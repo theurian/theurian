@@ -1,0 +1,143 @@
+[project]
+name = "theurian-workspace"
+version = "0.0.0"
+description = "Development workspace for the Theurian monorepo. Not a published artifact."
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy==2.3.0",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "pytest==9.1.1",
+    "ruff==0.16.1",
+    "types-jsonschema==4.26.0.20260518",
+    "types-pyyaml==6.0.12.20260724",
+    # `[all]` so a single `uv sync` at the repo root gives contributors the
+    # daemon, vector, and telemetry extras that the full test suite exercises.
+    "theurian[all]",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+theurian = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["packages/theurian-core/src"]
+
+[tool.ruff.lint]
+select = [
+    "A",    # flake8-builtins
+    "ANN",  # flake8-annotations
+    "ARG",  # flake8-unused-arguments
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez -- naive datetimes silently break validity windows
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "PGH",  # pygrep-hooks (blanket type: ignore)
+    "PL",   # pylint
+    "PTH",  # flake8-use-pathlib
+    "RET",  # flake8-return
+    "RUF",  # ruff-specific
+    "S",    # flake8-bandit
+    "SIM",  # flake8-simplify
+    "SLF",  # flake8-self
+    "T20",  # flake8-print
+    "TID",  # flake8-tidy-imports
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    "ANN401",  # `Any` is rejected by policy, but Protocol/`**kwargs` edges need it locally
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may import late (to assert on module state), chmod directly (to set up
+# permission fixtures), and assert freely.
+"packages/theurian-core/tests/**" = ["ANN", "PLC0415", "PLR2004", "PTH101", "S101", "SLF"]
+"tests/**" = ["ANN", "PLC0415", "PLR2004", "PTH101", "S101", "SLF"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"theurian.infrastructure".msg = "Domain and application layers must depend on ports, not infrastructure. Import infrastructure only from composition roots (cli, daemon, mcp, di)."
+
+[tool.ruff.lint.isort]
+known-first-party = ["theurian"]
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_explicit = false
+disallow_any_generics = true
+enable_error_code = [
+    "explicit-override",
+    "ignore-without-code",
+    "redundant-expr",
+    "truthy-bool",
+]
+files = ["packages/theurian-core/src", "packages/theurian-core/tests", "tests"]
+mypy_path = "packages/theurian-core/src"
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["packages/theurian-core/tests", "tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--import-mode=importlib",
+    "-ra",
+]
+markers = [
+    "unit: fast, isolated, no filesystem or network",
+    "integration: touches SQLite, the filesystem, or a local subprocess",
+    "contract: verifies a published contract between Core and a consumer",
+    "e2e: drives the real CLI, daemon, or plugin end to end",
+]
+asyncio_mode = "strict"
+filterwarnings = ["error"]
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["packages/theurian-core/src/theurian"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+    # Port definitions are pure interface: `Protocol` method bodies are `...`
+    # and there is nothing there to execute. Adapters and fakes are what get
+    # tested (ADR-0003).
+    "class .*\\(Protocol\\):",
+    "^\\s*\\.\\.\\.$",
+]
+fail_under = 80

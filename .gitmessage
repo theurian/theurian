@@ -1,0 +1,9 @@
+# <type>(<scope>): <subject>          # <= 50 chars, imperative
+#
+# <body: WHY this change is needed. The diff already shows what.>
+#
+# Types:  feat fix refactor docs test chore perf ci build revert
+# Scopes: core plugin schemas docs ci packaging
+#
+# Every commit needs a DCO sign-off. `git commit -s` adds it.
+# Refs ADR-NNNN when the change implements an architecture decision.

@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Theurian derived artifacts -------------------------------------------
+# Canonical state is rebuilt from Git-tracked migrations and content.
+# Never commit any of these. See docs/adr/0004-sqlite-is-a-derived-artifact.md
+.theurian/state/
+.theurian/cache/
+.theurian/runtime/
+.theurian/generated/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- Local secrets ---
+# Theurian's own token lives in ~/.theurian, never in a repo, but guard anyway.
+.env
+.env.*
+!.env.example
+*.token

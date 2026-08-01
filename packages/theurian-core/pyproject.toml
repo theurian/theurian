@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "theurian"
+version = "0.1.0.dev0"
+description = "Git-native engineering knowledge platform: versioned, traceable context for AI agents."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Theurian Contributors" }]
+keywords = [
+    "adr",
+    "ai-agents",
+    "knowledge-management",
+    "mcp",
+    "rag",
+    "traceability",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Typing :: Typed",
+]
+
+# Pinned exactly. Theurian ships a daemon that users install once and forget;
+# a floating range turns "works on my machine" into a support burden.
+# See docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md
+dependencies = [
+    "jsonschema==4.26.0",
+    "pydantic==2.13.4",
+    "python-ulid==4.0.1",
+    "pyyaml==6.0.3",
+    "typer==0.27.0",
+]
+
+[project.optional-dependencies]
+# The MCP daemon. Split out so `pip install theurian` stays usable in CI
+# images and pre-commit hooks that only need the CLI and migration engine.
+daemon = [
+    "mcp==2.0.0",
+    "uvicorn==0.52.0",
+    "watchfiles==1.2.0",
+]
+# Local vector search. sqlite-vec is pre-1.0 and reached only through the
+# VectorStore port; see docs/adr/0014.
+vector = ["sqlite-vec==0.1.9"]
+telemetry = [
+    "opentelemetry-sdk==1.44.0",
+    "opentelemetry-exporter-otlp-proto-http==1.44.0",
+]
+all = ["theurian[daemon,vector,telemetry]"]
+
+[project.scripts]
+theurian = "theurian.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/theurian/theurian"
+Documentation = "https://github.com/theurian/theurian/tree/main/docs"
+Source = "https://github.com/theurian/theurian"
+Changelog = "https://github.com/theurian/theurian/blob/main/packages/theurian-core/CHANGELOG.md"
+Issues = "https://github.com/theurian/theurian/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/theurian"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "README.md", "CHANGELOG.md", "LICENSE"]
