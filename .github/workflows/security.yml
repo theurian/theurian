@@ -94,7 +94,7 @@ jobs:
           # An SBOM that parses but lists nothing satisfies the release checklist
           # while telling a consumer nothing. Fail rather than publish it.
           [ "$count" -gt 0 ] || { echo "::error::SBOM contains no components"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: sbom.json
@@ -128,7 +128,7 @@ jobs:
               sys.exit(1)
           print("All dependency licences are compatible.")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: licenses
           path: licenses.json
