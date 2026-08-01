@@ -99,7 +99,7 @@ def test_a_representative_migration_validates(migration_validator: Draft202012Va
     [
         "01K1DEFABC1234567890ABCDE",
         "not-a-ulid",
-        "81K1DEFABC1234567890ABCDEF",
+        "81K1DEFABC1234567890ABCDEF",  # invalid-ulid
         "01k1defabc1234567890abcdef",
     ],
 )

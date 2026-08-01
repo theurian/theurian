@@ -63,10 +63,23 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# The banned-import rule below targets the domain and application layers.
+# Adapters legitimately import each other, and composition roots exist precisely
+# to name concrete adapters (ADR-0003).
+"packages/theurian-core/src/theurian/infrastructure/**" = ["TID251"]
+"packages/theurian-core/src/theurian/cli/**" = ["TID251"]
+"packages/theurian-core/src/theurian/daemon/**" = ["TID251"]
+"packages/theurian-core/src/theurian/mcp/**" = ["TID251"]
+
 # Tests may import late (to assert on module state), chmod directly (to set up
 # permission fixtures), and assert freely.
-"packages/theurian-core/tests/**" = ["ANN", "PLC0415", "PLR2004", "PTH101", "S101", "SLF"]
-"tests/**" = ["ANN", "PLC0415", "PLR2004", "PTH101", "S101", "SLF"]
+# ARG001: a pytest fixture requested for its side effects (chdir, isolated
+# data directory) is unused in the body by design.
+"packages/theurian-core/tests/**" = ["ANN", "ARG001", "PLC0415", "PLR2004", "PTH101", "S101", "SLF", "TID251"]
+# A fake's signature must match its port exactly, so it necessarily accepts
+# arguments a single-project in-memory implementation does not need.
+"packages/theurian-core/tests/fakes/**" = ["ANN", "ARG002", "PLC0415", "S101", "SLF"]
+"tests/**" = ["ANN", "ARG001", "PLC0415", "PLR2004", "PTH101", "S101", "SLF", "TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "theurian.infrastructure".msg = "Domain and application layers must depend on ports, not infrastructure. Import infrastructure only from composition roots (cli, daemon, mcp, di)."
@@ -91,10 +104,10 @@ enable_error_code = [
     "truthy-bool",
 ]
 files = ["packages/theurian-core/src", "packages/theurian-core/tests", "tests"]
-mypy_path = "packages/theurian-core/src"
+mypy_path = "packages/theurian-core/src:packages/theurian-core/tests"
 
 [[tool.mypy.overrides]]
-module = "tests.*"
+module = ["tests.*", "fakes.*"]
 disallow_untyped_defs = false
 
 # ---------------------------------------------------------------------------

@@ -311,12 +311,12 @@ def test_git_anchored_requires_commit_and_path() -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        "01K1DEFABC1234567890ABCDE",  # 25 characters
-        "01K1DEFABC1234567890ABCDEFG",  # 27 characters
-        "81K1DEFABC1234567890ABCDEF",  # overflows the 128-bit ULID space
-        "01K1DEFABC1234567890ABCDEI",  # 'I' is excluded from Crockford base32
-        "01K1DEFABC1234567890ABCDEL",  # so is 'L'
-        "01K1DEFABC1234567890ABCDEU",  # and 'U'
+        "01K1DEFABC1234567890ABCDE",  # 25 characters # invalid-ulid
+        "01K1DEFABC1234567890ABCDEFG",  # 27 characters # invalid-ulid
+        "81K1DEFABC1234567890ABCDEF",  # overflows the 128-bit ULID space # invalid-ulid
+        "01K1DEFABC1234567890ABCDEI",  # 'I' is excluded from Crockford base32 # invalid-ulid
+        "01K1DEFABC1234567890ABCDEL",  # so is 'L' # invalid-ulid
+        "01K1DEFABC1234567890ABCDEU",  # and 'U' # invalid-ulid
         "",
     ],
 )
