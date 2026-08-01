@@ -96,21 +96,30 @@ jobs:
       - name: Run the suite with no network access
         timeout-minutes: 10
         run: |
-          sudo unshare --net --map-root-user bash -c '
-            ip link set lo up
-            echo "--- interfaces visible to the tests ---"
-            ip -brief addr
-            exec "$(command -v uv)" run --frozen pytest -m "not e2e" -q
-          '
+          # Resolved in the outer shell: `sudo` resets PATH, so the inner shell
+          # cannot find uv on its own.
+          uv_path="$(command -v uv)"
 
-      - name: Prove the isolation actually blocks network
+          sudo --preserve-env=UV_CACHE_DIR,UV_PYTHON_INSTALL_DIR \
+            unshare --net bash -c "
+              ip link set lo up
+              echo '--- interfaces visible to the tests ---'
+              ip -brief addr
+              exec '$uv_path' run --frozen --no-sync pytest -m 'not e2e' -q
+            "
+
+      - name: Prove the sandbox actually blocks network
         timeout-minutes: 5
         run: |
-          # A guard against the check silently becoming a no-op: if the sandbox
-          # ever stops isolating, this reachability probe starts succeeding and
-          # the job fails rather than reporting a false pass.
-          if sudo unshare --net --map-root-user bash -c \
-               'ip link set lo up; curl -sS --max-time 5 https://pypi.org >/dev/null'; then
+          # Without this, a change to the sandboxing could turn the job above
+          # into a permanent false pass -- worse than no job, because it would
+          # be believed.
+          curl_path="$(command -v curl)"
+
+          if sudo unshare --net bash -c "
+               ip link set lo up
+               '$curl_path' -sS --max-time 5 https://pypi.org >/dev/null
+             "; then
             echo "::error::The network namespace did not block outbound traffic."
             exit 1
           fi
