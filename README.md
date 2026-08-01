@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/theurian-logo.svg" alt="Theurian" width="140">
+  <img src="assets/theurian-logo.png" alt="Theurian" width="140">
 
   <h1>Theurian</h1>
 
