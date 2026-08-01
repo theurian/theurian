@@ -1,0 +1,447 @@
+"""Knowledge migration model (ADR-0005).
+
+A migration is a declarative, storage-independent statement about knowledge
+state. The types here describe what a migration *is*; applying one is the
+application layer's job, and loading one from disk is the infrastructure's.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from typing import Final, override
+
+from theurian.domain.enums import (
+    KnowledgeKind,
+    KnowledgeStatus,
+    RelationType,
+    Sensitivity,
+    SpecificationStatus,
+    TrustLevel,
+)
+from theurian.domain.errors import (
+    MigrationCycleError,
+    MigrationDependencyMissingError,
+    MigrationError,
+)
+from theurian.domain.identifiers import ItemId, MigrationId, RevisionId, SpecId
+from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.values import ContentHash, MediaType
+
+#: The migration format this build understands.
+MIGRATION_API_VERSION: Final = "theurian.dev/v1"
+
+#: Bumped when the engine's *semantics* change in a way that would produce a
+#: different canonical state from identical inputs. It is hashed into the state
+#: hash so an engine change invalidates cached state instead of silently
+#: reinterpreting it (ADR-0007).
+MIGRATION_ENGINE_VERSION: Final = 1
+
+
+class OperationKind(StrEnum):
+    """The closed operation set. Adding one bumps ``apiVersion`` (ADR-0005)."""
+
+    CREATE_ITEM = "createItem"
+    UPSERT_REVISION = "upsertRevision"
+    DEPRECATE_ITEM = "deprecateItem"
+    RESTORE_ITEM = "restoreItem"
+    ADD_RELATION = "addRelation"
+    REMOVE_RELATION = "removeRelation"
+    ADD_ALIAS = "addAlias"
+    REMOVE_ALIAS = "removeAlias"
+    CHANGE_SENSITIVITY = "changeSensitivity"
+    CHANGE_OWNER = "changeOwner"
+    REGISTER_SPECIFICATION = "registerSpecification"
+    SUPERSEDE_SPECIFICATION = "supersedeSpecification"
+    ADD_EVIDENCE = "addEvidence"
+    REMOVE_EVIDENCE = "removeEvidence"
+
+
+@dataclass(frozen=True, slots=True)
+class Operation:
+    """Base for every migration operation."""
+
+    @property
+    def kind(self) -> OperationKind:
+        raise NotImplementedError
+
+    @property
+    def content_file(self) -> str | None:
+        """The body file this operation references, if any.
+
+        Declared on the base so the loader can collect referenced files without
+        knowing every operation type -- and so a new operation carrying content
+        cannot be forgotten by the state-hash computation.
+        """
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class CreateItem(Operation):
+    item_id: ItemId
+    kind_: KnowledgeKind
+    namespace: str
+    owner: str
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
+    trust_level: TrustLevel = TrustLevel.UNVERIFIED
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.CREATE_ITEM
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionMetadataSpec:
+    """The metadata block of an ``upsertRevision`` operation."""
+
+    title: str
+    content_type: MediaType
+    kind: KnowledgeKind
+    namespace: str
+    status: KnowledgeStatus
+    owner: str
+    trust_level: TrustLevel = TrustLevel.UNVERIFIED
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
+    tenant_id: str = "local"
+    acl_group: str = "default"
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    labels: tuple[str, ...] = ()
+    scope_paths: tuple[str, ...] = ()
+    source_anchors: tuple[SourceAnchor, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class UpsertRevision(Operation):
+    item_id: ItemId
+    revision_id: RevisionId
+    content_file_path: str
+    metadata: RevisionMetadataSpec
+    expected_revision: RevisionId | None = None
+    content_sha256: ContentHash | None = None
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.UPSERT_REVISION
+
+    @override
+    @property
+    def content_file(self) -> str | None:
+        return self.content_file_path
+
+
+@dataclass(frozen=True, slots=True)
+class DeprecateItem(Operation):
+    item_id: ItemId
+    reason: str | None = None
+    superseded_by: ItemId | None = None
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.DEPRECATE_ITEM
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreItem(Operation):
+    item_id: ItemId
+    reason: str | None = None
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.RESTORE_ITEM
+
+
+@dataclass(frozen=True, slots=True)
+class AddRelation(Operation):
+    source_item_id: ItemId
+    relation_type: RelationType
+    target_item_id: ItemId
+    note: str | None = None
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.ADD_RELATION
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveRelation(Operation):
+    source_item_id: ItemId
+    relation_type: RelationType
+    target_item_id: ItemId
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.REMOVE_RELATION
+
+
+@dataclass(frozen=True, slots=True)
+class AddAlias(Operation):
+    alias: ItemId
+    item_id: ItemId
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.ADD_ALIAS
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveAlias(Operation):
+    alias: ItemId
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.REMOVE_ALIAS
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeSensitivity(Operation):
+    item_id: ItemId
+    sensitivity: Sensitivity
+    #: Required by the schema. Reclassification changes who can read the content
+    #: and forces affected RAPTOR trees to rebuild, so the rationale is recorded.
+    reason: str
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.CHANGE_SENSITIVITY
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeOwner(Operation):
+    item_id: ItemId
+    owner: str
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.CHANGE_OWNER
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterSpecification(Operation):
+    spec_id: SpecId
+    item_id: ItemId
+    source_uri: str
+    content_format: MediaType
+    status: SpecificationStatus = SpecificationStatus.ACTIVE
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.REGISTER_SPECIFICATION
+
+
+@dataclass(frozen=True, slots=True)
+class SupersedeSpecification(Operation):
+    spec_id: SpecId
+    superseded_by: SpecId
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.SUPERSEDE_SPECIFICATION
+
+
+@dataclass(frozen=True, slots=True)
+class AddEvidence(Operation):
+    item_id: ItemId
+    anchor: SourceAnchor
+    description: str
+    confidence: float = 1.0
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.ADD_EVIDENCE
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveEvidence(Operation):
+    item_id: ItemId
+    source_uri: str
+
+    @override
+    @property
+    def kind(self) -> OperationKind:
+        return OperationKind.REMOVE_EVIDENCE
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    """One migration file, parsed and validated.
+
+    ``checksum`` is over the file's raw bytes. It is what makes editing an
+    already-applied migration detectable, and it is an input to the state hash.
+    """
+
+    migration_id: MigrationId
+    created_at: datetime
+    author: str
+    operations: tuple[Operation, ...]
+    checksum: ContentHash
+    depends_on: tuple[MigrationId, ...] = ()
+    description: str | None = None
+    #: Project-relative path, for error messages. Deliberately excluded from the
+    #: checksum and the state hash: renaming a file must not change the state.
+    source_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.operations:
+            raise MigrationError(f"Migration {self.migration_id} has no operations")
+        if self.created_at.tzinfo is None:
+            raise MigrationError(
+                f"Migration {self.migration_id} createdAt must carry an explicit offset"
+            )
+        if self.migration_id in self.depends_on:
+            raise MigrationError(f"Migration {self.migration_id} depends on itself")
+        duplicates = {d for d in self.depends_on if self.depends_on.count(d) > 1}
+        if duplicates:
+            listed = ", ".join(sorted(str(d) for d in duplicates))
+            raise MigrationError(f"Migration {self.migration_id} lists {listed} twice in dependsOn")
+
+    @property
+    def content_files(self) -> tuple[str, ...]:
+        """Body files referenced by this migration, in operation order."""
+        return tuple(path for op in self.operations if (path := op.content_file) is not None)
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationSet:
+    """An ordered, validated collection of migrations.
+
+    Construction performs the ordering and validation that must happen before
+    any operation runs: a cycle or a missing dependency means no valid
+    application order exists, and discovering that halfway through would leave
+    the store in a state no migration describes.
+    """
+
+    migrations: tuple[Migration, ...]
+    _by_id: dict[MigrationId, Migration] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        by_id: dict[MigrationId, Migration] = {}
+        for migration in self.migrations:
+            if migration.migration_id in by_id:
+                raise MigrationError(
+                    f"Duplicate migration id {migration.migration_id}: "
+                    f"{by_id[migration.migration_id].source_path} and {migration.source_path}"
+                )
+            by_id[migration.migration_id] = migration
+        object.__setattr__(self, "_by_id", by_id)
+
+        for migration in self.migrations:
+            for dependency in migration.depends_on:
+                if dependency not in by_id:
+                    raise MigrationDependencyMissingError(migration.migration_id, dependency)
+
+    @classmethod
+    def ordered(cls, migrations: tuple[Migration, ...]) -> MigrationSet:
+        """Build a set sorted into a valid application order.
+
+        Raises:
+            MigrationCycleError: If ``dependsOn`` forms a cycle.
+            MigrationDependencyMissingError: If a dependency is not present.
+            MigrationError: On a duplicate id.
+        """
+        unordered = cls(migrations)
+        return cls(unordered._topological_order())
+
+    def __iter__(self) -> Iterator[Migration]:
+        return iter(self.migrations)
+
+    def __len__(self) -> int:
+        return len(self.migrations)
+
+    def get(self, migration_id: MigrationId) -> Migration | None:
+        return self._by_id.get(migration_id)
+
+    @property
+    def ids(self) -> tuple[MigrationId, ...]:
+        return tuple(m.migration_id for m in self.migrations)
+
+    def _topological_order(self) -> tuple[Migration, ...]:
+        """Kahn's algorithm, with ULID order as the tie-break.
+
+        The tie-break is what makes ordering *deterministic* rather than merely
+        valid. Two independent migrations must always apply in the same order,
+        or the same inputs would produce different states on different machines
+        and the state hash would stop identifying a state (ADR-0007).
+        """
+        remaining = {m.migration_id: set(m.depends_on) for m in self.migrations}
+        ordered: list[Migration] = []
+
+        while remaining:
+            ready = sorted(
+                (mid for mid, deps in remaining.items() if not deps),
+                key=lambda mid: mid.value,
+            )
+            if not ready:
+                raise MigrationCycleError(self._find_cycle(remaining))
+
+            for migration_id in ready:
+                ordered.append(self._by_id[migration_id])
+                del remaining[migration_id]
+            for deps in remaining.values():
+                deps.difference_update(ready)
+
+        return tuple(ordered)
+
+    def _find_cycle(
+        self, remaining: dict[MigrationId, set[MigrationId]]
+    ) -> tuple[MigrationId, ...]:
+        """Extract one concrete cycle, so the error names the actual problem.
+
+        "A cycle exists" sends the reader hunting; "A -> B -> C -> A" does not.
+        """
+        start = min(remaining, key=lambda mid: mid.value)
+        path: list[MigrationId] = []
+        seen: set[MigrationId] = set()
+        current = start
+
+        while current not in seen:
+            seen.add(current)
+            path.append(current)
+            candidates = sorted(
+                (d for d in remaining[current] if d in remaining), key=lambda mid: mid.value
+            )
+            if not candidates:
+                break
+            current = candidates[0]
+
+        if current in path:
+            return (*path[path.index(current) :], current)
+        return tuple(path)
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedMigrations:
+    """A validated migration set plus the content it references.
+
+    Produced by an infrastructure loader, consumed by the application layer. It
+    lives in the domain because it is composed entirely of domain types -- and
+    because putting it in infrastructure would force the application layer to
+    import an adapter to name its own input (ADR-0003).
+
+    Carrying the bodies here means the engine performs no file I/O inside a write
+    transaction (NFR-8).
+    """
+
+    migration_set: MigrationSet
+    content_checksums: tuple[ContentHash, ...]
+    #: Body text keyed by content hash.
+    content_by_hash: dict[str, str]
+
+    @classmethod
+    def empty(cls) -> LoadedMigrations:
+        return cls(MigrationSet(()), (), {})
