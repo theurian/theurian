@@ -1,0 +1,22 @@
+# Theurian Claude Code plugin -- compatibility declaration
+#
+# Validated against schemas/protocol/compatibility.schema.json.
+# See docs/protocol/plugin-core-compatibility.md and ADR-0001.
+#
+# The plugin and Core are released independently. This file is how the plugin
+# states which Core it can talk to, and it is the only thing that has to change
+# when Core ships a compatible release.
+
+pluginVersion: 0.1.0
+
+coreCompatibility:
+  # Pre-release-tolerant on purpose: Core reports PEP 440 versions such as
+  # `0.1.0.dev0`, which translate to the SemVer pre-release `0.1.0-dev.0` and
+  # therefore sort *before* `0.1.0`. Pinning the minimum at `0.1.0` would reject
+  # every development build of the version this plugin is written against.
+  minimum: 0.1.0-dev.0
+  # Pre-1.0, a MINOR bump of Core may break the protocol, so the ceiling is the
+  # next MINOR. Post-1.0 it becomes the next MAJOR.
+  maximumExclusive: 0.2.0
+
+protocolVersion: theurian/v1

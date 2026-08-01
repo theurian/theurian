@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "name": "theurian",
+  "displayName": "Theurian",
+  "version": "0.1.0",
+  "description": "Invoke your engineering knowledge. Traceable specifications, decisions, and review knowledge for AI agents.",
+  "author": {
+    "name": "Theurian Contributors",
+    "url": "https://github.com/theurian/theurian"
+  },
+  "homepage": "https://github.com/theurian/theurian",
+  "repository": "https://github.com/theurian/theurian",
+  "license": "Apache-2.0",
+  "keywords": ["knowledge", "adr", "traceability", "specifications", "code-review", "mcp"],
+  "hooks": "./hooks/hooks.json"
+}

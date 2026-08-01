@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "TEMPLATE -- not loaded by Claude Code.",
+    "",
+    "This file lives under mcp/ rather than at the plugin root, and the plugin",
+    "manifest declares no `mcpServers` key. Both are deliberate: Claude Code",
+    "starts a plugin's MCP servers the moment the plugin is enabled, which would",
+    "produce a failed server entry before the user has been told that",
+    "/theurian:setup exists -- and FR-L3 requires that installing the plugin have",
+    "no observable effect at all.",
+    "",
+    "/theurian:setup installs this entry at user scope. See ADR-0012.",
+    "",
+    "The Authorization header carries an environment-variable reference, never a",
+    "literal token: config files get copied into gists, synced to dotfile repos,",
+    "and pasted into issues. THEURIAN_MCP_TOKEN is exported from ~/.theurian/env",
+    "(mode 0600), which reads the token from ~/.theurian/auth/token. See ADR-0011."
+  ],
+  "mcpServers": {
+    "theurian": {
+      "type": "http",
+      "url": "http://127.0.0.1:7419/mcp",
+      "headers": {
+        "Authorization": "Bearer ${THEURIAN_MCP_TOKEN}"
+      }
+    }
+  }
+}
