@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/migrations/migration.schema.json",
+  "title": "Theurian knowledge migration",
+  "description": "A declarative, storage-independent change to canonical knowledge state. Applied by `theurian migrate apply`. See docs/adr/0005-yaml-knowledge-migrations.md.",
+  "type": "object",
+  "required": ["apiVersion", "id", "createdAt", "author", "operations"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "theurian.dev/v1",
+      "description": "Migration format version. Adding an operation type bumps this."
+    },
+    "id": {
+      "$ref": "#/$defs/ulid",
+      "description": "ULID identifying this migration. Lexical order is creation order. Immutable once applied."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp with an explicit offset. A naive timestamp is rejected."
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 320,
+      "description": "Identity of the human who authored this change. Agent-generated proposals record the agent separately in evidence.json; approval is always human (ADR-0013)."
+    },
+    "dependsOn": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ulid" },
+      "uniqueItems": true,
+      "default": [],
+      "description": "Migrations that must be applied first. Topologically sorted; cycles are rejected."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Why this change was made. Reviewers read this before the diff."
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/operation" },
+      "description": "Applied in array order within one transaction. Either all succeed or none do."
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "description": "26-character Crockford base32 ULID, uppercase."
+    },
+    "itemId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$",
+      "maxLength": 200,
+      "description": "Stable, human-authored knowledge identifier, e.g. `architecture.auth-policy`."
+    },
+    "contentFile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "Path to the body file, relative to this migration file. Resolved with realpath and required to stay inside the project root, including through symlinks (SEC-7).",
+      "not": { "pattern": "^(/|[A-Za-z]:[\\\\/])" }
+    },
+    "relationType": {
+      "enum": [
+        "implements",
+        "implemented_by",
+        "supersedes",
+        "superseded_by",
+        "depends_on",
+        "constrained_by",
+        "verified_by",
+        "reviewed_by",
+        "contradicts",
+        "related_to",
+        "derived_from",
+        "evidenced_by",
+        "rejects",
+        "exception_to"
+      ]
+    },
+    "sensitivity": { "enum": ["public", "internal", "confidential", "restricted"] },
+    "trustLevel": { "enum": ["unverified", "inferred", "reviewed", "authoritative"] },
+    "status": {
+      "enum": ["draft", "proposed", "approved", "deprecated", "superseded", "rejected"]
+    },
+    "kind": {
+      "enum": [
+        "architecture",
+        "decision",
+        "domain",
+        "operations",
+        "security",
+        "testing",
+        "api",
+        "incident",
+        "convention",
+        "rejected-approach",
+        "known-exception"
+      ]
+    },
+    "sourceAnchor": {
+      "type": "object",
+      "required": ["provider", "sourceUri"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sourceUri": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "repository": { "type": "string", "maxLength": 512 },
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+        "blobSha": { "type": "string", "pattern": "^[0-9a-f]{7,64}$" },
+        "filePath": { "type": "string", "maxLength": 1024 },
+        "lineStart": { "type": "integer", "minimum": 1 },
+        "lineEnd": { "type": "integer", "minimum": 1 },
+        "externalId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "revisionMetadata": {
+      "type": "object",
+      "required": ["title", "contentType", "kind", "namespace", "status", "owner"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "contentType": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$",
+          "description": "Media type of the body. Preserved rather than converted, so a structured source stays structured (ADR-0010)."
+        },
+        "kind": { "$ref": "#/$defs/kind" },
+        "namespace": { "type": "string", "maxLength": 200 },
+        "status": { "$ref": "#/$defs/status" },
+        "owner": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "trustLevel": { "$ref": "#/$defs/trustLevel", "default": "unverified" },
+        "sensitivity": { "$ref": "#/$defs/sensitivity", "default": "internal" },
+        "tenantId": { "type": "string", "maxLength": 128, "default": "local" },
+        "aclGroup": { "type": "string", "maxLength": 128, "default": "default" },
+        "validFrom": { "type": "string", "format": "date-time" },
+        "validTo": { "type": ["string", "null"], "format": "date-time" },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 64 },
+          "uniqueItems": true
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": { "type": "string", "maxLength": 512 },
+              "description": "Glob patterns this knowledge governs. Used by drift detection to relate a code change to the rules that constrain it."
+            }
+          }
+        },
+        "sourceAnchors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sourceAnchor" }
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "required": ["op"],
+      "discriminator": { "propertyName": "op" },
+      "oneOf": [
+        { "$ref": "#/$defs/opCreateItem" },
+        { "$ref": "#/$defs/opUpsertRevision" },
+        { "$ref": "#/$defs/opDeprecateItem" },
+        { "$ref": "#/$defs/opRestoreItem" },
+        { "$ref": "#/$defs/opAddRelation" },
+        { "$ref": "#/$defs/opRemoveRelation" },
+        { "$ref": "#/$defs/opAddAlias" },
+        { "$ref": "#/$defs/opRemoveAlias" },
+        { "$ref": "#/$defs/opChangeSensitivity" },
+        { "$ref": "#/$defs/opChangeOwner" },
+        { "$ref": "#/$defs/opRegisterSpecification" },
+        { "$ref": "#/$defs/opSupersedeSpecification" },
+        { "$ref": "#/$defs/opAddEvidence" },
+        { "$ref": "#/$defs/opRemoveEvidence" }
+      ]
+    },
+    "opCreateItem": {
+      "type": "object",
+      "required": ["op", "itemId", "kind", "namespace", "owner"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "createItem" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "kind": { "$ref": "#/$defs/kind" },
+        "namespace": { "type": "string", "maxLength": 200 },
+        "owner": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "sensitivity": { "$ref": "#/$defs/sensitivity" },
+        "trustLevel": { "$ref": "#/$defs/trustLevel" }
+      }
+    },
+    "opUpsertRevision": {
+      "type": "object",
+      "required": ["op", "itemId", "revisionId", "contentFile", "metadata"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "upsertRevision" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "revisionId": { "$ref": "#/$defs/ulid" },
+        "expectedRevision": {
+          "oneOf": [{ "$ref": "#/$defs/ulid" }, { "type": "null" }],
+          "description": "Optimistic concurrency guard. Must equal the item's current revision, or be absent when creating the first revision. A mismatch is reported, never merged (ADR-0006)."
+        },
+        "contentFile": { "$ref": "#/$defs/contentFile" },
+        "contentSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Optional pin of the body file's digest. When present, a mismatch fails the migration -- this is what makes an out-of-band edit to the body detectable."
+        },
+        "metadata": { "$ref": "#/$defs/revisionMetadata" }
+      }
+    },
+    "opDeprecateItem": {
+      "type": "object",
+      "required": ["op", "itemId"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "deprecateItem" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "reason": { "type": "string", "maxLength": 2000 },
+        "supersededBy": { "$ref": "#/$defs/itemId" }
+      }
+    },
+    "opRestoreItem": {
+      "type": "object",
+      "required": ["op", "itemId"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "restoreItem" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "reason": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "opAddRelation": {
+      "type": "object",
+      "required": ["op", "sourceItemId", "relationType", "targetItemId"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "addRelation" },
+        "sourceItemId": { "$ref": "#/$defs/itemId" },
+        "relationType": { "$ref": "#/$defs/relationType" },
+        "targetItemId": { "$ref": "#/$defs/itemId" },
+        "note": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "opRemoveRelation": {
+      "type": "object",
+      "required": ["op", "sourceItemId", "relationType", "targetItemId"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "removeRelation" },
+        "sourceItemId": { "$ref": "#/$defs/itemId" },
+        "relationType": { "$ref": "#/$defs/relationType" },
+        "targetItemId": { "$ref": "#/$defs/itemId" }
+      }
+    },
+    "opAddAlias": {
+      "type": "object",
+      "required": ["op", "alias", "itemId"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "addAlias" },
+        "alias": { "$ref": "#/$defs/itemId" },
+        "itemId": { "$ref": "#/$defs/itemId" }
+      }
+    },
+    "opRemoveAlias": {
+      "type": "object",
+      "required": ["op", "alias"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "removeAlias" },
+        "alias": { "$ref": "#/$defs/itemId" }
+      }
+    },
+    "opChangeSensitivity": {
+      "type": "object",
+      "required": ["op", "itemId", "sensitivity", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "changeSensitivity" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "sensitivity": { "$ref": "#/$defs/sensitivity" },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "Required. Reclassification changes who can see the content and forces affected RAPTOR trees to rebuild, so the rationale is part of the record."
+        }
+      }
+    },
+    "opChangeOwner": {
+      "type": "object",
+      "required": ["op", "itemId", "owner"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "changeOwner" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "owner": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "opRegisterSpecification": {
+      "type": "object",
+      "required": ["op", "specId", "itemId", "sourceUri", "format"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "registerSpecification" },
+        "specId": { "$ref": "#/$defs/itemId" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "sourceUri": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "format": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
+        },
+        "status": { "enum": ["draft", "active", "superseded", "retired"] }
+      }
+    },
+    "opSupersedeSpecification": {
+      "type": "object",
+      "required": ["op", "specId", "supersededBy"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "supersedeSpecification" },
+        "specId": { "$ref": "#/$defs/itemId" },
+        "supersededBy": { "$ref": "#/$defs/itemId" }
+      }
+    },
+    "opAddEvidence": {
+      "type": "object",
+      "required": ["op", "itemId", "anchor", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "addEvidence" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "anchor": { "$ref": "#/$defs/sourceAnchor" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 }
+      }
+    },
+    "opRemoveEvidence": {
+      "type": "object",
+      "required": ["op", "itemId", "sourceUri"],
+      "additionalProperties": false,
+      "properties": {
+        "op": { "const": "removeEvidence" },
+        "itemId": { "$ref": "#/$defs/itemId" },
+        "sourceUri": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      }
+    }
+  }
+}

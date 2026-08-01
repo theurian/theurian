@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/config/project-config.schema.json",
+  "title": "Theurian project configuration (.theurian/config.yaml)",
+  "description": "Per-repository configuration, Git-tracked. Contains no secrets: credentials live in ~/.theurian and the OS secret store (ADR-0011).",
+  "type": "object",
+  "required": ["apiVersion", "projectId"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "theurian.dev/v1" },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 200
+    },
+    "defaultBranch": { "type": "string", "default": "main" },
+    "knowledgeDirectory": { "type": "string", "default": ".theurian" },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Adapter selection. Every provider defaults to a deterministic in-tree implementation that needs no network and no API key (ADR-0009).",
+      "properties": {
+        "embedding": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "type": "string", "default": "deterministic-hash" },
+            "model": { "type": "string" },
+            "dimension": { "type": "integer", "minimum": 8, "maximum": 8192 },
+            "endpointEnv": {
+              "type": "string",
+              "description": "Name of the environment variable holding the endpoint. The value itself is never stored here."
+            },
+            "apiKeyEnv": {
+              "type": "string",
+              "description": "Name of the environment variable holding the API key. Storing a key in this file is a configuration error."
+            }
+          }
+        },
+        "summarization": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "type": "string", "default": "extractive" },
+            "model": { "type": "string" },
+            "maxTokens": { "type": "integer", "minimum": 64, "maximum": 8192, "default": 512 },
+            "apiKeyEnv": { "type": "string" }
+          }
+        },
+        "reranking": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "type": "string", "default": "identity" },
+            "model": { "type": "string" },
+            "apiKeyEnv": { "type": "string" }
+          }
+        },
+        "vectorStore": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "enum": ["sqlite-vec", "brute-force"], "default": "sqlite-vec" }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "enum": ["github", "none"], "default": "none" },
+            "repositories": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
+              "description": "Allowlist of `owner/repo` values. A repository absent from this list is never contacted (SEC-10)."
+            }
+          }
+        }
+      }
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultTokenBudget": { "type": "integer", "minimum": 256, "default": 8000 },
+        "rrfK": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Reciprocal Rank Fusion smoothing constant."
+        },
+        "includeStatuses": {
+          "type": "array",
+          "items": {
+            "enum": ["draft", "proposed", "approved", "deprecated", "superseded", "rejected"]
+          },
+          "default": ["approved"],
+          "description": "Defaults to approved only, so an unreviewed draft is never returned as though it were a team decision."
+        }
+      }
+    },
+    "raptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "maxLevels": { "type": "integer", "minimum": 1, "maximum": 8, "default": 3 },
+        "minChildrenPerSummary": {
+          "type": "integer",
+          "minimum": 2,
+          "default": 3,
+          "description": "Below this, a level is skipped. Summarising a single document adds cost and no information."
+        }
+      }
+    },
+    "traceabilityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What each change type must be able to prove (§22). Unlisted change types default to permissive, so adopting the policy never blocks unrelated work.",
+      "patternProperties": {
+        "^(domain-behavior|architecture|bug-fix|refactoring|formatting)$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "specification": { "$ref": "#/$defs/requirement" },
+            "test": { "$ref": "#/$defs/requirement" },
+            "review": { "$ref": "#/$defs/requirement" },
+            "adr": { "$ref": "#/$defs/requirement" },
+            "issue": { "$ref": "#/$defs/requirement" },
+            "regressionTest": { "$ref": "#/$defs/requirement" },
+            "behaviorPreservationEvidence": { "$ref": "#/$defs/requirement" },
+            "traceability": { "$ref": "#/$defs/requirement" }
+          }
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "secretScan": {
+          "enum": ["block", "warn", "off"],
+          "default": "block",
+          "description": "What to do when a candidate revision appears to contain a secret (SEC-11)."
+        },
+        "maxSourceFileBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 67108864,
+          "default": 8388608
+        }
+      }
+    }
+  },
+  "$defs": {
+    "requirement": { "enum": ["required", "optional", "none"] }
+  }
+}

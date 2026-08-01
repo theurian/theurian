@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/cli/version.schema.json",
+  "title": "Output of `theurian version --json`",
+  "description": "The first contract the plugin depends on: it resolves compatibility from this before doing anything else. Changing its shape requires a protocol version bump.",
+  "type": "object",
+  "required": ["name", "version", "protocolVersion", "python", "platform"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "const": "theurian" },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Core version. May carry a PEP 440 development suffix such as `0.1.0.dev0`."
+    },
+    "protocolVersion": {
+      "type": "string",
+      "pattern": "^theurian/v[1-9][0-9]*$"
+    },
+    "python": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "platform": {
+      "type": "string",
+      "pattern": "^[a-z]+-[A-Za-z0-9_]+$",
+      "description": "`<system>-<machine>`, e.g. `darwin-arm64`, `linux-x86_64`."
+    }
+  }
+}

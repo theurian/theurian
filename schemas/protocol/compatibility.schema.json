@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/protocol/compatibility.schema.json",
+  "title": "Theurian plugin compatibility declaration",
+  "description": "Declares which Theurian Core versions and wire protocol a client plugin supports. Co-owned by Core and plugin maintainers; see docs/protocol/plugin-core-compatibility.md.",
+  "type": "object",
+  "required": ["pluginVersion", "coreCompatibility", "protocolVersion"],
+  "additionalProperties": false,
+  "properties": {
+    "pluginVersion": {
+      "$ref": "#/$defs/semver",
+      "description": "Version of this plugin artifact. Independent of the Core version (ADR-0001)."
+    },
+    "coreCompatibility": {
+      "type": "object",
+      "required": ["minimum", "maximumExclusive"],
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "$ref": "#/$defs/semver",
+          "description": "Oldest Core version this plugin works against, inclusive."
+        },
+        "maximumExclusive": {
+          "$ref": "#/$defs/semver",
+          "description": "First Core version this plugin does NOT support. Pre-1.0 this is the next MINOR, because a pre-1.0 MINOR bump may break the protocol; post-1.0 it is the next MAJOR."
+        }
+      }
+    },
+    "protocolVersion": {
+      "type": "string",
+      "pattern": "^theurian/v[1-9][0-9]*$",
+      "description": "Wire protocol the plugin speaks. Must equal what Core reports, exactly. There is no negotiation and no fallback: an ambiguous protocol match is worse than a clear stop."
+    }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
+    }
+  }
+}

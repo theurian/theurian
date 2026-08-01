@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/tool-context.schema.json",
+  "title": "Theurian MCP tool call context",
+  "description": "Explicit context carried by every project-scoped MCP tool call. There is no server-side session state and no process-global current project: with many agents sharing one daemon, an implicit default resolves one agent's query against another agent's project (ADR-0002).",
+  "type": "object",
+  "required": ["projectId"],
+  "additionalProperties": false,
+  "properties": {
+    "projectId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 200,
+      "description": "Required. Omitting it is a validation error, never a fallback to the most recently used project."
+    },
+    "snapshotId": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Optional pinned state hash. Pin one for the duration of a task so results stay reproducible even if the developer switches branches mid-run (ADR-0007)."
+    },
+    "agentId": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Provenance only. Theurian does not authenticate agents; this labels which run produced a proposal."
+    },
+    "taskId": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Provenance only. Groups calls belonging to one unit of agent work."
+    }
+  }
+}
