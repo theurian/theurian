@@ -1,0 +1,171 @@
+"""CLI composition root helpers.
+
+One of the three places allowed to name a concrete adapter (ADR-0003). Every
+command builds its object graph here, so wiring lives in one readable place
+rather than being scattered across command bodies.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
+
+from theurian.application.migration_engine import MigrationEngine
+from theurian.application.project_service import (
+    ProjectError,
+    ProjectPaths,
+    ProjectRegistry,
+    derive_project_id,
+    resolve_state_hash,
+)
+from theurian.domain.identifiers import ProjectId
+from theurian.domain.migration import LoadedMigrations
+from theurian.domain.state import StateHash
+from theurian.infrastructure.determinism import SystemClock, UlidGenerator
+from theurian.infrastructure.filesystem.migration_loader import load_migrations
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
+
+#: Timeout on every `git` invocation. An unbounded subprocess in a CLI that a
+#: hook may call is a hang the user cannot explain (SEC-19).
+GIT_TIMEOUT_SECONDS: Final = 5.0
+
+
+def find_git_root(start: Path) -> Path | None:
+    """The working tree root containing ``start``, or ``None``.
+
+    ``--show-toplevel`` rather than walking up looking for ``.git``: in a
+    worktree, ``.git`` is a *file*, and a hand-rolled walk gets that wrong.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 - resolved via PATH
+            cwd=start,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return Path(result.stdout.strip())
+
+
+def current_commit(root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607 - resolved via PATH
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def default_branch(root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],  # noqa: S607 - resolved via PATH
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "main"
+    branch = result.stdout.strip()
+    return branch or "main"
+
+
+def repository_url(root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],  # noqa: S607 - resolved via PATH
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def schema_root() -> Path:
+    """Locate the published JSON Schemas.
+
+    The packaged copy is checked first, because that is the path an installed
+    build actually takes -- preferring the source tree would mean the packaged
+    path was only ever exercised by users, never by the developers.
+
+    The source-checkout fallback lets a contributor edit a schema and see the
+    effect without reinstalling.
+    """
+    packaged = Path(__file__).resolve().parents[1] / "schemas"
+    if (packaged / "migrations" / "migration.schema.json").exists():
+        return packaged
+
+    from_source = Path(__file__).resolve().parents[5] / "schemas"
+    if (from_source / "migrations" / "migration.schema.json").exists():
+        return from_source
+
+    raise ProjectError(
+        "Cannot locate the published JSON Schemas. This build is incomplete; reinstall theurian."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CommandContext:
+    """Everything a project-scoped command needs, resolved once."""
+
+    project_id: ProjectId
+    paths: ProjectPaths
+    loaded: LoadedMigrations
+    state_hash: StateHash
+    clock: SystemClock
+    ids: UlidGenerator
+
+    @property
+    def engine(self) -> MigrationEngine:
+        return MigrationEngine(self.clock, self.loaded.content_by_hash)
+
+
+def resolve_context(start: Path | None = None) -> CommandContext:
+    """Build a command context for the project containing ``start``.
+
+    Raises:
+        ProjectError: If ``start`` is not inside a Git repository.
+    """
+    cwd = (start or Path.cwd()).resolve()
+    root = find_git_root(cwd)
+    if root is None:
+        raise ProjectError(
+            f"{cwd} is not inside a Git repository. Theurian scopes a project to a "
+            f"Git working tree, so that branches and worktrees stay isolated."
+        )
+
+    paths = ProjectPaths.of(root)
+    loaded = load_migrations(paths.root, paths.migrations, schema_root())
+
+    return CommandContext(
+        project_id=derive_project_id(root),
+        paths=paths,
+        loaded=loaded,
+        state_hash=resolve_state_hash(loaded, SCHEMA_VERSION),
+        clock=SystemClock(),
+        ids=UlidGenerator(),
+    )
+
+
+def registry() -> ProjectRegistry:
+    return ProjectRegistry.default()

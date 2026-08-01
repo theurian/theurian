@@ -84,13 +84,46 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv sync --frozen
-      # OSS-13 and ADR-0009: a contributor without a paid API key must be able
-      # to run everything. This job is what keeps that true rather than aspirational.
-      - name: Block outbound network, then run tests
+        timeout-minutes: 10
+
+      # OSS-13 and ADR-0009: a contributor without a paid API key must be able to
+      # run everything. This job is what keeps that true rather than aspirational.
+      #
+      # The isolation is a network namespace around the test process, not a
+      # global `iptables -P OUTPUT DROP`. That policy would also sever the
+      # runner's own connection to GitHub, hanging the job until it is killed --
+      # a failure mode that says nothing about whether the tests need network.
+      - name: Run the suite with no network access
+        timeout-minutes: 10
         run: |
-          sudo iptables -P OUTPUT DROP
-          sudo iptables -A OUTPUT -o lo -j ACCEPT
-          uv run pytest -m "not e2e" -q
+          # Resolved in the outer shell: `sudo` resets PATH, so the inner shell
+          # cannot find uv on its own.
+          uv_path="$(command -v uv)"
+
+          sudo --preserve-env=UV_CACHE_DIR,UV_PYTHON_INSTALL_DIR \
+            unshare --net bash -c "
+              ip link set lo up
+              echo '--- interfaces visible to the tests ---'
+              ip -brief addr
+              exec '$uv_path' run --frozen --no-sync pytest -m 'not e2e' -q
+            "
+
+      - name: Prove the sandbox actually blocks network
+        timeout-minutes: 5
+        run: |
+          # Without this, a change to the sandboxing could turn the job above
+          # into a permanent false pass -- worse than no job, because it would
+          # be believed.
+          curl_path="$(command -v curl)"
+
+          if sudo unshare --net bash -c "
+               ip link set lo up
+               '$curl_path' -sS --max-time 5 https://pypi.org >/dev/null
+             "; then
+            echo "::error::The network namespace did not block outbound traffic."
+            exit 1
+          fi
+          echo "Confirmed: no outbound network inside the sandbox."
 
   build:
     name: Build and verify the package

@@ -20,6 +20,7 @@ from typing import Annotated
 import typer
 
 from theurian import __protocol_version__, __version__
+from theurian.cli import commands
 from theurian.domain.compatibility import (
     CompatibilityDeclaration,
     CompatibilityOutcome,
@@ -37,6 +38,9 @@ app = typer.Typer(
 
 compat_app = typer.Typer(help="Inspect Core/plugin compatibility.", no_args_is_help=True)
 app.add_typer(compat_app, name="compat")
+app.add_typer(commands.project_app, name="project")
+app.add_typer(commands.migrate_app, name="migrate")
+app.command("init")(commands.init_command)
 
 #: Exit code for a compatibility mismatch. Distinct from 1 so a caller can tell
 #: "incompatible" apart from "the command itself failed".

@@ -12,7 +12,51 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Milestone 0 — architecture and OSS foundation.
+### Milestone 1 — local canonical store
+
+#### Added
+
+- **Knowledge migration engine.** Applies the fourteen YAML operations
+  transactionally, with `expectedRevision` optimistic concurrency, deterministic
+  topological ordering, cycle detection that names the actual cycle, and
+  idempotent re-application.
+- **SQLite canonical store.** WAL, `foreign_keys=ON`, immutable revisions with no
+  update path, alias resolution, bidirectional relation traversal, and a
+  migration history that records checksums.
+- **State hashing.** Content-addresses a whole canonical state so a database
+  file's name describes its contents. Covered by a committed golden vector and a
+  cross-process test that would catch a `PYTHONHASHSEED` dependency.
+- **Single-writer guarantee.** An OS advisory lock serialises concurrent writers,
+  behind an interface a daemon-owned queue can replace without touching
+  application code.
+- **CLI**: `theurian init`, `project register|unregister|list|status`, and
+  `migrate status|validate|apply`, all with `--json`.
+- **Deterministic fakes** for `Clock`, `IdGenerator`, and the migration writer.
+
+#### Fixed
+
+- The published JSON Schemas were not packaged into the wheel, so an installed
+  `theurian` could not validate a migration at all. A build hook now ships them
+  and an e2e test asserts an installed build can read a migration.
+- Editing an already-applied migration was not detected. Editing one changes the
+  state hash, which routed the next command to a fresh empty database where
+  nothing looked wrong; the check now runs against the previously active state
+  as well. See the amendment to ADR-0016.
+- Re-registering a project reported a change every time, because the
+  registration timestamp was refreshed. It now records when the project was
+  *first* registered, restoring the idempotence FR-L2 requires.
+- A read connection leaked when verifying migration history.
+
+#### Security
+
+- `contentFile` paths are resolved with symlinks followed before the containment
+  check, so both `../` traversal and symlink escape are refused (SEC-7, T-4, T-5).
+- YAML loading no longer coerces timestamps to `datetime`, which had made valid
+  migrations fail their own schema validation.
+
+---
+
+### Milestone 0 — architecture and OSS foundation
 
 ### Added
 
