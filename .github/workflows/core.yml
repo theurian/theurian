@@ -84,13 +84,37 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv sync --frozen
-      # OSS-13 and ADR-0009: a contributor without a paid API key must be able
-      # to run everything. This job is what keeps that true rather than aspirational.
-      - name: Block outbound network, then run tests
+        timeout-minutes: 10
+
+      # OSS-13 and ADR-0009: a contributor without a paid API key must be able to
+      # run everything. This job is what keeps that true rather than aspirational.
+      #
+      # The isolation is a network namespace around the test process, not a
+      # global `iptables -P OUTPUT DROP`. That policy would also sever the
+      # runner's own connection to GitHub, hanging the job until it is killed --
+      # a failure mode that says nothing about whether the tests need network.
+      - name: Run the suite with no network access
+        timeout-minutes: 10
         run: |
-          sudo iptables -P OUTPUT DROP
-          sudo iptables -A OUTPUT -o lo -j ACCEPT
-          uv run pytest -m "not e2e" -q
+          sudo unshare --net --map-root-user bash -c '
+            ip link set lo up
+            echo "--- interfaces visible to the tests ---"
+            ip -brief addr
+            exec "$(command -v uv)" run --frozen pytest -m "not e2e" -q
+          '
+
+      - name: Prove the isolation actually blocks network
+        timeout-minutes: 5
+        run: |
+          # A guard against the check silently becoming a no-op: if the sandbox
+          # ever stops isolating, this reachability probe starts succeeding and
+          # the job fails rather than reporting a false pass.
+          if sudo unshare --net --map-root-user bash -c \
+               'ip link set lo up; curl -sS --max-time 5 https://pypi.org >/dev/null'; then
+            echo "::error::The network namespace did not block outbound traffic."
+            exit 1
+          fi
+          echo "Confirmed: no outbound network inside the sandbox."
 
   build:
     name: Build and verify the package
