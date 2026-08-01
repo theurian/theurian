@@ -40,7 +40,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           # Copyleft licences are incompatible with shipping Theurian as
           # Apache-2.0 (OSS-4). Fail the build rather than discover it at release.
