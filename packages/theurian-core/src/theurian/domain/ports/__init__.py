@@ -7,8 +7,11 @@ pointing inward.
 The port set is closed. Adding one requires an ADR -- the constraint exists to
 prevent the "interface for everything" failure mode §34 of the brief rules out.
 
-Every port has a deterministic fake in ``tests/fakes/``. A port without a fake is
-not finished, because it cannot be exercised offline (OSS-15).
+Every port must ship a deterministic fake. A port without one is not finished,
+because it cannot be exercised offline (OSS-15). Fakes land in ``tests/fakes/``
+alongside the first real adapter in Milestone 1; until then
+``tests/unit/test_ports.py`` checks the properties that are checkable today --
+that the set is closed, and that each entry is a genuine Protocol.
 """
 
 from theurian.domain.ports.authorization import AuthorizationProvider
