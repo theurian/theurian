@@ -1,0 +1,70 @@
+apiVersion: theurian.dev/v1
+id: 01K1DEFABC01234567890ABCDE
+createdAt: 2026-07-22T14:30:00+09:00
+author: orders-team@example.com
+description: >-
+  Generalize the ordering constraint found in review on PR #431 into a domain
+  rule, and register the specification it governs. The review thread is recorded
+  as evidence; this migration is the human approval that turns it into a rule.
+dependsOn:
+  - 01K1ABCXYZ01234567890ABCDE
+
+operations:
+  - op: createItem
+    itemId: domain.order-cancellation
+    kind: domain
+    namespace: orders
+    owner: orders-team
+    sensitivity: internal
+    trustLevel: reviewed
+
+  - op: upsertRevision
+    itemId: domain.order-cancellation
+    revisionId: 01K1DEFREV01234567890ABCDE
+    contentFile: ../knowledge/domain/order-cancellation.md
+    metadata:
+      title: Order cancellation
+      contentType: text/markdown
+      kind: domain
+      namespace: orders
+      status: approved
+      owner: orders-team
+      trustLevel: reviewed
+      sensitivity: internal
+      validFrom: 2026-07-22T00:00:00+09:00
+      scope:
+        paths:
+          - services/orders/**
+      sourceAnchors:
+        - provider: github
+          repository: acme/order-service
+          sourceUri: https://github.com/acme/order-service/pull/431#discussion_r123
+          externalId: PRRT-123
+          commitSha: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+
+  - op: registerSpecification
+    specId: spec.order-cancellation
+    itemId: domain.order-cancellation
+    sourceUri: .theurian/specifications/order-cancellation.yaml
+    format: application/yaml
+    status: active
+
+  - op: addRelation
+    sourceItemId: domain.order-cancellation
+    relationType: constrained_by
+    targetItemId: architecture.auth-policy
+    note: >-
+      Cancellation is an authenticated operation; the caller's identity comes from
+      the platform token, never from a request field.
+
+  - op: addEvidence
+    itemId: domain.order-cancellation
+    description: >-
+      Review thread PRRT-123 on PR #431, where the ordering bug was found and the
+      fix agreed.
+    confidence: 1.0
+    anchor:
+      provider: github
+      repository: acme/order-service
+      sourceUri: https://github.com/acme/order-service/pull/431#discussion_r123
+      externalId: PRRT-123

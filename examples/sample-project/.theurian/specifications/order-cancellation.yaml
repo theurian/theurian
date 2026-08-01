@@ -1,0 +1,28 @@
+id: spec.order-cancellation
+title: Order cancellation
+version: 2
+status: active
+
+preconditions:
+  - order.status == pending
+  - order.cancellationDeadline > now
+
+rules:
+  - id: deadline-checked-first
+    description: >-
+      The deadline is evaluated before any state mutation. See
+      domain.order-cancellation for why.
+  - id: idempotent
+    description: Cancelling an already-cancelled order succeeds and changes nothing.
+
+outcomes:
+  success:
+    status: cancelled
+    emits: OrderCancelled
+  failure:
+    code: CANCELLATION_NOT_ALLOWED
+    includes: [cancellationDeadline]
+
+relations:
+  constrainedBy: adr.transaction-boundary
+  supersedes: spec.order-cancellation-v1

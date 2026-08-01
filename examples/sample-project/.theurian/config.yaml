@@ -1,0 +1,52 @@
+apiVersion: theurian.dev/v1
+projectId: sample-order-service
+defaultBranch: main
+knowledgeDirectory: .theurian
+
+# Every provider defaults to a deterministic in-tree implementation. This project
+# works with no API key and no network (ADR-0009).
+providers:
+  embedding:
+    adapter: deterministic-hash
+  summarization:
+    adapter: extractive
+  reranking:
+    adapter: identity
+  vectorStore:
+    adapter: sqlite-vec
+  review:
+    adapter: none
+    # A repository absent from this list is never contacted (SEC-10).
+    repositories:
+      - acme/order-service
+
+retrieval:
+  defaultTokenBudget: 8000
+  # Approved only, so an unreviewed draft is never returned as a team decision.
+  includeStatuses: [approved]
+
+raptor:
+  enabled: true
+  maxLevels: 3
+  minChildrenPerSummary: 3
+
+traceabilityPolicy:
+  domain-behavior:
+    specification: required
+    test: required
+    review: required
+  architecture:
+    adr: required
+    review: required
+  bug-fix:
+    issue: required
+    regressionTest: required
+  refactoring:
+    specification: optional
+    behaviorPreservationEvidence: required
+  formatting:
+    traceability: none
+
+security:
+  secretScan: block
+  maxSourceFileBytes: 8388608

@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01K1ABCXYZ01234567890ABCDE
+createdAt: 2026-07-15T10:00:00+09:00
+author: platform-team@example.com
+description: >-
+  Record the service-to-service authentication policy agreed in the platform
+  design review. Network position is not identity; every hop carries a verifiable
+  token.
+
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+    sensitivity: internal
+    trustLevel: reviewed
+
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: 01K1ABCREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/auth-policy.md
+    metadata:
+      title: Authentication and authorization policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sensitivity: internal
+      validFrom: 2026-07-15T00:00:00+09:00
+      scope:
+        paths:
+          - services/**/auth/**
+          - services/**/middleware/**
