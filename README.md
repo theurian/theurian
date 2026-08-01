@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/theurian-logo.png" alt="Theurian" width="140">
+  <img src="assets/theurian-logo.png" alt="Theurian" width="auto">
 
   <h1>Theurian</h1>
 
@@ -24,9 +24,10 @@ The name comes from *theurgy* — the practice of invoking what is already there
 Your team has already decided most of this. Theurian makes those decisions
 callable.
 
-> **Status: Milestone 0.** Architecture, ADRs, the domain model, ports, schemas,
-> the plugin skeleton, and CI are in place. The daemon, migration engine, and
-> retrieval land in Milestones 1–8. See the [roadmap](#roadmap).
+> **Status: Milestone 1.** The canonical store works: knowledge migrations
+> apply, state is content-addressed, and the CLI can initialise, register, and
+> migrate a project. Ingestion, the MCP daemon, and retrieval land in Milestones
+> 2–8. See the [roadmap](#roadmap).
 
 ---
 
@@ -125,16 +126,32 @@ sync && pytest` passes offline, for free, on any machine.
 
 ## Quick start
 
-> Milestone 0 ships the CLI's version and compatibility surface. The commands
-> below marked *(planned)* land in later milestones.
-
 ```sh
 git clone https://github.com/theurian/theurian
 cd theurian
 uv sync
 uv run pytest
-uv run theurian version --json
 ```
+
+Build a knowledge base from a repository:
+
+```sh
+cd /path/to/your/repo
+theurian init                  # create .theurian/ and the .gitignore entries
+theurian project register      # register this working tree
+# author a migration under .theurian/migrations/, then:
+theurian migrate validate
+theurian migrate apply
+theurian project status
+```
+
+There is nothing to search yet — retrieval arrives in Milestone 5. What works
+today is the part everything else depends on: a canonical store that is
+reproducible from Git, refuses to let an applied migration change, and reports
+conflicting edits instead of merging them.
+
+See [`examples/sample-project/`](examples/sample-project/) for a complete
+`.theurian/` to copy from.
 
 With Claude Code:
 
@@ -189,8 +206,8 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | Milestone | Scope | Status |
 | :-- | :-- | :-- |
 | 0 | Architecture, ADRs, domain model, ports, schemas, plugin skeleton, CI | **done** |
-| 1 | Local canonical store, YAML migrations, state hashing, branch handling | next |
-| 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | planned |
+| 1 | Local canonical store, YAML migrations, state hashing, project CLI | **done** |
+| 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | next |
 | 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | planned |
 | 4 | Claude Code plugin: setup, doctor, service adapters | planned |
 | 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | planned |
