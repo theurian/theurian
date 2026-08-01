@@ -1,0 +1,56 @@
+# CODEOWNERS
+#
+# Core and the plugin have distinct owner groups (§31, ADR-0001). This is not
+# bureaucracy: it is what makes the two artifacts independently releasable, and
+# what stops either side from unilaterally changing the shared contract.
+#
+# Ownership follows expertise. Reviewing a daemon locking strategy and reviewing
+# a Claude Code hook are different skills.
+
+# Default: Core maintainers.
+*                               @theurian/core-maintainers
+
+# ---------------------------------------------------------------------------
+# Theurian Core
+# ---------------------------------------------------------------------------
+/packages/theurian-core/        @theurian/core-maintainers
+/packaging/                     @theurian/core-maintainers
+/docker/                        @theurian/core-maintainers
+
+# ---------------------------------------------------------------------------
+# Claude Code plugin
+# ---------------------------------------------------------------------------
+/plugins/claude-code/           @theurian/claude-plugin-maintainers
+
+# ---------------------------------------------------------------------------
+# The shared contract -- both groups must approve.
+#
+# A schema change alters what Core promises and what every client relies on.
+# Requiring both signatures is how the boundary stays real rather than nominal.
+# ---------------------------------------------------------------------------
+/schemas/                       @theurian/core-maintainers @theurian/claude-plugin-maintainers
+/tests/contract/                @theurian/core-maintainers @theurian/claude-plugin-maintainers
+/tests/e2e/                     @theurian/core-maintainers @theurian/claude-plugin-maintainers
+/docs/protocol/                 @theurian/core-maintainers @theurian/claude-plugin-maintainers
+
+# ---------------------------------------------------------------------------
+# Architecture decisions and security
+# ---------------------------------------------------------------------------
+/docs/adr/                      @theurian/core-maintainers
+/docs/architecture/             @theurian/core-maintainers
+/docs/security/                 @theurian/core-maintainers @theurian/security
+/SECURITY.md                    @theurian/core-maintainers @theurian/security
+
+# ---------------------------------------------------------------------------
+# Project governance -- changes here are commitments to the community.
+# ---------------------------------------------------------------------------
+/GOVERNANCE.md                  @theurian/core-maintainers @theurian/claude-plugin-maintainers
+/LICENSE                        @theurian/core-maintainers @theurian/claude-plugin-maintainers
+/NOTICE                         @theurian/core-maintainers @theurian/claude-plugin-maintainers
+/CODE_OF_CONDUCT.md             @theurian/core-maintainers @theurian/claude-plugin-maintainers
+
+# ---------------------------------------------------------------------------
+# CI -- a workflow change can disable every check above.
+# ---------------------------------------------------------------------------
+/.github/workflows/             @theurian/core-maintainers
+/.github/CODEOWNERS             @theurian/core-maintainers @theurian/claude-plugin-maintainers

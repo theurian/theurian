@@ -1,0 +1,85 @@
+name: Bug report
+description: Something does not work as documented.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        **Before you paste diagnostics:** `theurian doctor --report --json`
+        redacts credentials and knowledge bodies, but your knowledge base may
+        still contain things a public issue does not need. Read the output before
+        posting it.
+
+        For a **security vulnerability**, use the private path in
+        [SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md)
+        instead of this form.
+
+  - type: dropdown
+    id: artifact
+    attributes:
+      label: Which artifact?
+      description: Core and the plugin are released independently.
+      options:
+        - Theurian Core (CLI, daemon, MCP server)
+        - Claude Code plugin
+        - Both, or not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: The smallest sequence that shows the problem.
+      placeholder: |
+        1. theurian project register .
+        2. theurian migrate apply
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Version
+      description: Output of `theurian version --json`.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Diagnostics (optional)
+      description: Output of `theurian doctor --report --json`, reviewed first.
+      render: json
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15.2 (arm64) / Ubuntu 24.04 (x86_64)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security vulnerability (those go through the private path).
+          required: true
+        - label: I reviewed any diagnostics I pasted above.
+          required: true

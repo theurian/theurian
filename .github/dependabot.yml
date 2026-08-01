@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # One PR for the dev toolchain: these move together and are low risk.
+      dev-tooling:
+        patterns: ["ruff", "mypy", "pytest*", "types-*", "coverage*"]
+    ignore:
+      # Pre-1.0 and young-major dependencies are upgraded deliberately, not on a
+      # schedule: a breaking change here means a rewrite of one adapter, and it
+      # needs a human reading the changelog (ADR-0014).
+      - dependency-name: "sqlite-vec"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "ci(deps)"

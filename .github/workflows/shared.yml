@@ -1,0 +1,155 @@
+name: Shared contract
+
+# Changes to schemas or to both trees run the full cross-artifact suite (§29).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect what changed
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      plugin: ${{ steps.filter.outputs.plugin }}
+      schemas: ${{ steps.filter.outputs.schemas }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'packages/theurian-core/**'
+            plugin:
+              - 'plugins/**'
+            schemas:
+              - 'schemas/**'
+            docs:
+              - 'docs/**'
+              - '*.md'
+
+  schemas:
+    name: Schemas are valid
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.schemas == 'true' || needs.changes.outputs.core == 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.2"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pytest packages/theurian-core/tests/unit/test_schemas.py -v
+
+  compatibility:
+    name: Cross-artifact compatibility
+    runs-on: ubuntu-latest
+    needs: changes
+    # A schema change touches the shared contract, so both consumers are
+    # re-checked even if only one tree changed.
+    if: |
+      needs.changes.outputs.schemas == 'true' ||
+      (needs.changes.outputs.core == 'true' && needs.changes.outputs.plugin == 'true')
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.2"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Contract tests against the installed CLI
+        run: uv run pytest -m contract -v
+      - name: The plugin is compatible with the Core beside it
+        run: |
+          uv run pytest \
+            packages/theurian-core/tests/unit/test_plugin_boundary.py \
+            -k compatib -v
+      - name: The declared range accepts this Core
+        run: |
+          uv run theurian compat check \
+            --plugin-version "$(yq -r .pluginVersion plugins/claude-code/compatibility.yaml)" \
+            --core-minimum "$(yq -r .coreCompatibility.minimum plugins/claude-code/compatibility.yaml)" \
+            --core-maximum-exclusive "$(yq -r .coreCompatibility.maximumExclusive plugins/claude-code/compatibility.yaml)" \
+            --protocol-version "$(yq -r .protocolVersion plugins/claude-code/compatibility.yaml)" \
+            --json
+
+  commits:
+    name: Conventional Commits and DCO
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Subjects follow Conventional Commits
+        run: |
+          base="origin/${{ github.base_ref }}"
+          git fetch origin "${{ github.base_ref }}" --depth=50
+          pattern='^(feat|fix|refactor|docs|test|chore|perf|ci|build|revert)(\([a-z-]+\))?!?: .+'
+          failed=0
+          while read -r sha; do
+            subject=$(git log -1 --format=%s "$sha")
+            if ! printf '%s' "$subject" | grep -qE "$pattern"; then
+              echo "::error::Not a Conventional Commit: $subject"
+              failed=1
+            fi
+          done < <(git rev-list "$base..HEAD" --no-merges)
+          exit $failed
+      - name: Every commit is signed off (DCO)
+        run: |
+          base="origin/${{ github.base_ref }}"
+          failed=0
+          while read -r sha; do
+            if ! git log -1 --format=%B "$sha" | grep -qE '^Signed-off-by: .+ <.+@.+>'; then
+              echo "::error::Missing DCO sign-off: $(git log -1 --format=%s "$sha")"
+              echo "Fix the latest commit with: git commit --amend -s"
+              echo "Fix a branch with: git rebase --signoff ${{ github.base_ref }}"
+              failed=1
+            fi
+          done < <(git rev-list "$base..HEAD" --no-merges)
+          exit $failed
+
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Relative links resolve
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          from urllib.parse import urlparse
+
+          root = pathlib.Path(".")
+          link = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+          broken = []
+          for md in root.rglob("*.md"):
+              if ".venv" in md.parts or ".git" in md.parts:
+                  continue
+              for target in link.findall(md.read_text(encoding="utf-8")):
+                  target = target.split(" ")[0]
+                  if urlparse(target).scheme or target.startswith("#"):
+                      continue
+                  resolved = (md.parent / target.split("#")[0]).resolve()
+                  if not resolved.exists():
+                      broken.append(f"{md}: {target}")
+          if broken:
+              print("::error::Broken relative links:")
+              for b in broken:
+                  print(f"  {b}")
+              sys.exit(1)
+          print("All relative links resolve.")
+          PY

@@ -1,0 +1,63 @@
+name: Architecture decision proposal
+description: Propose a decision that would be expensive to reverse.
+labels: ["adr", "architecture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when a change would be expensive to undo: a storage model, a
+        protocol shape, a security boundary, a dependency that becomes load-bearing.
+
+        Read [docs/adr/README.md](https://github.com/theurian/theurian/blob/main/docs/adr/README.md)
+        first -- the decision may already be recorded, in which case the right move
+        is superseding that ADR rather than opening a new one.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What forces make a decision necessary? Reference requirement IDs where they apply.
+    validations:
+      required: true
+
+  - type: textarea
+    id: decision
+    attributes:
+      label: Proposed decision
+      description: State it as a rule someone can follow or violate.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered, and why they were rejected
+      description: >-
+        Required. A proposal with no rejected alternatives is recording a
+        preference, not a decision.
+    validations:
+      required: true
+
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences
+      description: Positive, negative, and neutral. Be honest about the costs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compliance
+    attributes:
+      label: How would this be enforced?
+      description: >-
+        Required. A lint rule, a test, or a CI job. A decision with no enforcement
+        mechanism will be violated within a quarter.
+    validations:
+      required: true
+
+  - type: input
+    id: supersedes
+    attributes:
+      label: Supersedes (optional)
+      placeholder: ADR-0007

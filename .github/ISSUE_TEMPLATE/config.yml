@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/theurian/theurian/security/advisories/new
+    about: >-
+      Report privately. Do not open a public issue for a vulnerability -- doing so
+      discloses it to everyone before a fix exists.
+  - name: Question or idea
+    url: https://github.com/theurian/theurian/discussions
+    about: Ask a question or float an idea before it becomes an issue.

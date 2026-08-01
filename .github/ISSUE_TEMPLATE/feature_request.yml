@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a capability Theurian does not have.
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Theurian has a deliberately narrow scope. Some things are out of scope by
+        design rather than by omission:
+
+        - **Code symbol search, references, and types** -- that is Serena's job,
+          and Theurian must not reimplement it
+          ([docs/integrations/serena.md](https://github.com/theurian/theurian/blob/main/docs/integrations/serena.md)).
+        - **AI-approved knowledge** -- approval is a human act by design
+          ([ADR-0013](https://github.com/theurian/theurian/blob/main/docs/adr/0013-ai-writes-produce-proposals.md)).
+        - **Required cloud or vendor services in Core** -- Core works offline
+          ([ADR-0009](https://github.com/theurian/theurian/blob/main/docs/adr/0009-no-llm-vendor-lock-in.md)).
+
+        If your idea touches one of these, say why it is different -- that is a
+        genuinely interesting conversation, not a rejection.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Theurian to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried or considered?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Knowledge model and migrations
+        - Retrieval and RAPTOR
+        - Review knowledge
+        - Specifications and traceability
+        - CLI or daemon
+        - Claude Code plugin
+        - Documentation
+        - Other
+    validations:
+      required: true

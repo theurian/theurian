@@ -1,0 +1,120 @@
+name: Plugin
+
+# Plugin-only changes run this and nothing else (§29).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - "schemas/protocol/**"
+      - ".github/workflows/plugin.yml"
+  pull_request:
+    paths:
+      - "plugins/**"
+      - "schemas/protocol/**"
+      - ".github/workflows/plugin.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundary:
+    name: Core/plugin boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The monorepo is only worth having if the boundary is enforced. This is a
+      # grep rather than a test so it fails even if the Python suite is broken
+      # (ADR-0001, CP-2).
+      - name: The plugin must not import Core
+        run: |
+          if grep -rn --include='*' -E '^\s*(from|import)\s+theurian\b' plugins/; then
+            echo "::error::A plugin file imports theurian. The plugin may only use the CLI, MCP, health API, and public schemas."
+            exit 1
+          fi
+          echo "No Core imports found."
+
+      - name: The plugin must not contain Python
+        run: |
+          if find plugins -name '*.py' -not -path '*/tests/*' | grep .; then
+            echo "::error::Python in the plugin is one import away from a hard coupling to Core."
+            exit 1
+          fi
+          echo "No Python files found."
+
+      # ADR-0012: Claude Code starts a plugin's MCP servers at enable time.
+      # Declaring one would give the user a failed server before they had been
+      # told /theurian:setup exists (FR-L3).
+      - name: The manifest must not declare an MCP server
+        run: |
+          if jq -e '.mcpServers' plugins/claude-code/.claude-plugin/plugin.json >/dev/null 2>&1; then
+            echo "::error::plugin.json declares mcpServers. Setup installs the connection instead (ADR-0012)."
+            exit 1
+          fi
+          if [ -f plugins/claude-code/.mcp.json ]; then
+            echo "::error::A root .mcp.json is auto-loaded by Claude Code."
+            exit 1
+          fi
+          echo "No auto-registered MCP server."
+
+      - name: The connection template must be loopback HTTP with no literal token
+        run: |
+          template=plugins/claude-code/mcp/theurian.mcp.json
+          jq -e '.mcpServers.theurian.type == "http"' "$template" >/dev/null
+          jq -e '.mcpServers.theurian.url | startswith("http://127.0.0.1:")' "$template" >/dev/null
+          jq -e '.mcpServers.theurian | has("command") | not' "$template" >/dev/null
+          jq -e '.mcpServers.theurian.headers.Authorization == "Bearer ${THEURIAN_MCP_TOKEN}"' "$template" >/dev/null
+          echo "Connection template is correct."
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning plugins/claude-code/scripts/*.sh
+      - name: Hook scripts must be executable
+        run: |
+          for script in plugins/claude-code/scripts/*.sh; do
+            [ -x "$script" ] || { echo "::error::$script is not executable"; exit 1; }
+          done
+
+  manifest:
+    name: Manifest and commands
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.2"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Plugin structure, commands, hooks, and compatibility
+        run: uv run pytest packages/theurian-core/tests/unit/test_plugin_boundary.py -v
+      - name: JSON and YAML are well formed
+        run: |
+          jq empty plugins/claude-code/.claude-plugin/plugin.json
+          jq empty plugins/claude-code/hooks/hooks.json
+          jq empty plugins/claude-code/mcp/theurian.mcp.json
+          uv run python -c "import yaml,pathlib; yaml.safe_load(pathlib.Path('plugins/claude-code/compatibility.yaml').read_text())"
+
+  claude-validate:
+    name: claude plugin validate
+    runs-on: ubuntu-latest
+    continue-on-error: true # informational until the CLI is pinned in CI
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate with the Claude Code CLI
+        run: |
+          if command -v claude >/dev/null 2>&1; then
+            claude plugin validate ./plugins/claude-code --strict
+          else
+            echo "::notice::claude CLI unavailable on this runner; skipping."
+          fi

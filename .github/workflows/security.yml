@@ -1,0 +1,149 @@
+name: Security and supply chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # CodeQL and dependency advisories change without our code changing.
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          # Copyleft licences are incompatible with shipping Theurian as
+          # Apache-2.0 (OSS-4). Fail the build rather than discover it at release.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-3.0, SSPL-1.0
+          fail-on-severity: moderate
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.2"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Generate a CycloneDX SBOM
+        run: |
+          uv run --with cyclonedx-bom cyclonedx-py environment \
+            --output-format json --outfile sbom.json .venv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+  licenses:
+    name: Dependency licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.2"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: No copyleft dependencies
+        run: |
+          uv run --with pip-licenses pip-licenses --format=json > licenses.json
+          uv run python - <<'PY'
+          import json, sys, pathlib
+          DENIED = {"GPL", "AGPL", "SSPL"}
+          offenders = [
+              f"{p['Name']} ({p['License']})"
+              for p in json.loads(pathlib.Path("licenses.json").read_text())
+              if any(d in (p["License"] or "") for d in DENIED)
+              and "LGPL" not in (p["License"] or "")
+          ]
+          if offenders:
+              print("::error::Copyleft dependencies are incompatible with Apache-2.0:")
+              for o in offenders:
+                  print(f"  {o}")
+              sys.exit(1)
+          print("All dependency licences are compatible.")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: licenses
+          path: licenses.json
+
+  pinning:
+    name: Dependencies are pinned exactly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # ADR-0014: an unpinned dependency means an installed daemon can break
+      # months later with no correlating user action.
+      - name: Every dependency uses ==
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys, tomllib
+
+          bad = []
+          for path in ("pyproject.toml", "packages/theurian-core/pyproject.toml"):
+              data = tomllib.loads(pathlib.Path(path).read_text())
+              groups = {"dependencies": data.get("project", {}).get("dependencies", [])}
+              for name, deps in data.get("project", {}).get("optional-dependencies", {}).items():
+                  groups[f"optional:{name}"] = deps
+              for name, deps in data.get("dependency-groups", {}).items():
+                  groups[f"group:{name}"] = deps
+              for group, deps in groups.items():
+                  for dep in deps:
+                      if not isinstance(dep, str):
+                          continue
+                      # Workspace self-references carry no version.
+                      if re.fullmatch(r"[A-Za-z0-9._-]+(\[[^\]]+\])?", dep):
+                          continue
+                      if "==" not in dep:
+                          bad.append(f"{path} [{group}] {dep}")
+          if bad:
+              print("::error::Dependencies must be pinned with == (ADR-0014):")
+              for b in bad:
+                  print(f"  {b}")
+              sys.exit(1)
+          print("All dependencies are pinned.")
+          PY

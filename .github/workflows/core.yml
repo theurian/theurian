@@ -1,0 +1,116 @@
+name: Core
+
+# Runs only when Core, the shared schemas, or the toolchain change (§29).
+# Plugin-only pull requests should not pay for a Core matrix.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/theurian-core/**"
+      - "schemas/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/core.yml"
+  pull_request:
+    paths:
+      - "packages/theurian-core/**"
+      - "schemas/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/core.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.7.2"
+
+jobs:
+  quality:
+    name: Format, lint, types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      # --frozen so a resolution change fails here rather than silently
+      # landing in a release (ADR-0014).
+      - run: uv sync --frozen
+      - run: uv run ruff format --check packages tests
+      - run: uv run ruff check --output-format=github packages tests
+      - run: uv run mypy
+
+  test:
+    name: Tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen
+      - name: Unit and integration tests
+        run: uv run pytest -m "not e2e" --cov --cov-report=xml --cov-report=term
+      - name: Contract tests against the installed CLI
+        run: uv run pytest -m contract -v
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: coverage
+          path: coverage.xml
+
+  offline:
+    name: Full suite with no network
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      # OSS-13 and ADR-0009: a contributor without a paid API key must be able
+      # to run everything. This job is what keeps that true rather than aspirational.
+      - name: Block outbound network, then run tests
+        run: |
+          sudo iptables -P OUTPUT DROP
+          sudo iptables -A OUTPUT -o lo -j ACCEPT
+          uv run pytest -m "not e2e" -q
+
+  build:
+    name: Build and verify the package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv build --package theurian
+      - name: Install the built wheel into a clean environment
+        run: |
+          uv venv /tmp/verify
+          VIRTUAL_ENV=/tmp/verify uv pip install dist/*.whl
+          /tmp/verify/bin/theurian version --json
+      - name: Publish checksums
+        run: |
+          cd dist && sha256sum * | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

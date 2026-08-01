@@ -1,0 +1,27 @@
+# Local development. Not a production deployment: the OSS Core assumes a single
+# trusted user on loopback (SEC-1).
+
+services:
+  theurian:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      # Bound to the host's loopback only. Changing this to 7419:7419 exposes the
+      # daemon to your network -- read docs/security/local-mcp.md first.
+      - "127.0.0.1:7419:7419"
+    volumes:
+      - theurian-data:/home/theurian/.theurian
+      # Mount your repository read-only: Theurian only ever reads project files.
+      - ${THEURIAN_PROJECT:-..}:/workspace:ro
+    environment:
+      THEURIAN_BIND: 0.0.0.0 # inside the container namespace only
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7419/health', timeout=2)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  theurian-data:
