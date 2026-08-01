@@ -12,6 +12,43 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Milestone 2 — source ingestion
+
+#### Added
+
+- **Parsers** for Markdown, YAML, JSON, OpenAPI, AsyncAPI, and JSON Schema.
+  Structured sources keep their structure: an OpenAPI document yields an index
+  of operations, parameters, responses, and schemas, which is what specification
+  coverage will read in Milestone 8.
+- **Deterministic text projection** so lexical search can reach structured
+  content. Renders `outcomes.failure.code: CANCELLATION_NOT_ALLOWED` rather than
+  a bare value dump, and is byte-identical across processes and machines.
+- **Front matter handling**: parsed, preserved as searchable data, and never
+  permitted to govern. A `status: approved` in front matter is ignored *and
+  reported*, because a silent ignore is exactly the case where an author
+  believes something is approved and it is not.
+- **Media-type detection** that prefers content over extension. An OpenAPI
+  document is conventionally `openapi.yaml`, and treating it as plain YAML would
+  discard the operation index — a loss that would only surface milestones later
+  as a query returning nothing.
+- **`theurian ingest`**, with per-document failure isolation and an incremental
+  path: an unchanged file costs one hash, not a reparse.
+- External `$ref` targets are recorded, never fetched (SEC-10, T-7).
+
+#### Fixed
+
+- Markdown files with front matter were reparsed on every run. The manifest
+  stored the *body* hash while the early exit compared the *source* hash, and
+  those differ for exactly such a file. The two are now distinct fields with
+  distinct purposes.
+- OpenAPI documents serialised as JSON were not detected, because the sniff
+  assumed a YAML line start and `{"swagger": ...}` never matched. They fell
+  through to the generic JSON parser and silently lost their operation index.
+- The blank line after a front matter block stayed in the body, so identical
+  prose hashed differently depending on whether the file carried front matter.
+
+---
+
 ### Milestone 1 — local canonical store
 
 #### Added

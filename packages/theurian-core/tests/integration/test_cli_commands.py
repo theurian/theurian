@@ -351,3 +351,111 @@ def test_an_empty_project_validates(project: Path) -> None:
     code, validated = _invoke("migrate", "validate")
     assert code == 0
     assert validated["migrationCount"] == 0
+
+
+# ==========================================================================
+# ingest
+# ==========================================================================
+
+
+MARKDOWN_DOC = """---
+status: approved
+reviewers: [alice]
+---
+
+# Authentication policy
+
+Every call carries a signed token.
+"""
+
+OPENAPI_DOC = """openapi: 3.1.0
+info:
+  title: Orders API
+  version: "1.0"
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      responses:
+        "200": {description: OK}
+"""
+
+
+def _write_sources(root: Path) -> None:
+    (root / ".theurian/knowledge/architecture/auth.md").write_text(MARKDOWN_DOC)
+    (root / ".theurian/specifications/api.yaml").write_text(OPENAPI_DOC)
+
+
+def test_ingest_normalizes_every_format(project: Path) -> None:
+    _invoke("init")
+    _write_sources(project)
+
+    code, report = _invoke("ingest")
+
+    assert code == 0
+    assert report["ingested"] == 2
+    assert report["succeeded"]
+    assert {d["parser"] for d in report["documents"]} == {"markdown", "openapi"}
+
+
+def test_ingest_is_incremental(project: Path) -> None:
+    """Touching a file without changing it costs one hash, not a reparse."""
+    _invoke("init")
+    _write_sources(project)
+    _invoke("ingest")
+
+    code, second = _invoke("ingest")
+
+    assert code == 0
+    assert second["ingested"] == 0
+    assert second["unchanged"] == 2
+
+
+def test_ingest_reports_a_governed_front_matter_key(project: Path) -> None:
+    """ADR-0019: a silently ignored `status: approved` is the case where an
+    author believes something is approved and it is not."""
+    _invoke("init")
+    _write_sources(project)
+
+    _, report = _invoke("ingest")
+
+    codes = {w["code"] for w in report["warnings"]}
+    assert codes == {"front-matter-governed-field"}
+
+
+def test_a_parse_failure_is_reported_without_losing_the_rest(project: Path) -> None:
+    _invoke("init")
+    _write_sources(project)
+    (project / ".theurian/specifications/broken.yaml").write_text("key: [unclosed\n")
+
+    code, report = _invoke("ingest")
+
+    assert code == EXIT_STATE_ERROR, "a partial run is not a clean run"
+    assert report["ingested"] == 2, "the good documents still got in"
+    assert report["failed"] == 1
+
+
+def test_a_corrupt_manifest_costs_a_reparse_not_a_failure(project: Path) -> None:
+    """The manifest is a derived cache. Refusing to run would let a disposable
+    file block the command."""
+    _invoke("init")
+    _write_sources(project)
+    _invoke("ingest")
+
+    (project / ".theurian/cache/ingestion.json").write_text("{ not json")
+
+    code, report = _invoke("ingest")
+
+    assert code == 0
+    assert report["ingested"] == 2
+
+
+def test_ingest_writes_a_manifest_under_the_derived_cache(project: Path) -> None:
+    """ADR-0004: the manifest is derived, so it belongs somewhere git-ignored."""
+    _invoke("init")
+    _write_sources(project)
+    _invoke("ingest")
+
+    manifest = project / ".theurian/cache/ingestion.json"
+    assert manifest.is_file()
+    assert ".theurian/cache/" in (project / ".gitignore").read_text()

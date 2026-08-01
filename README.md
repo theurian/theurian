@@ -24,10 +24,10 @@ The name comes from *theurgy* — the practice of invoking what is already there
 Your team has already decided most of this. Theurian makes those decisions
 callable.
 
-> **Status: Milestone 1.** The canonical store works: knowledge migrations
-> apply, state is content-addressed, and the CLI can initialise, register, and
-> migrate a project. Ingestion, the MCP daemon, and retrieval land in Milestones
-> 2–8. See the [roadmap](#roadmap).
+> **Status: Milestone 2.** The canonical store works and sources are ingested:
+> Markdown, YAML, JSON, and OpenAPI normalize into one model that keeps their
+> structure. The MCP daemon and retrieval land in Milestones 3–8. See the
+> [roadmap](#roadmap).
 
 ---
 
@@ -142,6 +142,7 @@ theurian project register      # register this working tree
 # author a migration under .theurian/migrations/, then:
 theurian migrate validate
 theurian migrate apply
+theurian ingest                # normalize knowledge and specification sources
 theurian project status
 ```
 
@@ -207,8 +208,8 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | :-- | :-- | :-- |
 | 0 | Architecture, ADRs, domain model, ports, schemas, plugin skeleton, CI | **done** |
 | 1 | Local canonical store, YAML migrations, state hashing, project CLI | **done** |
-| 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | next |
-| 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | planned |
+| 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | **done** |
+| 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | next |
 | 4 | Claude Code plugin: setup, doctor, service adapters | planned |
 | 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | planned |
 | 6 | RAPTOR forest, incremental rebuild, blue/green index | planned |
