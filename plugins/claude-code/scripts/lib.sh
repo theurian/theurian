@@ -15,6 +15,8 @@ THEURIAN_HEALTH_TIMEOUT_SECONDS="2"
 
 # Exit code Core uses for a compatibility mismatch, distinct from a generic
 # failure so a caller can tell them apart.
+#
+# shellcheck disable=SC2034  # consumed by scripts that source this file
 THEURIAN_EXIT_INCOMPATIBLE=3
 
 theurian::plugin_root() {
