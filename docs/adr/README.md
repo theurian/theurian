@@ -23,6 +23,9 @@ alternatives that were rejected and why.
 | [0013](0013-ai-writes-produce-proposals.md) | AI writes produce proposals, never approved state | accepted |
 | [0014](0014-dependency-pinning-and-pre-1-0-isolation.md) | Exact dependency pinning and pre-1.0 isolation | accepted |
 | [0015](0015-dco-over-cla.md) | Developer Certificate of Origin, not a Contributor License Agreement | accepted |
+| [0016](0016-state-hash-covers-the-working-tree.md) | The state hash covers the working tree, not just committed migrations | accepted |
+| [0017](0017-sqlite-schema-versioning.md) | SQLite schema version participates in the state hash | accepted |
+| [0018](0018-single-writer-synchronous-in-m1.md) | One writer, expressed as a lock in Milestone 1 and a queue later | accepted |
 
 ## Writing a new ADR
 
