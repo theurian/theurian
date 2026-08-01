@@ -26,6 +26,8 @@ alternatives that were rejected and why.
 | [0016](0016-state-hash-covers-the-working-tree.md) | The state hash covers the working tree, not just committed migrations | accepted |
 | [0017](0017-sqlite-schema-versioning.md) | SQLite schema version participates in the state hash | accepted |
 | [0018](0018-single-writer-synchronous-in-m1.md) | One writer, expressed as a lock in Milestone 1 and a queue later | accepted |
+| [0019](0019-front-matter-is-data-not-governance.md) | Front matter is data, not governance metadata | accepted |
+| [0020](0020-deterministic-text-projection.md) | Text projection of structured sources is a deterministic pure function | accepted |
 
 ## Writing a new ADR
 
