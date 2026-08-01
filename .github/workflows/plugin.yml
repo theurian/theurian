@@ -26,7 +26,7 @@ jobs:
     name: Core/plugin boundary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # The monorepo is only worth having if the boundary is enforced. This is a
       # grep rather than a test so it fails even if the Python suite is broken
@@ -75,7 +75,7 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
@@ -90,7 +90,7 @@ jobs:
     name: Manifest and commands
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.7.2"
@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true # informational until the CLI is pinned in CI
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Validate with the Claude Code CLI
         run: |
           if command -v claude >/dev/null 2>&1; then
