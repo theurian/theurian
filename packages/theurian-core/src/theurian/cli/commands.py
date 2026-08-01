@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
 import typer
 
+from theurian.application.ingestion_service import (
+    IngestionRequest,
+    IngestionService,
+    manifest_from,
+)
 from theurian.application.migration_engine import (
     MigrationEngine,
     verify_no_applied_migration_changed,
@@ -40,7 +45,10 @@ from theurian.domain.errors import (
 )
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
+from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
+from theurian.domain.values import MediaType
+from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
@@ -400,6 +408,100 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     )
 
 
+class _Resolver:
+    """Adapts the parser registry to the application's ``ParserResolver``.
+
+    Keeps media-type detection and parser lookup behind one object, so the
+    application layer names neither the registry nor the detector (ADR-0003).
+    """
+
+    def __init__(self) -> None:
+        self._registry = ParserRegistry()
+
+    def detect(self, path: PurePosixPath, data: bytes) -> MediaType | None:
+        return detect_media_type(path, data)
+
+    def for_media_type(self, media_type: MediaType) -> SourceParser | None:
+        return self._registry.for_media_type(media_type)
+
+
+def ingest_command(as_json: JsonOption = False) -> None:
+    """Parse and normalize this project's knowledge and specification sources.
+
+    Ingestion stores *evidence*, never approved knowledge. Promotion still runs
+    through a migration and a human (ADR-0013).
+
+    A parse failure fails one document, not the run: a malformed file among two
+    hundred must not make the other 199 unavailable. The exit code reflects
+    whether every document parsed, so a script can tell a clean run from a
+    partial one.
+    """
+    context, _ = _require_project(as_json)
+
+    manifest_path = context.paths.knowledge_dir / "cache" / "ingestion.json"
+    previous: dict[str, str] = {}
+    if manifest_path.exists():
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            # The manifest is a derived cache. A corrupt one costs a full
+            # reparse, which is the correct price -- refusing to run would make
+            # a disposable file able to block the command.
+            previous = {}
+
+    service = IngestionService(_Resolver())
+    report = service.ingest(
+        IngestionRequest(
+            project_root=context.paths.root,
+            knowledge_dir=context.paths.knowledge_dir,
+            known_hashes=previous,
+            commit_sha=current_commit(context.paths.root),
+            repository=repository_url(context.paths.root),
+        )
+    )
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(manifest_from(report, previous), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    _emit(
+        {
+            "ingested": len(report.documents),
+            "unchanged": len(report.unchanged),
+            "skipped": len(report.skipped),
+            "failed": len(report.failures),
+            "succeeded": report.succeeded,
+            "documents": [
+                {
+                    "path": d.path,
+                    "title": d.title,
+                    "contentType": str(d.content_type),
+                    "parser": d.parser_id,
+                    "structured": d.structured is not None,
+                }
+                for d in report.documents
+            ],
+            "failures": [
+                {"path": f.path, "reason": f.reason, "mediaType": f.media_type}
+                for f in report.failures
+            ],
+            "warnings": [
+                {"code": w.code, "message": w.message, "location": w.location}
+                for w in report.warnings
+            ],
+        },
+        as_json=as_json,
+    )
+
+    if not report.succeeded:
+        # Documents that did parse are still ingested and the manifest is still
+        # written; the non-zero code says "not everything got in", which is a
+        # different thing from "the command broke".
+        raise typer.Exit(EXIT_STATE_ERROR)
+
+
 def _verify_history(context: CommandContext, as_json: bool) -> None:
     """Fail if an already-applied migration has been edited (FR-K5, ADR-0005).
 
@@ -482,6 +584,7 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
 
 __all__ = [
     "EXIT_STATE_ERROR",
+    "ingest_command",
     "init_command",
     "migrate_app",
     "project_app",

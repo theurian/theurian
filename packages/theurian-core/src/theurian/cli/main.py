@@ -41,6 +41,7 @@ app.add_typer(compat_app, name="compat")
 app.add_typer(commands.project_app, name="project")
 app.add_typer(commands.migrate_app, name="migrate")
 app.command("init")(commands.init_command)
+app.command("ingest")(commands.ingest_command)
 
 #: Exit code for a compatibility mismatch. Distinct from 1 so a caller can tell
 #: "incompatible" apart from "the command itself failed".
