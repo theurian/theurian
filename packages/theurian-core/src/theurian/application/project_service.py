@@ -89,6 +89,26 @@ class ProjectPaths:
         return self.state / "active.json"
 
     @property
+    def active_index_pointer(self) -> Path:
+        """Which index build retrieval should read.
+
+        Separate from ``active_pointer`` because an index is rebuilt on its own
+        schedule: re-embedding a corpus with a different model changes nothing
+        canonical, and swapping the pointer is what makes a blue/green index
+        build a rename rather than an outage.
+        """
+        return self.state / "active-index.json"
+
+    def index_for(self, index_build_id: str) -> Path:
+        """Where one index build lives.
+
+        The prefix matters. Index builds share a directory with canonical state
+        databases, and a glob that could not tell them apart would hand a
+        retrieval index to the canonical store.
+        """
+        return self.state / f"theurian-index-{index_build_id}.sqlite"
+
+    @property
     def write_lock(self) -> Path:
         return self.runtime / "write.lock"
 

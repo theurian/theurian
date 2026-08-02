@@ -6,9 +6,11 @@ only thing not exercised here is the MCP transport.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -308,3 +310,100 @@ def test_the_index_and_the_canonical_store_are_distinguishable_by_name(
 
     assert index_path.name.startswith("theurian-index-")
     assert _database(project).name.startswith("theurian-state-")
+
+
+# -- The CLI -----------------------------------------------------------------
+
+
+def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
+    result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
+    stream = result.stdout or result.stderr or ""
+    return result.exit_code, json.loads(stream) if stream.strip() else {}
+
+
+def test_index_build_writes_and_publishes_an_index(project: Path) -> None:
+    code, payload = _invoke("index", "build")
+
+    assert code == 0
+    assert payload["chunks"] >= 2
+    assert payload["published"] is True
+    assert Path(str(payload["indexPath"])).is_file()
+
+
+def test_a_fresh_index_reports_itself_fresh(project: Path) -> None:
+    _invoke("index", "build")
+
+    _, payload = _invoke("index", "status")
+
+    assert payload["built"] is True
+    assert payload["stale"] is False
+    assert payload["remedy"] == ""
+
+
+def test_changing_knowledge_makes_the_index_stale(project: Path) -> None:
+    """A stale index is a correctness problem wearing the costume of a
+    relevance problem: searches keep working and answer from knowledge that has
+    changed."""
+    _invoke("index", "build")
+
+    (project / ".theurian/knowledge/architecture/auth.md").write_text(
+        AUTH_BODY + "\n## Rate limiting\n\nOne hundred requests per minute.\n"
+    )
+    _, payload = _invoke("index", "status")
+
+    assert payload["stale"] is True
+
+
+def test_the_remedy_names_the_commands_in_the_order_they_must_run(project: Path) -> None:
+    """Indexing before applying would build from a database that is itself
+    behind, producing a fresh-looking index of stale knowledge."""
+    _invoke("index", "build")
+    (project / ".theurian/knowledge/architecture/auth.md").write_text(AUTH_BODY + "\nmore\n")
+
+    _, payload = _invoke("index", "status")
+
+    assert payload["knowledgeNotApplied"] is True
+    assert payload["remedy"].index("migrate apply") < payload["remedy"].index("index build")
+
+
+def test_all_three_hashes_are_reported(project: Path) -> None:
+    """Comparing only the index against the database would call an index fresh
+    whenever the database was equally out of date -- exactly when someone most
+    needs to be told otherwise."""
+    _invoke("index", "build")
+
+    _, payload = _invoke("index", "status")
+
+    assert payload["indexStateHash"]
+    assert payload["builtStateHash"]
+    assert payload["currentStateHash"]
+
+
+def test_indexing_without_a_built_state_says_what_to_run_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "bare"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    monkeypatch.chdir(root)
+    runner.invoke(app, ["init", "--json"])
+
+    code, payload = _invoke("index", "build")
+
+    assert code != 0
+    assert "migrate apply" in payload["remedy"]
+
+
+def test_lexical_only_builds_are_supported(project: Path) -> None:
+    """A machine that cannot or should not embed still gets search."""
+    code, payload = _invoke("index", "build", "--no-embeddings")
+
+    assert code == 0
+    assert payload["embeddings"] == 0
+    assert payload["embeddingModel"] == ""
