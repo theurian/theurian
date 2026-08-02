@@ -25,7 +25,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 1
+INDEX_SCHEMA_VERSION: Final = 2
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -107,6 +107,43 @@ CREATE TRIGGER chunks_fts_update AFTER UPDATE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, heading, text)
     VALUES ('delete', old.rowid, old.heading, old.text);
     INSERT INTO chunks_fts(rowid, heading, text) VALUES (new.rowid, new.heading, new.text);
+END;
+
+-- Substring index -----------------------------------------------------------
+-- A second lexical index, tokenized by trigram.
+--
+-- `unicode61` splits on whitespace and punctuation only, so an entire Japanese
+-- sentence becomes one token: `トークン` does not match `署名付きトークン`, and a
+-- Japanese knowledge base is absent from search entirely except where a query
+-- happens to equal a heading. This project's own knowledge is written in
+-- Japanese, so that is not an edge case.
+--
+-- Trigram indexing is what makes substring matching work for a script with no
+-- word boundaries. It costs disk on a file that is derived and disposable, and
+-- it is kept separate rather than replacing `unicode61` because trigrams are
+-- worse at what word tokenization is good at -- an exact term like `parses_json`
+-- should rank on the term, not on its overlapping fragments.
+CREATE VIRTUAL TABLE chunks_trigram USING fts5(
+    heading,
+    text,
+    content='chunks',
+    content_rowid='rowid',
+    tokenize="trigram"
+);
+
+CREATE TRIGGER chunks_trigram_insert AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_trigram(rowid, heading, text) VALUES (new.rowid, new.heading, new.text);
+END;
+
+CREATE TRIGGER chunks_trigram_delete AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_trigram(chunks_trigram, rowid, heading, text)
+    VALUES ('delete', old.rowid, old.heading, old.text);
+END;
+
+CREATE TRIGGER chunks_trigram_update AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunks_trigram(chunks_trigram, rowid, heading, text)
+    VALUES ('delete', old.rowid, old.heading, old.text);
+    INSERT INTO chunks_trigram(rowid, heading, text) VALUES (new.rowid, new.heading, new.text);
 END;
 
 -- Dense index ----------------------------------------------------------------

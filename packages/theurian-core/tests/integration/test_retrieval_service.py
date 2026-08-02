@@ -189,11 +189,28 @@ def test_a_title_only_match_still_finds_the_document(project: Path) -> None:
     assert outcome.candidates[0].item_id == "architecture.cache"
 
 
-def test_both_retrievers_running_is_reported_as_hybrid(project: Path) -> None:
+def test_dense_is_off_by_default(project: Path) -> None:
+    """Measured, not cautious: against a real corpus 91% of *unrelated*
+    natural-language questions clear the similarity floor, while the lowest
+    genuinely related query sits below the unrelated median. The bundled
+    embedder measures English surface-form overlap, not topical relevance.
+    """
     embedder = HashingEmbedding()
     service = _service(_build(project, embedder=embedder), embedder)
 
     outcome = service.search(SearchRequest(query="token rotation", project_id="demo"))
+
+    assert outcome.mode is RetrievalMode.LEXICAL
+    assert outcome.embedding_model == ""
+
+
+def test_dense_participates_when_asked_for(project: Path) -> None:
+    """Kept and made opt-in rather than deleted, so the path stays exercised for
+    the day a real model is configured through the same port."""
+    embedder = HashingEmbedding()
+    service = _service(_build(project, embedder=embedder), embedder)
+
+    outcome = service.search(SearchRequest(query="signed JWT", project_id="demo", use_dense=True))
 
     assert outcome.mode is RetrievalMode.HYBRID
     assert outcome.embedding_model == embedder.model_id

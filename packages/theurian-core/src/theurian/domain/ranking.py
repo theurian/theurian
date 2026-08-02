@@ -57,6 +57,9 @@ _DENSE_SCRIPT_RANGES: Final = (
 #: `mode_of` compares against these, so a caller that invents its own name
 #: gets LEXICAL rather than a silently wrong mode.
 LEXICAL: Final = "lexical"
+#: Trigram substring matching. A second *lexical* strategy, not a semantic one:
+#: it exists because `unicode61` cannot segment scripts without word boundaries.
+SUBSTRING: Final = "substring"
 DENSE: Final = "dense"
 
 
@@ -277,8 +280,8 @@ def mode_of(rankings: Mapping[str, Sequence[Ranked]]) -> RetrievalMode:
     trusting a worse answer that looks identical.
     """
     contributing = {name for name, results in rankings.items() if results}
-    if {LEXICAL, DENSE} <= contributing:
+    if DENSE in contributing and contributing - {DENSE}:
         return RetrievalMode.HYBRID
-    if DENSE in contributing:
+    if contributing == {DENSE}:
         return RetrievalMode.DENSE
     return RetrievalMode.LEXICAL

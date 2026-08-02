@@ -323,3 +323,53 @@ def test_a_token_estimate_is_stored_for_budgeting(store: SqliteIndexStore) -> No
     store.add_chunks([_indexable("c1", "x" * 400)])
 
     assert store.texts(["c1"])["c1"]["token_estimate"] >= 100
+
+
+# -- Scripts without word boundaries -----------------------------------------
+
+
+JAPANESE = (
+    "すべての内部呼び出しは、アイデンティティゲートウェイが発行した"
+    "署名付きトークンを持つ。トークンはデプロイごとにローテーションされる。"
+)
+
+
+@pytest.mark.parametrize(
+    "query", ["トークン", "署名付きトークン", "ローテーション", "デプロイ", "内部呼び出し"]
+)
+def test_japanese_is_searchable_by_substring(store: SqliteIndexStore, query: str) -> None:
+    """`unicode61` splits on whitespace and punctuation only, so a Japanese
+    sentence becomes one token and none of these match — the entire knowledge
+    base of a Japanese-language project is invisible to search. The trigram
+    index is what makes it reachable.
+    """
+    store.add_chunks([_indexable("ja", JAPANESE, heading="認証ポリシー")])
+
+    assert store.search_lexical(query, project_id="demo") == (), "the word index cannot"
+    assert store.search_substring(query, project_id="demo"), "the trigram index can"
+
+
+def test_substring_matching_still_discriminates(store: SqliteIndexStore) -> None:
+    """A substring index that matched everything would trade one broken search
+    for another."""
+    store.add_chunks([_indexable("ja", JAPANESE, heading="認証ポリシー")])
+
+    assert store.search_substring("kubernetes", project_id="demo") == ()
+    assert store.search_substring("課金モデル", project_id="demo") == ()
+
+
+def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStore) -> None:
+    """Documents a known gap rather than a desired behaviour.
+
+    A query whose terms all appear in every document carries no lexical
+    evidence, yet it still matches: SQLite's BM25 returns -1.375e-06 rather than
+    zero for that case, so no score threshold excludes it. Separating "matched
+    only common words" from "matched weakly" needs a per-term IDF test.
+
+    Asserted so the day someone fixes it, this test fails and gets rewritten,
+    rather than the gap persisting because nothing described it.
+    """
+    store.add_chunks([_indexable("only", "The gateway verifies the token.")])
+
+    assert store.search_lexical("the", project_id="demo"), "known gap, not a feature"
+    assert store.search_lexical("gateway token", project_id="demo")

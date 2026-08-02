@@ -29,6 +29,7 @@ from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.ranking import (
     DENSE,
     LEXICAL,
+    SUBSTRING,
     Fused,
     Ranked,
     RetrievalMode,
@@ -78,6 +79,20 @@ class SearchRequest:
     budget_tokens: int = DEFAULT_BUDGET_TOKENS
     limit: int = 10
     include_unapproved: bool = False
+    #: Whether the dense retriever participates.
+    #:
+    #: Off by default, and that is a measured decision rather than caution. The
+    #: bundled embedder is a hashed character n-gram vectoriser, and against a
+    #: real corpus 91% of *unrelated* natural-language questions clear the
+    #: similarity floor while the lowest genuinely related query sits below the
+    #: unrelated median. The distributions overlap; no threshold separates them,
+    #: because the thing being measured is English surface-form overlap and not
+    #: topical relevance.
+    #:
+    #: Left in and made opt-in rather than deleted: the code path stays
+    #: exercised, and it becomes useful the day a real model is configured
+    #: through the same port (ADR-0009).
+    use_dense: bool = False
     #: Chunks any one item may contribute. Two lets a long document make its
     #: case twice without crowding out every other opinion.
     per_item: int = 2
@@ -219,9 +234,19 @@ class RetrievalService:
             limit=CANDIDATE_DEPTH,
             include_unapproved=request.include_unapproved,
         )
-        dense = self._dense(request)
+        substring = self._index.search_substring(
+            request.query,
+            project_id=request.project_id,
+            limit=CANDIDATE_DEPTH,
+            include_unapproved=request.include_unapproved,
+        )
+        dense = self._dense(request) if request.use_dense else ()
 
-        rankings: dict[str, Sequence[Ranked]] = {LEXICAL: lexical, DENSE: dense}
+        rankings: dict[str, Sequence[Ranked]] = {
+            LEXICAL: lexical,
+            SUBSTRING: substring,
+            DENSE: dense,
+        }
         fused = reciprocal_rank_fusion(rankings)
         diversified = diversify(fused, per_item=request.per_item)[: request.limit]
 

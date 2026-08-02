@@ -328,6 +328,18 @@ class SqliteIndexStore:
         # bm25() returns a *negative* score where more negative is better, so it
         # is negated here. Only the resulting order is used downstream; RRF never
         # compares this number with a cosine similarity.
+        # No relevance floor here, deliberately, and this is a known gap.
+        #
+        # A review reported that BM25 returns "exactly 0.0000" for a hit whose
+        # only matching terms appear in every row, and proposed excluding those.
+        # Measured, SQLite returns -1.375e-06 for that case, not zero -- the
+        # 0.0000 was a printed rounding. A score threshold therefore excludes
+        # nothing, and a floor that excludes nothing while claiming to be a floor
+        # is worse than none.
+        #
+        # Separating "matched only common words" from "matched weakly" needs a
+        # per-term IDF test, not a threshold on the combined score. Recorded as
+        # outstanding rather than papered over.
         return tuple(
             Ranked(
                 chunk_id=row["chunk_id"],
@@ -337,6 +349,62 @@ class SqliteIndexStore:
             )
             for row in rows
         )
+
+    def search_substring(
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int = 50,
+        include_unapproved: bool = False,
+    ) -> tuple[Ranked, ...]:
+        """Rank by trigram substring match.
+
+        The retriever that makes Japanese searchable. `unicode61` turns a
+        Japanese sentence into a single token, so `トークン` never matches
+        `署名付きトークン` and the whole knowledge base is invisible to search.
+
+        Kept beside the word index rather than replacing it: trigrams are worse
+        at exact terms, which is what engineering queries are mostly made of.
+        Both feed the fusion, and agreement between them is meaningful in the way
+        agreement between two lexical strategies can be.
+        """
+        expression = _to_trigram_expression(query)
+        if not expression:
+            return ()
+
+        clauses, parameters = self._scope(project_id, include_unapproved)
+        sql = (
+            "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
+            "  bm25(chunks_trigram) AS rank_score "
+            "FROM chunks_trigram CROSS JOIN chunks ON chunks.rowid = chunks_trigram.rowid "
+            f"WHERE chunks_trigram MATCH ? AND {' AND '.join(clauses)} "
+            "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
+        )
+        with _connect(self._path) as connection:
+            try:
+                rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
+            except sqlite3.OperationalError:
+                return ()
+
+        return tuple(
+            Ranked(
+                chunk_id=row["chunk_id"],
+                item_id=row["item_id"],
+                revision_id=row["revision_id"],
+                score=-float(row["rank_score"]),
+            )
+            for row in rows
+        )
+
+    def _scope(self, project_id: str, include_unapproved: bool) -> tuple[list[str], list[object]]:
+        """The FR-R1 filter, shared by every retriever so none can forget it."""
+        clauses = ["chunks.project_id = ?"]
+        parameters: list[object] = [project_id]
+        if not include_unapproved:
+            clauses.append("chunks.status = ?")
+            parameters.append(KnowledgeStatus.APPROVED.value)
+        return clauses, parameters
 
     def search_dense(
         self,
@@ -454,3 +522,22 @@ __all__ = [
     "SqliteIndexStore",
     "fts5_available",
 ]
+
+
+#: Trigram matching needs at least three characters to form one gram.
+_MIN_TRIGRAM_CHARS: Final = 3
+
+
+def _to_trigram_expression(query: str) -> str:
+    """Turn user text into a trigram MATCH expression.
+
+    Terms shorter than a trigram are dropped rather than sent: FTS5 cannot match
+    them against a trigram index, and including one makes the whole expression
+    return nothing.
+    """
+    terms = [term.strip(_FTS_SPECIAL) for term in query[:MAX_QUERY_CHARS].replace('"', " ").split()]
+    unique: dict[str, None] = {}
+    for term in terms:
+        if len(term) >= _MIN_TRIGRAM_CHARS:
+            unique.setdefault(term, None)
+    return " OR ".join(f'"{term}"' for term in list(unique)[:MAX_QUERY_TERMS])

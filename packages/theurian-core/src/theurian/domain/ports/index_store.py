@@ -69,6 +69,20 @@ class IndexStore(Protocol):
         """
         ...
 
+    def search_substring(
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int,
+        include_unapproved: bool,
+    ) -> tuple[Ranked, ...]:
+        """Rank by substring match, best first.
+
+        The retriever that makes scripts without word boundaries searchable.
+        """
+        ...
+
     def search_dense(
         self,
         query_vector: Sequence[float],
