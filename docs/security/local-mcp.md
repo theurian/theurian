@@ -58,7 +58,7 @@ one until it matters.
 - ≥32 bytes from `secrets.token_urlsafe`.
 - Required on `/mcp` and every management endpoint.
 - Compared in constant time.
-- Stored at `~/.theurian/auth/token`, mode 0600, inside a 0700 directory, and in
+- Stored at `~/.theurian/auth/mcp-token`, mode 0600, inside a 0700 directory, and in
   the OS secret store where one exists. **A world-readable token file is refused,
   not used** — a credential anyone can read is not a credential.
 - Rotated only by explicit request (`theurian auth rotate`). Never by
@@ -100,7 +100,7 @@ configuration holds a *reference*:
 `/theurian:setup` writes `~/.theurian/env` (mode 0600):
 
 ```sh
-THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/token")"
+THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/mcp-token")"
 export THEURIAN_MCP_TOKEN
 ```
 

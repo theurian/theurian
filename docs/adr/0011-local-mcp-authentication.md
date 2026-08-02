@@ -33,14 +33,28 @@ literal secret — in configuration.
 3. Require `Authorization: Bearer <token>` on `/mcp` and on every management
    endpoint. Compare in constant time.
 4. `GET /health` is unauthenticated and returns only
-   `{status, version, protocolVersion, uptimeSeconds}` — enough for a health
+   `{status, version, protocolVersion, dataDir, startedAt}` — enough for a health
    check, nothing about projects or knowledge. This is what lets `SessionStart`
    stay cheap and unprivileged.
+
+   > **Amended in Milestone 3.** As accepted, this point listed
+   > `uptimeSeconds` and no `dataDir`. Implementing the ADR-0002 startup
+   > handshake showed the two cannot both hold: the handshake exists to
+   > distinguish *our* daemon from a different Theurian squatting on the port,
+   > and only the data directory answers that. Without it a starter must either
+   > reuse a daemon serving someone else's knowledge base, or treat every
+   > occupied port as a conflict.
+   >
+   > The disclosure is a filesystem path, to a caller that is already running as
+   > this user and can therefore read `~/.theurian` directly; it reveals nothing
+   > about projects or knowledge, which is the property this point protects.
+   > `startedAt` replaces `uptimeSeconds` because an absolute timestamp lets a
+   > caller tell a restarted daemon from a long-running one.
 5. Tokens are ≥ 32 bytes from `secrets.token_urlsafe`.
 
 ### Storage
 
-6. Canonical location: `~/.theurian/auth/token`, mode 0600, inside a 0700
+6. Canonical location: `~/.theurian/auth/mcp-token`, mode 0600, inside a 0700
    directory. Mode is verified on read; a world-readable token is refused, not
    silently used.
 2. When available, mirror into the OS secret store through the `SecretStore` port
@@ -73,7 +87,7 @@ literal secret — in configuration.
 10. `/theurian:setup` generates `~/.theurian/env` (mode 0600):
 
     ```sh
-    THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/token")"
+    THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/mcp-token")"
     export THEURIAN_MCP_TOKEN
     ```
 

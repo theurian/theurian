@@ -121,7 +121,7 @@ MCP configuration files get copied into gists, synced to dotfile repositories,
 and pasted into issues.
 
 **Controls:** the configuration carries `${THEURIAN_MCP_TOKEN}`, never a literal
-secret; the token lives in `~/.theurian/auth/token`; a test asserts the generated
+secret; the token lives in `~/.theurian/auth/mcp-token`; a test asserts the generated
 config contains no high-entropy string.
 
 #### T-9 — The token appears in a log or crash report (Information disclosure, High)

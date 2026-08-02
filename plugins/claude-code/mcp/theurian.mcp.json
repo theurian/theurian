@@ -14,7 +14,7 @@
     "The Authorization header carries an environment-variable reference, never a",
     "literal token: config files get copied into gists, synced to dotfile repos,",
     "and pasted into issues. THEURIAN_MCP_TOKEN is exported from ~/.theurian/env",
-    "(mode 0600), which reads the token from ~/.theurian/auth/token. See ADR-0011."
+    "(mode 0600), which reads the token from ~/.theurian/auth/mcp-token. See ADR-0011."
   ],
   "mcpServers": {
     "theurian": {
