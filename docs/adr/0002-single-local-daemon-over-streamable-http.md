@@ -121,8 +121,13 @@ Landed in Milestone 3:
   adjacent case: an unknown id gets an error, never someone else's content.
 - Every project-scoped MCP tool schema declares `projectId` in `required`.
 
-Still owed:
+Landed in Milestone 4:
 
-- A unit test asserting the MCP configuration writer emits no `command` key for
-  the `theurian` server. The writer arrives with `/theurian:setup` in Milestone
-  4; the rule it must satisfy is point 3 above.
+- `tests/integration/test_claude_mcp_config.py::test_the_entry_declares_no_command`
+  asserts the installed entry carries no `command` key, and
+  `test_a_stdio_entry_someone_hand_wrote_is_a_difference` asserts a hand-written
+  stdio entry is caught as a conflict rather than left in place. Point 3 above
+  is the rule both enforce.
+- `tests/integration/test_daemon.py::test_stopping_without_a_registered_service_is_refused`
+  — `daemon stop` asks the service manager rather than signalling a PID, because
+  point 5's advisory lock exists precisely because PIDs are recycled.

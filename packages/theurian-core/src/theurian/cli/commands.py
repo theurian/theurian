@@ -498,6 +498,53 @@ def _start_detached(*, port: int, as_json: bool) -> None:
     )
 
 
+@daemon_app.command("stop")
+def daemon_stop(
+    as_json: JsonOption = False,
+) -> None:
+    """Stop the daemon by asking the service manager that owns it.
+
+    Deliberately not a PID-based kill. This design uses an advisory lock rather
+    than a PID file precisely because PIDs are recycled, so a stale PID can name
+    a live unrelated process -- and signalling one of those is exactly the kind
+    of damage a convenience command should not be able to do (ADR-0002).
+
+    A daemon started with `--foreground` is stopped with Ctrl-C, by whoever
+    started it.
+    """
+    import asyncio  # noqa: PLC0415 - see the note above
+
+    from theurian.cli.setup_commands import _executable  # noqa: PLC0415
+    from theurian.domain.ports.daemon_manager import ServiceState  # noqa: PLC0415
+    from theurian.infrastructure.services import detect_manager  # noqa: PLC0415
+
+    service = detect_manager(executable=_executable())
+    if service is None:
+        _fail(
+            "This platform has no user-scoped service manager.",
+            remedy="Stop a foreground daemon with Ctrl-C in the terminal running it.",
+            as_json=as_json,
+            code=1,
+        )
+        return
+
+    status = asyncio.run(service.status())
+    if status.state is ServiceState.NOT_INSTALLED:
+        _fail(
+            "No Theurian service is registered, so there is nothing to stop.",
+            remedy="A daemon started with `--foreground` is stopped with Ctrl-C.",
+            as_json=as_json,
+            code=1,
+        )
+        return
+
+    asyncio.run(service.stop())
+    _emit(
+        {"stopped": True, "service": status.service_identifier},
+        as_json=as_json,
+    )
+
+
 @daemon_app.command("status")
 def daemon_status(
     port: Annotated[int, typer.Option("--port")] = 7419,
