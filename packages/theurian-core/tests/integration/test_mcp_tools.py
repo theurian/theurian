@@ -335,14 +335,20 @@ async def test_project_list_reports_the_registered_projects(
 
 
 @pytest.mark.asyncio
-async def test_capabilities_report_what_is_not_built_yet(registry: ProjectRegistry) -> None:
+async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectRegistry) -> None:
     """A client that only learns "version 0.1" has to guess. Per-feature flags
-    let it degrade one feature at a time."""
+    let it degrade one feature at a time.
+
+    This assertion previously claimed `hybridRetrieval is False` and kept
+    passing after hybrid retrieval shipped, which is how a capability
+    declaration and its implementation drift apart unnoticed.
+    """
     result = await _call(registry, "system.capabilities")
 
     assert result["capabilities"]["writeTools"] is False
-    assert result["capabilities"]["hybridRetrieval"] is False
+    assert result["capabilities"]["hybridRetrieval"] is True
     assert result["capabilities"]["knowledgeGet"] is True
+    assert result["capabilities"]["raptor"] is False, "not built yet, and says so"
     assert result["schemaVersion"]
 
 
@@ -684,3 +690,115 @@ async def test_a_pointer_to_a_missing_index_falls_back_instead_of_failing(
 
     assert result["retrieval"]["indexed"] is False
     assert result["count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_deprecated_item_stops_being_returned_even_from_a_stale_index(
+    indexed: ProjectRegistry,
+) -> None:
+    """The index's status is a build-time snapshot; the canonical store is the
+    authority for what is approved *now*.
+
+    Without a live re-check, deprecating a decision leaves it retrievable until
+    someone remembers to rebuild — which is the system returning knowledge the
+    team has explicitly retired.
+    """
+    root = Path(indexed.load()["demo"]["rootPath"])
+    (root / ".theurian/migrations/01K1CAAAAA01234567890ABCDE-deprecate.yaml").write_text(
+        """apiVersion: theurian.dev/v1
+id: 01K1CAAAAA01234567890ABCDE
+createdAt: 2026-08-03T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: architecture.auth-policy
+    reason: superseded by the new gateway design
+"""
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    assert all(hit["status"] == "approved" for hit in result["results"])
+
+
+@pytest.mark.asyncio
+async def test_a_stale_index_says_so_in_the_response(indexed: ProjectRegistry) -> None:
+    """Only the CLI knew about staleness, and the MCP client is the one acting
+    on the answer.
+
+    Applying a migration is what makes the index stale: editing a knowledge file
+    alone leaves the *database* equally out of date, so the index still matches
+    what the database holds.
+    """
+    root = Path(indexed.load()["demo"]["rootPath"])
+    (root / ".theurian/knowledge/architecture/caching-draft.md").write_text(
+        DRAFT_BODY + "\n\nAn additional paragraph that changes the state hash.\n"
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="token")
+
+    assert result["retrieval"]["stale"] is True
+    assert "index build" in result["retrieval"]["note"]
+
+
+@pytest.mark.asyncio
+async def test_include_unapproved_falls_back_when_the_index_holds_no_drafts(
+    indexed: ProjectRegistry,
+) -> None:
+    """An index built without `--include-unapproved` cannot answer this.
+
+    Indexing everything and filtering at query time was tried and reverted: it
+    made one boolean reach content the team decided must not be followed, and it
+    removed the operator's ability to guarantee no draft is in the file. Falling
+    back answers the question honestly instead of returning approved-only
+    results under a parameter that asked for more.
+    """
+    result = await _call(
+        indexed,
+        "knowledge.search",
+        projectId="demo",
+        query="caching",
+        includeUnapproved=True,
+    )
+
+    assert result["retrieval"]["indexed"] is False
+    assert any(hit["status"] == "draft" for hit in result["results"])
+
+
+@pytest.mark.asyncio
+async def test_the_response_says_whether_the_index_holds_unapproved_content(
+    indexed: ProjectRegistry,
+) -> None:
+    """So an empty answer to `includeUnapproved=True` is distinguishable from
+    "there are no drafts"."""
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    assert result["retrieval"]["indexesUnapproved"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_absurd_token_budget_is_clamped_rather_than_raised(
+    indexed: ProjectRegistry,
+) -> None:
+    """A caller asking for a million tokens means "as much as you have".
+    Answering with an exception that names an internal parameter helps nobody.
+    """
+    zero = await _call(indexed, "knowledge.search", projectId="demo", query="token", maxTokens=0)
+    huge = await _call(
+        indexed, "knowledge.search", projectId="demo", query="token", maxTokens=99_000_000
+    )
+
+    assert zero["count"] >= 1
+    assert huge["retrieval"]["usedTokens"] <= 32_000

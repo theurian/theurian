@@ -407,3 +407,58 @@ def test_lexical_only_builds_are_supported(project: Path) -> None:
     assert code == 0
     assert payload["embeddings"] == 0
     assert payload["embeddingModel"] == ""
+
+
+def test_retired_knowledge_is_never_indexed_even_when_asked_for(project: Path) -> None:
+    """SEC-13, T-15. `--include-unapproved` reaches work in progress, never
+    knowledge the team has retired.
+
+    A deprecated or rejected revision is one the team decided must not be
+    followed, and a rejected one is also where a secret that caused the
+    rejection still lives. No flag reaches them.
+    """
+    (project / ".theurian/migrations/01K1DAAAAA01234567890ABCDE-deprecate.yaml").write_text(
+        """apiVersion: theurian.dev/v1
+id: 01K1DAAAAA01234567890ABCDE
+createdAt: 2026-08-03T13:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: architecture.cache
+    reason: superseded by the edge cache design
+"""
+    )
+    assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
+
+    index_path = project / ".theurian/state/theurian-index-01K1DXAAAA.sqlite"
+    IndexBuilder(
+        store_factory=SqliteCanonicalStore,
+        index_factory=SqliteIndexStore,
+        embedder=None,
+    ).build(
+        IndexRequest(
+            database=_database(project),
+            index_path=index_path,
+            project_id="demo",
+            state_hash="test-state",
+            index_build_id="01K1DXAAAA",
+            include_unapproved=True,  # asked for explicitly, and still refused
+        )
+    )
+
+    hits = SqliteIndexStore(index_path).search_lexical(
+        "caching", project_id="demo", limit=50, include_unapproved=True
+    )
+
+    assert hits == (), "retired knowledge is not written to the index at all"
+
+
+def test_the_surfaceable_statuses_exclude_everything_retired() -> None:
+    """Guards the guard above: the set is what the builder consults, so a status
+    quietly added to it becomes retrievable with one boolean."""
+    from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
+
+    assert KnowledgeStatus.REJECTED not in SURFACEABLE_STATUSES
+    assert KnowledgeStatus.DEPRECATED not in SURFACEABLE_STATUSES
+    assert KnowledgeStatus.SUPERSEDED not in SURFACEABLE_STATUSES
+    assert KnowledgeStatus.APPROVED in SURFACEABLE_STATUSES

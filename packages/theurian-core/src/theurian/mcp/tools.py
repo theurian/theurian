@@ -57,6 +57,10 @@ SAFETY: Final[dict[str, object]] = {
 #: Cap on results per call, so one query cannot blow a caller's context budget.
 MAX_RESULTS: Final = 50
 
+#: Cap on the context one call may consume. Paired with MAX_RESULTS: both exist
+#: so a single query cannot spend a caller's whole window.
+MAX_BUDGET_TOKENS: Final = 32_000
+
 
 class ToolError(TheurianError):
     """A tool could not answer. Carries a remedy, never a stack trace."""
@@ -143,6 +147,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             raise ToolError(msg)
 
         capped_limit = max(1, min(limit, MAX_RESULTS))
+        # Clamped here, not validated: a caller asking for a million tokens wants
+        # "as much as you have", and answering that with an exception naming an
+        # internal parameter helps nobody.
+        capped_budget = max(1, min(maxTokens, MAX_BUDGET_TOKENS))
         hybrid = _hybrid_search(
             paths,
             database,
@@ -150,7 +158,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             query=query,
             limit=capped_limit,
             include_unapproved=includeUnapproved,
-            budget_tokens=maxTokens,
+            budget_tokens=capped_budget,
         )
         if hybrid is not None:
             return hybrid
@@ -281,11 +289,14 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             "version": __version__,
             "protocolVersion": __protocol_version__,
             "schemaVersion": SCHEMA_VERSION,
-            "milestone": 3,
+            "milestone": 5,
             "capabilities": {
-                "knowledgeSearch": "substring",
+                # What this build supports. A given response's `retrieval.mode`
+                # says what actually ran, which is `substring` until a project
+                # has an index.
+                "knowledgeSearch": "hybrid",
                 "knowledgeGet": True,
-                "hybridRetrieval": False,
+                "hybridRetrieval": True,
                 "raptor": False,
                 "reviewIngestion": False,
                 "traceability": False,
@@ -326,7 +337,19 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
         # simply an index that is not usable, and the fallback answers instead.
         return None
 
-    service = RetrievalService(SqliteIndexStore(index_path), HashingEmbedding())
+    active = read_active_state(paths)
+    built = str(active.state_hash) if active else None
+    stale = published.get("stateHash") != built
+
+    # An index built without `--include-unapproved` holds no drafts, so a query
+    # asking for them cannot be answered from it. Falling back is the honest
+    # answer; returning approved-only results would change the meaning of a
+    # published parameter without saying so.
+    if include_unapproved and not published.get("indexesUnapproved", False):
+        return None
+
+    index = SqliteIndexStore(index_path)
+    service = RetrievalService(index, HashingEmbedding())
     outcome = service.search(
         SearchRequest(
             query=query,
@@ -338,10 +361,20 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
     )
 
     now = datetime.now(UTC)
+    passages = index.chunk_texts([c.chunk_id for c in outcome.candidates])
     results: list[dict[str, Any]] = []
+    seen_items: set[str] = set()
+
     with SqliteCanonicalStore(database) as store:
         context = RequestContext(project_id=ProjectId(project_id))
         for candidate in outcome.candidates:
+            # One result per document. Diversification lets a long document put
+            # two chunks into the *ranking*, which is what stops a short answer
+            # being crowded out -- but returning the same revision twice gives a
+            # caller two byte-identical hits, inflates `count`, and invites an
+            # agent to weigh one decision double.
+            if candidate.item_id in seen_items:
+                continue
             # Resolved back to the canonical store rather than served from the
             # index. The index is never authoritative, and a result assembled
             # from it alone could outlive the revision it describes (FR-R5).
@@ -351,7 +384,20 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
             item = store.get_item(context, ItemId(candidate.item_id))
             if item is None:  # pragma: no cover - the index mirrors the store
                 continue
+            # The index's `status` is a build-time snapshot; the canonical store
+            # is the authority for what is approved *now*. Without this, a stale
+            # index resurrects knowledge the team has since deprecated or
+            # rejected -- exactly the failure the default is meant to prevent.
+            if not include_unapproved and item.status is not KnowledgeStatus.APPROVED:
+                continue
+            seen_items.add(candidate.item_id)
             result = _result(revision, item.status, now)
+            # The excerpt is the passage that actually matched, not the head of
+            # the document. Chunking buys ranking precision; without this the
+            # caller never sees the paragraph it bought.
+            passage = passages.get(candidate.chunk_id, "")
+            if passage:
+                result["excerpt"] = _excerpt(passage)
             result["fusedScore"] = round(candidate.fused_score, 6)
             result["foundBy"] = list(candidate.found_by)
             results.append(result)
@@ -364,16 +410,35 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
         "retrieval": {
             "mode": outcome.mode.value,
             "indexed": True,
+            # Reported, because only the CLI knew this and the client is the one
+            # acting on the answer. A stale index is a correctness problem
+            # wearing the costume of a relevance problem.
+            "stale": stale,
+            "indexesUnapproved": bool(published.get("indexesUnapproved", False)),
             "indexBuildId": published.get("indexBuildId"),
             "embeddingModel": outcome.embedding_model,
             "usedTokens": outcome.used_tokens,
             "droppedForBudget": outcome.dropped_for_budget,
             "note": (
-                "Ranked by reciprocal rank fusion over lexical and dense "
+                "This index was built from an earlier knowledge state. Run "
+                "`theurian index build` to refresh it."
+                if stale
+                else "Ranked by reciprocal rank fusion over lexical and dense "
                 "retrievers. `foundBy` names which retrievers surfaced each hit."
             ),
         },
     }
+
+
+#: Excerpt length. Long enough to judge relevance, short enough that ten hits do
+#: not become the whole answer.
+EXCERPT_CHARS: Final = 280
+
+
+def _excerpt(text: str) -> str:
+    """One line of a passage, for a caller deciding whether to fetch the rest."""
+    flattened = text.strip().replace("\n", " ")
+    return flattened[:EXCERPT_CHARS] + ("..." if len(flattened) > EXCERPT_CHARS else "")
 
 
 def _result(revision: KnowledgeRevision, status: KnowledgeStatus, now: datetime) -> dict[str, Any]:
@@ -383,13 +448,12 @@ def _result(revision: KnowledgeRevision, status: KnowledgeStatus, now: datetime)
     trust labels invites an agent to read a document as an instruction.
     """
     age = (now - revision.created_at).days
-    excerpt = revision.body.strip().replace("\n", " ")
 
     return {
         "itemId": revision.item_id.value,
         "revisionId": revision.revision_id.value,
         "title": revision.title,
-        "excerpt": excerpt[:280] + ("..." if len(excerpt) > 280 else ""),  # noqa: PLR2004
+        "excerpt": _excerpt(revision.body),
         "contentType": str(revision.content_type),
         "status": status.value,
         "trustLevel": revision.metadata.trust_level.value,

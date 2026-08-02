@@ -195,3 +195,19 @@ class ContentClassification(StrEnum):
 
     UNTRUSTED_KNOWLEDGE = "untrusted-knowledge"
     SYSTEM_METADATA = "system-metadata"
+
+
+#: Statuses `includeUnapproved` may surface (SEC-13, T-15).
+#:
+#: `REJECTED` is deliberately absent and there is no flag that adds it. A
+#: rejected revision is one the team decided must *not* be followed, and it is
+#: also where a secret that caused the rejection still lives. Everything else
+#: unapproved is work in progress, which an author asking for it has a reason to
+#: see.
+SURFACEABLE_STATUSES: frozenset[KnowledgeStatus] = frozenset(
+    {
+        KnowledgeStatus.APPROVED,
+        KnowledgeStatus.DRAFT,
+        KnowledgeStatus.PROPOSED,
+    }
+)

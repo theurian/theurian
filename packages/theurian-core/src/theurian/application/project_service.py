@@ -105,8 +105,24 @@ class ProjectPaths:
         The prefix matters. Index builds share a directory with canonical state
         databases, and a glob that could not tell them apart would hand a
         retrieval index to the canonical store.
+
+        Containment is checked because the id reaching here comes from
+        `active-index.json` — a derived, git-ignored, unsigned file that any
+        local process can edit. `../` in it resolves outside the project, and
+        SEC-7 covers every path, not only the ones that look like user input.
+
+        Raises:
+            ProjectError: If the id would escape the state directory.
         """
-        return self.state / f"theurian-index-{index_build_id}.sqlite"
+        candidate = (self.state / f"theurian-index-{index_build_id}.sqlite").resolve()
+        if not candidate.is_relative_to(self.state.resolve()):
+            msg = (
+                f"The index pointer names {index_build_id!r}, which resolves outside "
+                f"{self.state}. Delete .theurian/state/active-index.json and run "
+                f"`theurian index build`; the index is derived, so nothing is lost."
+            )
+            raise ProjectError(msg)
+        return candidate
 
     @property
     def write_lock(self) -> Path:

@@ -17,6 +17,7 @@ trust labelling happen after packing and belong to :mod:`theurian.domain.retriev
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -30,9 +31,27 @@ from theurian.domain.errors import TheurianError
 #: the same query against the same index, which FR-R7 rules out.
 RRF_K: Final = 60
 
-#: Rough characters per token. Deliberately conservative — see
+#: Rough characters per token for scripts that use spaces. See
 #: :func:`estimate_tokens`.
 CHARS_PER_TOKEN: Final = 4
+
+#: Tokens per character for CJK, kana, and emoji. Measured against `cl100k_base`
+#: on Japanese prose: 450 characters tokenized to ~600, so one-token-per-
+#: character still *under*-counts by a quarter. 1.5 keeps the estimate on the
+#: conservative side this module promises, which four-characters-per-token — the
+#: English heuristic — misses by roughly fivefold.
+_DENSE_TOKENS_PER_CHAR: Final = 1.5
+
+#: Ranges whose characters are counted at the dense rate above.
+_DENSE_SCRIPT_RANGES: Final = (
+    (0x3000, 0x30FF),  # CJK punctuation, hiragana, katakana
+    (0x3400, 0x4DBF),  # CJK extension A
+    (0x4E00, 0x9FFF),  # CJK unified ideographs
+    (0xAC00, 0xD7AF),  # Hangul syllables
+    (0xF900, 0xFAFF),  # CJK compatibility ideographs
+    (0xFF00, 0xFFEF),  # Halfwidth and fullwidth forms
+    (0x1F300, 0x1FAFF),  # Emoji
+)
 
 #: The retriever names this module expects.
 #: `mode_of` compares against these, so a caller that invents its own name
@@ -177,15 +196,30 @@ def diversify(candidates: Iterable[Fused], *, per_item: int = 2) -> tuple[Fused,
     return tuple(kept)
 
 
+def _is_dense_script(character: str) -> bool:
+    code = ord(character)
+    return any(low <= code <= high for low, high in _DENSE_SCRIPT_RANGES)
+
+
 def estimate_tokens(text: str) -> int:
     """A conservative token estimate.
 
     Deliberately an over-estimate. Exceeding a caller's budget silently drops the
     end of their context — often including their own instructions — while
-    under-filling it merely costs a little recall. A real tokenizer arrives when
-    one is a dependency worth taking (ADR-0009 — no vendor lock-in).
+    under-filling it merely costs a little recall.
+
+    Scripts are counted differently because they tokenize differently. A
+    character-count heuristic tuned on English under-counts Japanese roughly
+    fivefold, so a project whose knowledge is written in Japanese — which this
+    one's is — would blow every budget it was given while the estimate insisted
+    it had erred high.
+
+    A real tokenizer arrives when one is a dependency worth taking (ADR-0009 —
+    no vendor lock-in).
     """
-    return max(1, -(-len(text) // CHARS_PER_TOKEN))
+    dense = sum(1 for character in text if _is_dense_script(character))
+    sparse = len(text) - dense
+    return max(1, math.ceil(dense * _DENSE_TOKENS_PER_CHAR) + -(-sparse // CHARS_PER_TOKEN))
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +256,11 @@ def pack(
     kept: list[Fused] = []
     used = 0
     for candidate in candidates:
-        cost = sizes.get(candidate.chunk_id, 0)
+        # A missing size means the caller could not price this candidate.
+        # Charging the whole budget is the conservative reading; treating it as
+        # free is how a budget is silently exceeded, and `estimate_tokens`
+        # already errs high for the same reason.
+        cost = sizes.get(candidate.chunk_id, budget_tokens)
         if kept and used + cost > budget_tokens:
             break
         kept.append(candidate)

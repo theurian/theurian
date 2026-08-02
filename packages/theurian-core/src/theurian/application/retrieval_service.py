@@ -22,8 +22,10 @@ from typing import Any, Final, final
 
 from theurian.domain.chunking import IndexableChunk, chunk_document
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
+from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.embedding import EmbeddingProvider
+from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.ranking import (
     DENSE,
     LEXICAL,
@@ -46,6 +48,11 @@ CANDIDATE_DEPTH: Final = 50
 #: handed their whole window back.
 DEFAULT_BUDGET_TOKENS: Final = 2000
 
+#: Chunks per embedding request. An API-backed provider caps request size, and a
+#: local one gains nothing from an unbounded batch -- while an unbounded batch
+#: holds the whole corpus and all its vectors in memory at once.
+EMBED_BATCH: Final = 128
+
 
 @dataclass(frozen=True, slots=True)
 class IndexRequest:
@@ -56,9 +63,9 @@ class IndexRequest:
     project_id: str
     state_hash: str
     index_build_id: str
-    #: Indexing drafts is opt-in. An index that silently contained them would
-    #: make them retrievable by default, which is the failure this whole system
-    #: exists to prevent.
+    #: Whether unapproved revisions are written at all. Off by default, so an
+    #: operator who never opts in has a hard guarantee that no draft is in the
+    #: file — not merely that a query filter is expected to hold.
     include_unapproved: bool = False
 
 
@@ -97,7 +104,7 @@ class IndexBuilder:
         self,
         *,
         store_factory: Callable[[Path], Any],
-        index_factory: Callable[[Path], Any],
+        index_factory: Callable[[Path], IndexStore],
         embedder: EmbeddingProvider | None = None,
     ) -> None:
         self._store_factory = store_factory
@@ -105,15 +112,29 @@ class IndexBuilder:
         self._embedder = embedder
 
     def build(self, request: IndexRequest) -> dict[str, object]:
-        """Write a new index file from a canonical state."""
+        """Write a new index file from a canonical state.
+
+        Unapproved revisions are written only when asked for, and `rejected`
+        never is.
+
+        The obvious simplification — index everything, filter at query time —
+        was tried and reverted. It makes `includeUnapproved=True` a single
+        boolean that reaches content the team decided must not be followed, and
+        it removes the operator's ability to guarantee that a draft is not in
+        the file at all. The cost is that `includeUnapproved=True` cannot return
+        rows that were never written, which is reported rather than hidden:
+        `indexesUnapproved` says whether this build can answer such a query.
+        """
         index = self._index_factory(request.index_path)
         index.create(index_build_id=request.index_build_id, state_hash=request.state_hash)
 
-        context = RequestContext(project_id=_project_id(request.project_id))
-        indexable: list[Any] = []
+        context = RequestContext(project_id=ProjectId(request.project_id))
+        indexable: list[IndexableChunk] = []
 
         with self._store_factory(request.database) as store:
             for item in store.list_items(context):
+                if item.status not in SURFACEABLE_STATUSES:
+                    continue
                 if not request.include_unapproved and item.status is not KnowledgeStatus.APPROVED:
                     continue
                 if item.current_revision_id is None:
@@ -150,34 +171,43 @@ class IndexBuilder:
             "chunks": len(indexable),
             "embeddings": embedded,
             "embeddingModel": self._embedder.model_id if self._embedder else "",
+            "indexesUnapproved": request.include_unapproved,
         }
 
-    def _embed(self, index: Any, indexable: Sequence[Any]) -> int:
+    def _embed(self, index: IndexStore, indexable: Sequence[IndexableChunk]) -> int:
         """Embed every chunk, or none.
+
+        Batched, because a real provider caps request size and a local one gains
+        nothing from an unbounded batch.
 
         A partial embedding is worse than none: the dense retriever would rank
         the embedded half and silently never surface the rest, which looks like
-        a relevance problem rather than a build problem.
+        a relevance problem rather than a build problem. The build discards the
+        whole index file if any batch fails, so a partial one never publishes.
         """
         if self._embedder is None or not indexable:
             return 0
 
-        texts = tuple(item.chunk.text for item in indexable)
-        vectors = asyncio.run(self._embedder.embed(texts))
-        index.add_embeddings(
-            [(item.chunk.chunk_id, vector) for item, vector in zip(indexable, vectors, strict=True)]
-        )
+        embedded = 0
+        for start in range(0, len(indexable), EMBED_BATCH):
+            batch = indexable[start : start + EMBED_BATCH]
+            vectors = asyncio.run(self._embedder.embed(tuple(c.chunk.text for c in batch)))
+            index.add_embeddings(
+                [(c.chunk.chunk_id, v) for c, v in zip(batch, vectors, strict=True)]
+            )
+            embedded += len(vectors)
+
         index.record_embedding_model(
             model_id=self._embedder.model_id, dimension=self._embedder.dimension
         )
-        return len(vectors)
+        return embedded
 
 
 @final
 class RetrievalService:
     """Answers a query against one index build."""
 
-    def __init__(self, index: Any, embedder: EmbeddingProvider | None = None) -> None:
+    def __init__(self, index: IndexStore, embedder: EmbeddingProvider | None = None) -> None:
         self._index = index
         self._embedder = embedder
 
@@ -195,8 +225,7 @@ class RetrievalService:
         fused = reciprocal_rank_fusion(rankings)
         diversified = diversify(fused, per_item=request.per_item)[: request.limit]
 
-        rows = self._index.texts([candidate.chunk_id for candidate in diversified])
-        sizes = {chunk_id: int(row["token_estimate"]) for chunk_id, row in rows.items()}
+        sizes = self._index.token_sizes([candidate.chunk_id for candidate in diversified])
         packed = pack(diversified, sizes, budget_tokens=request.budget_tokens)
 
         return SearchOutcome(
@@ -235,9 +264,3 @@ class RetrievalService:
 
     def _embedding_model_if_used(self, dense: Sequence[Ranked]) -> str:
         return self._embedder.model_id if (dense and self._embedder) else ""
-
-
-def _project_id(value: str) -> Any:
-    from theurian.domain.identifiers import ProjectId  # noqa: PLC0415 - avoids a cycle
-
-    return ProjectId(value)

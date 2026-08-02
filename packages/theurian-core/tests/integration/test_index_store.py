@@ -118,12 +118,33 @@ def test_all_query_terms_must_appear(store: SqliteIndexStore) -> None:
 
 
 def test_fts5_operators_typed_by_a_user_are_treated_as_words(store: SqliteIndexStore) -> None:
-    """Someone searching `auth OR token` means three words. Letting FTS5 read
-    them as syntax turns an ordinary sentence into a syntax error."""
+    """Someone searching `auth NOT token` means three words.
+
+    If FTS5 read them as syntax, `NOT` would exclude the very chunk the user was
+    looking for — a wrong answer rather than an error, which is worse.
+    """
     store.add_chunks([_indexable("c1", "auth and token rotation")])
 
-    assert store.search_lexical('auth OR "token"', project_id="demo") == ()
-    assert store.search_lexical("auth token", project_id="demo")
+    assert store.search_lexical("auth NOT token", project_id="demo"), (
+        "NOT must be a word, not an operator that excludes the match"
+    )
+    assert store.search_lexical('auth OR "token"', project_id="demo")
+
+
+def test_a_natural_language_question_reaches_the_lexical_index(
+    store: SqliteIndexStore,
+) -> None:
+    """The main thing an agent actually sends.
+
+    ANDing every term required `how`, `do`, and `for` to appear in the chunk --
+    `unicode61` has no stop words -- so lexical search returned nothing for any
+    real question, and the hybrid half of retrieval quietly never fused.
+    """
+    store.add_chunks([_indexable("c1", "Rotate signing keys for auth tokens every ninety days.")])
+
+    hits = store.search_lexical("How do we rotate signing keys for auth tokens?", project_id="demo")
+
+    assert [h.chunk_id for h in hits] == ["c1"]
 
 
 @pytest.mark.parametrize("query", ['"', "-", "*", "((", "^", ":", "   "])
@@ -182,12 +203,34 @@ def test_drafts_are_withheld_unless_asked_for(store: SqliteIndexStore) -> None:
 
 
 def test_the_nearest_vector_ranks_first(store: SqliteIndexStore) -> None:
+    store.add_chunks([_indexable("near", "a"), _indexable("mid", "b", item="i2")])
+    store.add_embeddings([("near", [1.0, 0.0]), ("mid", [0.7, 0.7])])
+
+    hits = store.search_dense([0.9, 0.1], project_id="demo")
+
+    assert [h.chunk_id for h in hits] == ["near", "mid"]
+
+
+def test_a_barely_similar_vector_is_not_returned_at_all(store: SqliteIndexStore) -> None:
+    """Hashed n-grams give almost any pair of strings a small nonzero cosine.
+
+    Without a floor, every query returns the whole corpus ranked by accident,
+    and an agent asking about payroll receives an approved architecture
+    decision. "We have no such decision" has to be expressible.
+    """
     store.add_chunks([_indexable("near", "a"), _indexable("far", "b", item="i2")])
     store.add_embeddings([("near", [1.0, 0.0]), ("far", [0.0, 1.0])])
 
     hits = store.search_dense([0.9, 0.1], project_id="demo")
 
-    assert [h.chunk_id for h in hits] == ["near", "far"]
+    assert [h.chunk_id for h in hits] == ["near"], "0.11 cosine is noise, not a match"
+
+
+def test_a_query_matching_nothing_returns_nothing(store: SqliteIndexStore) -> None:
+    store.add_chunks([_indexable("c1", "a")])
+    store.add_embeddings([("c1", [1.0, 0.0])])
+
+    assert store.search_dense([0.0, 1.0], project_id="demo") == ()
 
 
 def test_dense_search_respects_the_same_filters(store: SqliteIndexStore) -> None:

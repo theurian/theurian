@@ -36,7 +36,10 @@ JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable 
 def index_build(
     include_unapproved: Annotated[
         bool,
-        typer.Option("--include-unapproved", help="Also index drafts. Off by default."),
+        typer.Option(
+            "--include-unapproved",
+            help="Also index drafts and proposals. Never indexes rejected knowledge.",
+        ),
     ] = False,
     no_embeddings: Annotated[
         bool,
@@ -85,18 +88,31 @@ def index_build(
         embedder=None if no_embeddings else HashingEmbedding(),
     )
 
-    report = builder.build(
-        IndexRequest(
-            database=paths.state / active.database_filename,
-            index_path=paths.index_for(index_build_id),
-            project_id=context.project_id.value,
-            state_hash=str(active.state_hash),
-            index_build_id=index_build_id,
-            include_unapproved=include_unapproved,
-        )
+    request = IndexRequest(
+        database=paths.state / active.database_filename,
+        index_path=paths.index_for(index_build_id),
+        project_id=context.project_id.value,
+        state_hash=str(active.state_hash),
+        index_build_id=index_build_id,
+        include_unapproved=include_unapproved,
     )
 
-    _publish(paths, index_build_id=index_build_id, state_hash=str(active.state_hash))
+    try:
+        report = builder.build(request)
+    except Exception:
+        # A half-built index is worse than none: it looks complete and is not,
+        # and only the build knows it failed. Nothing is published, so retrieval
+        # keeps using the previous build.
+        request.index_path.unlink(missing_ok=True)
+        raise
+
+    _publish(
+        paths,
+        index_build_id=index_build_id,
+        state_hash=str(active.state_hash),
+        indexes_unapproved=include_unapproved,
+    )
+    _reclaim(paths, keep=index_build_id)
     _emit({**report, "published": True}, as_json=as_json)
 
 
@@ -161,7 +177,22 @@ def _remedy(*, stale: bool, needs_apply: bool) -> str:
     return ""
 
 
-def _publish(paths: ProjectPaths, *, index_build_id: str, state_hash: str) -> None:
+def _reclaim(paths: ProjectPaths, *, keep: str) -> None:
+    """Delete superseded index builds.
+
+    Only after the pointer swap. A search that read the old pointer has already
+    opened its file, and on POSIX an unlinked-but-open SQLite file stays
+    readable until the last handle closes — so the swap is safe and the disk
+    does not grow without bound.
+    """
+    for stale in paths.state.glob("theurian-index-*.sqlite*"):
+        if keep not in stale.name:
+            stale.unlink(missing_ok=True)
+
+
+def _publish(
+    paths: ProjectPaths, *, index_build_id: str, state_hash: str, indexes_unapproved: bool
+) -> None:
     """Point retrieval at a finished build, atomically.
 
     Write-to-temp then ``os.replace``, which is atomic on POSIX. A reader must
@@ -172,7 +203,16 @@ def _publish(paths: ProjectPaths, *, index_build_id: str, state_hash: str) -> No
     pointer.parent.mkdir(parents=True, exist_ok=True)
     temporary = pointer.with_suffix(".json.tmp")
     temporary.write_text(
-        json.dumps({"indexBuildId": index_build_id, "stateHash": state_hash}, indent=2),
+        json.dumps(
+            {
+                "indexBuildId": index_build_id,
+                "stateHash": state_hash,
+                # Recorded so a search can say *why* `includeUnapproved=True`
+                # returned nothing, instead of looking like an empty result.
+                "indexesUnapproved": indexes_unapproved,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     os.replace(temporary, pointer)  # noqa: PTH105 - os.replace is the atomic primitive

@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.chunking import IndexableChunk
+from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
-from theurian.domain.ranking import Ranked
+from theurian.domain.ranking import Ranked, estimate_tokens
 from theurian.infrastructure.sqlite.index_schema import (
     FTS5_PROBE,
     INDEX_DDL,
@@ -40,6 +41,32 @@ _VECTOR_FORMAT: Final = "<%df"
 #: `auth OR "token"` means those as words, not as operators, and a query that
 #: raised a syntax error at them would be a search box that punishes punctuation.
 _FTS_SPECIAL: Final = '"*():^-'
+
+#: Cosine below which a dense hit is noise rather than a match.
+#:
+#: Hashed n-grams give almost any pair of strings a small nonzero similarity, so
+#: without a floor every query returns the whole corpus ranked by accident — and
+#: an agent asking about payroll receives an approved architecture decision. The
+#: value is measured, not guessed: over 400 random strings against a real corpus
+#: the 99th percentile was 0.187 and the maximum 0.238, while genuinely related
+#: queries scored 0.296 and above. 0.25 sits in that gap.
+#:
+#: A real embedding model separates these distributions far better and would
+#: want its own floor; it arrives with its own adapter.
+DENSE_SIMILARITY_FLOOR: Final = 0.25
+
+#: Bounds on what one query may cost. FTS5's cost is roughly quadratic in term
+#: count and linear in corpus size: measured against 2,000 chunks, a 500-term
+#: query took 8.7 seconds and a 2,000-term query did not finish inside a minute.
+#:
+#: That is not merely slow. The MCP SDK runs synchronous tools on a 40-thread
+#: pool, and `sqlite3` releases the GIL, so a handful of such queries saturate
+#: the CPU and every tool call for *every project this daemon serves* waits
+#: behind them. A query is attacker-influenceable — an agent composes it after
+#: reading content — so it gets the same input bounds as any other parser
+#: input (SEC-8).
+MAX_QUERY_CHARS: Final = 2_000
+MAX_QUERY_TERMS: Final = 64
 
 
 class IndexBuildError(TheurianError):
@@ -131,8 +158,6 @@ class SqliteIndexStore:
         if not chunks:
             return 0
 
-        from theurian.domain.ranking import estimate_tokens  # noqa: PLC0415 - avoids a cycle
-
         with _connect(self._path) as connection:
             connection.executemany(
                 "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
@@ -203,8 +228,43 @@ class SqliteIndexStore:
         with _connect(self._path) as connection:
             return int(connection.execute("SELECT count(*) FROM chunks").fetchone()[0])
 
+    def token_sizes(self, chunk_ids: Sequence[str]) -> dict[str, int]:
+        """Token estimate per chunk, for packing to a budget (FR-R4).
+
+        Sizes rather than rows. Handing a ``sqlite3.Row`` to the application
+        layer would couple the ranking pipeline to this adapter's cursor
+        semantics and column names -- coupling no import check can catch.
+        """
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" * len(chunk_ids))
+        with _connect(self._path) as connection:
+            rows = connection.execute(
+                f"SELECT chunk_id, token_estimate FROM chunks WHERE chunk_id IN ({placeholders})",  # noqa: S608 - placeholders only
+                tuple(chunk_ids),
+            ).fetchall()
+        return {row["chunk_id"]: int(row["token_estimate"]) for row in rows}
+
+    def chunk_texts(self, chunk_ids: Sequence[str]) -> dict[str, str]:
+        """The matched passage per chunk.
+
+        Returned so a hit can show *what* matched rather than the head of the
+        document it came from. Chunking buys ranking precision; without this the
+        caller never sees the paragraph it bought.
+        """
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" * len(chunk_ids))
+        with _connect(self._path) as connection:
+            rows = connection.execute(
+                f"SELECT chunk_id, text FROM chunks WHERE chunk_id IN ({placeholders})",  # noqa: S608 - placeholders only
+                tuple(chunk_ids),
+            ).fetchall()
+        return {row["chunk_id"]: str(row["text"]) for row in rows}
+
     def texts(self, chunk_ids: Sequence[str]) -> dict[str, sqlite3.Row]:
-        """Fetch chunk rows by id, for building results after ranking."""
+        """Fetch whole chunk rows by id. For adapters and tests, not for the
+        application layer -- see :meth:`token_sizes`."""
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
@@ -235,7 +295,8 @@ class SqliteIndexStore:
         clauses = ["chunks.project_id = ?"]
         parameters: list[object] = [project_id]
         if not include_unapproved:
-            clauses.append("chunks.status = 'approved'")
+            clauses.append("chunks.status = ?")
+            parameters.append(KnowledgeStatus.APPROVED.value)
 
         # The f-string interpolates only literals this module wrote (see
         # `clauses` above); every user-supplied value is a bound parameter.
@@ -244,7 +305,10 @@ class SqliteIndexStore:
             "  bm25(chunks_fts) AS rank_score "
             "FROM chunks_fts JOIN chunks ON chunks.rowid = chunks_fts.rowid "
             f"WHERE chunks_fts MATCH ? AND {' AND '.join(clauses)} "
-            "ORDER BY rank_score LIMIT ?"
+            # Ties break on chunk id so two runs agree, matching the dense
+            # side. BM25 ties are common among short chunks, and a tie
+            # straddling the LIMIT boundary changes which rows survive.
+            "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
         )
         with _connect(self._path) as connection:
             try:
@@ -290,7 +354,8 @@ class SqliteIndexStore:
         clauses = ["chunks.project_id = ?"]
         parameters: list[object] = [project_id]
         if not include_unapproved:
-            clauses.append("chunks.status = 'approved'")
+            clauses.append("chunks.status = ?")
+            parameters.append(KnowledgeStatus.APPROVED.value)
 
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, embeddings.vector "  # noqa: S608 - clauses are module-owned literals; values are bound
@@ -312,6 +377,8 @@ class SqliteIndexStore:
                 # scored: the arithmetic would succeed and the meaning would not.
                 continue
             similarity = _cosine(query_vector, vector, query_norm)
+            if similarity < DENSE_SIMILARITY_FLOOR:
+                continue
             scored.append(
                 Ranked(
                     chunk_id=row["chunk_id"],
@@ -352,12 +419,27 @@ def _to_match_expression(query: str) -> str:
     otherwise raise a syntax error at a person who typed a perfectly ordinary
     sentence.
 
-    Terms are ANDed. A query whose words all appear is a better default than one
-    where any word does, which on a knowledge base returns everything.
+    Bounded in length, in distinct terms, and de-duplicated — see
+    :data:`MAX_QUERY_CHARS`.
+
+    Terms are ORed and left to BM25 to rank. ANDing them requires every token to
+    appear in one chunk -- including `how`, `do`, `for`, which the `unicode61`
+    tokenizer does not treat as stop words -- so a natural-language question, the
+    main thing an agent actually sends, matches nothing at all. Recall is BM25's
+    problem to rank, not the matcher's problem to refuse.
     """
-    terms = [term.strip(_FTS_SPECIAL) for term in query.replace('"', " ").split()]
-    kept = [f'"{term}"' for term in terms if term]
-    return " AND ".join(kept)
+    terms = [term.strip(_FTS_SPECIAL) for term in query[:MAX_QUERY_CHARS].replace('"', " ").split()]
+
+    # De-duplicated first. A repeated term adds cost to the expression and
+    # changes nothing about the BM25 order, so `"token " * 2000` collapses to one
+    # term rather than to a minute of CPU.
+    unique: dict[str, None] = {}
+    for term in terms:
+        if term:
+            unique.setdefault(term, None)
+
+    kept = [f'"{term}"' for term in list(unique)[:MAX_QUERY_TERMS]]
+    return " OR ".join(kept)
 
 
 __all__ = [

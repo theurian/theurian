@@ -243,10 +243,12 @@ class IndexableChunk:
     """A chunk together with the canonical facts retrieval filters on (FR-R1).
 
     Carried alongside rather than inside :class:`Chunk` because chunking is a
-    property of text and these are properties of the revision it came from. The
-    index denormalises them so filtering happens in the same statement as the
-    match, before ranking -- filtering afterwards would let a caller infer that
-    a document they may not read exists.
+    property of text and these are properties of the revision it came from.
+
+    The index denormalises them so filtering can happen in the same statement as
+    the match, before ranking. Only ``status`` is filtered on today;
+    ``sensitivity`` and ``trust_level`` are carried for the scope filtering
+    Milestone 6 adds.
     """
 
     chunk: Chunk

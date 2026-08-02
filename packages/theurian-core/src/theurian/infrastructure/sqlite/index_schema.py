@@ -57,10 +57,16 @@ CREATE TABLE chunks (
     heading      TEXT    NOT NULL DEFAULT '',
     text         TEXT    NOT NULL,
     token_estimate INTEGER NOT NULL,
-    -- Denormalised from the canonical store so that FR-R1 filtering happens
-    -- before ranking rather than after. Filtering after ranking would let a
-    -- caller learn that a document they may not read exists, by watching how
-    -- many results disappeared.
+    -- Denormalised from the canonical store so that filtering can happen in the
+    -- same statement as the match, before ranking (FR-R1). Filtering after
+    -- ranking would let a caller learn that a document they may not read exists,
+    -- by watching how many results disappeared.
+    --
+    -- Today only `status` is filtered on. `sensitivity`, `trust_level`, and
+    -- `namespace` are carried for the scope filtering Milestone 6 adds and are
+    -- read by no query yet -- said plainly here because a comment that implies
+    -- an access control which does not exist is how the next person concludes
+    -- it is already handled. `namespace` is not even populated by the builder.
     status       TEXT    NOT NULL,
     sensitivity  TEXT    NOT NULL,
     trust_level  TEXT    NOT NULL,
