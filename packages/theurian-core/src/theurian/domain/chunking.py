@@ -236,3 +236,24 @@ def _merge_runts(passages: list[tuple[str, str]], target: int) -> list[tuple[str
             merged.append(pending)
 
     return merged
+
+
+@dataclass(frozen=True, slots=True)
+class IndexableChunk:
+    """A chunk together with the canonical facts retrieval filters on (FR-R1).
+
+    Carried alongside rather than inside :class:`Chunk` because chunking is a
+    property of text and these are properties of the revision it came from. The
+    index denormalises them so filtering happens in the same statement as the
+    match, before ranking -- filtering afterwards would let a caller infer that
+    a document they may not read exists.
+    """
+
+    chunk: Chunk
+    project_id: str
+    item_id: str
+    revision_id: str
+    status: str
+    sensitivity: str
+    trust_level: str
+    namespace: str = ""

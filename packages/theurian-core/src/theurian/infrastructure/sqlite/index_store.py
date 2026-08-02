@@ -17,12 +17,11 @@ import sqlite3
 import struct
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
-from theurian.domain.chunking import Chunk
+from theurian.domain.chunking import IndexableChunk
 from theurian.domain.errors import TheurianError
 from theurian.domain.ranking import Ranked
 from theurian.infrastructure.sqlite.index_schema import (
@@ -61,20 +60,6 @@ class Fts5UnavailableError(IndexBuildError):
             "unavailable. Install Python from python.org or your distribution's "
             "python3 package, both of which enable it."
         )
-
-
-@dataclass(frozen=True, slots=True)
-class IndexableChunk:
-    """A chunk plus the canonical facts retrieval filters on (FR-R1)."""
-
-    chunk: Chunk
-    project_id: str
-    item_id: str
-    revision_id: str
-    status: str
-    sensitivity: str
-    trust_level: str
-    namespace: str = ""
 
 
 def fts5_available() -> bool:
@@ -373,3 +358,12 @@ def _to_match_expression(query: str) -> str:
     terms = [term.strip(_FTS_SPECIAL) for term in query.replace('"', " ").split()]
     kept = [f'"{term}"' for term in terms if term]
     return " AND ".join(kept)
+
+
+__all__ = [
+    "Fts5UnavailableError",
+    "IndexBuildError",
+    "IndexableChunk",
+    "SqliteIndexStore",
+    "fts5_available",
+]

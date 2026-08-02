@@ -44,7 +44,7 @@ def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters r
 @pytest.fixture
 def store(tmp_path: Path) -> SqliteIndexStore:
     store = SqliteIndexStore(tmp_path / "index" / "theurian-index-01.sqlite")
-    store.create(index_build_id="01K1IDX", state_hash="abc123")
+    store.create(index_build_id="01K1DXAA", state_hash="abc123")
     return store
 
 
@@ -62,7 +62,7 @@ def test_an_index_records_what_it_was_built_from(store: SqliteIndexStore) -> Non
     whether it still describes the canonical store."""
     metadata = store.metadata()
 
-    assert metadata["index_build_id"] == "01K1IDX"
+    assert metadata["index_build_id"] == "01K1DXAA"
     assert metadata["state_hash"] == "abc123"
 
 
@@ -70,7 +70,7 @@ def test_building_over_an_existing_file_is_refused(store: SqliteIndexStore) -> N
     """An index build is all-or-nothing. Appending to a half-built one produces
     a file that looks complete and silently is not."""
     with pytest.raises(IndexBuildError, match="already exists"):
-        store.create(index_build_id="01K1IDX2", state_hash="def456")
+        store.create(index_build_id="01K1DXAB", state_hash="def456")
 
 
 def test_the_index_lives_apart_from_the_canonical_store(store: SqliteIndexStore) -> None:
