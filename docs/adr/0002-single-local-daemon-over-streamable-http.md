@@ -114,9 +114,11 @@ Landed in Milestone 3:
 - `tests/integration/test_daemon.py` covers the handshake directly: a daemon on
   a *different* data directory is a conflict rather than something to reuse or
   kill.
-- `tests/integration/test_mcp_tools.py::test_an_unregistered_project_names_what_is_registered`
-  asserts a call for an unregistered project returns an error, never another
-  project's knowledge (SEC-13).
+- `tests/integration/test_mcp_tools.py::test_a_query_for_one_project_cannot_observe_the_other`
+  registers two projects against one server and asserts a query for one cannot
+  reach the other's knowledge, including when both use the same `itemId`
+  (SEC-13). `test_an_unregistered_project_names_what_is_registered` covers the
+  adjacent case: an unknown id gets an error, never someone else's content.
 - Every project-scoped MCP tool schema declares `projectId` in `required`.
 
 Still owed:

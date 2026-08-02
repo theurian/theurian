@@ -487,3 +487,83 @@ def test_no_registered_tool_can_reach_a_canonical_write(registry: ProjectRegistr
             offenders[tool.name] = reached
 
     assert not offenders, f"tools with a canonical write path: {offenders}"
+
+
+# -- Cross-project isolation (SEC-13) --------------------------------------
+
+
+@pytest.fixture
+def two_projects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectRegistry:
+    """Two registered projects, each with its own knowledge and its own state.
+
+    One daemon serving many projects is the design (ADR-0002). The property that
+    makes it safe is that a call for one cannot observe the other -- and that
+    only becomes testable once two really exist.
+    """
+    data_dir = tmp_path / "datadir"
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+
+    for name, secret in (
+        ("alpha", "alpha-only-payment-rotation"),
+        ("beta", "beta-only-tls-pinning"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        for args in (
+            ["git", "init", "-q", "-b", "main"],
+            ["git", "config", "user.email", "test@example.com"],
+            ["git", "config", "user.name", "Test"],
+        ):
+            subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+        monkeypatch.chdir(root)
+        _run("init")
+        (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(
+            f"# {name} policy\n\n{secret}\n"
+        )
+        (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+        _run("project", "register")
+        _run("migrate", "apply")
+
+    return ProjectRegistry.default(data_dir)
+
+
+@pytest.mark.asyncio
+async def test_a_query_for_one_project_cannot_observe_the_other(
+    two_projects: ProjectRegistry,
+) -> None:
+    """SEC-13. The isolation is per state database, not a filter someone has to
+    remember to apply."""
+    alpha = await _call(two_projects, "knowledge.search", projectId="alpha", query="alpha-only")
+    leaked = await _call(two_projects, "knowledge.search", projectId="alpha", query="beta-only")
+
+    assert alpha["count"] == 1
+    assert leaked["count"] == 0, "alpha must not be able to read beta's knowledge"
+
+
+@pytest.mark.asyncio
+async def test_each_project_sees_its_own_content_under_the_same_item_id(
+    two_projects: ProjectRegistry,
+) -> None:
+    """Both projects use the same itemId. If scoping were wrong anywhere, this
+    is where one project's document would surface under the other's name."""
+    alpha = await _call(
+        two_projects, "knowledge.get", projectId="alpha", itemId="architecture.auth-policy"
+    )
+    beta = await _call(
+        two_projects, "knowledge.get", projectId="beta", itemId="architecture.auth-policy"
+    )
+
+    assert "alpha-only-payment-rotation" in alpha["body"]
+    assert "beta-only-tls-pinning" in beta["body"]
+    assert alpha["body"] != beta["body"]
+
+
+@pytest.mark.asyncio
+async def test_project_list_shows_both_without_revealing_their_knowledge(
+    two_projects: ProjectRegistry,
+) -> None:
+    result = await _call(two_projects, "project.list")
+
+    assert {p["projectId"] for p in result["projects"]} == {"alpha", "beta"}
+    assert "alpha-only-payment-rotation" not in json.dumps(result)
