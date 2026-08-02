@@ -12,6 +12,69 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Milestone 5 — hybrid retrieval
+
+#### Added
+
+- **Reciprocal Rank Fusion** over a lexical and a dense retriever (FR-R2).
+  Fusion uses *ranks*, never scores: BM25 and cosine similarity are not
+  comparable quantities, and normalising them onto one scale needs assumptions
+  about their distributions that do not survive a change of corpus or embedding
+  model.
+- **Document chunking** on structure first and length second — headings, then
+  paragraphs, then sentences, then words, then a hard character cut as the
+  backstop that always terminates.
+- **A retrieval index in its own SQLite file**: FTS5 for terms, an exact vector
+  scan for the rest. Separate from the canonical store on purpose — the
+  canonical `SCHEMA_VERSION` is an input to the state hash (ADR-0017), so
+  co-locating them would make every index change invalidate every canonical
+  state.
+- **A default embedding provider** that is deterministic, local, and needs no
+  API key: hashed character trigrams. It is **not a semantic model and does not
+  claim to be** — `model_id` says what it is, and the retrieval mode reported to
+  a caller names it. What it buys over exact term matching is morphological and
+  typographic tolerance; what it does not buy is meaning.
+- **Diversification and token budgeting** (FR-R4). At most N chunks per item, so
+  one long document cannot take every slot; packing strictly in rank order,
+  never a knapsack fill that would trade relevance for a number the caller
+  cannot see.
+- **`theurian index build` and `theurian index status`.** Status reports three
+  hashes — what the knowledge *is*, what the database *holds*, and what the
+  index was *built from* — because all three can differ, and comparing only the
+  last two calls an index fresh exactly when someone most needs to be told
+  otherwise.
+
+#### Changed
+
+- **BREAKING — `knowledge.search` response shape.** The flat `note` string is
+  replaced by a structured `retrieval` object carrying `mode`, `indexed`,
+  `indexBuildId`, `embeddingModel`, `usedTokens`, and `droppedForBudget`. Each
+  hit gains `foundBy` (which retrievers surfaced it) and `fusedScore`. A
+  ranking nobody can explain is a ranking nobody can debug.
+- `knowledge.search` gains a `maxTokens` parameter (FR-R4).
+- Searching a project with no index falls back to the previous substring scan
+  and says so, rather than returning nothing — which would read as "we have no
+  such decision" rather than "ask me again in a moment".
+
+#### Fixed
+
+- Japanese documents were indexed as a single chunk. Japanese puts no space
+  after a full stop, so the sentence pattern matched nothing and the word
+  fallback had no spaces to split on either. Found by running it, not by
+  reading it.
+- `theurian index build` reported "no built knowledge state" on a project that
+  had one: `_require_project` returns the state *database* as its second value,
+  and the new code treated it as the repository root.
+
+#### Known limitations
+
+- The default embedder is lexical in vector form. Semantic retrieval needs a
+  real model, which plugs in through the `EmbeddingProvider` port without
+  touching anything else (ADR-0003, ADR-0009).
+- RAPTOR summary nodes (FR-R3) and reranking arrive in Milestone 6.
+
+---
+
 ### Fixed after Milestone 4
 
 - **`theurian auth rotate` did not exist**, while three user-facing messages told

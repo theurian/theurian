@@ -24,11 +24,11 @@ The name comes from *theurgy* — the practice of invoking what is already there
 Your team has already decided most of this. Theurian makes those decisions
 callable.
 
-> **Status: Milestone 4.** The canonical store works, sources are ingested, a
+> **Status: Milestone 5.** The canonical store works, sources are ingested, a
 > single local MCP daemon serves that knowledge over authenticated loopback
-> HTTP, and `theurian setup` installs the whole thing idempotently. Search is
-> still substring matching; ranked hybrid retrieval lands in Milestone 5. See
-> the [roadmap](#roadmap).
+> HTTP, `theurian setup` installs the whole thing idempotently, and search is
+> ranked hybrid retrieval — lexical and dense, fused with RRF, packed to a
+> token budget. See the [roadmap](#roadmap).
 
 ---
 
@@ -195,12 +195,28 @@ Starting a second daemon is safe: it detects the first, reports `reuse`, and
 exits 0. One process serves every project you register and every agent that
 connects.
 
-Search is substring matching until Milestone 5 — the result *shape* is already
-the published one, so callers written today keep working. What works now is the
-part everything else depends on: a canonical store reproducible from Git that
-refuses to let an applied migration change and reports conflicting edits instead
-of merging them, served to agents with provenance and trust labels attached to
-every result.
+Build a retrieval index so search is ranked rather than a substring scan:
+
+```sh
+theurian index build    # lexical + dense, written to its own file
+theurian index status   # is the index still current with your knowledge?
+```
+
+`knowledge.search` fuses a lexical (SQLite FTS5) and a dense retriever with
+Reciprocal Rank Fusion, caps how many chunks any one document may contribute,
+and packs results into a `maxTokens` budget. Every hit says which retrievers
+found it, so a ranking can be explained rather than just trusted.
+
+The default embedder is deliberately modest: deterministic hashed character
+trigrams, no API key, no download. It buys tolerance for morphological variants
+and typos, **not** meaning — and it says so, so a hybrid search backed by
+n-grams is never mistaken for one backed by a semantic model. A real model plugs
+in through the `EmbeddingProvider` port without touching anything else.
+
+Underneath it all is the part everything depends on: a canonical store
+reproducible from Git that refuses to let an applied migration change and
+reports conflicting edits instead of merging them, served to agents with
+provenance and trust labels attached to every result.
 
 See [`examples/sample-project/`](examples/sample-project/) for a complete
 `.theurian/` to copy from.
@@ -262,8 +278,8 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | **done** |
 | 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | **done** |
 | 4 | Claude Code plugin: setup, doctor, service adapters | **done** |
-| 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | next |
-| 6 | RAPTOR forest, incremental rebuild, blue/green index | planned |
+| 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | **done** |
+| 6 | RAPTOR forest, incremental rebuild, blue/green index | next |
 | 7 | GitHub review ingestion and knowledge candidates | planned |
 | 8 | Specification and traceability tooling, drift detection | planned |
 
