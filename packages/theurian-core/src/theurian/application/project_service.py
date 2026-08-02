@@ -12,7 +12,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Final
+from typing import Any, Final
 
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ProjectId
@@ -220,6 +220,24 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
         raise ProjectError(
             f"{pointer} is unreadable: {exc}. Delete it to rebuild; it is derived."
         ) from exc
+
+
+def read_active_index(paths: ProjectPaths) -> dict[str, Any] | None:
+    """The published retrieval index pointer, or ``None``.
+
+    A missing or unreadable pointer means "no index", never an error. The index
+    is derived (ADR-0004), so the remedy is always a rebuild rather than a
+    repair — and a caller that cannot read it should fall back to answering
+    without one, not refuse to answer.
+    """
+    pointer = paths.active_index_pointer
+    if not pointer.is_file():
+        return None
+    try:
+        loaded = json.loads(pointer.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def write_active_state(

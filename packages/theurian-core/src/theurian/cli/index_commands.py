@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 
-from theurian.application.project_service import ProjectPaths, read_active_state
+from theurian.application.project_service import (
+    ProjectPaths,
+    read_active_index,
+    read_active_state,
+)
 from theurian.application.retrieval_service import IndexBuilder, IndexRequest
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
@@ -155,22 +159,6 @@ def _remedy(*, stale: bool, needs_apply: bool) -> str:
     if stale:
         return "Run `theurian index build`."
     return ""
-
-
-def read_active_index(paths: ProjectPaths) -> dict[str, Any] | None:
-    """The published index pointer, or ``None``.
-
-    A missing or unreadable pointer means "no index", never an error: the index
-    is derived, so the remedy is always a rebuild rather than a repair.
-    """
-    pointer = paths.active_index_pointer
-    if not pointer.is_file():
-        return None
-    try:
-        loaded = json.loads(pointer.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    return loaded if isinstance(loaded, dict) else None
 
 
 def _publish(paths: ProjectPaths, *, index_build_id: str, state_hash: str) -> None:

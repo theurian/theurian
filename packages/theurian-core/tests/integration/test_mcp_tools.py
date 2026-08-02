@@ -567,3 +567,120 @@ async def test_project_list_shows_both_without_revealing_their_knowledge(
 
     assert {p["projectId"] for p in result["projects"]} == {"alpha", "beta"}
     assert "alpha-only-payment-rotation" not in json.dumps(result)
+
+
+# -- Hybrid retrieval through the tool (FR-R2, FR-R4) ------------------------
+#
+# These exist because a breaking change to this response shape -- replacing the
+# flat `note` with a structured `retrieval` block -- passed the entire suite
+# without a single failure. Nineteen tests call `knowledge.search`, and every
+# one of them went down the substring fallback because no fixture had built an
+# index. The ranked path was shipped untested.
+
+
+@pytest.fixture
+def indexed(registry: ProjectRegistry) -> ProjectRegistry:
+    """The `registry` fixture, plus a built retrieval index."""
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_search_without_an_index_says_so_rather_than_returning_nothing(
+    registry: ProjectRegistry,
+) -> None:
+    """A project that applied migrations but has not indexed yet would otherwise
+    answer every query with nothing, which reads as "we have no such decision"
+    rather than "ask me again in a moment"."""
+    result = await _call(registry, "knowledge.search", projectId="demo", query="token")
+
+    assert result["retrieval"]["indexed"] is False
+    assert result["retrieval"]["mode"] == "substring"
+    assert "index build" in result["retrieval"]["note"]
+    assert result["count"] == 1, "the fallback still answers"
+
+
+@pytest.mark.asyncio
+async def test_search_uses_the_index_once_one_exists(indexed: ProjectRegistry) -> None:
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    assert result["retrieval"]["indexed"] is True
+    assert result["retrieval"]["mode"] in {"hybrid", "lexical", "dense"}
+    assert result["count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_ranked_hit_says_which_retrievers_found_it(indexed: ProjectRegistry) -> None:
+    """A ranking nobody can explain is a ranking nobody can debug."""
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+    hit = result["results"][0]
+
+    assert hit["foundBy"], "every hit names the retrievers that surfaced it"
+    assert hit["fusedScore"] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_ranked_hit_keeps_the_published_provenance_and_trust_labels(
+    indexed: ProjectRegistry,
+) -> None:
+    """SEC-15, FR-R5. The ranked path resolves hits back through the canonical
+    store, so it must not lose the labels the substring path attaches."""
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+    hit = result["results"][0]
+
+    assert hit["contentClassification"] == "untrusted-knowledge"
+    assert hit["mayContainInstructions"] is True
+    assert hit["executable"] is False
+    assert hit["sourceAnchors"]
+    assert hit["revisionId"]
+
+
+@pytest.mark.asyncio
+async def test_the_index_is_never_the_authority_for_a_result(
+    indexed: ProjectRegistry,
+) -> None:
+    """FR-R5. Results are resolved through the canonical store, so a hit
+    reflects the revision as it is now rather than as the index recorded it."""
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    assert result["results"][0]["title"] == "Authentication policy"
+
+
+@pytest.mark.asyncio
+async def test_a_token_budget_is_honoured(indexed: ProjectRegistry) -> None:
+    """FR-R4. An agent that receives more context than it asked for has already
+    paid for it."""
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="token", maxTokens=40)
+
+    assert result["retrieval"]["usedTokens"] <= 40 or result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_drafts_stay_out_of_ranked_results_by_default(
+    indexed: ProjectRegistry,
+) -> None:
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="caching")
+
+    assert all(hit["status"] == "approved" for hit in result["results"])
+
+
+@pytest.mark.asyncio
+async def test_a_pointer_to_a_missing_index_falls_back_instead_of_failing(
+    indexed: ProjectRegistry,
+) -> None:
+    """The index is derived. A pointer that outlived its file is a missing
+    optimisation, never a reason to refuse to answer."""
+    root = Path(indexed.load()["demo"]["rootPath"])
+    for built in (root / ".theurian/state").glob("theurian-index-*.sqlite"):
+        built.unlink()
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="token")
+
+    assert result["retrieval"]["indexed"] is False
+    assert result["count"] >= 1

@@ -27,13 +27,21 @@ from theurian import __protocol_version__, __version__
 from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
+    read_active_index,
     read_active_state,
+)
+from theurian.application.retrieval_service import (
+    DEFAULT_BUDGET_TOKENS,
+    RetrievalService,
+    SearchRequest,
 )
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
-from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeRevision
+from theurian.infrastructure.embedding import HashingEmbedding
+from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
@@ -108,23 +116,44 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         query: str,
         limit: int = 10,
         includeUnapproved: bool = False,  # noqa: N803
+        maxTokens: int = DEFAULT_BUDGET_TOKENS,  # noqa: N803
     ) -> dict[str, Any]:
         """Search knowledge.
 
-        Milestone 3 is a substring match over titles and bodies. Hybrid lexical
-        and vector retrieval with RRF arrives in Milestone 5; the *result shape*
-        is already the published one, so callers written now keep working.
+        Hybrid lexical and dense retrieval fused with RRF when an index has been
+        built, falling back to a substring scan when one has not. The fallback is
+        not a nicety: a project that has applied migrations but not yet run
+        `theurian index build` would otherwise answer every query with nothing,
+        which reads as "we have no such decision" rather than "ask me again in a
+        moment".
+
+        The *result shape* is the one Milestone 3 published, so callers written
+        against that keep working. `retrieval` is additive and says how the
+        answer was produced.
 
         ``includeUnapproved`` defaults to false. An unreviewed draft returned by
         default would be indistinguishable from a team decision, which is the
         failure this whole system exists to prevent.
         """
-        _, database = _resolve(projectId)
+        paths, database = _resolve(projectId)
         context = RequestContext(project_id=ProjectId(projectId))
         needle = query.strip().lower()
         if not needle:
             msg = "query must not be empty"
             raise ToolError(msg)
+
+        capped_limit = max(1, min(limit, MAX_RESULTS))
+        hybrid = _hybrid_search(
+            paths,
+            database,
+            project_id=projectId,
+            query=query,
+            limit=capped_limit,
+            include_unapproved=includeUnapproved,
+            budget_tokens=maxTokens,
+        )
+        if hybrid is not None:
+            return hybrid
 
         capped = max(1, min(limit, MAX_RESULTS))
         now = datetime.now(UTC)
@@ -154,10 +183,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             "query": query,
             "count": len(results),
             "results": results,
-            "note": (
-                "Milestone 3 matches substrings. Ranked hybrid retrieval arrives "
-                "in Milestone 5; this result shape is already final."
-            ),
+            "retrieval": {
+                "mode": "substring",
+                "indexed": False,
+                "note": (
+                    "No retrieval index has been built for this project, so this "
+                    "is an unranked substring scan. Run `theurian index build` "
+                    "for ranked hybrid retrieval."
+                ),
+            },
         }
 
     @server.tool(
@@ -264,6 +298,82 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         }
 
     return server
+
+
+def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
+    paths: ProjectPaths,
+    database: Path,
+    *,
+    project_id: str,
+    query: str,
+    limit: int,
+    include_unapproved: bool,
+    budget_tokens: int,
+) -> dict[str, Any] | None:
+    """Answer from the retrieval index, or ``None`` if there is not a usable one.
+
+    ``None`` rather than an error, so the caller falls back to the substring
+    scan. An index is derived: its absence is a missing optimisation, never a
+    reason to refuse to answer.
+    """
+    published = read_active_index(paths)
+    if not published:
+        return None
+
+    index_path = paths.index_for(str(published.get("indexBuildId", "")))
+    if not index_path.is_file():
+        # The pointer outlived its file. Reported by `index status`; here it is
+        # simply an index that is not usable, and the fallback answers instead.
+        return None
+
+    service = RetrievalService(SqliteIndexStore(index_path), HashingEmbedding())
+    outcome = service.search(
+        SearchRequest(
+            query=query,
+            project_id=project_id,
+            budget_tokens=budget_tokens,
+            limit=limit,
+            include_unapproved=include_unapproved,
+        )
+    )
+
+    now = datetime.now(UTC)
+    results: list[dict[str, Any]] = []
+    with SqliteCanonicalStore(database) as store:
+        context = RequestContext(project_id=ProjectId(project_id))
+        for candidate in outcome.candidates:
+            # Resolved back to the canonical store rather than served from the
+            # index. The index is never authoritative, and a result assembled
+            # from it alone could outlive the revision it describes (FR-R5).
+            revision = store.get_revision(context, RevisionId(candidate.revision_id))
+            if revision is None:
+                continue
+            item = store.get_item(context, ItemId(candidate.item_id))
+            if item is None:  # pragma: no cover - the index mirrors the store
+                continue
+            result = _result(revision, item.status, now)
+            result["fusedScore"] = round(candidate.fused_score, 6)
+            result["foundBy"] = list(candidate.found_by)
+            results.append(result)
+
+    return {
+        "projectId": project_id,
+        "query": query,
+        "count": len(results),
+        "results": results,
+        "retrieval": {
+            "mode": outcome.mode.value,
+            "indexed": True,
+            "indexBuildId": published.get("indexBuildId"),
+            "embeddingModel": outcome.embedding_model,
+            "usedTokens": outcome.used_tokens,
+            "droppedForBudget": outcome.dropped_for_budget,
+            "note": (
+                "Ranked by reciprocal rank fusion over lexical and dense "
+                "retrievers. `foundBy` names which retrievers surfaced each hit."
+            ),
+        },
+    }
 
 
 def _result(revision: KnowledgeRevision, status: KnowledgeStatus, now: datetime) -> dict[str, Any]:
