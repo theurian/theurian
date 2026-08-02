@@ -467,22 +467,39 @@ def daemon_status(
     Side-effect-free and cheap: this is what the SessionStart hook calls, so it
     must stay well inside the latency budget (NFR-2).
     """
-    from theurian.daemon.instance import probe_health  # noqa: PLC0415 - see above
+    import asyncio  # noqa: PLC0415 - see above
+
+    from theurian.cli.setup_commands import _executable  # noqa: PLC0415
+    from theurian.daemon.instance import probe_health  # noqa: PLC0415
     from theurian.daemon.runner import LOCK_FILENAME  # noqa: PLC0415
     from theurian.domain.ports.daemon_manager import ServiceState  # noqa: PLC0415
     from theurian.infrastructure.secrets.file_store import (  # noqa: PLC0415
         default_data_dir,
     )
+    from theurian.infrastructure.services import detect_manager  # noqa: PLC0415
 
     data_dir = default_data_dir()
     health = probe_health(port=port)
 
-    # `unknown` rather than `installed-stopped` when nothing answers. Milestone 3
-    # ships no DaemonManager adapter, so there is no way to tell a stopped
-    # service from one that was never installed -- and claiming the former would
-    # send the SessionStart hook off to start a service that does not exist.
-    # Milestone 4 replaces this with a real service probe.
-    state = ServiceState.RUNNING if health else ServiceState.UNKNOWN
+    # A live daemon is the strongest evidence there is; nothing a service
+    # manager reports would change the answer, so this asks first and cheaply.
+    #
+    # When nothing answers, the two remaining states demand opposite responses
+    # from the SessionStart hook: a registered-but-stopped service may be
+    # started (a user-approved service resuming), while an absent one must send
+    # the user to `/theurian:setup` rather than have a hook install anything
+    # (FR-L3). Only the service manager can tell them apart, so `unknown` is
+    # reserved for the platform that has none.
+    state = ServiceState.RUNNING
+    service_id: str | None = None
+    if health is None:
+        service = detect_manager(executable=_executable())
+        if service is None:
+            state = ServiceState.UNKNOWN
+        else:
+            status = asyncio.run(service.status())
+            state = status.state
+            service_id = status.service_identifier
 
     _emit(
         {
@@ -492,6 +509,7 @@ def daemon_status(
             "dataDir": str(data_dir),
             "lockFile": str(data_dir / LOCK_FILENAME),
             "endpoint": f"http://127.0.0.1:{port}/mcp",
+            "service": service_id,
         },
         as_json=as_json,
     )

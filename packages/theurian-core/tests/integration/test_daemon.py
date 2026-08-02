@@ -500,22 +500,23 @@ def _free_port() -> int:
 # detail.
 
 
-def test_status_reports_unknown_rather_than_guessing_at_a_service(
+def test_status_distinguishes_a_missing_service_from_a_stopped_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Milestone 3 ships no service adapter, so nothing can distinguish a
-    stopped service from one that was never installed.
+    """The SessionStart hook branches on exactly this.
 
-    Reporting `installed-stopped` here would send the SessionStart hook to start
-    a service that does not exist, and the user would see "could not start the
-    daemon" instead of "run /theurian:setup".
+    `installed-stopped` means a user-approved service may be resumed;
+    `not-installed` means send the user to `/theurian:setup` and install nothing
+    (FR-L3). Conflating them makes the hook either install without consent or
+    refuse to start something the user already approved.
     """
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))  # no service is registered here
     result = CliRunner().invoke(app, ["daemon", "status", "--port", str(_free_port()), "--json"])
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
-    assert payload["state"] == "unknown"
+    assert payload["state"] in {"not-installed", "unknown"}
     assert payload["listening"] is False
 
 
@@ -535,10 +536,11 @@ def test_status_reports_a_running_daemon(tmp_path: Path, monkeypatch: pytest.Mon
 def test_status_states_come_from_the_service_state_vocabulary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The hook and a future DaemonManager must agree on the words."""
+    """The hook and the DaemonManager must agree on the words."""
     from theurian.domain.ports.daemon_manager import ServiceState
 
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     result = CliRunner().invoke(app, ["daemon", "status", "--port", str(_free_port()), "--json"])
 
     assert json.loads(result.stdout)["state"] in {s.value for s in ServiceState}
