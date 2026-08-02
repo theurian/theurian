@@ -469,6 +469,7 @@ def daemon_status(
     """
     from theurian.daemon.instance import probe_health  # noqa: PLC0415 - see above
     from theurian.daemon.runner import LOCK_FILENAME  # noqa: PLC0415
+    from theurian.domain.ports.daemon_manager import ServiceState  # noqa: PLC0415
     from theurian.infrastructure.secrets.file_store import (  # noqa: PLC0415
         default_data_dir,
     )
@@ -476,9 +477,16 @@ def daemon_status(
     data_dir = default_data_dir()
     health = probe_health(port=port)
 
+    # `unknown` rather than `installed-stopped` when nothing answers. Milestone 3
+    # ships no DaemonManager adapter, so there is no way to tell a stopped
+    # service from one that was never installed -- and claiming the former would
+    # send the SessionStart hook off to start a service that does not exist.
+    # Milestone 4 replaces this with a real service probe.
+    state = ServiceState.RUNNING if health else ServiceState.UNKNOWN
+
     _emit(
         {
-            "state": "running" if health else "installed-stopped",
+            "state": state.value,
             "listening": health is not None,
             "version": (health or {}).get("version"),
             "dataDir": str(data_dir),

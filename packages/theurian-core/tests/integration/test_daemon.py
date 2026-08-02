@@ -21,8 +21,10 @@ from typing import override
 
 import pytest
 from starlette.testclient import TestClient
+from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
+from theurian.cli.main import app
 from theurian.daemon.instance import (
     InstanceLock,
     StartDecision,
@@ -489,3 +491,66 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+# -- The daemon CLI --------------------------------------------------------
+#
+# The SessionStart hook branches on this output. It is a contract with a shell
+# script that greps for specific keys, so the shape is not an implementation
+# detail.
+
+
+def test_status_reports_unknown_rather_than_guessing_at_a_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Milestone 3 ships no service adapter, so nothing can distinguish a
+    stopped service from one that was never installed.
+
+    Reporting `installed-stopped` here would send the SessionStart hook to start
+    a service that does not exist, and the user would see "could not start the
+    daemon" instead of "run /theurian:setup".
+    """
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+    result = CliRunner().invoke(app, ["daemon", "status", "--port", str(_free_port()), "--json"])
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["state"] == "unknown"
+    assert payload["listening"] is False
+
+
+def test_status_reports_a_running_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+
+    with _fake_daemon(str(tmp_path)) as port:
+        result = CliRunner().invoke(app, ["daemon", "status", "--port", str(port), "--json"])
+
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "running"
+    assert payload["listening"] is True
+    assert payload["version"] == "9.9.9"
+    assert payload["endpoint"] == f"http://127.0.0.1:{port}/mcp"
+
+
+def test_status_states_come_from_the_service_state_vocabulary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook and a future DaemonManager must agree on the words."""
+    from theurian.domain.ports.daemon_manager import ServiceState
+
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+    result = CliRunner().invoke(app, ["daemon", "status", "--port", str(_free_port()), "--json"])
+
+    assert json.loads(result.stdout)["state"] in {s.value for s in ServiceState}
+
+
+def test_a_detached_start_is_refused_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Silently running in the foreground when asked to detach would hang
+    whatever invoked it."""
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+    result = CliRunner().invoke(app, ["daemon", "start", "--json"])
+
+    assert result.exit_code != 0
+    assert "not implemented" in (result.stderr or result.stdout).lower()
