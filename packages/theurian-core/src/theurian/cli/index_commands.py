@@ -178,15 +178,31 @@ def _remedy(*, stale: bool, needs_apply: bool) -> str:
 
 
 def _reclaim(paths: ProjectPaths, *, keep: str) -> None:
-    """Delete superseded index builds.
+    """Delete superseded index builds — only those the pointer does not name.
 
-    Only after the pointer swap. A search that read the old pointer has already
-    opened its file, and on POSIX an unlinked-but-open SQLite file stays
-    readable until the last handle closes — so the swap is safe and the disk
-    does not grow without bound.
+    The first version kept whatever id *this* process had built and claimed
+    POSIX would keep an in-use file readable until its last handle closed. Both
+    were wrong:
+
+    - ``SqliteIndexStore`` holds no handle. It opens and closes per call, and one
+      search opens several connections, so every gap between them is a window in
+      which the file can vanish. Worse, ``sqlite3.connect`` then *creates* an
+      empty database at the deleted path, which defeats the "no index file, fall
+      back" branch and surfaces a raw `no such table` to the agent.
+    - Two concurrent builds would each delete the other's file, leaving whichever
+      published first pointing at nothing.
+
+    So this reads the pointer and keeps what it names, rather than what this
+    process happens to have produced — and compares ids exactly, because
+    substring matching would spare an unrelated build whose id contains another.
     """
+    published = read_active_index(paths)
+    current = str(published.get("indexBuildId", "")) if published else keep
+
     for stale in paths.state.glob("theurian-index-*.sqlite*"):
-        if keep not in stale.name:
+        # `theurian-index-<id>.sqlite`, plus any `-wal` / `-shm` beside it.
+        build_id = stale.name[len("theurian-index-") :].split(".", 1)[0]
+        if build_id != current:
             stale.unlink(missing_ok=True)
 
 

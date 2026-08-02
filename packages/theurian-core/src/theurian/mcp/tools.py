@@ -36,7 +36,7 @@ from theurian.application.retrieval_service import (
     SearchRequest,
 )
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeRevision
@@ -169,6 +169,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         with SqliteCanonicalStore(database) as store:
             for item in store.list_items(context):
+                # SURFACEABLE_STATUSES is the single authority on both paths.
+                # Applying it only in the index builder left this one returning
+                # rejected and deprecated knowledge whenever a caller passed
+                # includeUnapproved -- and this is the *default* path, because an
+                # index built without --include-unapproved sends such a query here.
+                if item.status not in SURFACEABLE_STATUSES:
+                    continue
                 if not includeUnapproved and item.status is not KnowledgeStatus.APPROVED:
                     continue
                 if item.current_revision_id is None:
@@ -194,6 +201,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             "retrieval": {
                 "mode": "substring",
                 "indexed": False,
+                "indexesUnapproved": False,
                 "note": (
                     "No retrieval index has been built for this project, so this "
                     "is an unranked substring scan. Run `theurian index build` "
@@ -331,7 +339,14 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
     if not published:
         return None
 
-    index_path = paths.index_for(str(published.get("indexBuildId", "")))
+    try:
+        index_path = paths.index_for(str(published.get("indexBuildId", "")))
+    except TheurianError:
+        # A pointer naming a path outside the project is refused by
+        # `index_for`. The index is derived, so that is a missing optimisation
+        # and not a reason to stop answering -- and letting the error through
+        # would also disclose an absolute path to the client.
+        return None
     if not index_path.is_file():
         # The pointer outlived its file. Reported by `index status`; here it is
         # simply an index that is not usable, and the fallback answers instead.
@@ -389,7 +404,14 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
             # is the authority for what is approved *now*. Without this, a stale
             # index resurrects knowledge the team has since deprecated or
             # rejected -- exactly the failure the default is meant to prevent.
-            if not include_unapproved and item.status is not KnowledgeStatus.APPROVED:
+            # Checked on *both* paths. Guarding this with `not include_unapproved`
+            # meant the opt-in path skipped status entirely, so an item retired
+            # after the index was built came back labelled `deprecated` -- or
+            # `rejected`, which is where a secret that caused the rejection still
+            # lives. `includeUnapproved` widens which statuses are allowed; it
+            # does not disable the check.
+            allowed = SURFACEABLE_STATUSES if include_unapproved else {KnowledgeStatus.APPROVED}
+            if item.status not in allowed:
                 continue
             # Likewise for *which revision* is current. The index pins a revision
             # id at build time, and replacing a revision is how a secret gets

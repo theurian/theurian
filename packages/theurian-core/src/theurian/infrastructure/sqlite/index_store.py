@@ -303,7 +303,12 @@ class SqliteIndexStore:
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
             "  bm25(chunks_fts) AS rank_score "
-            "FROM chunks_fts JOIN chunks ON chunks.rowid = chunks_fts.rowid "
+            # CROSS JOIN, which SQLite honours as an ordering instruction. With a
+            # plain JOIN the FR-R1 predicates on `chunks` make the planner drive
+            # from `chunks` and re-run MATCH per candidate row: measured at 20,000
+            # chunks, a 64-term query took 235 seconds. Forcing FTS5 to lead takes
+            # the same query to 0.25 seconds, with identical results.
+            "FROM chunks_fts CROSS JOIN chunks ON chunks.rowid = chunks_fts.rowid "
             f"WHERE chunks_fts MATCH ? AND {' AND '.join(clauses)} "
             # Ties break on chunk id so two runs agree, matching the dense
             # side. BM25 ties are common among short chunks, and a tie
