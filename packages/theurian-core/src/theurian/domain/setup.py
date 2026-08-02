@@ -1,0 +1,248 @@
+"""Setup as data: a plan, a report, and a journal (FR-L1, FR-L2, §6).
+
+Setup is modelled as a *plan* that is built by probing, shown, and only then
+applied — not as a script that does things. The difference matters three times:
+
+- ``--dry-run`` is the same code path with the apply step skipped, so what the
+  user is shown cannot drift from what runs.
+- Idempotence becomes checkable rather than hoped for: a second run must produce
+  a plan whose every step is :attr:`StepStatus.SATISFIED`.
+- A step that finds something unexpected can report :attr:`StepStatus.CONFLICTING`
+  and stop, instead of overwriting and discovering the mistake later.
+
+Nothing here performs I/O. The probes and actions live in the application layer,
+which is what lets the whole state machine be tested without a machine to set up.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
+from typing import Self
+
+from theurian.domain.errors import TheurianError
+
+
+class StepId(StrEnum):
+    """The steps of §6.2, in application order.
+
+    An enum rather than free strings: the plugin's presentation groups steps by
+    identity, `uninstall --dry-run` has to enumerate what setup created, and the
+    journal replays them by name. A typo in any of those should not typecheck.
+    """
+
+    PLATFORM = "platform"
+    CORE_PRESENT = "core-present"
+    ARTIFACT_INTEGRITY = "artifact-integrity"
+    DATA_DIRECTORY = "data-directory"
+    TOKEN = "token"  # noqa: S105 - a step name, not a secret
+    TOKEN_STORAGE = "token-storage"  # noqa: S105 - a step name, not a secret
+    ENV_REFERENCE = "env-reference"
+    DAEMON_SERVICE = "daemon-service"
+    DAEMON_RUNNING = "daemon-running"
+    SINGLE_INSTANCE = "single-instance"
+    PROJECT_REGISTERED = "project-registered"
+    PROJECT_LAYOUT = "project-layout"
+    GITIGNORE = "gitignore"
+    MCP_CONNECTION = "mcp-connection"
+    MCP_HEALTH = "mcp-health"
+    MIGRATIONS_VALID = "migrations-valid"
+    INITIAL_INDEX = "initial-index"
+    SERENA_DETECTION = "serena-detection"
+
+
+class StepStatus(StrEnum):
+    """The tri-state probe result every step reports.
+
+    Three states rather than a boolean because "already correct" and "present
+    but different" demand opposite responses: one is skipped silently, the other
+    must never be overwritten without consent (SEC-18).
+    """
+
+    SATISFIED = "satisfied"
+    MISSING = "missing"
+    CONFLICTING = "conflicting"
+    #: Probed and found not to apply here — an optional integration that is
+    #: absent, or a step this platform does not have. Distinct from SATISFIED so
+    #: a report never claims to have checked something it skipped.
+    NOT_APPLICABLE = "not-applicable"
+
+
+class StepOutcome(StrEnum):
+    """What actually happened to a step once the plan was applied."""
+
+    UNCHANGED = "unchanged"
+    CHANGED = "changed"
+    FAILED = "failed"
+    #: The plan was never applied (``--dry-run``), or an earlier critical
+    #: failure stopped the run before reaching this step.
+    NOT_ATTEMPTED = "not-attempted"
+
+
+class SetupState(StrEnum):
+    """Terminal and intermediate states of §6.1."""
+
+    PREFLIGHT = "preflight"
+    PLAN_BUILT = "plan-built"
+    AWAITING_CONSENT = "awaiting-consent"
+    APPLYING = "applying"
+    VERIFYING = "verifying"
+    CONVERGED = "converged"
+    #: Success with warnings, not a failure. A missing optional integration must
+    #: not stop local knowledge from working.
+    DEGRADED = "degraded"
+    ROLLED_BACK = "rolled-back"
+    ABORTED = "aborted"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {
+            SetupState.CONVERGED,
+            SetupState.DEGRADED,
+            SetupState.ROLLED_BACK,
+            SetupState.ABORTED,
+        }
+
+    @property
+    def is_success(self) -> bool:
+        """``DEGRADED`` counts. It is success with warnings (§6.1)."""
+        return self in {SetupState.CONVERGED, SetupState.DEGRADED}
+
+
+class SetupError(TheurianError):
+    """Setup could not proceed. Carries a remedy, never a stack trace."""
+
+
+@dataclass(frozen=True, slots=True)
+class SetupStep:
+    """One step: what it is, what was found, and what would be done about it."""
+
+    step_id: StepId
+    status: StepStatus
+    #: One line, addressed to a person reading a plan.
+    summary: str
+    #: What applying this step would do. Empty when nothing would.
+    action: str = ""
+    #: Absolute paths this step would create or modify. Drives the changed-files
+    #: list, and `uninstall --dry-run` must be able to enumerate all of them.
+    paths: tuple[str, ...] = ()
+    #: A step whose failure must roll the run back rather than degrade it.
+    critical: bool = True
+    outcome: StepOutcome = StepOutcome.NOT_ATTEMPTED
+    #: Present when a step is CONFLICTING or FAILED: the difference found, or
+    #: the reason. Shown to the user before anything is overwritten.
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status is StepStatus.MISSING and not self.action:
+            msg = f"{self.step_id}: a MISSING step must say what it would do"
+            raise SetupError(msg)
+        if self.status is StepStatus.CONFLICTING and not self.detail:
+            msg = (
+                f"{self.step_id}: a CONFLICTING step must carry the difference it "
+                f"found; the user is asked to approve it"
+            )
+            raise SetupError(msg)
+
+    @property
+    def would_change(self) -> bool:
+        return self.status is StepStatus.MISSING
+
+    @property
+    def needs_consent(self) -> bool:
+        """A conflict is never resolved silently, whatever the step (SEC-18)."""
+        return self.status is StepStatus.CONFLICTING
+
+    def applied(self, outcome: StepOutcome, detail: str = "") -> Self:
+        return replace(self, outcome=outcome, detail=detail or self.detail)
+
+
+@dataclass(frozen=True, slots=True)
+class SetupPlan:
+    """Everything setup would do, before it does any of it."""
+
+    steps: tuple[SetupStep, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        """True when the environment has already converged.
+
+        The plugin stops here and reports "already configured" rather than
+        asking for consent to do nothing.
+        """
+        return not any(s.would_change or s.needs_consent for s in self.steps)
+
+    @property
+    def mutating_steps(self) -> tuple[SetupStep, ...]:
+        return tuple(s for s in self.steps if s.would_change)
+
+    @property
+    def conflicting_steps(self) -> tuple[SetupStep, ...]:
+        return tuple(s for s in self.steps if s.needs_consent)
+
+    @property
+    def requires_consent(self) -> bool:
+        return bool(self.mutating_steps or self.conflicting_steps)
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Every path any step would touch, de-duplicated, in plan order."""
+        seen: dict[str, None] = {}
+        for step in self.steps:
+            if step.would_change or step.needs_consent:
+                seen.update(dict.fromkeys(step.paths))
+        return tuple(seen)
+
+    def step(self, step_id: StepId) -> SetupStep | None:
+        return next((s for s in self.steps if s.step_id == step_id), None)
+
+
+@dataclass(frozen=True, slots=True)
+class SetupReport:
+    """The result of a run — or of a ``--dry-run``, which reports the plan.
+
+    Serialised to JSON for `theurian setup --json`, which the plugin command
+    renders. The field names are the published contract.
+    """
+
+    state: SetupState
+    steps: tuple[SetupStep, ...]
+    dry_run: bool = False
+    serena_detected: bool = False
+    warnings: tuple[str, ...] = ()
+    #: Files actually created or modified. Empty on a dry run, and empty on a
+    #: second real run -- which is the idempotence contract of §6.3.
+    changed_paths: tuple[str, ...] = ()
+    backups: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def succeeded(self) -> bool:
+        return self.state.is_success
+
+    def step(self, step_id: StepId) -> SetupStep | None:
+        return next((s for s in self.steps if s.step_id == step_id), None)
+
+    def to_json(self) -> dict[str, object]:
+        """The published shape. Keys are camelCase, matching every other
+        ``--json`` command."""
+        return {
+            "state": self.state.value,
+            "dryRun": self.dry_run,
+            "succeeded": self.succeeded,
+            "serenaDetected": self.serena_detected,
+            "changedPaths": list(self.changed_paths),
+            "backups": list(self.backups),
+            "warnings": list(self.warnings),
+            "steps": [
+                {
+                    "id": s.step_id.value,
+                    "status": s.status.value,
+                    "outcome": s.outcome.value,
+                    "summary": s.summary,
+                    "action": s.action,
+                    "paths": list(s.paths),
+                    "detail": s.detail,
+                }
+                for s in self.steps
+            ],
+        }
