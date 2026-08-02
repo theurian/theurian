@@ -578,3 +578,22 @@ def test_a_detached_start_never_daemonises_theurian_itself(
     CliRunner().invoke(app, ["daemon", "start", "--port", str(port), "--json"])
 
     assert port_is_free(port=port), "a refused start must leave nothing listening"
+
+
+def test_stopping_without_a_registered_service_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deliberately not a PID-based kill. This design uses an advisory lock
+    rather than a PID file because PIDs are recycled, so a stale one can name a
+    live unrelated process -- and signalling that is exactly the damage a
+    convenience command must not be able to do (ADR-0002).
+    """
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = CliRunner().invoke(app, ["daemon", "stop", "--json"])
+    message = (result.stderr or result.stdout).lower()
+
+    assert result.exit_code != 0
+    assert "nothing to stop" in message or "no user-scoped service manager" in message
+    assert "ctrl-c" in message
