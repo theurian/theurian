@@ -12,9 +12,10 @@ with which arguments, and what the exit code means — which is where the bugs a
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol, final, runtime_checkable
 
@@ -51,9 +52,18 @@ class CommandRunner(Protocol):
     """Runs a command and reports what happened."""
 
     def run(
-        self, args: Sequence[str], *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+        self,
+        args: Sequence[str],
+        *,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        env: Mapping[str, str] | None = None,
     ) -> CommandResult:
-        """Execute ``args``. Never raises for a non-zero exit; that is data."""
+        """Execute ``args``. Never raises for a non-zero exit; that is data.
+
+        ``env`` **overlays** the current environment rather than replacing it,
+        so a caller can redirect one variable without having to reconstruct a
+        working PATH.
+        """
         ...
 
     def which(self, executable: str) -> str | None:
@@ -66,7 +76,11 @@ class SubprocessRunner:
     """The real one."""
 
     def run(
-        self, args: Sequence[str], *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+        self,
+        args: Sequence[str],
+        *,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         """Run a command, turning every failure mode into a result.
 
@@ -82,6 +96,7 @@ class SubprocessRunner:
                 text=True,
                 timeout=timeout,
                 check=False,
+                env={**os.environ, **env} if env else None,
             )
         except FileNotFoundError:
             return CommandResult(exit_code=127, stderr=f"{args[0]}: not found")

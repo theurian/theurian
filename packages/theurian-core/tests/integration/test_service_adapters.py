@@ -10,7 +10,7 @@ CI has no session bus to register it into.
 from __future__ import annotations
 
 import plistlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -31,6 +31,7 @@ class RecordingRunner:
         self, replies: dict[str, CommandResult] | None = None, missing: Sequence[str] = ()
     ) -> None:
         self.commands: list[list[str]] = []
+        self.environments: list[dict[str, str]] = []
         self._replies = replies or {}
         self._missing = set(missing)
 
@@ -39,8 +40,10 @@ class RecordingRunner:
         args: Sequence[str],
         *,
         timeout: float = 20.0,  # noqa: ARG002 - part of the CommandRunner protocol
+        env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         self.commands.append(list(args))
+        self.environments.append(dict(env or {}))
         for key, reply in self._replies.items():
             if key in " ".join(args):
                 return reply
