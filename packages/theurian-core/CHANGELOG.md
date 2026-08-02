@@ -12,6 +12,59 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Milestone 4 — setup, service adapters, and doctor
+
+#### Added
+
+- **`theurian setup`**, an idempotent plan-then-apply state machine over the
+  eighteen steps of the specification. It probes everything, shows what it would
+  do, applies only that, and then probes everything again — so the report states
+  what *is*, not what the apply functions believe they did. Running it twice
+  changes nothing (FR-L1, FR-L2).
+- **`--dry-run`** is the same code path with the apply skipped, so what the user
+  is shown cannot drift from what runs.
+- **User-scoped service adapters** for macOS LaunchAgent and Linux systemd user
+  units. Never a LaunchDaemon and never a system unit: those need administrator
+  rights and would run Theurian as root or a service account to read one user's
+  home directory.
+- **`theurian doctor`**, read-only by design, and **`doctor --report`**, which
+  redacts the home directory, the token path, and repository paths by default
+  because its output is what people paste into public issues (O-3).
+- **`theurian uninstall`**, which removes the OS service and the MCP entry
+  independently and never touches approved knowledge (FR-L5).
+- **MCP connection installation** into Claude Code at user scope, carrying
+  `${THEURIAN_MCP_TOKEN}` rather than a literal token (SEC-5).
+
+#### Changed
+
+- Theurian **reads** `~/.claude.json` and delegates every **write** to
+  `claude mcp add` / `claude mcp remove`. That file is Claude Code's live state,
+  not a configuration file Theurian has any business reformatting, and Claude
+  Code may be writing to it concurrently. See the amendment to ADR-0012.
+- `theurian daemon status` now distinguishes `not-installed` from
+  `installed-stopped` by asking the service manager. The SessionStart hook
+  branches on exactly this: one means a user-approved service may be resumed,
+  the other means send the user to `/theurian:setup` and install nothing.
+
+#### Fixed
+
+- Setup reported `degraded` on almost every successful install. The verification
+  pass re-probed the daemon's health microseconds after the start command
+  returned, long before it had bound its port. Starting a service and having it
+  answer are separate events, and setup now waits for the second one.
+
+#### Known limitations
+
+- Artifact integrity verification is reported as *not applicable* rather than
+  satisfied: there is no signed release manifest to check against yet, and a
+  step claiming success without checking anything would be a false assurance
+  about supply chain integrity (T-16).
+- Rollback is a journal, not an undo. Every apply is a create-or-tighten, so a
+  critical failure stops and reports where it stopped rather than deleting a
+  token another session may already be using.
+
+---
+
 ### Milestone 3 — the single MCP daemon
 
 #### Added

@@ -38,7 +38,24 @@ a user may want the MCP connection to survive removing the plugin.
    The plugin still owns the definition, satisfying §6 of the brief.
 3. `/theurian:setup` installs it at **user** scope (`~/.claude.json`), because the
    daemon is per-user and per-machine, not per-project.
-4. Installation is a merge, never a replace:
+4. Installation is a merge, never a replace, and Theurian does not perform it
+   itself:
+
+   > **Amended in Milestone 4.** As accepted, this point implied Theurian would
+   > edit `~/.claude.json`. Implementing it showed that is the wrong tool for the
+   > job: that file is Claude Code's *live state* — model caches, project
+   > history, onboarding flags — and a JSON round-trip would rewrite all of it to
+   > land a twelve-line change, while Claude Code may be writing to it
+   > concurrently. Theurian now reads the file and delegates every write to
+   > `claude mcp add` / `claude mcp remove`, which is a merge performed by the
+   > tool that owns the format. Verified against the real CLI: it stores
+   > `${THEURIAN_MCP_TOKEN}` verbatim rather than expanding it, which is exactly
+   > what SEC-5 requires. It also refuses to overwrite an existing entry, so
+   > resolving a conflict means removing first — and the result is confirmed by
+   > reading the file back, because "the command succeeded" and "the entry is now
+   > correct" are different claims.
+
+   The merge semantics are unchanged:
    - if no `theurian` entry exists, add it;
    - if an identical entry exists, do nothing and report `Satisfied`;
    - if a different `theurian` entry exists, back up the file with a timestamp,
@@ -85,10 +102,33 @@ a user may want the MCP connection to survive removing the plugin.
 
 ## Compliance
 
-- A test asserts `plugin.json` has no `mcpServers` key and that no `.mcp.json`
-  exists at the plugin root.
-- A test asserts the merge preserves an existing `serena` entry byte-for-byte.
-- A test asserts a conflicting entry produces a backup plus a diff and does not
-  write without consent.
-- An E2E test asserts that after plugin install and before setup, no socket is
-  listening on 7419 and no service is registered.
+Landed in Milestone 4, in `tests/integration/test_claude_mcp_config.py` unless
+noted:
+
+- `test_installing_preserves_every_other_server` and
+  `test_the_real_cli_leaves_other_servers_alone` — an existing `serena` entry,
+  and anything else configured, survives both installation and removal.
+- `test_installing_preserves_unrelated_top_level_state` — Claude Code's own
+  state under other top-level keys is untouched. Losing that would be a far
+  worse bug than a missing MCP entry.
+- `test_a_differing_entry_shows_both_sides` plus
+  `tests/integration/test_setup_service.py::test_a_conflict_stops_before_replacing_anything`
+  — a conflicting entry yields a diff, and setup stops without writing.
+- `test_a_stdio_entry_someone_hand_wrote_is_a_difference` — the configuration
+  ADR-0002 forbids is caught rather than left in place.
+- `test_the_real_cli_stores_the_variable_reference_verbatim` and
+  `test_the_real_cli_refuses_to_overwrite_an_existing_entry` run the actual
+  `claude` binary against a sandboxed `HOME`. Both facts this design rests on
+  belong to someone else's tool, and a fact about someone else's tool is exactly
+  the kind that changes without telling you.
+- The plugin manifest carries no `mcpServers` key and the plugin root no
+  `.mcp.json`; the Plugin CI job validates the manifest on every change.
+
+Still owed:
+
+- An E2E test asserting that after plugin install and before setup, nothing is
+  listening on 7419 and no service is registered. The parts are in place —
+  `theurian daemon status` now distinguishes `not-installed` from
+  `installed-stopped` — but asserting it end to end means installing a real
+  LaunchAgent, which needs a disposable machine rather than a developer's own
+  login session.

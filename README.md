@@ -24,10 +24,11 @@ The name comes from *theurgy* — the practice of invoking what is already there
 Your team has already decided most of this. Theurian makes those decisions
 callable.
 
-> **Status: Milestone 3.** The canonical store works, sources are ingested, and
-> a single local MCP daemon now serves that knowledge to agents over
-> authenticated loopback HTTP. Search is still substring matching; ranked hybrid
-> retrieval lands in Milestone 5. See the [roadmap](#roadmap).
+> **Status: Milestone 4.** The canonical store works, sources are ingested, a
+> single local MCP daemon serves that knowledge over authenticated loopback
+> HTTP, and `theurian setup` installs the whole thing idempotently. Search is
+> still substring matching; ranked hybrid retrieval lands in Milestone 5. See
+> the [roadmap](#roadmap).
 
 ---
 
@@ -146,7 +147,21 @@ theurian ingest                # normalize knowledge and specification sources
 theurian project status
 ```
 
-Then serve it to agents:
+Or let setup do all of it:
+
+```sh
+theurian setup --dry-run   # show the plan; change nothing
+theurian setup             # apply it; running twice changes nothing
+theurian doctor            # what is wrong, read-only
+```
+
+`setup` registers a **user-scoped** service — a LaunchAgent on macOS, a systemd
+user unit on Linux — and never asks for root. It adds Theurian's MCP entry to
+Claude Code at user scope carrying `${THEURIAN_MCP_TOKEN}`, never a literal
+token. Anything it finds already configured differently is shown as a diff and
+left alone until you approve it.
+
+To run the daemon by hand instead:
 
 ```sh
 theurian daemon start --foreground   # one daemon, 127.0.0.1:7419, for every client
@@ -246,8 +261,8 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | 1 | Local canonical store, YAML migrations, state hashing, project CLI | **done** |
 | 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | **done** |
 | 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | **done** |
-| 4 | Claude Code plugin: setup, doctor, service adapters | next |
-| 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | planned |
+| 4 | Claude Code plugin: setup, doctor, service adapters | **done** |
+| 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | next |
 | 6 | RAPTOR forest, incremental rebuild, blue/green index | planned |
 | 7 | GitHub review ingestion and knowledge candidates | planned |
 | 8 | Specification and traceability tooling, drift detection | planned |

@@ -174,10 +174,17 @@ Landed in Milestone 3, all in `tests/integration/test_daemon.py` unless noted:
   repaired.
 - `test_ensure_token_never_regenerates` — rotation is explicit.
 
-Still owed, with the milestone that brings the feature under test:
+Landed in Milestone 4:
 
-- The token never appears in a `SetupReport` or in `doctor` output, using a
-  poisoned-token fixture (M4 — neither exists yet).
-- The generated MCP configuration contains `${THEURIAN_MCP_TOKEN}` and never a
-  literal secret (M4 — the configuration writer arrives with
-  `/theurian:setup`).
+- `tests/integration/test_setup_service.py::test_the_env_file_references_the_token_rather_than_embedding_it`
+  and `test_the_mcp_entry_is_installed_without_the_literal_token` read the
+  generated token back and assert it appears in neither the env file nor the MCP
+  entry.
+- `tests/integration/test_claude_mcp_config.py::test_the_real_cli_stores_the_variable_reference_verbatim`
+  runs the real `claude` binary and asserts `${THEURIAN_MCP_TOKEN}` is stored
+  rather than expanded — the property SEC-5 actually depends on.
+- `tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`
+  — `doctor --report` is what people paste into public issues, and it is
+  redacted by default rather than on request (O-3).
+- `test_a_second_run_never_regenerates_the_token` — setup mints a token only
+  when there is none.
