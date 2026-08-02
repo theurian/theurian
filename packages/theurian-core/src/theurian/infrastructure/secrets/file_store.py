@@ -13,10 +13,14 @@ from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.errors import SecurityError
+from theurian.security.env_file import TOKEN_KEY as _TOKEN_KEY
+from theurian.security.env_file import env_file_contents
 from theurian.security.paths import ensure_private_mode, is_world_accessible
 
-#: The token file, relative to the data directory.
-TOKEN_KEY: Final = "mcp-token"  # noqa: S105 - a file name, not a secret
+#: The token file, relative to the data directory. Re-exported from
+#: :mod:`theurian.security.env_file`, which is where the application layer
+#: reaches it without importing an adapter (ADR-0003).
+TOKEN_KEY: Final = _TOKEN_KEY
 
 _SECRET_MODE: Final = 0o600
 _DIRECTORY_MODE: Final = 0o700
@@ -109,17 +113,10 @@ def default_data_dir() -> Path:
     return Path(override) if override else Path.home() / ".theurian"
 
 
-def env_file_contents(data_dir: Path) -> str:
-    """The shell snippet that exports the token from its 0600 file.
-
-    The secret itself lives in exactly one place. Everything else — the MCP
-    configuration, the shell profile — points at it (SEC-5).
-    """
-    token_path = data_dir / "auth" / TOKEN_KEY
-    return (
-        "# Written by `theurian setup`. Sourced by your shell profile so that\n"
-        "# Claude Code can expand ${THEURIAN_MCP_TOKEN} in its MCP configuration\n"
-        "# without the literal token ever entering a config file (ADR-0011).\n"
-        f'THEURIAN_MCP_TOKEN="$(cat "{token_path}")"\n'
-        "export THEURIAN_MCP_TOKEN\n"
-    )
+__all__ = [
+    "TOKEN_KEY",
+    "FileSecretStore",
+    "InsecureSecretPermissionsError",
+    "default_data_dir",
+    "env_file_contents",
+]
