@@ -109,12 +109,24 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 
 ## Compliance
 
-- A test enumerates every registered MCP tool and asserts none reaches a
-  `CanonicalStore` write method for approved state.
-- A test asserts proposal generation writes only under
-  `.theurian/proposals/<id>/` and nowhere else.
-- A test asserts a generated `migration.yaml` validates against
-  `schemas/migrations/migration.schema.json`.
-- A test asserts a proposal with empty evidence is rejected at generation.
-- An E2E test asserts approved knowledge is unchanged after a full agent session
-  that calls every write-intent tool.
+Landed in Milestone 3:
+
+- `tests/integration/test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write`
+  walks the bytecode of every registered MCP tool and asserts none reaches
+  `SqliteWriter`, `write_transaction`, or any writer-only method. Structural, not
+  a naming convention: a tool called `knowledge.get` that called
+  `append_revision` would fail it.
+- `test_the_write_gateway_still_guards_the_write_surface` guards that check, so
+  moving a write method onto the read-only store cannot silently defeat it.
+- `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only`
+  pins the tool list a real client sees over the wire.
+
+Still owed, with the milestone that brings the feature under test:
+
+- Proposal generation writes only under `.theurian/proposals/<id>/` (M6).
+- A generated `migration.yaml` validates against
+  `schemas/migrations/migration.schema.json` (M6).
+- A proposal with empty evidence is rejected at generation (M6).
+- An E2E test asserting approved knowledge is unchanged after a full agent
+  session that calls every write-intent tool (M6). Milestone 3 registers no
+  write-intent tool at all, so the property holds vacuously today.
