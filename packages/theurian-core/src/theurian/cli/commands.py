@@ -408,6 +408,87 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     )
 
 
+daemon_app = typer.Typer(help="Manage the local Theurian daemon.", no_args_is_help=True)
+
+# The daemon commands import uvicorn and the MCP SDK lazily. Measured: importing
+# them at module scope takes `theurian --version` from 170 ms to 600 ms, which
+# alone exceeds the SessionStart p95 budget of 300 ms (NFR-2) -- and the hook
+# runs on every session while never touching these commands.
+
+
+@daemon_app.command("start")
+def daemon_start(
+    foreground: Annotated[
+        bool, typer.Option("--foreground", help="Run in this process rather than detaching.")
+    ] = False,
+    port: Annotated[int, typer.Option("--port", help="Port to bind on 127.0.0.1.")] = 7419,
+    as_json: JsonOption = False,
+) -> None:
+    """Start the single local daemon.
+
+    Reusing an already-running daemon is a success, not an error: one process
+    per user per machine is the guarantee, and a second starter confirming the
+    first is healthy has done its job (ADR-0002).
+    """
+    from theurian.daemon.runner import serve  # noqa: PLC0415 - see the note above
+
+    if not foreground:
+        # Milestone 3 ships the foreground path only. Detaching belongs to the
+        # OS service manager (LaunchAgent, systemd), which arrives in Milestone
+        # 4 -- reimplementing daemonisation here would duplicate what the
+        # platform already does correctly.
+        _fail(
+            "Detached start is not implemented yet.",
+            remedy=(
+                "Run `theurian daemon start --foreground`, or wait for Milestone 4, "
+                "which registers a user-scoped LaunchAgent or systemd unit."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
+
+    try:
+        check = serve(port=port)
+    except RuntimeError as exc:
+        _fail(str(exc), remedy="Run `theurian doctor`.", as_json=as_json, code=1)
+        return
+
+    _emit({"decision": check.decision.value, "detail": check.detail}, as_json=as_json)
+
+
+@daemon_app.command("status")
+def daemon_status(
+    port: Annotated[int, typer.Option("--port")] = 7419,
+    as_json: JsonOption = False,
+) -> None:
+    """Report whether a daemon is running, and which one.
+
+    Side-effect-free and cheap: this is what the SessionStart hook calls, so it
+    must stay well inside the latency budget (NFR-2).
+    """
+    from theurian.daemon.instance import probe_health  # noqa: PLC0415 - see above
+    from theurian.daemon.runner import LOCK_FILENAME  # noqa: PLC0415
+    from theurian.infrastructure.secrets.file_store import (  # noqa: PLC0415
+        default_data_dir,
+    )
+
+    data_dir = default_data_dir()
+    health = probe_health(port=port)
+
+    _emit(
+        {
+            "state": "running" if health else "installed-stopped",
+            "listening": health is not None,
+            "version": (health or {}).get("version"),
+            "dataDir": str(data_dir),
+            "lockFile": str(data_dir / LOCK_FILENAME),
+            "endpoint": f"http://127.0.0.1:{port}/mcp",
+        },
+        as_json=as_json,
+    )
+
+
 class _Resolver:
     """Adapts the parser registry to the application's ``ParserResolver``.
 
@@ -584,6 +665,7 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
 
 __all__ = [
     "EXIT_STATE_ERROR",
+    "daemon_app",
     "ingest_command",
     "init_command",
     "migrate_app",

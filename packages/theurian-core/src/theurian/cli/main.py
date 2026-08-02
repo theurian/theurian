@@ -40,6 +40,7 @@ compat_app = typer.Typer(help="Inspect Core/plugin compatibility.", no_args_is_h
 app.add_typer(compat_app, name="compat")
 app.add_typer(commands.project_app, name="project")
 app.add_typer(commands.migrate_app, name="migrate")
+app.add_typer(commands.daemon_app, name="daemon")
 app.command("init")(commands.init_command)
 app.command("ingest")(commands.ingest_command)
 
