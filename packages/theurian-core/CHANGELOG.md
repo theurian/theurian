@@ -41,6 +41,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `claude mcp add` / `claude mcp remove`. That file is Claude Code's live state,
   not a configuration file Theurian has any business reformatting, and Claude
   Code may be writing to it concurrently. See the amendment to ADR-0012.
+- `theurian daemon start` without `--foreground` now asks the service manager
+  to start the daemon rather than refusing. Theurian never daemonises itself:
+  launchd and systemd already do supervision, restart-on-failure, and log
+  redirection, and a hand-rolled double-fork would be a second, worse
+  implementation of all three. Starting an *unregistered* service is refused
+  rather than improvised — a hook may resume a service the user approved, but it
+  must never be the thing that installs one (FR-L3).
 - `theurian daemon status` now distinguishes `not-installed` from
   `installed-stopped` by asking the service manager. The SessionStart hook
   branches on exactly this: one means a user-approved service may be resumed,
