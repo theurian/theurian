@@ -33,14 +33,28 @@ literal secret — in configuration.
 3. Require `Authorization: Bearer <token>` on `/mcp` and on every management
    endpoint. Compare in constant time.
 4. `GET /health` is unauthenticated and returns only
-   `{status, version, protocolVersion, uptimeSeconds}` — enough for a health
+   `{status, version, protocolVersion, dataDir, startedAt}` — enough for a health
    check, nothing about projects or knowledge. This is what lets `SessionStart`
    stay cheap and unprivileged.
+
+   > **Amended in Milestone 3.** As accepted, this point listed
+   > `uptimeSeconds` and no `dataDir`. Implementing the ADR-0002 startup
+   > handshake showed the two cannot both hold: the handshake exists to
+   > distinguish *our* daemon from a different Theurian squatting on the port,
+   > and only the data directory answers that. Without it a starter must either
+   > reuse a daemon serving someone else's knowledge base, or treat every
+   > occupied port as a conflict.
+   >
+   > The disclosure is a filesystem path, to a caller that is already running as
+   > this user and can therefore read `~/.theurian` directly; it reveals nothing
+   > about projects or knowledge, which is the property this point protects.
+   > `startedAt` replaces `uptimeSeconds` because an absolute timestamp lets a
+   > caller tell a restarted daemon from a long-running one.
 5. Tokens are ≥ 32 bytes from `secrets.token_urlsafe`.
 
 ### Storage
 
-6. Canonical location: `~/.theurian/auth/token`, mode 0600, inside a 0700
+6. Canonical location: `~/.theurian/auth/mcp-token`, mode 0600, inside a 0700
    directory. Mode is verified on read; a world-readable token is refused, not
    silently used.
 2. When available, mirror into the OS secret store through the `SecretStore` port
@@ -73,7 +87,7 @@ literal secret — in configuration.
 10. `/theurian:setup` generates `~/.theurian/env` (mode 0600):
 
     ```sh
-    THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/token")"
+    THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/mcp-token")"
     export THEURIAN_MCP_TOKEN
     ```
 
@@ -139,12 +153,31 @@ literal secret — in configuration.
 
 ## Compliance
 
-- A test asserts the daemon refuses to bind a non-loopback address.
-- A test asserts requests with a missing, wrong, or malformed token receive 401,
-  and that comparison is constant-time.
-- A test asserts a cross-origin `Origin` header is rejected.
-- A test asserts the token never appears in any log record, error message,
-  `SetupReport`, or `doctor` output, using a poisoned-token fixture.
-- A test asserts the generated MCP configuration contains `${THEURIAN_MCP_TOKEN}`
-  and never a 32-byte secret.
-- A test asserts a token file with mode 0644 is refused.
+Landed in Milestone 3, all in `tests/integration/test_daemon.py` unless noted:
+
+- `test_binding_a_non_loopback_address_is_refused` — the daemon refuses to bind
+  anything but loopback.
+- `test_mcp_without_a_token_is_refused`, `test_mcp_with_a_wrong_token_is_refused`,
+  and `test_malformed_authorization_headers_are_refused` — every shape of bad
+  credential receives 401.
+- `tests/unit/test_tokens.py::test_a_prefix_does_not_verify` — guards the
+  constant-time comparison against byte-at-a-time recovery.
+- `test_a_cross_origin_request_is_rejected` and
+  `test_a_foreign_host_header_is_rejected` — Origin and Host validation.
+- `test_health_does_not_leak_the_token`,
+  `test_the_401_names_the_fix_without_revealing_the_token`, and
+  `tests/e2e/test_daemon_single_instance.py::test_the_token_never_reaches_the_log`
+  — the token reaches neither a response body nor the daemon log.
+- `test_the_env_file_references_the_token_rather_than_embedding_it` — the secret
+  lives in one file; everything else points at it.
+- `test_a_world_readable_token_is_refused` — mode 0644 is refused rather than
+  repaired.
+- `test_ensure_token_never_regenerates` — rotation is explicit.
+
+Still owed, with the milestone that brings the feature under test:
+
+- The token never appears in a `SetupReport` or in `doctor` output, using a
+  poisoned-token fixture (M4 — neither exists yet).
+- The generated MCP configuration contains `${THEURIAN_MCP_TOKEN}` and never a
+  literal secret (M4 — the configuration writer arrives with
+  `/theurian:setup`).

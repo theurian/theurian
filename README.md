@@ -24,10 +24,10 @@ The name comes from *theurgy* — the practice of invoking what is already there
 Your team has already decided most of this. Theurian makes those decisions
 callable.
 
-> **Status: Milestone 2.** The canonical store works and sources are ingested:
-> Markdown, YAML, JSON, and OpenAPI normalize into one model that keeps their
-> structure. The MCP daemon and retrieval land in Milestones 3–8. See the
-> [roadmap](#roadmap).
+> **Status: Milestone 3.** The canonical store works, sources are ingested, and
+> a single local MCP daemon now serves that knowledge to agents over
+> authenticated loopback HTTP. Search is still substring matching; ranked hybrid
+> retrieval lands in Milestone 5. See the [roadmap](#roadmap).
 
 ---
 
@@ -146,10 +146,46 @@ theurian ingest                # normalize knowledge and specification sources
 theurian project status
 ```
 
-There is nothing to search yet — retrieval arrives in Milestone 5. What works
-today is the part everything else depends on: a canonical store that is
-reproducible from Git, refuses to let an applied migration change, and reports
-conflicting edits instead of merging them.
+Then serve it to agents:
+
+```sh
+theurian daemon start --foreground   # one daemon, 127.0.0.1:7419, for every client
+theurian daemon status               # what is running, and where its data lives
+```
+
+The daemon exposes five read-only MCP tools at `http://127.0.0.1:7419/mcp`:
+`knowledge.search`, `knowledge.get`, `knowledge.status`, `project.list`, and
+`system.capabilities`. Requests need a bearer token, which `daemon start` mints
+into `~/.theurian/auth/mcp-token` (mode 0600) on first run:
+
+```sh
+curl http://127.0.0.1:7419/health     # no credential needed; this is what the hook calls
+
+curl -H "Authorization: Bearer $(cat ~/.theurian/auth/mcp-token)" \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json, text/event-stream' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
+          "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"curl","version":"1"}}}' \
+     http://127.0.0.1:7419/mcp
+```
+
+Streamable HTTP is session-based: `initialize` returns an `mcp-session-id`
+header that every later request must carry, so `tools/list` on its own answers
+`400 Missing session ID`. In practice your MCP client handles this — the curl
+above is a check that the endpoint is up and your token works, not a way to
+drive the daemon by hand.
+
+Starting a second daemon is safe: it detects the first, reports `reuse`, and
+exits 0. One process serves every project you register and every agent that
+connects.
+
+Search is substring matching until Milestone 5 — the result *shape* is already
+the published one, so callers written today keep working. What works now is the
+part everything else depends on: a canonical store reproducible from Git that
+refuses to let an applied migration change and reports conflicting edits instead
+of merging them, served to agents with provenance and trust labels attached to
+every result.
 
 See [`examples/sample-project/`](examples/sample-project/) for a complete
 `.theurian/` to copy from.
@@ -209,8 +245,8 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | 0 | Architecture, ADRs, domain model, ports, schemas, plugin skeleton, CI | **done** |
 | 1 | Local canonical store, YAML migrations, state hashing, project CLI | **done** |
 | 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | **done** |
-| 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | next |
-| 4 | Claude Code plugin: setup, doctor, service adapters | planned |
+| 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | **done** |
+| 4 | Claude Code plugin: setup, doctor, service adapters | next |
 | 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | planned |
 | 6 | RAPTOR forest, incremental rebuild, blue/green index | planned |
 | 7 | GitHub review ingestion and knowledge candidates | planned |

@@ -12,6 +12,63 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Milestone 3 — the single MCP daemon
+
+#### Added
+
+- **One daemon per user per machine**, serving MCP over Streamable HTTP at
+  `http://127.0.0.1:7419/mcp`. Ten subagents cost one process, one writer, and
+  one warm index rather than ten of each (ADR-0002).
+- **Single-instance enforcement** through three independent mechanisms, because
+  each alone has a known failure mode: an advisory `flock`, a port probe, and a
+  startup handshake that reports version and data directory. A losing starter
+  exits 0 after confirming the winner is healthy; it never kills the winner and
+  never repairs data. A daemon serving a *different* data directory is a
+  conflict, not something to reuse — reusing it would answer every query from
+  the wrong knowledge base.
+- **Local authentication.** A 256-bit token in a 0600 file inside a 0700
+  directory, compared in constant time. `/health` stays unauthenticated so the
+  SessionStart hook and the instance probe need no credential (ADR-0011).
+- **Five read-only MCP tools**: `knowledge.search`, `knowledge.get`,
+  `knowledge.status`, `project.list`, and `system.capabilities`. No write-intent
+  tool exists at all — not behind a flag, not behind a permission (ADR-0013).
+- **Explicit project context.** Every project-scoped tool requires `projectId`.
+  There is no "last used project", because with many agents sharing one daemon
+  an implicit default resolves one agent's query against another's project.
+- **Trust labelling on every result**: `contentClassification:
+  untrusted-knowledge`, `mayContainInstructions: true`, `executable: false`,
+  plus source anchors and freshness. Knowledge bodies contain imperative
+  sentences because they describe rules; the labels say so explicitly (SEC-15).
+- **`theurian daemon start --foreground` and `theurian daemon status`**, both
+  with `--json`.
+
+#### Security
+
+- The daemon refuses to bind anything but loopback. A networked deployment needs
+  TLS, OAuth 2.1, audience validation, and tenant isolation; shipping half of
+  them would be worse than shipping none (SEC-1).
+- Origin and Host validation, so a page the user visits cannot reach the MCP
+  endpoint by resolving a hostname to 127.0.0.1 (SEC-2, T-2).
+- Access logging is off. Every request carries an `Authorization` header, and an
+  access log is the easiest place for one to escape its 0600 file (SEC-6).
+- A token file readable by other users is refused rather than quietly repaired:
+  a credential others could already read is not a credential (SEC-4).
+- An unregistered `projectId` returns an error naming what *is* registered,
+  never another project's knowledge (SEC-13).
+
+#### Known limitations
+
+- `theurian daemon start` supports `--foreground` only. Detaching belongs to the
+  user's service manager — a LaunchAgent or a systemd unit — which arrives with
+  `/theurian:setup` in Milestone 4. There is deliberately no `daemon stop`:
+  the lifecycle owner is the service manager, and a PID-based stop would
+  contradict the reason the design uses an advisory lock rather than a PID file.
+- `knowledge.search` matches substrings. Ranked hybrid retrieval arrives in
+  Milestone 5; the *result shape* is already the published one, so callers
+  written now keep working.
+
+---
+
 ### Milestone 2 — source ingestion
 
 #### Added

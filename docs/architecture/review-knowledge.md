@@ -116,10 +116,10 @@ Crucially, the gate answers **"should someone look at this?"** It never answers
 
 ```python
 KnowledgeCandidate(
-    trust_level=TrustLevel.INFERRED,   # not settable; always inferred
+    trust_level=TrustLevel.INFERRED,  # not settable; always inferred
     status=CandidateStatus.GENERATED,  # no AUTO_APPROVED member exists
-    evidence=(...),                    # empty evidence raises at construction
-    gate=PromotionGate(...),           # an unmet gate raises at construction
+    evidence=(...),  # empty evidence raises at construction
+    gate=PromotionGate(...),  # an unmet gate raises at construction
 )
 ```
 

@@ -103,12 +103,26 @@ the two calls.
 
 ## Compliance
 
-- `tests/e2e/test_single_daemon.py` launches ≥10 concurrent clients and asserts
-  exactly one daemon PID.
-- `tests/e2e/test_project_isolation.py` asserts a query for Project A never
-  returns Project B content.
-- `tests/e2e/test_concurrent_start.py` races N `daemon start` invocations and
-  asserts one winner, no corruption, and exit code 0 from the losers.
-- A unit test asserts that the MCP configuration writer emits no `command` key
-  for the `theurian` server.
+Landed in Milestone 3:
+
+- `tests/e2e/test_daemon_single_instance.py::test_many_concurrent_clients_share_one_daemon`
+  runs 12 concurrent MCP clients against a real daemon and asserts exactly one
+  listening PID.
+- `tests/e2e/test_daemon_single_instance.py::test_concurrent_starts_produce_one_winner`
+  races five `daemon start` invocations and asserts one winner, `reuse` from the
+  losers, and exit code 0 throughout.
+- `tests/integration/test_daemon.py` covers the handshake directly: a daemon on
+  a *different* data directory is a conflict rather than something to reuse or
+  kill.
+- `tests/integration/test_mcp_tools.py::test_a_query_for_one_project_cannot_observe_the_other`
+  registers two projects against one server and asserts a query for one cannot
+  reach the other's knowledge, including when both use the same `itemId`
+  (SEC-13). `test_an_unregistered_project_names_what_is_registered` covers the
+  adjacent case: an unknown id gets an error, never someone else's content.
 - Every project-scoped MCP tool schema declares `projectId` in `required`.
+
+Still owed:
+
+- A unit test asserting the MCP configuration writer emits no `command` key for
+  the `theurian` server. The writer arrives with `/theurian:setup` in Milestone
+  4; the rule it must satisfy is point 3 above.
