@@ -868,3 +868,78 @@ async def test_what_a_stale_index_withheld_is_reported(indexed: ProjectRegistry)
     result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
 
     assert result["retrieval"]["withheldSuperseded"] == 0, "a current index withholds nothing"
+
+
+# -- One status authority, reached from every tool ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_knowledge_get_will_not_hand_over_what_search_withheld(
+    registry: ProjectRegistry,
+) -> None:
+    """The bypass that survived three separate fixes to `knowledge.search`.
+
+    Closing every path through search achieved nothing while `get` had no gate:
+    a caller reads an approved item, takes the `targetItemId` off its relation,
+    and fetches the withheld body in one more call. No flag, no guessing.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    withheld = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.caching-draft"
+    )
+
+    assert "not present" in withheld
+
+
+@pytest.mark.asyncio
+async def test_the_withheld_message_does_not_confirm_the_item_exists(
+    registry: ProjectRegistry,
+) -> None:
+    """SEC-13. A distinct message would tell a caller that an id they may not
+    read is nonetheless a real id — the inference the isolation exists to
+    prevent."""
+    absent = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.no-such-thing"
+    )
+    withheld = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.caching-draft"
+    )
+
+    assert absent.replace("no-such-thing", "X") == withheld.replace("caching-draft", "X")
+
+
+@pytest.mark.asyncio
+async def test_asking_for_unapproved_reaches_a_draft_through_get(
+    registry: ProjectRegistry,
+) -> None:
+    """The flag widens which statuses are allowed. It is not a bypass, and it is
+    also not a lock: a draft is work in progress an author has reason to read."""
+    result = await _call(
+        registry,
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.caching-draft",
+        includeUnapproved=True,
+    )
+
+    assert result["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_relations_to_withheld_items_are_not_published(
+    registry: ProjectRegistry,
+) -> None:
+    """Withholding a body while publishing the id it lives at withholds nothing
+    that matters — the id is how the body was found in the first place."""
+    result = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert all("caching-draft" not in relation["targetItemId"] for relation in result["relations"])

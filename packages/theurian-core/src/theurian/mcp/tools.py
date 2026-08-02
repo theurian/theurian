@@ -174,9 +174,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # rejected and deprecated knowledge whenever a caller passed
                 # includeUnapproved -- and this is the *default* path, because an
                 # index built without --include-unapproved sends such a query here.
-                if item.status not in SURFACEABLE_STATUSES:
-                    continue
-                if not includeUnapproved and item.status is not KnowledgeStatus.APPROVED:
+                if not _may_surface(item.status, include_unapproved=includeUnapproved):
                     continue
                 if item.current_revision_id is None:
                     continue
@@ -214,14 +212,31 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         name="knowledge.get",
         description="Fetch one knowledge item's current revision, with provenance.",
     )
-    def knowledge_get(projectId: str, itemId: str) -> dict[str, Any]:  # noqa: N803
-        """Fetch an item, resolving aliases so a renamed item stays reachable."""
+    def knowledge_get(
+        projectId: str,  # noqa: N803
+        itemId: str,  # noqa: N803
+        includeUnapproved: bool = False,  # noqa: N803
+    ) -> dict[str, Any]:
+        """Fetch an item, resolving aliases so a renamed item stays reachable.
+
+        Gated on status by the same authority as search. Without this, closing
+        every path through `knowledge.search` achieved nothing: a caller reads an
+        approved item, takes the `targetItemId` off its `rejects` relation, and
+        fetches the rejected body in one more call. No flag, no guessing — and a
+        rejected revision is where the secret that caused the rejection lives.
+        """
         _, database = _resolve(projectId)
         context = RequestContext(project_id=ProjectId(projectId))
 
         with SqliteCanonicalStore(database) as store:
             item = store.get_item(context, ItemId(itemId))
-            if item is None or item.current_revision_id is None:
+            withheld = item is not None and not _may_surface(
+                item.status, include_unapproved=includeUnapproved
+            )
+            if item is None or item.current_revision_id is None or withheld:
+                # Deliberately the same message as "absent". A distinct one would
+                # confirm that a retired item exists at that id, which is the
+                # inference SEC-13 exists to prevent.
                 msg = f"{itemId!r} is not present in project {projectId!r}."
                 raise ToolError(msg)
 
@@ -230,7 +245,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 msg = f"{itemId!r} points at a missing revision."
                 raise ToolError(msg)
 
-            relations = store.list_relations(context, item.item_id)
+            relations = tuple(
+                relation
+                for relation in store.list_relations(context, item.item_id)
+                # A relation to a retired item is itself a pointer to withheld
+                # content -- it is how the rejected id was found in the first
+                # place. Withholding the body while publishing the id would be
+                # withholding nothing that matters.
+                if (target := store.get_item(context, relation.target_item_id)) is not None
+                and _may_surface(target.status, include_unapproved=includeUnapproved)
+            )
 
         payload = _result(revision, item.status, datetime.now(UTC))
         payload["body"] = revision.body
@@ -317,6 +341,18 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         }
 
     return server
+
+
+def _may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
+    """Whether a caller may see an item in this state.
+
+    One authority for every tool. Search reached this rule through three
+    separate code paths and `knowledge.get` through none, which is how a fix
+    applied three times still left the content reachable.
+    """
+    if status not in SURFACEABLE_STATUSES:
+        return False
+    return include_unapproved or status is KnowledgeStatus.APPROVED
 
 
 def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
@@ -410,8 +446,7 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
             # `rejected`, which is where a secret that caused the rejection still
             # lives. `includeUnapproved` widens which statuses are allowed; it
             # does not disable the check.
-            allowed = SURFACEABLE_STATUSES if include_unapproved else {KnowledgeStatus.APPROVED}
-            if item.status not in allowed:
+            if not _may_surface(item.status, include_unapproved=include_unapproved):
                 continue
             # Likewise for *which revision* is current. The index pins a revision
             # id at build time, and replacing a revision is how a secret gets
