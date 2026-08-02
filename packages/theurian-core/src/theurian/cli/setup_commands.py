@@ -11,6 +11,7 @@ drifted would be the one the user ran.
 
 from __future__ import annotations
 
+import platform
 import shutil
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Annotated, Any
 
 import typer
 
+from theurian import __version__
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
@@ -116,6 +118,13 @@ def setup_command(
 
 def doctor_command(
     port: PortOption = DEFAULT_PORT,
+    report_mode: Annotated[
+        bool,
+        typer.Option(
+            "--report",
+            help="Produce a redacted diagnostic that is safe to paste into an issue.",
+        ),
+    ] = False,
     as_json: JsonFlag = False,
 ) -> None:
     """Report what is wrong, and change nothing.
@@ -124,16 +133,51 @@ def doctor_command(
     whose output you cannot trust, because you can no longer tell what was
     broken from what it just fixed.
     """
-    report = SetupService(build_context(port=port)).run(SetupRequest(dry_run=True))
+    context = build_context(port=port)
+    report = SetupService(context).run(SetupRequest(dry_run=True))
     payload = report.to_json()
 
     problems = [step for step in report.steps if step.would_change or step.needs_consent]
     payload["healthy"] = not problems
     payload["problemCount"] = len(problems)
 
+    if report_mode:
+        payload = _redacted(payload, context)
+
     _write(payload, as_json=as_json)
     if problems:
         raise typer.Exit(1)
+
+
+def _redacted(payload: dict[str, Any], context: SetupContext) -> dict[str, Any]:
+    """Strip anything personal from a diagnostic meant to be shared (O-3).
+
+    ``doctor --report`` output is what people paste into public issues, so it is
+    redacted by default rather than on request. Absolute paths name the user's
+    account and their repositories; both are someone's private information even
+    though neither is a credential.
+    """
+    home = str(context.home)
+    token = str(context.auth_dir / "mcp-token")
+
+    def scrub(value: Any) -> Any:
+        if isinstance(value, str):
+            cleaned = value.replace(token, "<token file>").replace(home, "~")
+            root = context.project_root
+            return cleaned.replace(str(root), "<repository>") if root else cleaned
+        if isinstance(value, list):
+            return [scrub(item) for item in value]
+        if isinstance(value, dict):
+            return {key: scrub(item) for key, item in value.items()}
+        return value
+
+    scrubbed: dict[str, Any] = scrub(payload)
+    scrubbed["redacted"] = True
+    scrubbed["platform"] = (
+        f"{platform.system()} {platform.machine()} python{platform.python_version()}"
+    )
+    scrubbed["version"] = __version__
+    return scrubbed
 
 
 def uninstall_command(
