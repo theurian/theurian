@@ -802,3 +802,69 @@ async def test_an_absurd_token_budget_is_clamped_rather_than_raised(
 
     assert zero["count"] >= 1
     assert huge["retrieval"]["usedTokens"] <= 32_000
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_revision_is_not_served_from_a_stale_index(
+    indexed: ProjectRegistry,
+) -> None:
+    """The leak this guard exists for.
+
+    Replacing a revision is *how* a secret gets removed from approved
+    knowledge. The index pins a revision id at build time, so without this
+    check a stale index keeps answering with the very text the team just
+    retracted — and labels it with the new revision's `approved` status.
+
+    A stale index therefore returns fewer results rather than wrong ones.
+    """
+    root = Path(indexed.load()["demo"]["rootPath"])
+    (root / ".theurian/knowledge/architecture/auth-v2.md").write_text(
+        "# Authentication policy\n\nThe key now lives in the secret store.\n"
+    )
+    (root / ".theurian/migrations/01K1EAAAAA01234567890ABCDE-replace.yaml").write_text(
+        """apiVersion: theurian.dev/v1
+id: 01K1EAAAAA01234567890ABCDE
+createdAt: 2026-08-03T14:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: 01K1EREVAA01234567890ABCDE
+    expectedRevision: 01K1AAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/auth-v2.md
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-v2.md
+"""
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    assert all(hit["revisionId"] != "01K1AAAREV01234567890ABCDE" for hit in result["results"]), (
+        "the retracted revision must not be served"
+    )
+    assert result["retrieval"]["withheldSuperseded"] >= 1
+    assert result["retrieval"]["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_what_a_stale_index_withheld_is_reported(indexed: ProjectRegistry) -> None:
+    """Zero results with no explanation reads as "we have no such decision".
+    The count says "your index is behind" instead."""
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    assert result["retrieval"]["withheldSuperseded"] == 0, "a current index withholds nothing"

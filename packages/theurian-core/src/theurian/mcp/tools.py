@@ -364,6 +364,7 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
     passages = index.chunk_texts([c.chunk_id for c in outcome.candidates])
     results: list[dict[str, Any]] = []
     seen_items: set[str] = set()
+    superseded = 0
 
     with SqliteCanonicalStore(database) as store:
         context = RequestContext(project_id=ProjectId(project_id))
@@ -390,6 +391,17 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
             # rejected -- exactly the failure the default is meant to prevent.
             if not include_unapproved and item.status is not KnowledgeStatus.APPROVED:
                 continue
+            # Likewise for *which revision* is current. The index pins a revision
+            # id at build time, and replacing a revision is how a secret gets
+            # removed from approved knowledge -- so serving the pinned one would
+            # keep answering with the very text the team just retracted, under
+            # the new revision's `approved` label.
+            #
+            # A stale index therefore returns fewer results rather than wrong
+            # ones. `retrieval.stale` says why, and rebuilding restores them.
+            if item.current_revision_id != revision.revision_id:
+                superseded += 1
+                continue
             seen_items.add(candidate.item_id)
             result = _result(revision, item.status, now)
             # The excerpt is the passage that actually matched, not the head of
@@ -414,6 +426,10 @@ def _hybrid_search(  # noqa: PLR0913 - one keyword per published tool parameter
             # acting on the answer. A stale index is a correctness problem
             # wearing the costume of a relevance problem.
             "stale": stale,
+            # Withheld because the index still points at a revision that has
+            # since been replaced. Reported so a caller can tell "no such
+            # decision" from "your index is behind".
+            "withheldSuperseded": superseded,
             "indexesUnapproved": bool(published.get("indexesUnapproved", False)),
             "indexBuildId": published.get("indexBuildId"),
             "embeddingModel": outcome.embedding_model,
