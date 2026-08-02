@@ -12,6 +12,22 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed after Milestone 4
+
+- **`theurian auth rotate` did not exist**, while three user-facing messages told
+  people to run it — including the one shown when a token is found readable by
+  other users. A remedy that errors out is worse than no remedy, because it is
+  shown at the moment a credential has already been exposed. Rotation now
+  replaces the token, rewrites the env file that names its location, and
+  restarts the daemon: the daemon reads its token once at startup, so writing a
+  new file alone leaves every client getting a 401 with no visible cause.
+- **`theurian daemon stop`** now exists. Milestone 3 omitted it deliberately —
+  the service manager owns the lifecycle and a PID-based stop would contradict
+  the reason this design uses an advisory lock. Milestone 4 made `daemon start`
+  delegate to that manager, which left the absence of `stop` an arbitrary
+  asymmetry rather than a principled one. It asks the service manager, and
+  refuses rather than guessing when none is registered.
+
 ### Milestone 4 — setup, service adapters, and doctor
 
 #### Added
