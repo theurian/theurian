@@ -139,10 +139,37 @@ a false report, even if the CRITICAL was fixed.
 
 ## Standing conventions
 
-- Documentation and commit messages: **English**. Conversation with the user:
-  **Japanese**, cat-speech per the global personality rule.
-- Review output and anything that may reach a teammate: **professional Japanese,
-  no cat-speech.**
+### Language
+
+Theurian is open source with a worldwide audience. Anything that persists in the
+repository is read during PR review by people who do not read Japanese, and it
+stays in the history permanently. Writing it in Japanese is what shuts a
+contributor out.
+
+| Register | Language |
+| :-- | :-- |
+| Anything durable in the repository: commit messages, documentation, ADRs, code comments, docstrings, PR descriptions, issue text | **English** |
+| Briefs and instructions sent to subagents | **English** |
+| Review output, and anything else that may be read by a teammate | **professional Japanese, no cat-speech** |
+| Conversation with the user | **Japanese**, cat-speech per the global personality rule |
+
+The dividing line is direction of travel. Text that lives in the repository, or
+that instructs an agent, is English; text delivered to a person as a report is
+Japanese. A subagent brief looks like scratch, which is exactly why it needs
+naming: it gets quoted in reports, pasted into issues, and read by whoever
+debugs the orchestration later. Treating briefs as private Japanese notes is
+what let a whole milestone's commit messages be written in Japanese before
+anyone noticed they were durable.
+
+**Non-English text as *data* is correct, and must not be translated.** The rule
+governs prose, not examples. `署名付きトークンを持つ` in ADR-0023, in the
+CHANGELOG, in the README, and in the test fixtures is the measured input that
+demonstrates the CJK tokenization problem; translating it deletes the thing
+being demonstrated. The same holds anywhere a query, a corpus sample, or a
+fixture is in a given language *because* its language is the point.
+
+### Commits and local safety
+
 - Commits: Conventional Commits, signed, with a DCO `Signed-off-by` trailer
   (`git commit -s`). One topic per PR.
 - Never run a real `theurian setup`, `daemon start` (detached), or anything that
