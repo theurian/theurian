@@ -142,3 +142,19 @@ def test_an_abbreviation_does_not_split_english_prose_mid_sentence() -> None:
     chunks = chunk_document(REVISION, body, target_chars=500)
 
     assert all(not c.text.startswith(("14", "g.")) for c in chunks)
+
+
+def test_the_hard_character_cut_loses_no_content() -> None:
+    """`_by_length` is the last resort and the only cut that always terminates.
+
+    Advancing its window by two targets instead of one silently dropped half of
+    every document that reached it, and the whole suite stayed green: every
+    chunking test asserted a *bound* on the output and none compared the output
+    against the input.
+    """
+    body = "".join(chr(0x3042 + (index % 80)) for index in range(5_000))
+
+    chunks = chunk_document(REVISION, body, target_chars=400)
+
+    assert "".join(chunk.text for chunk in chunks) == body, "no character is dropped"
+    assert all(chunk.char_count <= 400 for chunk in chunks)

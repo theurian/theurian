@@ -98,14 +98,25 @@ class IndexStore(Protocol):
         """
         ...
 
-    def chunk_texts(self, chunk_ids: Sequence[str]) -> Mapping[str, str]:
-        """The matched passage per chunk, so a hit can show what matched."""
+    def chunk_texts(self, chunk_ids: Sequence[str], *, project_id: str) -> Mapping[str, str]:
+        """The matched passage per chunk, so a hit can show what matched.
+
+        Scoped by project like every other read here (SEC-13). See
+        :meth:`token_sizes` for why the scope is not left to the caller.
+        """
         ...
 
-    def token_sizes(self, chunk_ids: Sequence[str]) -> Mapping[str, int]:
+    def token_sizes(self, chunk_ids: Sequence[str], *, project_id: str) -> Mapping[str, int]:
         """Token estimate per chunk, for packing to a budget (FR-R4).
 
         Sizes rather than texts: deciding whether a chunk fits should not
         require reading the chunk.
+
+        ``project_id`` is required even though every id reaching here came from
+        a search that was already scoped. Chunk ids are ``<revisionId>#<n>`` and
+        revision ids are published in every result, so an id is guessable rather
+        than opaque -- and this lookup is the step that turns an id back into
+        text. A by-id read that trusts its ids is one refactor away from being
+        the first unscoped read in the pipeline (SEC-13).
         """
         ...

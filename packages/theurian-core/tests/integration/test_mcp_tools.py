@@ -88,6 +88,34 @@ operations:
           sourceUri: git://demo/caching-draft.md
 """
 
+#: A second and third approved item, so a budget has something to drop.
+EXTRA_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1{letter}AAAAA01234567890ABCDE
+createdAt: 2026-08-02T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.{slug}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.{slug}
+    revisionId: 01K1{letter}AAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/{slug}.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/{slug}.md
+"""
+
 
 @pytest.fixture
 def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
@@ -658,13 +686,79 @@ async def test_the_index_is_never_the_authority_for_a_result(
     assert result["results"][0]["title"] == "Authentication policy"
 
 
-@pytest.mark.asyncio
-async def test_a_token_budget_is_honoured(indexed: ProjectRegistry) -> None:
-    """FR-R4. An agent that receives more context than it asked for has already
-    paid for it."""
-    result = await _call(indexed, "knowledge.search", projectId="demo", query="token", maxTokens=40)
+@pytest.fixture
+def indexed_corpus(registry: ProjectRegistry) -> ProjectRegistry:
+    """`indexed`, plus two more approved items, then a build.
 
-    assert result["retrieval"]["usedTokens"] <= 40 or result["count"] == 1
+    A budget test needs something a budget can drop. The `registry` fixture
+    holds one approved item, so `count` was always 1 -- which is what made the
+    `or count == 1` arm of the assertion below absorb every failure.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        for letter, slug, title in (
+            ("C", "retry-policy", "Retry policy"),
+            ("D", "quota-policy", "Quota policy"),
+        ):
+            (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+                f"# {title}\n\nEvery call carries a signed token. This policy explains how "
+                f"the token budget is spent, and what the gateway does when it runs out.\n"
+            )
+            (
+                root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml"
+            ).write_text(EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title))
+        _run("migrate", "apply")
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_a_token_budget_is_honoured(indexed_corpus: ProjectRegistry) -> None:
+    """FR-R4. An agent that receives more context than it asked for has already
+    paid for it.
+
+    Asserted as a *difference* between two budgets rather than against a
+    constant. `usedTokens <= 40 or count == 1` is satisfied by a `pack` that
+    ignores the budget entirely, and by one that reports a used total it never
+    enforced -- both of which passed this test.
+    """
+    generous = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token", maxTokens=32_000
+    )
+    tight = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token", maxTokens=40
+    )
+
+    assert generous["count"] > 1, "the fixture must offer more than one hit to drop"
+    assert generous["retrieval"]["droppedForBudget"] == 0
+    assert tight["count"] < generous["count"], "a tight budget must actually drop results"
+    assert tight["count"] >= 1, "a budget below the best hit still returns it (pack's floor)"
+    # Over budget only via that documented single-result floor.
+    if tight["count"] > 1:
+        assert tight["retrieval"]["usedTokens"] <= 40
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["token\x00policy", "token\ud800policy"])
+async def test_a_query_containing_an_untransportable_character_does_not_raise(
+    indexed: ProjectRegistry, query: str
+) -> None:
+    """A search box must not raise at the user.
+
+    `_to_match_expression` quotes every term, so the inputs that still reach the
+    driver malformed are the ones that cannot become a NUL-terminated UTF-8
+    string: a NUL, which ends the C string early and makes FTS5 report
+    `unterminated string`; and a lone surrogate, which cannot be encoded at all
+    and fails as a `UnicodeEncodeError` before SQLite is called. Both used to
+    reach the client as a tool failure. JSON-RPC can carry either.
+    """
+    result = await _call(indexed, "knowledge.search", projectId="demo", query=query)
+
+    assert "results" in result
 
 
 @pytest.mark.asyncio

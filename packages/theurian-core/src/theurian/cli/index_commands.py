@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -23,7 +23,9 @@ from theurian.application.project_service import (
     read_active_state,
 )
 from theurian.application.retrieval_service import IndexBuilder, IndexRequest
+from theurian.domain.errors import TheurianError
 from theurian.infrastructure.embedding import HashingEmbedding
+from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
@@ -147,7 +149,12 @@ def index_status(as_json: JsonOption = False) -> None:
     indexed = (published or {}).get("stateHash")
 
     needs_apply = built != current
-    stale = published is None or indexed != current
+    # An index whose schema this build does not understand is unusable no matter
+    # how fresh its state hash is, and retrieval already falls back for it. Left
+    # out of `stale`, this command would answer "fresh, nothing to do" for the
+    # very file a search had just refused to read.
+    schema = _index_schema_version(paths, published)
+    stale = published is None or indexed != current or schema != INDEX_SCHEMA_VERSION
 
     _emit(
         {
@@ -156,12 +163,29 @@ def index_status(as_json: JsonOption = False) -> None:
             "indexStateHash": indexed,
             "builtStateHash": built,
             "currentStateHash": current,
+            "indexSchemaVersion": schema,
+            "expectedIndexSchemaVersion": INDEX_SCHEMA_VERSION,
             "stale": stale,
             "knowledgeNotApplied": needs_apply,
             "remedy": _remedy(stale=stale, needs_apply=needs_apply),
         },
         as_json=as_json,
     )
+
+
+def _index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None) -> int | None:
+    """The schema version of the published build, or ``None`` if there is none.
+
+    Never raises. A pointer naming a path outside the project, or a file that has
+    since been deleted, is a status to report rather than a command to fail.
+    """
+    if published is None:
+        return None
+    try:
+        path = paths.index_for(str(published.get("indexBuildId", "")))
+    except TheurianError:
+        return 0
+    return SqliteIndexStore(path).schema_version() if path.is_file() else 0
 
 
 def _remedy(*, stale: bool, needs_apply: bool) -> str:

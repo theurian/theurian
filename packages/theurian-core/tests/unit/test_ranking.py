@@ -226,3 +226,32 @@ def test_dense_only_is_reported_as_dense() -> None:
 def test_no_results_at_all_reports_lexical_rather_than_claiming_hybrid() -> None:
     """An empty result set must not claim a dense retriever ran."""
     assert mode_of({LEXICAL: [], DENSE: []}) is RetrievalMode.LEXICAL
+
+
+def test_an_unpriced_candidate_is_charged_the_whole_budget() -> None:
+    """A missing size means the caller could not price this candidate.
+
+    Charging the whole budget is the conservative reading; treating it as free
+    is how a budget is silently exceeded. No test covered this branch, so
+    flipping the default to 0 left the entire suite green.
+    """
+    candidates = [_fused("a", "i1"), _fused("b", "i2"), _fused("c", "i3")]
+
+    packed = pack(candidates, {"a": 10, "c": 10}, budget_tokens=100)
+
+    # `b` is unpriced, so it is charged 100 on top of `a`'s 10 and does not fit.
+    # Priced at 0 instead, all three would come back for 20 tokens.
+    assert [c.chunk_id for c in packed.candidates] == ["a"]
+    assert packed.used_tokens == 10
+    assert packed.dropped == 2, "the unpriced candidate and everything behind it"
+
+
+def test_an_unpriced_first_candidate_still_comes_back_alone() -> None:
+    """`pack` always returns at least one candidate. When that one is unpriced
+    it spends the whole budget, which is the conservative reading and must be
+    visible in `used_tokens` rather than reported as free."""
+    packed = pack([_fused("a", "i1"), _fused("b", "i2")], {"b": 10}, budget_tokens=100)
+
+    assert [c.chunk_id for c in packed.candidates] == ["a"]
+    assert packed.used_tokens == 100
+    assert packed.dropped == 1

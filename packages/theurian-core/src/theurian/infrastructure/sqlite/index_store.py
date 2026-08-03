@@ -89,6 +89,97 @@ class Fts5UnavailableError(IndexBuildError):
         )
 
 
+class IndexUnreadableError(IndexBuildError):
+    """This index file cannot be searched by this build.
+
+    Raised rather than swallowed, and that distinction is the whole point. An
+    index written by an older schema is missing tables this code queries, and
+    SQLite reports that as an ``OperationalError`` indistinguishable, to a bare
+    ``except``, from "your query was malformed". Returning ``()`` for it made an
+    upgrade silently switch Japanese search off for an entire knowledge base:
+    `chunks_trigram` was gone, `unicode61` cannot segment CJK, every query
+    answered "no results", and the response still said ``indexed: true``.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            f"This project's retrieval index cannot be read ({detail}). It was "
+            f"most likely built by an older version of Theurian. Run `theurian "
+            f"index build` to rebuild it; the index is derived, so nothing is lost."
+        )
+
+
+#: Fragments of a SQLite message that mean *the file* is wrong, not the query.
+#: A missing table is the shape an older index schema takes; the rest are the
+#: shapes a truncated or corrupted copy takes.
+_UNREADABLE_INDEX_ERRORS: Final = (
+    "no such table",
+    "no such column",
+    "no such module",
+    "malformed",
+    "file is not a database",
+)
+
+
+def _index_is_unreadable(exc: sqlite3.Error) -> bool:
+    """Whether SQLite is complaining about the index rather than the query.
+
+    The two must not share a branch. A query-shaped complaint returns nothing,
+    because a search box that raises at an unbalanced quote is a broken search
+    box. A file-shaped complaint must never return nothing, because "no results"
+    is exactly what a caller cannot distinguish from a correct empty answer.
+    """
+    message = str(exc).lower()
+    return any(fragment in message for fragment in _UNREADABLE_INDEX_ERRORS)
+
+
+def _is_query_syntax_error(exc: sqlite3.Error) -> bool:
+    """Whether FTS5 rejected the *expression* — a case that can no longer happen.
+
+    **This predicate is unreachable today, and that is recorded rather than
+    hidden.** Nothing this module can now build is a malformed FTS5 expression:
+
+    - :func:`_to_match_expression` deletes every ``"`` and strips the operator
+      characters from each term's edges, then wraps each term in quotes — so what
+      reaches FTS5 is a list of phrases whose only syntactically significant
+      character cannot be present;
+    - :func:`_is_transportable` removes the two things that broke the string
+      before FTS5 ever parsed it: a NUL and a lone surrogate.
+
+    Measured, not assumed. Replacing both call sites with a raise leaves the
+    whole suite green, and 5,580 adversarial queries — every one- and
+    two-character string over ``"*():^-{}[]<>!@#$%&+=~`|\\/;,.?'`` plus NUL,
+    a lone surrogate and whitespace, FTS5's own operator syntax, and 4,000
+    random strings — reached it zero times across 11,160 calls.
+
+    **Kept anyway, as the cheap half of a defence in depth.** The day someone
+    relaxes the sanitising above, a syntax error stops being impossible and
+    starts being an exception that escapes as a tool failure at an agent — the
+    exact HIGH that was just closed. A branch that costs two string comparisons
+    is a poor thing to trade for that.
+
+    **What actually holds the invariant is the sanitising, not this branch.**
+    Anyone changing `_to_match_expression`, `_query_terms`, or
+    `_is_transportable` is changing the thing under test, and the tests that
+    fail are `test_punctuation_never_raises_at_the_user`,
+    `test_a_nul_byte_in_a_query_returns_nothing_rather_than_raising`, and
+    `test_a_lone_surrogate_in_a_query_returns_nothing_rather_than_raising` in
+    ``tests/integration/test_index_store.py``, plus
+    `test_a_query_containing_an_untransportable_character_does_not_raise` in
+    ``tests/integration/test_mcp_tools.py``. None of them exercises this line,
+    and none of them should have to.
+
+    The distinction from the bm25 relevance floor this milestone removed is the
+    whole point of writing it down. That floor *claimed* to exclude weak matches
+    and excluded nothing — a guard that read as protection and was not, which is
+    why it went. This one is known not to fire, says so, and is kept for a
+    named future case. The code is nearly identical; only the comment separates
+    an honest belt-and-braces from a lie.
+    """
+    message = str(exc).lower()
+    return "fts5" in message or "syntax" in message
+
+
 def fts5_available() -> bool:
     """Whether this SQLite build supports FTS5."""
     with closing(sqlite3.connect(":memory:")) as connection:
@@ -224,41 +315,90 @@ class SqliteIndexStore:
             row = connection.execute("SELECT * FROM index_metadata WHERE id = 1").fetchone()
         return dict(row) if row else {}
 
+    def schema_version(self) -> int:
+        """The index schema this file was written with, or 0 if unknowable.
+
+        0 covers an unreadable file, a missing metadata row, and a database that
+        is not an index at all. Callers treat it exactly as they treat a
+        mismatch, because operationally it means the same thing: this build
+        cannot search this file, and the remedy is a rebuild.
+
+        Never raises. The index is derived (ADR-0004), so a caller asking whether
+        it is usable must get an answer rather than an exception.
+        """
+        try:
+            with _connect(self._path) as connection:
+                row = connection.execute(
+                    "SELECT index_schema_version FROM index_metadata WHERE id = 1"
+                ).fetchone()
+        except sqlite3.DatabaseError:
+            return 0
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def is_searchable(self) -> bool:
+        """Whether this file's schema is the one this build queries.
+
+        Checked *before* searching, because after searching it is too late to
+        tell the difference: a schema mismatch removes tables, and a query
+        against a missing table fails in a way that looks like an empty result.
+
+        The version was written into every index from the first build and read
+        by nothing until now, which is how a bump could ship without anyone
+        noticing that old files kept being searched.
+
+        Not repaired, and not migrated. ADR-0004 makes the index a derived
+        artifact: the honest response to a version it does not understand is to
+        say so and name the rebuild, not to attempt an upgrade path that would
+        have to be maintained forever for a file that costs seconds to recreate.
+        """
+        return self.schema_version() == INDEX_SCHEMA_VERSION
+
     def chunk_count(self) -> int:
         with _connect(self._path) as connection:
             return int(connection.execute("SELECT count(*) FROM chunks").fetchone()[0])
 
-    def token_sizes(self, chunk_ids: Sequence[str]) -> dict[str, int]:
+    def token_sizes(self, chunk_ids: Sequence[str], *, project_id: str) -> dict[str, int]:
         """Token estimate per chunk, for packing to a budget (FR-R4).
 
         Sizes rather than rows. Handing a ``sqlite3.Row`` to the application
         layer would couple the ranking pipeline to this adapter's cursor
         semantics and column names -- coupling no import check can catch.
+
+        Project-scoped as defence in depth (SEC-13). Every id reaching here came
+        from a search this class already scoped, so the filter should match
+        everything -- and "should" is what a scoping bug sounds like in the
+        moment before it becomes a cross-project disclosure. The cost is one
+        indexed predicate on a lookup of at most `limit` rows.
         """
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
         with _connect(self._path) as connection:
             rows = connection.execute(
-                f"SELECT chunk_id, token_estimate FROM chunks WHERE chunk_id IN ({placeholders})",  # noqa: S608 - placeholders only
-                tuple(chunk_ids),
+                "SELECT chunk_id, token_estimate FROM chunks "  # noqa: S608 - placeholders only
+                f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
+                (project_id, *chunk_ids),
             ).fetchall()
         return {row["chunk_id"]: int(row["token_estimate"]) for row in rows}
 
-    def chunk_texts(self, chunk_ids: Sequence[str]) -> dict[str, str]:
+    def chunk_texts(self, chunk_ids: Sequence[str], *, project_id: str) -> dict[str, str]:
         """The matched passage per chunk.
 
         Returned so a hit can show *what* matched rather than the head of the
         document it came from. Chunking buys ranking precision; without this the
         caller never sees the paragraph it bought.
+
+        Project-scoped for the reason :meth:`token_sizes` gives, and with more at
+        stake: this one returns knowledge text rather than a number.
         """
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
         with _connect(self._path) as connection:
             rows = connection.execute(
-                f"SELECT chunk_id, text FROM chunks WHERE chunk_id IN ({placeholders})",  # noqa: S608 - placeholders only
-                tuple(chunk_ids),
+                "SELECT chunk_id, text FROM chunks "  # noqa: S608 - placeholders only
+                f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
+                (project_id, *chunk_ids),
             ).fetchall()
         return {row["chunk_id"]: str(row["text"]) for row in rows}
 
@@ -292,14 +432,10 @@ class SqliteIndexStore:
         if not expression:
             return ()
 
-        clauses = ["chunks.project_id = ?"]
-        parameters: list[object] = [project_id]
-        if not include_unapproved:
-            clauses.append("chunks.status = ?")
-            parameters.append(KnowledgeStatus.APPROVED.value)
+        clauses, parameters = self._scope(project_id, include_unapproved)
 
         # The f-string interpolates only literals this module wrote (see
-        # `clauses` above); every user-supplied value is a bound parameter.
+        # `_scope`); every user-supplied value is a bound parameter.
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, "  # noqa: S608 - clauses are module-owned literals; values are bound
             "  bm25(chunks_fts) AS rank_score "
@@ -319,9 +455,17 @@ class SqliteIndexStore:
             try:
                 rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
             except sqlite3.OperationalError as exc:
-                # A query that survived sanitising can still be rejected -- an
-                # unbalanced quote, say. A search box must not raise at the user.
-                if "fts5" in str(exc).lower() or "syntax" in str(exc).lower():
+                # An index this build cannot read is not a query problem, and
+                # answering it with `()` would be indistinguishable from "nothing
+                # matched". Checked first, so no query-shaped guard below can
+                # accidentally absorb it.
+                if _index_is_unreadable(exc):
+                    raise IndexUnreadableError(str(exc)) from exc
+                # Unreachable: sanitising cannot produce a malformed expression
+                # any more. Kept as the guard that catches it again if sanitising
+                # is ever relaxed -- `_is_query_syntax_error` documents why, and
+                # names the tests that hold the invariant in its place.
+                if _is_query_syntax_error(exc):
                     return ()
                 raise
 
@@ -384,8 +528,20 @@ class SqliteIndexStore:
         with _connect(self._path) as connection:
             try:
                 rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
-            except sqlite3.OperationalError:
-                return ()
+            except sqlite3.OperationalError as exc:
+                # This handler used to swallow everything, which is how a v1
+                # index -- one with no `chunks_trigram` at all -- reported zero
+                # hits for every Japanese query while the response still claimed
+                # to be answering from an index. `unicode61` cannot segment CJK,
+                # so this retriever is the *only* one that can answer at all for
+                # such a corpus, and its silence was total.
+                if _index_is_unreadable(exc):
+                    raise IndexUnreadableError(str(exc)) from exc
+                # Unreachable, and kept for the same reason as in
+                # `search_lexical`. See `_is_query_syntax_error`.
+                if _is_query_syntax_error(exc):
+                    return ()
+                raise
 
         return tuple(
             Ranked(
@@ -398,7 +554,20 @@ class SqliteIndexStore:
         )
 
     def _scope(self, project_id: str, include_unapproved: bool) -> tuple[list[str], list[object]]:
-        """The FR-R1 filter, shared by every retriever so none can forget it."""
+        """The FR-R1 filter, shared by every retriever so none can forget it.
+
+        Every retriever means every retriever: lexical, substring, and dense all
+        build their WHERE clause from here. That was not true when this docstring
+        was first written -- only the substring retriever called it, while the
+        other two assembled the same two predicates by hand -- and the gap was
+        found by mutation: the cross-project isolation test only failed when all
+        three copies were broken at once, so any single copy could have lost its
+        `project_id` predicate with the suite still green.
+
+        A comment claiming a single point of enforcement is worse than no comment
+        when there are three, because it tells the next reader this is already
+        handled. It is now, and this is the one place to change it (SEC-13).
+        """
         clauses = ["chunks.project_id = ?"]
         parameters: list[object] = [project_id]
         if not include_unapproved:
@@ -424,11 +593,7 @@ class SqliteIndexStore:
         if not query_vector:
             return ()
 
-        clauses = ["chunks.project_id = ?"]
-        parameters: list[object] = [project_id]
-        if not include_unapproved:
-            clauses.append("chunks.status = ?")
-            parameters.append(KnowledgeStatus.APPROVED.value)
+        clauses, parameters = self._scope(project_id, include_unapproved)
 
         sql = (
             "SELECT chunks.chunk_id, chunks.item_id, chunks.revision_id, embeddings.vector "  # noqa: S608 - clauses are module-owned literals; values are bound
@@ -483,6 +648,84 @@ def _cosine(left: Sequence[float], right: Sequence[float], left_norm: float) -> 
     return dot / (left_norm * right_norm)
 
 
+#: Trigram matching needs at least three characters to form one gram.
+_MIN_TRIGRAM_CHARS: Final = 3
+
+
+def _is_transportable(term: str) -> bool:
+    """Whether this term can be handed to SQLite as text at all (SEC-8).
+
+    The contract with SQLite is not "a Python string"; it is *a NUL-terminated
+    UTF-8 byte string*. Two kinds of `str` cannot become one, and both are
+    reachable from a JSON-RPC caller because JSON can carry ``\\u0000`` and an
+    unpaired ``\\ud800``:
+
+    - a NUL ends the C string early, so FTS5 stops reading the MATCH expression
+      mid-token and reports ``unterminated string``;
+    - a lone surrogate cannot be encoded as UTF-8 at all, so the failure is a
+      ``UnicodeEncodeError`` raised by the driver before SQLite is even called —
+      which no ``except sqlite3.OperationalError`` could ever have caught.
+
+    Both used to escape as a tool failure at the agent. Both are now a term this
+    matcher declines to spend, which is the same answer punctuation already got.
+
+    Stated as *this* property rather than as a list of bad characters, on
+    purpose. A query is an arbitrary string chosen by something that has just
+    read untrusted content, so the safe formulation is "what can cross this
+    boundary", not "which characters have been observed to break it". Measured
+    against the alternative: every other C0 and C1 control, ZWSP, the BOM, the
+    non-characters U+FFFE/U+FFFF, and U+10FFFF all cross it intact and match
+    nothing, so banning controls wholesale would have been a rule with no defect
+    behind it.
+    """
+    if "\x00" in term:
+        return False
+    try:
+        term.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _query_terms(query: str, *, min_length: int) -> list[str]:
+    """The distinct terms a query is allowed to spend, longest first.
+
+    De-duplicated, because a repeated term adds cost to the expression and
+    changes nothing about the BM25 order: ``"token " * 2000`` collapses to one
+    term rather than to a minute of CPU.
+
+    **Longest first is a selection rule, not a display order.** When a query
+    brings more distinct terms than :data:`MAX_QUERY_TERMS`, something has to be
+    dropped, and taking the first N in the order they were typed is the worst
+    available choice — an English question front-loads its least selective words
+    ("how do we handle the ...") so the truncated query keeps `how`, `do`, `we`
+    and discards the noun it was about. The caller believes they searched for
+    that noun. Length is a cheap, tokenizer-free proxy for selectivity, and under
+    an OR match a low-IDF term barely moves the BM25 order anyway.
+
+    The alternative was to keep the typed order and report the truncation. That
+    was rejected here rather than dismissed: the count would have to travel back
+    through :class:`~theurian.domain.ports.index_store.IndexStore` to reach a
+    client, widening the port for a condition a query must exceed 64 distinct
+    terms to reach — while still answering the question worse than this does.
+
+    Ties keep the order the user typed, because ``sorted`` is stable, so one
+    query always produces one expression (FR-R7).
+
+    This is the only place a caller-supplied string becomes SQL text — the dense
+    retriever takes a vector, and the by-id reads take chunk ids the index
+    itself produced — so it is also the only place that has to hold
+    :func:`_is_transportable`. A term that cannot cross into SQLite is dropped
+    rather than the whole query, so `auth token\\x00` still searches for `auth`.
+    """
+    unique: dict[str, None] = {}
+    for word in query[:MAX_QUERY_CHARS].replace('"', " ").split():
+        term = word.strip(_FTS_SPECIAL)
+        if len(term) >= min_length and _is_transportable(term):
+            unique.setdefault(term, None)
+    return sorted(unique, key=lambda term: -len(term))[:MAX_QUERY_TERMS]
+
+
 def _to_match_expression(query: str) -> str:
     """Turn user text into an FTS5 MATCH expression.
 
@@ -493,7 +736,7 @@ def _to_match_expression(query: str) -> str:
     sentence.
 
     Bounded in length, in distinct terms, and de-duplicated — see
-    :data:`MAX_QUERY_CHARS`.
+    :data:`MAX_QUERY_CHARS` and :func:`_query_terms`.
 
     Terms are ORed and left to BM25 to rank. ANDing them requires every token to
     appear in one chunk -- including `how`, `do`, `for`, which the `unicode61`
@@ -501,31 +744,7 @@ def _to_match_expression(query: str) -> str:
     main thing an agent actually sends, matches nothing at all. Recall is BM25's
     problem to rank, not the matcher's problem to refuse.
     """
-    terms = [term.strip(_FTS_SPECIAL) for term in query[:MAX_QUERY_CHARS].replace('"', " ").split()]
-
-    # De-duplicated first. A repeated term adds cost to the expression and
-    # changes nothing about the BM25 order, so `"token " * 2000` collapses to one
-    # term rather than to a minute of CPU.
-    unique: dict[str, None] = {}
-    for term in terms:
-        if term:
-            unique.setdefault(term, None)
-
-    kept = [f'"{term}"' for term in list(unique)[:MAX_QUERY_TERMS]]
-    return " OR ".join(kept)
-
-
-__all__ = [
-    "Fts5UnavailableError",
-    "IndexBuildError",
-    "IndexableChunk",
-    "SqliteIndexStore",
-    "fts5_available",
-]
-
-
-#: Trigram matching needs at least three characters to form one gram.
-_MIN_TRIGRAM_CHARS: Final = 3
+    return " OR ".join(f'"{term}"' for term in _query_terms(query, min_length=1))
 
 
 def _to_trigram_expression(query: str) -> str:
@@ -535,9 +754,14 @@ def _to_trigram_expression(query: str) -> str:
     them against a trigram index, and including one makes the whole expression
     return nothing.
     """
-    terms = [term.strip(_FTS_SPECIAL) for term in query[:MAX_QUERY_CHARS].replace('"', " ").split()]
-    unique: dict[str, None] = {}
-    for term in terms:
-        if len(term) >= _MIN_TRIGRAM_CHARS:
-            unique.setdefault(term, None)
-    return " OR ".join(f'"{term}"' for term in list(unique)[:MAX_QUERY_TERMS])
+    return " OR ".join(f'"{term}"' for term in _query_terms(query, min_length=_MIN_TRIGRAM_CHARS))
+
+
+__all__ = [
+    "Fts5UnavailableError",
+    "IndexBuildError",
+    "IndexUnreadableError",
+    "IndexableChunk",
+    "SqliteIndexStore",
+    "fts5_available",
+]

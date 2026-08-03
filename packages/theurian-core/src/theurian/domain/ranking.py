@@ -236,6 +236,37 @@ class Packed:
     dropped: int = 0
 
 
+def take_within_budget(costs: Sequence[int], *, budget_tokens: int) -> tuple[int, int]:
+    """How many leading items fit a budget, and what they cost (FR-R4).
+
+    Strictly a prefix, never a knapsack fill. Skipping a large high-ranked result
+    to fit two small low-ranked ones would quietly reorder relevance to optimise
+    a number the caller cannot see.
+
+    Always takes at least one when any exist: a caller whose budget is smaller
+    than the single best result is better served by one over-long answer they can
+    truncate than by an empty one they cannot act on.
+
+    Separate from :func:`pack` because the budget rule outlived the type it was
+    written for. Retrieval's unranked substring fallback owes the caller the same
+    promise, and had no `Fused` to pass — so it honoured no budget at all, which
+    is how FR-R4 came to hold on one of two answer paths.
+
+    Returns:
+        ``(count, used_tokens)``.
+    """
+    if budget_tokens < 1:
+        msg = f"budget_tokens must be at least 1, got {budget_tokens}"
+        raise RankingError(msg)
+
+    used = 0
+    for count, cost in enumerate(costs):
+        if count and used + cost > budget_tokens:
+            return count, used
+        used += cost
+    return len(costs), used
+
+
 def pack(
     candidates: Sequence[Fused],
     sizes: Mapping[str, int],
@@ -244,32 +275,18 @@ def pack(
 ) -> Packed:
     """Take candidates in rank order until the budget is spent (FR-R4).
 
-    Strictly in order, never a knapsack fill. Skipping a large high-ranked result
-    to fit two small low-ranked ones would quietly reorder relevance to optimise
-    a number the caller cannot see.
-
-    Always returns at least one candidate when any exist: a caller whose budget
-    is smaller than the single best result is better served by one over-long
-    answer they can truncate than by an empty one they cannot act on.
+    See :func:`take_within_budget` for the rule this applies.
     """
-    if budget_tokens < 1:
-        msg = f"budget_tokens must be at least 1, got {budget_tokens}"
-        raise RankingError(msg)
+    # A missing size means the caller could not price this candidate. Charging
+    # the whole budget is the conservative reading; treating it as free is how a
+    # budget is silently exceeded, and `estimate_tokens` already errs high for
+    # the same reason.
+    costs = [sizes.get(candidate.chunk_id, budget_tokens) for candidate in candidates]
+    kept, used = take_within_budget(costs, budget_tokens=budget_tokens)
 
-    kept: list[Fused] = []
-    used = 0
-    for candidate in candidates:
-        # A missing size means the caller could not price this candidate.
-        # Charging the whole budget is the conservative reading; treating it as
-        # free is how a budget is silently exceeded, and `estimate_tokens`
-        # already errs high for the same reason.
-        cost = sizes.get(candidate.chunk_id, budget_tokens)
-        if kept and used + cost > budget_tokens:
-            break
-        kept.append(candidate)
-        used += cost
-
-    return Packed(candidates=tuple(kept), used_tokens=used, dropped=len(candidates) - len(kept))
+    return Packed(
+        candidates=tuple(candidates[:kept]), used_tokens=used, dropped=len(candidates) - kept
+    )
 
 
 def mode_of(rankings: Mapping[str, Sequence[Ranked]]) -> RetrievalMode:

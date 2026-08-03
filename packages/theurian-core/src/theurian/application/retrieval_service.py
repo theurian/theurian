@@ -18,12 +18,13 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, final
+from typing import Final, final
 
 from theurian.domain.chunking import IndexableChunk, chunk_document
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.ranking import (
@@ -95,6 +96,12 @@ class SearchRequest:
     use_dense: bool = False
     #: Chunks any one item may contribute. Two lets a long document make its
     #: case twice without crowding out every other opinion.
+    #:
+    #: A caller that presents *one result per document* must pass 1, not collapse
+    #: duplicates afterwards. The cap is applied immediately after fusion and
+    #: therefore before `limit` and before the budget: a second chunk removed
+    #: later has already taken a result slot and already been charged tokens, so
+    #: collapsing at the end costs recall and misstates `used_tokens`.
     per_item: int = 2
 
 
@@ -118,7 +125,7 @@ class IndexBuilder:
     def __init__(
         self,
         *,
-        store_factory: Callable[[Path], Any],
+        store_factory: Callable[[Path], CanonicalReadSession],
         index_factory: Callable[[Path], IndexStore],
         embedder: EmbeddingProvider | None = None,
     ) -> None:
@@ -250,7 +257,9 @@ class RetrievalService:
         fused = reciprocal_rank_fusion(rankings)
         diversified = diversify(fused, per_item=request.per_item)[: request.limit]
 
-        sizes = self._index.token_sizes([candidate.chunk_id for candidate in diversified])
+        sizes = self._index.token_sizes(
+            [candidate.chunk_id for candidate in diversified], project_id=request.project_id
+        )
         packed = pack(diversified, sizes, budget_tokens=request.budget_tokens)
 
         return SearchOutcome(

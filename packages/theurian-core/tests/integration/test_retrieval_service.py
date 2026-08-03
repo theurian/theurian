@@ -23,7 +23,7 @@ from theurian.application.retrieval_service import (
 )
 from theurian.cli.main import app
 from theurian.domain.ports.embedding import EmbeddingProvider
-from theurian.domain.ranking import RetrievalMode
+from theurian.domain.ranking import DENSE, RetrievalMode
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -231,16 +231,29 @@ def test_an_index_without_embeddings_degrades_visibly_to_lexical(project: Path) 
 def test_a_morphological_variant_is_found_only_with_the_dense_retriever(
     project: Path,
 ) -> None:
-    """The reason the default embedder ships at all. FTS5 matches terms
-    exactly, so "rotating" does not retrieve a document that says "Rotating"...
-    but it does retrieve one that says "rotation" once n-grams are involved.
+    """The reason the default embedder ships at all.
+
+    The query has to be one FTS5 genuinely cannot answer. "credential rotating"
+    is not: `unicode61` folds case, the body says "Rotating a credential", and
+    the lexical retriever matched it on its own -- so the assertion held with
+    the dense retriever switched off entirely. "autentication" is a typo that
+    appears nowhere, which only character n-grams can bridge.
     """
     embedder = HashingEmbedding()
-    hybrid = _service(_build(project, embedder=embedder), embedder)
+    index_path = _build(project, embedder=embedder)
 
-    outcome = hybrid.search(SearchRequest(query="credential rotating", project_id="demo"))
+    without = _service(index_path, embedder).search(
+        SearchRequest(query="autentication", project_id="demo")
+    )
+    with_dense = _service(index_path, embedder).search(
+        SearchRequest(query="autentication", project_id="demo", use_dense=True)
+    )
 
-    assert outcome.candidates, "n-grams bridge the morphological gap"
+    assert without.candidates == (), "FTS5 matches terms exactly and finds nothing"
+    assert with_dense.candidates, "n-grams bridge the morphological gap"
+    assert with_dense.candidates[0].item_id == "architecture.auth"
+    assert DENSE in with_dense.candidates[0].ranks, "the dense retriever is what surfaced it"
+    assert with_dense.mode is RetrievalMode.DENSE
 
 
 def test_another_project_is_never_returned(project: Path) -> None:
@@ -272,12 +285,22 @@ def test_the_token_budget_is_respected(project: Path) -> None:
 
 def test_what_was_dropped_for_space_is_reported(project: Path) -> None:
     """ "Nothing else matched" and "your budget ran out" lead to different next
-    actions, so they are different answers."""
+    actions, so they are different answers.
+
+    `>= 0` is true of every integer this field can hold, including the 0 that a
+    `pack` reporting nothing dropped would return. The count is asserted against
+    what the same query finds with room to spare instead.
+    """
     service = _service(_build(project, embedder=None), None)
 
-    outcome = service.search(SearchRequest(query="policy", project_id="demo", budget_tokens=20))
+    roomy = service.search(SearchRequest(query="policy", project_id="demo", budget_tokens=32_000))
+    squeezed = service.search(SearchRequest(query="policy", project_id="demo", budget_tokens=20))
 
-    assert outcome.dropped_for_budget >= 0
+    assert len(roomy.candidates) > 1, "the fixture must offer something to drop"
+    assert roomy.dropped_for_budget == 0, "nothing is dropped when nothing is tight"
+    assert len(squeezed.candidates) < len(roomy.candidates)
+    assert squeezed.dropped_for_budget == len(roomy.candidates) - len(squeezed.candidates)
+    assert squeezed.used_tokens <= 20 or len(squeezed.candidates) == 1
 
 
 def test_two_identical_searches_return_the_same_order(project: Path) -> None:

@@ -12,6 +12,8 @@ import pytest
 
 from theurian.domain.chunking import Chunk
 from theurian.infrastructure.sqlite.index_store import (
+    MAX_QUERY_CHARS,
+    MAX_QUERY_TERMS,
     IndexableChunk,
     IndexBuildError,
     SqliteIndexStore,
@@ -102,19 +104,34 @@ def test_matching_is_case_and_accent_insensitive(store: SqliteIndexStore) -> Non
     assert store.search_lexical("RESUME", project_id="demo")
 
 
-def test_all_query_terms_must_appear(store: SqliteIndexStore) -> None:
-    """Any-term matching on a knowledge base returns everything, which is the
-    same as returning nothing useful."""
+def test_matching_every_term_beats_matching_one_of_them(store: SqliteIndexStore) -> None:
+    """Terms are ORed, and precision is BM25's job rather than the matcher's.
+
+    ANDing them read better and shipped broken: `unicode61` has no stop words,
+    so a real question required `how` and `do` to appear in the chunk and
+    matched nothing at all -- see
+    :func:`test_a_natural_language_question_reaches_the_lexical_index`, which
+    fails if this is ever changed back. So a partial match is *returned*; what
+    protects the caller is that it loses.
+
+    This test previously asserted the opposite -- that every term must appear --
+    and could not fail either way: its only control document contained neither
+    query term, so it was excluded under AND and under OR alike. Both halves
+    below are therefore load-bearing. The exclusion is what stops "any term"
+    from meaning "everything"; the order is what replaced the AND guarantee.
+    """
     store.add_chunks(
         [
-            _indexable("c1", "Authentication uses signed tokens."),
-            _indexable("c2", "Caching uses a short TTL.", item="architecture.cache"),
+            _indexable("both", "Authentication uses signed tokens."),
+            _indexable("one", "Tokens are minted hourly.", item="architecture.mint"),
+            _indexable("neither", "Caching uses a short TTL.", item="architecture.cache"),
         ]
     )
 
     hits = store.search_lexical("authentication tokens", project_id="demo")
 
-    assert [h.chunk_id for h in hits] == ["c1"]
+    assert [h.chunk_id for h in hits] == ["both", "one"], "a chunk sharing no term is not returned"
+    assert hits[0].score > hits[1].score, "the full match outranks the partial one"
 
 
 def test_fts5_operators_typed_by_a_user_are_treated_as_words(store: SqliteIndexStore) -> None:
@@ -153,6 +170,59 @@ def test_punctuation_never_raises_at_the_user(store: SqliteIndexStore, query: st
     store.add_chunks([_indexable("c1", "some text")])
 
     assert store.search_lexical(query, project_id="demo") == ()
+
+
+@pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
+@pytest.mark.parametrize("query", ["token\x00", "tok\x00en"])
+def test_a_nul_byte_in_a_query_returns_nothing_rather_than_raising(
+    store: SqliteIndexStore, query: str, retriever: str
+) -> None:
+    """An input that survives quoting and still breaks FTS5.
+
+    `_to_match_expression` wraps every term in quotes, so no punctuation reaches
+    FTS5 as syntax. A NUL is not punctuation: SQLite's contract is a
+    NUL-terminated UTF-8 string, so the C string ends early and FTS5 reports
+    `unterminated string` -- a message containing neither "fts5" nor "syntax",
+    which is why the guard used to miss it and re-raise at the caller.
+
+    Both retrievers, because both used to fail and only one was reported.
+    JSON-RPC can carry ``\\u0000``, so an agent can send this.
+    """
+    store.add_chunks([_indexable("c1", "every call carries a signed token")])
+
+    assert getattr(store, retriever)(query, project_id="demo", limit=10) == ()
+
+
+@pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
+@pytest.mark.parametrize("query", ["token\ud800", "tok\udc80en"])
+def test_a_lone_surrogate_in_a_query_returns_nothing_rather_than_raising(
+    store: SqliteIndexStore, query: str, retriever: str
+) -> None:
+    """The same defect as the NUL, arriving as a different exception.
+
+    An unpaired surrogate cannot be encoded as UTF-8 at all, so the driver
+    raises `UnicodeEncodeError` before SQLite is called -- which no
+    `except sqlite3.OperationalError` could have caught, however well written.
+    `json.loads('"\\\\ud800"')` yields one, so this is reachable over JSON-RPC.
+    """
+    store.add_chunks([_indexable("c1", "every call carries a signed token")])
+
+    assert getattr(store, retriever)(query, project_id="demo", limit=10) == ()
+
+
+def test_a_well_formed_term_survives_beside_an_untransportable_one(
+    store: SqliteIndexStore,
+) -> None:
+    """The whole query is not thrown away for one bad byte.
+
+    Dropping the offending *term* rather than the query keeps a search usable
+    when a caller concatenated something odd onto the end of it.
+    """
+    store.add_chunks([_indexable("c1", "every call carries a signed token")])
+
+    hits = store.search_lexical("carries token\x00", project_id="demo", limit=10)
+
+    assert [h.chunk_id for h in hits] == ["c1"]
 
 
 def test_results_are_ranked_best_first(store: SqliteIndexStore) -> None:
@@ -358,6 +428,70 @@ def test_substring_matching_still_discriminates(store: SqliteIndexStore) -> None
     assert store.search_substring("課金モデル", project_id="demo") == ()
 
 
+def test_the_substring_index_is_scoped_to_one_project(store: SqliteIndexStore) -> None:
+    """SEC-13, FR-R1, for the newest retriever.
+
+    Every query above this one is single-project, so the trigram retriever's
+    scoping was carried entirely by the word index's tests: removing the
+    ``project_id`` predicate from all three retrievers killed the lexical and
+    dense isolation tests and left every substring test green. A retriever added
+    later must not inherit an isolation guarantee it is never asked to prove.
+    """
+    store.add_chunks(
+        [
+            _indexable("mine", JAPANESE, project="demo"),
+            _indexable("theirs", JAPANESE, project="other", item="architecture.other"),
+        ]
+    )
+
+    mine = store.search_substring("トークン", project_id="demo")
+    theirs = store.search_substring("トークン", project_id="other")
+
+    assert [h.chunk_id for h in mine] == ["mine"]
+    assert [h.chunk_id for h in theirs] == ["theirs"]
+
+
+def test_the_substring_index_withholds_drafts_too(store: SqliteIndexStore) -> None:
+    """The status filter is per retriever, so it is asserted per retriever.
+
+    A draft reachable through trigrams but not through terms would be withheld
+    from an English query and served for a Japanese one.
+    """
+    store.add_chunks(
+        [
+            _indexable("approved", JAPANESE, status="approved"),
+            _indexable("draft", JAPANESE, status="draft", item="architecture.draft"),
+        ]
+    )
+
+    withheld = store.search_substring("トークン", project_id="demo")
+    asked_for = store.search_substring("トークン", project_id="demo", include_unapproved=True)
+
+    assert [h.chunk_id for h in withheld] == ["approved"]
+    assert len(asked_for) == 2
+
+
+def test_the_substring_index_ors_its_terms_like_the_word_index(store: SqliteIndexStore) -> None:
+    """The two lexical retrievers must agree about what a multi-term query means.
+
+    Switching this one to AND changed nothing in the suite: every substring test
+    sent a single term, so the conjunction was never exercised. Divergence here
+    would be invisible and would surface as a Japanese query answering
+    differently from its English equivalent.
+    """
+    store.add_chunks(
+        [
+            _indexable("both", "トークンのローテーション手順"),
+            _indexable("one", "ローテーションのみを説明する文書", item="architecture.rotate"),
+            _indexable("neither", "課金モデルの説明", item="architecture.billing"),
+        ]
+    )
+
+    hits = store.search_substring("トークン ローテーション", project_id="demo")
+
+    assert sorted(h.chunk_id for h in hits) == ["both", "one"], "OR, as the word index does"
+
+
 def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStore) -> None:
     """Documents a known gap rather than a desired behaviour.
 
@@ -373,3 +507,51 @@ def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStor
 
     assert store.search_lexical("the", project_id="demo"), "known gap, not a feature"
     assert store.search_lexical("gateway token", project_id="demo")
+
+
+# -- Input bounds (SEC-8) ----------------------------------------------------
+#
+# `MAX_QUERY_CHARS` and `MAX_QUERY_TERMS` carry a measured DoS rationale -- a
+# 2,000-term query did not finish inside a minute, and `sqlite3` releases the
+# GIL, so a handful of them starve every tool call for every project this daemon
+# serves. Neither constant was named anywhere in the suite: raising both to a
+# hundred million broke nothing.
+
+
+def test_a_query_is_truncated_at_the_character_bound(store: SqliteIndexStore) -> None:
+    """The bound is a truncation, so it has to be observable as one.
+
+    The term is placed just past the cut, where it is dropped, and just before
+    it, where it is kept. A test that only sent a long query would pass against
+    no bound at all.
+
+    This pins the *mechanism*, not the number: the padding is sized from
+    :data:`MAX_QUERY_CHARS`, so retuning the constant moves both sides together
+    and this test follows. Deleting the truncation is what it fails on, which is
+    the regression worth catching -- the number is a deliberate knob and the
+    rationale for its value lives with the constant.
+    """
+    store.add_chunks([_indexable("c1", "the gateway rejects an unsigned request")])
+    padding = "x" * MAX_QUERY_CHARS
+
+    assert store.search_lexical(f"{padding} gateway", project_id="demo") == (), "past the cut"
+    assert store.search_lexical(f"gateway {padding}", project_id="demo"), "before the cut"
+
+
+def test_only_the_first_terms_by_length_are_spent(store: SqliteIndexStore) -> None:
+    """FR-R7 and SEC-8 together: bounded, and bounded the same way every time.
+
+    Longest-first is the selection rule, not a display order -- an English
+    question front-loads its least selective words, so taking the first N as
+    typed would keep `how`, `do`, `we` and discard the noun the caller believes
+    they searched for. Pinned here because nothing else states it.
+    """
+    store.add_chunks([_indexable("c1", "gateway")])
+    fillers = " ".join(f"filler{index:04d}long" for index in range(MAX_QUERY_TERMS))
+
+    assert store.search_lexical(f"gateway {fillers}", project_id="demo") == (), (
+        "the short, real term loses its slot to longer fillers"
+    )
+    assert store.search_lexical(f"gateway {fillers[:20]}", project_id="demo"), (
+        "well inside the bound, the same term is spent"
+    )
