@@ -139,11 +139,18 @@ class ProjectPaths:
 
 
 def derive_project_id(root: Path) -> ProjectId:
-    """Derive a stable, readable project id from a directory name.
+    """Propose a stable, readable project id from a directory name.
 
     Deliberately derived from the *name* rather than the absolute path: moving a
     repository must not change its identity, and a path-derived id would leak a
     machine-specific value into a shared registry.
+
+    **A proposal, not an identity.** Directory names are not unique — a user with
+    both ``team-one/api`` and ``team-two/api`` gets ``api`` twice — so what this
+    returns is only the default offered at registration. The registry is the
+    authority for a project that has been registered, and it refuses to let a
+    second root take an id that is already spoken for
+    (:meth:`ProjectRegistry.register`).
     """
     slug = _SLUG_INVALID.sub("-", root.resolve().name.lower()).strip("-")
     if not slug:
@@ -303,6 +310,21 @@ class ProjectRegistry:
             raise ProjectError(f"{self.path} is not valid JSON: {exc}") from exc
         return loaded
 
+    def id_for_root(self, root: Path) -> ProjectId | None:
+        """The id this root is registered under, or ``None``.
+
+        Root path, not directory name, is what identifies a registration: the
+        name is only how an id gets *proposed*. Callers resolving "which project
+        am I in" must ask this before falling back to :func:`derive_project_id`,
+        or a project registered under a disambiguated id would be addressed by
+        the colliding default instead.
+        """
+        wanted = root.resolve()
+        for project_id, entry in self.load().items():
+            if Path(entry.get("rootPath", "")).resolve() == wanted:
+                return ProjectId(project_id)
+        return None
+
     def register(self, project: Project) -> bool:
         """Add or update a registration.
 
@@ -310,12 +332,39 @@ class ProjectRegistry:
             ``True`` if anything changed. Re-registering an identical project is
             a no-op, so setup can run repeatedly without churn (FR-L2).
 
+        Raises:
+            ProjectError: If the id is already registered to a different root.
+
         ``registeredAt`` records when the project was *first* registered and is
         preserved across re-registration. Refreshing it would make every re-run
         report a change and defeat the idempotence FR-L2 requires.
+
+        **Why a collision is refused rather than resolved.** Ids default to the
+        directory name, and directory names repeat: ``team-one/api`` and
+        ``team-two/api`` both propose ``api``. This method used to overwrite,
+        which silently re-pointed the id at the newer root — and since every MCP
+        tool resolves a project by asking this registry for a root path, an agent
+        working in ``team-one`` that asked for ``api`` was served ``team-two``'s
+        knowledge, with no error and nothing in the answer saying which
+        repository it came from (SEC-13).
+
+        Picking a suffix automatically would be worse than either: an already
+        configured agent keeps naming ``api`` and would silently follow the id to
+        whichever project kept it. So the collision is surfaced to the person who
+        can actually decide, at the one moment they are present.
         """
         entries = self.load()
         existing = entries.get(project.project_id.value)
+
+        if existing is not None:
+            registered_root = Path(existing.get("rootPath", "")).resolve()
+            if registered_root != Path(project.root_path).resolve():
+                raise ProjectError(
+                    f"Project id {project.project_id.value!r} is already registered to "
+                    f"{registered_root}, so it cannot also name {project.root_path}. "
+                    f"Register this one under a distinct id: "
+                    f"`theurian project register --project-id <id>`."
+                )
 
         entry = {
             "rootPath": project.root_path,

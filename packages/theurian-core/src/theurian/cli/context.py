@@ -140,8 +140,17 @@ class CommandContext:
         return MigrationEngine(self.clock, self.loaded.content_by_hash)
 
 
-def resolve_context(start: Path | None = None) -> CommandContext:
+def resolve_context(
+    start: Path | None = None, project_id: ProjectId | None = None
+) -> CommandContext:
     """Build a command context for the project containing ``start``.
+
+    The id is resolved in three steps, most authoritative first: an explicit
+    argument (how a user breaks a collision), then the registry keyed by root
+    path, then the directory-name default. Skipping the registry lookup would
+    mean a project registered under a disambiguated id was addressed by the
+    colliding default on its own command line — the CLI writing to one project
+    while every agent reads the other.
 
     Raises:
         ProjectError: If ``start`` is not inside a Git repository.
@@ -158,7 +167,7 @@ def resolve_context(start: Path | None = None) -> CommandContext:
     loaded = load_migrations(paths.root, paths.migrations, schema_root())
 
     return CommandContext(
-        project_id=derive_project_id(root),
+        project_id=project_id or registry().id_for_root(root) or derive_project_id(root),
         paths=paths,
         loaded=loaded,
         state_hash=resolve_state_hash(loaded, SCHEMA_VERSION),

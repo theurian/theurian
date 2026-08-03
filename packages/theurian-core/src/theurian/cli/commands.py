@@ -136,15 +136,26 @@ def project_register(
     path: Annotated[
         Path | None, typer.Argument(help="Project root. Defaults to the current directory.")
     ] = None,
+    project_id: Annotated[
+        str | None,
+        typer.Option(
+            "--project-id",
+            help="Override the id. Needed when another project already holds the default.",
+        ),
+    ] = None,
     as_json: JsonOption = False,
 ) -> None:
     """Register a Git working tree as a project.
 
     One worktree is one project: two worktrees of the same repository can sit on
     different branches and therefore hold different knowledge (FR-P5).
+
+    The id defaults to the directory name, which is not unique across a machine.
+    A clash is refused rather than silently resolved -- see
+    :meth:`ProjectRegistry.register` -- and ``--project-id`` is how it is broken.
     """
     try:
-        context = resolve_context(path)
+        context = resolve_context(path, ProjectId(project_id) if project_id else None)
     except TheurianError as exc:
         _fail(str(exc), remedy="Run this inside a Git repository.", as_json=as_json, code=1)
         return
@@ -159,7 +170,17 @@ def project_register(
         last_seen_commit=current_commit(context.paths.root),
     )
 
-    changed = registry().register(project)
+    try:
+        changed = registry().register(project)
+    except TheurianError as exc:
+        _fail(
+            str(exc),
+            remedy="Choose a distinct id with `--project-id`, or unregister the other project.",
+            as_json=as_json,
+            code=1,
+        )
+        return
+
     _emit(
         {
             "projectId": project.project_id.value,
