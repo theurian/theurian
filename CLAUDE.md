@@ -8,12 +8,56 @@ The distinction matters because the expensive mistakes are orchestration
 mistakes. A reviewer that finds a CRITICAL is doing its job; an orchestrator that
 receives one and quietly downgrades it is not.
 
+## The orchestrator does not implement
+
+**Claude Code in the main session orchestrates. It does not write the change
+itself.** Every unit of work — production code, tests, documentation, build and
+CI configuration — is assigned to the specialist that owns it:
+
+| Work | Owner |
+| :-- | :-- |
+| Production Python | `theurian-python` |
+| Tests, fixtures, mutation checks | `theurian-tests` |
+| README, CHANGELOG, ADRs, docstring-level prose | `theurian-docs` |
+| MCP surface: tools, schemas, wire contract | `theurian-mcp` |
+| Workflow, packaging, quality gate | `theurian-ci` |
+| Review | the three reviewers below |
+
+This holds even when the orchestrator can obviously see the fix. The reason is
+not effort but **independence**: work that is written and then reviewed inside a
+single context gets graded by the mind that produced it, and that mind has
+already decided the change is correct. Handing implementation to one agent and
+judgement to another is what makes the review round mean anything.
+
+What the orchestrator keeps for itself:
+
+- deciding **what** to assign, and to whom, and in what order;
+- writing each brief — scope, requirement IDs, ADRs, known-unfinished;
+- **verifying** the returned work by running it, never by reading it;
+- weighing findings against the severity rules below, and deciding what is
+  blocking;
+- relaying results to the user.
+
+Two narrow exceptions, both of which must be stated in the response when used:
+
+1. **Reproduction and verification scratch scripts.** Confirming a defect exists,
+   or that a returned fix actually closes it, is the orchestrator's own job — it
+   is the check on the specialists, so it cannot be delegated to them.
+2. **A trivial mechanical follow-up inside work already delivered and
+   reviewed** — a rename, a moved import, a typo. If it needs a decision, it is
+   not mechanical; assign it.
+
+When several assignments are independent, launch them **in one message** so they
+run concurrently. Sequence them only where one genuinely consumes another's
+output.
+
 ## Milestone definition of done
 
 A milestone is not done when the code works. It is done when all of this has
 happened, in order:
 
-1. **Implement**, with the quality gate green after every logical commit:
+1. **Implement — by assignment, never by the orchestrator** (see above), with the
+   quality gate green after every logical commit:
    `uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest -q`
 2. **Run it for real.** A scratch script or a real CLI invocation against a
    temporary `HOME` and `THEURIAN_DATA_DIR`. Every milestone so far has found a
