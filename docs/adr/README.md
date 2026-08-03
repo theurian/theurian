@@ -30,6 +30,7 @@ alternatives that were rejected and why.
 | [0020](0020-deterministic-text-projection.md) | Text projection of structured sources is a deterministic pure function | accepted |
 | [0021](0021-rank-fusion-over-score-normalisation.md) | Fuse retrievers by rank, not by normalised score | accepted |
 | [0022](0022-index-lives-in-its-own-database.md) | The retrieval index lives in its own database file | accepted |
+| [0023](0023-trigram-index-beside-the-word-index.md) | A trigram index beside the word index, not instead of it | accepted |
 
 ## Writing a new ADR
 

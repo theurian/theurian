@@ -27,8 +27,11 @@ callable.
 > **Status: Milestone 5.** The canonical store works, sources are ingested, a
 > single local MCP daemon serves that knowledge over authenticated loopback
 > HTTP, `theurian setup` installs the whole thing idempotently, and search is
-> ranked hybrid retrieval — lexical and dense, fused with RRF, packed to a
-> token budget. See the [roadmap](#roadmap).
+> ranked retrieval — two lexical indexes fused with RRF, diversified, and packed
+> to a token budget. Japanese, Chinese, and Thai knowledge is searchable, which
+> needed a trigram index to work at all. Dense retrieval is built and
+> **off by default**, for a measured reason given [below](#retrieval). See the
+> [roadmap](#roadmap).
 
 ---
 
@@ -147,6 +150,16 @@ theurian ingest                # normalize knowledge and specification sources
 theurian project status
 ```
 
+A project's id defaults to its directory name, which is not unique on a machine:
+`team-one/api` and `team-two/api` both propose `api`. The second registration is
+**refused** rather than silently taking the id from the first — an agent asking
+for `api` would otherwise be handed the other repository's knowledge with nothing
+in the answer saying so. Break the tie explicitly:
+
+```sh
+theurian project register --project-id team-two-api
+```
+
 Or let setup do all of it:
 
 ```sh
@@ -195,24 +208,6 @@ Starting a second daemon is safe: it detects the first, reports `reuse`, and
 exits 0. One process serves every project you register and every agent that
 connects.
 
-Build a retrieval index so search is ranked rather than a substring scan:
-
-```sh
-theurian index build    # lexical + dense, written to its own file
-theurian index status   # is the index still current with your knowledge?
-```
-
-`knowledge.search` fuses a lexical (SQLite FTS5) and a dense retriever with
-Reciprocal Rank Fusion, caps how many chunks any one document may contribute,
-and packs results into a `maxTokens` budget. Every hit says which retrievers
-found it, so a ranking can be explained rather than just trusted.
-
-The default embedder is deliberately modest: deterministic hashed character
-trigrams, no API key, no download. It buys tolerance for morphological variants
-and typos, **not** meaning — and it says so, so a hybrid search backed by
-n-grams is never mistaken for one backed by a semantic model. A real model plugs
-in through the `EmbeddingProvider` port without touching anything else.
-
 Underneath it all is the part everything depends on: a canonical store
 reproducible from Git that refuses to let an applied migration change and
 reports conflicting edits instead of merging them, served to agents with
@@ -232,6 +227,56 @@ With Claude Code:
 Installing the plugin does nothing on its own — no daemon starts, no OS service
 is registered. `/theurian:setup` is the only command that installs anything, it
 shows a plan first, and running it twice changes nothing.
+
+## Retrieval
+
+Build a retrieval index so search is ranked rather than a substring scan:
+
+```sh
+theurian index build    # written to its own file, separate from canonical state
+theurian index status   # is the index still current with your knowledge?
+```
+
+`knowledge.search` runs several retrievers and fuses them with Reciprocal Rank
+Fusion, caps how many chunks any one document may contribute, and packs results
+into a `maxTokens` budget. Every hit reports `foundBy` — which retrievers
+surfaced it — so a ranking can be explained rather than just trusted.
+
+| Retriever | What it is | Default |
+| :-- | :-- | :-- |
+| `lexical` | SQLite FTS5, `unicode61` tokenizer. Ranks exact terms — identifiers, error codes, config keys. | on |
+| `substring` | SQLite FTS5, `trigram` tokenizer. Matches inside words, which is the only way a script without word spacing is searchable. | on |
+| `dense` | Cosine similarity over embeddings, by exact scan. | **off** |
+
+**Languages without word spacing work.** `unicode61` splits on whitespace and
+punctuation and nothing else, so `署名付きトークンを持つ` is a single token and a
+search for `トークン` used to match nothing at all — the entire knowledge base of
+a Japanese project was invisible. The trigram index sits beside the word index
+rather than replacing it, because trigrams are worse at exactly what engineering
+queries are made of: a trigram search for `cat` also matches `concatenate`.
+Fusing both means each covers the other's blind spot.
+([ADR-0023](docs/adr/0023-trigram-index-beside-the-word-index.md))
+
+**Dense retrieval is off by default, and that is measured rather than cautious.**
+The bundled embedder is deterministic hashed character trigrams — no API key, no
+download — and it buys tolerance for morphological variants and typos, **not**
+meaning. Tested against a real corpus, 91% of *unrelated* natural-language
+questions cleared its similarity floor, while the lowest genuinely related query
+scored below the unrelated median. There is no threshold that separates those
+distributions, so turning it on by default would add noise and call it recall.
+
+Pass `useDense: true` to switch it on anyway; the code path is kept and tested
+so that configuring a real model through the `EmbeddingProvider` port is a
+configuration change and not a first run of untested code. `retrieval.mode` says
+which retrievers actually ran and `retrieval.embeddingModel` names the model, so
+an n-gram-backed search is never mistaken for a semantic one.
+([ADR-0021](docs/adr/0021-rank-fusion-over-score-normalisation.md))
+
+**Rebuild the index after upgrading.** The trigram index made the index schema
+version 2, and an index built under version 1 is not detected — it simply
+answers without the trigram half, which on a Japanese knowledge base means it
+answers with nothing. `theurian index build` is the whole remedy; the index is
+derived, so nothing is lost.
 
 ## Theurian and Serena
 
@@ -278,15 +323,15 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | 2 | Source ingestion: Markdown, YAML, JSON, OpenAPI | **done** |
 | 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | **done** |
 | 4 | Claude Code plugin: setup, doctor, service adapters | **done** |
-| 5 | Hybrid retrieval: FTS5, vectors, RRF, token budgets | **done** |
-| 6 | RAPTOR forest, incremental rebuild, blue/green index | next |
+| 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
+| 6 | RAPTOR forest, incremental rebuild, blue/green index, scope filtering, index schema version check | next |
 | 7 | GitHub review ingestion and knowledge candidates | planned |
 | 8 | Specification and traceability tooling, drift detection | planned |
 
 ## Documentation
 
 - [Requirements and architecture analysis](docs/architecture/requirements-analysis.md) — the reasoning behind everything here
-- [Architecture decision records](docs/adr/README.md) — fifteen decisions and the alternatives rejected
+- [Architecture decision records](docs/adr/README.md) — twenty-three decisions and the alternatives rejected
 - [Threat model](docs/security/threat-model.md)
 - [Local MCP security](docs/security/local-mcp.md)
 - [Migration format](docs/protocol/migrations.md)

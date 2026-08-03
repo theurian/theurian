@@ -48,6 +48,31 @@ always need a full re-index.
 6. The previous build is not deleted when a new one is published. A search
    already reading it keeps a consistent view.
 
+   > **Amended in Milestone 5. This point is withdrawn, not delivered.**
+   > `theurian index build` publishes the new pointer and then reaps every build
+   > the pointer does not name, so the previous file is gone by the time the
+   > command returns. Verified by running two builds in a row against a real
+   > project: the first build's file is absent afterwards.
+   >
+   > The reason is that the guarantee this point promised was never real.
+   > `SqliteIndexStore` holds no connection between calls — it opens and closes
+   > per query, and one search opens several — so "a search already reading it"
+   > describes no actual reader, and every gap between those connections is a
+   > window in which the file can vanish anyway. Worse, `sqlite3.connect` on a
+   > deleted path *creates an empty database there*, which defeats the "no index
+   > file, fall back to substring scan" branch and surfaces a raw `no such
+   > table` to the agent. Keeping the old file made that window larger, not
+   > smaller.
+   >
+   > Reaping eagerly also fixes a second problem: two concurrent builds would
+   > each have deleted the other's file. Reaping reads the pointer and keeps
+   > what it names, rather than what the running process happens to have built.
+   >
+   > A search that genuinely survives a rebuild needs a reader that holds its
+   > file open for the duration, which is the blue/green index work in Milestone
+   > 6. Until then, a search racing a rebuild falls back to the substring scan
+   > rather than answering from a half-visible index.
+
 ## Consequences
 
 ### Positive
@@ -67,6 +92,11 @@ always need a full re-index.
 - Old builds accumulate until replaced. Reaping them belongs with the blue/green
   work in Milestone 6.
 
+  > **Amended in Milestone 5.** Reaping landed here instead, for the reason in
+  > the amendment to point 6 above: keeping old builds turned out to be a
+  > hazard rather than a courtesy. Each build deletes every index file the
+  > published pointer does not name, so a project holds exactly one.
+
 ### Neutral
 
 - A cross-project search (FR-R8) will need to open several index files. That is
@@ -83,6 +113,8 @@ always need a full re-index.
 
 ## Compliance
 
+Landed in Milestone 5:
+
 - `tests/integration/test_index_store.py::test_the_index_lives_apart_from_the_canonical_store`
 - `tests/integration/test_retrieval_service.py::test_the_index_is_a_separate_file_from_the_canonical_store`
   — asserts the canonical database is untouched by an index build.
@@ -97,3 +129,22 @@ always need a full re-index.
 - `tests/integration/test_mcp_tools.py::test_a_pointer_to_a_missing_index_falls_back_instead_of_failing`
   — a pointer that outlived its file is a missing optimisation, not a refusal to
   answer.
+
+Point 3 was exercised within the same milestone that made it. Adding the trigram
+table ([ADR-0023](0023-trigram-index-beside-the-word-index.md)) took
+`INDEX_SCHEMA_VERSION` from 1 to 2 and cost an index rebuild and nothing else:
+no canonical `SCHEMA_VERSION` bump, no state hash change, no canonical database
+invalidated. That is the whole argument of this ADR, run once for real.
+
+Still owed, with the milestone that will satisfy it:
+
+- **`INDEX_SCHEMA_VERSION` is written and never read** (Milestone 6). Point 3
+  gives the index its own version so it can be rebuilt on its own schedule, but
+  nothing compares the stored value against the running one, so an index built
+  under an older schema is used rather than reported. Measured for the 1 → 2
+  case: the missing table surfaces as `sqlite3.OperationalError`, which
+  `search_substring` catches and answers with no results. Belongs with the
+  blue/green index work that already owns index lifecycle.
+- **A search concurrent with a rebuild is not protected** (Milestone 6). See the
+  amendment to point 6: the guarantee that ADR gave has not been replaced, only
+  withdrawn. It belongs with the blue/green work.

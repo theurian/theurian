@@ -32,6 +32,26 @@ in-tree deterministic default that requires no network.**
 | `SummarizationProvider` | extractive (lead + salient sentence selection) | grounded by construction; never hallucinates because it never generates |
 | `RerankingProvider` | identity (preserves fusion order) | no gain, no loss |
 
+> **Amended in Milestone 5.** "Usable" was too generous, and measuring it said
+> so. The shipped `EmbeddingProvider` default is `theurian-hashed-char-ngram`, a
+> hashed character trigram vectoriser, and against a real corpus **91% of
+> unrelated natural-language questions cleared its similarity floor** while the
+> lowest genuinely related query fell below the unrelated median. As a retriever
+> it is not weak, it is uninformative — the distributions overlap, so no
+> threshold separates them.
+>
+> The decision is unchanged: the port stays, the in-tree default stays, and no
+> API key is required. What changed is that the dense retriever is now **opt-in**
+> (`useDense`, default `false` — see the amendment to
+> [ADR-0021](0021-rank-fusion-over-score-normalisation.md)). The row above should
+> be read as: *usable as a deterministic, offline stand-in that keeps the code
+> path exercised*, not as *usable as retrieval*.
+>
+> This is the "Negative" consequence below arriving with a number attached, and
+> it strengthens rather than weakens rule 1: what makes Theurian functional
+> offline is lexical retrieval — now two tokenizers of it (ADR-0023) — not the
+> default embedder.
+
 Rules:
 
 1. Core's default configuration calls no external service and requires no API key.
@@ -94,3 +114,16 @@ Rules:
   opt-in credentialed job) each real adapter.
 - A grep-based CI check fails if a vendor name appears under `domain/` or
   `application/`.
+
+Landed in Milestone 5, for the `EmbeddingProvider` default specifically:
+
+- `tests/unit/test_hashing_embedding.py::test_it_does_not_claim_to_be_semantic`
+  — the test that keeps the amendment above honest in code rather than only in
+  prose.
+- `test_it_is_deterministic_across_processes` — rule 4 in practice. `hash()`
+  randomisation would give a rebuilt index vectors that no longer match the ones
+  a pinned result was ranked against, and the failure would look like a
+  relevance drift rather than a bug.
+- `test_it_satisfies_the_port` — the default and any future adapter answer the
+  same `EmbeddingProvider` Protocol, which is what makes swapping one a
+  configuration change rather than a code change.
