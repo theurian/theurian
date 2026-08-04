@@ -373,6 +373,58 @@ and it is off by default for that reason.
 > what it bought is a cheaper unit and not a closed channel: T-17's "closed
 > outright on this branch" is retracted there. The residual is the same face of
 > the same class and still ends with [#15](https://github.com/theurian/theurian/issues/15).
+>
+> **Corrected in Milestone 5, review round 8. The cost paragraph above — "it was
+> never compared against the alternative that actually runs today,
+> `substring_answer`, which already performs this same match in Python, over
+> whole revision bodies, one query per document" — is wrong in two ways and stale
+> in a third.** They are separated here because they are not the same kind of
+> wrong: two clauses were never true, and one was true of the moment it was
+> written.
+>
+> **"Already performs this same match in Python" — never true.**
+> `substring_answer` tests the whole query as a single literal substring
+> (`mcp/search.py`, `needle=query.strip().lower()`), where this branch is an
+> up-to-eight-term OR with a relevance order evaluated over every matching row.
+> Different work, not the same work in a different language, and the difference
+> shows from outside: handing the fallback the eight-term worst case costs it
+> what a query matching nothing costs, because it does not spend terms.
+>
+> **"One query per document" — never true. It is two.** `_scan` resolves each
+> item through `SqliteCanonicalStore.get_revision`, which reads
+> `knowledge_revisions` and then `source_anchors`. Counted off a `sqlite3` trace
+> callback rather than read off the code: one `list_items` for the project, then
+> two statements per document.
+>
+> **"Was never compared against the alternative that actually runs today" — true
+> when written, and answered in review round 8.** The comparison was made, at
+> matched corpus sizes on one machine with a minimum of three runs, and it runs
+> the *other way* from the direction this paragraph assumed. The fallback costs
+> about **half** of this branch's worst legal query at equal row counts, and on
+> document-shaped input — the same characters carried as fewer, longer documents
+> — about a seventh of it. The figures and the corpus live at
+> `index_scan.scan_statement` and under T-6 of the
+> [threat model](../security/threat-model.md) rather than being copied here, for
+> the reason given in the amendment to Decision item 4: one of each to keep true.
+>
+> **The decision this paragraph justified is unchanged, and its ground is
+> inverted.** This branch is not preferred for being cheaper, because it is not.
+> It is preferred because it is the one member of the three expensive retrievers
+> that *releases* the GIL: `_scan`'s match is a Python `in` and `_dense_ranking`
+> is pure Python, so both hold the interpreter lock for the whole of their work
+> while `sqlite3` gives it up around `execute`. Measured under four concurrent
+> callers, the fallback moves the p95 delay of the asyncio loop serving `/health`
+> clear of its idle value and this branch leaves it there. So the trade is wall
+> clock for latency isolation in a daemon shared by every project on the machine,
+> and it is a trade rather than a saving.
+>
+> **Ordering and ratios, never absolutes.** The harness cannot control the
+> machine it runs on. Re-run against a busier one for this amendment, it
+> reproduced the ordering in every column and none of the magnitudes: the p95
+> ratio came out above the band T-6 records and the worst-case ratio well below
+> it, because the idle floor it is measured against had itself moved by about
+> three times. A figure quoted from any single run of it is not a fact about the
+> product.
 
 ## Compliance
 
@@ -411,6 +463,13 @@ Landed in Milestone 5:
   `test_a_query_below_the_trigram_floor_is_answered_from_the_index`,
   `test_a_query_above_the_floor_was_already_answered` as the control, and
   `test_a_short_query_that_is_absent_still_returns_nothing`.
+
+  **"Not worse" is about what comes back, not what it costs, and the two run in
+  opposite directions.** Review round 8 measured this path at roughly twice the
+  unranked one at equal row counts — see the last amendment under Alternatives
+  considered for why it is still the right path. No test holds that cost
+  ordering; it is a benchmark, and it is recorded at `index_scan.scan_statement`
+  and under T-6 of the [threat model](../security/threat-model.md).
 - **That the scan ranks, and selects on relevance under a `LIMIT`.**
   `tests/integration/test_index_store.py::test_the_scan_below_the_floor_selects_by_relevance_not_by_creation_order`
   — the densest chunk is deliberately the newest, so dropping the relevance term
