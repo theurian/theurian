@@ -742,6 +742,45 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Blue/green index builds in Milestone 6 are what fix this properly; ADR-0022's
   original promise that the previous build survives has been withdrawn rather
   than delivered.
+- **`knowledge.status` is not covered by the equality above.** The withheld half
+  of a project cannot be read out of `itemCount` or `itemsByStatus`, which
+  exclude `deprecated`, `superseded` and `rejected` and report a total that is
+  the sum of what they do report. Two other values move: `stateHash`, which
+  covers the whole working tree by design (ADR-0016) and is query-independent —
+  the same property that makes `snapshotId` safe to publish — and
+  `appliedMigrations`, which counts migration *files*, so it increments for a
+  migration that creates only withheld items. Measured on two projects differing
+  by exactly one rejected item: `appliedMigrations` 1 against 2. It names no
+  status, id or body, no request parameter reaches it, and `stateHash` already
+  distinguishes anything it does. Accepted for this milestone with the argument
+  in T-17 and filed against Milestone 6 as
+  [#19](https://github.com/theurian/theurian/issues/19), because every remedy is
+  a change to a published tool that has no response schema to change with it.
+- **An unregistered `projectId` is echoed back into the error unbounded.** Two
+  million characters in produce a two-million-character message, against 2,000
+  for an over-long `query` (clamped by `MAX_QUERY_CHARS`) and 185 for an
+  over-long `itemId` (which reports its length instead of itself). Nothing is
+  disclosed — the caller receives bytes it sent — but the reader of the error
+  pays for them. Recorded under T-6 and filed as
+  [#17](https://github.com/theurian/theurian/issues/17); the bound is trivial and
+  where it goes decides which of three tools change their error text.
+- **A corrupt canonical state database reaches the caller with no remedy.** A
+  truncated `theurian-state-*.sqlite` answers `knowledge.search`, `knowledge.get`
+  and `knowledge.status` with `Error executing tool knowledge.search: database
+  disk image is malformed`, and one corrupted JSON column answers the first two
+  with `Expecting value: line 1 column 1 (char 0)`. Neither names the file or the
+  cure, and canonical state rebuilds from Git-tracked migrations, so the cure is
+  cheap and worth naming — `theurian index build` and `theurian migrate apply`
+  both already print it for the same state. Present before this milestone.
+  [#18](https://github.com/theurian/theurian/issues/18).
+- **`knowledge.get` and `knowledge.status` publish no response schema.**
+  `schemas/mcp/` describes `knowledge.search`, `project.list` and the tool
+  context; two of the five tools have nothing a client in another language can
+  validate against, and nowhere for the decisions above to land.
+  [#20](https://github.com/theurian/theurian/issues/20), which also collects the
+  review rounds' remaining LOW findings — three docstrings that overstate what
+  the code beside them does, a stale line-number citation, a mutable module-level
+  `SAFETY` dict, and a relation gate that publishes an id `knowledge.get` refuses.
 - Scope filtering is not implemented. `sensitivity`, `trust_level`, and
   `namespace` are carried on every chunk and read by no query; `namespace` is not
   even populated. Milestone 6.

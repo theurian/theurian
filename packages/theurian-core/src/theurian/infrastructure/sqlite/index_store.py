@@ -291,6 +291,25 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 #: whoever has the traceback still has the real cause. It is the better of two
 #: wrong answers. "Rebuild your index" costs seconds and loses nothing
 #: (ADR-0004); a traceback at an agent names no remedy and repeats forever.
+#:
+#: **The key holds beyond this file, and one member of it is known and open.**
+#: Re-drawn in `ef325c9`, it has two halves divided by who owns the error
+#: contract: the module containing the read — closed for the state pointer, the
+#: registry and the ingestion manifest — and a port adapter under ADR-0003, where
+#: this store is closed and **`SqliteCanonicalStore` is the one remaining
+#: member**. A truncated `theurian-state-*.sqlite` reaches `knowledge.search`,
+#: `knowledge.get` and `knowledge.status` as `database disk image is malformed`
+#: with no remedy, and one corrupted JSON column (`scope_paths`) reaches the
+#: first two as `Expecting value: line 1 column 1 (char 0)` — which is not a
+#: `sqlite3.Error` at all, so a guard enumerated over that hierarchy would close
+#: the first face and leave the second. Present on `main`, no published claim
+#: falsified, and converted rather than fixed in Milestone 5 because the canonical
+#: store's remedy is *delete this file and re-apply the migrations* rather than
+#: *rebuild the index*, and printing that one wrongly is expensive. Named here
+#: rather than left out: a class with an unnamed member returns as another
+#: instance of the one that was closed. Filed at
+#: https://github.com/theurian/theurian/issues/18; delete this paragraph in the
+#: change that closes it.
 _UNREADABLE_VALUES: Final = (UnicodeDecodeError, struct.error, TypeError, ValueError)
 
 

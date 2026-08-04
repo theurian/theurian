@@ -222,7 +222,13 @@ Every retrieval result carries:
 }
 ```
 
-`executable` cannot be set true — the type rejects it.
+`executable` is `const: false` in
+[`schemas/knowledge/retrieval-result.schema.json`](../../schemas/knowledge/retrieval-result.schema.json),
+and a real tool response carrying `executable: true` is rejected by it —
+asserted in `tests/integration/test_wire_contract.py`. This used to say "the type
+rejects it", naming `domain.retrieval.SafetyMetadata`, which does refuse it and
+is not on the path that produces this value; see the round-eight correction to
+T-3 in [the threat model](threat-model.md).
 
 **Theurian labels; it does not enforce.** An agent that treats document text as
 instructions will be influenced by a document that contains instructions, and no

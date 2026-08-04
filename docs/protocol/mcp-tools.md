@@ -224,8 +224,12 @@ Every knowledge-bearing result carries the same three fields, always:
 }
 ```
 
-`executable` is `const: false` in the schema and cannot be set true in the domain
-type.
+`executable` is `const: false` in the schema, and a real tool response carrying
+`executable: true` is rejected by it (`tests/integration/test_wire_contract.py`).
+This used to add "and cannot be set true in the domain type": the type that
+refuses it, `domain.retrieval.SafetyMetadata`, is not on the path that produces
+this value. See the round-eight correction to T-3 in
+[the threat model](../security/threat-model.md).
 
 **Theurian labels; it does not enforce.** A calling agent must treat retrieved
 content as data. An agent that follows instructions found inside a document will

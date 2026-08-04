@@ -508,8 +508,23 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # *which* item changed, a caller who takes an action (deprecate,
         # supersede, reject) and watches one number move immediately afterward
         # has confirmed it -- exactly the shape of oracle T-17 exists to close,
-        # just coarser. Nothing about withheld content is reported here, not
-        # even a total.
+        # just coarser. No count below reports anything about withheld content,
+        # not even a total.
+        #
+        # **That is a claim about the counts, not about this response, and the
+        # difference is measured.** Two projects differing only in one rejected
+        # item return the same `itemCount` and `itemsByStatus` and different
+        # `stateHash` and `appliedMigrations`, so T-17's equality -- one query
+        # against two corpora -- does not hold for this tool the way it does for
+        # `knowledge.search` and `knowledge.get`. `stateHash` covers the whole
+        # working tree by design (ADR-0016) and is query-independent by
+        # construction, which is the justification `snapshotId` carries and the
+        # reason FR-R5 publishes it at all. `appliedMigrations` had no such
+        # justification; it counts migration *files*, so it moves identically
+        # whether the migration added an approved item, a draft, a rejected one
+        # or none, and nothing about a request reaches it. Accepted for
+        # Milestone 5 with the argument and the measurement in T-17, filed at
+        # https://github.com/theurian/theurian/issues/19.
         by_status: dict[str, int] = {}
         for item in items:
             if item.status not in SURFACEABLE_STATUSES:

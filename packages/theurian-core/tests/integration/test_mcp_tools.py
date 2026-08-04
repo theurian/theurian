@@ -3075,6 +3075,17 @@ async def test_an_over_long_item_id_is_not_echoed_back(registry: ProjectRegistry
     Bounded at 500 rather than pinned at the 183 characters measured today: the
     property is that the message does not grow with its input, and 183 is one
     wording of it.
+
+    **`projectId` is a third member of this class and is known and open.**
+    `mcp/tools.py`'s `_unresolvable` interpolates it with no bound: measured
+    through this same entry point, 2,000,000 characters in produce a 2,000,141
+    character message, against 2,000 for `query` and 185 for `itemId`. It is
+    named here rather than left out, because a class carrying an unnamed member
+    comes back a round later as another instance of the one that was closed. The
+    reasoning for converting it rather than fixing it in Milestone 5, and the
+    decision it is waiting on, are T-6 in the threat model and
+    https://github.com/theurian/theurian/issues/17. Delete this paragraph in the
+    change that closes it.
     """
     message = await _call_failing(registry, "knowledge.get", projectId="demo", itemId="a" * 20_000)
 
