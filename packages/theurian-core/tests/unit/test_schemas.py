@@ -545,6 +545,81 @@ def test_published_patterns_admit_exactly_what_the_domain_constructs(
         )
 
 
+_PROJECT_ID_CANDIDATES = (
+    "backend-service",
+    "backend",
+    "a1",
+    "Backend",
+    "backend_service",
+    "backend service",
+    "backend.service",
+    "-leading",
+    "trailing-",
+    # The registry key that reached a real `project.list` array as a second
+    # entry a reader could not distinguish from the first.
+    "backend-service\n",
+    "",
+    "a" * 200,
+    "a" * 201,
+)
+
+
+#: Every published face of ``ProjectId``. The pattern is hand-copied into each
+#: of these files, so the interesting failure is one of them moving alone --
+#: a client validating a `project.list` entry against one and a tool argument
+#: against another must reach the same verdict about the same id.
+_PROJECT_ID_FACES = (
+    ("config/project-config.schema.json", ("properties", "projectId")),
+    ("mcp/tool-context.schema.json", ("properties", "projectId")),
+    ("mcp/knowledge-search-response.schema.json", ("properties", "projectId")),
+    (
+        "mcp/project-list-response.schema.json",
+        ("properties", "projects", "items", "properties", "projectId"),
+    ),
+)
+
+
+def _at(relative: str, pointer: tuple[str, ...]) -> dict[str, Any]:
+    node: Any = _load(relative)
+    for key in pointer:
+        node = node[key]
+    resolved: dict[str, Any] = node
+    return resolved
+
+
+@pytest.mark.parametrize(("relative", "pointer"), _PROJECT_ID_FACES, ids=str)
+def test_every_published_project_id_pattern_admits_exactly_what_projectid_constructs(
+    relative: str, pointer: tuple[str, ...]
+) -> None:
+    r"""The claim ``project-list-response``'s own description says no
+    Python-backed test can make.
+
+    ``projectId`` is a *key* of the registry file, so a published pattern is the
+    only statement a JavaScript or Go client has about what an id may look like.
+    ``project-list-response`` carried a trailing ``\n?`` for a milestone, and
+    correctly: while ``ProjectId`` was ``$``-anchored, ``ProjectId("demo\n")``
+    constructed and ``project.list`` really did publish it, so a bare slug
+    pattern would have rejected Theurian's own output in exactly the ECMA-262 and
+    RE2 clients the schema exists for. ``80f94b6`` removed the input, and the
+    concession then pointed the other way -- admitting, under those same
+    dialects, a value the constructor refuses.
+
+    Neither direction could be defended by a test, because ``jsonschema`` reads
+    ``pattern`` with Python's ``re`` and ``demo\n`` satisfies the field under
+    both forms. Under the end-of-input oracle it does not, so this goes red if
+    the ``\n?`` returns to any of the four, or if the constructor is loosened
+    under them.
+    """
+    from theurian.domain.identifiers import ProjectId
+
+    subschema = _at(relative, pointer)
+
+    for candidate in _PROJECT_ID_CANDIDATES:
+        assert _admits(subschema, candidate) == _constructs(ProjectId, candidate), (
+            f"{relative}: schema and domain disagree about {candidate!r}"
+        )
+
+
 def test_the_case_the_oracle_exists_for_is_still_in_the_candidate_lists() -> None:
     """The comparison above is total only over the cases listed, and for a
     milestone none of them contained whitespace.
@@ -559,6 +634,9 @@ def test_the_case_the_oracle_exists_for_is_still_in_the_candidate_lists() -> Non
     )
     assert any("\n" in candidate for candidate in _ULID_CANDIDATES), (
         "the ULID list lost its trailing-newline case"
+    )
+    assert any("\n" in candidate for candidate in _PROJECT_ID_CANDIDATES), (
+        "the project-id list lost its trailing-newline case"
     )
 
 
