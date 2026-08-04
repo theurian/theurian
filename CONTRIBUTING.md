@@ -125,9 +125,12 @@ history of the decision is the point.
 Use the [issue templates](.github/ISSUE_TEMPLATE/). For bugs, include
 `theurian version --json` output and `theurian doctor --report --json`.
 
-**Review the doctor output before posting it.** It redacts credentials and
-knowledge bodies by default, but your knowledge base may still contain
-information a public issue does not need.
+**Review the doctor output before posting it.** What `--report` redacts is
+absolute paths — your home directory, the repository root, and the token file's
+path — replaced wherever they appear, including inside each step's `summary` and
+`detail`. It is not a credential filter and removes nothing else, so a path
+outside those three roots, or a filename that is itself revealing, still goes out
+verbatim.
 
 For a security vulnerability, use the private path in [SECURITY.md](SECURITY.md)
 instead of an issue.

@@ -38,13 +38,20 @@ this table will list a supported window.
 ### What Theurian protects
 
 - **The local endpoint.** The daemon binds `127.0.0.1` only, validates `Origin`
-  and `Host` against DNS rebinding, and requires a bearer token with ≥256 bits of
-  entropy on every request. `GET /health` is the sole unauthenticated endpoint
-  and returns only liveness and version.
+  and `Host` against DNS rebinding on every request the MCP app serves, and
+  requires a bearer token with ≥256 bits of entropy on all of them. `GET /health`
+  is the sole endpoint outside both, and it is outside both rather than only
+  outside the token: it answers a cross-origin request with `{status, version,
+  protocolVersion, dataDir, startedAt}`. That is nothing about projects or
+  knowledge, and it is not nothing — `dataDir` is `~/.theurian`, so it names the
+  OS user. See T-2 in the threat model.
 - **The token.** Stored in a 0600 file inside a 0700 directory, and in the OS
   secret store where one is available. A world-readable token file is refused,
-  not used. The token never appears in a config file, a log, an error message, or
-  `doctor` output — redaction happens at the logging sink, not at each call site.
+  not used. The token appears in no config file, no response body, and not in the
+  daemon's log — the last asserted against a real daemon, and true because
+  nothing in the stack logs request headers rather than because access logging is
+  off. Redaction at a logging sink is the design ADR-0011 records and it is **not
+  implemented**; there is no sink yet to apply it at.
 - **The filesystem boundary.** Every path is resolved with `realpath` and checked
   for containment in the project root. `..` traversal, absolute paths, and
   symlinks that leave the root are all refused, including symlinks on
@@ -123,9 +130,17 @@ policy to `.theurian/`.
 
 ## Sharing diagnostics safely
 
-`theurian doctor --report --json` redacts credentials and knowledge bodies by
-default. Review its output before posting it anywhere public — your knowledge
-base may contain information your issue does not need.
+`theurian doctor --report --json` redacts by default rather than on request, and
+what it redacts is **absolute paths**, wherever they appear in the payload: your
+home directory becomes `~`, the repository root becomes `<repository>`, and the
+token file's path becomes `<token file>`. Those name your account and your
+repositories, which is someone's private information even though none of them is
+a credential.
+
+It is not a credential filter and does not claim to be one — no credential value
+and no knowledge body enters that payload for it to remove — and it removes
+nothing but those three roots. Review its output before posting it anywhere
+public: a path outside them, or a revealing filename, goes out verbatim.
 
 ## Dependencies
 

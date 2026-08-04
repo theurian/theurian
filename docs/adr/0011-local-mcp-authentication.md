@@ -50,6 +50,28 @@ literal secret — in configuration.
    > about projects or knowledge, which is the property this point protects.
    > `startedAt` replaces `uptimeSeconds` because an absolute timestamp lets a
    > caller tell a restarted daemon from a long-running one.
+
+   > **Amended in Milestone 5, review round 7. "A caller that is already running
+   > as this user" is one of two caller classes, and the disclosure argument was
+   > written for that one only.** `/health` is exempt from the bearer token *and*
+   > from the `Origin` and `Host` allowlist, because the rebinding settings are
+   > passed to the mounted MCP app and `/health` sits beside it. Measured against
+   > the real ASGI app: `GET /health` with `Origin: https://evil.example` and a
+   > rebound `Host` returns 200 and the full body, where the same headers get 401
+   > on `/mcp` without a token and 421 `Invalid Host header` with one.
+   >
+   > So the second caller class is **a web page in the user's browser**, which is
+   > not running as this user and cannot read `~/.theurian`. To it, `dataDir` is
+   > `/Users/<username>/.theurian` and therefore the OS username, alongside the
+   > version and the uptime. The point's protected property still holds — nothing
+   > about projects or knowledge crosses — and the sentence that cleared the path
+   > does not.
+   >
+   > Left as accepted for Milestone 5 rather than changed: the token still bars
+   > `/mcp`, so this is a fingerprinting disclosure and not a knowledge one. T-2
+   > in the threat model records what is readable and the one option for closing
+   > it — publishing a truncated `sha256` of the resolved path, which both
+   > consumers' equality test can still use.
 5. Tokens are ≥ 32 bytes from `secrets.token_urlsafe`.
 
 ### Storage
@@ -113,6 +135,33 @@ literal secret — in configuration.
     scrubs anything matching the token, `Authorization` header values, and
     configured secret patterns. Relying on every call site to remember is how
     tokens end up in logs.
+
+    > **Amended in Milestone 5, review round 7. This was never implemented, and
+    > has read as a shipped control ever since it was accepted.** There is no
+    > formatter and no logging sink. `security/tokens.redact` is the function
+    > this point describes; its only caller in the repository is
+    > `packages/theurian-core/tests/unit/test_tokens.py`.
+    >
+    > What holds the property in its place is not what this repository says it
+    > is. `daemon/runner.py` runs uvicorn with `access_log=False` and
+    > `log_level="warning"`, and that is read everywhere as the reason. Switching
+    > both back on against a real daemon puts the token nowhere in the output:
+    > `uvicorn.logging.AccessFormatter` writes the client address, method, path,
+    > HTTP version and status code, and no header. The property holds because
+    > nothing in this stack logs request headers — wider than the stated reason,
+    > and nobody's decision.
+    >
+    > `tests/e2e/test_daemon_single_instance.py::test_the_token_never_reaches_the_log`
+    > asserts the outcome against a real daemon and is worth keeping as the only
+    > end-to-end check over a real log. It does not evidence the mechanism, and no
+    > flip of either uvicorn argument makes it red.
+    >
+    > The decision is **not withdrawn**, because its reasoning is still right —
+    > the first component that logs a request or an exception with headers
+    > attached needs a sink, not a habit. It is restated as unimplemented, and
+    > filed under *Still owed* below rather than left reading as a control in
+    > force. A control that does not exist is worse than a missing one: it is
+    > what a reviewer stops looking at.
 13. `theurian doctor --report` redacts by default, because its output is what
     people paste into public issues (O-3).
 
@@ -185,6 +234,24 @@ Landed in Milestone 4:
   rather than expanded — the property SEC-5 actually depends on.
 - `tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`
   — `doctor --report` is what people paste into public issues, and it is
-  redacted by default rather than on request (O-3).
+  redacted by default rather than on request (O-3). Note what this pins: the home
+  directory, not the token. No test asserts a token is absent from a setup report
+  or from `doctor` output.
 - `test_a_second_run_never_regenerates_the_token` — setup mints a token only
   when there is none.
+
+Still owed, with the milestone that will satisfy it:
+
+- **Decision 12, the logging sink, is unimplemented** and this section previously
+  read as though `test_the_token_never_reaches_the_log` discharged it. That test
+  discharges the *outcome* for one log file — see the amendment to point 12 for
+  why the mechanism is uvicorn's `access_log=False` and not a formatter. The
+  decision itself is owed by whichever milestone first adds a component that logs
+  a request, an exception with headers attached, or an audit record; nothing
+  before that has a sink to put it in. Found in Milestone 5, review round 7.
+- **`/health` outside the `Origin` and `Host` allowlist** (point 4's second
+  amendment). No test asserts what that endpoint discloses to a cross-origin
+  caller — `test_a_cross_origin_request_is_rejected` and
+  `test_a_foreign_host_header_is_rejected` both drive `/mcp`. Deferred past
+  Milestone 5 with the disclosure recorded under T-2; the milestone that changes
+  `daemon/server.py`'s route layout owns it.

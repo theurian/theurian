@@ -111,9 +111,51 @@ A page the user visits resolves a hostname to `127.0.0.1` and issues requests
 that the browser considers same-origin.
 
 **Controls:** bind loopback only; validate `Origin` and `Host` against an
-allowlist on every request; the MCP SDK enables this for localhost hosts and
-Theurian asserts it rather than assuming it. The token is a second barrier: a
-page cannot read a 0600 file.
+allowlist on **every request the MCP app serves** — the settings are passed to
+`mcp.streamable_http_app`, so they cover what is mounted under it and nothing
+else; the MCP SDK enables this for localhost hosts and Theurian asserts it rather
+than assuming it. The token is a second barrier: a page cannot read a 0600 file.
+
+The two run in that order — token first, allowlist second — because the bearer
+middleware wraps the whole app and the allowlist belongs to the mount. A rebound
+page carrying no credential is therefore refused as unauthorized rather than as
+cross-origin. Both refuse it; only the status code differs, and knowing which one
+answered matters when reading a report.
+
+**Residual risk: `/health` is outside the `Origin` and `Host` checks as well as
+outside the token, and this names what it discloses.** Round six recorded that
+the validation does not reach it and stopped there, which leaves a reader to
+assume the exemption is as narrow as `daemon/server.py`'s comment says
+("liveness and version only — nothing about projects or knowledge"). That is true
+of *knowledge* and not of the body. Measured in-process against the real ASGI
+app, no socket bound:
+
+```
+health, no auth               : 200 {"status":"ok",...,"dataDir":"/var/folders/.../theurian-r7-...","startedAt":"..."}
+health, evil Origin           : 200  same
+health, rebound Host          : 200  same
+mcp,    evil Origin, no token : 401
+mcp,    token + rebound Host  : 421 Invalid Host header
+mcp,    token + evil Origin   : 403 Invalid Origin header
+```
+
+In a real install `dataDir` is `Path.home() / ".theurian"`, so a rebound page
+reads back the **OS username**, the Theurian version, the protocol version and —
+through `startedAt` — the uptime. The version is the one that dates the install
+against a published advisory; the username is the one that is not otherwise
+guessable from a web page.
+
+**The deferral stands**: `daemon/server.py` is not in this change, and the token
+still bars `/mcp` for a rebound page. Recorded here rather than fixed, with one
+option for whoever takes it: `dataDir` could be published as a fingerprint —
+`sha256` of the resolved path, truncated. It has **two** consumers, not one:
+`daemon/instance.py`'s `_reuse_or_conflict` and the `SINGLE_INSTANCE` step in
+`application/setup_steps.py`. Both do the same one thing with it —
+`Path(running_dir).resolve() != data_dir.resolve()` — so equality is all either
+needs, and a fingerprint of the already-resolved path would answer it. The cost
+is that both then print a fingerprint where they now print a path, and "Port 7419
+is held by a Theurian serving `/Users/you/work/.theurian`" is a message a user can
+act on where a hash is not.
 
 #### T-8 — The token is written into a config file that gets committed (Information disclosure, High)
 
@@ -126,10 +168,90 @@ config contains no high-entropy string.
 
 #### T-9 — The token appears in a log or crash report (Information disclosure, High)
 
-**Controls:** redaction at the logging sink, not at call sites — depending on
-every call site to remember is how tokens end up in logs. `doctor --report`
-redacts by default. A poisoned-token fixture asserts the token appears in no log
-record, error message, setup report, or doctor output.
+> **Corrected in Milestone 5, review round 7. This entry named a control that
+> does not exist, and named the mechanism of the one that does wrongly.**
+>
+> It claimed "redaction at the logging sink, not at call sites".
+> `security/tokens.redact` exists and has **no production caller** — the only
+> one in the repository is `tests/unit/test_tokens.py` — because there is no
+> logging sink to apply it at. Nothing is redacted at a sink today.
+>
+> It also claimed "a poisoned-token fixture asserts the token appears in no log
+> record, error message, setup report, or doctor output". There is no such
+> fixture: the assertions are per-test, each reading the real token back from the
+> file. The log record among them is asserted and the setup report and doctor
+> output are not, so the sentence was right about one of the four and wrong about
+> the shape of all of them. The surfaces below are what is there.
+
+**Controls that exist**, each one surface asserted not to carry the token:
+
+| Surface | Assertion |
+| :-- | :-- |
+| the daemon's log file, against a real daemon and a real MCP call | `tests/e2e/test_daemon_single_instance.py::test_the_token_never_reaches_the_log` |
+| the `/health` body | `packages/theurian-core/tests/integration/test_daemon.py::test_health_does_not_leak_the_token` |
+| the 401 body | `…test_daemon.py::test_the_401_names_the_fix_without_revealing_the_token`, and over a real socket in `tests/e2e/test_daemon_single_instance.py::test_mcp_without_a_token_is_refused` |
+| `theurian auth rotate` output | `…tests/integration/test_auth_rotate.py::test_the_new_token_never_appears_in_the_output` — also excludes the first eight characters |
+| the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
+
+`doctor --report` redacts, and what is pinned is the home directory rather than
+the token:
+`…tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`
+asserts the sandbox path is absent from the payload. No assertion covers a token
+in a setup report or in `doctor` output.
+
+**What keeps the token out of that log is not `access_log=False`, and this was
+measured rather than reasoned.** `daemon/runner.py` runs uvicorn with
+`access_log=False` and `log_level="warning"`, and the e2e test's docstring reads
+that as the mechanism: "access logging is off precisely because every request
+carries an `Authorization` header". Switching both back on says otherwise —
+a real daemon, `access_log=True`, `log_level="debug"`, an authenticated
+`initialize` and an unauthenticated one, grepped over the whole of stdout and
+stderr:
+
+```
+full token in the output   : 0 occurrences
+the string "authorization" : 0 occurrences
+access lines written       : 2   ("POST /mcp HTTP/1.1" 401 / 200)
+```
+
+`uvicorn.logging.AccessFormatter` formats `client_addr`, `method`, `full_path`,
+`http_version` and `status_code`. **A header is not among them**, so the token
+was never in the request line that `access_log=False` suppresses. The property
+holds because nothing in this stack logs request headers at all — a much wider
+and much less deliberate reason than the one recorded.
+
+Two consequences, and the second is why this is written out rather than
+corrected in one word:
+
+- **`test_the_token_never_reaches_the_log` is a weaker guard than it reads.** No
+  single flip of either uvicorn argument makes it red; it fails only if some
+  component starts writing a header or a token into that one file during a
+  `tools/list` call. It is worth keeping — it is the only end-to-end assertion
+  over a real log — and it is not evidence for the mechanism its docstring names.
+- **`full_path` includes the query string, and that *is* logged.** Verified: a
+  probe sent as `GET /health?probe=…` came back in the access line. Theurian
+  carries the credential in a header, so nothing leaks today; a future endpoint
+  that accepts a token, a signature or an id in the query string would be logged
+  verbatim the moment access logging is switched on.
+
+`redact` is spare capacity for whoever adds a sink, not a control in force, and
+its docstring now says so.
+
+**Verified as not a problem, and recorded so it is not re-checked.** A crash
+report was the other half of this entry's title. `typer==0.27.0` builds the CLI
+app with `pretty_exceptions_enable` true and `pretty_exceptions_show_locals`
+**false**, and Theurian sets neither — the safe value is typer's default. An
+induced exception in a command holding a token in a local variable printed source
+lines only, with the token absent from the output, so there is no path to a token
+in terminal scrollback through the traceback renderer. Relying on a dependency's
+default is worth knowing about at the next upgrade; it is not worth a mitigation
+today.
+
+**Residual risk:** what holds is that no component in this stack logs a request
+header, which is a property of the components rather than a rule anyone stated.
+A second logging surface — a structured audit trail, an error reporter, a CLI
+that logs to disk, a middleware that dumps headers on 5xx — inherits none of it,
+and neither the assertions above nor `access_log=False` would notice.
 
 #### T-11 — A client authorized for Project A reads Project B (EoP, High)
 
@@ -171,54 +293,118 @@ followed before the containment check. Intermediate components are checked too,
 not only the final target. A symlinked *root* — `/tmp` on macOS, a symlinked home
 directory — still works, because the root is resolved as well.
 
-#### T-6 — A zip or YAML bomb exhausts memory (DoS, Medium)
+#### T-6 — A zip or YAML bomb at ingestion, or a search query that burns seconds of CPU (DoS, Medium)
 
-**Controls:** max file size, max nesting depth, max archive expansion ratio, wall
-clock timeout, `yaml.safe_load` only. Size is re-checked after read, because a
-file can grow between `stat` and `read`.
+**Controls at ingestion:** max file size, max nesting depth, max archive
+expansion ratio, wall clock timeout, `yaml.safe_load` only. Size is re-checked
+after read, because a file can grow between `stat` and `read`.
 
-**A second path, which those controls do not cover: an ordinary search query.**
-They bound *ingestion*, and the expensive operation added in Milestone 5 is a
-*query*. The scan below the trigram floor (ADR-0023) runs a `LIKE` and an
-occurrence count over every row of the index for each term it spends, and the
-worst legal query measures about **1.7s** of GIL-releasing SQLite work on 20,000
-chunks — in a daemon serving every project on the machine. It is reachable from
-the public API with no tuning and no privileges: eight two-character terms with
-the matching one typed last, roughly 24 characters, a hundredth of
-`MAX_QUERY_CHARS`. Reaching it repeatedly is a denial of service against every
-other project sharing the daemon.
+**Those controls bound ingestion, and the expensive operations added in Milestone
+5 are queries.** There are **two**, and they are enumerated below rather than
+described, because this entry was written naming one of them and the impact
+argument it carried is not true of the other.
 
-**Controls:** the query is bounded in characters (`MAX_QUERY_CHARS`), in distinct
-terms (`MAX_QUERY_TERMS`), and — new in Milestone 5 — in terms actually spent
-(`index_scan.SCAN_TERMS`, eight), which is what took this query from 4.25s to
-1.7s. **Those are the only bounds. There is no per-query timeout and no limit on
-how many such queries run at once**, and that was established by looking rather
-than assumed: nothing in the tree calls `sqlite3`'s interrupt or progress
+| Member | The work one call does | Holds the GIL? | Bounded by |
+| :-- | :-- | :-- | :-- |
+| the scan below the trigram floor (ADR-0023), `search_substring` | a `LIKE` and an occurrence count over every row of the index, per term spent | no — `sqlite3` releases it around `execute` | `MAX_QUERY_CHARS`, `MAX_QUERY_TERMS`, `index_scan.SCAN_TERMS` |
+| `IndexStore.search_dense` | `fetchall` over every embedding in the project, then a `struct.unpack` and a Python cosine per row, then a sort | **yes** — `_dense_ranking` is pure Python | **nothing.** The port takes no `limit`, and one would not have bounded it — see below |
+
+Both are reachable from the public API with no tuning and no privileges. The scan
+needs eight two-character terms with the matching one typed last — roughly 24
+characters, a hundredth of `MAX_QUERY_CHARS`. The dense path needs
+`useDense: true`, a published `knowledge.search` parameter, against an index
+built by default: `theurian index build` embeds unless `--no-embeddings` is
+passed. Reaching either repeatedly is a denial of service against every other
+project sharing the daemon.
+
+**Per member, what one call costs:**
+
+| | Measured |
+| :-- | :-- |
+| scan, worst legal query, 20,000 chunks of 1,000 CJK characters | ~1.7 s |
+| `search_dense`, 6,000 chunks | 142–143 ms, peak 9.20 MB |
+| `search_dense`, 20,000 chunks | 478–482 ms, peak 31.22 MB |
+
+The 143 ms agrees with the figure `retrieval_service._dense` and the port already
+record, so the single-call measurement was right all along and what was missing
+from this entry is the concurrency column below.
+
+The scan's 1.7 s is *accepted* rather than solved; the reasoning is at
+`index_scan.scan_statement`, and the honest summary is that it is far below the
+alternative on this path, which does the same match in Python over whole revision
+bodies, one query per document. `SCAN_TERMS` is what took it from 4.25 s.
+
+**The class-level statement no longer says "GIL-releasing", because that is the
+scan's property and not the class's.** The removed wording — "1.7 s of
+GIL-releasing SQLite work", "`sqlite3` releases the GIL, so a handful of such
+queries saturate the CPU" — was an argument about how the load *spreads*, and it
+is inverted for the second member. What is true of both: **there is no per-query
+timeout and no limit on how many run at once.** That was established by looking
+rather than assumed — nothing in the tree calls `sqlite3`'s interrupt or progress
 handler, and nothing implements a semaphore, a rate limit, or a concurrency cap.
 
 `busy_timeout = 5000` is not the missing bound, and it is the near miss most
 likely to end someone's search. It is a **lock wait** — how long a connection
 waits for a writer to release the database — not a statement bound. A scan that
-holds the CPU for 1.7s holds no lock anyone is waiting on and is never
+holds the CPU for 1.7 s holds no lock anyone is waiting on and is never
 interrupted by it.
 
-**Residual risk, in two parts, of which only the first is measured.**
+**Concurrency: the health endpoint's starvation is an open question for the scan
+and a measured fact for `search_dense`.** `knowledge.search` is registered as a
+synchronous handler, so each call occupies a worker thread of the MCP framework's
+pool — a pool Theurian neither sizes nor bounds — while uvicorn's asyncio loop
+serves `/health` on the main thread. A worker that releases the GIL leaves that
+loop free; one that holds it does not.
 
-1.7s per query is a fact, and it is *accepted* rather than solved: the reasoning
-is at `index_scan.scan_statement`, and the honest summary is that it is far below
-the alternative on this path, which does the same match in Python over whole
-revision bodies, one query per document.
+| | Four concurrent callers |
+| :-- | :-- |
+| wall clock, 4 threads ÷ 1 thread, `search_dense` | **4.70×–5.09×** |
+| wall clock, 4 threads ÷ 1 thread, the `LIKE` scan | 2.53×–2.98× |
+| worst delay of a 5 ms asyncio tick, idle | 0.8–7.1 ms |
+| worst delay of a 5 ms asyncio tick, 4× `search_dense` | **42.3–61.8 ms** |
+| worst delay of a 5 ms asyncio tick, 4× `LIKE` scan | 5.9–13.8 ms |
 
-What that single number does **not** bound is the risk. `knowledge.search` is
-registered as a synchronous handler, so each call occupies a worker thread of the
-MCP framework's pool — a pool Theurian neither sizes nor bounds — for the whole
-1.7s. Nobody has asked what happens when enough of these arrive together to fill
-it: whether later requests queue, time out at the client, or starve the health
-endpoint the SessionStart hook depends on. That is an open question, not a
-quantity with a conservative estimate attached, and it is stated that way so the
-single-query figure is not read as a ceiling. A per-query bound is a daemon-level
-control on the transport layer rather than a retrieval change, and is filed for a
-later milestone on that basis.
+Ranges over three runs for the wall-clock rows and four for the tick rows, on a
+machine that was not otherwise idle — which is why they are ranges: the idle
+floor alone moved by a factor of nine, so no single value here is quotable and
+the `LIKE` scan's row overlaps the idle row at its edges.
+What survives that noise is the ordering — the GIL-holding member delays the loop
+serving `/health` by roughly an order of magnitude more than the GIL-releasing
+one, and by roughly an order of magnitude more than idle. So for `search_dense`
+the question this entry used to leave open is answered: the `SessionStart` hook's
+probe waits on a retriever it has nothing to do with. For the scan member it
+stays open, at this harness's resolution.
+
+**Recorded, not implemented, and one obvious remediation does not work.** A
+`limit` on `search_dense` is the shape that suggests itself, and it buys
+approximately nothing:
+
+```
+chunks= 20000  returned= 20000  time=2253.0 ms   (under tracemalloc)
+    A fetchall only        peak=  27.63 MB
+    B whole search_dense   peak=  31.22 MB
+    C the 50-row slice     peak=   0.44 KB
+```
+
+88% of the peak is the `fetchall` that happens before any Python runs, and the
+slice a `limit` would hand back is 0.44 KB of 31 MB. The same holds for GIL-held
+time: every embedding is unpacked and scored whatever depth is asked for. So
+`SqliteIndexStore.search_dense`'s docstring — "the peak memory is unchanged
+either way: `fetchall` already holds every vector" — is measured true, and the
+port's "the `limit` was a fiction" reasoning is not narrower than it reads. It is
+correct about the parameter, and the parameter is not the remediation.
+
+What would bound these is a mechanism change, which belongs to its own change
+with its own review:
+
+| Quantity | What would bound it |
+| :-- | :-- |
+| peak memory on the dense path | streaming the cursor and keeping a top-*k* heap instead of `fetchall` + sort, or pushing the scoring into SQL |
+| GIL-held time on the dense path | the same, or moving the cosine into a released-GIL extension |
+| concurrent occupancy, either member | a semaphore or concurrency cap on the retrieval path, or a per-query timeout at the transport layer |
+
+A per-query bound is a daemon-level control on the transport layer rather than a
+retrieval change, and is filed for a later milestone on that basis.
 
 Recorded under T-6 rather than as its own entry: resource exhaustion is one
 threat, and splitting it by which stage the load enters would leave a reader
@@ -691,7 +877,11 @@ round-six correction below records is a different member with a different size.
 > key, enumerated correctly over that population, and missed a second member that
 > moves with the pass count held at one. What that cost, and what it did not, is
 > the round-six correction below; the wider key is stated here because this is
-> where a reader looks for the argument.
+> where a reader looks for the argument. **Round seven then found that everything
+> enumerated under the wider key is time-shaped** — passes and canonical reads —
+> and that peak memory is a second quantity over the same members; see the
+> round-seven correction below. Read the quoted argument as the key, not as the
+> list beneath it: the list has now been short twice.
 >
 > **First, two counts that this entry had collapsed into one sentence.** They
 > answer different questions and only one of them is withheld-independent:
@@ -890,6 +1080,65 @@ round-six correction below records is a different member with a different size.
 > separation, and no figure here crossed the loopback hop a real client adds
 > (TB-1).
 
+> **Corrected in Milestone 5, review round 7. The key is right and the
+> enumeration under it is still narrower than its own words.** Round six widened
+> the key from the pass count to "any quantity proportional to a ranking's
+> length". The three-member table above and the residual then enumerate only
+> **time-shaped** quantities — canonical reads, and passes.
+>
+> **Peak memory is a second quantity over the same three members**, and two of
+> them are unbounded in it for the same reason they are unbounded in reads.
+> Driving `_visible_ranking` with a retriever that never truncates, `tracemalloc`
+> around the call, visible rows held at 50 and the pass count held at one:
+>
+> ```
+>  visible  withheld  |rank|  passes   reads    peakKB
+>       50         0      50       1      50       3.0
+>       50        50     100       1     100      10.5
+>       50       200     250       1     250      10.3
+>       50      2000    2050       1    2050     160.3
+>       50      5950    6000       1    6000     640.3
+> ```
+>
+> **This is not a fourth member.** The path enumeration in the round-six table is
+> complete and was re-confirmed: `Visibility.cleared` has exactly two production
+> callers — `retrieval_service.py`'s `_visible_ranking` and `_dense` — split into
+> three rows there by branch shape. It is a **second quantity over the same three
+> paths** — an observable of the kind "a resource the query consumes" rather than
+> "a duration", which is a different family and was not on this entry's list.
+>
+> **It matters beyond bookkeeping.** `index_scan.scan_statement` dropped its
+> `LIMIT` in round four, and the cost that stopped being paid in time moved into
+> memory: on that branch `|ranking|` is the entire match set, so this term is
+> bounded by the corpus and by nothing else. Closing the enumeration at "canonical
+> reads and passes" hides the half of the trade that round four made.
+>
+> **Evidence grade, and the one place two harnesses disagree.** The security
+> review measured the same sweep and got 34.6 / 26.6 / 29.8 / 77.4 / 305.4 KB
+> against the 3.0 / 10.5 / 10.3 / 160.3 / 640.3 KB above — the same shape, values
+> up to an order of magnitude apart at the small end and a factor of two at the
+> large one, because `tracemalloc` prices whatever else the harness allocates
+> inside the window. Both are stable run to run within their own harness. So **no
+> absolute figure here is quotable**, and neither is the growth factor: over a
+> 120× increase in `|ranking|` the peak grew 8.8× in the review's harness and
+> 213× in this one. What reproduces is the sign and the direction — peak memory
+> tracks `|ranking|` with the pass count held at one. Both are fake-store numbers:
+> a real `SqliteCanonicalStore` materialises `KnowledgeItem`s, so the real figure
+> is larger by an unmeasured factor.
+>
+> **On the dense member this term is second-order, and T-6 is where that is
+> priced.** `search_dense`'s own peak is 31.22 MB on 20,000 chunks — the
+> `fetchall` before any ranking exists — against well under a megabyte for a
+> 6,000-row ranking walked here, in either harness. Bounding the ranking would not
+> bound that, which is one reason a `limit` on that port is not the remediation it
+> looks like.
+>
+> Nothing here widens the attacker's reach, for the same reason the round-six
+> correction did not: the fix location is unchanged. The Milestone 6 index purge
+> and blue/green build, [#15](https://github.com/theurian/theurian/issues/15),
+> removes the withheld term from `|ranking|` and takes every quantity proportional
+> to it — time and memory alike — with it.
+
 Evidence grade: the three rows are one harness, one corpus, run by the change
 that produced them. The shipped configuration was reproduced once independently,
 on the CJK reproduction from this entry, at +0.534 ms (+4.6%) — the same order,
@@ -1030,8 +1279,9 @@ moved. Re-measuring it belongs with the rest of the timing residual in Milestone
 6; it is named here rather than dropped, because a stale measurement quoted as
 current is worse than an absent one.
 
-The scan's *absolute* cost is a separate concern from its timing separation, and
-it is recorded under T-6 rather than here.
+The *absolute* cost of a retriever is a separate concern from its timing
+separation, and it is recorded under T-6 rather than here — for the scan, and for
+the dense path, which T-6 enumerates as the second member of that class.
 
 #### T-17a — BM25 collection statistics count withheld documents (Information disclosure, High — accepted for M5, root fix in M6)
 

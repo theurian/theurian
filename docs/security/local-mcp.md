@@ -19,24 +19,37 @@ it to anything running on the machine.
 
 ## Controls
 
+The order below is the order the code applies, not the order these controls are
+usually listed in. The token is checked by Starlette middleware wrapping the
+whole app; the `Origin` and `Host` allowlist belongs to the *mounted* MCP app, so
+it is reached only after the token passes — and `/health`, which sits beside the
+mount, never reaches it at all.
+
 ```mermaid
 flowchart LR
     R["Request"] --> B{"Loopback<br/>interface?"}
     B -->|no| X1["Refused: the daemon<br/>binds 127.0.0.1 only"]
-    B -->|yes| O{"Origin and Host<br/>on the allowlist?"}
-    O -->|no| X2["403 — DNS rebinding"]
-    O -->|yes| P{"Path"}
-    P -->|"GET /health"| H["200 — liveness and version only"]
+    B -->|yes| P{"Path"}
+    P -->|"GET /health"| H["200 — no token,<br/>no Origin or Host check"]
     P -->|"/mcp, management"| T{"Valid bearer token?<br/>constant-time compare"}
     T -->|no| X3["401 with the fix in the body"]
-    T -->|yes| A["Authorize projectId"]
+    T -->|yes| O{"Origin and Host<br/>on the allowlist?"}
+    O -->|"bad Host"| X2["421 Invalid Host header"]
+    O -->|"bad Origin"| X4["403 Invalid Origin header"]
+    O -->|yes| A["Authorize projectId"]
     A --> S["Serve"]
 
     style X1 fill:#8a2f2f,color:#fff
     style X2 fill:#8a2f2f,color:#fff
     style X3 fill:#8a2f2f,color:#fff
+    style X4 fill:#8a2f2f,color:#fff
+    style H fill:#8a6d1f,color:#fff
     style S fill:#1f6f4a,color:#fff
 ```
+
+Measured against the real ASGI app: a rebound `Host` gives 421 and a foreign
+`Origin` gives 403, both only once a valid token has been presented; without one
+the answer is 401 whatever the headers say.
 
 ### Binding
 
@@ -69,12 +82,28 @@ one until it matters.
 It returns exactly:
 
 ```json
-{ "status": "ok", "version": "0.4.0", "protocolVersion": "theurian/v1", "uptimeSeconds": 3421 }
+{
+  "status": "ok",
+  "version": "0.4.0",
+  "protocolVersion": "theurian/v1",
+  "dataDir": "/Users/you/.theurian",
+  "startedAt": "2026-08-04T09:12:44.108312+00:00"
+}
 ```
 
-Nothing about projects, knowledge, or configuration. This is what lets the
-`SessionStart` hook stay fast and unprivileged: a health check that needed a
-credential would push credential handling into a hook that runs on every session.
+Nothing about projects or knowledge. This is what lets the `SessionStart` hook
+stay fast and unprivileged: a health check that needed a credential would push
+credential handling into a hook that runs on every session. `dataDir` is there so
+a second starter can tell *this* daemon from a different Theurian squatting on
+the port — see ADR-0011, point 4.
+
+**It is also outside the `Origin` and `Host` allowlist, not only outside the
+token.** The rebinding settings are given to the mounted MCP app, and `/health`
+sits beside it. So a page the user visits can read this body cross-origin, where
+the same request to `/mcp` gets 401 without a token and 421 `Invalid Host header`
+with one. To that caller `dataDir` names the OS user, and `startedAt` gives the
+uptime. Recorded as a residual under T-2 in the [threat model](threat-model.md)
+rather than closed in Milestone 5.
 
 ## Getting the token to Claude Code without writing it down
 
@@ -128,16 +157,40 @@ because "401 Unauthorized" on a tool you just installed is otherwise a mystery.
 
 ## Never in a log
 
-Redaction happens at the logging sink — one formatter that scrubs the token,
-`Authorization` header values, and configured secret patterns. Not at each call
-site: relying on every future call site to remember is precisely how tokens end
-up in logs.
+`tests/e2e/test_daemon_single_instance.py::test_the_token_never_reaches_the_log`
+starts a real daemon, makes an authenticated MCP call, and asserts the token is
+absent from its log file.
 
-`theurian doctor --report` redacts credentials and knowledge bodies by default,
-because its output is what people paste into public issues.
+The reason it passes is worth stating exactly, because this page used to state
+it wrongly. `uvicorn` runs with `access_log=False` and `log_level="warning"`,
+which is what everything here pointed at — but switching both back on still puts
+no token in the output. `uvicorn.logging.AccessFormatter` writes the client
+address, method, path, HTTP version and status code, and no header. The token
+stays out of the log because **nothing in this stack logs request headers**, not
+because access logging is off.
 
-A test asserts, using a poisoned-token fixture, that the token appears in no log
-record, error message, setup report, or doctor output.
+One thing that *is* logged when access logging is on: the full path, query string
+included. Theurian carries the credential in a header, so nothing leaks — but a
+future endpoint taking a secret as a query parameter would be logged verbatim.
+
+**Redaction at a logging sink is a design, not a shipped control.** ADR-0011
+decision 12 describes one formatter that scrubs the token, `Authorization` header
+values, and configured secret patterns — because relying on every future call
+site to remember is precisely how tokens end up in logs. It is not implemented:
+`security/tokens.redact` exists and nothing in the product calls it, because
+there is no sink yet to apply it at. Said here rather than left implied, since a
+control that does not exist is the one nobody re-checks.
+
+The token is also asserted absent from the `/health` body, from the 401 body
+both in-process and over a real socket, from `theurian auth rotate` output, and
+from the generated MCP configuration and env file. There is no assertion covering
+a setup report or `doctor` output.
+
+`theurian doctor --report` redacts **absolute paths** by default — your home
+directory, the repository root, and the token file's path, replaced wherever they
+appear — because its output is what people paste into public issues. It is not a
+credential filter: no credential value enters that payload for it to remove, and
+it removes nothing but those three roots.
 
 ## Filesystem boundary
 
