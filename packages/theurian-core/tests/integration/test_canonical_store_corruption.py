@@ -87,6 +87,16 @@ LEAK_WINDOW: Final = 12
 #: a caller is told the item does not exist when its row is in fact unreadable.
 #: Recorded here rather than asserted, because closing it is a change to
 #: `knowledge.get`, not to this store.
+#:
+#: **This tuple, and the exact set below, say nothing about a tool that does not
+#: refuse at all.** Both are read only where ``answer.refused`` holds, so the
+#: worse face of the same gap is invisible to them: corrupt
+#: `knowledge_items.project_id` and `knowledge.search` answers
+#: ``{"count": 0, "results": []}`` while `knowledge.status` answers
+#: ``{"itemCount": 0}`` -- each a successful, false statement to an agent, and
+#: neither a refusal. :data:`SILENTLY_EMPTIED` is where that class is stated;
+#: framing it here would have required a set of refusals to hold something that
+#: never refuses.
 _ID_RESOLUTION_REFUSALS: Final = (
     "is not present in project",
     "points at a missing revision",
@@ -107,10 +117,45 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
     }
 )
 
+#: Every (tool, table, column) where one damaged cell makes a tool answer
+#: **successfully with less than the database holds**, stated exactly.
+#:
+#: Not a leak and not a refusal, which is why nothing else in this file can see
+#: it: every other property here is read either over ``answer.refused`` or over
+#: the text of a message, and these four positions produce neither. A caller is
+#: told ``count: 0`` with ``stale: false``, or ``itemCount: 0``, and has no way
+#: to tell that from a project which genuinely holds nothing.
+#:
+#: Recorded rather than fixed. Closing it means the retrieval path noticing that
+#: a row it walked past could not be interpreted, which is a change to the gate
+#: and the status tool rather than to this store; it is carried as a Milestone 6
+#: issue. What this set buys until then is that the reach cannot grow in
+#: silence -- a fifth position appears here as a failure, and each of the four
+#: disappears the moment its surface starts refusing instead.
+SILENTLY_EMPTIED: Final = frozenset(
+    {
+        ("knowledge.search", "knowledge_items", "item_id"),
+        ("knowledge.search", "knowledge_items", "project_id"),
+        ("knowledge.status", "knowledge_items", "project_id"),
+        ("knowledge.status", "migration_history", "project_id"),
+    }
+)
+
 #: Declared by the DDL, written by no migration operation and read by no store
 #: method. Excluded from the corpus-coverage guard with its reason, so the guard
 #: stays a real check on every other table.
 UNPOPULATED_TABLES: Final = frozenset({"traceability_edges"})
+
+#: How many columns a single ``UPDATE`` can put a string into, across the whole
+#: populated schema. Arithmetic over the DDL, table by table, ``INTEGER PRIMARY
+#: KEY`` rowids and `traceability_edges` excluded: 4 + 8 + 24 + 13 + 4 + 6 + 11
+#: + 13 + 11 + 5.
+#:
+#: An exact number rather than a floor. ``len(columns) > 90`` -- what stood here
+#: -- let nine columns vanish from the sweep without a word, and a sweep that
+#: has quietly stopped covering a column asserts nothing about it while still
+#: reporting green.
+CORRUPTIBLE_COLUMN_COUNT: Final = 99
 
 BODY: Final = "# Authentication policy\n\nEvery call carries a signed token.\n"
 DRAFT_BODY: Final = "# Caching draft\n\nA proposal nobody has reviewed.\n"
@@ -275,9 +320,13 @@ def _invoke(*args: str) -> tuple[int, str]:
     result = runner.invoke(app, [*args, "--json"])
     text = (result.stdout or "") + (result.stderr or "")
     if result.exception is not None and not isinstance(result.exception, SystemExit):
-        # An uncaught exception never reaches a terminal as text, but its message
-        # is what a traceback would show the operator, so it is held to the same
-        # rule as anything the command prints.
+        # An uncaught exception *does* reach a terminal as text: Typer installs a
+        # Rich traceback, which prints the exception's own message under the
+        # frame that raised it. `CliRunner` swallows it instead of rendering it,
+        # so appending it here is what keeps this sweep looking at what an
+        # operator sees. Measured with `schema_metadata.schema_version`
+        # overwritten: the real `theurian migrate apply` printed a boxed
+        # traceback ending in the cell, exit 1, with empty JSON on stdout.
         text += f"{type(result.exception).__name__}: {result.exception}"
     return result.exit_code, text
 
@@ -370,6 +419,40 @@ def corruptible_columns(database: Path) -> tuple[Column, ...]:
         return tuple(columns)
     finally:
         connection.close()
+
+
+#: A ``CREATE TABLE`` body, up to the closing paren that sits alone on a line.
+_TABLE_BLOCK: Final = re.compile(r"CREATE TABLE (\w+) \((.*?)\n\);", re.DOTALL)
+
+#: Lines inside a table body that declare a constraint rather than a column.
+_CONSTRAINT_HEADS: Final = frozenset({"CHECK", "PRIMARY", "UNIQUE", "FOREIGN", "CONSTRAINT"})
+
+
+def declared_corruptible_columns() -> frozenset[Column]:
+    """The same population, parsed out of :data:`DDL` instead of the live file.
+
+    Deliberately a second, independent derivation. :func:`corruptible_columns`
+    asks SQLite through ``PRAGMA table_info``; this reads the source text. A
+    change that narrows one -- widening the rowid exclusion, say, so real
+    columns stop being swept -- moves the two apart, and
+    :func:`test_every_column_outside_a_rowid_really_took_the_cell` names exactly
+    which columns went missing rather than reporting a count that got smaller.
+    """
+    declared: set[Column] = set()
+    for table, body in _TABLE_BLOCK.findall(DDL):
+        if table in UNPOPULATED_TABLES:
+            continue
+        for raw in body.splitlines():
+            line = raw.strip().rstrip(",")
+            if not line:
+                continue
+            name, _, rest = line.partition(" ")
+            if name.upper() in _CONSTRAINT_HEADS:
+                continue
+            if "INTEGER PRIMARY KEY" in " ".join(rest.split()).upper():
+                continue
+            declared.add(Column(table, name))
+    return frozenset(declared)
 
 
 def corrupt(database: Path, column: Column) -> bool:
@@ -524,9 +607,27 @@ def test_every_column_outside_a_rowid_really_took_the_cell(corpus: Corpus) -> No
     matched no row also does. This reads the cell back: a column that reports
     success without holding the sentinel would put an untested column in the
     sweep and make every assertion about it vacuous.
+
+    The population is pinned two ways before that runs, because a sweep can also
+    be hollowed out by never reaching a column at all. Set equality against
+    :func:`declared_corruptible_columns` names any column that stopped being
+    swept; :data:`CORRUPTIBLE_COLUMN_COUNT` catches the case set equality cannot
+    -- a column added to the DDL, which the live database and the parsed DDL
+    both grow at once and neither notices.
     """
     columns = corruptible_columns(corpus.database)
-    assert len(columns) > 90, f"the population collapsed to {len(columns)} columns"
+    declared = declared_corruptible_columns()
+
+    assert set(columns) == declared, (
+        "the swept columns and the DDL's own columns have moved apart; "
+        f"missing from the sweep: {sorted(map(str, declared - set(columns)))}, "
+        f"swept but undeclared: {sorted(map(str, set(columns) - declared))}"
+    )
+    assert len(columns) == CORRUPTIBLE_COLUMN_COUNT, (
+        f"the schema now offers {len(columns)} corruptible columns rather than "
+        f"{CORRUPTIBLE_COLUMN_COUNT}; every exact set in this file was measured "
+        f"against the old population"
+    )
 
     silent: list[str] = []
     for column in columns:
@@ -716,6 +817,7 @@ def test_no_cli_output_repeats_a_byte_of_the_state_database(corpus: Corpus) -> N
     over failures, because unlike `knowledge.get` this command publishes counts
     and paths and never a document's content: a cell in its output came from a
     converter's complaint whatever the exit code.
+
     """
     leaked: dict[str, tuple[str, ...]] = {}
     for column in corruptible_columns(corpus.database):
@@ -846,4 +948,97 @@ async def test_the_corpus_reaches_each_converter_family(
     assert [tool for tool, answer in answers.items() if answer.refused], (
         f"no tool interpreted the {family} cell in {column}; every assertion "
         f"about this family is vacuous. Answers: {answers}"
+    )
+
+
+# -- Answering successfully with less than the file holds -------------------
+
+
+def _published_integers(text: str) -> dict[str, int]:
+    """Every integer a payload publishes, keyed by its path through the JSON.
+
+    Derived from the payload rather than from a list of field names, so a count
+    added to a response in a later milestone is compared without anyone
+    remembering to add it here. Booleans are excluded: `True` is an `int` in
+    Python and ``stale: false -> true`` is not a shrinking count.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+
+    found: dict[str, int] = {}
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, bool):
+            return
+        if isinstance(node, int):
+            found[path] = node
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            found[f"{path}[]"] = len(node)
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+
+    walk(payload, "")
+    return found
+
+
+@pytest.mark.asyncio
+async def test_no_tool_answers_with_less_than_the_intact_database_holds(
+    corpus: Corpus,
+) -> None:
+    """The face no property framed around refusals can see, stated as a set.
+
+    Both other sweeps read ``answer.refused`` before they assert anything, so a
+    tool that answers *successfully* and wrongly is structurally invisible to
+    them -- and that is the worse outcome, not the milder one. `knowledge.search`
+    replying ``{"count": 0, "results": [], "retrieval": {"stale": false}}`` over
+    a damaged `knowledge_items.project_id` tells an agent that the index is fresh
+    and this project holds no answer, which is a false statement it will act on;
+    a refusal at least stops it.
+
+    The comparison is against the same corpus one moment earlier, so a shrinking
+    count cannot be a property of the corpus or of the clock. Only shrinking is
+    read: a corrupted `title` changes what `knowledge.get` returns and that is
+    the caller's own content answered correctly, which is why this is not "the
+    answer changed".
+
+    :data:`SILENTLY_EMPTIED` is an exact set and the behaviour is carried to
+    Milestone 6. What must not happen in the meantime is the set growing without
+    anyone noticing, and an inequality here would have permitted exactly that.
+    """
+    server = build_server(corpus.registry)
+    intact = {
+        tool: _published_integers((await call_tool(server, tool, args)).text)
+        for tool, args in TOOL_CALLS
+    }
+    assert all(intact.values()), f"a tool published no integer to compare against: {intact}"
+
+    emptied: dict[tuple[str, str, str], dict[str, str]] = {}
+    for column in corruptible_columns(corpus.database):
+        assert corrupt(corpus.database, column), f"{column} took no value"
+        try:
+            for tool, args in TOOL_CALLS:
+                answer = await call_tool(server, tool, args)
+                if answer.refused:
+                    continue
+                published = _published_integers(answer.text)
+                shrunk = {
+                    field: f"{before} -> {published[field]}"
+                    for field, before in intact[tool].items()
+                    if field in published and published[field] < before
+                }
+                if shrunk:
+                    emptied[tool, column.table, column.name] = shrunk
+        finally:
+            restore(corpus)
+
+    assert set(emptied) == SILENTLY_EMPTIED, (
+        f"the set of positions where a tool answers successfully with less than it "
+        f"holds has moved. Newly emptied: "
+        f"{ {p: emptied[p] for p in set(emptied) - SILENTLY_EMPTIED} }; "
+        f"no longer emptied: {sorted(SILENTLY_EMPTIED - set(emptied))}"
     )
