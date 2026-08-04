@@ -57,6 +57,21 @@ Group by severity: **CRITICAL / HIGH / MEDIUM / LOW**. For each:
   issues"
 - a specific fix
 
+Severity comes from the rubric in `CLAUDE.md` (*What "green" means*), not from
+how central the code is. The line this review blurs is **wrong behaviour versus
+unproven behaviour**. Behaviour that is actually wrong, or a docstring claim that
+is actually false, is HIGH — CRITICAL only if it puts content in front of a
+caller who may not read it. Behaviour that is correct but rests on nothing — an
+invariant no test holds, a claim with no measurement, a shape a later change
+would turn into a defect — is MEDIUM, and item 6 above produces both. Say which
+one you have, and whether you ran anything that separates them.
+
+The other two reviews each add a per-finding demonstration gate, then carve an
+exception for a face of an already-demonstrated class. This one deliberately has
+neither: the distinction above is wrong versus unproven behaviour, not measured
+versus recovered disclosure, so there is no local gate for an exception to attach
+to. Class scoring still applies — take it from `CLAUDE.md` unmodified.
+
 State explicitly when a severity level is empty. A short accurate review beats a
 padded one; do not invent findings to fill a section, and do not open with
 praise.

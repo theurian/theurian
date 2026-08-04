@@ -233,7 +233,41 @@ launches together, so spend it on the rows above and not on every brief.
 **Not over the reviewers' findings.** They already are independent readers who
 go to the source. This is for the node they do not cover.
 
+**A reviewer's claim is a claim.** Independence makes a finding worth acting on;
+it does not make its stated mechanism true, and three times this milestone the
+mechanism was wrong while the finding was real. Before a claim is carried into a
+brief, check it against what the repository already records — the threat model,
+the ADRs, the docstring of the thing being described. Two independent readers
+can contradict each other, and the orchestrator is the only node that sees both.
+
 ### What "green" means
+
+| Severity | Earns it |
+| :-- | :-- |
+| CRITICAL | Withheld or unauthorised content reaches a caller; or the product asserts something false that changes a security decision; or a published value varies with content the caller may not read, and that variation has been *demonstrated* to recover the content itself. **Reproducible now, in the shipped default configuration.** A parameter the documented API accepts is not an exemption; an operator-only configuration change is. |
+| HIGH | Shipped behaviour is wrong, or a published claim is false — **without disclosure of content the caller may not read**; or a published value varies with content the caller may not read, where recovery has not been demonstrated and the reach is bounded and recorded; or a caller can make the system spend work not bounded by any recorded limit, through a documented entry point. |
+| MEDIUM | The behaviour is correct but **unproven**: a test that cannot fail, a claim with no measurement, a gap a future change turns into a defect; or a cost that is bounded but materially larger than what the code or the docs record. |
+| LOW | Clarity, naming, redundancy, a cost that is measured and bounded. |
+
+CRITICAL is anchored to disclosure rather than to correctness in general, which
+is the product's own grading and not a preference: in the threat model T-3 — an
+agent following instructions injected into indexed content — is High, not
+Critical. The harm of an agent acting on wrong knowledge is already graded High
+there, so a retriever that returns the wrong content without disclosing anything
+the caller may not read is HIGH here too.
+
+Score the class, not the face. When one root cause produces several observables
+and recovery has been demonstrated through any one of them, the class is
+CRITICAL and its movement-only siblings describe the class's reach and what its
+closure must cover — they are not separate findings a grade lower. A channel
+with no demonstrated sibling still needs its own extraction program.
+
+Name the class by its root cause, never by the shape of what it emits. A similar
+observable arising from a different root cause is a different class, not a
+sibling face: T-17's faces were quantities computed before the gate, while
+T-17a and the timing residual are one class named *the index still holds the
+withdrawn rows*, and that is why they carry their own severity and their own
+recorded decision.
 
 | Severity | Rule |
 | :-- | :-- |
@@ -241,6 +275,23 @@ go to the source. This is for the node they do not cover.
 | HIGH | Must be zero, or converted to a stated CRITICAL-free design decision with the reasoning recorded in the code or an ADR. |
 | MEDIUM | Each one gets an explicit, recorded decision: fix now, or file an issue naming the milestone that will. Never silently carried. |
 | LOW | Recorded in the PR description. May be deferred without an issue. |
+
+Each reviewer's scale drifts toward its own mandate, so **the orchestrator
+applies the first table, never the reviewer who wrote the finding**, and names
+each downgrade and its reason in the PR description. **A reported test gap drops
+to MEDIUM only on a recorded check that the behaviour underneath is correct** —
+correct, say what was checked; defective, that is a new finding at its own
+severity. Round seven's HIGH-1 was a reported test gap leaking a `rejected`
+item's note and a `draft` source's incoming edge into the default response:
+unresolved, not inflated, and the label did not say which.
+
+A threat-model entry and a review finding are scored on different scales. An
+entry's severity is the residual after its controls and its *recorded*
+deferrals; a finding's severity is what is true in the code now. T-6 stays
+Medium as an entry while its query-side members are HIGH as findings, because
+the per-query bound is transport-layer work deferred with its reasoning
+recorded. Where no such deferral is recorded, the finding keeps its severity
+and must be converted explicitly.
 
 A finding is only closed when the fix is **verified the way the finding was
 found** — if the reviewer reproduced it with a script, the fix is confirmed by

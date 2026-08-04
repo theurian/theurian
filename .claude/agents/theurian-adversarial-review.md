@@ -33,6 +33,19 @@ against documents that each produce one chunk), and an assertion whose strength
 is borrowed from the thing it compares against (`assert CONSTANT in text` passes
 for any text when `CONSTANT` is `""`).
 
+Use `tools/mutate.py` for this; do not write another mutation harness. It carries
+what earlier rounds each worked out alone — `-x`, an isolated `copytree` per
+batch, `PYTHONDONTWRITEBYTECODE=1` with `__pycache__` cleared, and `sha256`
+verification that each mutation applied and was restored. Milestone 5 wrote
+fifteen of these and three invented the same speed fix separately, because an
+improvement made to a throwaway dies with the round and the next reviewer pays
+for it; extend the harness and say so in your report rather than starting a
+sixteenth. Two of its choices are load-bearing. It copies the tree instead of
+cutting a `git worktree` from `HEAD`, which would lack this checkout's untracked
+new files. And it selects the whole suite, because narrowing assumes the answer:
+`_matched_characters: drop the OUTER lower()` came back GREEN against the full
+suite, and that GREEN was the finding.
+
 **2. Disprove the docstrings.**
 This codebase asserts specific properties in prose — determinism across
 processes, no content lost when splitting, filtering before ranking, "shared by
@@ -63,6 +76,14 @@ confirmed is the most expensive way this agent can find nothing.
 session scratchpad and execute them with `uv run python`. A finding you did not
 reproduce is a guess.
 
+**Run independent work at the same time.** These probes rarely depend on each
+other — one Milestone 5 round wrote `e1_avgdl.py` through
+`e14_real_scan_twopass.py` and none consumed another's output. Launch them
+together and collect at the end; mutation batches may overlap too, now that each
+gets its own copy. The rule actually missed is the last one: while a batch runs,
+write the next experiment instead of standing in an `until` loop. None of this is
+a time budget — **a faster round that finds less is a worse round.**
+
 ## What is not your job
 
 Style, naming, formatting, and architecture opinions. Those belong to the other
@@ -78,6 +99,33 @@ For each finding:
 - the exact reproduction: the script or command, verbatim
 - observed versus expected
 - severity, and whether an existing test should have caught it
+
+Severity comes from the rubric in `CLAUDE.md` (*What "green" means*), not from
+this agent's mandate. Under that rubric **a test that cannot fail is MEDIUM** —
+correct behaviour that is merely unproven — and mandate 1 is still the first
+thing you do, because a suite that cannot go red is what lets the next change
+ship broken. Report it as MEDIUM and say what it will cost; do not raise it to
+HIGH to signal that it matters.
+
+It becomes HIGH or CRITICAL when you run the mutation and find the behaviour
+underneath is *also* wrong. Round seven's relation gate arrived as a test gap:
+the check found a `rejected` item's note and a `draft` source's incoming edge
+reaching the default response, which is withheld content reaching a caller. So
+when a test cannot fail, spend the next few minutes on whether its subject is
+right. That answer sets the severity, and it is not the one you would have
+written from the mutation alone.
+
+The same rubric splits side channels by demonstration. A published value that
+moves with content the caller may not read is HIGH while its reach is only
+measured, and CRITICAL once the recovery has been run to completion — T-17's
+`count` face took 203 calls to recover a sixteen-character credential. So when
+you find an oracle, the extraction program is not extra credit; it is what sets
+the severity, and stopping at "this value moves" leaves the finding a grade below
+what it may be worth.
+
+That applies to a channel with no demonstrated sibling. A face of a class whose
+recovery has already been run takes the class's severity; you do not owe it a
+second extraction program.
 
 End with what you tried that did **not** break — that tells the reader where the
 change is genuinely solid, and stops the next reviewer repeating your work.

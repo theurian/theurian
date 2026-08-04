@@ -74,3 +74,21 @@ working from memory.
 Severity, `file:line`, the concrete attack or disclosure, and a specific fix.
 State explicitly which categories are clean — "no injection findings" is useful
 information. Do not manufacture findings; do not soften a real one.
+
+Severity comes from the rubric in `CLAUDE.md` (*What "green" means*), not from
+which SEC-* requirement is involved. The line this review blurs is **disclosure
+versus a false published claim**. Content the caller may not read reaching them,
+or a false assertion that changes a security decision, is CRITICAL — and it has
+to reproduce in the shipped default configuration, or it is not one. A parameter
+the documented API accepts is not an exemption — `includeUnapproved` is one — and
+an operator-only configuration change is. A control that a document, a docstring
+or a test name describes and the code does not implement is a false claim: HIGH,
+unless you can show the content it was meant to withhold coming out. T-9 is the
+worked example — redaction at a logging sink with no production caller and no
+sink, where the token stayed out for an entirely different reason.
+
+That gate is per-channel, not per-face. Where the missing control is one face of
+a class whose recovery has already been run — T-17's gate staying after the
+ranking is the worked example — the face takes the class's severity and owes no
+separate demonstration. Name the class by its root cause, as `CLAUDE.md`
+requires.
