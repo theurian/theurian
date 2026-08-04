@@ -461,20 +461,32 @@ def test_status_says_it_cannot_know_when_the_registry_breaks_between_its_two_rea
     assert payload["stateHash"], "and so does the one every other command compares against"
 
 
-def test_unregister_still_blames_the_id_when_the_id_is_what_is_wrong(project: Path) -> None:
-    """The other half, so the fix above cannot become one fixed remedy again.
+def test_unregister_does_not_refuse_an_id_for_its_shape(project: Path) -> None:
+    """The escape command has to be able to name what broke the registry.
 
-    A registry that reads perfectly well and an id that is not a slug is the
-    case the default remedy was written for. Without this, replacing the default
-    unconditionally would pass every assertion in the test above.
+    This used to assert the opposite, and the opposite was the defect. Parsing
+    the argument as a ``ProjectId`` first made this command refuse exactly the
+    entries it exists to remove: a registry key is whatever a hand edit left
+    behind, and ``theurian project unregister 'Team One/API'`` answered "Check
+    the project id with `theurian project list`" -- the listing that had just
+    printed it. Removing a key needs no id semantics; only writing one does.
+
+    An id that is not a slug is now looked up like any other key. This one is
+    absent from the file, so nothing is removed, at the exit code every other
+    absent id already gets.
+
+    The remedy branch this replaced is still pinned, from the side that can
+    actually reach it:
+    ``test_unregister_names_the_unreadable_file_rather_than_blaming_the_id``
+    asserts the registry's own cure wins over ``_context_remedy``'s default.
     """
     _invoke("init")
     _invoke("project", "register")
 
     code, payload = _invoke("project", "unregister", "Not A Slug")
 
-    assert code == 1
-    assert "Check the project id" in payload["remedy"]
+    assert code == 0, "a key absent from the file is not an error, whatever it looks like"
+    assert payload["removed"] is False
 
 
 # -- migrate ---------------------------------------------------------------

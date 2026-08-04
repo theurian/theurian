@@ -24,7 +24,9 @@ from theurian.application.migration_engine import (
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     ProjectError,
+    ProjectPaths,
     ensure_gitignore,
     initialize_project,
     read_active_state,
@@ -50,6 +52,7 @@ from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
+from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
 from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
@@ -204,6 +207,35 @@ def _read_registry() -> _RegistryRead:
         )
     except TheurianError as exc:
         return _RegistryRead(entries={}, unreadable=(), failure=exc, path=reg.path)
+
+
+def _read_active(paths: ProjectPaths, as_json: bool) -> ActiveState | None:
+    """The active state pointer, or an ``{error, remedy}`` exit if it is broken.
+
+    The registry's sibling, and it exists for the same reason ``_read_registry``
+    does: ``read_active_state`` raises, and a raise from a state file that
+    nothing converts is a Rich traceback with an empty stdout, from a command
+    whose contract is a JSON payload (CP-2). Measured before this existed, an
+    ``active.json`` holding four bytes of text failed ``theurian migrate
+    status``, ``migrate validate``, ``migrate apply``, ``ingest``, ``index
+    build`` and ``index status`` that way in one go -- all six through the single
+    unguarded read in ``_verify_history``.
+
+    Not folded into ``_require_project``'s ``except`` chain, because the raise
+    happens *after* it, in ``_verify_history``; and deliberately reachable from
+    ``cli.index_commands`` too, so the two composition roots cannot print
+    different cures for the same file.
+    """
+    try:
+        return read_active_state(paths)
+    except TheurianError as exc:
+        _fail(
+            str(exc),
+            remedy=_context_remedy(exc, default=ACTIVE_POINTER_REMEDY),
+            as_json=as_json,
+            code=1,
+        )
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +403,18 @@ def project_unregister(
     problem, in a listing that fails on the same file. ``_context_remedy`` keeps
     the cure attached to the refusal that actually happened, exactly as ``init``,
     ``project register`` and ``_require_project`` already do.
+
+    **The argument is not validated, on purpose.** It used to be parsed as a
+    :class:`ProjectId` first, which made this command refuse exactly the ids it
+    exists to remove: a registry key is whatever a hand edit left behind, and
+    ``theurian project unregister 'Team One/API'`` failed with "check the project
+    id with `theurian project list`" -- the listing that had just printed it.
+    That is the closed loop this whole remedy chain is built to break. Removing a
+    key needs no id semantics; only writing one does, and writing goes through
+    ``project register``.
     """
     try:
-        removed = registry().unregister(ProjectId(project_id))
+        removed = registry().unregister(project_id)
     except TheurianError as exc:
         _fail(
             str(exc),
@@ -475,6 +516,22 @@ def project_list(as_json: JsonOption = False) -> None:
     )
 
 
+def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
+    """Why the state pointer could not be read and what cures it, or nothing.
+
+    The shape :attr:`_RegistryRead.failure_fields` uses, for the other file this
+    command reads. Kept as a function rather than a second dataclass because the
+    pointer read has no equivalent of ``holds`` -- there is one value to lose and
+    no membership question to answer about it.
+    """
+    if failure is None:
+        return {}
+    return {
+        "reason": str(failure),
+        "remedy": _context_remedy(failure, default=ACTIVE_POINTER_REMEDY),
+    }
+
+
 def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     """``project status`` for a repository whose project could not be resolved.
 
@@ -492,6 +549,11 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     no way out. Exit code stays 0; the remedy travels into the payload instead,
     where both a human reading the rendered output and a script reading JSON can
     find it.
+
+    ``statePointerCorrupt`` is deliberately absent here rather than ``false``.
+    Nothing on this branch has resolved a project, so no state pointer was
+    looked at, and emitting the field would answer a question this branch never
+    asked -- the same reason ``registered`` refuses to be ``False`` above.
     """
     payload: dict[str, Any] = {"registered": False, "reason": str(exc), "indexStale": False}
     if isinstance(exc, ProjectError) and exc.remedy:
@@ -538,7 +600,19 @@ def project_status(as_json: JsonOption = False) -> None:
     # edit lands between the two reads. A raise at that point would cost this
     # command its whole payload for a file it only consults for one field.
     read = _read_registry()
-    active = read_active_state(context.paths)
+
+    # The pointer gets the same treatment for the same reason, and it needs it
+    # more: this command reads it on every run, not only in a race, and an
+    # unreadable one used to end the whole command in a traceback with an empty
+    # stdout. `_read_active` is not usable here -- it exits, and this command
+    # answers at exit 0 even for a directory that is not a project at all.
+    pointer_failure: TheurianError | None = None
+    active: ActiveState | None = None
+    try:
+        active = read_active_state(context.paths)
+    except TheurianError as exc:
+        pointer_failure = exc
+
     database = context.paths.database_for(context.state_hash)
 
     _emit(
@@ -555,6 +629,15 @@ def project_status(as_json: JsonOption = False) -> None:
             "activeStateHash": None if active is None else str(active.state_hash),
             "stateBuilt": database.exists(),
             "indexStale": active is None or active.state_hash != context.state_hash,
+            # `activeStateHash: null` alone cannot say which of two things
+            # happened, and the two have opposite cures: `migrate apply` for a
+            # project that has never been applied, and *delete this file, then*
+            # apply for one whose pointer is corrupt. That is exactly the pair
+            # `ActiveIndexPointer` was split to distinguish for the index
+            # pointer, and `index status` publishes it as `indexPointerCorrupt`;
+            # this is the same statement about the file beside it, under a name
+            # that matches. Always present, `false` included.
+            "statePointerCorrupt": pointer_failure is not None,
             "migrationCount": len(context.loaded.migration_set),
             "headCommit": current_commit(context.paths.root),
             "schemaVersion": SCHEMA_VERSION,
@@ -565,6 +648,17 @@ def project_status(as_json: JsonOption = False) -> None:
             # field that only sometimes exists is a field a caller eventually
             # forgets to check for.
             "unreadable": list(read.unreadable),
+            # `reason`/`remedy` is this command's one vocabulary for "why part of
+            # this answer is missing", spoken by `_unresolved_status` and by
+            # `failure_fields` already. Two files can be unreadable at once, so
+            # the pair is filled by the pointer first and the registry second,
+            # and the registry wins: `registered` degrades to `None` when the
+            # registry fails, and `failure_fields` exists precisely because a
+            # "cannot know" with no reason beside it is unactionable. Nothing is
+            # lost when it wins -- `statePointerCorrupt` above carries the
+            # pointer failure whatever happens, and its cure is a fixed string
+            # both this command and `theurian index status` print.
+            **_pointer_failure_fields(pointer_failure),
             **read.failure_fields,
         },
         as_json=as_json,
@@ -956,10 +1050,23 @@ def ingest_command(as_json: JsonOption = False) -> None:
     if manifest_path.exists():
         try:
             previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             # The manifest is a derived cache. A corrupt one costs a full
             # reparse, which is the correct price -- refusing to run would make
             # a disposable file able to block the command.
+            #
+            # Which is what it did for two of the three ways it can be corrupt.
+            # `JSONDecodeError` alone let a manifest of arbitrary bytes end
+            # `theurian ingest` in a Rich traceback with an empty stdout -- the
+            # disposable file blocking the command this comment says it must not
+            # be able to block. Same file, same price, same reparse.
+            #
+            # Bounded to *reading* it on purpose. A manifest this process cannot
+            # write still ends the run, at the `write_text` below, and that is a
+            # different family with more members than this line -- every atomic
+            # write in `project_service` is in it. One of them fixed here would
+            # be a family half-closed, which is worse than a family named: it is
+            # tracked for Milestone 6 with the canonical-store read failures.
             previous = {}
 
     service = IngestionService(_Resolver())
@@ -1022,8 +1129,14 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
     Editing a migration changes the state hash (ADR-0016), so the next command
     would otherwise open a fresh empty database, find nothing applied, and report
     everything as fine -- silently losing the guarantee precisely when it fires.
+
+    An unreadable pointer is refused rather than treated as "no previous state".
+    The early returns below are for the cases where there is genuinely nothing to
+    check against; a pointer that exists and cannot be parsed is not one of them,
+    and swallowing it would drop the FR-K5 check for every command routed through
+    :func:`_require_project` without saying so.
     """
-    active = read_active_state(context.paths)
+    active = _read_active(context.paths, as_json)
     if active is None or active.state_hash == context.state_hash:
         return
 

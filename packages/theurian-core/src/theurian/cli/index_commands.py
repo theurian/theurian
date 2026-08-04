@@ -25,7 +25,6 @@ from theurian.application.project_service import (
     ProjectPaths,
     read_active_index,
     read_active_index_pointer,
-    read_active_state,
 )
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
@@ -119,9 +118,13 @@ def _require_buildable_state(paths: ProjectPaths, as_json: bool) -> ActiveState 
     Split out so `index_build` reads as build-then-publish, with everything
     that can refuse the attempt before it starts gathered in one place.
     """
-    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import _fail, _read_active  # noqa: PLC0415 - cycle
 
-    active = read_active_state(paths)
+    # `_read_active`, not `read_active_state`: an unreadable pointer and an
+    # absent one need different cures, and this function's own refusal below --
+    # "run `theurian migrate apply` first" -- is the wrong one for a file that
+    # has to be deleted before applying can help.
+    active = _read_active(paths, as_json)
     if active is None:
         _fail(
             "This project has no built knowledge state, so there is nothing to index.",
@@ -238,11 +241,15 @@ def index_status(as_json: JsonOption = False) -> None:
     ``theurian migrate apply`` for state that was never the problem, while the
     corrupt file sat on disk the whole time.
     """
-    from theurian.cli.commands import _emit, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import _emit, _read_active, _require_project  # noqa: PLC0415 - cycle
 
     context, _ = _require_project(as_json)
     paths = context.paths
-    active = read_active_state(paths)
+    # Converted here as well as inside `_require_project`, which has already read
+    # the same file: the two reads straddle a window in which `migrate apply` --
+    # or the very deletion this command's remedy asks for -- replaces the
+    # pointer, and a raise landing in it would cost the whole payload.
+    active = _read_active(paths, as_json)
     pointer = read_active_index_pointer(paths)
     published = dict(pointer.payload) if pointer.payload is not None else None
 

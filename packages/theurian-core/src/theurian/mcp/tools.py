@@ -22,6 +22,7 @@ errors it raises. How a search is actually answered lives in
 
 from __future__ import annotations
 
+import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -122,8 +123,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 ) -> MCPServer:
     """Register Milestone 3's read-only tools."""
 
-    def _registry_failure(exc: ProjectError) -> ToolError:
-        """A registry no reader can partition, with its remedy still attached.
+    def _with_remedy(exc: ProjectError) -> ToolError:
+        """A ``ProjectError``, with its remedy still attached.
 
         ``ProjectError`` carries the cure on a separate attribute, and the SDK
         re-raises anything that escapes a tool as
@@ -132,6 +133,12 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         therefore reached every agent as an error naming no way out, while
         ``theurian project list`` printed the cure for the same byte of the same
         file. Folded into the message because the wire has one field for both.
+
+        Named for the conversion rather than for the registry, because the
+        registry was only where it was noticed: the state pointer's failures
+        arrive the same way, from the same layer, and lost their remedy to the
+        same line of SDK code. One fold, applied wherever a ``ProjectError``
+        would otherwise cross the tool boundary.
         """
         return ToolError(" ".join(part for part in (str(exc), exc.remedy) if part))
 
@@ -149,7 +156,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         try:
             return registry.load(), registry.unreadable_ids()
         except ProjectError as exc:
-            raise _registry_failure(exc) from exc
+            raise _with_remedy(exc) from exc
 
     def _unresolvable(project_id: str, entries: dict[str, dict[str, str]]) -> ToolError:
         """Why this id did not resolve, and the command that fixes *that* cause.
@@ -181,15 +188,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # The file was parseable a moment ago and is not now. That is a
             # different failure with a different cure, and its own message is
             # more use than "not registered" would be.
-            return _registry_failure(exc)
+            return _with_remedy(exc)
 
         if project_id in unreadable:
             return ToolError(
                 f"Project {project_id!r} has an entry in the project registry that cannot "
-                f"be read, so there is no root path to resolve it to. It is not missing: "
-                f"`theurian project register` refuses the id while that entry holds it. "
-                f"Run `theurian project unregister {project_id}` to remove the entry, then "
-                f"register the project again from its repository."
+                f"be read, so it resolves to nothing. It is not missing: "
+                # Not "refuses the id", which was true only of the members this
+                # branch used to have. An entry keyed by something that is not a
+                # slug is refused by root instead -- `register` never gets as far
+                # as the id, because resolving the repository's context refuses
+                # first. Both are "register refuses while that entry is there",
+                # which is what the reader needs and is true of every member.
+                f"`theurian project register` refuses while that entry is in the file. "
+                # Shell-quoted because an unreadable id is whatever a hand edit
+                # left behind. `theurian project unregister Team One/API` is
+                # three arguments to a command that takes one, so the remedy for
+                # the entry that broke the registry was itself unrunnable.
+                f"Run `theurian project unregister {shlex.quote(project_id)}` to remove the "
+                f"entry, then register the project again from its repository."
             )
 
         known = ", ".join(sorted(entries)) or "none"
@@ -231,7 +248,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         try:
             entries = registry.load()
         except ProjectError as exc:
-            raise _registry_failure(exc) from exc
+            raise _with_remedy(exc) from exc
 
         entry = entries.get(project_id)
         if entry is None:
@@ -255,7 +272,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # the writer, the CLI and here; until then the default is the single
         # authority and the recorded field is documentation.
         paths = ProjectPaths.of(Path(entry["rootPath"]))
-        active = read_active_state(paths)
+        try:
+            active = read_active_state(paths)
+        except ProjectError as exc:
+            # The pointer is derived and has a cure, and the cure is the whole
+            # value of the message. Left to escape, the SDK kept `str(exc)` and
+            # dropped `.remedy` -- so an `active.json` holding arbitrary bytes
+            # reached the agent as `'utf-8' codec can't decode byte 0xb9 in
+            # position 15`: an OS-level string, naming no file and no next
+            # action, in answer to a question about a project.
+            raise _with_remedy(exc) from exc
         if active is None:
             msg = (
                 f"Project {project_id!r} has no built knowledge state. "
@@ -385,7 +411,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # `InvalidIdentifierError` carries no remedy, and the SDK re-raises
             # whatever escapes a tool as `Error executing tool knowledge.get:
             # {exc}` -- so a caller got a format rule and no next action, the
-            # same drop `_registry_failure` was changed to stop. Raised here
+            # same drop `_with_remedy` was changed to stop. Raised here
             # rather than left to escape so the message names the tool that
             # finds a real id.
             #
