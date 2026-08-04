@@ -1,10 +1,24 @@
-# Milestone 5: what five review rounds actually found
+# Milestone 5: what the first five review rounds actually found
 
-Milestone 5 turned `knowledge.search` into hybrid retrieval and ran five review
-rounds before the PR. Two rules in [`CLAUDE.md`](../../CLAUDE.md) came out of it
-— *a finding is closed by a closure argument, not by a fix*, and *the
-orchestrator has no reviewer*. This log holds the account those rules were drawn
-from, so the file every session loads can state the rule and point here.
+Milestone 5 turned `knowledge.search` into hybrid retrieval. **Eight review
+rounds ran before the PR — `39ce944`'s message attests the count — and this log
+accounts for the first five.** Rounds six to eight are not covered here; their
+converted findings are issues
+[#17](https://github.com/theurian/theurian/issues/17) to
+[#20](https://github.com/theurian/theurian/issues/20), and the arc across all
+eight is in the pull request description.
+
+Two rules in [`CLAUDE.md`](../../CLAUDE.md) came out of it — *a finding is closed
+by a closure argument, not by a fix*, and *the orchestrator has no reviewer*.
+This log holds the account those rules were drawn from, so the file every session
+loads can state the rule and point here.
+
+It was written at `79870f9` and committed in `7d3b3f6`, which was sliced from the
+same working tree as `07f16ef` — the gate-inside-ranking change this log
+describes below as uncommitted. Observations about the state of the tree
+therefore name `79870f9` rather than `HEAD`: `HEAD` moves and a commit does not,
+so the same command against a later commit gives a different answer without
+either answer being wrong.
 
 Round attribution below comes from two sources: the round column in
 [T-17](../security/threat-model.md) for the information-disclosure family, and
@@ -46,14 +60,16 @@ like it was saying. **The family was found one face at a time across rounds one
 to three, and closed once, structurally, at the end.** No face has a commit that
 closes it on its own:
 
-- `application/visibility.py` is untracked and `Visibility` appears zero times in
-  `HEAD`'s `application/retrieval_service.py`, so the whole gate-inside-ranking
-  change is uncommitted.
-- `git log -S "usedTokens" -- src/theurian/mcp/` returns only the commit that
-  introduced the field and `f30881e`. Round one's fix commit `c9a65d3` is large —
-  13 files, 680 insertions — and its message enumerates 2 CRITICAL and 8 HIGH in
-  detail without once mentioning the token-budget oracle. `usedTokens` appears
-  twice in that whole diff: as an unchanged context line still reading
+- At `79870f9`, `application/visibility.py` was untracked and `Visibility`
+  appeared zero times in `application/retrieval_service.py`, so the whole
+  gate-inside-ranking change was uncommitted. It landed afterwards, as `07f16ef`.
+- At `79870f9`,
+  `git log -S "usedTokens" 79870f9 -- packages/theurian-core/src/theurian/mcp/`
+  returned only `3b7139b`, which introduced the field, and `f30881e`. Round one's
+  fix commit `c9a65d3` is large — 13 files, 680 insertions — and its message
+  enumerates 2 CRITICAL and 8 HIGH in detail without once mentioning the
+  token-budget oracle. `usedTokens` appears twice in that whole diff: as an
+  unchanged context line still reading
   `"usedTokens": outcome.used_tokens`, and as one added assertion
   (`assert huge["retrieval"]["usedTokens"] <= 32_000`) which was later judged to
   hold with the clamp deleted. Nothing in the commit moves the budget
@@ -64,16 +80,16 @@ closes it on its own:
   > conclusion is unchanged and now rests on what the diff does rather than on
   > how wide it is. Recorded because the log's own point is that an unverified
   > claim survives by sounding like evidence.
-- In `HEAD`, `mcp/search.py` still computes `"usedTokens": outcome.used_tokens`
-  over candidates and only afterwards calls `_resolve_through_canonical`. The
-  face attributed to round one was open through every committed round.
+- At `79870f9`, `mcp/search.py` still computed
+  `"usedTokens": outcome.used_tokens` over candidates and only afterwards called
+  `_resolve_through_canonical`. The face attributed to round one was open
+  through every round committed by then.
 
 So the round column answers "which reviewer saw it", and nothing else. The
 sentence in [the threat model](../security/threat-model.md) that read *each face
 was closed in front of the reviewer who found it* has been corrected to say so;
 whether interim per-face patches existed in the working tree between rounds is
-not recoverable from the repository, and is being verified separately before the
-PR.
+not recoverable from the repository.
 
 The lesson is the one the closure-argument rule turns on: three rounds of
 per-face work produced no committed fix for the first face, and one structural
@@ -130,8 +146,8 @@ must produce the same response.
 ## The rest of the milestone, which was not this defect
 
 Rounds one and two carried substantial findings with nothing to do with T-17.
-Reading the five rounds as one defect fixed five times is wrong, and the rule in
-`CLAUDE.md` is written not to invite that reading.
+Reading these five rounds as one defect fixed five times is wrong, and the rule
+in `CLAUDE.md` is written not to invite that reading.
 
 Round one (`c9a65d3`, 2 CRITICAL and 8 HIGH, the three reviewers' sets barely
 overlapping):
@@ -207,7 +223,9 @@ lines in `mcp/tools.py`. The test that pins it states the family directly:
 
 (`packages/theurian-core/tests/integration/test_mcp_tools.py`, the docstring of
 the bypass test.) The same rule had been written three times and left the same
-gap three times, which is why the decision now lives in one `_may_surface`.
+gap three times, which is why `d4b3fb0` consolidated the decision into a single
+`_may_surface` in `mcp/tools.py`. It has since moved twice, and now lives in
+`theurian.domain.enums.may_surface`.
 
 **State, lifecycle and concurrency artefacts.** Some of this surfaces as error
 behaviour, but the family is wider: persistent files, the active pointer, and
@@ -296,7 +314,7 @@ together.
 
 ## The round count is a smell, not a target
 
-Five rounds does not mean five defects, and three rounds is not a rule this
+These five rounds do not mean five defects, and three rounds is not a rule this
 milestone supports. What it does support:
 
 - A fourth round finding a *new family* means the closure argument was
