@@ -40,7 +40,11 @@ from theurian.infrastructure.sqlite.connection import (
     write_transaction,
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
-from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
+from theurian.infrastructure.sqlite.store import (
+    SqliteCanonicalStore,
+    SqliteWriter,
+    StateDatabaseUnreadableError,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -147,8 +151,15 @@ def test_a_revision_survives_a_round_trip(database: Path, lock: Path) -> None:
 
 
 def test_reading_a_revision_verifies_its_content_hash(database: Path, lock: Path) -> None:
-    """INV-3 is checked on read, so a tampered stored hash is caught rather than
-    trusted."""
+    """INV-3 is checked on read, so a tampered stored hash is caught rather than trusted.
+
+    The refusal now arrives as `StateDatabaseUnreadableError` rather than as the
+    bare `InvariantViolationError`, and the change is deliberate: INV-3's message
+    names ``content_sha256.short`` and the hash of the *stored body*, which is a
+    12-character confirmation oracle over a revision the caller may not be
+    entitled to read. The violation still travels as ``__cause__``, which is what
+    this asserts -- the check is unchanged, only who is told what.
+    """
     with write_transaction(database, lock) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(_project())
@@ -160,8 +171,17 @@ def test_reading_a_revision_verifies_its_content_hash(database: Path, lock: Path
             ("tampered", REV_1.value),
         )
 
-    with SqliteCanonicalStore(database) as store, pytest.raises(InvariantViolationError):
+    with (
+        SqliteCanonicalStore(database) as store,
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+    ):
         store.get_revision(RequestContext(project_id=PROJECT), REV_1)
+
+    assert isinstance(caught.value.__cause__, InvariantViolationError), (
+        "INV-3 must still be what refused it"
+    )
+    assert "content hash mismatch" in str(caught.value.__cause__)
+    assert "theurian migrate apply" in str(caught.value), "and the refusal must name a remedy"
 
 
 # -- ADR-0006: immutability ------------------------------------------------

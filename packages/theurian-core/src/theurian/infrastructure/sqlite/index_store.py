@@ -292,24 +292,32 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 #: wrong answers. "Rebuild your index" costs seconds and loses nothing
 #: (ADR-0004); a traceback at an agent names no remedy and repeats forever.
 #:
-#: **The key holds beyond this file, and one member of it is known and open.**
-#: Re-drawn in `ef325c9`, it has two halves divided by who owns the error
-#: contract: the module containing the read — closed for the state pointer, the
-#: registry and the ingestion manifest — and a port adapter under ADR-0003, where
-#: this store is closed and **`SqliteCanonicalStore` is the one remaining
-#: member**. A truncated `theurian-state-*.sqlite` reaches `knowledge.search`,
-#: `knowledge.get` and `knowledge.status` as `database disk image is malformed`
-#: with no remedy, and one corrupted JSON column (`scope_paths`) reaches the
-#: first two as `Expecting value: line 1 column 1 (char 0)` — which is not a
-#: `sqlite3.Error` at all, so a guard enumerated over that hierarchy would close
-#: the first face and leave the second. Present on `main`, no published claim
-#: falsified, and converted rather than fixed in Milestone 5 because the canonical
-#: store's remedy is *delete this file and re-apply the migrations* rather than
-#: *rebuild the index*, and printing that one wrongly is expensive. Named here
-#: rather than left out: a class with an unnamed member returns as another
-#: instance of the one that was closed. Filed at
-#: https://github.com/theurian/theurian/issues/18; delete this paragraph in the
-#: change that closes it.
+#: **The key holds beyond this file, and no member of it is now open.** Re-drawn
+#: in `ef325c9`, it has two halves divided by who owns the error contract:
+#:
+#: - the module containing the read — the state pointer, the registry and the
+#:   ingestion manifest;
+#: - a port adapter under ADR-0003 — this store, and
+#:   :class:`~theurian.infrastructure.sqlite.store.SqliteCanonicalStore`.
+#:
+#: The canonical store was the last one open, and it was a disclosure rather than
+#: the missing remedy issue #18 recorded: measured through
+#: ``build_server(...).call_tool`` against a database built by the real CLI, a
+#: corrupted `created_at`, `valid_from`, `content_type` or `status` cell reached
+#: an MCP client verbatim through both `knowledge.get` and `knowledge.search`,
+#: eight of eight — and that store holds `draft` and `rejected` revisions, so
+#: those bytes are bytes the caller may not read. It is closed by
+#: :func:`~theurian.infrastructure.sqlite.store._reading`, which applies the same
+#: key with two differences its own docstring records: the block is entered by a
+#: read *helper* rather than by a convention, so a read added later cannot
+#: forget it; and its detail is the exception type for `sqlite3.Error` too,
+#: where this file still passes `str(exc)` through.
+#:
+#: What that closure claims is the key, applied without exception, in both
+#: halves: the state pointer, the registry, the ingestion manifest, this store
+#: and the canonical store. It does not claim that no *other* line in Theurian
+#: interprets untrusted bytes — the key is a question to ask of a new read, not
+#: an inventory that stays true on its own.
 _UNREADABLE_VALUES: Final = (UnicodeDecodeError, struct.error, TypeError, ValueError)
 
 
