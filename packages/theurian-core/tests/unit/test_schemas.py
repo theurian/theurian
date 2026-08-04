@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -307,6 +308,148 @@ def test_the_source_anchor_contract_matches_the_invariant_it_came_from() -> None
     assert anchors["items"]["additionalProperties"] is False
 
 
+# -- Published patterns against the domain that produces the values ---------
+#
+# A published ``pattern`` is ECMA-262, and the clients that read these schemas
+# -- ECMA-262 engines, and RE2 wherever a schema is compiled for one -- mean
+# *end of input* by ``$``. Python's ``re`` is the outlier: its ``$`` also
+# matches immediately before a trailing newline. ``Draft202012Validator``
+# compiles ``pattern`` with ``re``, so putting a candidate through it answers a
+# question no consumer of these schemas asks, and answers it more loosely than
+# the contract does.
+#
+# That gap is not theoretical, and this file is where it was hiding. ``80f94b6``
+# anchored the domain constructors ``\A...\Z`` because ``demo\n`` satisfied a
+# ``$``-anchored slug and ``project.list`` published two entries a reader sees as
+# one id. This comparison claims *exact* agreement between the published pattern
+# and the constructor, and it stayed green straight through that fix -- a
+# Python-backed validator agreed with the unfixed domain, and would have gone on
+# agreeing with a ``$``-anchored one indefinitely. Nothing in the candidate list
+# contained a newline, so the disagreement was never put to it.
+#
+# Hence: the anchors are rewritten to Python's end-of-input forms before the
+# subschema reaches the validator. Everything else in the subschema -- ``type``,
+# ``maxLength``, which carries the 200-character bound -- is still evaluated by
+# the real validator, and that is the reason for translating the pattern in
+# place rather than matching it by hand.
+#
+# Do not simplify this back to ``Draft202012Validator(subschema)``. It will look
+# like a pointless indirection, it will pass every candidate that has no
+# whitespace in it, and it reinstates the blind spot in full.
+
+
+def _end_of_input_anchored(pattern: str) -> str:
+    r"""Rewrite an ECMA-262 pattern's ``^``/``$`` as Python's ``\A``/``\Z``.
+
+    A scan rather than :meth:`str.replace`, because both characters are ordinary
+    members of a character class and both occur as one here: ``contentType``'s
+    published pattern contains ``[a-z0-9!#$&^_.+-]``, which a blind replacement
+    turns into a class Python refuses to compile. Escape pairs are copied
+    through for the same reason, so a later ``\$`` keeps meaning a literal
+    dollar rather than an anchor.
+
+    ``^`` becomes ``\A`` although Python's non-multiline ``^`` already means
+    start-of-input -- the pair is what makes the intent legible, and the
+    translation is checked in both positions below.
+    """
+    out: list[str] = []
+    in_class = False
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\":
+            if index + 1 >= len(pattern):
+                raise ValueError(f"pattern ends in a dangling escape: {pattern!r}")
+            out.append(pattern[index : index + 2])
+            index += 2
+            continue
+        if in_class:
+            in_class = char != "]"
+        elif char == "[":
+            in_class = True
+        elif char == "^":
+            char = r"\A"
+        elif char == "$":
+            char = r"\Z"
+        out.append(char)
+        index += 1
+    if in_class:
+        raise ValueError(f"pattern has an unterminated character class: {pattern!r}")
+    return "".join(out)
+
+
+def _admits(subschema: dict[str, Any], candidate: str) -> bool:
+    """Whether the *published* schema admits the candidate.
+
+    Deliberately not ``Draft202012Validator(subschema).is_valid(candidate)``:
+    see the note above this function for why that validator is a lax reader of
+    an ECMA-262 pattern rather than the contract's own.
+    """
+    assert "pattern" in subschema, (
+        "this comparison is about a published pattern; a subschema without one "
+        "would agree with the domain only by accident"
+    )
+    published = {**subschema, "pattern": _end_of_input_anchored(subschema["pattern"])}
+    return Draft202012Validator(published).is_valid(candidate)
+
+
+def _constructs(build: Callable[[str], object], candidate: str) -> bool:
+    from theurian.domain.errors import TheurianError
+
+    try:
+        build(candidate)
+    except TheurianError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    ("published", "python_equivalent"),
+    [
+        ("^abc$", r"\Aabc\Z"),
+        # `contentType`'s own pattern: `$` and `^` inside a class are literals,
+        # and this is the case `str.replace` corrupts.
+        ("^[a-z0-9!#$&^_.+-]+$", r"\A[a-z0-9!#$&^_.+-]+\Z"),
+        # An escaped dollar is a dollar, not an anchor.
+        (r"^\$[0-9]+$", r"\A\$[0-9]+\Z"),
+        # Anchors are not only at the ends of the string.
+        ("^a$|^b$", r"\Aa\Z|\Ab\Z"),
+        # A class closed by an escaped bracket stays open until the real one.
+        (r"^[a\]$]+$", r"\A[a\]$]+\Z"),
+    ],
+)
+def test_the_anchor_translation_moves_anchors_and_leaves_every_other_character(
+    published: str, python_equivalent: str
+) -> None:
+    """The oracle's own correctness, pinned separately from what it measures.
+
+    Every verdict in the agreement test below is only as good as this rewrite,
+    and a rewrite that quietly mangles a character class would make the schema
+    look stricter than it is -- a disagreement invented by the test rather than
+    found in the contract.
+    """
+    assert _end_of_input_anchored(published) == python_equivalent
+
+
+def test_a_python_validator_reads_a_published_pattern_more_loosely_than_a_client_does() -> None:
+    """The whole reason ``_admits`` does not hand ``pattern`` to the validator.
+
+    The published ``itemId`` pattern is the domain's own, transcribed. Under
+    ECMA-262 -- what every client compiles it as -- it refuses a trailing
+    newline, exactly as ``ItemId`` does. Under Python's ``re`` it admits one. So
+    a Python-backed validator and the domain can be in perfect agreement while
+    the *published* contract and the domain are not, which is the state this
+    file was in for a milestone.
+
+    If this test is ever deleted, ``_admits`` may be simplified back and nothing
+    will object.
+    """
+    published = _load(RETRIEVAL_RESULT)["properties"]["itemId"]["pattern"]
+
+    assert re.search(published, "architecture.auth-policy\n") is not None
+    assert re.search(_end_of_input_anchored(published), "architecture.auth-policy\n") is None
+
+
 #: ``(schema field, domain type, candidate)``. Each candidate is checked for
 #: agreement, never for a fixed verdict: the claim is that the published pattern
 #: admits exactly what the domain constructs, so a case is interesting whether
@@ -324,11 +467,20 @@ _IDENTIFIER_CANDIDATES = (
     "architecture.",
     "architecture auth",
     "architecture_auth",
+    # The case ``80f94b6`` fixed, and the only kind of case that separates a
+    # Python-read pattern from a published one. Keep it.
+    "architecture.auth-policy\n",
     "",
     "a" * 200,
     "a" * 201,
 )
 
+#: No trailing-newline case here, and that is a finding rather than an
+#: oversight: ``MediaType`` is still ``$``-anchored, so it and the published
+#: pattern genuinely disagree about one. The disagreement is carried by
+#: ``test_a_media_type_with_a_trailing_newline_is_refused_like_the_identifiers``
+#: as a strict xfail, so it is reported every run instead of sitting here as a
+#: row that looks like a pass.
 _MEDIA_TYPE_CANDIDATES = (
     "text/markdown",
     "application/vnd.oai.openapi+json",
@@ -347,22 +499,10 @@ _ULID_CANDIDATES = (
     "81K1DEFABC1234567890ABCDEF",  # invalid-ulid
     "01k1defabc1234567890abcdef",
     "01K1DEFABC1234567890ABCDEI",  # invalid-ulid
+    # A ULID that is valid up to the newline. Same case as the item id above.
+    "01K1DEFABC1234567890ABCDEF\n",
     "",
 )
-
-
-def _admits(subschema: dict[str, Any], candidate: str) -> bool:
-    return Draft202012Validator(subschema).is_valid(candidate)
-
-
-def _constructs(build: Callable[[str], object], candidate: str) -> bool:
-    from theurian.domain.errors import TheurianError
-
-    try:
-        build(candidate)
-    except TheurianError:
-        return False
-    return True
 
 
 @pytest.mark.parametrize(
@@ -384,6 +524,10 @@ def test_published_patterns_admit_exactly_what_the_domain_constructs(
     a 201-character item id, a media type carrying a `charset` parameter, a ULID
     with an ambiguous character. Comparing the two decisions is total over the
     cases listed and costs no I/O.
+
+    "Admits" means what a client's regex engine admits, not what a Python one
+    does; ``_admits`` and the note above it carry that, and it is the difference
+    between this test measuring the contract and measuring a proxy for it.
     """
     from theurian.domain.identifiers import ItemId, RevisionId
     from theurian.domain.values import MediaType
@@ -399,6 +543,57 @@ def test_published_patterns_admit_exactly_what_the_domain_constructs(
         assert _admits(subschema, candidate) == _constructs(builders[field], candidate), (
             f"{field}: schema and domain disagree about {candidate!r}"
         )
+
+
+def test_the_case_the_oracle_exists_for_is_still_in_the_candidate_lists() -> None:
+    """The comparison above is total only over the cases listed, and for a
+    milestone none of them contained whitespace.
+
+    That is precisely why anchoring the constructors turned nothing red. A
+    reader trimming a candidate list has no way to tell that one entry is the
+    only reason the agreement is being tested at all; this says so, and fails if
+    it goes.
+    """
+    assert any("\n" in candidate for candidate in _IDENTIFIER_CANDIDATES), (
+        "the item-id list lost its trailing-newline case"
+    )
+    assert any("\n" in candidate for candidate in _ULID_CANDIDATES), (
+        "the ULID list lost its trailing-newline case"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "MediaType is still `$`-anchored in theurian.domain.values, so it "
+        "constructs from a trailing newline that the published pattern refuses. "
+        "Open finding, recorded in 80f94b6 and not yet assigned."
+    ),
+)
+def test_a_media_type_with_a_trailing_newline_is_refused_like_the_identifiers() -> None:
+    r"""The third row of the agreement table, kept visible rather than omitted.
+
+    ``itemId`` and ``revisionId`` agree about a trailing newline because
+    ``80f94b6`` anchored their constructors ``\A...\Z``. ``MediaType`` was left
+    out of that commit and reported instead: ``_MEDIA_TYPE_PATTERN`` still ends
+    in ``$``, so ``MediaType('application/json\n')`` constructs -- and then
+    compares unequal to every member of ``_STRUCTURED_MEDIA_TYPES``, so a
+    structured payload is silently normalised as prose, which is the one thing
+    ADR-0010 says must not happen.
+
+    A strict xfail rather than a candidate quietly left out of
+    ``_MEDIA_TYPE_CANDIDATES``: this reports as an expected failure every run,
+    and turns into a *real* failure the moment the constructor is anchored -- at
+    which point the case belongs in the candidate list with the others and this
+    test should go.
+    """
+    from theurian.domain.values import MediaType
+
+    subschema = _load(RETRIEVAL_RESULT)["properties"]["contentType"]
+
+    assert _admits(subschema, "application/json\n") == _constructs(
+        MediaType, "application/json\n"
+    ), "schema and domain disagree about 'application/json\\n'"
 
 
 # -- CLI contract ----------------------------------------------------------

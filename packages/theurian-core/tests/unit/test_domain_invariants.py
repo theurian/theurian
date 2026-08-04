@@ -16,7 +16,7 @@ from theurian.domain.enums import (
     TrustLevel,
 )
 from theurian.domain.errors import InvalidIdentifierError, InvariantViolationError
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     AUTHORED_IN_THEURIAN,
     KnowledgeAlias,
@@ -377,6 +377,37 @@ def test_item_id_exposes_its_namespace() -> None:
 def test_malformed_project_ids_are_rejected(value: str) -> None:
     with pytest.raises(InvalidIdentifierError):
         ProjectId(value)
+
+
+@pytest.mark.parametrize(
+    ("build", "value"),
+    [
+        (ProjectId, "backend-service\n"),
+        (ItemId, "architecture.auth-policy\n"),
+        (SpecId, "spec.order-cancellation\n"),
+        (RevisionId, "01K1DEFABC1234567890ABCDEF\n"),
+    ],
+    ids=["project", "item", "spec", "revision"],
+)
+def test_an_identifier_with_a_trailing_newline_is_rejected(
+    build: type[ProjectId | ItemId | SpecId | RevisionId], value: str
+) -> None:
+    r"""Every value here is legal up to the newline, which is the point.
+
+    Python's ``$`` matches at the end of the string *and* immediately before a
+    trailing newline, so while these patterns were ``^...$`` all four of these
+    constructed. A real ``project.list`` response then published ``"demo"`` and
+    ``"demo\n"`` side by side in one array, from one registry, indistinguishable
+    to whoever read it. ``80f94b6`` anchored them ``\A...\Z``.
+
+    Nothing went red for that fix, and this is why: the rejection cases above
+    enumerate character-class and length violations and contain no whitespace at
+    all, in either direction. The pattern could be put back to ``$`` today and
+    the only thing that would notice is this test and the published-pattern
+    agreement in ``test_schemas.py``.
+    """
+    with pytest.raises(InvalidIdentifierError):
+        build(value)
 
 
 def test_identifier_types_are_not_interchangeable() -> None:
