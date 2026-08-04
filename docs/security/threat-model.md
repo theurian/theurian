@@ -489,7 +489,10 @@ with its own review:
 | rows and memory on the fallback path | a page bound on `list_items`, which is a change to the `knowledge.status` and search fallback surfaces rather than a retrieval tuning |
 
 A per-query bound is a daemon-level control on the transport layer rather than a
-retrieval change, and is filed for a later milestone on that basis.
+retrieval change, and is filed for a later milestone on that basis:
+[#26](https://github.com/theurian/theurian/issues/26), which covers the third
+row of that table for all three members. The other three rows are separate
+changes and are not filed.
 
 **A fourth member spends no CPU and is here for the same reason: it is unbounded
 work for one call.** An error message built out of an unbounded input is an

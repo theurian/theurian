@@ -645,7 +645,7 @@ def test_the_case_the_oracle_exists_for_is_still_in_the_candidate_lists() -> Non
     reason=(
         "MediaType is still `$`-anchored in theurian.domain.values, so it "
         "constructs from a trailing newline that the published pattern refuses. "
-        "Open finding, recorded in 80f94b6 and not yet assigned."
+        "Open finding, recorded in 80f94b6 and filed for Milestone 6 as #28."
     ),
 )
 def test_a_media_type_with_a_trailing_newline_is_refused_like_the_identifiers() -> None:

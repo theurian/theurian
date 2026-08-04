@@ -201,7 +201,10 @@ class ClaudeCodeMcpConfig:
             # Kept rather than deleted: whether a branch only a race can reach
             # should exist at all is a decision for review, not a cleanup. If it
             # stays, note that it destroys the user's entry with no backup taken
-            # here -- `back_up` is a separate call this path does not make.
+            # here -- `back_up` is a separate call this path does not make, where
+            # `LaunchAgentManager.install` calls its own before overwriting.
+            # That decision is filed for Milestone 6 as
+            # https://github.com/theurian/theurian/issues/27 (SEC-18).
             removal = self._claude("mcp", "remove", SERVER_NAME, "--scope", "user")
             if not removal.ok:
                 return f"Could not remove the existing entry: {removal.output}"

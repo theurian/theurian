@@ -698,7 +698,9 @@ class SqliteIndexStore:
         # nothing, and a floor that excludes nothing while claiming to be a floor
         # is worse than none. Separating "matched only common words" from
         # "matched weakly" needs a per-term IDF test, not a threshold on the
-        # combined score. Recorded as outstanding rather than papered over.
+        # combined score. Recorded as outstanding rather than papered over, and
+        # filed for Milestone 6 as
+        # https://github.com/theurian/theurian/issues/21.
         try:
             with _reading(self._path) as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()

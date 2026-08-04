@@ -75,7 +75,9 @@ CURRENT_PROTOCOL_VERSION: Final = "theurian/v1"
 #: ``tests/unit/test_schemas.py`` holds for ``itemId``, ``revisionId``,
 #: ``contentType`` and ``projectId``. That schema is not in the oracle at all.
 #: ``MediaType``'s disagreement is held by a strict xfail; this one and
-#: ``ContentHash``'s are held by nothing.
+#: ``ContentHash``'s are held by nothing. All three are filed for Milestone 6 as
+#: https://github.com/theurian/theurian/issues/28, which also owes the two
+#: missing fields to the agreement oracle.
 _PROTOCOL_PATTERN: Final = re.compile(r"^theurian/v[1-9]\d*$")
 
 
