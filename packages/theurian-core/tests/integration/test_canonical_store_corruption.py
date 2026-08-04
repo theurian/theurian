@@ -41,8 +41,9 @@ import re
 import shutil
 import sqlite3
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, override
 
@@ -54,7 +55,18 @@ from typer.testing import CliRunner
 from theurian.application.project_service import ProjectRegistry
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
-from theurian.infrastructure.sqlite.schema import DDL
+from theurian.domain.context import RequestContext
+from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.knowledge import KnowledgeRevision, RevisionMetadata, SourceAnchor
+from theurian.domain.values import MARKDOWN, ValidityPeriod
+from theurian.infrastructure.sqlite.connection import (
+    SchemaVersionMismatchError,
+    StateDatabaseUnreadableError,
+    write_transaction,
+)
+from theurian.infrastructure.sqlite.schema import DDL, SCHEMA_VERSION
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 
 pytestmark = pytest.mark.integration
 
@@ -72,6 +84,15 @@ SENTINEL: Final = "ROTATE-ME sk-live-9f2a7c41d8e3 payroll band L7 = 240000"
 #: sample: an implementation that echoed the first half of the cell would satisfy
 #: ``SENTINEL not in message`` and fail here.
 LEAK_WINDOW: Final = 12
+
+#: :data:`SENTINEL` reduced to what SQLite accepts as an identifier, for the one
+#: damage this file writes into the schema text rather than into a row. Spaces
+#: and `=` would leave DDL that does not parse, which is a *different* failure.
+#:
+#: Still caught by :func:`leaked_fragments`: `9f2a7c41d8e3`, `payroll` and
+#: `240000` survive the substitution unchanged, so a message that quotes this
+#: identifier is recognised as a disclosure exactly as a quoted cell is.
+SCHEMA_SENTINEL: Final = re.sub(r"[^0-9A-Za-z]", "_", SENTINEL)
 
 #: `knowledge.get`'s two id-resolution refusals, which name no remedy on purpose.
 #:
@@ -948,6 +969,344 @@ async def test_the_corpus_reaches_each_converter_family(
     assert [tool for tool, answer in answers.items() if answer.refused], (
         f"no tool interpreted the {family} cell in {column}; every assertion "
         f"about this family is vacuous. Answers: {answers}"
+    )
+
+
+# -- Where the guard sits, on the writer -----------------------------------
+#
+# `SqliteWriter` reads three times and is guarded three times, and until now
+# nothing anywhere held that. Deleting any of the three left 1464 tests green
+# while the corrupted cell walked out of `theurian migrate status` -- so the
+# placement was correct and unproven, which is the state a later edit removes
+# without noticing.
+#
+# Reached through the writer directly rather than through the CLI, and that is
+# forced rather than convenient. `record_migration`, `get_item` and
+# `append_revision` run only for a *pending* migration, and adding one to the
+# corpus changes the migration set, which changes the state hash, which sends
+# the next command to a different -- empty, undamaged -- database file
+# (ADR-0016). There is no CLI invocation that reaches them over a damaged
+# state. `applied_migrations` is the exception and is swept through `migrate
+# status` as well.
+
+PROJECT_ID: Final = ProjectId("demo")
+ITEM_ID: Final = ItemId("architecture.auth-policy")
+REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
+APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+
+#: Each read :class:`SqliteWriter` performs, with a cell whose converter quotes
+#: what it would not accept. Every one of these three sits behind a guard today.
+WRITER_READS: Final = (
+    (
+        "get_item",
+        "knowledge_items",
+        "status",
+        lambda writer: writer.get_item(PROJECT_ID, ITEM_ID),
+    ),
+    (
+        "applied_migrations",
+        "migration_history",
+        "migration_id",
+        lambda writer: writer.applied_migrations(PROJECT_ID),
+    ),
+    (
+        "record_migration",
+        "migration_history",
+        "sequence",
+        lambda writer: writer.record_migration(
+            PROJECT_ID, MigrationId(MIGRATION_ID), "c" * 64, APPLIED_AT
+        ),
+    ),
+)
+
+
+def _write_lock(corpus: Corpus) -> Path:
+    """The project's real write lock, so this writer serialises like any other."""
+    return corpus.root / ".theurian/runtime/write.lock"
+
+
+@pytest.mark.parametrize(("method", "table", "name", "call"), WRITER_READS)
+def test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it(
+    corpus: Corpus,
+    method: str,
+    table: str,
+    name: str,
+    call: Callable[[SqliteWriter], object],
+) -> None:
+    """SEC-13 on the write path. The same property, three reads nothing held.
+
+    A write transaction is not a private context: `theurian migrate status`
+    opens one, and everything raised inside it reaches an operator through
+    Typer's Rich traceback. Measured with `migration_history.migration_id`
+    overwritten and the guard removed, `migrate status` printed
+    ``InvalidIdentifierError: MigrationId must be a 26-character ... got
+    'ROTATE-ME sk-live-...'`` -- the cell, verbatim, from a command that reports
+    on migrations and has no business publishing a stored value at all.
+
+    Asserted over what the caller receives rather than over an exception type,
+    like everything else in this file: no fragment of the cell, and a remedy the
+    caller can run. The second half is what separates this from "it raised
+    something": an unguarded `ValueError` names no next action, and an agent
+    that receives one re-issues the identical command.
+    """
+    column = Column(table, name)
+    assert corrupt(corpus.database, column), f"{column} took no value"
+    assert holds_sentinel(corpus.database, column)
+
+    with (
+        pytest.raises(Exception) as caught,
+        write_transaction(corpus.database, _write_lock(corpus)) as connection,
+    ):
+        call(SqliteWriter(connection))
+
+    published = str(caught.value)
+    assert leaked_fragments(published) == (), (
+        f"`SqliteWriter.{method}` published the corrupted {column}: {published}"
+    )
+    assert names_a_remedy(published, commands=_command_paths(), tools=frozenset()), (
+        f"`SqliteWriter.{method}` refused {column} with no next action: {published}"
+    )
+
+
+def test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state(
+    corpus: Corpus,
+) -> None:
+    """The inverse, and the reason the writer is guarded three times and not four.
+
+    `append_revision` reads a stored `content_sha256` and is deliberately *not*
+    guarded, because past ``BEGIN IMMEDIATE`` a failure is the caller's statement
+    against the caller's data. Answering one of those with "delete
+    `.theurian/state/` and run `theurian migrate apply`" would hand an operator a
+    destructive remedy for a write that simply did not apply -- and, worse, would
+    make a conflicting write indistinguishable from a damaged file.
+
+    The absence of a guard is as much a decision as its presence and was as
+    unheld: wrapping that one read left the whole suite green. The two arms here
+    are the boundary itself. The same damage -- a schema whose
+    `knowledge_revisions` no longer declares the column both sides ask for, which
+    is what a rewritten `sqlite_master.sql` cell looks like -- is a damaged
+    database on the read side and the caller's problem on the write side.
+
+    Neither arm may publish the cell, which is why the sentinel is written into
+    the schema text rather than into a row: a `sqlite3` complaint about a broken
+    schema quotes names it read out of the file.
+    """
+    # Built before the damage and before either `pytest.raises`, so a domain
+    # object this test failed to construct is an error here rather than a pass
+    # in the write arm -- which is what the first draft of this test did.
+    revision = _a_revision_the_store_already_holds(corpus)
+
+    connection = sqlite3.connect(corpus.database, isolation_level=None)
+    try:
+        connection.execute("PRAGMA writable_schema = ON")
+        changed = connection.execute(
+            "UPDATE sqlite_master SET sql = replace(sql, 'content_sha256', ?) "
+            "WHERE type = 'table' AND name = 'knowledge_revisions'",
+            (SCHEMA_SENTINEL,),
+        ).rowcount
+    finally:
+        connection.close()
+    assert changed == 1, "the schema row must exist, or this damages nothing"
+
+    commands = _command_paths()
+    context = RequestContext(project_id=PROJECT_ID)
+
+    with pytest.raises(Exception) as reading, SqliteCanonicalStore(corpus.database) as store:
+        store.list_revisions(context, ITEM_ID)
+
+    with (
+        pytest.raises(Exception) as writing,
+        write_transaction(corpus.database, _write_lock(corpus)) as connection,
+    ):
+        SqliteWriter(connection).append_revision(revision)
+
+    assert names_a_remedy(str(reading.value), commands=commands, tools=frozenset()), (
+        f"a read over a damaged schema named no remedy: {reading.value}"
+    )
+    assert not names_a_remedy(str(writing.value), commands=commands, tools=frozenset()), (
+        f"a write inside an open transaction was answered with a remedy that deletes "
+        f"the state: {writing.value}"
+    )
+    assert (leaked_fragments(str(reading.value)), leaked_fragments(str(writing.value))) == (
+        (),
+        (),
+    ), f"the damaged schema reached a caller: read={reading.value} write={writing.value}"
+
+
+def _a_revision_the_store_already_holds(corpus: Corpus) -> KnowledgeRevision:
+    """The corpus's own approved revision, rebuilt with different content.
+
+    Read through a plain `sqlite3` connection rather than through the store,
+    because the store is what the surrounding test is measuring. Read from the
+    *pristine* copy, so the caller may damage the live database first.
+    """
+    connection = sqlite3.connect(corpus.pristine)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT * FROM knowledge_revisions WHERE revision_id = ?",
+            (REVISION_ID.value,),
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None, "the corpus must hold this revision, or nothing is appended"
+
+    return KnowledgeRevision.create(
+        revision_id=REVISION_ID,
+        item_id=ITEM_ID,
+        project_id=PROJECT_ID,
+        migration_id=MigrationId(MIGRATION_ID),
+        title=row["title"],
+        # Different content under an existing id, so an intact schema answers
+        # this with the immutability invariant rather than with silence.
+        body="Rewritten by a migration nobody approved.\n",
+        content_type=MARKDOWN,
+        metadata=RevisionMetadata(
+            kind=KnowledgeKind(row["kind"]),
+            namespace=row["namespace"],
+            status=KnowledgeStatus(row["status"]),
+            trust_level=TrustLevel(row["trust_level"]),
+            sensitivity=Sensitivity(row["sensitivity"]),
+            owner=row["owner"],
+        ),
+        validity=ValidityPeriod(valid_from=datetime.fromisoformat(row["valid_from"])),
+        author=row["author"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        # INV-4: a revision Theurian did not author needs somewhere it came
+        # from, and `KnowledgeRevision.create` refuses one without it.
+        source_anchors=(SourceAnchor(provider="git", source_uri="git://demo/rewritten.md"),),
+    )
+
+
+# -- What the report says, and what it does not ----------------------------
+
+
+def test_a_damaged_database_report_names_the_converter_that_failed(corpus: Corpus) -> None:
+    """The detail is the failing exception's type, and nothing else can be.
+
+    It is the whole of what this report carries beyond a fixed sentence, and the
+    only thing that tells an operator holding two of them apart: a
+    `ValueError` from a timestamp and an `InvalidIdentifierError` from a revision
+    pointer are different repairs. Replacing it with an empty string leaves a
+    grammatical, remedy-naming, entirely uninformative message -- and left the
+    whole suite green.
+
+    Two columns rather than one, because "the message contains the cause's type
+    name" is satisfied by an implementation that hard-codes any single name.
+    What is asserted is that the two reports *differ*, and that each names its
+    own cause.
+    """
+    context = RequestContext(project_id=PROJECT_ID)
+    reports: dict[str, str] = {}
+
+    # An enum, which raises `ValueError`, and a domain value object, which raises
+    # `InvalidIdentifierError` -- the two families whose failure to share a base
+    # class is why the guard is written over the boundary and not the hierarchy.
+    for column in (
+        Column("knowledge_items", "status"),
+        Column("knowledge_items", "current_revision_id"),
+    ):
+        assert corrupt(corpus.database, column), f"{column} took no value"
+        try:
+            with (
+                pytest.raises(StateDatabaseUnreadableError) as caught,
+                SqliteCanonicalStore(corpus.database) as store,
+            ):
+                store.get_item(context, ITEM_ID)
+        finally:
+            restore(corpus)
+
+        cause = caught.value.__cause__
+        assert cause is not None, f"{column}: the real exception did not travel on __cause__"
+        assert type(cause).__name__ in str(caught.value), (
+            f"{column}: the report does not say what failed. cause={type(cause).__name__}, "
+            f"report={caught.value}"
+        )
+        reports[str(column)] = str(caught.value)
+
+    _first, _second = reports.values()
+    assert _first != _second, (
+        f"two different converter failures produced the same report, so the detail "
+        f"distinguishes nothing: {reports}"
+    )
+
+
+def test_a_nested_read_reports_the_converter_that_failed_not_the_wrapper(
+    corpus: Corpus,
+) -> None:
+    """Reads nest, and a nested read must not answer with the answer's own name.
+
+    `get_revision` maps its row by calling `_anchors_for`, which is a guarded
+    read inside a guarded read. Without `StateDatabaseUnreadableError` in the
+    already-answered set the outer guard wraps the inner one, and the detail --
+    the only part of the report that carries information -- becomes the string
+    ``StateDatabaseUnreadableError``, which says that a state database was
+    unreadable to someone reading a message that already says so.
+
+    `source_anchors.line_start` is the cell: `SourceAnchor` takes it as an int
+    and the corrupted text reaches its comparison, so the failure happens in the
+    *inner* read and the outer guard is what decides how it is reported.
+    """
+    column = Column("source_anchors", "line_start")
+    assert corrupt(corpus.database, column), f"{column} took no value"
+    assert holds_sentinel(corpus.database, column)
+    context = RequestContext(project_id=PROJECT_ID)
+
+    with (
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+        SqliteCanonicalStore(corpus.database) as store,
+    ):
+        store.get_revision(context, REVISION_ID)
+
+    chain: list[BaseException] = []
+    current: BaseException | None = caught.value
+    while current is not None:
+        chain.append(current)
+        current = current.__cause__
+
+    wraps = [item for item in chain if isinstance(item, StateDatabaseUnreadableError)]
+    assert len(wraps) == 1, (
+        f"the nested read was answered {len(wraps)} times over: "
+        f"{[type(item).__name__ for item in chain]}"
+    )
+    assert type(chain[-1]).__name__ in str(caught.value), (
+        f"the report names the wrapper rather than the converter that failed: "
+        f"chain={[type(item).__name__ for item in chain]}, report={caught.value}"
+    )
+
+
+def test_an_unsupported_schema_version_is_reported_as_a_version_not_as_damage(
+    corpus: Corpus,
+) -> None:
+    """A header this build read successfully is not a damaged file.
+
+    `schema_version` is the one cell whose *failure to be interpreted* and whose
+    *successful interpretation* both stop a read, and they need different
+    answers. A number this build does not support was read correctly: the file
+    is intact, the build is the wrong one, and the caller needs the two version
+    numbers to know that. Wrapping it discards both and asserts damage that is
+    not there -- and the sweep cannot catch it, because the sweep writes text
+    into that column and text is the *other* case.
+
+    ADR-0017: state databases are rebuilt rather than migrated, so no
+    compatibility window makes this unreachable.
+    """
+    unsupported = SCHEMA_VERSION + 1000
+    connection = sqlite3.connect(corpus.database)
+    try:
+        changed = connection.execute(
+            "UPDATE schema_metadata SET schema_version = ? WHERE id = 1", (unsupported,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    assert changed == 1, "schema_metadata must hold its single row, or this changes nothing"
+
+    with pytest.raises(SchemaVersionMismatchError) as caught, SqliteCanonicalStore(corpus.database):
+        pass
+
+    assert (caught.value.found, caught.value.expected) == (unsupported, SCHEMA_VERSION), (
+        f"the mismatch does not say which two versions disagree: {caught.value!r}"
     )
 
 
