@@ -55,9 +55,17 @@ from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
 from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
 from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
-from theurian.infrastructure.sqlite.connection import create_database, write_transaction
+from theurian.infrastructure.sqlite.connection import (
+    SchemaVersionMismatchError,
+    create_database,
+    write_transaction,
+)
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
-from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
+from theurian.infrastructure.sqlite.store import (
+    SqliteCanonicalStore,
+    SqliteWriter,
+    StateDatabaseUnreadableError,
+)
 
 #: Exit code for a knowledge-state problem the user must resolve: a checksum
 #: mismatch, a revision conflict, a dependency cycle. Distinct from 1 so a script
@@ -1130,10 +1138,11 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
     would otherwise open a fresh empty database, find nothing applied, and report
     everything as fine -- silently losing the guarantee precisely when it fires.
 
-    An unreadable pointer is refused rather than treated as "no previous state".
-    The early returns below are for the cases where there is genuinely nothing to
-    check against; a pointer that exists and cannot be parsed is not one of them,
-    and swallowing it would drop the FR-K5 check for every command routed through
+    An unreadable pointer -- or a previous database this build cannot read -- is
+    refused rather than treated as "no previous state". The early returns below
+    are for the cases where there is genuinely nothing to check against; a file
+    that exists and cannot be read is not one of them, and swallowing it would
+    drop the FR-K5 check for every command routed through
     :func:`_require_project` without saying so.
     """
     active = _read_active(context.paths, as_json)
@@ -1147,9 +1156,28 @@ def _verify_history(context: CommandContext, as_json: bool) -> None:
     try:
         with SqliteCanonicalStore(previous) as store:
             recorded = dict(store.applied_migrations(context.project_id))
-    except TheurianError:
+    except SchemaVersionMismatchError:
         # A previous state written by another schema version tells us nothing
         # about this one. Not an error: it is simply not evidence (ADR-0017).
+        return
+    except StateDatabaseUnreadableError as exc:
+        # Caught apart from the mismatch above rather than sharing one `except
+        # TheurianError`, because the two say opposite things. A state at
+        # another schema version is *not evidence*. A state this build cannot
+        # read is evidence it could not reach -- and returning here reported a
+        # clean history, with a zero exit, for every command routed through
+        # `_require_project`: exactly the silence this docstring forbids.
+        _fail(
+            f"Theurian cannot confirm that no applied migration has been edited "
+            f"(FR-K5): the previously active state database is unreadable. {exc}",
+            remedy=(
+                "Delete `.theurian/state/` and run `theurian migrate apply` to rebuild it "
+                "from the Git-tracked migrations. The rebuilt history records the files as "
+                "they are now, so an edit made before that point stops being detectable."
+            ),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
         return
 
     try:
