@@ -429,13 +429,31 @@ class SqliteWriter:
             InvariantViolationError: If the id exists with different content.
                 Re-appending the *identical* revision is allowed, because
                 re-applying a migration must be a no-op (FR-K8).
+            StateDatabaseUnreadableError: If the stored hash differs because it
+                is not a hash. Distinguished from the above because the two
+                remedies disagree -- see the comment on the comparison.
         """
         existing = self._conn.execute(
             "SELECT content_sha256 FROM knowledge_revisions WHERE revision_id = ?",
             (revision.revision_id.value,),
         ).fetchone()
         if existing is not None:
-            if existing["content_sha256"] != revision.content_sha256.value:
+            stored: str = existing["content_sha256"]
+            if stored != revision.content_sha256.value:
+                # Two states produce this mismatch and their cures are opposite:
+                # an author rewriting a revision, and a damaged cell. Only the
+                # first is INV-1, and telling the second to "write a new revision
+                # instead" appends a duplicate into a database that is already
+                # broken -- reached by re-applying an *unchanged* migration,
+                # which FR-K8 requires to be a no-op.
+                #
+                # The comparison itself stays a comparison of opaque strings, so
+                # the guard's key -- does this line interpret bytes that came out
+                # of this file? -- is answered "no" everywhere but here. Only the
+                # question of *why* the comparison failed is an interpretation,
+                # and it is asked only once the answer changes what is raised.
+                with _reading():
+                    ContentHash(stored)
                 raise InvariantViolationError(
                     f"Revision {revision.revision_id} already exists with different content. "
                     f"Revisions are immutable; write a new revision instead."

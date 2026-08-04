@@ -51,6 +51,10 @@ REV_1 = RevisionId("01K1REV00101234567890ABCDE")
 REV_2 = RevisionId("01K1REV00201234567890ABCDE")
 MIGRATION = MigrationId("01K1AAAAAA01234567890ABCDE")
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+
+#: A cell that is a digest to no reader, holding nothing this codebase says
+#: elsewhere, so a fragment of it in a message came out of the database file.
+SENTINEL = "ROTATE-ME sk-live-9f2a7c41d8e3 payroll band L7 = 240000"
 ANCHOR = SourceAnchor(
     provider="git",
     source_uri="git://demo/.theurian/knowledge/a.md",
@@ -204,6 +208,43 @@ def test_rewriting_a_revision_with_different_content_is_refused(database: Path, 
 
         with pytest.raises(InvariantViolationError, match="immutable"):
             writer.append_revision(_revision(body="rewritten"))
+
+
+def test_a_damaged_stored_hash_is_not_reported_as_an_immutability_violation(
+    database: Path, lock: Path
+) -> None:
+    """The remedy INV-1 prints is harmful when the mismatch is a damaged cell.
+
+    The comparison above has two causes and only one message. A stored
+    ``content_sha256`` that is not a digest at all differs from the caller's hash
+    exactly as a rewritten body does, so re-applying an unchanged migration --
+    the FR-K8 path, which repeats every append -- reported ``Revisions are
+    immutable; write a new revision instead``. An author who follows that appends
+    a duplicate into a database that is already damaged.
+
+    Asserted through the *unchanged* revision on purpose: this is the input that
+    must succeed, and it is the one the misdiagnosis fired on.
+    """
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.append_revision(_revision())
+
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute(
+            "UPDATE knowledge_revisions SET content_sha256 = ? WHERE revision_id = ?",
+            (SENTINEL, REV_1.value),
+        )
+
+    with (
+        write_transaction(database, lock) as connection,
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+    ):
+        SqliteWriter(connection).append_revision(_revision())
+
+    assert "theurian migrate apply" in str(caught.value), "a refusal a caller cannot act on"
+    assert "immutable" not in str(caught.value), "the immutability remedy is the harmful one here"
+    assert SENTINEL not in str(caught.value), "and the cell stays inside the guard"
 
 
 def test_history_is_preserved_across_revisions(database: Path, lock: Path) -> None:
