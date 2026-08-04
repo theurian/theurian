@@ -80,6 +80,9 @@ ignore = [
 # arguments a single-project in-memory implementation does not need.
 "packages/theurian-core/tests/fakes/**" = ["ANN", "ARG002", "PLC0415", "S101", "SLF"]
 "tests/**" = ["ANN", "ARG001", "PLC0415", "PLR2004", "PTH101", "S101", "SLF", "TID251"]
+# Development tools are console programs: stdout is their interface, not a
+# stray debug statement. Everything else in the rule set still applies.
+"tools/**" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "theurian.infrastructure".msg = "Domain and application layers must depend on ports, not infrastructure. Import infrastructure only from composition roots (cli, daemon, mcp, di)."
@@ -103,7 +106,7 @@ enable_error_code = [
     "redundant-expr",
     "truthy-bool",
 ]
-files = ["packages/theurian-core/src", "packages/theurian-core/tests", "tests"]
+files = ["packages/theurian-core/src", "packages/theurian-core/tests", "tests", "tools"]
 mypy_path = "packages/theurian-core/src:packages/theurian-core/tests"
 
 [[tool.mypy.overrides]]
