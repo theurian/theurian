@@ -199,7 +199,32 @@ def _refuse_if_empty(
 
     if report["chunks"] != 0:
         return False
-    available = _indexable_items(request.database, include_unapproved=request.include_unapproved)
+    try:
+        available = _indexable_items(
+            request.database, include_unapproved=request.include_unapproved
+        )
+    except TheurianError as exc:
+        # A second read session over the same file, so `_run_build`'s conversion
+        # one function above does not cover it -- and it reaches rows the build
+        # itself never touches. Measured against the real CLI on a project whose
+        # only knowledge is `draft`, so the build indexes zero chunks and this
+        # line runs: damaging `projects.registered_at` or `projects.root_path`
+        # ended `theurian index build --json` in a Rich traceback, exit 1, empty
+        # stdout, and the cell published through `__cause__` -- the same escape
+        # the `migrate` commands were just converted for.
+        request.index_path.unlink(missing_ok=True)
+        _fail(
+            f"This build indexed nothing, and the canonical state could not say whether "
+            f"that is correct: {exc}",
+            remedy=(
+                "Nothing was published, so retrieval still uses the previous index. Delete "
+                ".theurian/state/ and run `theurian migrate apply`, then retry; canonical "
+                "state rebuilds from Git-tracked migrations."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return True
     if not available:
         return False
     request.index_path.unlink(missing_ok=True)

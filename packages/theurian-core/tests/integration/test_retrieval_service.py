@@ -7,8 +7,10 @@ only thing not exercised here is the MCP transport.
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, final
@@ -39,6 +41,10 @@ from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
 pytestmark = pytest.mark.integration
+
+#: A cell holding nothing this codebase says elsewhere, so a fragment of it in a
+#: published message came out of the state database file and nowhere else.
+SENTINEL = "ROTATE-ME sk-live-9f2a7c41d8e3 payroll band L7 = 240000"
 
 
 def _mode(outcome: SearchOutcome) -> RetrievalMode:
@@ -701,14 +707,13 @@ def test_the_refused_build_names_the_state_rebuild_and_publishes_nothing(
     assert not (renamed_without_rebuilding_state / ".theurian/state/active-index.json").exists()
 
 
-def test_an_empty_project_may_still_publish_an_empty_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The control that keeps the refusal narrow.
+@pytest.fixture
+def empty_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A registered, applied project holding no knowledge, so a build has 0 chunks.
 
-    "No chunks" is only a defect when the canonical store *holds* knowledge. A
-    project that has genuinely indexed nothing yet must still get an index, or
-    the refusal would block the ordinary first build of an empty repository.
+    The only corpus that reaches the zero-chunk branch of `index build`. Every
+    other fixture here indexes something, which is why the read that branch makes
+    of the canonical store went unguarded for as long as it did.
     """
     root = tmp_path / "empty"
     root.mkdir()
@@ -723,12 +728,54 @@ def test_an_empty_project_may_still_publish_an_empty_index(
     assert runner.invoke(app, ["init", "--json"]).exit_code == 0
     assert runner.invoke(app, ["project", "register", "--json"]).exit_code == 0
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
+    return root
 
+
+def test_an_empty_project_may_still_publish_an_empty_index(empty_project: Path) -> None:
+    """The control that keeps the refusal narrow.
+
+    "No chunks" is only a defect when the canonical store *holds* knowledge. A
+    project that has genuinely indexed nothing yet must still get an index, or
+    the refusal would block the ordinary first build of an empty repository.
+    """
     code, payload = _invoke("index", "build")
 
     assert code == 0
     assert payload["chunks"] == 0
     assert payload["published"] is True
+
+
+def test_a_zero_chunk_build_asks_the_store_a_question_it_may_fail_to_answer(
+    empty_project: Path,
+) -> None:
+    """CP-2 over the second store session a build opens, which nothing converted.
+
+    `_run_build` converts the build's own read; this is a *different* session,
+    opened afterwards to ask what the store held, and it reaches rows the build
+    never touches -- `projects` among them. Measured against the real CLI before
+    this was guarded: exit 1, empty stdout, and a Rich traceback whose
+    ``__cause__`` published the damaged cell that
+    `StateDatabaseUnreadableError` had just withheld from its own message.
+
+    Asserted over the whole output rather than over `error`, because the escape
+    this pins never reached a JSON document at all.
+    """
+    with closing(sqlite3.connect(_database(empty_project))) as raw, raw:
+        raw.execute("UPDATE projects SET registered_at = ?", (SENTINEL,))
+
+    result = runner.invoke(app, ["index", "build", "--json"])
+    published = (result.stdout or "") + (result.stderr or "")
+
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        "an uncaught exception is the escape itself, whatever it says"
+    )
+    assert set(json.loads(published)) == {"error", "remedy"}, "the whole contract"
+    assert "migrate apply" in json.loads(published)["remedy"]
+    assert SENTINEL not in published, "and the cell stays inside the guard"
+    assert not list((empty_project / ".theurian/state").glob("theurian-index-*.sqlite")), (
+        "a refused build must leave no file a later `index status` would believe"
+    )
 
 
 def test_an_unreadable_state_database_fails_through_the_published_error_shape(
