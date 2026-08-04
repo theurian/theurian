@@ -51,7 +51,8 @@ A milestone is not done when the code works. It is done when all of this has
 happened, in order:
 
 1. **Implement — by assignment, never by the orchestrator** (see above), with the
-   quality gate green after every logical commit:
+   quality gate green after every logical commit — and a commit *each time* it
+   goes green, not at the end (see *Commits and local safety*):
    `uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest -q`
 2. **Run it for real.** A scratch script or a real CLI invocation against a
    temporary `HOME` and `THEURIAN_DATA_DIR`. Every milestone so far has found a
@@ -311,6 +312,17 @@ its language is the point.
 
 - Commits: Conventional Commits, signed, with a DCO `Signed-off-by` trailer
   (`git commit -s`). One topic per PR.
+- **A commit is triggered by the quality gate going green, not by the work being
+  finished** — at that moment, not at the end of a review round and not before
+  opening the PR. Milestone 5 held 16,300 uncommitted lines for 28 hours; slicing
+  them afterwards took three attempts, and the one that built opens with a
+  13,434-line commit. Size was not the cause: a port signature change spread
+  across layers, and a commit that removes an API without moving its consumers
+  does not build — once they have landed separately, no ordering works.
+  Committing at the green keeps them together. It also bounds review: rounds four
+  to six were handed `git diff main...HEAD`, which showed 7,792 lines of a larger
+  change — four production modules and three schemas were untracked, and so
+  invisible to it. An uncommitted tree has no boundary a reviewer can check.
 - Never run a real `theurian setup`, `daemon start` (detached), or anything that
   writes to `~/.claude.json` or `~/Library/LaunchAgents` on the user's machine.
   Redirect `HOME` and `THEURIAN_DATA_DIR`.
