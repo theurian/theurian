@@ -374,6 +374,41 @@ def _written_by_another_schema(root: Path) -> None:
     )
 
 
+#: A schema version cell holding something ``int()`` will not take, and a marker
+#: no honest response can contain.
+#:
+#: The value is the *whole* point of the recipe and not decoration: a corrupt
+#: page holds whatever was on it, so the cell that fails to convert can be a
+#: fragment of a document. `int()` puts the value it refused into the `ValueError`
+#: it raises, so a refusal built out of that message publishes it. Anything
+#: unique will do; this is only unique enough to search a response for.
+UNREADABLE_VERSION_MARKER = "x-page-fragment-7Q"
+
+
+def _a_schema_version_that_is_not_a_number(root: Path) -> None:
+    """A cell where the version belongs that `int()` will not take (SEC-7).
+
+    The index is derived, unsigned and git-ignored, so a partial overwrite, a
+    truncated copy or a flipped bit past the header leaves cells holding whatever
+    was on the page — while the file still opens, still has every table, and
+    still answers `PRAGMA integrity_check`. This is the shape that reached an
+    agent as `ToolError: invalid literal for int() with base 10: ...`, with no
+    remedy named and every later query against the project failing identically,
+    because `int()` sat outside the block that answers for this file's bytes.
+
+    Distinct from `_written_by_another_schema`, which stores a *number* this
+    build does not read. Both reach the same reason code, and they must: the
+    remedy is the same rebuild. What differs is the route — one is a comparison
+    that fails, the other a conversion that raises.
+    """
+    _must(root, "index", "build")
+    _corrupt(
+        _index_file(root),
+        "UPDATE index_metadata SET index_schema_version = ?",
+        (UNREADABLE_VERSION_MARKER,),
+    )
+
+
 def _passes_the_gate_and_still_breaks(root: Path) -> None:
     """The case the version gate is *supposed* to catch and cannot always.
 
@@ -468,6 +503,13 @@ BREAKAGES: tuple[tuple[str, str, str, Recipe, dict[str, Any]], ...] = (
         "schema-mismatch",
         INDEX_SCHEMA_MISMATCH,
         _written_by_another_schema,
+        {},
+    ),
+    (
+        "schema-version-is-not-a-number",
+        "schema-mismatch",
+        INDEX_SCHEMA_MISMATCH,
+        _a_schema_version_that_is_not_a_number,
         {},
     ),
     ("table-dropped", "unreadable", INDEX_UNREADABLE, _passes_the_gate_and_still_breaks, {}),
@@ -870,6 +912,59 @@ async def test_a_rejected_pointer_does_not_echo_the_path_it_rejected(
     assert str(escaped_pointer) not in note, "no absolute path reaches the client"
     assert "tmp/elsewhere" not in note, "nor the rejected pointer value"
     assert "active-index.json" in note, "the file to delete is still named"
+
+
+@pytest.fixture
+def unreadable_schema_version(project: Path) -> Path:
+    """A published index whose version cell holds text rather than a number."""
+    _a_schema_version_that_is_not_a_number(project)
+    return project
+
+
+async def _however_it_ends(registry: ProjectRegistry, **arguments: Any) -> str:
+    """Everything the caller receives from one call, answer or refusal, as text.
+
+    Written to take both shapes on purpose. The property below is that a cell
+    this build could not interpret reaches the caller by *no* route, and a test
+    that only inspected a successful payload would report the property held while
+    the same bytes travelled in an exception message — which is exactly how they
+    travelled: `ToolError: invalid literal for int() with base 10: ...`, straight
+    to the agent. Failing on a raised exception rather than on the assertion
+    would say "something went wrong" where the finding is "the file's contents
+    came back".
+    """
+    try:
+        return json.dumps(await _search(registry, **arguments), ensure_ascii=False)
+    except Exception as escaped:  # the escape the guard exists to prevent
+        return f"{type(escaped).__name__}: {escaped}"
+
+
+@pytest.mark.asyncio
+async def test_a_cell_the_index_could_not_interpret_is_never_read_back_to_the_caller(
+    unreadable_schema_version: Path, registry: ProjectRegistry
+) -> None:
+    """SEC-7 message hygiene, for the bytes of the file rather than for a path.
+
+    `int()` and `float()` put the value they refused into the exception they
+    raise, and under corruption that value is whatever was on the page —
+    knowledge text included. So the refusal this build produces names the
+    exception's *type* and never its message, and this asserts the whole reply
+    rather than one field of it: the marker must be absent from the note, from
+    the results, and from a raised message if one is raised at all.
+
+    Paired with the `schema-version-is-not-a-number` row of `BREAKAGES`, which
+    says the caller still gets a usable answer. Neither covers the other: an
+    answer that leaks and a refusal that does not are both failures, and they
+    fail in different fields.
+    """
+    reply = await _however_it_ends(registry, query="token")
+
+    assert UNREADABLE_VERSION_MARKER not in reply, (
+        "the cell that could not be read came back out to the caller"
+    )
+    assert "index-schema-mismatch" in reply, (
+        "and the reply must still be the refusal, not some unrelated success"
+    )
 
 
 @pytest.fixture
@@ -1393,3 +1488,42 @@ def test_a_query_that_matches_nothing_returns_nothing_and_does_not_raise(
 
     assert search("kubernetes", project_id="demo") == ()
     assert search("token", project_id="demo"), "and a matching one still matches"
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [UNREADABLE_VERSION_MARKER, b"\xde\xad\xbe\xef"],
+    ids=["text", "blob"],
+)
+def test_a_schema_version_that_is_not_a_number_is_answered_rather_than_raised(
+    store: SqliteIndexStore, cell: Any
+) -> None:
+    """`schema_version` says it never raises, and that had stopped being true.
+
+    It is the one read that answers with a *value* instead of propagating a
+    refusal, because every caller asks it the same question — can this build use
+    this file? — and an exception is not an answer to it. `int()` sat outside the
+    guarded block, so a cell holding text, a blob, or anything else `int()` will
+    not take escaped through this method to `is_searchable`, past the fallback
+    that exists for exactly this file, and out to the agent as a `ToolError`
+    naming no remedy. `theurian index status` repeats the same promise and broke
+    with it.
+
+    0 is "unknowable", not "version zero": callers treat it as they treat a
+    mismatch, because operationally it means the same thing.
+
+    Two cells and not three. A REAL there is *not* a member: the column has
+    INTEGER affinity, a lossless value is converted on the way in, and `int(2.5)`
+    is 2 — so a corrupt version of 2.5 reads as this build's own version and is
+    indistinguishable from it. That is a truncation rather than an escape, and
+    naming it here is cheaper than the next reader adding the case and finding
+    out.
+
+    Both halves are asserted. Returning 0 is what makes the search fall back;
+    `is_searchable` being False is what a caller acts on, and it is a separate
+    line that a partial fix could leave true.
+    """
+    _corrupt(store.path, "UPDATE index_metadata SET index_schema_version = ?", (cell,))
+
+    assert store.schema_version() == 0, "unknowable, and never an exception"
+    assert store.is_searchable() is False

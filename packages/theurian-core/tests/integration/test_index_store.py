@@ -6,7 +6,11 @@ external-content triggers are exactly the things a fake would paper over.
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -49,6 +53,26 @@ def store(tmp_path: Path) -> SqliteIndexStore:
     store = SqliteIndexStore(tmp_path / "index" / "theurian-index-01.sqlite")
     store.create(index_build_id="01K1DXAA", state_hash="abc123")
     return store
+
+
+def _corrupt(database: Path, statement: str, parameters: tuple[Any, ...] = ()) -> None:
+    """Write a value into an index that no build would ever write.
+
+    The index is derived, unsigned and git-ignored (SEC-7), so a cell can hold
+    anything a partial overwrite, a truncated copy or a flipped bit left there —
+    and the reads below are the only thing standing between such a cell and the
+    caller. Statements rather than random bytes because a named cell is
+    reproducible; the random-fixture campaign that found this class lives in the
+    review record, not in the suite.
+
+    ``closing`` rather than ``with sqlite3.connect(...)``: the latter commits and
+    does *not* close, leaking a handle whose ``ResourceWarning`` — with
+    ``filterwarnings = error`` — fails whichever test happens to be running when
+    it is collected.
+    """
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(statement, parameters)
+        connection.commit()
 
 
 # -- Building ---------------------------------------------------------------
@@ -383,6 +407,50 @@ def test_a_corpus_embedded_by_another_model_is_skipped_not_scored(
     assert [h.chunk_id for h in hits] == ["two-dim"]
 
 
+@pytest.mark.parametrize(
+    "cell",
+    ["eight-ch", 42, b"\x00" * 9],
+    ids=["text", "integer", "nine-bytes"],
+)
+def test_a_vector_cell_that_cannot_be_one_is_skipped_rather_than_failing_the_search(
+    store: SqliteIndexStore, cell: Any
+) -> None:
+    """SEC-7, ADR-0004. Bytes read from a derived file are not to be trusted.
+
+    ``vector`` is declared ``BLOB``, which in SQLite is an affinity and not a
+    constraint: a cell there can hold TEXT, an INTEGER, or a blob of the wrong
+    width, and none of them can be refused by ``struct.unpack`` in a way the
+    caller survives. Measured before the width check moved in front of the
+    unpack: two bytes gave ``unpack requires a buffer of 0 bytes``, nine gave
+    ``8 bytes``, TEXT gave ``a bytes-like object is required, not 'str'`` and an
+    INTEGER gave ``object of type 'int' has no len()`` — none of them a
+    ``sqlite3`` exception, so none of them reached the fallback that keys on one.
+
+    The three cases reach two different guards, and each is sized to reach the
+    one it names. TEXT and INTEGER are refused by the ``isinstance`` check —
+    **eight characters** of text and not a sentence, because ``len()`` on a
+    ``str`` counts characters and a longer one is turned away by the width test
+    before ``isinstance`` is ever the reason. Nine bytes is refused by the width
+    test's modulo: nine divided by four is two, exactly the width this query
+    asks for, so a check comparing only component counts would hand those nine
+    bytes to ``struct``.
+
+    **Skipped, not raised.** A corpus embedded by another model is skipped the
+    same way, so this is the answer the caller already gets for a vector that
+    cannot be compared; failing the whole search over one unreadable row would
+    take away the lexical answer that was never in doubt. The healthy row is what
+    says the skip was a skip: an assertion that the call merely did not raise is
+    satisfied by returning nothing at all.
+    """
+    store.add_chunks([_indexable("healthy", "a"), _indexable("corrupt", "b", item="i2")])
+    store.add_embeddings([("healthy", [1.0, 0.0]), ("corrupt", [1.0, 0.0])])
+    _corrupt(store.path, "UPDATE embeddings SET vector = ? WHERE chunk_id = 'corrupt'", (cell,))
+
+    hits = store.search_dense([1.0, 0.0], project_id="demo")
+
+    assert [h.chunk_id for h in hits] == ["healthy"]
+
+
 def test_an_index_with_no_embeddings_returns_nothing_rather_than_failing(
     store: SqliteIndexStore,
 ) -> None:
@@ -507,6 +575,38 @@ def test_a_passage_is_returned_for_the_project_that_owns_it(store: SqliteIndexSt
     assert store.chunk_texts(["theirs"], project_id="other") == {
         "theirs": "the other team's incident runbook"
     }
+
+
+def test_a_passage_comes_back_as_text_even_when_the_row_holds_bytes(
+    store: SqliteIndexStore,
+) -> None:
+    """SEC-7, ADR-0004. The port promises ``Mapping[str, str]``; the file promises
+    nothing.
+
+    A ``TEXT`` column has TEXT *affinity*, which converts a number on the way in
+    and leaves a blob exactly as it found it — so bytes are the one foreign value
+    a ``chunks.text`` cell can actually hold, and a partial overwrite of a
+    derived, unsigned file is how it gets there. Handed straight through, that
+    value leaves this adapter as ``bytes`` and becomes a result's ``excerpt``,
+    where it is a ``TypeError`` at the shaper rather than a passage.
+
+    Failing towards a readable wrong answer is deliberate here: the row is
+    already unreadable, and the alternative — refusing the whole search over one
+    unprintable cell — costs the caller the results that were never in doubt.
+
+    The key half of the same coercion is **not** asserted, and the reason is
+    worth writing down rather than rediscovering: ``chunk_id`` is looked up with
+    a bound ``str``, and SQLite compares an INTEGER or a BLOB cell against TEXT as
+    unequal whatever its affinity, so a row whose id is not text cannot be
+    returned by this statement at all. The ``str()`` there guards a value this
+    lookup cannot produce; the one below guards one it can.
+    """
+    store.add_chunks([_indexable("c1", "the body")])
+    _corrupt(store.path, "UPDATE chunks SET text = ? WHERE chunk_id = 'c1'", (b"\xff\x80",))
+
+    passages = store.chunk_texts(["c1"], project_id="demo")
+
+    assert passages == {"c1": "b'\\xff\\x80'"}, "the passage must be text, whatever the cell holds"
 
 
 def test_a_chunk_records_its_own_size(store: SqliteIndexStore) -> None:
@@ -999,6 +1099,142 @@ def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStor
 
     assert store.search_lexical("the", project_id="demo"), "known gap, not a feature"
     assert store.search_lexical("gateway token", project_id="demo")
+
+
+# -- One corpus, two builds (FR-R7) -------------------------------------------
+#
+# Every retriever here breaks a score tie on `chunk_id`, and until now nothing
+# held the three that do it in SQL. Removing `, chunks.chunk_id` from
+# `search_lexical`, from the trigram lookup and from `scan_statement` left the
+# whole suite green -- because every fixture that could see an ordering inserted
+# its chunks in ascending id order, so rowid order and chunk-id order were the
+# same list and a tie-break that had been deleted still looked like it was
+# working. The two tie-breaks that live in Python (`reciprocal_rank_fusion` and
+# `_dense_ranking`) were held; these three were not.
+#
+# So the corpus is built twice from the same chunks in two different insertion
+# orders, which is what an unrelated edit followed by `theurian index build`
+# amounts to. Measured with each `ORDER BY` shortened in turn: not merely a
+# different order but a different *set* -- the second build answered with 50 rows
+# starting at `01K1TEB060...` where the first answered with 50 starting at
+# `01K1TEB000...`, because the tie straddles the `LIMIT` boundary and rowid order
+# decides which side of it each row falls on.
+
+#: Enough near-identical chunks to overflow :data:`TIE_LIMIT` twice over, so the
+#: tie the retrievers have to break genuinely straddles the `LIMIT` boundary. A
+#: corpus at or below the limit comes back whole in any order and holds nothing.
+TIE_COUNT = 120
+
+#: What the two lookups are asked for. Absolute rather than the adapters' own
+#: default, so retuning that default cannot quietly make this corpus fit.
+TIE_LIMIT = 50
+
+#: How far build B is rotated before insertion. Any non-zero rotation would do;
+#: what matters is that no chunk keeps its rowid and that the first row inserted
+#: is not the lowest id.
+TIE_ROTATION = 60
+
+#: One body for the whole corpus, in both writing systems.
+#:
+#: Identical text and identical length in every chunk, which is what makes every
+#: BM25 score equal to the last bit -- the state the tie-break exists for, and
+#: the state a corpus of *varying* prose never reaches. The Japanese half is not
+#: decoration: `unicode61` cannot segment it, so it is the only thing the trigram
+#: lookup and the sub-trigram scan can match on (ADR-0023).
+TIE_BODY = "the shared gateway meters every request 共有ゲートウェイは全リクエストを計測する"
+
+
+def _tie_chunk_id(number: int) -> str:
+    """A chunk id whose ascending order is known, shaped like a real one.
+
+    `chunk_id` is `<revision ULID>#<ordinal>`, so the ids a real build mints
+    ascend with creation order -- which is exactly the coincidence that hid the
+    missing tie-break. Here the ids ascend and the *insertion* order does not.
+
+    Twenty-six characters before the `#`, and every one of them Crockford base32:
+    no `I`, `L`, `O` or `U`. An id of the wrong shape would sort the same way and
+    prove the same thing, which is precisely why it would be wrong -- the ids
+    this file compares are the ids the adapter compares in production.
+    """
+    return f"01K1TEB{number:03d}0123456789ABCDEF#0"
+
+
+def _tie_corpus() -> list[IndexableChunk]:
+    return [
+        _indexable(_tie_chunk_id(number), TIE_BODY, item=f"architecture.note-{number:03d}")
+        for number in range(TIE_COUNT)
+    ]
+
+
+def _build(path: Path, chunks: Sequence[IndexableChunk]) -> SqliteIndexStore:
+    built = SqliteIndexStore(path)
+    built.create(index_build_id="01K1DXAA", state_hash="abc123")
+    built.add_chunks(list(chunks))
+    return built
+
+
+def _physical_order(store: SqliteIndexStore) -> list[str]:
+    """The order SQLite would hand rows back in with nothing to sort by."""
+    with closing(sqlite3.connect(store.path)) as connection:
+        return [row[0] for row in connection.execute("SELECT chunk_id FROM chunks ORDER BY rowid")]
+
+
+@pytest.mark.parametrize(
+    ("retriever", "query", "expected_rows"),
+    [
+        ("search_lexical", "gateway", TIE_LIMIT),
+        ("search_substring", "ゲートウェイ", TIE_LIMIT),
+        ("search_substring", "計測", TIE_COUNT),
+    ],
+    ids=["word-index", "trigram-lookup", "scan-below-the-floor"],
+)
+def test_two_builds_of_one_corpus_answer_a_tie_identically(
+    tmp_path: Path, retriever: str, query: str, expected_rows: int
+) -> None:
+    """FR-R7. A rebuild must not change which rows a query returns.
+
+    An index is derived and rebuilt often -- after every `migrate apply`, and on
+    any machine that clones the repository. If a tie is settled by rowid, then
+    editing an unrelated document reorders the answer to a query that has nothing
+    to do with it, and past the `LIMIT` it changes *which rows come back at all*:
+    a pinned result stops reproducing, and two engineers asking the same question
+    are answered from different halves of the same corpus.
+
+    The third case is the sub-trigram scan, and its row count is deliberately the
+    whole corpus rather than :data:`TIE_LIMIT`: that branch has no `LIMIT` to
+    straddle, because it must score every matching row before it can name the
+    best of them. So it cannot lose rows to a rebuild -- only their order, which
+    the caller then truncates. Held here beside the other two because the
+    `limit` a caller passes is applied to whatever order this branch chose.
+
+    Two preconditions, both able to make this pass for the wrong reason. Every
+    score must tie, or relevance settles the order and the tie-break never runs.
+    And the two builds must genuinely differ in physical order, or the comparison
+    is a build against its own twin -- which is the state every existing fixture
+    was in, and the reason three tie-breaks could be deleted with the suite still
+    green.
+    """
+    chunks = _tie_corpus()
+    first = _build(tmp_path / "a" / "theurian-index-a.sqlite", chunks)
+    second = _build(
+        tmp_path / "b" / "theurian-index-b.sqlite",
+        [*chunks[TIE_ROTATION:], *chunks[:TIE_ROTATION]],
+    )
+
+    hits = [
+        getattr(built, retriever)(query, project_id="demo", limit=TIE_LIMIT)
+        for built in (first, second)
+    ]
+
+    assert _physical_order(first) != _physical_order(second), (
+        "the two builds must disagree about rowid order, or this compares a build with itself"
+    )
+    assert len({row.score for row in hits[0]}) == 1, (
+        "every score must tie, or relevance decides the order and the tie-break is unread"
+    )
+    expected = [_tie_chunk_id(number) for number in range(expected_rows)]
+    assert [row.chunk_id for row in hits[0]] == expected, "ascending chunk id, and no other order"
+    assert [row.chunk_id for row in hits[1]] == expected, "the same rows, from the other build"
 
 
 # -- Input bounds (SEC-8) ----------------------------------------------------

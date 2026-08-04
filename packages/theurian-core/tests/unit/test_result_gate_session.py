@@ -399,3 +399,51 @@ def test_the_measured_ranking_clears_more_rows_than_a_short_circuit_would_stop_a
         f"wherever the withdrawn ones rank; fewer means `cleared` stopped early, "
         f"and the read counts above are measuring a scan that no longer happens"
     )
+
+
+# -- An id that came out of the index (SEC-7, ADR-0004) -----------------------
+#
+# `Ranked.item_id` is a cell of a derived, unsigned, git-ignored file, and
+# `CanonicalVisibility` builds an `ItemId` out of it. Validation refusing that
+# string used to raise: an `InvalidIdentifierError` is a `DomainError`, so
+# `hybrid_answer`'s `IndexBuildError` handler never saw it and it reached the
+# agent as a bare tool failure naming no remedy -- measured in 3 of 400 fixtures
+# with 1 to 40 random bytes corrupted past the first page.
+#
+# The argument for treating the field as untrusted was already written nineteen
+# lines below it, for `revision_id` on the same row: an id that failed validation
+# "would raise here rather than simply fail to match". This is that reasoning
+# applied to the other id.
+
+#: Two ids no rule this domain could adopt would accept, so this stays a test
+#: about the *refusal* rather than about today's identifier grammar. The second
+#: is the exact shape the corruption campaign produced.
+REFUSED_ITEM_IDS = ("", "architecture.auth-poli\x06y")
+
+
+@pytest.mark.parametrize("item_id", REFUSED_ITEM_IDS, ids=["empty", "control-character"])
+def test_a_row_naming_an_id_the_domain_refuses_is_withheld_rather_than_raised(
+    item_id: str,
+) -> None:
+    """A refusal is spent the way a mismatch is: the row names no item, so it goes.
+
+    Failing towards *fewer* results is the only direction available to a file
+    that is derived and unsigned (ADR-0004, SEC-7). The alternative on the table
+    was to drop validation and hand the raw string to the canonical store, which
+    trades a tool failure for an unvalidated identifier reaching a query.
+
+    Both assertions are load-bearing and they fail for different implementations.
+    An empty result is what a caller sees; that alone is also produced by passing
+    the string through to a store that happens not to know it, which is the
+    version this replaced. The read count is what says the domain refused it
+    *here*, before anything was asked about it.
+    """
+    log: list[str] = []
+    row = Ranked(chunk_id=f"{_ulid(1)}#0", item_id=item_id, revision_id=_ulid(1))
+
+    cleared = CanonicalVisibility(
+        _RecordingSession(log), CONTEXT, include_unapproved=False
+    ).cleared((row,))
+
+    assert cleared == (), "a row the domain will not name cannot be shown"
+    assert log.count("get_item") == 0, "and the id is never handed to the canonical store"

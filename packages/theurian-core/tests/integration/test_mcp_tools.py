@@ -22,7 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
-from theurian.application.retrieval_service import CANDIDATE_DEPTH
+from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_DEPTH
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
@@ -3427,10 +3427,22 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
     moved with it and the assertion held at a depth of 5 and of 200 — a guard
     that resizes itself guards nothing. Counting at fifty makes this a claim
     about the corpus: fifty-five near-identical notes really do offer fifty rows
-    to the retriever that carries them. The one thing that must still be read off
-    the implementation is the last assertion, which says the depth the pipeline
-    actually reads is a depth this corpus can fill — if it ever is not, every
-    equality assertion below is vacuous and this is where that gets said.
+    to the retriever that carries them.
+
+    **What this corpus reaches, and what it does not.** The last two assertions
+    are read off the implementation, and they say opposite things on purpose. The
+    crowd must offer more visible rows than :data:`CANDIDATE_DEPTH` publishes, or
+    no fiftieth visible row exists to be displaced and every equality below is
+    vacuous. It must *not* fill :data:`FIRST_PASS_DEPTH`, and it does not: fifty-six
+    chunks against a first pass of a hundred, so both retrievers are exhausted on
+    that pass and ``cleared[:CANDIDATE_DEPTH]`` trims the two corpora identically.
+    This fixture therefore cannot fail when that cut is deleted — measured,
+    ``return cleared`` passed every one of the 1,407 tests that existed before
+    ``tests/unit/test_candidate_cut.py`` was written — and the corpus that can
+    fail is there, where the matching rows outnumber a first pass. An earlier
+    wording of this paragraph called the asserted constant "the depth the pipeline
+    actually reads", which is :data:`FIRST_PASS_DEPTH` and was not the constant
+    asserted; that mismatch is where the gap lived.
 
     It also records *which* retriever is doing the work, because that is the
     whole difference between the two corpora and it is not visible from the
@@ -3468,9 +3480,16 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
         "and it must be reachable through the word index too, or `dense` and "
         "`lexical` below prove nothing about it"
     )
-    assert CANDIDATE_DEPTH <= DOCUMENTED_DEPTH, (
-        "the pipeline reads deeper than this crowd can fill, so no visible row is "
-        "displaced and every equality asserted below holds vacuously"
+    crowd = index.search_substring(corpus.query, project_id="depth-probe", limit=FIRST_PASS_DEPTH)
+
+    assert len(crowd) > CANDIDATE_DEPTH, (
+        "the pipeline publishes every row this crowd can offer, so no visible row "
+        "is displaced and every equality asserted below holds vacuously"
+    )
+    assert len(crowd) < FIRST_PASS_DEPTH, (
+        "this corpus now outlasts a first pass, so it no longer describes what the "
+        "comment above says it describes: re-read `tests/unit/test_candidate_cut.py`, "
+        "which exists because this one is exhausted before the candidate cut bites"
     )
 
 
