@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import sqlite3
 import struct
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +52,10 @@ from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS
 #: machine reads correctly on another -- the file is derived, but it is also
 #: copied between machines more often than anyone plans for.
 _VECTOR_FORMAT: Final = "<%df"
+
+#: The width of one component of the above. Named rather than spelled `4` in two
+#: places, because the two places are a pack and an unpack and they have to agree.
+_FLOAT32_BYTES: Final = 4
 
 #: Cosine below which a dense hit is noise rather than a match.
 #:
@@ -156,7 +160,9 @@ def _is_query_expression_error(exc: sqlite3.Error) -> bool:
 
     **The carve-out from a file-shaped default, which is the reverse of what the
     predicate beside it used to be.** :func:`_reading` treats every
-    `sqlite3.DatabaseError` as the index's fault until this says otherwise.
+    `sqlite3.Error` as the index's fault until this says otherwise, and asks this
+    of nothing else: a decode, an unpack or a numeric conversion cannot be the
+    caller's expression, so :data:`_UNREADABLE_VALUES` gets no carve-out at all.
 
     **Deliberately narrower than the true set of query-borne messages.** An FTS5
     column filter — `col : x`, `-a`, `{a b` — is rejected with `no such column`,
@@ -237,38 +243,83 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
+#: What *interpreting this file* can raise, other than through `sqlite3` itself.
+#:
+#: **The population is a boundary, not an exception hierarchy, and stating it as
+#: a hierarchy is what reopened this twice.** Both previous statements looked
+#: complete from inside:
+#:
+#: - the first enumerated *message fragments* of `sqlite3.OperationalError`.
+#:   Three shapes escaped it, `unable to open database file` — the state a
+#:   rebuild reclaiming this file out from under an in-flight search leaves —
+#:   among them;
+#: - the second enumerated `sqlite3.DatabaseError` and inverted the default, so
+#:   that anything which was not FTS5 judging the caller's *expression* became
+#:   the file's fault. Measured through the real ``knowledge.search`` against a
+#:   real index with 1 to 40 random bytes corrupted past the first page, 400
+#:   fixtures: 117 refusals naming `theurian index build`, and **25 escapes** —
+#:   `ToolError: 'utf-8' codec can't decode byte 0xb9 in position 53` at the
+#:   agent, no remedy named, every later query against that project failing
+#:   identically.
+#:
+#: The key that closes it is not a base class but a question: **does this line
+#: interpret bytes that came out of this file?** Those bytes are untrusted — the
+#: index is derived, unsigned and git-ignored (SEC-7), and a bit flipped past the
+#: header survives the schema gate, which still reports ``schema_version: 2`` and
+#: ``is_searchable: True``. Interpretation fails in whichever type the
+#: interpreter uses, and that is almost never `sqlite3`'s:
+#:
+#: - `UnicodeDecodeError` — SQLite's own *error text* for a corrupt schema is not
+#:   always valid UTF-8, and `sqlite3` decodes it before it can raise. It fires
+#:   inside :func:`_connect`'s PRAGMA loop, so it took out all nine reads at once
+#:   and was the widest member of the class by a factor of seven;
+#: - `struct.error` and `TypeError` — an `embeddings.vector` holding two bytes,
+#:   nine bytes, TEXT or an INTEGER, none of which `_unpack` can refuse;
+#: - `ValueError` and `TypeError` again — `float()` and `int()` over a cell whose
+#:   storage class is not the one its column declares. A NULL `chunks.heading`
+#:   makes the scan branch's whole ordering key NULL (`length(lower(NULL))` is
+#:   NULL and the sum propagates it), and `float(None)` is not a database error;
+#:   a TEXT `index_metadata.index_schema_version` gave `invalid literal for
+#:   int() with base 10: 'two'` out of :meth:`SqliteIndexStore.schema_version`,
+#:   which is the method that promises never to raise.
+#:
+#: **The cost of this width, stated rather than discovered later.** A genuine
+#: programming error inside a :func:`_reading` block is now reported as an
+#: unreadable index. Two things bound it: nothing goes inside such a block except
+#: executing a statement and converting its rows — which is a convention this
+#: module holds and the next reader must keep — and ``raise ... from exc``, so
+#: whoever has the traceback still has the real cause. It is the better of two
+#: wrong answers. "Rebuild your index" costs seconds and loses nothing
+#: (ADR-0004); a traceback at an agent names no remedy and repeats forever.
+_UNREADABLE_VALUES: Final = (UnicodeDecodeError, struct.error, TypeError, ValueError)
+
+
 @contextmanager
 def _reading(path: Path) -> Iterator[sqlite3.Connection]:
     """A read of this index, with every way it can fail already mapped.
 
     **One mapping over every read, because the exceptions to it were the
     defect.** What this replaced was a per-retriever ``except
-    sqlite3.OperationalError`` consulting a list of message fragments, and it
-    was wrong three independent ways at once:
+    sqlite3.OperationalError`` consulting a list of message fragments. It could
+    not see SQLITE_CORRUPT or SQLITE_NOTADB — both arrive as plain
+    `sqlite3.DatabaseError` — and it covered ``execute`` only, leaving
+    :func:`_connect` and its PRAGMAs outside the ``try`` at all thirteen sites
+    while four reads had no guard at all.
 
-    - the *class* was too narrow. SQLITE_CORRUPT and SQLITE_NOTADB — `database
-      disk image is malformed` and `file is not a database`, both named on that
-      list — arrive as plain `sqlite3.DatabaseError`, so the handler could never
-      see them however long the list grew. Reproduced through the real
-      ``knowledge.search`` against a real index with data pages zeroed: the
-      agent received ``ToolError: database disk image is malformed``, and every
-      later query against that project failed identically, permanently, naming
-      no remedy. The version gate cannot intercept it — a file corrupted past
-      its early pages still reports ``schema_version: 2`` and
-      ``is_searchable: True``;
-    - the *set* was open. `unable to open database file`, the state a rebuild
-      reclaiming a file out from under an in-flight search leaves, was on no
-      list;
-    - and it covered ``execute`` only. :func:`_connect` and its PRAGMAs sat
-      outside the ``try`` at all thirteen sites, and four reads — ``metadata``,
-      ``chunk_count``, ``chunk_texts``, ``texts`` — had no guard at all.
-      ``chunk_texts`` fetches the passages of *every successful ranked search*,
-      so widening only the retrievers would have closed none of that.
+    So the default inverts twice over. Anything `sqlite3` raises out of a read is
+    this file's fault unless :func:`_is_query_expression_error` says the caller's
+    text was; and anything :data:`_UNREADABLE_VALUES` covers is this file's fault
+    without exception, because a decode, an unpack or a numeric conversion is
+    never something the caller's query can be blamed for. That constant carries
+    the population and why it is the one that closes.
 
-    So the default inverts: a `sqlite3.DatabaseError` out of a read is this
-    file's fault unless :func:`_is_query_expression_error` says the caller's
-    text was. The shape nobody anticipated now fails towards `theurian index
-    build` rather than towards a traceback at an agent.
+    **The guard spans the caller's block, and that is what makes it cover the
+    conversion.** An exception raised inside a ``with _reading(...)`` body is
+    thrown into this generator at the ``yield``, so a `float()` over a corrupt
+    cell is mapped exactly like the `execute` that fetched it — but only while
+    the conversion stays inside the block. It did not: `_unpack`, `float(...)`
+    and every `Ranked` were built after the connection had closed, which is why
+    widening the ``except`` alone closed nothing on that side.
 
     **Reads only, and the asymmetry is deliberate.** A write that fails is a
     build failing, and a build reports its own failure; telling someone their
@@ -277,10 +328,18 @@ def _reading(path: Path) -> Iterator[sqlite3.Connection]:
     try:
         with _connect(path) as connection:
             yield connection
-    except sqlite3.DatabaseError as exc:
+    except sqlite3.Error as exc:
         if _is_query_expression_error(exc):
             raise _QueryExpressionError(str(exc)) from exc
         raise IndexUnreadableError(str(exc)) from exc
+    except _UNREADABLE_VALUES as exc:
+        # The exception's *type* and never its message. `float()` and `int()`
+        # put the cell they could not convert into the `ValueError` they raise,
+        # and under corruption that cell holds whatever was on the page --
+        # knowledge text included. This detail is rendered to a user by the
+        # index CLI, so building the message out of `str(exc)` would publish a
+        # fragment of a document to whoever can make an index unreadable.
+        raise IndexUnreadableError(f"an unreadable value, {type(exc).__name__}") from exc
 
 
 @final
@@ -462,7 +521,10 @@ class SqliteIndexStore:
     def metadata(self) -> dict[str, object]:
         with _reading(self._path) as connection:
             row = connection.execute("SELECT * FROM index_metadata WHERE id = 1").fetchone()
-        return dict(row) if row else {}
+            # Converted inside the block, like every other read here. `dict()`
+            # over a `sqlite3.Row` cannot fail today; the rule is uniform so that
+            # the next conversion added to a read does not have to be noticed.
+            return dict(row) if row else {}
 
     def schema_version(self) -> int:
         """The index schema this file was written with, or 0 if unknowable.
@@ -472,22 +534,27 @@ class SqliteIndexStore:
         mismatch, because operationally it means the same thing: this build
         cannot search this file, and the remedy is a rebuild.
 
-        Never raises. The index is derived (ADR-0004), so a caller asking whether
-        it is usable must get an answer rather than an exception.
+        Never raises, and that had stopped being true. `int()` sat outside the
+        block below, so a corrupt cell where the version belongs — TEXT, a blob,
+        anything `int()` will not take — reached the caller as a `ValueError`
+        while this line promised it could not. `theurian index status` repeats the
+        promise (`_index_schema_version`, "never raises") and both surfaces broke
+        together. The index is derived (ADR-0004), so a caller asking whether it
+        is usable must get an answer rather than an exception.
 
         Reads through :func:`_reading` like every other read and then converts
-        its refusal, rather than naming `sqlite3.DatabaseError` here. One place
-        decides what a broken index looks like; this is the one caller that
-        answers with a value instead of propagating it.
+        its refusal, rather than naming an exception type here. One place decides
+        what a broken index looks like; this is the one caller that answers with
+        a value instead of propagating it.
         """
         try:
             with _reading(self._path) as connection:
                 row = connection.execute(
                     "SELECT index_schema_version FROM index_metadata WHERE id = 1"
                 ).fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
         except IndexUnreadableError:
             return 0
-        return int(row[0]) if row and row[0] is not None else 0
 
     def is_searchable(self) -> bool:
         """Whether this file's schema is the one this build queries.
@@ -537,7 +604,10 @@ class SqliteIndexStore:
                 f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
                 (project_id, *chunk_ids),
             ).fetchall()
-        return {row["chunk_id"]: str(row["text"]) for row in rows}
+            # `str()` on the key as well as the value: a corrupt row can hold an
+            # INTEGER where the schema declares TEXT, and a key of a type the
+            # caller never looks up is a passage silently missing from a result.
+            return {str(row["chunk_id"]): str(row["text"]) for row in rows}
 
     def texts(self, chunk_ids: Sequence[str], *, project_id: str) -> dict[str, sqlite3.Row]:
         """Fetch whole chunk rows by id. For adapters and tests, not for the
@@ -563,7 +633,7 @@ class SqliteIndexStore:
                 f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
                 (project_id, *chunk_ids),
             ).fetchall()
-        return {row["chunk_id"]: row for row in rows}
+            return {str(row["chunk_id"]): row for row in rows}
 
     def search_lexical(
         self,
@@ -601,9 +671,19 @@ class SqliteIndexStore:
             # straddling the LIMIT boundary changes which rows survive.
             "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
         )
+        # No relevance floor on the score below, deliberately, and this is a known
+        # gap. A review reported that BM25 returns "exactly 0.0000" for a hit
+        # whose only matching terms appear in every row, and proposed excluding
+        # those. Measured, SQLite returns -1.375e-06 for that case, not zero --
+        # the 0.0000 was a printed rounding. A score threshold therefore excludes
+        # nothing, and a floor that excludes nothing while claiming to be a floor
+        # is worse than none. Separating "matched only common words" from
+        # "matched weakly" needs a per-term IDF test, not a threshold on the
+        # combined score. Recorded as outstanding rather than papered over.
         try:
             with _reading(self._path) as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
+                return _ranked(rows, _bm25)
         except _QueryExpressionError:
             # Unreachable: sanitising cannot produce a malformed expression any
             # more. Kept as the guard that catches it again if sanitising is ever
@@ -612,32 +692,6 @@ class SqliteIndexStore:
             # raises is the file's problem and must not be answered with `()`,
             # which is indistinguishable from "nothing matched".
             return ()
-
-        # bm25() returns a *negative* score where more negative is better, so it
-        # is negated here. Only the resulting order is used downstream; RRF never
-        # compares this number with a cosine similarity, which
-        # `tests/unit/test_ranking.py::test_fusion_uses_rank_not_score` holds.
-        # No relevance floor here, deliberately, and this is a known gap.
-        #
-        # A review reported that BM25 returns "exactly 0.0000" for a hit whose
-        # only matching terms appear in every row, and proposed excluding those.
-        # Measured, SQLite returns -1.375e-06 for that case, not zero -- the
-        # 0.0000 was a printed rounding. A score threshold therefore excludes
-        # nothing, and a floor that excludes nothing while claiming to be a floor
-        # is worse than none.
-        #
-        # Separating "matched only common words" from "matched weakly" needs a
-        # per-term IDF test, not a threshold on the combined score. Recorded as
-        # outstanding rather than papered over.
-        return tuple(
-            Ranked(
-                chunk_id=row["chunk_id"],
-                item_id=row["item_id"],
-                revision_id=row["revision_id"],
-                score=-float(row["rank_score"]),
-            )
-            for row in rows
-        )
 
     def search_substring(
         self,
@@ -687,6 +741,7 @@ class SqliteIndexStore:
         try:
             with _reading(self._path) as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
+                return _ranked(rows, _bm25)
         except _QueryExpressionError:
             # Unreachable, and kept for the same reason as in `search_lexical`.
             # What must *not* be caught here is anything else `_reading` raises:
@@ -696,16 +751,6 @@ class SqliteIndexStore:
             # cannot segment CJK, so this retriever is the *only* one that can
             # answer at all for such a corpus, and its silence was total.
             return ()
-
-        return tuple(
-            Ranked(
-                chunk_id=row["chunk_id"],
-                item_id=row["item_id"],
-                revision_id=row["revision_id"],
-                score=-float(row["rank_score"]),
-            )
-            for row in rows
-        )
 
     def _scan_below_the_trigram_floor(
         self,
@@ -806,16 +851,8 @@ class SqliteIndexStore:
         # truncated copy, something that is not an index at all.
         with _reading(self._path) as connection:
             rows = connection.execute(sql, arguments).fetchall()
+            result = _ranked(rows, _scan_score)
 
-        result = tuple(
-            Ranked(
-                chunk_id=row["chunk_id"],
-                item_id=row["item_id"],
-                revision_id=row["revision_id"],
-                score=float(row["matched_characters"]),
-            )
-            for row in rows
-        )
         self._scan_cache[cache_key] = result
         return result
 
@@ -888,44 +925,139 @@ class SqliteIndexStore:
         #
         # No query-shaped carve-out here either. This retriever takes a vector, so
         # no caller text reaches SQL.
+        #
+        # Scored inside the block rather than after it. Unpacking a blob is an
+        # interpretation of this file's bytes exactly as `execute` is, and it ran
+        # outside the connection's lifetime while the guard that answers for such
+        # bytes ended with the connection -- see `_UNREADABLE_VALUES`.
         with _reading(self._path) as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
+            return _dense_ranking(rows, query_vector)
 
-        query_norm = math.sqrt(sum(value * value for value in query_vector))
-        if query_norm == 0.0:
-            return ()
 
-        scored: list[Ranked] = []
-        for row in rows:
-            vector = _unpack(row["vector"])
-            if len(vector) != len(query_vector):
-                # A corpus embedded by a different model. Skipped rather than
-                # scored: the arithmetic would succeed and the meaning would not.
-                continue
-            similarity = _cosine(query_vector, vector, query_norm)
-            if similarity < DENSE_SIMILARITY_FLOOR:
-                continue
-            scored.append(
-                Ranked(
-                    chunk_id=row["chunk_id"],
-                    item_id=row["item_id"],
-                    revision_id=row["revision_id"],
-                    score=similarity,
-                )
+def _dense_ranking(
+    rows: Sequence[sqlite3.Row], query_vector: Sequence[float]
+) -> tuple[Ranked, ...]:
+    """Cosine-rank fetched rows against a query vector.
+
+    Split out of :meth:`SqliteIndexStore.search_dense` so the whole of it fits
+    inside one ``with _reading(...)`` block without nesting the scan loop under a
+    connection by hand.
+    """
+    query_norm = math.sqrt(sum(value * value for value in query_vector))
+    if query_norm == 0.0:
+        return ()
+
+    scored: list[Ranked] = []
+    for row in rows:
+        vector = _stored_vector(row["vector"], len(query_vector))
+        if vector is None:
+            continue
+        similarity = _cosine(query_vector, vector, query_norm)
+        if similarity < DENSE_SIMILARITY_FLOOR:
+            continue
+        scored.append(
+            Ranked(
+                chunk_id=str(row["chunk_id"]),
+                item_id=str(row["item_id"]),
+                revision_id=str(row["revision_id"]),
+                score=similarity,
             )
+        )
 
-        # Ties break on chunk id so two runs agree (FR-R7).
-        scored.sort(key=lambda ranked: (-ranked.score, ranked.chunk_id))
-        return tuple(scored)
+    # Ties break on chunk id so two runs agree (FR-R7).
+    scored.sort(key=lambda ranked: (-ranked.score, ranked.chunk_id))
+    return tuple(scored)
 
 
 def _pack(vector: Sequence[float]) -> bytes:
     return struct.pack(_VECTOR_FORMAT % len(vector), *vector)
 
 
+def _stored_vector(blob: object, width: int) -> tuple[float, ...] | None:
+    """One stored embedding, or ``None`` if these bytes are not one.
+
+    **The width check moved in front of the unpack, and that is the whole of it.**
+    `search_dense` already skipped a vector whose length disagreed with the
+    query's -- a corpus embedded by a different model, where the arithmetic would
+    succeed and the meaning would not -- but it measured that length *after*
+    `_unpack` had run. Measured against a real index with `embeddings.vector`
+    overwritten: two bytes gives `unpack requires a buffer of 0 bytes`, nine bytes
+    gives `8 bytes`, TEXT gives `a bytes-like object is required, not 'str'`, and
+    an INTEGER gives `object of type 'int' has no len()`. None of those is a
+    `sqlite3` exception and the `dimension` column that would have caught them is
+    recorded by `add_embeddings` and read by nothing.
+
+    So the same rows are skipped the same way, and one more class joins them: a
+    blob that cannot be a float32 vector of this width at all. `_reading` still
+    covers what is left, because a guard that depends on this function staying
+    exhaustive is the enumeration that failed twice already.
+    """
+    if not isinstance(blob, bytes):
+        return None
+    if len(blob) % _FLOAT32_BYTES != 0 or len(blob) // _FLOAT32_BYTES != width:
+        return None
+    return _unpack(blob)
+
+
 def _unpack(blob: bytes) -> tuple[float, ...]:
-    count = len(blob) // 4
+    count = len(blob) // _FLOAT32_BYTES
     return struct.unpack(_VECTOR_FORMAT % count, blob)
+
+
+def _ranked(
+    rows: Sequence[sqlite3.Row], score: Callable[[sqlite3.Row], float]
+) -> tuple[Ranked, ...]:
+    """Retriever rows as :class:`Ranked`, converted where the guard still reaches.
+
+    Called from inside a ``with _reading(...)`` block by every retriever, which is
+    what it exists for: this is the conversion that used to happen after the
+    connection had closed, so a NULL where a score belongs reached an agent as
+    ``float() argument must be a string or a real number, not 'NoneType'``.
+
+    Ids are coerced with `str()` rather than passed through, which closes a
+    hazard rather than a measured escape and is recorded as the smaller claim it
+    is. `Ranked` declares them `str` and validates nothing, so an INTEGER in a
+    corrupt `chunk_id` cell leaves this module as an `int` and is next compared
+    with a neighbouring `str` in a tie-break -- `search_dense`'s `scored.sort`,
+    and fusion's. Driving that from a real index (`UPDATE chunks SET chunk_id =
+    42`) did not reach it, because a tie-break only runs on an exact score tie;
+    the value simply travelled. A coerced id that names nothing fails to match
+    in :class:`~theurian.application.visibility.CanonicalVisibility`, which drops
+    the row -- the direction a value read out of a derived file should fail in.
+    """
+    return tuple(
+        Ranked(
+            chunk_id=str(row["chunk_id"]),
+            item_id=str(row["item_id"]),
+            revision_id=str(row["revision_id"]),
+            score=score(row),
+        )
+        for row in rows
+    )
+
+
+def _bm25(row: sqlite3.Row) -> float:
+    """FTS5's score, negated.
+
+    bm25() returns a *negative* score where more negative is better. Only the
+    resulting order is used downstream; RRF never compares this number with a
+    cosine similarity, which
+    `tests/unit/test_ranking.py::test_fusion_uses_rank_not_score` holds.
+    """
+    return -float(row["rank_score"])
+
+
+def _scan_score(row: sqlite3.Row) -> float:
+    """How much of the query this row accounts for -- see
+    :func:`~theurian.infrastructure.sqlite.index_scan.scan_statement`.
+
+    NULL here is reachable and is why this conversion had to move inside the
+    guard: the key is a sum over `length(lower(chunks.text))` and
+    `length(lower(chunks.heading))`, and a NULL in either column makes the whole
+    sum NULL rather than zero.
+    """
+    return float(row["matched_characters"])
 
 
 def _cosine(left: Sequence[float], right: Sequence[float], left_norm: float) -> float:
