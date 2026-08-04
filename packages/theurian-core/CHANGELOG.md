@@ -56,21 +56,47 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 - **BREAKING — `knowledge.search` response shape.** The flat `note` string is
   replaced by a structured `retrieval` object carrying `mode`, `indexed`,
-  `stale`, `staleAgainst`, `withheldSuperseded`, `indexesUnapproved`,
-  `indexBuildId`, `embeddingModel`, `usedTokens`, and `droppedForBudget`. Each
-  hit gains `foundBy` (which retrievers surfaced it) and `fusedScore`. A ranking
-  nobody can explain is a ranking nobody can debug.
+  `stale`, `staleAgainst`, `indexesUnapproved`, `indexBuildId`,
+  `embeddingModel`, `fallbackReason`, `snapshotId`, `usedTokens`,
+  `droppedForBudget`, and `note`. Each hit gains `foundBy` (which retrievers
+  surfaced it) and `fusedScore`. A ranking nobody can explain is a ranking
+  nobody can debug.
 
-  `retrieval.mode` takes four values, not three: `substring` when no index has
-  been built, then `lexical`, `dense`, or `hybrid` according to which retrievers
-  actually returned anything.
+  `snapshotId` is FR-R5's provenance realised once per response rather than
+  once per hit: every hit in one answer is resolved through one canonical
+  connection, so a per-hit copy would repeat one string. It is byte-identical
+  to `knowledge.status.stateHash`, so a caller holding one can compare it
+  against the other without a second call, and it is query-independent by
+  construction — which is what makes it safe to publish at all (see Security).
+
+  **The shape is now the same on both answer paths.** The ranked path and the
+  unranked fallback used to publish different key sets — `stale`,
+  `staleAgainst`, `indexBuildId`, and `embeddingModel` only on the ranked one,
+  `fallbackReason` only on the fallback — which let a client branch on key
+  *presence* rather than on a value. Every key now appears on both responses;
+  one that does not apply to a given path carries `null` rather than being
+  omitted.
+
+  `retrieval.mode` takes five values: `substring` for the unranked fallback,
+  then `lexical`, `dense`, `hybrid`, or `none` on the ranked path, according to
+  which retrievers actually contributed a result that survived the canonical
+  re-check. `none` is new: an empty result set used to report `lexical`,
+  indistinguishable from "the word index answered and found nothing" — exactly
+  what a v1 index missing its trigram table, or an embedder whose vectors do
+  not match the corpus, produces.
 
   When the answer came from the unranked fallback, `retrieval.fallbackReason`
-  says which of four things happened — `no-index`, `index-pointer-invalid`,
-  `index-file-missing`, or `unapproved-not-indexed`. All four used to produce the
-  same sentence, "no retrieval index has been built for this project", which is
-  true of exactly one of them; the other three told a user to run a command they
-  had already run and said nothing about the one that would have helped.
+  says which of seven things happened — `no-index`, `index-pointer-invalid`,
+  `index-file-missing`, `index-schema-mismatch`, `index-unreadable`,
+  `index-project-mismatch`, or `unapproved-not-indexed`. All seven used to
+  produce the same sentence, "no retrieval index has been built for this
+  project", which is true of exactly one of them; the rest told a user to run a
+  command they had already run and said nothing about the one that would have
+  helped.
+
+  **BREAKING — `withheldSuperseded` is removed** from the `retrieval` object.
+  It was a per-query count of matches the caller was not allowed to see. See
+  Security, below: it turned out to be a side channel, not a courtesy.
 
 - **BREAKING — the index schema is version 2; existing indexes must be rebuilt.**
   The trigram table is new, and `INDEX_SCHEMA_VERSION` went 1 → 2 with it. Run
@@ -78,12 +104,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   disposable, and this is the lifecycle separation ADR-0022 exists for, exercised
   for the first time.
 
-  **A version-1 index is not detected.** The missing table surfaces as a SQLite
-  error that the substring retriever catches and answers with no results, so an
-  index built before this release silently loses the trigram half and a Japanese
-  knowledge base goes back to being invisible — with nothing in the response
-  saying so. A version check on open is owed (ADR-0022, Milestone 6). Until then,
-  rebuild after upgrading.
+  A version-1 index is detected rather than silently losing its trigram half.
+  `SqliteIndexStore.is_searchable` compares the stored schema version against
+  the one this build expects before any query runs; a mismatch is reported as
+  `retrieval.fallbackReason: "index-schema-mismatch"` and `indexed: false`,
+  with an unranked substring scan still answering the question underneath it.
+  This landed in Milestone 5, not Milestone 6 as ADR-0022 and ADR-0023 said —
+  the check shipped later in the same milestone, after those ADRs were
+  written, and the ADRs were not updated to match until now.
+
+- **BREAKING — `theurian index build` refuses to publish an index with zero
+  chunks when the canonical state holds knowledge.** Publishing it used to put
+  a correct-looking empty index in place — every later search answers
+  `count: 0` with `indexed: true`, and `theurian index status` reports nothing
+  to do, which is the exact shape a project-id mismatch takes. The build now
+  exits 1 and names every project id the canonical store actually holds
+  knowledge under.
+
+- **BREAKING — `theurian index status` gains `projectId`, `indexProjectId`, and
+  `orphaned`; `active-index.json` now records `projectId`.** Every chunk is
+  stamped with the project id that built it, so an index built for a different
+  id answers every query with nothing while still reporting `indexed: true`.
+  A pointer written before this field existed cannot be checked, so it is
+  treated as `orphaned` too — deliberately, because the command exists to avoid
+  asserting a freshness it has not established, and a pointer that predates the
+  check has none to assert. `knowledge.search` reports the same class of
+  mismatch as `retrieval.fallbackReason: "index-project-mismatch"`.
 
 - **BREAKING — dense retrieval is off by default.** `SearchRequest.use_dense` and
   the MCP parameter `useDense` both default to `false`, so a healthy default
@@ -113,11 +159,247 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   would have been worse: an already-configured agent keeps naming `api` and would
   silently follow the id to whichever project kept it.
 
+  **BREAKING, and its mirror.** The same refusal now also applies the other way
+  round: a root that already has an id being registered under a *second* one.
+  An id is stamped into every canonical row and index chunk at the moment it is
+  written, and `migrate apply` is idempotent, so using `--project-id` to rename
+  an already-registered project produced a second, empty project rather than a
+  renamed one — every search under the new id answered `count: 0` with
+  `indexed: true`, and `theurian index status` reported nothing to do. To
+  rename a project: `theurian project unregister <old-id>`, register the new
+  id, delete `.theurian/state/`, then `theurian migrate apply` and `theurian
+  index build`.
+
 - **Project id resolution order changed** to: explicit `--project-id`, then the
   registry keyed by *root path*, then the directory name. Without the middle
   step, a project registered under a disambiguated id would still be addressed by
   the colliding default on its own command line — the CLI writing to one project
   while every agent reads the other.
+
+- **BREAKING — the project registry validates every entry as it reads it, and a
+  question keyed by root path refuses while any entry is unreadable.**
+  `ProjectRegistry.load` used to return whatever `json.loads` produced, so an
+  entry that was not a registration reached its caller unchecked. Three
+  consequences, each reproduced against the previous behaviour before being
+  written here:
+
+  | Registry contents | Was | Is |
+  | :-- | :-- | :-- |
+  | an entry naming no `rootPath` | `project list` reported it as an ordinary project, `count: 2` | skipped by `load`; `count: 1`, and the id appears under `unreadable` |
+  | an entry naming no `rootPath` | `id_for_root` matched it against **every** directory | every root-keyed question refuses |
+  | a JSON array, or truncated JSON | `AttributeError: 'list' object has no attribute 'items'`, as a Rich traceback | reported as `{error, remedy}` with exit 1 |
+
+  The middle row is the one that mattered. `Path("").resolve()` is the *calling
+  process's* current working directory, so `entry.get("rootPath", "")` made an
+  entry with no root claim whichever directory the command happened to run from:
+  `id_for_root` returned that id for a completely unrelated repository, and
+  `resolve_context` then addressed that repository's knowledge under it
+  (SEC-13). An empty `rootPath` is now rejected as firmly as a missing key.
+
+  A malformed entry invalidates only itself. It still holds its id, so `register`
+  refuses to reclaim it — with its own remedy, rather than a collision message
+  that assumes a readable `rootPath` to report — and `unregister` can remove it.
+  Both read the raw file rather than `load`'s validated subset, or registering
+  one id would erase a different id's broken entry as a side effect of an
+  unrelated write.
+
+  **`ProjectRegistry.ids_for_root` raises rather than answering "not
+  registered", and that is the breaking half.** An entry is skipped exactly
+  because it names no root, so "is that entry this directory's registration?"
+  has no answer: the field that would settle it is the field that is missing.
+  Answering `()` sends `resolve_context` to `derive_project_id`, which addresses
+  the directory by its *name* — the id that may already belong to the project it
+  collided with, which is the misrouting the collision refusal above exists to
+  prevent.
+
+  The blast radius is asymmetric on purpose. Questions keyed by an **id** keep
+  working: `theurian project list`, `theurian project unregister` (the remedy),
+  the setup registry scan, and every MCP tool — so one hand-edited line does not
+  stop a daemon that serves every other project on the machine. Questions keyed
+  by a **root path** refuse: resolving the project for the working directory,
+  and `theurian project register`, which asks the same question to enforce "one
+  root, one id" and therefore stops machine-wide until the entry is removed.
+  That last part is accepted rather than special-cased — the plain `register`
+  form resolves its context from the working directory and would refuse there
+  regardless, so an exception would reach only the `--project-id` form, in
+  exchange for a safety argument harder to check than the refusal it removes.
+
+- **`theurian project list` gains an always-present `unreadable` field**, naming
+  the ids whose entries `load` skipped, plus a `remedy` when it is non-empty. It
+  is emitted even when empty, because a consumer that has to branch on whether a
+  key is present will eventually forget to. Reported here rather than only where
+  it breaks something: this is the command every other surface sends a user to,
+  and the id it now prints is the argument `theurian project unregister` needs.
+  A registry that cannot be partitioned into entries at all — truncated JSON, a
+  JSON array, arbitrary bytes — is now reported by this command rather than
+  escaping as a traceback, which mattered most here because this was the one
+  place the "delete it and re-register" remedy never reached.
+
+- **BREAKING — the `project.list` MCP tool gains two required response fields,
+  `unreadable` and `remedy`, and its output is published as a schema for the
+  first time.** Adding a required property is a breaking change under
+  `schemas/README.md`'s compatibility rules, and it is named as one here even
+  though a client that ignores unknown keys will not notice: the rule is about
+  what the contract *permits*, and a response missing either key is now invalid.
+
+  Both are always present — `remedy` carries `null` when `unreadable` is empty —
+  because emitting a key only when it applies makes "nothing is unreadable"
+  indistinguishable from "this daemon predates the field". `count` sizes
+  `projects` alone and excludes the unreadable ids, since an entry naming no root
+  path can be queried by nothing.
+
+  `schemas/mcp/project-list-response.schema.json` is the contract, published
+  after three milestones in which `project.list` was the tool an agent calls to
+  find out what this daemon can answer for and the only one whose shape was not
+  written down.
+
+  **`projects` and `unreadable` are two reads of one file, not a partition of
+  one snapshot.** `load()` and `unreadable_ids()` open the registry
+  independently, so a registration landing between them can leave an id in both
+  lists or in neither. Stated as it is rather than as the cleaner guarantee it
+  resembles: a caller must not compute the size of the registry file by adding
+  the two, and must not treat membership of one as proof of absence from the
+  other. The fix is a single-snapshot read in `ProjectRegistry`, which is not
+  written and not scheduled.
+
+  **This wire change turned nothing red, and that is the finding.** Every test
+  covering the MCP tools, the schemas and the wire contract — 186 of them when
+  the fields were added, 189 now — was green before and after, because no
+  assertion anywhere in the repository pins `project.list`'s response shape. The
+  tool's own test reads `count` and one `projectId` and never looks at the key
+  set. It is the same gap that let
+  `knowledge.search`'s response shape change with the whole suite passing; that
+  one was closed with a conformance test this milestone and this one was still
+  open until the schema was written. The guarantee now rests on the schema —
+  and therefore on the schema being *checked against a real response*, which is
+  the rule stated in `schemas/README.md` and the work item it names.
+
+  **The schema deliberately puts no pattern on `projects[].projectId`, and that
+  was settled by measurement rather than by transcription.** Nothing validates
+  registry *keys*: `load()` reads only `rootPath`, so a hand-edited
+  `{"Not An Id": {"rootPath": "/valid"}}` loads and `project.list` publishes
+  `projectId: "Not An Id"`. Ids that Theurian creates are lowercase kebab-case
+  and `ProjectId` enforces that, but a registry key is not a `ProjectId`.
+  Constraining the published field to the slug pattern would have produced a
+  schema that rejects the product's own output — which is exactly the defect
+  this milestone shipped in round one and corrected in
+  `knowledge/retrieval-result.schema.json` (see Fixed, below).
+
+- **`protocolVersion` stays `theurian/v1`, and that is a decision rather than an
+  omission.** Milestone 5 makes several breaking wire changes — the
+  `knowledge.search` response reshape, the removal of `withheldSuperseded`, and
+  the two required fields above — and none of them bumps it. Nothing has been
+  released: Core is `0.1.0.dev0`, there is no release tag, and every change here
+  is under *Unreleased*. `theurian/v1` has therefore never reached a client, so
+  no plugin can be pinned to a v1 that lacks these fields, and bumping would
+  publish a `theurian/v2` whose v1 was never shipped. The version's unit is a
+  released protocol; what protects an integrator reading this branch is this
+  changelog, which names each break. `protocolVersion` bumps on the first
+  breaking change *after* `theurian/v1` ships — Milestone 5's set is the content
+  of v1, not a departure from it. Recorded here because a reader who finds three
+  breaking wire changes and an unchanged protocol version is entitled to know
+  which of the two is the mistake.
+
+- **Every project-scoped MCP tool now tells "not registered" from "registered
+  and unreadable".** The two need opposite remedies and used to share one
+  message, which sent half its readers into a loop: `theurian project register`,
+  be told the id is already in use, read the same advice again. An id whose entry
+  cannot be parsed is now named as such and pointed at `theurian project
+  unregister <id>` first. The `Registered:` list is assembled from the entries
+  that loaded, so the skipped ids are named beside it rather than merged into it
+  — merged, they would inherit the `register` remedy that cannot work; omitted, a
+  user comparing the answer against their own registry file finds a project
+  missing from both the list and the explanation.
+
+- **BREAKING — `theurian project status --json` reports `registered: null`, a
+  third value for what was a boolean**, and gains an always-present `unreadable`
+  list. `null` means "cannot be told": the registry holds an entry that names no
+  root path, and this directory is inside a Git repository, so `false` would be
+  the same guess `ids_for_root` refuses to make. A plain "not inside a Git
+  repository" keeps its honest `false` rather than being dragged into an
+  ambiguity it cannot be about. The command still exits 0 and carries the remedy
+  in the payload, because a confused user reaches for `project status` first and
+  a report with no way out is what it used to give them. A consumer treating
+  `registered` as a boolean now sees `null` where it previously saw `false`.
+
+- **`theurian setup` reports a registry it cannot read as `conflicting` rather
+  than as a missing registration.** The project-registration step asked the
+  registry for entries and scanned them by root path, which silently skipped an
+  unreadable one and reported `MISSING` beside a remedy that cannot work —
+  registering is refused while an entry that might hold this root's id is
+  unreadable. It now asks the same question `ids_for_root` answers, and reports
+  the impossibility on the first screen a person reads when something is broken.
+
+- **BREAKING — `maxTokens` now pays for the whole response, not only the
+  results, so the same budget returns fewer of them.** `projectId`, the echoed
+  `query`, `count` and the entire `retrieval` block — the `note` above all,
+  which is a paragraph of prose — travel with every answer and were charged to
+  nobody. Measured at 138 to 171 tokens of fixed overhead on a ten-document
+  project: a caller asking for 2,000 was sent 2,030 and told the answer had
+  cost 1,860. The envelope is now reserved from the budget before any result is
+  packed, so on that same project the default `maxTokens=2000` returns **9
+  results with `droppedForBudget: 1`** where it used to return 10 and overshoot.
+  `usedTokens` still means what it meant — what `results` cost — rather than
+  quietly becoming a different number; charging honestly for the envelope did
+  not have to wait for a wire-contract change. A budget smaller than the
+  envelope still returns one result rather than none.
+
+- **BREAKING — `SearchRequest` has no `limit`, and `substring_answer` and
+  `hybrid_answer` require the caller's `ActiveState`.** Both are Milestone 5
+  APIs changed within Milestone 5, so no released version is affected; they are
+  named here because the branch is what anyone integrating against Core is
+  reading.
+
+  `SearchRequest(query=..., limit=10)` no longer type-checks. `limit` and the
+  token budget both moved to `ResultRequest`, which is applied on the far side
+  of the canonical gate. Applying `limit` to *candidates* let a withheld
+  document consume a result slot — see Security, below — and a field that
+  cannot be set cannot be applied in the wrong order. What is left on
+  `SearchRequest` bounds the work rather than the answer: `CANDIDATE_DEPTH` per
+  retriever, and `per_item` per document.
+
+  `substring_answer(database, *, project_id=...)` becomes
+  `substring_answer(database, *, state=..., project_id=...)`, and `hybrid_answer`
+  takes the same new parameter in place of reading the active state itself.
+  Both publish `retrieval.snapshotId`, and resolving it here rather than
+  receiving it is the read that can disagree with the one that chose the
+  database: a pointer replaced by `migrate apply` mid-request makes the field
+  name a state the results did not come from, and a pointer deleted mid-request
+  makes it `null`. The caller passes down the state it already resolved to
+  choose the database, so `snapshotId` names that state and is never empty.
+
+- **BREAKING — retrieval takes a visibility, because the canonical gate moved
+  inside the ranking.** Again Milestone 5 APIs changed within Milestone 5, so no
+  released version is affected. No `knowledge.search` response field changes:
+  this is the application layer and the `IndexStore` port only.
+
+  | Was | Is |
+  | :-- | :-- |
+  | `RetrievalService.search(request)` | `search(request, visible)`, taking a `Visibility` — with **no default** |
+  | `ResultGate.admit(request)`, with candidates and passages carried on `ResultRequest` | `admit(request, source)`, where `source` is `Callable[[Visibility], SearchOutcome]`; `ResultRequest` has neither field |
+  | `SearchOutcome.embedding_model` | `RetrievalService.embedding_model(use_dense=...)` |
+  | `IndexStore.search_dense(vector, *, project_id, limit, include_unapproved)` | the same without `limit`; it returns its whole ranking |
+  | `IndexStore.token_sizes(chunk_ids, *, project_id)` | removed |
+  | `theurian.mcp.results.may_surface` | `theurian.domain.enums.may_surface` |
+  | — | `CanonicalReadSession.get_item` is now part of the protocol |
+
+  A caller of `search` has to name whose view it is ranking for. "Everything is
+  visible" is the assumption this milestone chased through five separate fields
+  (see Security, below), and a default parameter is how it comes back — so there
+  is none, and a test that wants an ungated ranking says so at the call site.
+  `admit` takes a *source* of candidates rather than a finished list for the same
+  reason: there is nowhere to put a list that was ranked without a visibility.
+
+  The rest follow from the same move. `embeddingModel` left the search outcome
+  because it was the same value for every query against one index, and a value
+  answerable without a query cannot be made to vary with one. `search_dense` lost
+  its `limit` because an exact vector scan scores every embedding whatever it is
+  asked for — the parameter bounded the output while appearing to bound the work,
+  which would have misled the caller that now re-asks at greater depth.
+  `token_sizes` went with the budget that used it: pricing a retrieved chunk
+  charges for text the canonical store may still withdraw. `get_item` is on the
+  read protocol because clearing a ranked row needs the *item*'s status now, not
+  the status the index recorded at build time.
 
 - `knowledge.search` gains a `maxTokens` parameter (FR-R4).
 - Searching a project with no index falls back to the previous substring scan
@@ -145,6 +427,60 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - `theurian index build` reported "no built knowledge state" on a project that
   had one: `_require_project` returns the state *database* as its second value,
   and the new code treated it as the repository root.
+- `search_dense` leaked a raw `sqlite3.OperationalError` — "no such table:
+  embeddings" — when an index's `embeddings` table was missing, which defeated
+  `hybrid_answer`'s guarantee to never answer from a broken index for
+  `useDense=true`. Wrapped in `IndexUnreadableError`, like the other two
+  retrievers, and reported as an ordinary fallback.
+- A query containing a NUL byte or a lone unpaired surrogate reached the agent
+  as a tool failure instead of a search result: SQLite rejects the first as an
+  unterminated string, and the Python driver raises `UnicodeEncodeError` on the
+  second *before* SQLite is even called, so no `except sqlite3.OperationalError`
+  could catch either. Both are now dropped as untransportable terms — the
+  treatment punctuation already got — so `auth token\x00` still searches for
+  `auth`. Separately, a 20,000,000-character query was accepted and echoed back
+  verbatim, a 20 MB response to one search; `knowledge.search` now bounds and
+  normalises the query once, at the MCP boundary, before both searching and
+  echoing it.
+- A corrupt `active-index.json` — truncated, a JSON array, an object with no
+  `indexBuildId` — was treated identically to no index ever having been built,
+  sending a user who had already run `theurian index build` back through the
+  same command a second time. The two are now distinguished
+  (`fallbackReason: "index-pointer-invalid"` vs. `"no-index"`).
+- A query with more than 64 distinct terms kept the first 64 in the order the
+  caller typed them, which for a natural-language question discards the noun
+  it was about — "how do we handle the ..." front-loads its least selective
+  words. The limit now keeps the 64 *longest* terms, a tokenizer-free proxy for
+  selectivity.
+- **`theurian index build` made search strictly worse than having no index at
+  all, for the most common noun length in Japanese.** A trigram index has no
+  gram for a term shorter than three characters, so 認証, 決済, 監査 and 契約 —
+  two characters each — returned results before a build and `count: 0,
+  indexed: true` after one, with no `fallbackReason` to explain it. An agent
+  reads that as "this team has made no such decision". A query whose terms are
+  *all* below the floor is now answered by a scoped `LIKE` scan over the same
+  rows, under the same project and status filters, and a single character is
+  admitted when it is a letter of a script written without word boundaries
+  (`鍵` is a noun; `e` is a letter the word index already answers as a word).
+  The scan is ranked, by how many characters of the query each chunk accounts
+  for — under a `LIMIT` the ordering key is the selection key, so ordering by
+  `chunk_id` would have made the *oldest* matches the only reachable ones. A
+  lone punctuation character is deliberately declined rather than answered:
+  `。` is in every Japanese paragraph, and matching it means reading the whole
+  corpus to return "the fifty the sort favoured". (ADR-0023)
+- **The published schema disagreed with the product it describes, twice, in the
+  same way — found by comparing the schema against the domain's own
+  validators, not by testing output.** `knowledge/retrieval-result.schema.json`
+  required at least one `sourceAnchors` entry. INV-8 permits a revision to
+  carry no source anchor when it declares itself `authored-in-theurian`, so
+  every result for knowledge written inside Theurian violated the schema
+  Theurian publishes, on both answer paths. No `protocolVersion` bump: no
+  response ever carried a different shape, and no schema-validating client
+  could have been working against such a document. An integrator who wrote a
+  non-empty check from the schema rather than from the product has work to do.
+  Separately, `itemId` had no `maxLength` in the schema while the domain has
+  rejected one over 200 characters since it was introduced; the schema now
+  states the same bound.
 
 #### Security
 
@@ -160,18 +496,246 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   exists at a given id.
 - A stale index no longer resurrects retired knowledge or superseded revisions.
   Status and current-revision are both re-checked against the canonical store on
-  *both* the default and the `includeUnapproved` path; a stale index returns
-  fewer results rather than wrong ones, and `retrieval.withheldSuperseded` says
-  how many it held back.
+  *both* the default and the `includeUnapproved` path, so a stale index returns
+  fewer results rather than wrong ones.
+- **The token budget was priced on candidates before the canonical re-check
+  withdrew them, which turned `usedTokens` into a truth oracle for content the
+  caller had just been refused** (SEC-13, T-15). A retired or superseded
+  revision that matched the query still spent its share of the budget before
+  being dropped from `results`, so `count: 0, results: [], usedTokens: 46`
+  said "something matched and may not be read" — and because the trigram
+  retriever matches any substring of three characters or more, that statement
+  supports sequential extraction, not just existence detection: guess a
+  character, ask, keep it if the number moves. Measured on this code, 257
+  ordinary `knowledge.search` calls — no `includeUnapproved`, no privileges —
+  recovered a 20-character credential from a document whose superseding
+  revision had redacted it. The only precondition was an index older than the
+  redaction, which is the normal state between `migrate apply` and `index
+  build`: the window opened by *performing* the redaction was the window the
+  plaintext could be read back through.
+
+  `retrieval.mode` had the same defect in a different field: it was derived
+  from the rankings fusion produced, which still held candidates the canonical
+  store went on to withhold, rather than from the results the caller actually
+  received. Both are now computed from `results` after resolution — never from
+  a candidate that did not survive it. `withheldSuperseded` is removed for the
+  same reason (see Changed, above). Verified by comparing a query that matches
+  only withheld content against a query that matches nothing at all, field by
+  field: no key differs.
+
+- **The bullet above is one face of five, and recording it as one defect with
+  five faces is the finding** (SEC-13, T-15, T-17). Four more fields carried the
+  same oracle. They are listed together because each fix closed the one in front
+  of it and left a sibling: every one of them moved a *quantity* past the
+  canonical gate while the gate itself stayed after the ranking.
+
+  | Face | What was computed before the gate |
+  | :-- | :-- |
+  | `usedTokens` | the token budget, priced on candidates |
+  | `count` | `limit`, truncating candidates |
+  | `fusedScore` | the RRF ranks |
+  | `CANDIDATE_DEPTH` | the rows *fetched* from each retriever |
+  | the excerpt | `diversify` choosing which chunk of a document to publish |
+
+  Two of them supported full extraction with no flags and no privileges: 203
+  ordinary `knowledge.search` calls recovered a 16-character credential through
+  `count`, and 442 recovered one through the candidate depth at the **default**
+  token budget with no parameter set. 203 is the figure to plan against, because
+  an attacker picks whichever implementation is cheaper. `fusedScore` moved every
+  published score by a rank —
+  `[0.032787, 0.032258, 0.031746, 0.031250]` became
+  `[0.032258, 0.031746, 0.031250, 0.030769]` — and the excerpt moved *which
+  paragraph* of a visible document was published, in 9.1% of 20,000 random rank
+  arrangements.
+
+  **What closed it was not a sixth patch.** The gate moved inside the ranking:
+  `RetrievalService.search` takes a `Visibility` and ranks only rows it has
+  cleared, so fusion, diversification, `limit` and the budget all see exactly the
+  rows an index that never held the withheld documents would have offered. The
+  fix this entry used to describe — re-fusing the survivors after filtering — is
+  gone with the function that did it, because ranks are never computed over
+  withheld rows now and there is nothing left to repair. Retrievers are read deeper
+  instead: 100 rows, then twice as many, until 50 *visible* rows exist or the
+  retriever returns fewer rows than it was asked for. On a Japanese corpus this
+  mattered most, and needed no setup: `unicode61` cannot segment CJK, so the
+  trigram retriever's fifty slots are the whole candidate list.
+
+  Verified by comparing one query against two corpora — one whose index holds a
+  document the caller may not read, one that never held it — rather than two
+  queries against one corpus, which is what the three earlier rounds did and is
+  only ever as wide as the fields those two queries happen to move. Every
+  published value is equal, at every `limit` up to 50 and at the default budget,
+  with and without `useDense`, **in English and in Japanese**.
+
+  **Both corpora are load-bearing, in opposite directions.** The depth loop is
+  read once for the word index and once for the trigram retriever, and removing
+  it from one is a different mutation from removing it from the other. Taking it
+  off the trigram retriever, English notices only at `maxTokens=32,000` while
+  Japanese also notices at `limit=50` at the default budget, through
+  `droppedForBudget` — the field the attack used. Taking it off the word index,
+  English fails four cases and **Japanese fails none**: the Japanese word index
+  returns one row against this crowd, so its loop has nothing to skip and the
+  displacement is unobservable. Deleting either corpus leaves one of the two
+  loops unguarded with a green suite.
+
+  Timing remains a stated residual, and closing the content channel **widened**
+  it before a mitigation narrowed it again: with a first pass of exactly 50, a
+  single withheld row forced a second query, and a single call classified the two
+  cases correctly 91.6% of the time. Reading 100 rows first moves that threshold
+  from "one withheld row matched" to "fifty did" and brings it back to +3.0% /
+  63.0%, against 62.1% for a pipeline with no depth loop at all. It is a
+  mitigation, not a proof, and what guards it is a count of retriever reads per
+  request rather than a clock — no wall-clock assertion runs in CI, so a change
+  that made each read more expensive in proportion to what was withheld would go
+  unnoticed.
+
+  Those separations are the trigram-lookup branch, and the branch below the
+  trigram floor was two orders worse before it was fixed in this same milestone:
+  a `LIMIT` bounded nothing there, so every doubling re-scanned the corpus —
+  +86% on a plain CJK noun, +101% on the worst legal query, and a six-pass worst
+  case of 3.06 s against the 43 ms recorded for the lookup. **That branch now
+  scans the corpus once whatever the canonical store withheld** — `scan_statement`
+  dropped its `LIMIT` and the loop's exit test became `!=`, so a retriever that
+  never truncates is not asked twice; 3.06 s → 0.64 s, and 0.65 s with the whole
+  corpus retired.
+
+  **Once *scanned*, not once *called*, and the two were reported as one until
+  review round five.** A ranking that totals exactly `FIRST_PASS_DEPTH` rows is
+  indistinguishable from a truncated one, so the loop asks again: the scan port
+  is called once at 50 withheld rows and twice at 51. What holds that second call
+  to no further pass over the corpus is `SqliteIndexStore._scan_cache`, a
+  memoisation for this one gap — deleted when `IndexStore` states its own
+  exhaustion, filed as [#16](https://github.com/theurian/theurian/issues/16).
+  The earlier "one pass from 0 to 5,999 withheld rows" is not wrong, only
+  narrower than the sentence it supported: a 6,000-row ranking never lands on the
+  coincidence.
+
+  The trigram lookup keeps the loop outright: 1 pass at 50 withheld rows and 2 at
+  51, costing +12.8 ms (+15% of a request), down from +64.3 ms. **What is left on
+  both branches is closed by an argument rather than a further mitigation**, and
+  it is the duration face of the BM25 entry below rather than a finding of its
+  own: a ranking the visibility has not yet judged still contains the withheld
+  rows, so any work proportional to its length moves with how many there are.
+  That is the extra fetch needed to secure `CANDIDATE_DEPTH` visible rows from a
+  retriever that is not exhausted, and — with the pass count held at one — the
+  canonical read `CanonicalVisibility.cleared` makes for every row of the
+  ranking. Both follow from the definition of the loop and not from a defect in
+  it. No exhaustion signal removes them and no cache removes them; only an index
+  that no longer holds withdrawn rows does
+  ([#15](https://github.com/theurian/theurian/issues/15), Milestone 6). See T-17
+  in the threat model for the measurements, the five things that would falsify
+  that argument, and their evidence grade.
+
+  **The canonical-read half was found in review round six, and two claims are
+  retracted with it.** T-17 said this branch's timing channel was "closed
+  outright" and that walking the whole ranking is what keeps the canonical read
+  count off the withheld count. Dropping the `LIMIT` closed the *pass count*; the
+  read count is `len(ranked)`, so 10 visible rows cost 10 canonical reads with
+  nothing withheld and 210 with 200 withheld, in one pass, at about 15 µs each and
+  bounded by nothing on a branch whose statement has no `LIMIT`. Round four
+  replaced a bounded 6× multiplier with an unbounded linear term rather than
+  removing the channel, and the published residual of +0.35 ms / 63.0% is the
+  lookup's pass-count edge rather than a bound over T-17 as a whole.
 
 #### Known limitations
 
 - The default embedder is lexical in vector form, and off by default for the
   reason given above. Semantic retrieval needs a real model, which plugs in
   through the `EmbeddingProvider` port without touching anything else
-  (ADR-0003, ADR-0009).
-- `INDEX_SCHEMA_VERSION` is written into every index and never read back, so a
-  schema mismatch degrades silently instead of being reported (ADR-0022).
+  (ADR-0003, ADR-0009). Because it stays opt-in, FR-R2 is only partly
+  discharged: the fusion is real and both retrievers exist, but a healthy
+  default search never runs the dense one.
+- The relevance floor removed above (Changed) leaves a query whose terms all
+  appear in every document still ranking. Separating "matched weakly" from
+  "matched only common words" needs a per-term IDF test, not a score
+  threshold (ADR-0021, Milestone 6).
+- Two candidates ranked `(i, j)` and `(j, i)` by two retrievers score exactly
+  equal under Reciprocal Rank Fusion, so the `chunk_id` tie-break — revision
+  creation order — decides between them instead of relevance. Measured at
+  9%–16% of adjacent top-10 pairs, depending on corpus, over a 30-document,
+  15-query test corpus. A relevance-based tie-break needs a per-retriever
+  weighting decision (ADR-0021, Milestone 6).
+- A query mixing a short term (one or two characters) with a longer one (three
+  or more) still drops the short term from the trigram retriever entirely,
+  because the trigram expression is then non-empty and the floor that rescues
+  an all-short query never fires. `認証 トークン` searches only for `トークン` on
+  this retriever (ADR-0023, Milestone 6).
+- The scan below the trigram floor orders by occurrences weighted by term
+  length, which is a proxy for relevance and not IDF: a chunk that repeats one
+  term many times can outrank a chunk that covers two. The same per-term IDF
+  work closes this and the mixed-length residual above (ADR-0023, Milestone 6).
+- **A query with more than eight terms below the trigram floor searches only its
+  first eight**, and *first* means first typed. Both the match and the order come
+  from that one slice, so a term past it is honestly absent rather than present
+  but unrankable. Eight is a cost bound: each term is a `LIKE` and an occurrence
+  count over every row, so the worst legal query runs 0.81s at four terms, 1.67s
+  at eight and 4.25s unbounded, on 20,000 chunks — the multi-second, GIL-holding
+  query SEC-8 exists to keep out of a daemon shared by every project. The
+  longest-first ordering that decides *which* terms survive elsewhere is a no-op
+  here, because every term on this path is one or two characters; picking the
+  selective one out of `認証 決済 監査 契約` needs corpus statistics this
+  retriever does not have (ADR-0023, Milestone 6).
+- Case matching is asymmetric across the trigram floor: SQLite's `LIKE` folds
+  ASCII only while the trigram tokenizer folds all of Unicode, so a two-letter
+  Greek query is case-sensitive and the same word with one letter more is not.
+  Japanese and Chinese are caseless, so the scripts the floor exists for are
+  unaffected; a Greek or Cyrillic corpus would need the `icu` tokenizer
+  (ADR-0023).
+- `mode: "substring"` names two different things on the wire: the unranked
+  canonical scan reported at the top level of `retrieval`, and the trigram
+  retriever named inside a ranked hit's `foundBy`. Left as one published value
+  rather than renamed, and documented at both call sites in `mcp/search.py`.
+- A hit's `foundBy` names which retrievers ranked it, not at which position each
+  did. The positions exist on the fused candidate and are what `fusedScore` is
+  computed from; publishing them would be a schema change (ADR-0021).
+- **On a stale index, BM25's collection statistics count documents the canonical
+  store will withhold, and the visible order moves with them.** This entry twice
+  called part of the effect harmless, and both bounds were false. It first said
+  the statistics "do not vary with what a query matched"; FTS5's `bm25` weights
+  each phrase by `idf = log((N - nHit + 0.5) / (nHit + 0.5))`, where `nHit`
+  counts the rows matching *that phrase* — so a withheld row containing one of
+  the query's terms reweights the **visible** rows against each other. It then
+  said the remaining statistics were harmless because query-independent. They are
+  query-independent, and that is not the same claim.
+
+  Two channels, and they differ in what a caller can do with them:
+
+  - **`idf`, via `nHit`** — query-dependent, so a probe steers it, and bounded by
+    `tf`: a term that does not also occur in visible content leaves every visible
+    row at `tf = 0` and reads back nothing. It is an oracle for whether a
+    withheld document contains a term already in the visible vocabulary, not the
+    character-at-a-time extraction T-17 describes — still disclosure on a corpus
+    of incident notes or rejected-review rationales.
+  - **`avgdl`, and more weakly `N`** — query-independent, so no probe can make
+    them answer a question, but **unconditional**: no shared vocabulary is
+    needed. BM25's length norm `k1 * (1 - b + b * D / avgdl)` is a function of
+    each row's own `D`, so it is not a common factor across rows and moving
+    `avgdl` does not preserve an order. Measured on withheld rows sharing no term
+    with the query, with each phrase's `nHit` asserted identical in both indexes:
+    1,218 configurations reorder two visible rows.
+
+  So the published `fusedScore`, the hit order and — because `knowledge.search`
+  always asks for one chunk per document — which paragraph is returned as
+  `excerpt` can all move for *any* withheld content while the index is stale,
+  whatever that content says. The gate removes rows from the result; it does not
+  remove them from the statistics the survivors are scored against. What an
+  attacker can read back out is the `idf` channel and nothing more.
+
+  **Accepted for this milestone rather than deferred without a decision**, and
+  re-taken in review round five against the corrected text rather than carried
+  forward on the old one. The argument is in T-17a: purging withheld chunks from
+  the derived index on read means a read path writing to a derived artifact, and
+  Milestone 6 settles blue/green index builds, so building it now means building
+  it twice. The window is the stale window and the root fix is eliminating it,
+  not correcting statistics inside it. `theurian index build` closes it today.
+  Tracked at HIGH against Milestone 6 as
+  [#15](https://github.com/theurian/theurian/issues/15), disclosed in
+  `SECURITY.md` and the README. Both channels are pinned by tests that assert the
+  leak is *present*, so its scope cannot grow unnoticed and closing the window in
+  Milestone 6 turns them red — `test_a_withheld_document_can_still_reorder_the_visible_ones`
+  for the `idf` channel, and
+  `test_a_withheld_document_sharing_no_vocabulary_still_reorders_the_visible_ones`
+  for the `avgdl` one.
 - A search running while `theurian index build` publishes is not protected. The
   new build reaps the old file immediately, and the retrieval store holds no
   open handle between queries, so such a search falls back to the substring scan.

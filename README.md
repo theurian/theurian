@@ -245,7 +245,7 @@ surfaced it — so a ranking can be explained rather than just trusted.
 | Retriever | What it is | Default |
 | :-- | :-- | :-- |
 | `lexical` | SQLite FTS5, `unicode61` tokenizer. Ranks exact terms — identifiers, error codes, config keys. | on |
-| `substring` | SQLite FTS5, `trigram` tokenizer. Matches inside words, which is the only way a script without word spacing is searchable. | on |
+| `substring` | SQLite FTS5, `trigram` tokenizer, plus a scoped scan for queries too short to form a trigram. Matches inside words, which is the only way a script without word spacing is searchable. | on |
 | `dense` | Cosine similarity over embeddings, by exact scan. | **off** |
 
 **Languages without word spacing work.** `unicode61` splits on whitespace and
@@ -255,6 +255,17 @@ a Japanese project was invisible. The trigram index sits beside the word index
 rather than replacing it, because trigrams are worse at exactly what engineering
 queries are made of: a trigram search for `cat` also matches `concatenate`.
 Fusing both means each covers the other's blind spot.
+
+A trigram index has no gram for a term shorter than three characters, which
+would leave out 認証, 決済 and 監査 — two characters is the most common noun
+length in Japanese. A query whose terms are *all* that short is answered by a
+scoped scan over the same rows instead, ranked by how much of the query each
+chunk accounts for. Three things it is not: a query mixing a short term with a
+long one still searches only for the long one on this retriever; a query that is
+a single punctuation character is declined rather than answered; and a query with
+more than eight short terms searches only the first eight it was given, because
+each term costs a pass over every row and a search that takes seconds is one
+every other project sharing the daemon waits for.
 ([ADR-0023](docs/adr/0023-trigram-index-beside-the-word-index.md))
 
 **Dense retrieval is off by default, and that is measured rather than cautious.**
@@ -273,10 +284,48 @@ an n-gram-backed search is never mistaken for a semantic one.
 ([ADR-0021](docs/adr/0021-rank-fusion-over-score-normalisation.md))
 
 **Rebuild the index after upgrading.** The trigram index made the index schema
-version 2, and an index built under version 1 is not detected — it simply
-answers without the trigram half, which on a Japanese knowledge base means it
-answers with nothing. `theurian index build` is the whole remedy; the index is
-derived, so nothing is lost.
+version 2. An index built under version 1 is detected on open and reported
+rather than silently losing its trigram half: `knowledge.search` falls back to
+an unranked scan with `retrieval.fallbackReason: "index-schema-mismatch"`, and
+`theurian index status` shows the version it found beside the version it
+expects. `theurian index build` is the whole remedy; the index is derived, so
+nothing is lost.
+
+**An index older than your knowledge answers with less, never with more, and
+does not say what it left out.** A document retired or superseded since the last
+build is checked against the canonical store and withheld — and the retrievers
+are read *through* that check rather than filtered after it, so `count`,
+`usedTokens`, `fusedScore` and which paragraph is excerpted are all exactly what
+they would be if that document had never been indexed. That equality is the
+point: anything that moved when a query happened to match withheld text would
+spell it out one character at a time, since the substring retriever matches any
+three characters. `retrieval.stale` tells you the index is behind, which is a
+fact about the index and not about your query.
+([T-17](docs/security/threat-model.md))
+
+**One thing that equality does not cover, and it is not fixed in this
+milestone.** BM25 scores a row against corpus statistics taken over the whole
+index file, and while the index is stale the withheld rows are still in that file
+being counted. So a withheld document can change the *relative* order of two
+documents you can see, which reaches `fusedScore`, the hit order and which
+paragraph is excerpted. Two different things move, and they are not the same
+size:
+
+- **The order you get moves for any withheld content, whatever it says.** One of
+  those statistics is the average document length, so a withheld document that
+  shares not one word with your query still changes each visible row's score, by
+  a different amount for each. Measured against SQLite FTS5, not argued.
+- **Reading content back out of the ranking is narrower.** That needs a term
+  which also occurs in content you *can* read, so it can confirm whether a
+  withheld document contains a term already in your vocabulary and cannot spell
+  out one that is not.
+
+`theurian index build` removes both, along with every other consequence of a
+stale index; eliminating the stale window itself is Milestone 6's blue/green
+builds. **If your ranking must not depend on retired content at all, rebuild the
+index as part of retiring it rather than on a schedule.** Accepted deliberately,
+with the argument and the measurements recorded.
+([T-17a](docs/security/threat-model.md))
 
 ## Theurian and Serena
 
@@ -324,7 +373,7 @@ repository. ([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
 | 3 | Single MCP daemon: Streamable HTTP, auth, multi-project | **done** |
 | 4 | Claude Code plugin: setup, doctor, service adapters | **done** |
 | 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
-| 6 | RAPTOR forest, incremental rebuild, blue/green index, scope filtering, index schema version check | next |
+| 6 | RAPTOR forest, incremental rebuild, blue/green index, scope filtering | next |
 | 7 | GitHub review ingestion and knowledge candidates | planned |
 | 8 | Specification and traceability tooling, drift detection | planned |
 

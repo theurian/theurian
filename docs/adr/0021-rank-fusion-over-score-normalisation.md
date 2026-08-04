@@ -57,6 +57,15 @@ a way that leaves their relative position to chance.
    retriever happened to answer first.
 4. Every fused candidate reports `foundBy`: which retrievers surfaced it and at
    what rank.
+
+   > **Amended in Milestone 5.** Half of that is on the wire. `Fused.ranks` holds
+   > the per-retriever positions and is what `fusedScore` is computed from, but
+   > the published `foundBy` is the retriever *names*, sorted — see
+   > `schemas/knowledge/retrieval-result.schema.json`, which is the normative
+   > shape. So a caller can see *that* both retrievers agreed and not *where*
+   > each put the hit. The ADR is corrected rather than the wire: publishing the
+   > ranks is a schema change, and the explanation `foundBy` exists to give —
+   > why a result is in the list at all — is carried by the names.
 5. A retriever that returns nothing is not an error. The reported retrieval mode
    degrades from `hybrid` to `lexical`, visibly.
 
@@ -105,6 +114,52 @@ a way that leaves their relative position to chance.
 - Recall depends on how deep each retriever is asked to go. A document neither
   retriever ranks within `CANDIDATE_DEPTH` cannot be fused at all.
 
+  > **Amended in Milestone 5. `CANDIDATE_DEPTH` now counts rows the caller may
+  > see, not rows the index returned**, and that changes what this sentence
+  > means. As written it described a fixed `LIMIT`: fifty rows came back from
+  > each retriever and whatever the canonical store later withdrew came out of
+  > those fifty. So a document the caller *may* read could be pushed out of the
+  > fusion by one it may not — which is not only a recall loss but a channel,
+  > because every number computed downstream moved with it (T-17).
+  >
+  > A retriever is now read through the caller's `Visibility`: `FIRST_PASS_DEPTH`
+  > rows, then twice as many, until fifty *visible* rows exist or it returns
+  > fewer rows than it was asked for. Fifty visible rows are therefore the same
+  > fifty whether or not a withheld document happens to match. The recall
+  > consequence stands as written, against a corpus with nothing withheld — it is
+  > the *depth* that is now honest about what it counts.
+  >
+  > The alternative measured against it was an eager exclusion: ask the canonical
+  > store up front which revisions are surfaceable and filter them out in SQL.
+  > That pays 32 ms on every query, including the ones against an index with
+  > nothing stale about it, and the canonical scan inside that figure grows with
+  > the corpus; depth doubling pays only when there is something to skip, and in
+  > proportion to how much. The breakdown, and the depth-doubling figures beside
+  > it, are in T-17 of the [threat model](../security/threat-model.md) and in
+  > `RetrievalService._visible_ranking`'s docstring — this is the decision, not
+  > the measurement.
+  >
+  > The dense retriever is the exception and does not double: an exact vector
+  > scan scores every embedding whatever it is asked for, so
+  > `IndexStore.search_dense` lost its `limit` rather than pretending one bounded
+  > the work. It returns its whole ranking, and the cut to fifty happens on the
+  > far side of the gate.
+- Two candidates ranked `(i, j)` and `(j, i)` by two retrievers score *exactly*
+  equal — the sum `1/(k+i) + 1/(k+j)` is symmetric in `i` and `j` — so on such a
+  pair the `chunk_id` tie-break decides, not relevance. `chunk_id` is
+  `<revision ULID>#<ordinal>`, so ties resolve by revision creation order: a
+  determinism device standing in for a relevance judgement the fusion cannot
+  make.
+
+  > **Measured in Milestone 5.** Not rare. Over a 30-document corpus and 15
+  > queries, fusing the lexical and trigram retrievers: 12 of 135 adjacent
+  > top-10 pairs, 9%, were exact ties. An independent measurement on a
+  > different corpus put it at 16%. The share is corpus-dependent; the
+  > mechanism is not. Recorded in
+  > `theurian.domain.ranking.reciprocal_rank_fusion`'s docstring, where it is
+  > caused. Breaking such a tie on relevance needs a per-retriever weighting
+  > decision this milestone did not take — see Compliance.
+
 ### Neutral
 
 - Adding a third retriever (RAPTOR summary nodes in Milestone 6, a reranker
@@ -142,14 +197,111 @@ Landed in Milestone 5:
 - `test_an_index_without_embeddings_degrades_visibly_to_lexical` — a search that
   lost its dense half does not look identical to a healthy one.
 
+For the amendment to the depth consequence (fusion runs behind the gate):
+
+- `tests/integration/test_retrieval_service.py::test_the_scores_the_gate_publishes_are_computed_over_the_survivors`
+  — the fused scores a caller receives are the ones an index without the withheld
+  document would have produced, rather than the ones it produced with it and then
+  had corrected.
+- `test_the_limit_is_applied_to_results_and_not_to_candidates` — a withheld
+  candidate does not consume a result slot.
+- `test_a_withheld_row_cannot_choose_which_chunk_of_a_visible_document_is_published`
+  — `diversify` is downstream of the gate, so `per_item` caps what is visible
+  rather than what was ranked. Scripted ranks, because the channel needs one
+  exact arrangement.
+- `tests/integration/test_mcp_tools.py::test_a_withheld_document_changes_nothing_a_caller_can_see`
+  — the end-to-end statement of the same property: one query, two corpora, every
+  published value equal, at `limit` 50 and at the default. Paired with
+  `test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_depth`,
+  which asserts the fixture can still violate it.
+
+The security argument these discharge, and the five fields it took three rounds
+of review to close, are recorded in T-17 of the
+[threat model](../security/threat-model.md) rather than here. What belongs to
+this ADR is the ordering: fusion is a function of what the caller may see, and of
+nothing else.
+
+> **Corrected in Milestone 5, review round 4.** The first item above claims the
+> fused scores a caller receives "are the ones an index without the withheld
+> document would have produced". That is true of everything the gate controls and
+> false of one thing it does not. FTS5's `bm25` weights each phrase by an `idf`
+> computed from `nHit`, the number of rows matching that phrase, and the withheld
+> rows are still in the index file being counted — so a withheld document can
+> reorder two *visible* rows inside one retriever, and RRF fuses ranks, so the
+> reordering reaches `fusedScore`. Measured; recorded as T-17a in the threat
+> model, and unfixed until Milestone 6.
+>
+> The three tests cited still assert what they say they assert and still pass.
+> What they hold is that no stage computes a rank from a withheld **row**. They
+> do not hold — and cannot, at this layer — that the corpus a visible row is
+> scored *against* is free of withheld rows. That is a property of the index
+> file, not of the fusion, which is why nothing here turned red.
+>
+> Accepted for Milestone 5 with the reasoning recorded in T-17a, tracked at HIGH
+> against Milestone 6 as
+> [#15](https://github.com/theurian/theurian/issues/15). The fix is the
+> blue/green build that removes the stale window, not a change to the fusion:
+> RRF's contract is "ranks in, ranks out", and it holds. What it cannot do is
+> repair a rank that was wrong before it arrived.
+>
+> **Widened in review round five.** The paragraph above names `idf`/`nHit` as the
+> mechanism, which is the channel an attacker can *steer* and not the only one
+> that moves an order. `avgdl` — the corpus mean document length — enters BM25's
+> length norm `k1 * (1 - b + b * D / avgdl)`, which is a function of each row's
+> own `D` and therefore not a common factor across rows. Measured on withheld
+> rows sharing no term with the query, with every phrase's `nHit` asserted
+> identical in both indexes: 1,218 configurations reorder two visible rows. So
+> the ranks arriving at RRF can be wrong even when the withheld documents share
+> no vocabulary with the query at all. The acceptance was re-taken on the
+> corrected text; T-17a carries the measurements and the terms.
+
 For the amendment to point 5 (dense off by default):
 
 - `tests/integration/test_retrieval_service.py::test_dense_is_off_by_default`
 - `test_dense_participates_when_asked_for` — the opt-in path is exercised, which
   is the whole reason the code was kept rather than deleted.
-- `tests/unit/test_ranking.py::test_both_retrievers_contributing_is_hybrid` and
-  `test_no_results_at_all_reports_lexical_rather_than_claiming_hybrid` — the
+- `tests/unit/test_ranking.py::test_both_retrievers_contributing_is_hybrid` — the
   reported mode is never more generous than what actually ran.
+
+  > **Amended in Milestone 5.** The sibling test previously cited here,
+  > `test_no_results_at_all_reports_lexical_rather_than_claiming_hybrid`, no
+  > longer exists, and its assertion no longer holds: an empty result set used
+  > to report `lexical`, indistinguishable from "the word index answered and
+  > found nothing" — exactly the signature a v1 index with no trigram table or
+  > an embedder whose vectors do not match the corpus produces. `mode_of` now
+  > has a fourth value, `RetrievalMode.NONE`, for "no retriever contributed
+  > anything", pinned by
+  > `test_no_results_at_all_is_neither_lexical_nor_hybrid`.
+
+Landed in Milestone 5, for the T-17a correction above:
+
+- `tests/integration/test_retrieval_service.py::test_a_withheld_document_can_still_reorder_the_visible_ones`
+  — the first condition on the T-17a acceptance that needed a test. It asserts
+  that a leak is **present**: two builds of one project, one still holding the
+  retired note and one that never did, return the same two visible documents in a
+  different order. The existing depth corpora assert the opposite equality and
+  pass, because their withheld runbook does not move their crowd far enough to
+  reorder it — a test asserting the right thing against a corpus that cannot
+  exhibit the defect, which is the shape of the three T-17 rounds that passed
+  with a sibling channel open.
+- `test_the_bm25_probe_corpus_can_still_flip` — its guard, for the same reason
+  `test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_depth`
+  exists. It asserts the fixture's preconditions rather than the outcome, so a
+  fixture that quietly stopped being able to flip fails here instead of passing
+  the test above for the wrong reason.
+
+Both of those pin the `idf`/`nHit` channel, whose fixture needs the probe term in
+visible content. The `avgdl` channel needs a corpus that shares nothing with the
+query, so it is a separate pair, landed with the round-5 widening:
+
+- `test_a_withheld_document_sharing_no_vocabulary_still_reorders_the_visible_ones`
+  — the withheld document contains neither query term, as a token or as a
+  substring, and each phrase's `nHit` is asserted identical in both indexes, so
+  `idf` cannot be what moved. The visible order moves anyway.
+- `test_removing_the_shared_term_from_the_visible_bodies_stops_this_corpus_flipping`
+  — the same demonstration from the other side: take the shared term out of the
+  visible bodies and the `idf` channel stops reaching the published order on that
+  corpus. Read alone, either one misstates the scope; the pair is what states it.
 
 Still owed, with the milestone that will satisfy it:
 
@@ -166,3 +318,11 @@ Still owed, with the milestone that will satisfy it:
   per-term IDF test rather than a threshold on the combined score. Pinned by
   `tests/integration/test_index_store.py::test_a_query_of_only_common_words_still_matches_today`,
   which is written to fail the day it is fixed.
+- **A relevance-based tie-break** (Milestone 6). Today, two candidates tied
+  exactly under RRF — see the Negative consequence above — resolve by
+  `chunk_id`, i.e. by revision creation order, which answers FR-R7's
+  reproducibility requirement and nothing about which of the two is the better
+  result. The per-term IDF work above is one candidate weighting signal;
+  closing this needs a decision about how retriever weight enters the fusion
+  at all, which is why it is filed separately rather than assumed to fall out
+  of the same fix.

@@ -136,15 +136,42 @@ table ([ADR-0023](0023-trigram-index-beside-the-word-index.md)) took
 no canonical `SCHEMA_VERSION` bump, no state hash change, no canonical database
 invalidated. That is the whole argument of this ADR, run once for real.
 
+`INDEX_SCHEMA_VERSION` is read on open, not only written. This section used to
+say the version was "written and never read", which was true when this ADR
+was first drafted. It stopped being true later in the same milestone, when
+`SqliteIndexStore.is_searchable` was added to compare the stored version
+against `INDEX_SCHEMA_VERSION` before any query runs — an index built under an
+older schema is now reported and falls back
+(`fallbackReason: index-schema-mismatch`) rather than being used and silently
+answering short — and this section was not updated to match until now.
+`tests/integration/test_index_fallback.py::test_a_fallback_names_the_reason_it_could_not_use_the_index[written-by-another-schema]`,
+`test_a_broken_index_is_never_reported_as_a_healthy_one[written-by-another-schema]`,
+`test_index_status_reports_the_schema_it_found_and_the_one_it_wants`, and
+`test_a_schema_mismatch_is_stale_even_when_the_state_hash_matches`. The
+parameter id names the scenario; `index-schema-mismatch` is the reason code it
+asserts.
+
 Still owed, with the milestone that will satisfy it:
 
-- **`INDEX_SCHEMA_VERSION` is written and never read** (Milestone 6). Point 3
-  gives the index its own version so it can be rebuilt on its own schedule, but
-  nothing compares the stored value against the running one, so an index built
-  under an older schema is used rather than reported. Measured for the 1 → 2
-  case: the missing table surfaces as `sqlite3.OperationalError`, which
-  `search_substring` catches and answers with no results. Belongs with the
-  blue/green index work that already owns index lifecycle.
 - **A search concurrent with a rebuild is not protected** (Milestone 6). See the
   amendment to point 6: the guarantee that ADR gave has not been replaced, only
-  withdrawn. It belongs with the blue/green work.
+  withdrawn. It belongs with the blue/green work. This is also NFR-4, which
+  ADR-0018's Neutral consequence cited as satisfied by WAL — it is not, because
+  WAL spans one database file and this rebuild replaces one.
+- **Something other than a build will write to an index** (Milestone 6,
+  [#15](https://github.com/theurian/theurian/issues/15)). This ADR's model is
+  that publishing is a pointer swap and "the rebuild happens in a file nobody is
+  reading" — which assumes the only writer is a build, producing a fresh file.
+  T-17a's root fix breaks that assumption: withdrawn rows have to leave the
+  index, the shape chosen is a **single-writer incremental purge rather than a
+  purge on read**, and tombstones do not substitute for it, because what leaks
+  is FTS5's collection statistics and those count rows a tombstone leaves in
+  place.
+
+  So blue/green has to answer a question this ADR has not been asked yet:
+  whether a purge produces a new build and swaps the pointer — which makes it an
+  ordinary build under points 5 and 6, at the cost of rewriting the whole file
+  to remove a few rows — or mutates the published build in place, which is a
+  write to the file searches are reading and needs the writer discipline
+  ADR-0018 owes for the index. Recorded here rather than in #15 alone, because
+  it is a constraint on the blue/green design and not a detail of the purge.

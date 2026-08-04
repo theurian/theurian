@@ -79,6 +79,31 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   audience and scope validation, and tenant isolation — none of which the local
   daemon implements, because it does not need them and shipping half of them
   would be worse than shipping none.
+- **Search ranking, while the retrieval index is out of date.** A document you
+  retire or supersede is withheld from results immediately, but it stays in the
+  index file until the next `theurian index build` — and BM25 scores every result
+  against statistics computed over that whole file. So a withheld document can
+  change the relative order of two documents you *can* see, and which paragraph
+  of one of them is excerpted.
+
+  **Any withheld content can do that, whatever it says.** One of those statistics
+  is the average document length, so a withheld document that shares not one word
+  with your query still changes the score of every visible row — by a different
+  amount for each, which is why the order moves. This was measured against SQLite
+  FTS5 rather than reasoned about; an earlier version of this section claimed the
+  opposite.
+
+  Reading content back out of the ranking is narrower. That needs a term which
+  also occurs in content you *can* read, so what it can answer is whether a
+  withheld document contains a term you have already seen somewhere — not a term
+  you do not already have.
+
+  `theurian index build` closes both, along with every other consequence of a
+  stale index. It is accepted for now rather than fixed for now — the reasoning,
+  the measurements and the scheduled fix are T-17a in
+  [the threat model](docs/security/threat-model.md). **If a project's ranking
+  order must not depend on retired content at all, rebuild the index as part of
+  retiring it rather than on a schedule.**
 
 ## Personal data in review knowledge
 

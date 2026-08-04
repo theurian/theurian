@@ -176,3 +176,35 @@ naming the repository. Pinned by
 - `test_re_registering_the_same_root_stays_idempotent` and
   `test_re_registering_a_disambiguated_project_stays_idempotent` — the refusal
   does not cost FR-L2.
+
+Landed in Milestone 5, review round 5 — a third route to the same disclosure,
+through an entry the registry could not read. `ProjectRegistry.load` returned
+whatever `json.loads` produced, and `id_for_root` compared
+`Path(entry.get("rootPath", "")).resolve()`. `Path("").resolve()` is the
+*calling process's* current working directory, so an entry with no `rootPath`
+matched **every** directory a command ran from — reproduced against the previous
+code, where `id_for_root` returned that id for a repository it had no relation
+to. The entry shape is what a hand edit leaves behind, and point 4's guarantee
+does not distinguish "reached through a collision" from "reached through a
+corrupt line". Pinned by `tests/integration/test_project_registry.py`:
+
+- `test_a_corrupt_entry_does_not_hand_a_working_tree_the_id_it_collided_with` —
+  the regression stated on the resolved **id** rather than on something having
+  been refused, because some other exception for some other reason would satisfy
+  `pytest.raises` while the id is what the defect got wrong.
+- `test_an_unreadable_entry_refuses_a_root_it_could_not_possibly_be` — the
+  refusal is deliberately broader than the entry that caused it. An entry naming
+  no root cannot be attributed to a directory at all, so per-root decidability is
+  unavailable rather than merely expensive.
+- `test_one_unreadable_entry_does_not_hide_the_projects_that_are_fine` and
+  `test_the_daemon_keeps_serving_a_readable_project_beside_a_broken_entry` — the
+  other half, and the one that belongs to *this* ADR: one daemon serves every
+  project on the machine, so refusing all of them for one hand-edited line
+  repeats at machine scale the failure `IndexUnreadableError` exists to avoid at
+  project scale.
+- `test_registration_is_refused_while_the_file_holds_an_unreadable_entry`,
+  `test_re_registering_the_id_whose_own_entry_is_broken_names_that_id_not_the_file`,
+  and `test_removing_the_unreadable_entry_restores_resolution` — the refusal
+  names an id a user can actually type, and the remedy it names works.
+- `test_every_id_in_the_file_is_either_loaded_or_reported_unreadable` — the
+  partition is total, so no id can vanish from both `load` and `unreadable_ids`.
