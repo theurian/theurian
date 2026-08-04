@@ -19,11 +19,14 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectRegistry
+from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
 from theurian.application.retrieval_service import CANDIDATE_DEPTH
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
+from theurian.domain.context import RequestContext
+from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.ranking import Ranked
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 from theurian.mcp.tools import MAX_RESULTS
 
 pytestmark = pytest.mark.integration
@@ -438,6 +441,184 @@ async def test_status_counts_items_by_status(registry: ProjectRegistry) -> None:
     assert result["itemsByStatus"] == {"approved": 1, "draft": 1}
     assert result["appliedMigrations"] == 2
     assert result["stateHash"]
+
+
+#: One item in each status this tool refuses to count, plus the two the
+#: `registry` fixture already holds.
+#:
+#: `knowledge.status` had no retired item anywhere in its fixtures, so the
+#: ``status not in SURFACEABLE_STATUSES`` branch never fired and replacing it
+#: with ``item.status.value == ""`` passed the whole suite. All three excluded
+#: statuses are here rather than one, because they are excluded for one reason
+#: -- `knowledge.get` answers "withheld" and "absent" identically (SEC-13), and
+#: a count is the same answer as a number -- and a corpus holding one of them
+#: could not tell whether the other two were still excluded.
+#:
+#: Each arrives by the operation that really produces it: `deprecateItem` for
+#: `deprecated`, and a revision declaring the status for `superseded` and
+#: `rejected`. Writing all three as revision metadata would have left
+#: `deprecateItem`'s own path unrepresented.
+RETIRED_MIGRATION_ID = "01K1DDDDDD01234567890ABCDE"
+RETIRED_BODY = "# Retired\n\nContent nobody outside the team may be told exists.\n"
+
+RETIRED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RETIRED_MIGRATION_ID}
+createdAt: 2026-08-02T16:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.retired-gateway
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.retired-gateway
+    revisionId: 01K1DDDGWA01234567890ABCDE
+    contentFile: ../knowledge/architecture/retired-gateway.md
+    metadata:
+      title: Retired gateway
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/retired-gateway.md
+  - op: deprecateItem
+    itemId: architecture.retired-gateway
+    reason: replaced by the edge proxy
+  - op: createItem
+    itemId: architecture.superseded-sessions
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.superseded-sessions
+    revisionId: 01K1DDDSSN01234567890ABCDE
+    contentFile: ../knowledge/architecture/superseded-sessions.md
+    metadata:
+      title: Superseded sessions
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: superseded
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/superseded-sessions.md
+  - op: createItem
+    itemId: architecture.rejected-store
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.rejected-store
+    revisionId: 01K1DDDRST01234567890ABCDE
+    contentFile: ../knowledge/architecture/rejected-store.md
+    metadata:
+      title: Rejected store
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/rejected-store.md
+"""
+
+
+@pytest.fixture
+def with_retired_items(registry: ProjectRegistry) -> ProjectRegistry:
+    """The `registry` project, plus one deprecated, one superseded, one rejected."""
+    root = Path(registry.load()["demo"]["rootPath"])
+    knowledge = root / ".theurian/knowledge/architecture"
+    for slug in ("retired-gateway", "superseded-sessions", "rejected-store"):
+        (knowledge / f"{slug}.md").write_text(RETIRED_BODY)
+    (root / f".theurian/migrations/{RETIRED_MIGRATION_ID}-retire.yaml").write_text(
+        RETIRED_MIGRATION
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
+
+
+def _stored_statuses(registry: ProjectRegistry) -> dict[str, str]:
+    """Every item in the canonical store, mapped to the status it really holds."""
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    context = RequestContext(project_id=ProjectId("demo"))
+    with SqliteCanonicalStore(paths.state / active.database_filename) as store:
+        return {item.item_id.value: item.status.value for item in store.list_items(context)}
+
+
+@pytest.mark.asyncio
+async def test_the_retired_items_really_reach_the_canonical_store(
+    with_retired_items: ProjectRegistry,
+) -> None:
+    """Guards the guard. Without this, a migration that stopped applying would
+    turn the exclusion test below into an assertion about a two-item store --
+    which is exactly the state that let the exclusion be deleted unnoticed."""
+    stored = _stored_statuses(with_retired_items)
+
+    assert stored == {
+        "architecture.auth-policy": "approved",
+        "architecture.caching-draft": "draft",
+        "architecture.retired-gateway": "deprecated",
+        "architecture.superseded-sessions": "superseded",
+        "architecture.rejected-store": "rejected",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retired_items_are_absent_from_every_published_count(
+    with_retired_items: ProjectRegistry,
+) -> None:
+    """SEC-13, T-17. A count is an answer to the question the error message refuses.
+
+    `knowledge.get` deliberately says the same thing about a withheld id and an
+    absent one, so a caller cannot confirm that a retired id exists. Counting the
+    retired items here answers that question with a number instead, and does it
+    without the caller needing to guess an id at all.
+
+    Asserted as an exact mapping rather than as "deprecated is not a key": a
+    breakdown that reported them under a different label, or collapsed them into
+    an `other` bucket, would leak the same quantity.
+    """
+    result = await _call(with_retired_items, "knowledge.status", projectId="demo")
+
+    assert result["itemsByStatus"] == {"approved": 1, "draft": 1}
+    assert result["itemCount"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_item_count_is_the_sum_of_the_published_breakdown(
+    with_retired_items: ProjectRegistry,
+) -> None:
+    """The subtraction the filtered breakdown would otherwise invite.
+
+    Reporting the true total beside a filtered breakdown leaks the withheld count
+    exactly, by subtraction -- so `itemCount` is defined as the sum of what is
+    published and not as the store's size. Pinned separately from the exclusion
+    itself because the two fail independently: this one holds while
+    `itemsByStatus` is correct and `itemCount` is `len(items)`.
+    """
+    result = await _call(with_retired_items, "knowledge.status", projectId="demo")
+    stored = _stored_statuses(with_retired_items)
+
+    assert result["itemCount"] == sum(result["itemsByStatus"].values())
+    assert result["itemCount"] < len(stored), (
+        "the store must be larger than the published count, or this asserts nothing"
+    )
 
 
 # -- project.list ----------------------------------------------------------
@@ -2101,17 +2282,227 @@ async def test_asking_for_unapproved_reaches_a_draft_through_get(
     assert result["status"] == "draft"
 
 
+#: A rejected item, an approved one, and one relation from `auth-policy` to each.
+#:
+#: The relation gate at `knowledge.get` had no corpus at all: no fixture in the
+#: repository issued `addRelation`, so the test that named the gate asserted a
+#: `not in` over an empty list and passed with the gate replaced by
+#: `target.item_id is not None`. Both edges are needed, and for different
+#: reasons -- the rejected one is the leak, and the approved one is what keeps
+#: the assertion from going vacuous again if a later fixture change loses the
+#: relations. `related_to` rather than a second `rejects` because it has no
+#: inverse either, so both edges reach `knowledge.get` in the direction they
+#: were written.
+RELATION_MIGRATION_ID = "01K1RNNNNN01234567890ABCDE"
+REJECTED_ID = "01K1RRRRRR01234567890ABCDE"
+REJECTED_REVISION_ID = "01K1RRRREV01234567890ABCDE"
+ROTATION_ID = "01K1TTTTTT01234567890ABCDE"
+ROTATION_REVISION_ID = "01K1TTTREV01234567890ABCDE"
+
+#: The note on the rejected edge. Published beside `targetItemId` by the same
+#: comprehension, so it is a second field to check rather than decoration -- an
+#: implementation that blanked the id and kept the note would leak the reason a
+#: revision was rejected, which is the content SEC-13 withholds the body for.
+REJECTED_RELATION_NOTE = "superseded by the signed-token design"
+
+REJECTED_BODY = "# Plaintext token store\n\nTokens were kept unhashed in `sessions.token`.\n"
+ROTATION_BODY = "# Token rotation\n\nRotating a credential invalidates the previous one.\n"
+
+RELATION_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RELATION_MIGRATION_ID}
+createdAt: 2026-08-02T15:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.plaintext-token-store
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.plaintext-token-store
+    revisionId: {REJECTED_REVISION_ID}
+    contentFile: ../knowledge/architecture/plaintext-token-store.md
+    metadata:
+      title: Plaintext token store
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/plaintext-token-store.md
+  - op: createItem
+    itemId: architecture.token-rotation
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.token-rotation
+    revisionId: {ROTATION_REVISION_ID}
+    contentFile: ../knowledge/architecture/token-rotation.md
+    metadata:
+      title: Token rotation
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/token-rotation.md
+  - op: addRelation
+    sourceItemId: architecture.auth-policy
+    relationType: rejects
+    targetItemId: architecture.plaintext-token-store
+    note: {REJECTED_RELATION_NOTE}
+  - op: addRelation
+    sourceItemId: architecture.auth-policy
+    relationType: related_to
+    targetItemId: architecture.token-rotation
+    note: the rotation procedure this policy assumes
+"""
+
+
+@pytest.fixture
+def with_a_rejected_relation(registry: ProjectRegistry) -> ProjectRegistry:
+    """The `registry` project, plus the two edges above off `architecture.auth-policy`."""
+    root = Path(registry.load()["demo"]["rootPath"])
+    knowledge = root / ".theurian/knowledge/architecture"
+    (knowledge / "plaintext-token-store.md").write_text(REJECTED_BODY)
+    (knowledge / "token-rotation.md").write_text(ROTATION_BODY)
+    (root / f".theurian/migrations/{RELATION_MIGRATION_ID}-relations.yaml").write_text(
+        RELATION_MIGRATION
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
+
+
+def _stored_relations(registry: ProjectRegistry, item_id: str) -> tuple[str, ...]:
+    """The relation targets the canonical store actually holds for ``item_id``.
+
+    Resolved through the active-state pointer, not by globbing: `migrate apply`
+    leaves the previous state database beside the new one, so a glob picks one of
+    two and the test would depend on filesystem ordering. This is the same
+    database the tool under test reads.
+    """
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    context = RequestContext(project_id=ProjectId("demo"))
+    with SqliteCanonicalStore(paths.state / active.database_filename) as store:
+        return tuple(
+            relation.target_item_id.value
+            for relation in store.list_relations(context, ItemId(item_id))
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_rejected_relation_really_reaches_the_canonical_store(
+    with_a_rejected_relation: ProjectRegistry,
+) -> None:
+    """Guards the guard below, which is the whole reason this round exists.
+
+    The gate can only be observed while there is something for it to withhold.
+    With no `addRelation` anywhere in the suite, `knowledge.get` published an
+    empty list and the assertion that named the gate held over nothing. This
+    reads the store directly, so a migration that silently stopped applying
+    fails here rather than turning the next test green for the wrong reason.
+    """
+    stored = _stored_relations(with_a_rejected_relation, "architecture.auth-policy")
+
+    assert stored == (
+        "architecture.plaintext-token-store",
+        "architecture.token-rotation",
+    ), "both edges are recorded, and the gate is the only thing that removes one"
+
+
 @pytest.mark.asyncio
 async def test_relations_to_withheld_items_are_not_published(
-    registry: ProjectRegistry,
+    with_a_rejected_relation: ProjectRegistry,
 ) -> None:
     """Withholding a body while publishing the id it lives at withholds nothing
-    that matters — the id is how the body was found in the first place."""
+    that matters — the id is how the body was found in the first place.
+
+    Asserted as the exact published list rather than as an absence, because an
+    absence over an empty list is what this test used to be. The approved edge
+    has to survive: a gate that published nothing would satisfy "the rejected id
+    is gone" and break `knowledge.get` for every honest caller.
+    """
     result = await _call(
-        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+        with_a_rejected_relation,
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
     )
 
-    assert all("caching-draft" not in relation["targetItemId"] for relation in result["relations"])
+    assert [relation["targetItemId"] for relation in result["relations"]] == [
+        "architecture.token-rotation"
+    ]
+    assert [relation["relationType"] for relation in result["relations"]] == ["related_to"]
+
+
+@pytest.mark.asyncio
+async def test_no_field_of_a_withheld_relation_survives_into_the_payload(
+    with_a_rejected_relation: ProjectRegistry,
+) -> None:
+    """`targetItemId` is not the only thing the comprehension publishes.
+
+    `note` says *why* a revision was rejected, which is the same class of content
+    as the body the id would have been used to fetch. Asserted over the whole
+    serialised payload so a field added to the relation shape later is covered
+    without this test being edited (SEC-13).
+    """
+    result = await _call(
+        with_a_rejected_relation,
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
+    )
+
+    serialised = json.dumps(result)
+    assert result["relations"], "the visible edge must still be there, or this asserts nothing"
+    assert "plaintext-token-store" not in serialised
+    assert REJECTED_RELATION_NOTE not in serialised
+    assert "rejects" not in serialised
+
+
+@pytest.mark.asyncio
+async def test_the_rejected_item_is_unreachable_through_the_flag_that_reaches_a_draft(
+    with_a_rejected_relation: ProjectRegistry,
+) -> None:
+    """`includeUnapproved` widens the allowed statuses; it does not disable them.
+
+    A caller who has the rejected id from somewhere else must not be able to turn
+    the relation gate's own opt-in into a bypass — `rejected` is outside
+    `SURFACEABLE_STATUSES` and no flag adds it back.
+    """
+    result = await _call(
+        with_a_rejected_relation,
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
+        includeUnapproved=True,
+    )
+    message = await _call_failing(
+        with_a_rejected_relation,
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.plaintext-token-store",
+        includeUnapproved=True,
+    )
+
+    assert [relation["targetItemId"] for relation in result["relations"]] == [
+        "architecture.token-rotation"
+    ]
+    assert "not present" in message
 
 
 # -- The candidate depth itself, and the equality that closes the family ------

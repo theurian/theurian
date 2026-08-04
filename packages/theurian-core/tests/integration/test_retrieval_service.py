@@ -303,14 +303,114 @@ def test_dense_participates_when_asked_for(project: Path) -> None:
 
 def test_an_index_without_embeddings_degrades_visibly_to_lexical(project: Path) -> None:
     """The failure this reporting exists for: a search that quietly lost its
-    dense half must not look identical to a healthy one."""
-    service = _service(_build(project, embedder=None), HashingEmbedding())
+    dense half must not look identical to a healthy one.
+
+    The metadata assertion is the one this fixture decides. `embedding_model` is
+    checked at `use_dense=False`, which returns on the function's first line
+    before the index is consulted at all -- so it holds for a fixture built with
+    an embedder just as well, and stood here for a while looking as though it
+    said something about this one. What the fixture actually determines is the
+    row the build wrote: an index built without an embedder must not claim one,
+    because that empty string is what every later comparison against a
+    configured model is made against.
+    """
+    index_path = _build(project, embedder=None)
+    service = _service(index_path, HashingEmbedding())
 
     outcome = service.search(SearchRequest(query="signed JWT", project_id="demo"), NOTHING_WITHHELD)
 
+    assert SqliteIndexStore(index_path).metadata()["embedding_model"] == ""
     assert _mode(outcome) is RetrievalMode.LEXICAL
-    assert service.embedding_model(use_dense=False) == "", "a request that did not ask names none"
     assert outcome.candidates, "lexical search still works"
+
+
+@final
+class _AnotherModel:
+    """`HashingEmbedding`'s vectors, declared under a different ``model_id``.
+
+    Deliberately the *same* arithmetic. A second embedder that produced different
+    vectors would let a test pass because the query happened to score badly,
+    which is not the property: the refusal is a policy about declared identity,
+    not a quality threshold. With the vectors identical, dense retrieval would
+    work perfectly if the refusal were removed -- so anything the test observes
+    is the refusal and nothing else.
+
+    ADR-0009 anticipates a second model shipping, which is when this branch stops
+    being hypothetical.
+    """
+
+    model_id = "another-model-v1"
+    model_revision = "1"
+    dimension = HashingEmbedding.dimension
+
+    def __init__(self) -> None:
+        self._inner = HashingEmbedding()
+
+    async def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        return await self._inner.embed(texts)
+
+
+def test_an_index_embedded_by_another_model_names_no_model(project: Path) -> None:
+    """FR-R7. What a caller is told about a search whose dense half cannot run.
+
+    One index, read twice: once through the embedder that built it and once
+    through an embedder declaring a different ``model_id``. The second names no
+    model, because scoring one model's query vector against another's document
+    vectors is arithmetic without meaning -- comparable, and confidently wrong.
+
+    Both halves are asserted. A function that returned ``""`` unconditionally
+    satisfies the mismatch case on its own, and that is the shape this pair
+    exists to rule out.
+    """
+    index_path = _build(project, embedder=HashingEmbedding())
+
+    agreeing = _service(index_path, HashingEmbedding())
+    disagreeing = _service(index_path, _AnotherModel())
+
+    assert agreeing.embedding_model(use_dense=True) == HashingEmbedding.model_id
+    assert disagreeing.embedding_model(use_dense=True) == ""
+
+
+def test_an_index_embedded_by_another_model_is_not_scored_against_it(project: Path) -> None:
+    """The refusal has to withhold the ranking, not just the label.
+
+    "autentication" is a typo appearing nowhere in the corpus, so FTS5 and the
+    trigram retriever both find nothing and any result at all came from the dense
+    retriever. Under the matching embedder it answers; under the mismatched one
+    the search must degrade to lexical and return nothing -- rather than return
+    the same hit under a blank ``embeddingModel``, which is the failure a label
+    without a behaviour would be.
+    """
+    index_path = _build(project, embedder=HashingEmbedding())
+
+    agreeing = _service(index_path, HashingEmbedding()).search(
+        SearchRequest(query="autentication", project_id="demo", use_dense=True), NOTHING_WITHHELD
+    )
+    disagreeing = _service(index_path, _AnotherModel()).search(
+        SearchRequest(query="autentication", project_id="demo", use_dense=True), NOTHING_WITHHELD
+    )
+
+    assert agreeing.candidates, "the control: these vectors do bridge the typo"
+    assert DENSE in agreeing.candidates[0].ranks
+    assert disagreeing.candidates == ()
+
+
+def test_a_model_mismatch_removes_only_the_dense_half(project: Path) -> None:
+    """ADR-0004 again: a mismatched model is a lost optimisation, not a failure.
+
+    Refusing the whole search would take away the lexical answer the index can
+    still give perfectly well, over a disagreement about vectors the query did
+    not need. The mode is what a caller reads to tell the two apart, so it is
+    asserted rather than inferred from the results being non-empty.
+    """
+    index_path = _build(project, embedder=HashingEmbedding())
+
+    outcome = _service(index_path, _AnotherModel()).search(
+        SearchRequest(query="signed JWT", project_id="demo", use_dense=True), NOTHING_WITHHELD
+    )
+
+    assert outcome.candidates[0].item_id == "architecture.auth"
+    assert _mode(outcome) is RetrievalMode.LEXICAL
 
 
 def test_a_morphological_variant_is_found_only_with_the_dense_retriever(

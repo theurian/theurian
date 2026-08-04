@@ -64,16 +64,20 @@ from theurian.application.project_service import (
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
+    read_active_state,
 )
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.chunking import Chunk
+from theurian.domain.context import RequestContext
+from theurian.domain.identifiers import ProjectId
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import (
     IndexableChunk,
     IndexUnreadableError,
     SqliteIndexStore,
 )
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 from theurian.mcp.search import (
     INDEX_FILE_MISSING,
     INDEX_POINTER_INVALID,
@@ -83,6 +87,7 @@ from theurian.mcp.search import (
     NO_INDEX,
     UNAPPROVED_NOT_INDEXED,
 )
+from theurian.mcp.tools import MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
@@ -1008,6 +1013,214 @@ async def test_a_fresh_index_is_neither_stale_nor_a_fallback(
     assert result["retrieval"]["indexed"] is True
     assert result["retrieval"]["stale"] is False
     assert result["retrieval"]["fallbackReason"] is None
+
+
+# -- The fallback obeys the same `limit` the ranked path does -----------------
+#
+# `substring_answer` applies no limit of its own; the only thing that bounds what
+# it returns is one `break` inside `_scan`. Deleting that `break` passed the
+# whole suite, because every fixture in this file has fewer matching documents
+# than the `limit` its queries are issued with -- so the loop exhausted the store
+# before the bound could ever be reached, and the bound was never read.
+#
+# Two published numbers hang off it. `count` is the length of what the scan
+# returned, and `droppedForBudget` is the rest of that same list, so a scan that
+# ignores `limit` tells a caller who asked for two documents both that six
+# matched and how many of the six their budget refused.
+
+#: Five more approved documents, all matching `token`, on top of the approved one
+#: the base fixture already holds. Six against a `limit` of two, so the bound is
+#: crossed with room on either side: a fixture with exactly `limit` matches would
+#: pass whether the `break` fired on the last row or never fired at all.
+_LIMIT_CORPUS = (
+    ("01K1EEEEEE01234567890ABCDE", "architecture.token-quota", "01K1EEEREV01234567890ABCDE"),
+    ("01K1FFFFFF01234567890ABCDE", "architecture.token-audit", "01K1FFFREV01234567890ABCDE"),
+    ("01K1GGGGGG01234567890ABCDE", "architecture.token-scope", "01K1GGGREV01234567890ABCDE"),
+    ("01K1HHHHHH01234567890ABCDE", "architecture.token-expiry", "01K1HHHREV01234567890ABCDE"),
+    ("01K1JJJJJJ01234567890ABCDE", "architecture.token-revocation", "01K1JJJREV01234567890ABCDE"),
+)
+
+#: Every approved item the queries below match. Named once so the two tests read
+#: the same corpus and a document added to one is added to both.
+_LIMIT_CORPUS_ITEMS = frozenset(
+    {"architecture.auth-policy", *(item for _, item, _ in _LIMIT_CORPUS)}
+)
+
+
+@pytest.fixture
+def six_matching_documents(project: Path) -> Path:
+    """`project` -- still with no index -- holding six approved documents on `token`."""
+    knowledge = project / ".theurian/knowledge/architecture"
+    for migration_id, item, revision_id in _LIMIT_CORPUS:
+        slug = item.split(".", 1)[1]
+        (knowledge / f"{slug}.md").write_text(
+            f"# {slug}\n\nThe gateway checks every signed token before {slug} applies.\n"
+        )
+        (project / f".theurian/migrations/{migration_id}-{slug}.yaml").write_text(
+            _migration(migration_id, item, revision_id, slug, "approved")
+        )
+    _must(project, "migrate", "apply")
+    return project
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_scan_really_has_more_matches_than_the_limit(
+    six_matching_documents: Path, registry: ProjectRegistry
+) -> None:
+    """Guards the guard. The bound below can only be observed while the corpus
+    overflows it, and every other fixture in this file underflows it -- which is
+    how the bound came to be unheld in the first place."""
+    result = await _search(registry, query="token", limit=MAX_RESULTS)
+
+    assert result["retrieval"]["indexed"] is False, "the fallback path, not the ranked one"
+    assert result["count"] == len(_LIMIT_CORPUS_ITEMS)
+    assert {hit["itemId"] for hit in result["results"]} == set(_LIMIT_CORPUS_ITEMS)
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_returns_no_more_than_the_limit_it_was_asked_for(
+    six_matching_documents: Path, registry: ProjectRegistry
+) -> None:
+    """FR-R4. A caller's `limit` is a promise about their context window.
+
+    The ranked path honours it; the fallback is the path a project without an
+    index takes for every query it ever issues, and a caller cannot tell which
+    one answered before the response arrives. Returning the whole matching corpus
+    there spends a budget the caller sized for two documents.
+
+    Identity is not asserted -- `_scan` walks the store's own ordering and this
+    test is about the bound, not about which two rows sit under it -- but
+    membership is, so an implementation that padded the answer out with anything
+    else fails here.
+    """
+    result = await _search(registry, query="token", limit=2)
+
+    assert result["count"] == 2
+    assert len(result["results"]) == 2
+    assert {hit["itemId"] for hit in result["results"]} <= _LIMIT_CORPUS_ITEMS
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cannot_report_more_dropped_than_the_limit_allowed(
+    six_matching_documents: Path, registry: ProjectRegistry
+) -> None:
+    """`droppedForBudget` is the tail of the same list `count` is the head of.
+
+    It exists so "nothing else matched" is distinguishable from "your budget ran
+    out". Priced over a scan that ignored `limit`, it answers a third question
+    nobody asked -- how much of the corpus matched -- and it answers it to a
+    caller who asked for two documents.
+
+    `maxTokens=1` rather than a tuned figure: one result is always returned
+    however small the budget, so the split is one kept and the rest dropped at
+    any corpus size, and the assertion does not move when a payload field is
+    added.
+    """
+    result = await _search(registry, query="token", limit=2, maxTokens=1)
+
+    assert result["count"] == 1, "at least one result is returned however small the budget"
+    assert result["retrieval"]["droppedForBudget"] == 1, (
+        "the second of the two the limit allowed, and none of the four beyond it"
+    )
+
+
+# -- A build that indexes nothing, and when that is wrong ---------------------
+#
+# `index build` refuses to publish an empty index while the canonical store still
+# holds indexable knowledge, because an empty index that looks healthy is what a
+# project-id mismatch looks like from every later surface. "Indexable" is decided
+# by `_indexable_items`, which repeats the builder's own status rule -- and that
+# rule was held by nothing: replacing `item.status in SURFACEABLE_STATUSES` with
+# `and True` passed the entire suite, because no project in it holds only retired
+# knowledge.
+#
+# The consequence is not a leak here but a refusal: a team that has deprecated or
+# rejected everything it wrote is told its state database is broken and sent to
+# delete `.theurian/state/`, over a build that is correctly empty.
+
+RETIRED_ONLY_ID = "01K1KKKKKK01234567890ABCDE"
+RETIRED_ONLY_REVISION_ID = "01K1KKKREV01234567890ABCDE"
+
+
+@pytest.fixture
+def only_retired_knowledge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A registered project whose every item has been rejected.
+
+    Its own repository rather than a migration layered on `project`: the
+    distinction being tested is between "nothing indexable" and "something
+    indexable that failed to index", and one approved document anywhere in the
+    project puts it on the wrong side of that line.
+    """
+    root = tmp_path / "retired-only"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    _in(root, "init")
+    (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(BODY)
+    (root / f".theurian/migrations/{RETIRED_ONLY_ID}-auth.yaml").write_text(
+        _migration(
+            RETIRED_ONLY_ID,
+            "architecture.auth-policy",
+            RETIRED_ONLY_REVISION_ID,
+            "Authentication policy",
+            "rejected",
+        )
+    )
+    _in(root, "project", "register")
+    _in(root, "migrate", "apply")
+    return root
+
+
+@pytest.mark.parametrize("flags", [(), ("--include-unapproved",)])
+def test_a_project_holding_only_retired_knowledge_builds_an_empty_index(
+    only_retired_knowledge: Path, flags: tuple[str, ...]
+) -> None:
+    """An empty build is correct here, and refusing it blames the wrong thing.
+
+    The refusal exists for a project whose knowledge *is* indexable and did not
+    get indexed -- a project id that changed under the data. Retired knowledge is
+    not that: the builder is meant to skip it (SEC-13), so a build that skipped
+    all of it did exactly what it was asked. Reporting "the canonical state holds
+    knowledge" sends the operator to delete their state database over a build
+    that was right.
+
+    Both flags, because the two terms of the availability rule exclude a rejected
+    item independently: without the flag, ``status is APPROVED`` already excludes
+    it and the ``SURFACEABLE_STATUSES`` term is never the reason. Only the
+    ``--include-unapproved`` case reaches that term, which is why it was the term
+    nothing held.
+    """
+    code, payload = _in(only_retired_knowledge, "index", "build", *flags)
+
+    assert code == 0, payload
+    assert payload["chunks"] == 0
+    assert (only_retired_knowledge / ".theurian/state/active-index.json").exists()
+
+
+def test_the_retired_only_project_really_holds_a_revision(only_retired_knowledge: Path) -> None:
+    """Guards the guard. A project with no items at all takes the branch above
+    for the trivial reason, and the whole point is that this one holds a revision
+    with a current pointer that the builder chose to skip on status alone."""
+    paths = ProjectPaths.of(only_retired_knowledge)
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have applied its migration"
+    context = RequestContext(project_id=ProjectId("retired-only"))
+
+    with SqliteCanonicalStore(paths.state / active.database_filename) as store:
+        items = store.list_items(context)
+
+    assert [(item.item_id.value, item.status.value) for item in items] == [
+        ("architecture.auth-policy", "rejected")
+    ]
+    assert items[0].current_revision_id is not None, (
+        "a null revision pointer would exclude it from the count for the other reason"
+    )
 
 
 # -- `theurian index status` --------------------------------------------------
