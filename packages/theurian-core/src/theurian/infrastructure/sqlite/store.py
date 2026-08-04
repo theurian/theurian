@@ -817,8 +817,21 @@ def _evidence_from_row(row: sqlite3.Row) -> KnowledgeEvidence:
 
 
 def _applied_migration_from_row(row: sqlite3.Row) -> tuple[MigrationId, str]:
-    checksum: str = row["checksum"]
-    return MigrationId(row["migration_id"]), checksum
+    # Constructed rather than returned as the `str` it used to be, and the
+    # construction is the whole of it: the only line in this file that read a
+    # cell without interpreting it was the only line whose cell escaped.
+    # `migration_history.checksum` is compared against a file's hash and then
+    # rendered into `MigrationChecksumMismatchError`'s message, so a damaged one
+    # travelled to the operator as data -- `theurian migrate status --json`
+    # answered `{"error": "Migration 01K1... was applied with checksum ROTATE-ME
+    # sk-live-... but the file on disk hashes to 744a5080..."}`.
+    #
+    # `ContentHash` is what the value already is on the way in: the only writer
+    # is `MigrationEngine.apply`, passing `migration.checksum.value`. Refusing
+    # anything else on the way out costs a regex over 64 characters and puts
+    # this cell inside `_reading` with the rest.
+    checksum = ContentHash(row["checksum"])
+    return MigrationId(row["migration_id"]), checksum.value
 
 
 def _relation_from_row(row: sqlite3.Row) -> KnowledgeRelation:

@@ -32,7 +32,7 @@ from theurian.domain.knowledge import (
     SourceAnchor,
 )
 from theurian.domain.project import Project
-from theurian.domain.values import MARKDOWN, ValidityPeriod
+from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
@@ -378,17 +378,23 @@ def test_a_query_never_crosses_a_project_boundary(database: Path, lock: Path) ->
 
 def test_migration_history_records_order_and_checksums(database: Path, lock: Path) -> None:
     second = MigrationId("01K1BBBBBB01234567890ABCDE")
+    # Real digests, because the read side now refuses anything that is not one:
+    # the only production writer is `MigrationEngine.apply` passing
+    # `migration.checksum.value`, and a placeholder here was testing a round
+    # trip that cannot happen.
+    first_checksum = ContentHash.of_text("one").value
+    second_checksum = ContentHash.of_text("two").value
 
     with write_transaction(database, lock) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(_project())
-        writer.record_migration(PROJECT, MIGRATION, "checksum-one", NOW)
-        writer.record_migration(PROJECT, second, "checksum-two", NOW)
+        writer.record_migration(PROJECT, MIGRATION, first_checksum, NOW)
+        writer.record_migration(PROJECT, second, second_checksum, NOW)
 
     with SqliteCanonicalStore(database) as store:
         history = store.applied_migrations(PROJECT)
 
-    assert history == ((MIGRATION, "checksum-one"), (second, "checksum-two"))
+    assert history == ((MIGRATION, first_checksum), (second, second_checksum))
 
 
 # -- Session lifetime ------------------------------------------------------
