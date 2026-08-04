@@ -206,12 +206,52 @@ def scan_statement(
     than in a reader's inference from a table. It is a single GIL-releasing
     thread in a daemon serving every project on the machine, so it is not free:
     it is 46% of the 4.19s the same query cost before, it is paid **once** per
-    search now rather than once per depth pass, it is held down by a constant
-    with a measured table beside it, and it is far below the alternative on this
-    path — `substring_answer` does this same match in *Python*, over whole
-    revision bodies, one query per document. Going lower means spending fewer
+    search now rather than once per depth pass, and it is held down by a
+    constant with a measured table beside it. Going lower means spending fewer
     terms and answering less; why that trade stops at eight rather than four is
     recorded at the constant, which is where anyone retuning it will be.
+
+    **What this paragraph used to add — that 1.92s is "far below the alternative
+    on this path" — is backwards, measured.** The alternative is
+    :func:`~theurian.mcp.search.substring_answer`, the canonical-store walk that
+    runs whenever no index can answer. Same machine, same corpus sizes, minimum
+    of three runs, 1,000 CJK characters per row:
+
+    =========== ==================== =======================
+    rows        ``_scan``, no match  this scan, worst 8-term
+    =========== ==================== =======================
+    4,000                     198 ms                  401 ms
+    8,000                     398 ms                  806 ms
+    =========== ==================== =======================
+
+    About half, not far above — and further apart on document-shaped input,
+    where `_scan` costs roughly 43us per document plus 8us per thousand
+    characters, so the same 20M characters carried as 9,000-character documents
+    costs it about 260ms against the 1.92s above.
+
+    **The "same match" premise was wrong too, which is why the ordering
+    inverts.** `_scan` tests the whole query as one literal substring; this
+    statement is an up-to-eight-term OR with a relevance order over every
+    matching row. Different work, not the same work in a different language —
+    handing `_scan` the eight-term query measured 196ms at 4,000 rows,
+    indistinguishable from no match, because it does not spend terms. It also
+    does *two* queries per document, not one: the revision, then its source
+    anchors.
+
+    **The ground that does hold is the GIL, and it inverts the reasoning without
+    changing the conclusion.** `_scan` is a Python ``in`` over each revision's
+    whole title and body, and it holds the interpreter lock for all of it, where
+    `sqlite3` releases it around `execute`. Under four concurrent callers, 5ms
+    asyncio ticks, `_scan` raises the p95 tick delay of the loop serving
+    `/health` by about 2.1x and the worst by an order of magnitude; this
+    statement leaves the p95 at its idle value and the worst within a small
+    multiple of it. Ratios rather than absolutes: the harness cannot control the
+    machine, and its worst column moved by a third between runs.
+
+    So this branch trades wall clock for latency isolation in a daemon shared by
+    every project on the machine, which is the right trade — but it is a trade,
+    not a saving. `docs/security/threat-model.md` carries the numbers under T-6,
+    where this scan is one of three members rather than the only one.
 
     One cheaper shape was measured and rejected. Hoisting the case fold into a
     ``WITH ... AS MATERIALIZED`` computes `lower()` once per row instead of once

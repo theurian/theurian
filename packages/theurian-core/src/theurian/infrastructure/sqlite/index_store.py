@@ -810,9 +810,17 @@ class SqliteIndexStore:
         exist to avoid.
 
         ADR-0023's cost objection to `LIKE` compared it only against the trigram
-        lookup, never against the alternative that actually runs:
-        `substring_answer` already performs this match in *Python*, over whole
-        revision bodies, one query per document, whenever no index exists.
+        lookup, not against `substring_answer`, the alternative that actually
+        runs whenever no index can answer. That comparison has since been made,
+        and it does not say what this docstring used to: `substring_answer` is
+        *cheaper* — about half at equal row counts — and it is not the same
+        match, since it tests the whole query as one literal substring where
+        this branch runs an up-to-eight-term OR with a relevance order. It also
+        costs two queries per document rather than one. What it does not do is
+        release the GIL. See
+        :func:`~theurian.infrastructure.sqlite.index_scan.scan_statement` for
+        the measurements and T-6 in `docs/security/threat-model.md` for why the
+        more expensive member is still the right one here.
 
         **Cached per instance (see `self._scan_cache`).** This method already
         answers the same rows on every call for the same arguments -- there is

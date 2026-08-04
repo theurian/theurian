@@ -150,7 +150,7 @@ Each release carries a CycloneDX SBOM and SHA-256 checksums.
 
 ## Further reading
 
-- [Threat model](docs/security/threat-model.md) — trust boundaries and sixteen enumerated threats
+- [Threat model](docs/security/threat-model.md) — trust boundaries and eighteen enumerated threats (T-1..T-17, plus T-17a)
 - [Local MCP security](docs/security/local-mcp.md)
 - [ADR-0011: local MCP authentication](docs/adr/0011-local-mcp-authentication.md)
 - [ADR-0013: AI writes produce proposals](docs/adr/0013-ai-writes-produce-proposals.md)

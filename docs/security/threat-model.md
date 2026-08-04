@@ -300,22 +300,47 @@ expansion ratio, wall clock timeout, `yaml.safe_load` only. Size is re-checked
 after read, because a file can grow between `stat` and `read`.
 
 **Those controls bound ingestion, and the expensive operations added in Milestone
-5 are queries.** There are **two**, and they are enumerated below rather than
+5 are queries.** There are **three**, and they are enumerated below rather than
 described, because this entry was written naming one of them and the impact
-argument it carried is not true of the other.
+argument it carried is not true of the other two.
 
 | Member | The work one call does | Holds the GIL? | Bounded by |
 | :-- | :-- | :-- | :-- |
 | the scan below the trigram floor (ADR-0023), `search_substring` | a `LIKE` and an occurrence count over every row of the index, per term spent | no — `sqlite3` releases it around `execute` | `MAX_QUERY_CHARS`, `MAX_QUERY_TERMS`, `index_scan.SCAN_TERMS` |
 | `IndexStore.search_dense` | `fetchall` over every embedding in the project, then a `struct.unpack` and a Python cosine per row, then a sort | **yes** — `_dense_ranking` is pure Python | **nothing.** The port takes no `limit`, and one would not have bounded it — see below |
+| `mcp.search._scan`, behind `substring_answer` | one `list_items` materialising every item in the project, then two queries per document — the revision, then its source anchors — and a Python `in` over the whole of its title and body | **yes** — the match is a Python `in` | `limit`, and only for a query that *matches*. One that matches nothing walks every document, and `list_items` materialises every item before the first comparison either way — so neither rows nor memory are bounded by anything the caller passes |
 
-Both are reachable from the public API with no tuning and no privileges. The scan
-needs eight two-character terms with the matching one typed last — roughly 24
-characters, a hundredth of `MAX_QUERY_CHARS`. The dense path needs
+All three are reachable from the public API with no tuning and no privileges. The
+scan needs eight two-character terms with the matching one typed last — roughly
+24 characters, a hundredth of `MAX_QUERY_CHARS`. The dense path needs
 `useDense: true`, a published `knowledge.search` parameter, against an index
 built by default: `theurian index build` embeds unless `--no-embeddings` is
-passed. Reaching either repeatedly is a denial of service against every other
-project sharing the daemon.
+passed. Reaching any of them repeatedly is a denial of service against every
+other project sharing the daemon.
+
+**The third member needs no query shape at all, because it is what runs when the
+index cannot answer.** Both of its ordinary routes are default states rather
+than edge cases:
+
+| Route | Reached by |
+| :-- | :-- |
+| `_NOT_BUILT` | any search before the project's first `theurian index build` — the state every project starts in |
+| `_NO_DRAFTS_INDEXED` | `includeUnapproved: true` against an index built without `--include-unapproved`, which is what `theurian index build` produces by default |
+
+Six further routes reach the same code — an invalid pointer, an unreadable one, a
+missing file, a schema mismatch, and either of the two ways an index fails to
+show it was built for this project. Eight `Fallback` constants in
+`mcp/search.py`, all landing on `substring_answer`. This member was left out of
+the entry for two milestones because it is the *fallback*, and a fallback reads
+as the cheap path.
+
+`list_items` is the same unbounded shape one level down, and `knowledge.status`
+calls it too: it materialises every `KnowledgeItem` in the project with no
+`limit` anywhere in the signature. Measured at 1.26 kB per item over 1,000 items
+and 1.22 kB over 4,000 — so 4.89 MB at 4,000 items, and of the order of 120 MB at
+a hundred thousand, held per concurrent caller. Recorded, not bounded: adding a
+page bound is a change to two published tool surfaces and belongs with the
+Milestone 6 retrieval work, not with a documentation round.
 
 **Per member, what one call costs:**
 
@@ -324,22 +349,58 @@ project sharing the daemon.
 | scan, worst legal query, 20,000 chunks of 1,000 CJK characters | ~1.7 s |
 | `search_dense`, 6,000 chunks | 142–143 ms, peak 9.20 MB |
 | `search_dense`, 20,000 chunks | 478–482 ms, peak 31.22 MB |
+| `_scan`, no match, 4,000 documents of 1,000 CJK characters | 198 ms |
+| `_scan`, no match, 8,000 documents of 1,000 CJK characters | 398 ms |
 
 The 143 ms agrees with the figure `retrieval_service._dense` and the port already
 record, so the single-call measurement was right all along and what was missing
 from this entry is the concurrency column below.
 
 The scan's 1.7 s is *accepted* rather than solved; the reasoning is at
-`index_scan.scan_statement`, and the honest summary is that it is far below the
-alternative on this path, which does the same match in Python over whole revision
-bodies, one query per document. `SCAN_TERMS` is what took it from 4.25 s.
+`index_scan.scan_statement`. `SCAN_TERMS` is what took it from 4.25 s.
+
+**The ground this entry gave for accepting it was backwards, and the decision
+survives on a different one.** Both this entry and `index_scan.scan_statement`
+said the scan's cost "is far below the alternative on this path, which does the
+same match in Python over whole revision bodies". Measured — same machine, same
+corpus sizes, minimum of three runs, 1,000 CJK characters per row — the
+alternative is about **half** the cost, not far above it:
+
+| rows | `_scan`, no match (its worst) | index scan, worst legal 8-term query | index scan, one CJK noun |
+| --: | --: | --: | --: |
+| 4,000 | 198 ms | 401 ms | 51 ms |
+| 8,000 | 398 ms | 806 ms | 101 ms |
+
+On document-shaped input the gap is wider, because `_scan`'s cost separates into
+about 43 µs per document plus 8 µs per thousand characters: the same 20 M
+characters carried as 9,000-character documents costs it roughly 260 ms, against
+the 1.67–1.92 s the index scan costs over 20,000 rows — near a seventh.
+Extrapolating this harness's index column to 20,000 rows gives about 2.0 s, which
+is what says it and the table at `scan_statement` are measuring the same thing.
+
+**"The same match" was wrong too, and that is why the ordering inverts.**
+`substring_answer` tests the whole query as a single literal substring
+(`mcp/search.py`, `needle=query.strip().lower()`); the index scan is an
+up-to-eight-term OR with a relevance order evaluated over every matching row.
+Different work, not the same work in a different language. Handing `_scan` the
+eight-term query measured 196 ms at 4,000 rows and 399 ms at 8,000 —
+indistinguishable from no match, because it does not spend terms.
+
+**What does hold is the GIL, which is the third column of the table above.** The
+index scan is `sqlite3` work and releases the interpreter lock; `_scan` is a
+Python `in` and does not. That comparison is measured under concurrency below,
+and it is the ground the decision now rests on: the cheaper member is the one
+that stalls everything else.
 
 **The class-level statement no longer says "GIL-releasing", because that is the
 scan's property and not the class's.** The removed wording — "1.7 s of
 GIL-releasing SQLite work", "`sqlite3` releases the GIL, so a handful of such
 queries saturate the CPU" — was an argument about how the load *spreads*, and it
-is inverted for the second member. What is true of both: **there is no per-query
-timeout and no limit on how many run at once.** That was established by looking
+is inverted for the other two members. With the third member enumerated, the scan
+is the **only** one of the three that releases the GIL, so the removed wording was
+not merely over-general — it described the minority case. What is true of all
+three: **there is no per-query timeout and no limit on how many run at once.**
+That was established by looking
 rather than assumed — nothing in the tree calls `sqlite3`'s interrupt or progress
 handler, and nothing implements a semaphore, a rate limit, or a concurrency cap.
 
@@ -375,6 +436,29 @@ the question this entry used to leave open is answered: the `SessionStart` hook'
 probe waits on a retriever it has nothing to do with. For the scan member it
 stays open, at this harness's resolution.
 
+**The third member falls on `search_dense`'s side of that line, which is what
+the cost comparison above rests on.** A separate harness — 2,000 documents, four
+worker threads, 5 ms asyncio ticks over three seconds, two idle controls:
+
+| | median | p95 | worst |
+| :-- | --: | --: | --: |
+| idle | 0.67 ms | 0.70 ms | 1.19 ms |
+| 4× `_scan` (Python) | 0.83 ms | **1.57 ms** | **21.47 ms** |
+| 4× index sub-trigram scan (SQL) | 0.68 ms | 0.72 ms | 3.05 ms |
+| idle again | 0.66 ms | 0.70 ms | 0.77 ms |
+
+**Ordering and ratios only; the absolutes are not quotable.** This machine was
+not idle-controlled either — a second run of the same harness put the `_scan`
+worst at 14.56 ms and the idle-again worst at 1.83 ms, so the worst column moves
+by a third between runs while the median and p95 columns do not. The p95 ratio
+held at 2.1×–2.2× across both runs; the worst ratio was an order of magnitude in
+both, and no more precisely than that.
+
+So the decision this entry records is unchanged and its ground is not: the index
+scan is accepted **despite** being the more expensive member in wall clock, not
+because it is the cheaper one. It buys the asyncio loop serving `/health` — and
+therefore every other project on the daemon — a p95 that does not move.
+
 **Recorded, not implemented, and one obvious remediation does not work.** A
 `limit` on `search_dense` is the shape that suggests itself, and it buys
 approximately nothing:
@@ -401,7 +485,8 @@ with its own review:
 | :-- | :-- |
 | peak memory on the dense path | streaming the cursor and keeping a top-*k* heap instead of `fetchall` + sort, or pushing the scoring into SQL |
 | GIL-held time on the dense path | the same, or moving the cosine into a released-GIL extension |
-| concurrent occupancy, either member | a semaphore or concurrency cap on the retrieval path, or a per-query timeout at the transport layer |
+| concurrent occupancy, any of the three members | a semaphore or concurrency cap on the retrieval path, or a per-query timeout at the transport layer |
+| rows and memory on the fallback path | a page bound on `list_items`, which is a change to the `knowledge.status` and search fallback surfaces rather than a retrieval tuning |
 
 A per-query bound is a daemon-level control on the transport layer rather than a
 retrieval change, and is filed for a later milestone on that basis.
