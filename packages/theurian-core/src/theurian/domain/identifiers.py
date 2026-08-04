@@ -13,14 +13,21 @@ from typing import Final, Self, override
 
 from theurian.domain.errors import InvalidIdentifierError
 
+# Anchored with ``\A``/``\Z``, never ``^``/``$``: Python's ``$`` also matches
+# immediately before a trailing newline, so ``demo\n`` satisfied a ``$``-anchored
+# slug and ``project.list`` published two entries a human reads as one id. Every
+# other regex dialect these identifiers are re-expressed in -- JSON Schema's
+# ECMA-262, RE2 -- means end-of-input by ``$``, so the laxity was Python's alone
+# and forced published schemas to carry a matching ``\n?``.
+
 # Crockford base32, excluding I, L, O, and U.
-_ULID_PATTERN: Final = re.compile(r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+_ULID_PATTERN: Final = re.compile(r"\A[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
 
 # Dotted, lowercase, kebab-friendly segments: ``architecture.auth-policy``.
-_DOTTED_PATTERN: Final = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)*$")
+_DOTTED_PATTERN: Final = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)*\Z")
 
 # A single kebab-case segment: ``backend-service``.
-_SLUG_PATTERN: Final = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_SLUG_PATTERN: Final = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 _MAX_IDENTIFIER_LENGTH: Final = 200
 
