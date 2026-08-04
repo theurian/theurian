@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from theurian.domain.enums import (
+    INVERSE_RELATIONS,
     KnowledgeKind,
     KnowledgeStatus,
     RelationType,
@@ -253,6 +254,33 @@ def test_symmetric_relations_have_no_inverse() -> None:
         created_at=NOW,
     )
     assert relation.inverse is None
+
+
+def test_the_four_types_that_reach_a_reader_unmirrored_have_no_inverse() -> None:
+    """The premise the `knowledge.get` relation-gate corpus is built on.
+
+    `SqliteCanonicalStore.list_relations` mirrors an edge on the way out only
+    when its type has an entry here. Every other type reaches the caller in the
+    orientation it was stored in, so an *incoming* edge arrives with
+    `target_item_id` set to the item being fetched — which is what made the old
+    gate's question ("may the target be surfaced?") a tautology on those rows,
+    and why the integration tests parametrise the gate over exactly these four.
+
+    If one of them ever gains an inverse it leaves that class, and those tests
+    would go on passing while covering three cases instead of four. This is
+    where that gets noticed.
+    """
+    unmirrored = {
+        RelationType.REJECTS,
+        RelationType.RELATED_TO,
+        RelationType.CONTRADICTS,
+        RelationType.DEPENDS_ON,
+    }
+
+    assert unmirrored.isdisjoint(INVERSE_RELATIONS), (
+        "an incoming edge of one of these types is published in its stored "
+        "orientation, and the gate's corpus depends on that"
+    )
 
 
 def test_supersedes_is_marked_acyclic() -> None:

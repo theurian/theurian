@@ -354,9 +354,24 @@ def test_the_token_file_is_private(running_daemon: Daemon) -> None:
 
 
 def test_the_token_never_reaches_the_log(running_daemon: Daemon) -> None:
-    """SEC-6. Access logging is off precisely because every request carries an
-    Authorization header, and a log file is the easiest place for a credential
-    to escape its 0600 file.
+    """SEC-6, T-9. The only end-to-end assertion over a real daemon's real log.
+
+    It does **not** hold because `daemon/runner.py` passes `access_log=False`,
+    which is what this docstring used to claim. Measured with both uvicorn
+    arguments switched back on — `access_log=True`, `log_level="debug"` — the
+    access lines carry no header at all: `uvicorn.logging.AccessFormatter`
+    formats `client_addr`, `method`, `full_path`, `http_version` and
+    `status_code`, and an `Authorization` header is not among them. Neither flip
+    makes this test red.
+
+    What keeps the credential out is that nothing in this stack logs request
+    headers — wider than the recorded reason, and nobody's decision, which is
+    exactly why it is worth asserting rather than reasoning about. This test
+    fails when some component starts writing a header or a token into that file,
+    which is the event no configuration flag announces.
+
+    A weaker guard than it reads, and kept for what it does cover: the whole log
+    of a real process across a real authenticated MCP call.
     """
     with _McpClient(running_daemon.port, running_daemon.token, "probe") as client:
         client.tools()

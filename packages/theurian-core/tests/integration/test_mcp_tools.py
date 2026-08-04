@@ -8,7 +8,9 @@ same entry point the transport uses -- against a project built by the real CLI.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
 import subprocess
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -2503,6 +2505,582 @@ async def test_the_rejected_item_is_unreachable_through_the_flag_that_reaches_a_
         "architecture.token-rotation"
     ]
     assert "not present" in message
+
+
+# -- The same gate, in the direction nothing in this repository ever built ---
+#
+# `list_relations` returns every edge touching an item in *both* directions, and
+# mirrors only the four types in `INVERSE_RELATIONS` on the way out. For every
+# other type -- `rejects`, `related_to`, `contradicts`, `depends_on` -- an
+# *incoming* edge comes back in the orientation it was stored in, so
+# `target_item_id` is the item being fetched. The gate asked whether the target
+# could be surfaced, which on those rows asks about the item the caller is
+# already holding, and published the edge together with the note its withheld
+# source had written. Measured on a real project before the fix:
+#
+#     {"relationType": "contradicts", "targetItemId": "architecture.auth-policy",
+#      "note": "REJECTED BECAUSE sessions.token held raw bearer tokens until 2026-07"}
+#
+# `with_a_rejected_relation` above cannot show that, and neither can anything
+# else here: both of its edges are outgoing, and no other fixture in the
+# repository issues an `addRelation` at all. So the review round that went
+# looking for this defect ran a suite in which every relation assertion agreed
+# with it, and the fix landed with nothing going red.
+#
+# The corpus below is built so that cannot recur: every no-inverse type gets its
+# own fetched item and its own incoming edge, and a second project holds the same
+# visible content with the withheld item and its edges never written.
+
+GATE_PROBE = "relations-probe"
+GATE_ABSENT = "relations-absent"
+
+#: The four relation types absent from `INVERSE_RELATIONS`, and therefore the
+#: four whose incoming edges reach a reader unmirrored. Written out rather than
+#: derived from the mapping, so this is a claim about which types matter rather
+#: than a restatement of whatever the mapping currently holds. The premise --
+#: that none of the four has an inverse -- is pinned in
+#: `tests/unit/test_domain_invariants.py`, by
+#: `test_the_four_types_that_reach_a_reader_unmirrored_have_no_inverse`.
+NO_INVERSE_TYPES = ("rejects", "related_to", "contradicts", "depends_on")
+
+#: The `rejected` item every withheld edge below hangs off.
+WITHHELD_SOURCE = "architecture.plaintext-token-store"
+#: A `draft` item. `rejected` is reachable through no flag, so a rejected source
+#: cannot show that the gate *widens* correctly; a draft one can.
+DRAFT_SOURCE = "architecture.session-cookies"
+#: The approved item every fetched item keeps one publishable edge to, so no
+#: assertion below is satisfied by an implementation that publishes nothing.
+VISIBLE_PEER = "architecture.token-rotation"
+#: The fetched item for the inverse-bearing type, reached from three directions.
+INVERSE_TARGET = "architecture.gate-implements"
+#: The fetched item the draft points at.
+DRAFT_TARGET = "architecture.gate-draft-source"
+
+
+def _gate_target(relation_type: str) -> str:
+    """The approved item that receives an incoming edge of ``relation_type``.
+
+    One fetched item per type rather than one item with four edges: with a single
+    item every parameter would assert the same list, so a gate that handled
+    `contradicts` and leaked `depends_on` would fail all four identically and
+    name none of them.
+    """
+    return f"architecture.gate-{relation_type.replace('_', '-')}"
+
+
+def _withheld_note(marker: str) -> str:
+    """The note on an edge whose far end the caller may not see.
+
+    A rejection rationale is where the secret that caused the rejection lives, so
+    `note` is the field this defect actually leaked -- the withheld *id* never
+    appeared. Tagged by the edge that carries it so a leak names its own route
+    instead of only proving that some route is open.
+    """
+    return f"REJECTED BECAUSE sessions.token held raw bearer tokens ({marker})"
+
+
+@dataclass(frozen=True, slots=True)
+class _GateItem:
+    """One item in the gate corpus. ``revision_id`` is fixed so both projects mint
+    the same one -- the differential compares whole responses, and `revisionId`
+    is published."""
+
+    slug: str
+    status: str
+    revision_id: str
+
+    @property
+    def item_id(self) -> str:
+        return f"architecture.{self.slug}"
+
+    @property
+    def title(self) -> str:
+        return self.slug.replace("-", " ").capitalize()
+
+
+#: Present in both projects.
+GATE_SHARED_ITEMS = (
+    _GateItem("token-rotation", "approved", "01K1SREV0101234567890ABCDE"),
+    _GateItem("session-cookies", "draft", "01K1SREV0201234567890ABCDE"),
+    _GateItem("gate-rejects", "approved", "01K1SREV0401234567890ABCDE"),
+    _GateItem("gate-related-to", "approved", "01K1SREV0501234567890ABCDE"),
+    _GateItem("gate-contradicts", "approved", "01K1SREV0601234567890ABCDE"),
+    _GateItem("gate-depends-on", "approved", "01K1SREV0701234567890ABCDE"),
+    _GateItem("gate-implements", "approved", "01K1SREV0801234567890ABCDE"),
+    _GateItem("gate-draft-source", "approved", "01K1SREV0901234567890ABCDE"),
+)
+
+#: Written only into `relations-probe`.
+GATE_WITHHELD_ITEM = _GateItem("plaintext-token-store", "rejected", "01K1SREV0301234567890ABCDE")
+
+#: Edges both projects hold, byte for byte. Every one of them must be published.
+GATE_VISIBLE_EDGES: tuple[tuple[str, str, str, str], ...] = (
+    *(
+        (_gate_target(relation_type), "related_to", VISIBLE_PEER, f"the peer for {relation_type}")
+        for relation_type in NO_INVERSE_TYPES
+    ),
+    (INVERSE_TARGET, "related_to", VISIBLE_PEER, "the peer for implements"),
+    (DRAFT_TARGET, "related_to", VISIBLE_PEER, "the peer for the draft source"),
+    # A type *with* an inverse, both ways round. The store mirrors the incoming
+    # one, which is a different code path from everything above and was pinned in
+    # neither direction.
+    (VISIBLE_PEER, "implements", INVERSE_TARGET, "incoming from a visible item, mirrored"),
+    (INVERSE_TARGET, "implements", VISIBLE_PEER, "outgoing, a type that has an inverse"),
+    # Incoming from a draft: withheld by default, published when widened.
+    (DRAFT_SOURCE, "contradicts", DRAFT_TARGET, "incoming from a draft"),
+)
+
+#: Edges only `relations-probe` holds. None may be published under any flag.
+GATE_WITHHELD_EDGES: tuple[tuple[str, str, str, str], ...] = (
+    *(
+        (WITHHELD_SOURCE, relation_type, _gate_target(relation_type), _withheld_note(relation_type))
+        for relation_type in NO_INVERSE_TYPES
+    ),
+    (WITHHELD_SOURCE, "implements", INVERSE_TARGET, _withheld_note("implements")),
+    # Outgoing to the withheld item: the direction the old gate did catch, kept
+    # so the differential covers it too.
+    (_gate_target("depends_on"), "related_to", WITHHELD_SOURCE, _withheld_note("outgoing")),
+)
+
+#: The items the two projects genuinely disagree about, and therefore the only
+#: ones the differential can say anything with. `gate-draft-source` is left out
+#: deliberately: the draft and its edge exist in *both* projects, so comparing
+#: that item would compare two identical corpora and hold whatever the gate did.
+GATE_DIFFERENTIAL_ITEMS = (
+    *(_gate_target(relation_type) for relation_type in NO_INVERSE_TYPES),
+    INVERSE_TARGET,
+)
+
+GATE_BASE_MIGRATION_ID = "01K1SAAAAA01234567890ABCDE"
+GATE_WITHHELD_MIGRATION_ID = "01K1SBBBBB01234567890ABCDE"
+
+GATE_ITEM_OPERATIONS = """  - op: createItem
+    itemId: {item_id}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {item_id}
+    revisionId: {revision_id}
+    contentFile: ../knowledge/architecture/{slug}.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: {status}
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://gate/{slug}.md
+"""
+
+
+def _gate_migration(
+    migration_id: str,
+    created_at: str,
+    items: Sequence[_GateItem],
+    edges: Sequence[tuple[str, str, str, str]],
+) -> str:
+    operations = "".join(
+        GATE_ITEM_OPERATIONS.format(
+            item_id=item.item_id,
+            revision_id=item.revision_id,
+            slug=item.slug,
+            title=item.title,
+            status=item.status,
+        )
+        for item in items
+    ) + "".join(
+        f"  - op: addRelation\n"
+        f"    sourceItemId: {source}\n"
+        f"    relationType: {relation_type}\n"
+        f"    targetItemId: {target}\n"
+        f"    note: {note}\n"
+        for source, relation_type, target, note in edges
+    )
+    return (
+        f"apiVersion: theurian.dev/v1\n"
+        f"id: {migration_id}\n"
+        f"createdAt: {created_at}\n"
+        f"author: engineer@example.com\n"
+        f"operations:\n"
+        f"{operations}"
+    )
+
+
+def _build_gate_project(root: Path, *, holds_the_withheld_source: bool) -> None:
+    """One project of the pair, differing only in whether the withheld item exists.
+
+    The shared content lives in one migration written identically into both, and
+    the withheld item and its six edges live in a second migration only the probe
+    receives. Applied in id order, so the edges land after both endpoints exist.
+    """
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _run("init")
+    _run("project", "register")
+    knowledge = root / ".theurian/knowledge/architecture"
+    migrations = root / ".theurian/migrations"
+
+    for item in GATE_SHARED_ITEMS:
+        (knowledge / f"{item.slug}.md").write_text(f"# {item.title}\n\nBody for {item.item_id}.\n")
+    (migrations / f"{GATE_BASE_MIGRATION_ID}-shared.yaml").write_text(
+        _gate_migration(
+            GATE_BASE_MIGRATION_ID,
+            "2026-08-03T10:00:00+09:00",
+            GATE_SHARED_ITEMS,
+            GATE_VISIBLE_EDGES,
+        )
+    )
+
+    if holds_the_withheld_source:
+        item = GATE_WITHHELD_ITEM
+        (knowledge / f"{item.slug}.md").write_text(f"# {item.title}\n\nBody for {item.item_id}.\n")
+        (migrations / f"{GATE_WITHHELD_MIGRATION_ID}-withheld.yaml").write_text(
+            _gate_migration(
+                GATE_WITHHELD_MIGRATION_ID,
+                "2026-08-03T11:00:00+09:00",
+                (item,),
+                GATE_WITHHELD_EDGES,
+            )
+        )
+
+    _run("migrate", "apply")
+
+
+@pytest.fixture(scope="module")
+def gate_projects(tmp_path_factory: pytest.TempPathFactory) -> ProjectRegistry:
+    """Two projects in one registry, differing in one thing.
+
+    ``relations-probe``  holds the rejected item and the six edges touching it
+    ``relations-absent`` was never told that item exists
+
+    Everything else is held equal on purpose -- the item ids, the revision ids,
+    the bodies, the notes and the visible edges -- because the differential below
+    compares whole responses, and any honest difference between the two projects
+    would have to be excluded from that comparison and would take a real leak
+    with it.
+
+    Module-scoped: two real projects through the real CLI, and every test here
+    asks the same pair the same questions.
+    """
+    base = tmp_path_factory.mktemp("relation-gate")
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(base / "datadir"))
+    try:
+        for project_id, holds in ((GATE_PROBE, True), (GATE_ABSENT, False)):
+            root = base / project_id
+            root.mkdir()
+            monkey.chdir(root)
+            _build_gate_project(root, holds_the_withheld_source=holds)
+    finally:
+        monkey.undo()
+    return ProjectRegistry.default(base / "datadir")
+
+
+def _published(result: dict[str, Any]) -> tuple[tuple[str, str, str | None], ...]:
+    """The relations a caller receives, in wire order.
+
+    Order is not incidental: `list_relations` sorts by source, type and target in
+    SQL, so a published list is deterministic and an assertion may state it. A
+    `set` here would hide a gate that published the right rows in an order driven
+    by which ones were filtered out.
+    """
+    return tuple(
+        (relation["relationType"], relation["targetItemId"], relation["note"])
+        for relation in result["relations"]
+    )
+
+
+def _gate_relation_rows(
+    registry: ProjectRegistry, project_id: str
+) -> tuple[tuple[str, str, str], ...]:
+    """Every edge in ``project_id``'s canonical store, read with SQL.
+
+    Deliberately not through `list_relations`: that is the call the gate filters,
+    and a corpus guard that used it could not tell "the gate withheld this row"
+    from "this row was never stored". Counting rows in the table is the only
+    reading that distinguishes them -- the original relation test evaluated
+    `all(...)` over an empty list and passed for exactly that reason.
+
+    Resolved through the active-state pointer rather than a glob, because
+    `migrate apply` leaves the previous database beside the new one.
+    """
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, f"{project_id} must have built a canonical state"
+    with contextlib.closing(sqlite3.connect(paths.state / active.database_filename)) as connection:
+        rows = connection.execute(
+            "SELECT source_item_id, relation_type, target_item_id FROM knowledge_relations "
+            "WHERE project_id = ? ORDER BY source_item_id, relation_type, target_item_id",
+            (project_id,),
+        ).fetchall()
+    return tuple((str(a), str(b), str(c)) for a, b, c in rows)
+
+
+def _authored(edges: Sequence[tuple[str, str, str, str]]) -> tuple[tuple[str, str, str], ...]:
+    return tuple(sorted((source, kind, target) for source, kind, target, _ in edges))
+
+
+def test_the_incoming_edges_really_reach_the_canonical_store(
+    gate_projects: ProjectRegistry,
+) -> None:
+    """Guards the guard. The gate can only be observed while it holds something.
+
+    Every assertion below is an absence, and an absence over a corpus that was
+    never written is free. This counts the rows in `knowledge_relations`
+    directly, so a migration that silently stopped applying -- a renamed
+    operation, a rejected id, an edge dropped for referencing an item that does
+    not exist yet -- fails here instead of turning six tests green for the wrong
+    reason.
+
+    The five incoming edges are named individually rather than counted, because
+    a count cannot say which direction they were stored in, and direction is the
+    whole defect.
+    """
+    rows = _gate_relation_rows(gate_projects, GATE_PROBE)
+
+    assert rows == _authored(GATE_VISIBLE_EDGES + GATE_WITHHELD_EDGES)
+    assert tuple(row for row in rows if row[0] == WITHHELD_SOURCE) == (
+        (WITHHELD_SOURCE, "contradicts", "architecture.gate-contradicts"),
+        (WITHHELD_SOURCE, "depends_on", "architecture.gate-depends-on"),
+        (WITHHELD_SOURCE, "implements", INVERSE_TARGET),
+        (WITHHELD_SOURCE, "rejects", "architecture.gate-rejects"),
+        (WITHHELD_SOURCE, "related_to", "architecture.gate-related-to"),
+    ), "the withheld item must be the *source* of these, or nothing incoming is being tested"
+
+
+def test_the_control_project_holds_the_visible_edges_and_nothing_else(
+    gate_projects: ProjectRegistry,
+) -> None:
+    """Guards the differential's other half: `relations-absent` is a control, not
+    an empty project.
+
+    If it lost the visible edges too, the comparison below would hold between two
+    answers that publish nothing, and a gate that withheld everything would pass.
+    If it gained the withheld ones, there would be no difference left to detect.
+    Both are stated as one exact row set.
+    """
+    rows = _gate_relation_rows(gate_projects, GATE_ABSENT)
+
+    assert rows == _authored(GATE_VISIBLE_EDGES)
+    assert not any(WITHHELD_SOURCE in row for row in rows), (
+        "the control must never have heard of the withheld item"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_unapproved", [False, True], ids=["default", "widened"])
+@pytest.mark.parametrize("item_id", GATE_DIFFERENTIAL_ITEMS)
+async def test_a_withheld_relation_endpoint_changes_nothing_a_caller_can_see(
+    gate_projects: ProjectRegistry, item_id: str, include_unapproved: bool
+) -> None:
+    """SEC-13. Milestone 5's closure argument, applied to `knowledge.get`.
+
+    One request against two corpora: one whose canonical state holds an item the
+    caller may not read together with every edge touching it, one that was never
+    told the item exists. The **whole response** must be identical -- all sixteen
+    published fields, `body`, `excerpt`, `revisionId`, `freshness`,
+    `sourceAnchors` and the three trust labels among them, plus any field added
+    to this payload after today.
+
+    Field-by-field is what the previous round did, and it is how this defect
+    survived: `targetItemId` was checked, and the leak was in `note`. A whole-
+    response comparison also covers the family that is not a field value at all
+    -- *which rows*, or which part of a row, reached the caller -- since a
+    displaced or reordered relation changes the list without changing any field's
+    domain.
+
+    Nothing is excluded from the comparison, which is worth saying because the
+    equivalent test for `knowledge.search` has to exclude two build identities.
+    `knowledge.get` publishes no build identity and no count, so the two
+    responses are required to be equal outright.
+
+    Asserted under both flags. `includeUnapproved=True` is the one that widens
+    which statuses may surface, and `rejected` is outside `SURFACEABLE_STATUSES`
+    under every flag -- so the equality is required to survive the widening, not
+    to depend on it.
+
+    One field is wall-clock-derived and shared rather than pinned:
+    `freshness.ageDays` is `now - revisionCreatedAt` in whole days, and the two
+    calls below are milliseconds apart, so they agree except across the instant
+    the day count ticks. If this ever fails on `ageDays` alone and on nothing
+    else, that is the cause and not a leak -- `revisionCreatedAt` itself comes
+    from the migration and is identical in both projects by construction.
+    """
+    arguments = {"itemId": item_id, "includeUnapproved": include_unapproved}
+    probe = await _call(gate_projects, "knowledge.get", projectId=GATE_PROBE, **arguments)
+    absent = await _call(gate_projects, "knowledge.get", projectId=GATE_ABSENT, **arguments)
+
+    assert probe["relations"], "two empty relation lists would be equal and prove nothing"
+    assert probe == absent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relation_type", NO_INVERSE_TYPES)
+async def test_an_incoming_edge_from_a_withheld_item_is_not_published(
+    gate_projects: ProjectRegistry, relation_type: str
+) -> None:
+    """SEC-13. The four types whose incoming edges reach a reader unmirrored.
+
+    On each of these an incoming edge arrives with `target_item_id` set to the
+    item being fetched, so a gate that asks only about the target asks whether
+    the caller may see what they are already holding. It answered yes for all
+    four and published the source's note.
+
+    One fetched item per type, so a gate that closed `contradicts` and left
+    `depends_on` open fails at the parameter that names it. Asserted as the exact
+    published list rather than as the absence of a string: an absence is what the
+    round-six test asserted, and the visible edge has to survive or a gate that
+    withheld every relation would satisfy it.
+    """
+    result = await _call(
+        gate_projects, "knowledge.get", projectId=GATE_PROBE, itemId=_gate_target(relation_type)
+    )
+
+    assert _published(result) == (("related_to", VISIBLE_PEER, f"the peer for {relation_type}"),)
+    assert _withheld_note(relation_type) not in json.dumps(result), (
+        "the note is the field that leaked; the withheld id never appeared"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_type_with_an_inverse_is_gated_in_both_directions(
+    gate_projects: ProjectRegistry,
+) -> None:
+    """`implements` reaches this item three ways, and only two may be published.
+
+    The store mirrors an incoming edge of a type that has an inverse, which is a
+    different code path from every type above and was pinned in neither
+    direction. All three are asserted at once because the mirroring is what makes
+    them hard to tell apart on the wire: the withheld source's edge and the
+    visible peer's edge are the same shape until the gate runs, and the published
+    `implemented_by` row proves the mirror still happens for the one that clears
+    it. A gate that suppressed both would look identical to a correct one if only
+    the withheld direction were checked.
+
+    Order is the store's: source id, then type, then target.
+    """
+    result = await _call(
+        gate_projects, "knowledge.get", projectId=GATE_PROBE, itemId=INVERSE_TARGET
+    )
+
+    assert _published(result) == (
+        ("implements", VISIBLE_PEER, "outgoing, a type that has an inverse"),
+        ("related_to", VISIBLE_PEER, "the peer for implements"),
+        ("implemented_by", VISIBLE_PEER, "incoming from a visible item, mirrored"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_incoming_edge_from_a_draft_reappears_when_the_flag_widens(
+    gate_projects: ProjectRegistry,
+) -> None:
+    """Over-blocking is a defect too, and this is the case that distinguishes them.
+
+    A gate that withheld every incoming edge would satisfy every assertion above.
+    `includeUnapproved` widens which statuses may surface, and a draft is work in
+    progress its author has reason to read -- so the same edge that is correctly
+    absent by default has to come back, note included.
+
+    It comes back naming the *fetched* item as its `targetItemId`, because an
+    incoming edge of a type with no inverse is published in the orientation it
+    was stored in. That is the shape, not a leak: the gate has cleared both ends
+    before this row is published. It is pinned here so a later change to the wire
+    shape is a decision rather than an accident.
+    """
+    default = await _call(gate_projects, "knowledge.get", projectId=GATE_PROBE, itemId=DRAFT_TARGET)
+    widened = await _call(
+        gate_projects,
+        "knowledge.get",
+        projectId=GATE_PROBE,
+        itemId=DRAFT_TARGET,
+        includeUnapproved=True,
+    )
+
+    assert _published(default) == (("related_to", VISIBLE_PEER, "the peer for the draft source"),)
+    assert _published(widened) == (
+        ("related_to", VISIBLE_PEER, "the peer for the draft source"),
+        ("contradicts", DRAFT_TARGET, "incoming from a draft"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_unapproved", [False, True], ids=["default", "widened"])
+async def test_an_incoming_edge_from_a_rejected_item_survives_no_flag(
+    gate_projects: ProjectRegistry, include_unapproved: bool
+) -> None:
+    """`includeUnapproved` widens the allowed statuses; `rejected` is not among
+    them under either setting.
+
+    Stated as the same exact list under both flags, and separately from the draft
+    above, because the two are the pair that has to be told apart: a caller who
+    can widen their way to a draft's note must not widen their way to a rejected
+    revision's, which is where the reason for the rejection is written.
+    """
+    result = await _call(
+        gate_projects,
+        "knowledge.get",
+        projectId=GATE_PROBE,
+        itemId=_gate_target("contradicts"),
+        includeUnapproved=include_unapproved,
+    )
+
+    assert _published(result) == (("related_to", VISIBLE_PEER, "the peer for contradicts"),)
+
+
+# -- `itemId` that is not an id at all ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_item_id_names_the_tool_that_finds_a_real_one(
+    registry: ProjectRegistry,
+) -> None:
+    """FR-R6. An error without a next action is a support request.
+
+    `InvalidIdentifierError` carries a format rule and no remedy, and the SDK
+    re-raises whatever escapes a tool as `Error executing tool …: {exc}` --
+    keeping `str(exc)` and dropping everything else. So a caller who passed a
+    title where an id belongs was told what an id looks like and not how to find
+    one.
+
+    Naming `knowledge.search` discloses nothing SEC-13 protects: every stored id
+    passed this same validation, so a string that fails it names no item,
+    withheld or otherwise.
+    """
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="Authentication Policy"
+    )
+
+    assert "knowledge.search" in message, "the remedy must name the tool that returns real ids"
+    assert "demo" in message, "and the project to run it against"
+
+
+@pytest.mark.asyncio
+async def test_an_over_long_item_id_is_not_echoed_back(registry: ProjectRegistry) -> None:
+    """The failure `MAX_QUERY_CHARS` closes for `query`, closed here for `itemId`.
+
+    A message built from an unbounded input is an amplifier: whatever reads the
+    error -- a log line, an agent's context window, a bug report -- receives the
+    whole of what the caller sent. `ItemId` checks length before it quotes the
+    value, so the message reports the length and never the string.
+
+    Bounded at 500 rather than pinned at the 183 characters measured today: the
+    property is that the message does not grow with its input, and 183 is one
+    wording of it.
+    """
+    message = await _call_failing(registry, "knowledge.get", projectId="demo", itemId="a" * 20_000)
+
+    assert "aaaa" not in message, "not even a truncated prefix of the identifier"
+    assert "20000" in message, "the length is what the caller needs to see"
+    assert len(message) < 500, f"the message grew with its input ({len(message)} characters)"
 
 
 # -- The candidate depth itself, and the equality that closes the family ------
