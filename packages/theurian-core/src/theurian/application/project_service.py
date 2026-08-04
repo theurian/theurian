@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
@@ -48,9 +49,94 @@ INITIAL_DIRECTORIES: Final = (
 
 _SLUG_INVALID: Final = re.compile(r"[^a-z0-9]+")
 
+#: Every failure to read the index pointer has the same cure, because the index
+#: is derived (ADR-0004): throw the pointer away and build again.
+#:
+#: Public rather than module-private: `theurian index status` names the same
+#: cure for the same file, through `cli.index_commands`, and a private name
+#: re-typed there is a private name that drifts from this one the first time
+#: either wording changes.
+INDEX_POINTER_REMEDY: Final = (
+    "Delete .theurian/state/active-index.json and run `theurian index build`; "
+    "the index is derived, so nothing is lost."
+)
+
+#: The half of "rename a project" that is easy to omit and impossible to notice.
+#: Canonical rows are stamped with the id in force at `migrate apply`, and
+#: `migrate apply` is idempotent, so it will not restamp them. An id changed
+#: without this reads a store that holds nothing under the new id -- and reports
+#: itself indexed while doing it.
+_REBUILD_STATE_CLAUSE: Final = (
+    "then delete .theurian/state/ and run `theurian migrate apply` followed by "
+    "`theurian index build`. Canonical rows and index chunks carry the project id they "
+    "were written with, so changing the id without rebuilding them addresses an empty project."
+)
+
+
+def _registry_reset_remedy(path: Path) -> str:
+    """The remedy for a registry file whose *set of ids* cannot be trusted.
+
+    Reached only when the top level of the file is not what every reader here
+    assumes -- unparsable JSON, or JSON that is not an object -- because that is
+    the one failure this module cannot recover from entry by entry: without a
+    dict of ids to iterate, there is no way to say which registrations are fine
+    and which are not. A malformed *entry* is a narrower problem with its own,
+    narrower remedy: see :meth:`ProjectRegistry.load`,
+    :meth:`ProjectRegistry.ids_for_root` and :meth:`ProjectRegistry.register`.
+    """
+    return (
+        f"Delete {path} and re-register each project with `theurian project register`; "
+        f"it is derived and holds nothing that is not also recoverable from each "
+        f"project's own .theurian/."
+    )
+
+
+def _entry_root_path(entry: object) -> str | None:
+    """The root path a raw registry entry names, or ``None`` if it names none.
+
+    One predicate in one place, because two readers partition the same file on
+    it and must never disagree: :meth:`ProjectRegistry.load`, which keeps the
+    entries that pass, and :meth:`ProjectRegistry.unreadable_ids`, which reports
+    the ids that do not. A second copy of this test would eventually admit an
+    entry ``load`` skips -- or skip one it admits -- and root resolution would go
+    back to guessing at the difference.
+
+    ``""`` is rejected as firmly as a missing key. ``Path("").resolve()`` is the
+    *calling process's* current working directory, so an entry holding it would
+    match whichever directory a command happened to run from.
+    """
+    if not isinstance(entry, dict):
+        return None
+    root_path = entry.get("rootPath")
+    if not isinstance(root_path, str) or not root_path.strip():
+        return None
+    return root_path
+
+
+def _unreadable_ids(entries: Mapping[str, object]) -> tuple[str, ...]:
+    """The ids whose entries name no root, sorted.
+
+    Sorted because this reaches both an error message and a command the user
+    retypes from it; ids in JSON-file order would read differently on two
+    machines holding the same registry.
+    """
+    return tuple(sorted(pid for pid, entry in entries.items() if _entry_root_path(entry) is None))
+
 
 class ProjectError(TheurianError):
-    """A project could not be registered, resolved, or initialised."""
+    """A project could not be registered, resolved, or initialised.
+
+    ``remedy`` carries the command that fixes it, separately from the message
+    that says what was refused. A CLI reporting the failure must not have to
+    infer the cure from the exception's type: ``resolve_context`` alone can fail
+    because there is no Git repository, because the registry is ambiguous, or
+    because a migration does not validate, and one fixed remedy for all three
+    sends two thirds of its readers to look in the wrong place.
+    """
+
+    def __init__(self, message: str, *, remedy: str = "") -> None:
+        self.remedy = remedy
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,16 +198,32 @@ class ProjectPaths:
         SEC-7 covers every path, not only the ones that look like user input.
 
         Raises:
-            ProjectError: If the id would escape the state directory.
+            ProjectError: If the id would escape the state directory, or cannot
+                name a path at all.
         """
-        candidate = (self.state / f"theurian-index-{index_build_id}.sqlite").resolve()
-        if not candidate.is_relative_to(self.state.resolve()):
-            msg = (
-                f"The index pointer names {index_build_id!r}, which resolves outside "
-                f"{self.state}. Delete .theurian/state/active-index.json and run "
-                f"`theurian index build`; the index is derived, so nothing is lost."
+        try:
+            candidate = (self.state / f"theurian-index-{index_build_id}.sqlite").resolve()
+            contained = candidate.is_relative_to(self.state.resolve())
+        except (ValueError, OSError) as exc:
+            # An embedded NUL makes `resolve` raise `ValueError`, and a name the
+            # platform rejects makes it raise `OSError`. Neither is a
+            # `TheurianError`, so both escaped callers that had correctly
+            # narrowed to one: `knowledge.search` failed permanently for the
+            # project instead of degrading to an answer (ADR-0004), and the
+            # OS-level message reached the client. Callers may only ever need to
+            # catch `TheurianError`, so the conversion happens here.
+            raise ProjectError(
+                f"The index pointer names {index_build_id!r}, which is not a usable filename.",
+                remedy=INDEX_POINTER_REMEDY,
+            ) from exc
+
+        # Resolving succeeded, so the returned path is one the OS will accept --
+        # a caller's later `is_file()` cannot raise the error just converted.
+        if not contained:
+            raise ProjectError(
+                f"The index pointer names {index_build_id!r}, which resolves outside {self.state}.",
+                remedy=INDEX_POINTER_REMEDY,
             )
-            raise ProjectError(msg)
         return candidate
 
     @property
@@ -148,8 +250,9 @@ def derive_project_id(root: Path) -> ProjectId:
     **A proposal, not an identity.** Directory names are not unique — a user with
     both ``team-one/api`` and ``team-two/api`` gets ``api`` twice — so what this
     returns is only the default offered at registration. The registry is the
-    authority for a project that has been registered, and it refuses to let a
-    second root take an id that is already spoken for
+    authority for a project that has been registered, and it refuses both
+    directions of ambiguity: a second root taking an id that is already spoken
+    for, and a second id naming a root that already has one
     (:meth:`ProjectRegistry.register`).
     """
     slug = _SLUG_INVALID.sub("-", root.resolve().name.lower()).strip("-")
@@ -245,22 +348,81 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
         ) from exc
 
 
-def read_active_index(paths: ProjectPaths) -> dict[str, Any] | None:
-    """The published retrieval index pointer, or ``None``.
+@dataclass(frozen=True, slots=True)
+class ActiveIndexPointer:
+    """What ``active-index.json`` said, and whether it said anything usable.
 
-    A missing or unreadable pointer means "no index", never an error. The index
-    is derived (ADR-0004), so the remedy is always a rebuild rather than a
-    repair — and a caller that cannot read it should fall back to answering
-    without one, not refuse to answer.
+    Two failures, not one. "No pointer" and "a pointer that names no build" have
+    different remedies — `theurian index build` against *delete the pointer,
+    then* build — and collapsing both into ``None`` told a user who had built an
+    index that they never had, then handed them the one remedy that leaves the
+    file in place.
+
+    Measured across eight ways of corrupting the file, only the one that made the
+    id escape the project reached the right remedy: three (a JSON array, unparsed
+    text, an empty file) reported `no-index`, three (no ``indexBuildId``, a null
+    one, a blank one) reported `index-file-missing`, and one — arbitrary bytes —
+    escaped as a `UnicodeDecodeError` at the agent.
+    """
+
+    #: The pointer's contents, or ``None`` when there is nothing usable to read.
+    payload: Mapping[str, Any] | None = None
+    #: A pointer file exists and does not name a build: unparseable, not a JSON
+    #: object, or without a non-empty ``indexBuildId``.
+    unreadable: bool = False
+
+    def __post_init__(self) -> None:
+        if self.payload is not None and self.unreadable:
+            # Not a user-facing error: the two states are exclusive by
+            # construction, and a caller branching on `unreadable` would
+            # otherwise silently ignore a payload.
+            msg = "an unreadable index pointer cannot also carry a payload"
+            raise ValueError(msg)
+
+
+def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
+    """Read the published retrieval index pointer, distinguishing its failures.
+
+    Never raises. The index is derived (ADR-0004), so every problem here is a
+    missing optimisation and the caller answers without one — but it still has
+    to be able to say *which* problem, because that is what decides the remedy
+    it prints.
+
+    ``indexBuildId`` is required, not merely read. A pointer without one names no
+    build, so it is not a usable pointer; accepting it built a path out of an
+    empty id and reported `index-file-missing` — "the published index build is
+    no longer on disk", about a build that was never named.
     """
     pointer = paths.active_index_pointer
     if not pointer.is_file():
-        return None
+        return ActiveIndexPointer()
+
     try:
         loaded = json.loads(pointer.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    return loaded if isinstance(loaded, dict) else None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is a `ValueError`, not an `OSError`, and
+        # `JSONDecodeError` is not its parent: a pointer holding arbitrary bytes
+        # -- a partially overwritten file, a restored binary -- escaped the
+        # previous handler entirely and reached the caller as a crash.
+        return ActiveIndexPointer(unreadable=True)
+
+    if not isinstance(loaded, dict):
+        return ActiveIndexPointer(unreadable=True)
+    build_id = loaded.get("indexBuildId")
+    if not isinstance(build_id, str) or not build_id.strip():
+        return ActiveIndexPointer(unreadable=True)
+    return ActiveIndexPointer(payload=loaded)
+
+
+def read_active_index(paths: ProjectPaths) -> dict[str, Any] | None:
+    """The published retrieval index pointer's contents, or ``None``.
+
+    For callers that only need the payload. Anything that reports a remedy to a
+    user should call :func:`read_active_index_pointer` instead and say which of
+    the two failures it hit.
+    """
+    payload = read_active_index_pointer(paths).payload
+    return dict(payload) if payload is not None else None
 
 
 def write_active_state(
@@ -301,29 +463,244 @@ class ProjectRegistry:
         base = data_dir or Path(os.environ.get("THEURIAN_DATA_DIR", Path.home() / ".theurian"))
         return cls(path=base / "projects.json")
 
-    def load(self) -> dict[str, dict[str, str]]:
+    def _raw_entries(self) -> dict[str, Any]:
+        """The file's top level, parsed but with no entry validated yet.
+
+        Shared by :meth:`load`, which validates each entry and *skips* the ones
+        that fail, and by :meth:`register` and :meth:`unregister`, which need to
+        know whether an id is *present* at all -- valid or not -- because
+        skipping a malformed entry from ``load``'s result must not also make its
+        id look available to a new registration (see :meth:`register`).
+
+        Raises only for a failure entry-by-entry validation cannot recover
+        from: the file is not JSON, or its top level is not an object. Either
+        means the set of ids itself is unknown, so :func:`_registry_reset_remedy`
+        is the only remedy that applies -- and it is now attached to both, rather
+        than to the second alone. This docstring already claimed to cover
+        unparsable JSON while that branch raised with no remedy at all, which
+        reached the user as an error naming no way out, from the one class of
+        registry failure with a completely reliable cure.
+
+        ``UnicodeDecodeError`` is caught beside ``JSONDecodeError`` for the same
+        reason ``read_active_index_pointer`` catches it: it is a ``ValueError``
+        and not a subclass of ``JSONDecodeError``, so a registry holding
+        arbitrary bytes -- a partial overwrite, a restored binary -- escaped this
+        handler entirely and surfaced as a traceback. Same file, same corruption,
+        same remedy; only the first byte differed.
+        """
         if not self.path.exists():
             return {}
         try:
-            loaded: dict[str, dict[str, str]] = json.loads(self.path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ProjectError(f"{self.path} is not valid JSON: {exc}") from exc
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ProjectError(
+                f"{self.path} cannot be read as JSON: {exc}",
+                remedy=_registry_reset_remedy(self.path),
+            ) from exc
+
+        if not isinstance(loaded, dict):
+            raise ProjectError(
+                f"{self.path} must hold a JSON object mapping project ids to registrations, "
+                f"not a {type(loaded).__name__}.",
+                remedy=_registry_reset_remedy(self.path),
+            )
         return loaded
 
+    def load(self) -> dict[str, dict[str, str]]:
+        """The registry contents, project id to registration fields.
+
+        Validated at read time rather than trusted. The file is annotated
+        ``dict[str, dict[str, str]]``, but it lives in the user's home directory
+        and nothing stops a hand edit from breaking that shape -- and a
+        malformed entry used to escape as a bare ``AttributeError`` at whichever
+        caller first called ``.get()`` on it, rather than the ``{error, remedy}``
+        contract every other failure in this module honours.
+
+        That validation covers the *type* of an entry but, until this method also
+        checked ``rootPath``, not its *contents*: every reader of this method's
+        return value indexes straight into ``entry["rootPath"]``, so an entry a
+        dict but missing the key reached one of them as the same bare
+        ``AttributeError``-shaped escape this docstring says is closed, and an
+        entry holding ``""`` did not raise at all -- it resolved to the calling
+        process's current working directory, so a corrupt registry answered as
+        the wrong project rather than as an error.
+
+        **A malformed entry is skipped, not fatal to every other one.** This
+        used to raise on the first entry that failed either check, which meant
+        one hand-edit anywhere in the file made every registered project
+        unreadable -- ``theurian project list``, every MCP tool's project
+        resolution, and `setup_steps`'s registry scan all failed together, on a
+        machine that had done nothing to the *other* registrations. The registry
+        is per-user and one daemon serves many projects at once (module
+        docstring, ADR-0002); refusing all of them for a defect in one repeats,
+        at the whole-machine scale, exactly the failure `IndexUnreadableError`
+        exists to avoid at the one-project scale: a single bad row answering for
+        rows that are fine.
+
+        The decision this reverses -- and the risk that made it look safe --
+        was never really the protection it claimed. The refusal always paired
+        with one remedy, :func:`_registry_reset_remedy`: delete the file and
+        re-register *everything*. That remedy destroys the very "this id is
+        already spoken for" information the whole-file refusal was meant to
+        preserve, so it never actually stopped an id from being reclaimed --
+        it only stopped anyone from using the registry at all until they had
+        thrown away the fact along with the file. What genuinely protects
+        against reclaiming a malformed entry's id is kept, and moved to where
+        it can still see the entry that failed here: :meth:`register` checks
+        :meth:`_raw_entries` directly, so an id that exists in the file --
+        readable or not -- is still refused to a new root, and
+        :meth:`unregister` can still remove the one entry that is actually
+        broken, which ``theurian project register`` names as the escape.
+
+        **What tolerance here costs, and where it is paid.** Skipping an entry
+        makes it absent, and absent is a *claim*: for a question keyed by id it
+        is the true one, but for a question keyed by root path it is a guess, and
+        :meth:`ids_for_root` refuses to make it rather than answering "not
+        registered" about a registration it simply cannot read. Callers that
+        name an id -- ``theurian project list``, ``project unregister``,
+        ``setup``'s registry scan, every MCP tool -- are served by this method
+        and keep working.
+
+        Reporting the skipped ids is :meth:`unreadable_ids`, and something a user
+        looks at has to call it: an entry silently missing from ``project list``
+        is a project that vanished with nothing said.
+        """
+        return {
+            project_id: entry
+            for project_id, entry in self._raw_entries().items()
+            if _entry_root_path(entry) is not None
+        }
+
+    def unreadable_ids(self) -> tuple[str, ...]:
+        """Ids present in the file that :meth:`load` skips, sorted.
+
+        Public because a skipped entry that nothing reports is a project that
+        disappeared in silence. ``theurian project list`` counted only what it
+        could read, so the one command a user runs to find out what is registered
+        was also the command that hid the problem -- and the id it hid is the
+        argument ``theurian project unregister`` needs. A remedy naming an id
+        that no surface prints is not a remedy.
+        """
+        return _unreadable_ids(self._raw_entries())
+
+    def ids_for_root(self, root: Path) -> tuple[str, ...]:
+        """Every id this root is registered under, sorted.
+
+        Sorted because the answer reaches an error message, and a message that
+        names ids in JSON-file order is a message that reads differently on two
+        machines holding the same registry.
+
+        Raises:
+            ProjectError: If *any* entry in the file is unreadable -- not only
+                one that might plausibly belong to this root.
+
+        **Why one bad entry refuses every root, when :meth:`load` tolerates it.**
+        An entry is skipped exactly when :func:`_entry_root_path` returns
+        ``None``, and that is exactly the case where the entry names no root. So
+        "is that unreadable entry this directory's registration?" has no answer:
+        the field that would settle it is the field that is missing. Per-root
+        decidability is not expensive here, it is unavailable, so the honest
+        refusal is the broad one.
+
+        Answering ``()`` anyway is what made per-entry tolerance dangerous.
+        :meth:`id_for_root` turned it into ``None``, ``resolve_context`` read
+        ``None`` as "never registered" and fell back to
+        :func:`derive_project_id` -- and a project registered under a
+        disambiguated id *because its derived default collided* was then
+        addressed by the id belonging to the project it collided with.
+        Reproduced end to end: commands run in one working tree wrote knowledge
+        into a different, readable, still-registered project, and nothing said so
+        (SEC-13). Whole-file rejection was loud about this; tolerance was not.
+        The regression was the silence, not the tolerance, so what is restored
+        here is only the loudness.
+
+        Deliberately narrower than the whole-file rejection it replaces, but not
+        free, and the boundary is worth stating exactly because the tempting
+        summary of it is wrong. What refuses is every question keyed by a root
+        path: resolving the project for the working directory, and
+        :meth:`register`, which asks this to enforce "one root, one id" and so
+        inherits the refusal even when given an explicit id. What keeps working
+        is every question keyed by an *id*, because those go through
+        :meth:`load`: ``theurian project list``, ``theurian project unregister``
+        -- the command that fixes it -- ``setup``'s registry scan, and every MCP
+        tool, so the daemon carries on serving every readable project rather than
+        the whole machine stopping for one hand-edited line.
+
+        Registration being blocked machine-wide until the entry is removed is
+        accepted rather than worked around. It could be allowed for a re-run that
+        creates no new (root, id) pairing, but that buys almost nothing: the
+        plain ``theurian project register`` resolves its context from the working
+        directory first and refuses there regardless, so the exception would only
+        ever apply to the ``--project-id`` form, in exchange for a special case
+        whose safety argument is harder to check than the refusal it removes.
+        """
+        entries = self._raw_entries()
+        unreadable = _unreadable_ids(entries)
+        if unreadable:
+            raise ProjectError(
+                f"Cannot say which project {root.resolve()} belongs to: {self.path} holds "
+                f"entries that cannot be read ({', '.join(unreadable)}). An unreadable entry "
+                f"is one that names no root path, so there is no way to tell whether one of "
+                f"them is this directory's registration -- and treating this directory as "
+                f"unregistered would address it by the id derived from its name, which may "
+                f"already belong to a different project.",
+                remedy=(
+                    f"Remove the unreadable entries: "
+                    f"{', '.join(f'`theurian project unregister {pid}`' for pid in unreadable)}. "
+                    f"`theurian project list` shows them under `unreadable`. Meanwhile "
+                    f"anything that names a project id still works, including every daemon "
+                    f"tool; anything that resolves the project from the current directory, "
+                    f"`theurian project register` included, refuses rather than guesses."
+                ),
+            )
+
+        wanted = root.resolve()
+        return tuple(
+            sorted(
+                project_id
+                # Every entry names a root here, or the refusal above would have
+                # fired; the walrus is narrowing for the type checker, not a test.
+                for project_id, entry in entries.items()
+                if (root_path := _entry_root_path(entry)) and Path(root_path).resolve() == wanted
+            )
+        )
+
     def id_for_root(self, root: Path) -> ProjectId | None:
-        """The id this root is registered under, or ``None``.
+        """The single id this root is registered under, or ``None``.
 
         Root path, not directory name, is what identifies a registration: the
         name is only how an id gets *proposed*. Callers resolving "which project
         am I in" must ask this before falling back to :func:`derive_project_id`,
         or a project registered under a disambiguated id would be addressed by
         the colliding default instead.
+
+        ``None`` therefore means one thing only: every entry in the file was
+        readable and none of them named this root. "There is an entry here that
+        cannot be read" is a different answer and raises instead
+        (:meth:`ids_for_root`), because a caller cannot distinguish the two from
+        ``None`` and the fallback it would reach for is the misrouting itself.
+
+        Raises:
+            ProjectError: If more than one id names this root. :meth:`register`
+                refuses to create that state, so reaching it means the registry
+                was edited by hand -- and picking the first match would answer a
+                question the registry no longer has one answer to, sending the
+                CLI to one project while every agent naming the other id reads
+                an empty one.
+            ProjectError: If any entry in the file is unreadable, via
+                :meth:`ids_for_root`.
         """
-        wanted = root.resolve()
-        for project_id, entry in self.load().items():
-            if Path(entry.get("rootPath", "")).resolve() == wanted:
-                return ProjectId(project_id)
-        return None
+        found = self.ids_for_root(root)
+        if len(found) > 1:
+            raise ProjectError(
+                f"{root.resolve()} is registered under more than one project id "
+                f"({', '.join(found)}), so which project this directory is cannot be answered.",
+                remedy=(
+                    f"Keep one: run `theurian project unregister <id>` for each of the "
+                    f"others, {_REBUILD_STATE_CLAUSE}"
+                ),
+            )
+        return ProjectId(found[0]) if found else None
 
     def register(self, project: Project) -> bool:
         """Add or update a registration.
@@ -333,7 +710,10 @@ class ProjectRegistry:
             a no-op, so setup can run repeatedly without churn (FR-L2).
 
         Raises:
-            ProjectError: If the id is already registered to a different root.
+            ProjectError: If the id is already registered to a different root,
+                or this root is already registered under a different id, or the
+                id already has an entry that cannot be read, or *any* id does
+                (via :meth:`ids_for_root`).
 
         ``registeredAt`` records when the project was *first* registered and is
         preserved across re-registration. Refreshing it would make every re-run
@@ -352,19 +732,86 @@ class ProjectRegistry:
         configured agent keeps naming ``api`` and would silently follow the id to
         whichever project kept it. So the collision is surfaced to the person who
         can actually decide, at the one moment they are present.
-        """
-        entries = self.load()
-        existing = entries.get(project.project_id.value)
 
-        if existing is not None:
-            registered_root = Path(existing.get("rootPath", "")).resolve()
-            if registered_root != Path(project.root_path).resolve():
+        **And the mirror image, which is worse.** Refusing "one id, two roots"
+        while permitting "one root, two ids" left the documented escape from a
+        collision — ``--project-id`` — walking into a second, quieter failure. A
+        user who wanted a clearer name got a *duplicate* registration rather than
+        a rename, and the new id addressed a project with no knowledge in it:
+        canonical rows and index chunks are stamped with the id in force when
+        they were written, and ``migrate apply`` is idempotent, so nothing
+        restamps them. Every search under the new id answered ``count: 0`` while
+        reporting ``indexed: true``, and ``theurian index status`` said there was
+        nothing to do. Nothing short of deleting the state database recovered,
+        and nothing said so — which is why the refusal carries that instruction.
+
+        **Checks the raw file, not :meth:`load`'s validated result.** ``load``
+        now skips a malformed entry rather than raising for it (see its
+        docstring), and a skipped entry must not read as an *available* id: a
+        new registration that only checked ``load`` would silently overwrite
+        whatever the broken entry held, which is the exact misrouting the
+        collision refusal above exists to prevent — just reached through an
+        unreadable entry instead of a readable one. So this method asks
+        :meth:`_raw_entries` whether the id is present at all, and refuses a
+        malformed hit with its own remedy rather than folding it into either
+        collision message above, both of which assume a readable ``rootPath``
+        to report.
+
+        That check covers *this* id. Some other id's unreadable entry is the
+        mirror image and is refused by :meth:`ids_for_root` below: it may be this
+        very root's registration, and registering over it would produce the "one
+        root, two ids" duplicate the paragraph above exists to prevent -- an
+        addressable, empty project -- with the difference that nothing could
+        report the clash, because the entry that clashed was the unreadable one.
+        The specific check runs first so the more precise remedy wins when both
+        apply.
+        """
+        raw = self._raw_entries()
+        existing_raw = raw.get(project.project_id.value)
+        root = Path(project.root_path).resolve()
+
+        existing: dict[str, Any] | None = None
+        if existing_raw is not None:
+            # The same predicate `load` and `unreadable_ids` partition on, rather
+            # than a third hand-rolled copy of it: "this id's entry is
+            # unreadable" and "this id is one of the ids `project list` reports
+            # as unreadable" have to be the same statement, or the remedy below
+            # names an id the user cannot see.
+            root_path = _entry_root_path(existing_raw)
+            if root_path is None:
+                raise ProjectError(
+                    f"Project id {project.project_id.value!r} already has an entry in "
+                    f"{self.path} that cannot be read, so registering it now would silently "
+                    f"discard whatever that entry held.",
+                    remedy=(
+                        f"Run `theurian project unregister {project.project_id.value}` to "
+                        f"remove the unreadable entry, then register again."
+                    ),
+                )
+            existing = existing_raw
+            registered_root = Path(root_path).resolve()
+            if registered_root != root:
                 raise ProjectError(
                     f"Project id {project.project_id.value!r} is already registered to "
-                    f"{registered_root}, so it cannot also name {project.root_path}. "
-                    f"Register this one under a distinct id: "
-                    f"`theurian project register --project-id <id>`."
+                    f"{registered_root}, so it cannot also name {project.root_path}.",
+                    remedy=(
+                        "Register this one under a distinct id: "
+                        "`theurian project register --project-id <id>`."
+                    ),
                 )
+
+        held = tuple(pid for pid in self.ids_for_root(root) if pid != project.project_id.value)
+        if held:
+            raise ProjectError(
+                f"{root} is already registered as {', '.join(held)}, so it cannot also be "
+                f"registered as {project.project_id.value!r}. A project id is an identity, "
+                f"not a label.",
+                remedy=(
+                    f"To rename it, run "
+                    f"{', '.join(f'`theurian project unregister {pid}`' for pid in held)}, "
+                    f"{_REBUILD_STATE_CLAUSE}"
+                ),
+            )
 
         entry = {
             "rootPath": project.root_path,
@@ -380,19 +827,32 @@ class ProjectRegistry:
         if existing == entry:
             return False
 
-        entries[project.project_id.value] = entry
-        self._write(entries)
+        # Built from the raw file, not from `load`'s validated subset, so
+        # registering one id never erases some *other* id's malformed entry --
+        # that entry stays exactly as broken as it was until someone names it,
+        # via `register` or `unregister`, rather than being deleted as a side
+        # effect of an unrelated write.
+        updated = dict(raw)
+        updated[project.project_id.value] = entry
+        self._write(updated)
         return True
 
     def unregister(self, project_id: ProjectId) -> bool:
-        entries = self.load()
-        if project_id.value not in entries:
+        """Remove one registration, whether or not it was readable.
+
+        Reads :meth:`_raw_entries` rather than :meth:`load`, on purpose: the
+        entry ``load`` would skip for being malformed is exactly the one this
+        method has to be able to remove -- it is the remedy :meth:`register`
+        names when an id is already held by an entry that cannot be read.
+        """
+        raw = self._raw_entries()
+        if project_id.value not in raw:
             return False
-        del entries[project_id.value]
-        self._write(entries)
+        remaining = {pid: entry for pid, entry in raw.items() if pid != project_id.value}
+        self._write(remaining)
         return True
 
-    def _write(self, entries: dict[str, dict[str, str]]) -> None:
+    def _write(self, entries: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = self.path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")

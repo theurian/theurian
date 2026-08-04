@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from theurian.application.project_service import ProjectError, ProjectRegistry
 from theurian.cli.main import app
 
 pytestmark = pytest.mark.integration
@@ -182,6 +183,298 @@ def test_status_outside_a_repository_reports_unregistered(
     code, status = _invoke("project", "status")
     assert code == 0, "status must report, not fail, outside a project"
     assert not status["registered"]
+
+
+# -- project list, when the registry file is not what it should be ----------
+#
+# `project list` is the command every other surface names when it wants a user
+# to go and look -- `project register`'s and `ids_for_root`'s remedies both send
+# them here -- so it is the one command that must survive a registry it cannot
+# fully read. A skipped entry it did not report was a project that vanished in
+# silence, and a file it could not parse at all reached the user as a Rich
+# traceback from the very command the remedy told them to run.
+
+
+@pytest.fixture
+def registry_path(project: Path) -> Path:
+    """The per-user registry file this test's ``THEURIAN_DATA_DIR`` points at.
+
+    Written to directly, because no supported command can produce a malformed
+    entry -- the file lives in the user's home directory and a hand edit is the
+    only way in, which is exactly why these branches exist.
+    """
+    path = project.parent / "datadir" / "projects.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_list_reports_an_empty_unreadable_set_rather_than_omitting_the_field(
+    project: Path,
+) -> None:
+    """CP-2. The field is part of the shape, not a flag that appears on trouble.
+
+    A consumer that has to branch on whether a key is present will eventually
+    forget to, and the day it forgets is the day the key is there -- when
+    something is broken. Asserted as ``== []``, not as ``in listed``: a value of
+    ``None``, or a string, would satisfy "the key exists" while breaking every
+    caller that iterates it.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+
+    _, listed = _invoke("project", "list")
+
+    assert listed["unreadable"] == []
+    assert "remedy" not in listed, "a healthy registry must not print a cure for nothing"
+
+
+def test_list_names_the_unreadable_id_so_the_remedy_can_be_typed(
+    project: Path, registry_path: Path
+) -> None:
+    """The id `project unregister` needs is the id only this command can show.
+
+    Every other surface -- `project register`, `resolve_context`, `index status`
+    -- reports an unreadable entry by telling the user to run
+    ``theurian project unregister <id>`` and to find ``<id>`` here. Counting the
+    readable entries and silently dropping the rest, which is what `load` alone
+    does, made that remedy untypable and the project itself invisible.
+
+    ``count`` deliberately still reports only what is readable: the entry is
+    named under ``unreadable``, not padded into ``projects`` as a registration
+    the command cannot actually describe.
+    """
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": {"rootPath": str(project), "defaultBranch": "main"},
+                "hand-edited": {"defaultBranch": "main"},
+            }
+        )
+    )
+
+    code, listed = _invoke("project", "list")
+
+    assert code == 0
+    assert listed["unreadable"] == ["hand-edited"]
+    assert listed["count"] == 1, "the unreadable entry is named, not counted as a project"
+    assert [p["projectId"] for p in listed["projects"]] == ["demo"]
+    assert "theurian project unregister" in listed["remedy"]
+
+
+@pytest.mark.parametrize(
+    ("corruption", "content", "expected"),
+    [
+        ("truncated JSON", b'{"demo": {"rootPath"', "cannot be read as JSON"),
+        ("a JSON array", b"[]", "must hold a JSON object"),
+        ("arbitrary bytes", b"\xff\xfe\x00\x01theurian", "cannot be read as JSON"),
+    ],
+    ids=["truncated-json", "json-array", "arbitrary-bytes"],
+)
+def test_list_reports_a_registry_it_cannot_parse_instead_of_raising(
+    registry_path: Path, corruption: str, content: bytes, expected: str
+) -> None:
+    """CP-2, and the loop that had no exit.
+
+    None of these can be recovered from entry by entry -- without a dict of ids
+    there is nothing to partition -- so the whole file is refused. It still has
+    to arrive as the ``{error, remedy}`` contract at exit 1: this command is
+    where every other remedy sends the user, so a traceback here left them with
+    a broken registry and no working way to inspect it.
+
+    ``arbitrary bytes`` is the case that hid behind the other two. A registry of
+    binary -- a partial overwrite, a restored file -- raises
+    ``UnicodeDecodeError`` at ``read_text``, which is a ``ValueError`` and *not*
+    a ``JSONDecodeError``, so it sailed past a handler that caught only the
+    latter. ``catch_exceptions=False`` is what makes that a failure here rather
+    than a silently swallowed exit code.
+    """
+    registry_path.write_bytes(content)
+
+    code, payload = _invoke("project", "list")
+
+    assert code == 1, f"{corruption} must be reported, not raised"
+    assert expected in payload["error"]
+    assert str(registry_path) in payload["error"], "the file to fix is named"
+    assert "theurian project register" in payload["remedy"], (
+        "the remedy is delete-and-re-register; a message with no way out is why this branch exists"
+    )
+
+
+# -- the same unreadable file, reached through the other two commands -------
+#
+# The fix above taught `project list` to report a registry it cannot parse.
+# It never reached the two commands beside it, and both are on the remedy chain
+# every other surface prints: `project status` is what a confused user runs
+# first, and `project unregister <id>` is where the chain ends. A traceback at
+# the first and a wrong cure at the last leave that chain broken at both ends.
+#
+# The corruption shapes are the three above, restated rather than shared,
+# because "these three shapes reach this command" is the claim: a shared
+# parameter list that lost one would quietly narrow every test using it.
+
+REGISTRY_CORRUPTIONS = [
+    ("truncated JSON", b'{"demo": {"rootPath"', "cannot be read as JSON"),
+    ("a JSON array", b"[]", "must hold a JSON object"),
+    ("arbitrary bytes", b"\xff\xfe\x00\x01theurian", "cannot be read as JSON"),
+]
+
+
+@pytest.mark.parametrize(
+    ("corruption", "content", "expected"),
+    REGISTRY_CORRUPTIONS,
+    ids=["truncated-json", "json-array", "arbitrary-bytes"],
+)
+def test_status_reports_a_registry_it_cannot_parse_instead_of_raising(
+    registry_path: Path, corruption: str, content: bytes, expected: str
+) -> None:
+    """The ``--json`` contract has to hold on the command people run when lost.
+
+    ``status``'s handler for a failed ``resolve_context`` asks the registry for
+    its unreadable ids -- and on a file that is not JSON at all, that read raises
+    the very exception the handler is inside. Measured before the fix: exit 1,
+    stdout zero bytes, a Rich traceback, on all three shapes. A caller parsing
+    ``--json`` gets nothing to parse, from the command every remedy sends them
+    to first.
+
+    Exit 0 is deliberate and matches the rest of this command: ``status``
+    answers for directories that are not projects at all, so "cannot tell" is a
+    status rather than a command failure -- and ``registered: null`` is already
+    its value for exactly that.
+
+    ``unreadable`` is ``[]`` here and that is not a claim that nothing is
+    broken: without a JSON object there is no set of ids to partition, so the
+    list is empty because it could not be computed. ``reason`` and ``remedy``
+    carry the whole-file failure, and the field stays present because a
+    consumer that has to branch on key presence eventually forgets to.
+    """
+    registry_path.write_bytes(content)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0, f"{corruption} must be reported as a status, not raised"
+    assert payload["registered"] is None, "the registry cannot say, and False would be a guess"
+    assert expected in payload["reason"]
+    assert "re-register each project with `theurian project register`" in payload["remedy"], (
+        "the whole-file failure has one reliable cure, and this is the command that must print it"
+    )
+    assert payload["unreadable"] == []
+
+
+def test_unregister_names_the_unreadable_file_rather_than_blaming_the_id(
+    registry_path: Path,
+) -> None:
+    """The last link of the remedy chain, and the one that pointed nowhere.
+
+    ``project list``, ``project status``, ``probe_project_registered``,
+    ``project register`` and every MCP tool name
+    ``theurian project unregister <id>`` as the cure for a broken registry. When
+    the file cannot be read at all, this command answered "Check the project id
+    with `theurian project list`" -- and the id is not the problem, ``list``
+    fails on the same file, and the user is returned to where they started.
+
+    One corruption shape rather than three: what varies between them is the
+    message, which the ``project list`` tests above already pin. What is
+    asserted here is the remedy, which does not vary.
+    """
+    registry_path.write_bytes(b'{"demo": {"rootPath"')
+
+    code, payload = _invoke("project", "unregister", "demo")
+
+    assert code == 1
+    assert "re-register each project with `theurian project register`" in payload["remedy"]
+    assert "Check the project id" not in payload["remedy"], (
+        "the id is not what is wrong, and `project list` cannot read this file either"
+    )
+
+
+def test_status_outside_a_repository_keeps_a_certain_answer_on_a_wholly_corrupt_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unrelated ambiguity must not weaken an answer that is not ambiguous.
+
+    A directory outside a Git working tree is not a project whatever the
+    registry says: there is no root for any registration to name, so no failure
+    to read that file could possibly be about *this* directory. ``registered``
+    stays ``False`` -- the honest answer -- rather than being dragged to ``None``
+    by a file the question does not depend on.
+
+    Pinned because the tempting simplification is "the registry is broken, so
+    nothing can be known", and it is wrong in exactly this one case. The
+    in-repository counterpart, where ``None`` *is* correct, is
+    ``test_status_reports_a_registry_it_cannot_parse_instead_of_raising``
+    above; without this pair, either behaviour alone looks like the rule.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    path = tmp_path / "datadir" / "projects.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"demo": {"rootPath"')
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert "not inside a Git repository" in payload["reason"], "the fixture must be outside one"
+    assert payload["registered"] is False
+    assert payload["unreadable"] == []
+
+
+def test_status_says_it_cannot_know_when_the_registry_breaks_between_its_two_reads(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolved path's own version of "cannot know", which nothing reached.
+
+    ``resolve_context`` asks the registry which project this root is, and the
+    payload asks it again for the ``registered`` flag and the unreadable set.
+    "A moment ago" is not "now": the file lives in the user's home directory,
+    another ``theurian`` process shares it, and the product's own remedies tell
+    people to edit it. A raise on the second read cost this command its entire
+    ``--json`` payload for a file it consults for one field.
+
+    Forced with a monkeypatch rather than a real race, because a race is not a
+    fixture. What is being tested is the *handling*, and a test that has to win
+    a timing lottery to reach it is a test that mostly does not.
+
+    ``registered`` becomes ``None`` and nothing else is lost: the state hash,
+    the migration count and the freshness all come from the project's own
+    ``.theurian/``, which the registry has nothing to do with. A handler that
+    turned the whole payload into an error would throw away every field that was
+    still perfectly knowable.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _invoke("project", "register")
+
+    def _explode(self: object) -> dict[str, dict[str, str]]:
+        raise ProjectError("hand-edited between reads", remedy="Delete it and re-register.")
+
+    monkeypatch.setattr(ProjectRegistry, "load", _explode)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert payload["registered"] is None, (
+        "the file cannot be searched, and False would claim it was"
+    )
+    assert "hand-edited between reads" in payload["reason"]
+    assert payload["remedy"] == "Delete it and re-register."
+    assert payload["migrationCount"] == 1, "a field the registry has nothing to do with survives"
+    assert payload["stateHash"], "and so does the one every other command compares against"
+
+
+def test_unregister_still_blames_the_id_when_the_id_is_what_is_wrong(project: Path) -> None:
+    """The other half, so the fix above cannot become one fixed remedy again.
+
+    A registry that reads perfectly well and an id that is not a slug is the
+    case the default remedy was written for. Without this, replacing the default
+    unconditionally would pass every assertion in the test above.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+
+    code, payload = _invoke("project", "unregister", "Not A Slug")
+
+    assert code == 1
+    assert "Check the project id" in payload["remedy"]
 
 
 # -- migrate ---------------------------------------------------------------

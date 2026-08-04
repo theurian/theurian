@@ -152,15 +152,29 @@ def resolve_context(
     colliding default on its own command line — the CLI writing to one project
     while every agent reads the other.
 
+    The fallback to ``derive_project_id`` is only safe because the middle step
+    raises rather than returning ``None`` when it cannot read an entry. ``or``
+    cannot tell "no registration names this root" from "a registration might and
+    is unreadable", and while it could, the second case took the fallback and
+    produced exactly the misrouting the paragraph above describes
+    (:meth:`ProjectRegistry.ids_for_root`). An explicit ``project_id``
+    short-circuits before the lookup, which is what keeps every project on the
+    machine addressable while a broken entry is being removed.
+
     Raises:
-        ProjectError: If ``start`` is not inside a Git repository.
+        ProjectError: If ``start`` is not inside a Git repository, if its root is
+            registered under more than one project id, or if the registry holds
+            an entry that cannot be read and no explicit ``project_id`` was
+            given.
+        MigrationError: If the migrations under it do not load or validate.
     """
     cwd = (start or Path.cwd()).resolve()
     root = find_git_root(cwd)
     if root is None:
         raise ProjectError(
             f"{cwd} is not inside a Git repository. Theurian scopes a project to a "
-            f"Git working tree, so that branches and worktrees stay isolated."
+            f"Git working tree, so that branches and worktrees stay isolated.",
+            remedy="Run this inside a Git repository.",
         )
 
     paths = ProjectPaths.of(root)

@@ -77,6 +77,24 @@ class SqliteCanonicalStore:
             self._connection = None
 
     def __enter__(self) -> SqliteCanonicalStore:
+        # Opened here rather than at the first read, and that is a security
+        # decision rather than symmetry with `__exit__`.
+        #
+        # `CanonicalVisibility.cleared` is a comprehension over the retriever's
+        # rows, so a query that matched nothing never calls `get_item`, never
+        # calls `_conn`, and never opens this connection. The ~0.4 ms of
+        # `sqlite3.connect` plus the pragmas plus the schema-version check was
+        # therefore charged to exactly those requests that *found* something —
+        # and when the response says `count: 0`, that bit says "everything it
+        # found is something you may not read".
+        #
+        # Measured on a 61-document Japanese corpus, 600 interleaved calls: one
+        # `knowledge.search` against a probe query classified correctly 88.3% of
+        # the time versus a control one character away, +0.60 ms at the median.
+        # Six characters of a credential no response contains came back in 836
+        # ordinary calls with the response body never read. Opening here takes
+        # the same measurement to 57.8%, which is chance.
+        self._conn()
         return self
 
     def __exit__(self, *_: object) -> None:

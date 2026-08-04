@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/retrieval-metadata.schema.json",
+  "title": "Theurian retrieval metadata",
+  "description": "The `retrieval` block carried by every `knowledge.search` response: how the answer was produced, so a client can act on a degraded one instead of reading it as \"this team has made no such decision\".\n\n**Every field here describes what was returned, the index, or the caller's own parameters. No field may be derived from content the caller was not allowed to read** (SEC-13, T-15). That is not a style rule. A response saying `count: 0, results: [], usedTokens: 46` states that something matched and may not be read, and the trigram retriever matches any substring of three characters — so such a field is not existence detection but sequential extraction. Measured before this was closed: 257 ordinary `knowledge.search` calls recovered a twenty-character credential from a document whose superseding revision had redacted it. A per-query count of withheld matches (`withheldSuperseded`) was removed rather than hidden.\n\n`stale` is the deliberate exception and the reason that removal was possible: it says \"your index is behind, expect fewer results\" identically for every query, so it carries the useful half of that signal and none of the leak.\n\nOne shape on both answer paths. A key that cannot apply carries `null` rather than being absent, so a client never branches on key *presence* — the branch a client does not exercise is the one that runs the first time an index goes missing in production.",
+  "type": "object",
+  "required": [
+    "mode",
+    "indexed",
+    "stale",
+    "staleAgainst",
+    "indexesUnapproved",
+    "indexBuildId",
+    "embeddingModel",
+    "fallbackReason",
+    "snapshotId",
+    "usedTokens",
+    "droppedForBudget",
+    "note"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "description": "Which retrievers are behind the results in this response. Read off the results themselves, never off the rankings that produced them: a ranking still contains candidates the canonical store then withheld.",
+      "oneOf": [
+        {
+          "const": "hybrid",
+          "description": "The dense retriever and at least one lexical retriever are both behind the returned results."
+        },
+        {
+          "const": "lexical",
+          "description": "Only lexical retrieval is behind the returned results. Covers both the word index and the substring retriever — a hit found by the substring retriever alone reports `lexical`, because both of its strategies, the trigram-index lookup and the scan run below the trigram floor, are lexical rather than semantic (see a hit's `foundBy`)."
+        },
+        {
+          "const": "dense",
+          "description": "Only vector similarity is behind the returned results."
+        },
+        {
+          "const": "none",
+          "description": "No retriever contributed anything to the returned results. Distinct from `lexical`, which used to cover this case and so reported \"the word index answered\" for a search where nothing answered at all."
+        },
+        {
+          "const": "substring",
+          "description": "No index answered, so this is the unranked scan of the canonical store. **Not the substring retriever** — the trigram-index lookup, or the scoped scan run below its floor — which appears under the same word in a hit's `foundBy` and requires a published index to run at all. Two different things share this string; both are already on the wire, so both are described rather than renamed. Always accompanied by `indexed: false` and a non-null `fallbackReason`."
+        }
+      ]
+    },
+    "indexed": {
+      "type": "boolean",
+      "description": "Whether a published retrieval index answered this query. False means the unranked canonical scan answered it, and `fallbackReason` says why."
+    },
+    "stale": {
+      "type": ["boolean", "null"],
+      "description": "Whether the index that answered was built from an earlier knowledge state than the one in the database. Null on the unranked path, where there is no index to compare.\n\nQuery-independent by construction, which is what makes it safe: it is the same for every query against this project at this moment, so it can be reported without saying that *this* query matched something withheld. A stale index returns fewer results, never wrong ones."
+    },
+    "staleAgainst": {
+      "enum": ["builtState", null],
+      "description": "What `stale` compared against: the built canonical state, not the repository's migrations. Deriving the latter would mean re-reading every migration on every search. `theurian index status` does compare all three and can report a database that is itself behind, which this cannot."
+    },
+    "indexesUnapproved": {
+      "type": "boolean",
+      "description": "Whether the index was built with `--include-unapproved`. Published so that an empty answer to `includeUnapproved: true` is distinguishable from \"there are no drafts\". A property of the build, identical for every query."
+    },
+    "indexBuildId": {
+      "type": ["string", "null"],
+      "description": "Which index build answered, as recorded in `.theurian/state/active-index.json`. Null on the unranked path.\n\nNo pattern is asserted. The value is copied from a derived, git-ignored, unsigned file that any local process can write, and a schema that rejects a response Theurian really emits is worse than one that under-specifies a field."
+    },
+    "embeddingModel": {
+      "type": "string",
+      "description": "The embedding model behind the dense retriever when it ran; empty when it did not — because the caller did not pass `useDense`, because no embedder is configured, or because the index was embedded by a different model.\n\nA property of the index and of the caller's parameters. It must never depend on what a query matched: an earlier version reported it empty when the dense retriever *found nothing*, so it flipped on a withheld dense hit — one bit per query, no flag required to read it."
+    },
+    "fallbackReason": {
+      "description": "Why the ranked path stood aside, machine-readable so a client can act without parsing `note`. Null when a published index answered. Two reasons share `index-project-mismatch` because a client's next action is the same for both; the `note` distinguishes them for a person reading the transcript.",
+      "oneOf": [
+        { "const": null, "description": "A published index answered this query." },
+        {
+          "const": "no-index",
+          "description": "This project has never had an index built. Remedy: `theurian index build`."
+        },
+        {
+          "const": "index-pointer-invalid",
+          "description": "`active-index.json` exists but does not name a usable build — truncated, empty, or naming a path outside the state directory. Remedy: delete it, then rebuild. Reported apart from `no-index` because telling a user who *has* built an index to build it again sends them round the loop that produced the state."
+        },
+        {
+          "const": "index-file-missing",
+          "description": "The pointer outlived its file. Remedy: rebuild."
+        },
+        {
+          "const": "index-schema-mismatch",
+          "description": "The build uses an index schema this Core does not search. Left unchecked this is silent: a query against a missing table looks exactly like a query that matched nothing, which is how a v1 file answered every Japanese query with silence while reporting `indexed: true`. Remedy: rebuild."
+        },
+        {
+          "const": "index-unreadable",
+          "description": "The file passed the version check and then failed mid-query. Remedy: rebuild."
+        },
+        {
+          "const": "index-project-mismatch",
+          "description": "The build records a different project id, or records none at all. Either way its content is out of scope for this query, and an index that matched nothing while reporting itself healthy would read as \"this team has made no such decision\". Neither `note` names the other id: this reply goes to an agent holding one project's id. Remedy: rebuild for this project."
+        },
+        {
+          "const": "unapproved-not-indexed",
+          "description": "The caller asked for unapproved knowledge and the index was built without it. Answering from the approved-only index would change the meaning of a published parameter without saying so. Remedy: `theurian index build --include-unapproved`."
+        }
+      ]
+    },
+    "snapshotId": {
+      "type": "string",
+      "description": "Which canonical state answered this query (FR-R5) — the identical string `knowledge.status` already publishes as `stateHash`, so a caller holding one can compare it against the other without a second call.\n\nResponse scope, not per hit: every result in one response was resolved through the same canonical store connection, so a per-hit copy would only repeat one string once per result — the reasoning already applied to `indexBuildId`.\n\nQuery-independent by construction (SEC-13, T-15), identically to `stale`: it names which snapshot of the *whole project's* knowledge produced this response, the same value no matter what the query was or matched, so it can never answer \"did this query match something withheld?\" Present and identical on both answer paths — the unranked scan reads the same canonical state it answers from.\n\nNon-null by construction, not merely in practice. `.theurian/state/active.json` used to be read twice per request — once to locate the database, once to name the snapshot — and a delete landing between the two reads (the documented remedy for an unreadable pointer) emptied the second one; a concurrent `migrate apply` could also swap the pointer between the reads and make this name a state the results did not actually come from. Both are closed at the source rather than in this field: the tool resolves the pointer exactly once per request, and every downstream answer path takes that resolved state as an argument instead of re-reading it, so there is no remaining code path that reaches a response without one in hand. `tests/integration/test_mcp_tools.py::test_one_read_of_the_state_pointer_serves_the_whole_request` proves it by deleting the pointer file the instant the first read returns — a stronger check than counting calls, because a counter only watches the name it is attached to and a second read could arrive through a different import."
+    },
+    "usedTokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Estimated cost of the results in this response, measured on each serialised result exactly as the caller receives it — provenance, source anchors and trust labels included, not the excerpt alone.\n\nPriced on results, never on candidates. A budget spent before the canonical store decides what may be shown both misstates the total and publishes a number that moves because of a document the caller may not read."
+    },
+    "droppedForBudget": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many results the caller was entitled to see did not fit `maxTokens`, so \"nothing else matched\" is distinguishable from \"your budget ran out\". Counts only results that passed every gate; content withheld from this caller is never counted here, and is not \"dropped for budget\"."
+    },
+    "note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Prose for a person reading the transcript. The fields above are the API; do not parse this."
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "One shape, both paths: what a ranked answer must say.",
+      "if": { "properties": { "indexed": { "const": true } }, "required": ["indexed"] },
+      "then": {
+        "properties": {
+          "mode": { "enum": ["lexical", "dense", "hybrid", "none"] },
+          "stale": { "type": "boolean" },
+          "staleAgainst": { "const": "builtState" },
+          "indexBuildId": { "type": "string" },
+          "fallbackReason": { "type": "null" }
+        }
+      }
+    },
+    {
+      "$comment": "And what an unranked answer must say. `null` for every key that cannot apply, so a client reads values rather than testing for presence.",
+      "if": { "properties": { "indexed": { "const": false } }, "required": ["indexed"] },
+      "then": {
+        "properties": {
+          "mode": { "const": "substring" },
+          "stale": { "type": "null" },
+          "staleAgainst": { "type": "null" },
+          "indexBuildId": { "type": "null" },
+          "fallbackReason": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

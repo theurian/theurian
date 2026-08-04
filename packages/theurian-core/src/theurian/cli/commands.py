@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 
@@ -23,6 +24,7 @@ from theurian.application.migration_engine import (
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (
+    ProjectError,
     ensure_gitignore,
     initialize_project,
     read_active_state,
@@ -32,6 +34,7 @@ from theurian.cli.context import (
     CommandContext,
     current_commit,
     default_branch,
+    find_git_root,
     registry,
     repository_url,
     resolve_context,
@@ -94,6 +97,115 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
     raise typer.Exit(code)
 
 
+def _context_remedy(exc: TheurianError, *, default: str) -> str:
+    """The remedy that matches why resolving the project actually failed.
+
+    ``resolve_context`` does three things — find the Git working tree, ask the
+    registry which project this root is, and load and validate every migration —
+    so a fixed "run this inside a Git repository" told a user with a malformed
+    migration to go looking for a ``.git`` directory that was already there.
+    """
+    if isinstance(exc, ProjectError) and exc.remedy:
+        return exc.remedy
+    if isinstance(exc, MigrationCycleError):
+        return "Break the dependency cycle shown above, then retry."
+    if isinstance(exc, MigrationError):
+        return "Fix the migration file, then retry."
+    return default
+
+
+@dataclass(frozen=True, slots=True)
+class _RegistryRead:
+    """What the registry could say, including that it could say nothing.
+
+    A file whose top level does not parse holds no set of ids, so ``unreadable``
+    -- which names *which* entries are broken -- cannot be computed at all, and
+    ``failure`` carries the refusal in its place. Both arrive as values rather
+    than as an exception because ``project status`` answers at exit 0: it reports
+    for repositories that are not projects at all, and a raise from the registry
+    read replaced its entire ``--json`` payload with a Rich traceback.
+    """
+
+    entries: dict[str, dict[str, str]]
+    unreadable: tuple[str, ...]
+    failure: TheurianError | None
+    path: Path
+
+    @property
+    def failure_fields(self) -> dict[str, str]:
+        """Why the registry could not be read and what cures it, or nothing.
+
+        Emitted beside a ``registered`` of ``None``, never alone: a payload that
+        says "cannot know" without saying why is a status a user cannot act on.
+
+        Not the only reason ``registered`` can be ``None`` -- see :meth:`holds`,
+        whose other case is explained by the ``unreadable`` list instead.
+        """
+        if self.failure is None:
+            return {}
+        return {
+            "reason": str(self.failure),
+            "remedy": _context_remedy(
+                self.failure,
+                default=f"Inspect {self.path}, or delete it and re-register each project.",
+            ),
+        }
+
+    def holds(self, project_id: str | None) -> bool | None:
+        """Whether this id is registered, or ``None`` where the file cannot say.
+
+        **The single rule behind every ``registered`` field ``project status``
+        emits, because its two branches disagreed.** The unresolved branch
+        answered ``None`` whenever the registry held anything it could not read;
+        the resolved branch consulted only :attr:`failure` and so answered
+        ``False`` for an id whose *own* entry had become unreadable between
+        ``resolve_context``'s read and this one -- the exact guess
+        :meth:`ProjectRegistry.ids_for_root` refuses to make, made by the other
+        half of the same command.
+
+        ``None`` for an unknown id is the unresolved-status case: with no id to
+        look up there is nothing to check membership of, so any entry the file
+        holds and :meth:`ProjectRegistry.load` skips leaves the question open.
+
+        Deliberately not "``None`` whenever anything is unreadable". An id
+        present in :attr:`entries` is registered whatever some *other* entry
+        looks like, and answering "cannot know" about something known is its own
+        false report.
+        """
+        if self.failure is not None:
+            return None
+        if project_id is None:
+            return None if self.unreadable else False
+        if project_id in self.entries:
+            return True
+        # Absent from `entries` is not absent from the *file*: `load` skips an
+        # entry that names no root path, and its id is still a key. `False` here
+        # would tell a user their project is unregistered while `project
+        # register` refuses to reuse the id and `project unregister` can still
+        # remove it.
+        return None if project_id in self.unreadable else False
+
+
+def _read_registry() -> _RegistryRead:
+    """Read the registry, turning a file it cannot parse into a value.
+
+    The failure converted here is raised by ``ProjectRegistry._raw_entries``,
+    which *every* reader reaches -- ``load``, ``unreadable_ids``,
+    ``ids_for_root``, ``register`` and ``unregister`` alike. Auditing the callers
+    of ``load`` alone therefore misses it, and that is precisely how
+    ``project status`` came to call ``unreadable_ids()`` from inside the
+    ``except`` block handling the raise ``ids_for_root`` had just made: exit 1
+    with an empty stdout, from a command whose contract is exit 0 and a payload.
+    """
+    reg = registry()
+    try:
+        return _RegistryRead(
+            entries=reg.load(), unreadable=reg.unreadable_ids(), failure=None, path=reg.path
+        )
+    except TheurianError as exc:
+        return _RegistryRead(entries={}, unreadable=(), failure=exc, path=reg.path)
+
+
 # ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
@@ -107,7 +219,12 @@ def init_command(as_json: JsonOption = False) -> None:
     try:
         context = resolve_context()
     except TheurianError as exc:
-        _fail(str(exc), remedy="Run this inside a Git repository.", as_json=as_json, code=1)
+        _fail(
+            str(exc),
+            remedy=_context_remedy(exc, default="Run this inside a Git repository."),
+            as_json=as_json,
+            code=1,
+        )
         return
 
     created = initialize_project(context.paths)
@@ -153,11 +270,47 @@ def project_register(
     The id defaults to the directory name, which is not unique across a machine.
     A clash is refused rather than silently resolved -- see
     :meth:`ProjectRegistry.register` -- and ``--project-id`` is how it is broken.
+
+    ``--project-id`` is not a rename. A repository that already has an id is
+    refused a second one, because the id is stamped into canonical rows and index
+    chunks when they are written: a second registration would produce a project
+    that is addressable and empty.
     """
+    # Parsed apart from `resolve_context`, and failed apart from it: a malformed
+    # `--project-id` and an unresolvable working tree are different problems with
+    # different cures, and folding both into one `except TheurianError` sent an
+    # invalid `--project-id` through `_context_remedy`'s default -- "run this
+    # inside a Git repository" -- which is true and answers nothing, since the
+    # command was already inside one.
+    #
+    # `if project_id:` on purpose, not `is not None`: an empty string is treated
+    # the same as an omitted flag below and falls back to the derived id, and
+    # that fallback must stay reachable rather than turning into a parse failure.
+    parsed_id: ProjectId | None = None
+    if project_id:
+        try:
+            parsed_id = ProjectId(project_id)
+        except TheurianError as exc:
+            _fail(
+                str(exc),
+                remedy=(
+                    "--project-id must be lowercase kebab-case (letters, digits, and hyphens), "
+                    "e.g. `team-two-api`."
+                ),
+                as_json=as_json,
+                code=1,
+            )
+            return
+
     try:
-        context = resolve_context(path, ProjectId(project_id) if project_id else None)
+        context = resolve_context(path, parsed_id)
     except TheurianError as exc:
-        _fail(str(exc), remedy="Run this inside a Git repository.", as_json=as_json, code=1)
+        _fail(
+            str(exc),
+            remedy=_context_remedy(exc, default="Run this inside a Git repository."),
+            as_json=as_json,
+            code=1,
+        )
         return
 
     project = Project(
@@ -175,7 +328,12 @@ def project_register(
     except TheurianError as exc:
         _fail(
             str(exc),
-            remedy="Choose a distinct id with `--project-id`, or unregister the other project.",
+            remedy=_context_remedy(
+                exc,
+                default=(
+                    "Choose a distinct id with `--project-id`, or unregister the other project."
+                ),
+            ),
             as_json=as_json,
             code=1,
         )
@@ -203,13 +361,25 @@ def project_unregister(
 
     Removes the registration and nothing else. Git-tracked knowledge under
     ``.theurian/`` is untouched.
+
+    This is the terminal command of the remedy chain: ``project list``,
+    ``project status``, ``setup``'s registry probe, ``project register`` and
+    every MCP tool answer an unreadable registry by naming it. So the remedy it
+    prints when it *itself* fails is the last thing a user reads before running
+    out of instructions -- and a fixed "check the project id" told a user whose
+    registry file does not parse at all to go and check an id that was never the
+    problem, in a listing that fails on the same file. ``_context_remedy`` keeps
+    the cure attached to the refusal that actually happened, exactly as ``init``,
+    ``project register`` and ``_require_project`` already do.
     """
     try:
         removed = registry().unregister(ProjectId(project_id))
     except TheurianError as exc:
         _fail(
             str(exc),
-            remedy="Check the project id with `theurian project list`.",
+            remedy=_context_remedy(
+                exc, default="Check the project id with `theurian project list`."
+            ),
             as_json=as_json,
             code=1,
         )
@@ -226,17 +396,130 @@ def project_unregister(
     )
 
 
+def _listed_project(project_id: str, entry: dict[str, str]) -> dict[str, str]:
+    """One row of ``project list``: the whole entry, under the id that keys it.
+
+    The id is the registry *key*, and any ``projectId`` the entry itself carries
+    is dropped rather than merged. ``{"projectId": pid, **entry}`` published the
+    entry's own value instead, because a later key wins -- and the registry is
+    hand-editable, which is the premise ``unreadable`` exists for. The result was
+    not a cosmetic mislabel. Measured against two registered projects with one
+    hand-edited line, ``alpha``'s entry claiming ``projectId: beta``: this
+    command listed ``beta`` twice, ``alpha`` appeared on no surface at all so the
+    ``theurian project unregister <id>`` that every remedy in this module names
+    could not be typed for it, and the id that *was* shown against ``alpha``'s
+    row unregistered ``beta``.
+
+    Kept whole rather than narrowed to the fields a caller acts on, which is
+    where this deliberately differs from the ``project.list`` MCP tool: this is
+    the surface a user reads to see what the registry actually holds, a field
+    Theurian itself never writes included.
+    """
+    return {"projectId": project_id, **{k: v for k, v in entry.items() if k != "projectId"}}
+
+
 @project_app.command("list")
 def project_list(as_json: JsonOption = False) -> None:
-    """List registered projects."""
-    entries = registry().load()
+    """List registered projects.
+
+    ``unreadable`` names the ids whose entries the registry could not parse.
+    They are reported here rather than only where they break something, because
+    this is the command a user runs to find out what is registered -- and a
+    skipped entry that only this command could show was a project that vanished
+    with nothing said. The id is also the argument
+    ``theurian project unregister`` needs, which is the remedy every other
+    surface prints for them, so hiding it here made that remedy untypable.
+
+    Always emitted, empty list included: a consumer that has to branch on whether
+    a key is present will eventually forget to.
+
+    The failure this command cannot recover from -- a file that is not JSON at
+    all, so there is no set of ids to partition -- is reported rather than
+    raised. It used to escape as a Rich traceback, which mattered more here than
+    anywhere else: this is the command every other surface names when it wants a
+    user to go and look, `project unregister`'s remedy included, so the one place
+    `_registry_reset_remedy` was written for was the one place it never reached.
+    """
+    reg = registry()
+    try:
+        entries = reg.load()
+        unreadable = reg.unreadable_ids()
+    except TheurianError as exc:
+        _fail(
+            str(exc),
+            remedy=_context_remedy(
+                exc, default=f"Inspect {reg.path}, or delete it and re-register each project."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
     _emit(
         {
             "count": len(entries),
-            "projects": [{"projectId": pid, **entry} for pid, entry in sorted(entries.items())],
+            "projects": [_listed_project(pid, entry) for pid, entry in sorted(entries.items())],
+            "unreadable": list(unreadable),
+            **(
+                {
+                    "remedy": (
+                        "Remove them with `theurian project unregister <id>`. Until then, "
+                        "commands that resolve a project from the current directory refuse "
+                        "rather than guess."
+                    )
+                }
+                if unreadable
+                else {}
+            ),
         },
         as_json=as_json,
     )
+
+
+def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
+    """``project status`` for a repository whose project could not be resolved.
+
+    Exit 0 is kept deliberately: unlike every other command here, ``status``
+    answers for repositories that are not yet a project at all, and "not
+    registered" -- for any reason, including "not inside a Git repository" -- is
+    a legitimate status rather than a command failure. Switching to the
+    ``{error, remedy}`` / non-zero contract the other commands use would make a
+    routine "you haven't set this up" status look like a crash.
+
+    But an ambiguous registry is not a routine "nothing here yet": it is a
+    problem only the user can fix, and ``ProjectError.remedy`` is the only place
+    the ``project unregister`` invocations that fix it are named. Dropping it
+    left the command a confused user reaches for *first* reporting a problem with
+    no way out. Exit code stays 0; the remedy travels into the payload instead,
+    where both a human reading the rendered output and a script reading JSON can
+    find it.
+    """
+    payload: dict[str, Any] = {"registered": False, "reason": str(exc), "indexStale": False}
+    if isinstance(exc, ProjectError) and exc.remedy:
+        payload["remedy"] = exc.remedy
+
+    # `resolve_context` never got as far as asking the registry whether this root
+    # is registered -- for any reason, a broken migration included -- while the
+    # registry cannot answer for itself either: it holds an entry that cannot be
+    # read, or it does not parse at all. `registered: False` would then be the
+    # same guess `ids_for_root` refuses to make: an unreadable entry names no
+    # root, so there is no way to tell whether it is *this* directory's own, and
+    # a file that does not parse does not even have entries to ask about.
+    #
+    # `find_git_root` is checked apart from the registry so a plain "not inside a
+    # Git repository" -- which has nothing to do with the registry -- keeps its
+    # honest `False` rather than being dragged into an ambiguity that could not
+    # possibly be about it. That directory is not a project whatever the registry
+    # says, and `theurian project list` is the surface that reports the file.
+    read = _read_registry()
+    if find_git_root(Path.cwd()) is not None:
+        payload["registered"] = read.holds(None)
+    # Stays a list even when the file did not parse, because a caller that
+    # iterates it must not have to branch first. That the set of ids is *unknown*
+    # rather than empty is carried by `registered: None` and by `reason`, which
+    # is the registry's own refusal here: `resolve_context` consults the registry
+    # before it loads migrations, so a file-level failure is what raised above.
+    payload["unreadable"] = list(read.unreadable)
+    return payload
 
 
 @project_app.command("status")
@@ -245,13 +528,16 @@ def project_status(as_json: JsonOption = False) -> None:
     try:
         context = resolve_context()
     except TheurianError as exc:
-        _emit(
-            {"registered": False, "reason": str(exc), "indexStale": False},
-            as_json=as_json,
-        )
+        _emit(_unresolved_status(exc), as_json=as_json)
         return
 
-    entries = registry().load()
+    # Read once, through the reader that cannot raise. Reaching here means the
+    # registry parsed a moment ago -- `resolve_context` asked it which project
+    # this root is -- but "a moment ago" is not "now": the file lives in the
+    # user's home directory, another `theurian` process shares it, and a hand
+    # edit lands between the two reads. A raise at that point would cost this
+    # command its whole payload for a file it only consults for one field.
+    read = _read_registry()
     active = read_active_state(context.paths)
     database = context.paths.database_for(context.state_hash)
 
@@ -259,7 +545,11 @@ def project_status(as_json: JsonOption = False) -> None:
         {
             "projectId": context.project_id.value,
             "root": str(context.paths.root),
-            "registered": context.project_id.value in entries,
+            # `None` is this command's "cannot know", and both branches now get
+            # it from `holds` rather than each deciding for itself -- which is
+            # how the resolved one came to answer `False` where the unresolved
+            # one answered `None` for the same file.
+            "registered": read.holds(context.project_id.value),
             "initialized": context.paths.knowledge_dir.is_dir(),
             "stateHash": str(context.state_hash),
             "activeStateHash": None if active is None else str(active.state_hash),
@@ -269,6 +559,13 @@ def project_status(as_json: JsonOption = False) -> None:
             "headCommit": current_commit(context.paths.root),
             "schemaVersion": SCHEMA_VERSION,
             "engineVersion": MIGRATION_ENGINE_VERSION,
+            # Always present, empty list included (`project list`'s model):
+            # entries elsewhere in the registry that could not be read. Normally
+            # empty here -- `resolve_context` above would have raised -- but a
+            # field that only sometimes exists is a field a caller eventually
+            # forgets to check for.
+            "unreadable": list(read.unreadable),
+            **read.failure_fields,
         },
         as_json=as_json,
     )
@@ -788,7 +1085,7 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
     except TheurianError as exc:
         _fail(
             str(exc),
-            remedy="Run this inside an initialised Theurian project.",
+            remedy=_context_remedy(exc, default="Run this inside an initialised Theurian project."),
             as_json=as_json,
             code=1,
         )

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +20,34 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
+from theurian.application.retrieval_service import CANDIDATE_DEPTH
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
+from theurian.domain.ranking import Ranked
+from theurian.mcp.tools import MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
+
+
+class _NothingWithheld:
+    """A `Visibility` that withholds nothing.
+
+    The tests below that use it are asserting a *precondition*: that the index
+    still holds the retracted text and the retrievers still match it. That is
+    what makes the response-level assertions mean something -- an answer that
+    omits a secret because no retriever could find it proves nothing about the
+    gate. Ranked through the real canonical store, these queries reach nothing,
+    which is the fix; ranked through this, they reach the document, which is the
+    threat the fix answers.
+    """
+
+    def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        return tuple(ranked)
+
+
+NOTHING_WITHHELD = _NothingWithheld()
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID = "01K1AAAREV01234567890ABCDE"
@@ -282,6 +305,77 @@ async def test_no_match_is_an_empty_result_not_an_error(registry: ProjectRegistr
 
     assert result["count"] == 0
     assert result["results"] == []
+
+
+#: `createItem` with no `upsertRevision` beside it. A normal, supported shape:
+#: an item may be declared in one migration and given content in a later one,
+#: and it sits in the store with `currentRevisionId: null` until then.
+PLACEHOLDER_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1HAAAAA01234567890ABCDE
+createdAt: 2026-08-02T14:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.reserved-slot
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+"""
+
+
+@pytest.fixture
+def with_a_contentless_item(registry: ProjectRegistry) -> ProjectRegistry:
+    """The `registry` project plus one item that has no revision yet."""
+    root = Path(registry.load()["demo"]["rootPath"])
+    (root / ".theurian/migrations/01K1HAAAAA01234567890ABCDE-reserve.yaml").write_text(
+        PLACEHOLDER_MIGRATION
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_an_item_with_no_revision_yet_is_skipped_rather_than_crashing(
+    with_a_contentless_item: ProjectRegistry,
+) -> None:
+    """`createItem` before `upsertRevision` leaves `currentRevisionId` null.
+
+    Every result is built from a revision, so an item that has none has nothing
+    to return — but it is still in `list_items`, still `draft`, and therefore
+    still walked by the scan whenever a caller passes `includeUnapproved`. The
+    guard has to be a skip: dereferencing the null pointer would take the whole
+    search down for every caller, over an item nobody asked about.
+
+    `includeUnapproved` is required to reach it at all, because `createItem`
+    files the item as a draft.
+    """
+    result = await _call(
+        with_a_contentless_item,
+        "knowledge.search",
+        projectId="demo",
+        query="caching",
+        includeUnapproved=True,
+    )
+
+    assert result["count"] == 1, "the search still answers"
+    assert result["results"][0]["itemId"] == "architecture.caching-draft"
+
+
+@pytest.mark.asyncio
+async def test_the_contentless_item_really_is_in_the_store(
+    with_a_contentless_item: ProjectRegistry,
+) -> None:
+    """Guards the guard. If the migration had not applied, the test above would
+    be walking a two-item store and asserting nothing about the branch."""
+    result = await _call(with_a_contentless_item, "knowledge.status", projectId="demo")
+
+    assert result["itemCount"] == 3
+    assert result["itemsByStatus"]["draft"] == 2, "the reserved slot is one of them"
 
 
 @pytest.mark.asyncio
@@ -625,6 +719,74 @@ def indexed(registry: ProjectRegistry) -> ProjectRegistry:
     return registry
 
 
+@pytest.fixture(params=["indexed", "registry"], ids=["ranked", "fallback"])
+def either_answer_path(request: pytest.FixtureRequest) -> tuple[ProjectRegistry, bool]:
+    """A project with an index, and one without, and which of the two it is.
+
+    A fixture rather than a boolean parameter because `theurian index build`
+    embeds through `asyncio.run`, which raises inside an already-running loop —
+    so an async test cannot build one in its own body.
+    """
+    chosen: ProjectRegistry = request.getfixturevalue(request.param)
+    return chosen, request.param == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_one_read_of_the_state_pointer_serves_the_whole_request(
+    either_answer_path: tuple[ProjectRegistry, bool], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-R5. `snapshotId` must name the state the results actually came from.
+
+    Every tool used to read `.theurian/state/active.json` twice: once to choose
+    the database, and again to report which canonical state answered. `migrate
+    apply` swaps that pointer atomically, so a request landing between the two
+    read the old database and named the new hash — a false answer to the one
+    question the field exists to answer. The second read could also find nothing
+    at all, which is why `snapshotId` had to admit `null`.
+
+    Proved by removing the pointer the instant the first read returns, rather
+    than by counting calls: a counter only watches the name it was attached to,
+    and the read that came back was reached through a different import. Nothing
+    can read the file after this, on any path, so a non-empty `snapshotId` means
+    the value was carried rather than re-fetched.
+
+    Run on both answer paths. They report the field for the same reason and used
+    to fetch it in two different places.
+    """
+    from theurian.application.project_service import read_active_state
+    from theurian.mcp import tools
+
+    registry, built = either_answer_path
+
+    def read_and_remove(paths: Any) -> Any:
+        state = read_active_state(paths)
+        paths.active_pointer.unlink(missing_ok=True)
+        return state
+
+    monkeypatch.setattr(tools, "read_active_state", read_and_remove)
+
+    result = await _call(registry, "knowledge.search", projectId="demo", query="token")
+
+    assert result["retrieval"]["indexed"] is built, "both answer paths must be covered"
+    assert result["retrieval"]["snapshotId"], "the state that answered, carried not re-read"
+
+
+@pytest.mark.asyncio
+async def test_search_and_status_name_the_same_canonical_state(
+    indexed: ProjectRegistry,
+) -> None:
+    """The point of publishing `snapshotId` at all.
+
+    A caller holding a `knowledge.status` response must be able to tell whether a
+    search answered from that same state without a third call, so the two strings
+    have to be the identical value rather than two renderings of one idea.
+    """
+    status = await _call(indexed, "knowledge.status", projectId="demo")
+    search = await _call(indexed, "knowledge.search", projectId="demo", query="token")
+
+    assert search["retrieval"]["snapshotId"] == status["stateHash"]
+
+
 @pytest.mark.asyncio
 async def test_search_without_an_index_says_so_rather_than_returning_nothing(
     registry: ProjectRegistry,
@@ -743,6 +905,223 @@ async def test_a_token_budget_is_honoured(indexed_corpus: ProjectRegistry) -> No
 
 
 @pytest.mark.asyncio
+async def test_the_default_budget_answers_an_ordinary_query_in_full(
+    indexed_corpus: ProjectRegistry,
+) -> None:
+    """FR-R4. The half of `DEFAULT_BUDGET_TOKENS` that bounds it from below.
+
+    A default exists so that omitting the parameter is *safe*, not so that it
+    silently truncates. Three short policy documents that all answer the query is
+    an ordinary answer to an ordinary question, and a caller who states no budget
+    has to receive it whole — otherwise the pipeline's second opinion, which
+    `diversify` spends a per-item cap to make room for, is invisible to every
+    caller who did not read the parameter list.
+
+    Asserted against the generous answer rather than against a token count, so it
+    survives any retuning of `estimate_tokens`: the claim is "the default did not
+    cost this caller anything", which is a comparison and not a number.
+
+    `DEFAULT_BUDGET_TOKENS` was moved from 2000 to 200 and the entire suite
+    passed. Every other budget test here states its own `maxTokens`, and the
+    published default — which is what an agent actually calls with — was checked
+    by nothing.
+    """
+    default = await _call(indexed_corpus, "knowledge.search", projectId="demo", query="token")
+    generous = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token", maxTokens=32_000
+    )
+
+    assert generous["count"] > 1, "the fixture must offer more than one hit to lose"
+    assert default["results"] == generous["results"], (
+        "a caller who stated no budget must not be answered with less than the corpus holds"
+    )
+    assert default["retrieval"]["droppedForBudget"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_tokens", [32_000, 200], ids=["generous", "tight"])
+async def test_the_reported_cost_is_measured_on_the_payload_the_caller_receives(
+    indexed_corpus: ProjectRegistry, max_tokens: int
+) -> None:
+    """FR-R4. A budget the caller cannot verify is a number, not a promise.
+
+    The ranked path used to price a *chunk* — the unit it retrieves and pins —
+    while sending a full result payload. The excerpt is capped at 280
+    characters; provenance, the trust triple, `sourceAnchors` and SAFETY are
+    not, and none of them was counted. Measured on a ten-document project,
+    `maxTokens=500` reported 486 and sent 1,953: 9.2x over at the tightest
+    budget. Every existing budget assertion compared the implementation's number
+    against itself, so all of them held.
+
+    Two assertions, deliberately different in kind. The first pins *what* is
+    priced: the serialised result, exactly as the caller receives it. The second
+    holds whatever `estimate_tokens` is later retuned to — a caller charged N
+    tokens must not be sent more than `CHARS_PER_TOKEN * N` characters — so this
+    test cannot be satisfied by changing the estimator to agree with a wrong
+    total.
+
+    Run at both ends of the budget because the tight case is the one that
+    matters and the one that was worst: it is where truncation silently eats the
+    caller's own instructions.
+    """
+    from theurian.domain.ranking import CHARS_PER_TOKEN, estimate_tokens
+
+    result = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token", maxTokens=max_tokens
+    )
+    sent = [json.dumps(hit, ensure_ascii=False) for hit in result["results"]]
+
+    assert result["retrieval"]["indexed"] is True, "this must exercise the ranked path"
+    assert sent, "a response with no results would satisfy any accounting"
+    assert result["retrieval"]["usedTokens"] == sum(estimate_tokens(one) for one in sent)
+    assert result["retrieval"]["usedTokens"] * CHARS_PER_TOKEN >= sum(len(one) for one in sent), (
+        "the caller was charged for less than was sent to them"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_budget_covers_the_whole_message_and_not_only_the_results(
+    indexed_corpus: ProjectRegistry,
+) -> None:
+    """FR-R4. What arrives in the caller's window is the response, not the hits.
+
+    `projectId`, the echoed `query`, `count` and the whole `retrieval` block —
+    the `note` above all, which is a paragraph of prose — travel with every
+    answer and were charged to nobody. Measured at 138 to 171 tokens of fixed
+    overhead, so `maxTokens=100` sent 302 to 352.
+
+    The budget is calibrated from the run itself rather than written as a
+    constant: `maxTokens` is set to exactly what the results alone cost, which is
+    the budget the previous accounting accepted in full while sending the
+    envelope on top of it. A response that still fits that number is one that
+    charged for the envelope.
+    """
+    from theurian.domain.ranking import estimate_tokens
+
+    generous = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token", maxTokens=32_000
+    )
+    results_alone = int(generous["retrieval"]["usedTokens"])
+    tight = await _call(
+        indexed_corpus,
+        "knowledge.search",
+        projectId="demo",
+        query="token",
+        maxTokens=results_alone,
+    )
+
+    assert generous["count"] > 1, "the fixture must offer more than one hit to drop"
+    assert tight["retrieval"]["droppedForBudget"] >= 1, (
+        "the results alone exactly filled this budget, so the envelope must displace one"
+    )
+    assert estimate_tokens(json.dumps(tight, ensure_ascii=False)) <= results_alone
+
+
+@pytest.mark.asyncio
+async def test_the_envelope_never_starves_the_answer_completely(
+    indexed_corpus: ProjectRegistry,
+) -> None:
+    """The floor `take_within_budget` promises, held through the new reservation.
+
+    A budget smaller than the envelope leaves nothing to spend, and the naive
+    subtraction returns zero or negative — which would turn "your budget is
+    small" into "we have no such decision", the failure the whole fallback exists
+    to prevent. One over-long answer a caller can truncate beats an empty one
+    they cannot act on.
+    """
+    starved = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token", maxTokens=1
+    )
+
+    assert starved["count"] == 1
+    assert starved["retrieval"]["usedTokens"] > 0
+
+
+#: One document long enough to split into several chunks, every one of which
+#: contains `gateway`. Without it the per-item cap cannot be observed at this
+#: layer: every other document here yields exactly one chunk, so "no item appears
+#: twice" is true whether or not the cap runs.
+LONG_BODY = (
+    "# Gateway runbook\n\nThis runbook records what the gateway does under load.\n\n"
+) + "".join(
+    f"## {section}\n\nThe gateway {section.lower()} procedure is rehearsed each quarter. "
+    f"It states what the gateway requires, who owns the gateway path, and when the "
+    f"gateway behaviour is next revisited. Nothing here changes without a migration.\n\n"
+    for section in ("Escalation", "Retention", "Exceptions", "Review cadence")
+)
+
+
+@pytest.fixture
+def indexed_long_document(registry: ProjectRegistry) -> ProjectRegistry:
+    """`registry`, plus one multi-chunk document, then a build."""
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / ".theurian/knowledge/architecture/gateway-runbook.md").write_text(LONG_BODY)
+        (root / ".theurian/migrations/01K1EAAAAA01234567890ABCDE-gateway.yaml").write_text(
+            EXTRA_MIGRATION.format(letter="E", slug="gateway-runbook", title="Gateway runbook")
+        )
+        _run("migrate", "apply")
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_one_result_per_document_however_many_chunks_matched(
+    indexed_long_document: ProjectRegistry,
+) -> None:
+    """`knowledge.search` returns documents, so a document appears once.
+
+    The cap lives in the `per_item=1` this tool passes to the ranking, and
+    nothing at this layer noticed when it moved: raising it to 2 left 96 tests
+    green while a second chunk of the same document appeared in `results` — two
+    hits with one `itemId`, two shares of the caller's budget, and a `count` that
+    no longer counts documents.
+    """
+    result = await _call(
+        indexed_long_document, "knowledge.search", projectId="demo", query="gateway", limit=10
+    )
+    items = [hit["itemId"] for hit in result["results"]]
+
+    assert "architecture.gateway-runbook" in items, "the multi-chunk document must be found"
+    assert items.count("architecture.gateway-runbook") == 1, (
+        "one result per document, not one per chunk"
+    )
+    assert len(items) == len(set(items))
+
+
+def test_the_cap_is_the_only_reason_the_long_document_appears_once(
+    indexed_long_document: ProjectRegistry,
+) -> None:
+    """Guards the guard above.
+
+    "It appears once" is satisfied by a corpus that could only ever have produced
+    one chunk of it. Asked for two per item, the same query against the same
+    index must return the same document twice, or the assertion above is about
+    the fixture rather than about the cap.
+
+    **Synchronous**, and at the ranking layer: this is the state the tool must
+    not publish, so it is measured one layer below the tool.
+    """
+    from theurian.application.retrieval_service import RetrievalService, SearchRequest
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(indexed_long_document.load()["demo"]["rootPath"])
+    (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
+    outcome = RetrievalService(SqliteIndexStore(built)).search(
+        SearchRequest(query="gateway", project_id="demo", per_item=2), NOTHING_WITHHELD
+    )
+
+    items = [candidate.item_id for candidate in outcome.candidates]
+    assert items.count("architecture.gateway-runbook") == 2, (
+        "the index must hold a second matching chunk for the cap to have work to do"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("query", ["token\x00policy", "token\ud800policy"])
 async def test_a_query_containing_an_untransportable_character_does_not_raise(
     indexed: ProjectRegistry, query: str
@@ -759,6 +1138,95 @@ async def test_a_query_containing_an_untransportable_character_does_not_raise(
     result = await _call(indexed, "knowledge.search", projectId="demo", query=query)
 
     assert "results" in result
+
+
+#: A document whose answer is nowhere near its head.
+#:
+#: The first section is long enough to fill an excerpt on its own and never says
+#: `quarantine`; the last section is the only place that word appears. That
+#: separation is the whole point: with a corpus of short documents the head of
+#: the body *is* the matched passage, so an excerpt taken from either place
+#: reads the same and the replacement below cannot be observed.
+HEAD_MARKER = "every inbound call carries a signed token"
+TAIL_MARKER = "the gateway quarantines the tenant"
+LAYERED_BODY = (
+    f"# Authentication policy\n\nThe gateway is the only trust boundary, so "
+    f"{HEAD_MARKER} and the signature is verified before any handler runs. "
+    + (
+        "This paragraph exists to fill the first passage with prose that does "
+        "not answer the question being asked. " * 6
+    )
+    + f"\n\n## Compromise handling\n\nWhen a signing key leaks, {TAIL_MARKER} "
+    f"and every credential minted under that key is revoked immediately.\n"
+)
+
+
+@pytest.fixture
+def layered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectRegistry:
+    """One document whose answer is in its last section, and a built index.
+
+    **Synchronous**, and that is not a style choice. `theurian index build`
+    embeds through `asyncio.run`, which raises inside an already-running loop,
+    so an async test cannot build an index in its own body.
+    """
+    registry = _project_with_body(tmp_path, monkeypatch, LAYERED_BODY)
+    _build_index(registry)
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_the_excerpt_is_the_passage_that_matched_not_the_head_of_the_document(
+    layered: ProjectRegistry,
+) -> None:
+    """Chunking buys ranking precision; this is what delivers it to the caller.
+
+    Retrieval ranks *chunks*, so a hit already knows which paragraph answered
+    the query. Returning the head of the document instead throws that away: the
+    caller sees an introduction, cannot tell why the document was returned, and
+    pays a `knowledge.get` to find out — which is the whole cost chunking was
+    supposed to avoid.
+
+    Both halves are asserted. "The matched passage is present" alone is
+    satisfied by returning the entire body; "the head is absent" alone is
+    satisfied by returning nothing at all.
+    """
+    result = await _call(layered, "knowledge.search", projectId="demo", query="quarantines")
+    excerpt = result["results"][0]["excerpt"]
+
+    assert TAIL_MARKER in excerpt, "the caller must see the paragraph that matched"
+    assert HEAD_MARKER not in excerpt, "not the head of the document it came from"
+
+
+@pytest.mark.asyncio
+async def test_the_unranked_fallback_still_excerpts_from_the_head(
+    layered: ProjectRegistry,
+) -> None:
+    """The control, and a published difference between the two answer paths.
+
+    Without an index there are no chunks, so the fallback has nothing but the
+    document to excerpt from and says the head. That is what makes the ranked
+    path's excerpt a real replacement rather than a coincidence of this corpus:
+    the same document, the same query, a different excerpt.
+    """
+    root = Path(layered.load()["demo"]["rootPath"])
+    (root / ".theurian/state/active-index.json").unlink()
+
+    result = await _call(layered, "knowledge.search", projectId="demo", query="quarantines")
+    excerpt = result["results"][0]["excerpt"]
+
+    assert result["retrieval"]["indexed"] is False
+    assert HEAD_MARKER in excerpt, "with no chunk to point at, the head is all there is"
+
+
+def _build_index(registry: ProjectRegistry) -> None:
+    """Run `theurian index build` inside a registered project's root."""
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
 
 
 @pytest.mark.asyncio
@@ -888,6 +1356,18 @@ async def test_an_absurd_token_budget_is_clamped_rather_than_raised(
 ) -> None:
     """A caller asking for a million tokens means "as much as you have".
     Answering with an exception that names an internal parameter helps nobody.
+
+    **The second assertion is weaker than it reads, and is left as a floor
+    rather than mistaken for a bound.** This corpus answers in 609 tokens, so
+    `usedTokens <= 32_000` holds at any `MAX_BUDGET_TOKENS` above that — and
+    holds with the clamp deleted outright. Measured: the constant was raised to
+    10,000,000 and all 1,261 tests passed. Nothing in this suite can bind it,
+    because `MAX_RESULTS` caps a response at fifty payloads of roughly 200
+    tokens — an excerpt is capped at `results.EXCERPT_CHARS` — which is a third
+    of the cap. Reaching it needs a corpus of fifty CJK documents, whose
+    280-character excerpts cost about 420 tokens each; until one exists, the
+    real bound on a response is `MAX_RESULTS`, which is pinned by
+    `test_a_caller_may_have_the_fifty_results_the_tool_promises`.
     """
     zero = await _call(indexed, "knowledge.search", projectId="demo", query="token", maxTokens=0)
     huge = await _call(
@@ -896,6 +1376,102 @@ async def test_an_absurd_token_budget_is_clamped_rather_than_raised(
 
     assert zero["count"] >= 1
     assert huge["retrieval"]["usedTokens"] <= 32_000
+
+
+# -- What a caller's own query may cost them (SEC-8, FR-R4) ------------------
+#
+# `mcp.tools.MAX_QUERY_CHARS` is a published contract value, not a knob: the
+# response schema states `maxLength: 2000` on `query` with the reason, and
+# `test_a_real_search_response_validates_against_its_published_schema
+# [unranked-overlong-query]` fails if the constant moves. So the *number* is
+# pinned, and nothing below restates it.
+#
+# What the schema cannot hold is the two claims that make the number safe, and
+# neither was tested. Both were confirmed reachable by mutation:
+#
+#   - `infrastructure.sqlite.index_query.MAX_QUERY_CHARS` lowered to 500: a
+#     query whose question sat 1,400 characters in came back `count: 0` while
+#     the response echoed all 1,907 characters of it. The schema calls that
+#     field "the string that was actually searched for"; it would have been a
+#     string containing a term nobody searched for. 1,260 tests passed.
+#   - `mcp.tools.MAX_QUERY_CHARS` raised to 8,000: at the default budget the
+#     caller's own query displaced two of their three results, because the
+#     echoed query is charged to them through `_envelope_tokens`.
+
+
+@pytest.mark.asyncio
+async def test_a_term_the_response_echoes_is_a_term_that_was_searched_for(
+    indexed: ProjectRegistry,
+) -> None:
+    """SEC-8. Two bounds, one string — the invariant that keeps the echo honest.
+
+    The query is truncated twice by two constants that happen to be equal: once
+    at the tool boundary, which decides what is *echoed*, and again in
+    `_query_terms`, which decides what is *searched*. If the retrieval one were
+    ever the smaller, every response would keep saying "query" of a string it
+    had only partly read, and a caller debugging a missing result would be
+    reading the wrong evidence.
+
+    **The probe is placed from the observed boundary, not from either
+    constant.** One call with an absurd query reveals where the echo is cut;
+    the real probe then puts its question just inside that point. That is what
+    makes it catch the divergence from *either* side, verified both ways: the
+    retrieval bound lowered to 500, and the tool bound raised to 8,000 — which
+    moves the observed cut, so the probe follows it out past the retrieval one.
+
+    The shape it cannot see is the two moving together. Both at 8,000 leaves
+    this green, because the echo and the search still agree; what that breaks is
+    the caller's budget, which is the test below, and the published `maxLength`,
+    which is the wire-contract suite.
+    """
+    absurd = await _call(indexed, "knowledge.search", projectId="demo", query="z" * 50_000)
+    cut = len(absurd["query"])
+    probe = "z" * (cut - 20) + " signed"
+
+    answer = await _call(indexed, "knowledge.search", projectId="demo", query=probe)
+
+    assert cut < 50_000, "the boundary must truncate at all, or the probe measures nothing"
+    assert answer["query"] == probe, "the whole probe must be echoed, including its question"
+    assert [hit["itemId"] for hit in answer["results"]] == ["architecture.auth-policy"], (
+        "a term the caller can read back in `query` must be one the search actually spent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_query_at_the_boundary_does_not_cost_the_caller_their_answer(
+    indexed_corpus: ProjectRegistry,
+) -> None:
+    """FR-R4. The caller's own words are charged to the caller's own budget.
+
+    `_envelope_tokens` prices the echoed query and reserves it from `maxTokens`,
+    which is right — it is sent to them — but it means the cap on a query is
+    also a cap on how much of a defaulting caller's answer their question may
+    eat. At 2,000 characters that is about 500 tokens of the 2,000-token
+    default, and all three results still fit. Measured: 4,000 still fits this
+    corpus, 6,000 does not, and at 8,000 the same query returns one result and
+    reports two dropped. So it is a band, and a corpus with more to say would
+    narrow it — a caller's question is charged against their whole answer, not
+    against a fixed share of it.
+
+    So this is the constraint the schema's `maxLength` does not express — the
+    query cap and `DEFAULT_BUDGET_TOKENS` are not independent, and raising the
+    first is a change to what the second delivers. No `maxTokens` is passed,
+    because the caller who is hurt is the one who never thought about it.
+
+    The query is sent absurdly long rather than at the published length, so the
+    boundary clamps it and the test needs no constant to know where that is.
+    """
+    short = await _call(indexed_corpus, "knowledge.search", projectId="demo", query="token")
+    maximal = await _call(
+        indexed_corpus, "knowledge.search", projectId="demo", query="token " + "z" * 50_000
+    )
+
+    assert short["count"] > 1, "the fixture must have an answer long enough to be cut into"
+    assert len(maximal["query"]) < 50_000, "the boundary must clamp, or this measures nothing"
+    assert [hit["itemId"] for hit in maximal["results"]] == [
+        hit["itemId"] for hit in short["results"]
+    ], "a question at the published maximum must not displace the answer to it"
+    assert maximal["retrieval"]["droppedForBudget"] == 0
 
 
 @pytest.mark.asyncio
@@ -951,17 +1527,516 @@ operations:
     assert all(hit["revisionId"] != "01K1AAAREV01234567890ABCDE" for hit in result["results"]), (
         "the retracted revision must not be served"
     )
-    assert result["retrieval"]["withheldSuperseded"] >= 1
     assert result["retrieval"]["stale"] is True
 
 
 @pytest.mark.asyncio
-async def test_what_a_stale_index_withheld_is_reported(indexed: ProjectRegistry) -> None:
-    """Zero results with no explanation reads as "we have no such decision".
-    The count says "your index is behind" instead."""
+async def test_what_a_stale_index_withheld_is_not_reported(indexed: ProjectRegistry) -> None:
+    """`withheldSuperseded` was a per-query count of documents that matched the
+    caller's terms and that the caller was not allowed to read.
+
+    It was added so zero results would not read as "we have no such decision".
+    It bought that at the price of a truth oracle, and the trigram retriever
+    matches any substring of three characters, so the oracle extracts rather
+    than merely detects. `stale` says the same useful thing — your index is
+    behind, expect fewer results — and says it identically for every query.
+    """
     result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
 
-    assert result["retrieval"]["withheldSuperseded"] == 0, "a current index withholds nothing"
+    assert "withheldSuperseded" not in result["retrieval"]
+    assert result["retrieval"]["stale"] is False
+
+
+# -- The extraction oracle, closed and kept closed (SEC-13, T-15, T-17) -------
+#
+# T-17 in `docs/security/threat-model.md` is the threat these tests discharge,
+# and it is its own entry rather than a note on T-15 for a reason worth knowing
+# while reading them: T-15 covers a secret being committed *into* approved
+# knowledge, and this attacks T-15's own remediation. Superseding a revision is
+# the documented way to get a secret out, and the window right after performing
+# that redaction was the window the plaintext could be read back — through a
+# different tool call, with no flag.
+#
+# T-17 records both extraction paths, re-measured against the pre-fix code:
+# 257 ordinary `knowledge.search` calls recovered a 20-character credential
+# through a superseding revision, and 215 recovered a 13-character one through
+# `deprecateItem` — where `withheldSuperseded` never moved and `usedTokens` was
+# the only channel. Both paths are parametrized below for exactly that reason:
+# closing one says nothing about the other.
+#
+# The invariant asserted here is deliberately stronger than "extraction fails",
+# which is a property of one attack strategy and can hold of a channel that is
+# merely narrow. It is: **a query matching only withheld content must be
+# indistinguishable, in the content of the response, from a query matching
+# nothing at all.** The two `retrieval` blocks are compared whole, so every
+# field is covered by construction and a field added later is covered the day it
+# is added.
+#
+# **In content, and only in content.** T-17 records a residual these tests do
+# not close and must not be read as closing: timing. A withheld candidate still
+# costs a canonical-store lookup before it is dropped, so latency stays weakly
+# correlated with whether a query matched withheld content. That is inherent to
+# re-checking against the canonical store on every call — the same re-check that
+# closes T-15's window — rather than something this fix chose to leave.
+
+#: A string that appears in exactly one document and in no English word list,
+#: so a hit is unambiguous and a miss is not a tokenizer accident.
+LEAKED_CREDENTIAL = "ZQXJVBWKPLMNTRD9"
+
+#: A query that matches nothing, in the same shape as `LEAKED_CREDENTIAL`. The comparison
+#: is only meaningful if the control query is equally exotic -- a common word
+#: would differ in `retrieval` for honest reasons.
+NO_SUCH_TERM = "QQZZXNOSUCHVALUE7"
+
+#: The dense retriever cannot score `LEAKED_CREDENTIAL`. Measured: the bundled embedder is
+#: a hashed character n-gram vectoriser, and a random sixteen-character token
+#: shares almost no n-gram mass with prose, so it sits below the 0.25 similarity
+#: floor and the dense retriever contributes nothing at all. A probe that never
+#: reaches the retriever cannot demonstrate anything about the field that
+#: retriever reports, so the dense case gets a query the retriever can actually
+#: score -- measured at 0.773 against the withheld chunk and below the floor for
+#: everything else in the corpus.
+DENSE_PROBE = "tenant quarantine playbook rehearsal"
+#: Unrelated to every document here, on every retriever. The control has to be
+#: as scoreable as the probe and match nothing, or the comparison is between two
+#: different kinds of query rather than between two answers.
+DENSE_CONTROL = "kubernetes scheduler bin packing"
+
+#: ``(id, probe, control, useDense)``. The probe matches only the withheld
+#: document; the control matches nothing.
+PROBES = (
+    ("the-secret-itself", LEAKED_CREDENTIAL, NO_SUCH_TERM, False),
+    ("a-phrase-the-vector-retriever-can-score", DENSE_PROBE, DENSE_CONTROL, True),
+)
+
+RUNBOOK_BODY = (
+    f"# Tenant quarantine playbook\n\nWhen the shared gateway credential "
+    f"{LEAKED_CREDENTIAL} leaks, the responder rehearses this quarantine playbook, "
+    f"isolates the affected tenant, and records the rehearsal in the "
+    f"quarantine ledger before escalating.\n"
+)
+
+RUNBOOK_TITLE = "Tenant quarantine playbook"
+
+#: The one document both withholding stories retire, so both write the same
+#: migration. ``title`` is the only hole in it, and it is a hole because the
+#: title is prepended to the body before chunking: an English title on the
+#: Japanese depth corpus would hand the word index tokens no other document in
+#: that corpus has, and the word index having nothing to say is the point of
+#: that corpus.
+RUNBOOK_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1FAAAAA01234567890ABCDE
+createdAt: 2026-08-02T13:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.runbook
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.runbook
+    revisionId: 01K1FAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/runbook.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/runbook.md
+"""
+
+#: The remediation itself: a new revision with the credential removed. The
+#: window this opens is the ordinary state between `migrate apply` and `index
+#: build` -- performing the fix is what makes the old text readable from the
+#: index, which is why the oracle mattered.
+REDACTION_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1GAAAAA01234567890ABCDE
+createdAt: 2026-08-03T15:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.runbook
+    revisionId: 01K1GREVAA01234567890ABCDE
+    expectedRevision: 01K1FAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/runbook-v2.md
+    metadata:
+      title: Tenant quarantine playbook
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/runbook-v2.md
+"""
+
+#: The other way content leaves approved knowledge. Covered alongside the
+#: redaction because they take different branches out of `ResultGate` -- one
+#: fails the status gate, the other the current-revision check -- and closing one
+#: says nothing about the other.
+DEPRECATION_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1GAAAAA01234567890ABCDE
+createdAt: 2026-08-03T15:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: architecture.runbook
+    reason: the credential was pasted into it
+"""
+
+
+def _supersede(root: Path) -> None:
+    (root / ".theurian/knowledge/architecture/runbook-v2.md").write_text(
+        "# Tenant quarantine playbook\n\nThe gateway credential now lives in the secret store.\n"
+    )
+    (root / ".theurian/migrations/01K1GAAAAA01234567890ABCDE-redact.yaml").write_text(
+        REDACTION_MIGRATION
+    )
+
+
+def _deprecate(root: Path) -> None:
+    (root / ".theurian/migrations/01K1GAAAAA01234567890ABCDE-deprecate.yaml").write_text(
+        DEPRECATION_MIGRATION
+    )
+
+
+@pytest.fixture(params=[_supersede, _deprecate], ids=["superseded", "deprecated"])
+def withheld(registry: ProjectRegistry, request: pytest.FixtureRequest) -> ProjectRegistry:
+    """A secret indexed while approved, then withheld, with the index left stale.
+
+    **Synchronous**, because `theurian index build` embeds through
+    `asyncio.run`, which raises inside an already-running loop.
+
+    The index is deliberately *not* rebuilt. That is not a contrived state: it
+    is where every project sits between applying the migration that redacts a
+    secret and running the next `index build`.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / ".theurian/knowledge/architecture/runbook.md").write_text(RUNBOOK_BODY)
+        (root / ".theurian/migrations/01K1FAAAAA01234567890ABCDE-runbook.yaml").write_text(
+            RUNBOOK_MIGRATION.format(title=RUNBOOK_TITLE)
+        )
+        _run("migrate", "apply")
+        _run("index", "build")
+
+        request.param(root)
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
+
+
+@pytest.mark.parametrize(
+    ("probe", "control", "use_dense"), [p[1:] for p in PROBES], ids=[p[0] for p in PROBES]
+)
+def test_the_stale_index_still_ranks_the_withheld_document(
+    withheld: ProjectRegistry, probe: str, control: str, use_dense: bool
+) -> None:
+    """Guards the guard: proves each probe reaches the branch under test.
+
+    If the index no longer ranked the withheld document, "a query for it looks
+    like a query for nothing" would be true because there was nothing to
+    withhold — the fixture, not the fix, would be doing the work. That is not
+    hypothetical here: the dense retriever cannot score `LEAKED_CREDENTIAL` at all, so the
+    `useDense` case was silently vacuous until this fixed it.
+
+    Asserted against the ranked candidate list, one layer below the canonical
+    store that does the withholding, and with the same `useDense` the response
+    test uses.
+    """
+    from theurian.application.retrieval_service import RetrievalService, SearchRequest
+    from theurian.infrastructure.embedding import HashingEmbedding
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(withheld.load()["demo"]["rootPath"])
+    (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
+    service = RetrievalService(SqliteIndexStore(built), HashingEmbedding())
+
+    found = service.search(
+        SearchRequest(query=probe, project_id="demo", use_dense=use_dense), NOTHING_WITHHELD
+    )
+    nothing = service.search(
+        SearchRequest(query=control, project_id="demo", use_dense=use_dense), NOTHING_WITHHELD
+    )
+
+    assert [c.item_id for c in found.candidates] == ["architecture.runbook"], (
+        "the probe must still rank the retracted document, and only it"
+    )
+    assert nothing.candidates == (), "and the control must reach no candidate at all"
+    if use_dense:
+        assert "dense" in found.candidates[0].found_by, (
+            "the dense retriever must be one of the retrievers that surfaced it, "
+            "or `embeddingModel` is not a channel this probe can open"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("probe", "control", "use_dense"), [p[1:] for p in PROBES], ids=[p[0] for p in PROBES]
+)
+async def test_a_query_matching_only_withheld_content_is_indistinguishable_from_no_match(
+    withheld: ProjectRegistry, probe: str, control: str, use_dense: bool
+) -> None:
+    """SEC-13, T-15, T-17. The whole `retrieval` block, compared field by field.
+
+    Not "the secret is absent from the response" — it was already absent, and
+    the leak was never the text. It was that ``count: 0, results: [],
+    usedTokens: 46`` *states* that something matched and may not be read, which
+    is the truth oracle sequential extraction needs.
+
+    ``useDense=True`` is covered because ``embeddingModel`` was a fourth channel
+    on top of the count, the token total and the mode: it used to be reported
+    empty when the dense retriever found nothing, so it flipped on a withheld
+    dense hit — one bit per query, and no flag required to read it.
+
+    The claim is about the *content* of the response and nothing else. T-17
+    records timing as a standing residual: a withheld candidate still costs a
+    canonical-store lookup, so latency remains weakly correlated. Nothing here
+    measures or asserts anything about how long the two calls took, and a reader
+    must not take equality of these two blocks as a claim that they are
+    indistinguishable in every respect.
+    """
+    withheld_only = await _call(
+        withheld, "knowledge.search", projectId="demo", query=probe, useDense=use_dense
+    )
+    no_match = await _call(
+        withheld, "knowledge.search", projectId="demo", query=control, useDense=use_dense
+    )
+
+    assert withheld_only["count"] == 0
+    assert withheld_only["results"] == []
+    assert withheld_only["retrieval"] == no_match["retrieval"], (
+        "every field that differs here is a channel an attacker reads one bit at a time"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nothing_derived_from_the_withheld_document_is_reported(
+    withheld: ProjectRegistry,
+) -> None:
+    """SEC-13, T-17, stated positively so a reader knows what the fields may say.
+
+    Every number in `retrieval` is computed from the results the caller actually
+    receives; everything else is a property of the index or of the caller's own
+    parameters. `stale` is the deliberate exception and the reason
+    `withheldSuperseded` could be deleted rather than merely hidden: it says
+    "your index is behind, expect fewer results" identically for every query.
+
+    `droppedForBudget` is asserted at zero for its own reason. A withheld hit is
+    not "dropped for budget" — counting it there would move the leak one field
+    to the left rather than close it.
+    """
+    result = await _call(withheld, "knowledge.search", projectId="demo", query=LEAKED_CREDENTIAL)
+    retrieval = result["retrieval"]
+
+    assert retrieval["usedTokens"] == 0, "nothing was sent, so nothing was charged"
+    assert retrieval["droppedForBudget"] == 0, "a withheld hit is not 'dropped for budget'"
+    assert retrieval["mode"] == "none", "the mode names the retrievers behind the *results*"
+    assert "withheldSuperseded" not in retrieval
+    assert retrieval["stale"] is True, "the query-independent half is still told"
+
+
+# -- The same oracle, in the input space the probes above cannot reach --------
+#
+# Every probe above matches the withheld document *and nothing else*, so both
+# sides of the comparison answer `count: 0` and every field agrees — which stayed
+# true while the caller's `limit` was still being applied to *candidates*, and a
+# withheld candidate was still taking a result slot from a visible one.
+#
+# The channel needs both halves: a query matching withheld content **and** at
+# least `limit` documents the caller may see. Then the withheld hit displaces the
+# last visible one, `count` drops by one, and the oracle is open again — measured
+# at 203 ordinary `knowledge.search` calls to recover a sixteen-character
+# credential, cheaper than the 257 the probes above were written against.
+#
+# The invariant is unchanged and the assertion is stronger: the **whole
+# response** must be identical, not merely the `retrieval` block. `fusedScore`
+# lives in `results`, and it was a second oracle of exactly the same shape — RRF
+# scores `1 / (k + rank)`, so a withheld chunk ranked above a visible one pushed
+# that visible one's published score from 0.032787 to 0.032258. Four visible
+# hits, four numbers, all moving together: a finer read than `count`, because it
+# also says which rank the withheld document took.
+
+#: A control the same length as the probe. `retrieval` no longer depends on what
+#: a query *matched*, but the response does echo the query and the caller is
+#: charged for the envelope that carries it, so a control of a different length
+#: would differ from the probe for an honest reason and blunt the comparison.
+CROWD_CONTROL = "QQZZXNOSUCHVAL7X"
+
+#: How many approved documents the crowding probe also matches. Enough that the
+#: displacement is visible at several `limit` values rather than at one.
+CROWD = 4
+
+
+def _without_query(payload: dict[str, Any]) -> dict[str, Any]:
+    """Everything a caller receives except the string they sent."""
+    return {key: value for key, value in payload.items() if key != "query"}
+
+
+@pytest.fixture(params=[_supersede, _deprecate], ids=["superseded", "deprecated"])
+def crowded(registry: ProjectRegistry, request: pytest.FixtureRequest) -> ProjectRegistry:
+    """`withheld`, plus enough approved documents to fill the caller's `limit`.
+
+    Same shape as `withheld` and deliberately not layered on it: the crowd has to
+    be in the index *before* the redaction, and rebuilding afterwards would
+    remove the withheld revision from the index and leave nothing to withhold.
+
+    **Synchronous**, because `theurian index build` embeds through `asyncio.run`,
+    which raises inside an already-running loop.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / ".theurian/knowledge/architecture/runbook.md").write_text(RUNBOOK_BODY)
+        (root / ".theurian/migrations/01K1FAAAAA01234567890ABCDE-runbook.yaml").write_text(
+            RUNBOOK_MIGRATION.format(title=RUNBOOK_TITLE)
+        )
+        for index, letter in enumerate("HJKM"[:CROWD]):
+            slug = f"gateway-note-{index}"
+            (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+                f"# Gateway note {index}\n\nThe shared gateway meters every request for "
+                f"tenant {index}, and the gateway rejects an unsigned one.\n"
+            )
+            (
+                root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml"
+            ).write_text(
+                EXTRA_MIGRATION.format(letter=letter, slug=slug, title=f"Gateway note {index}")
+            )
+        _run("migrate", "apply")
+        _run("index", "build")
+
+        request.param(root)
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
+
+
+def test_the_crowding_probe_puts_the_withheld_document_among_visible_ones(
+    crowded: ProjectRegistry,
+) -> None:
+    """Guards the guard: proves this fixture can violate the invariant.
+
+    Two preconditions, both necessary. The withheld document must still be ranked
+    — otherwise there is nothing to withhold and the fixture, not the fix, keeps
+    the two responses equal. And it must rank *above* at least one visible
+    document, or removing it changes nothing about which visible ones fit inside
+    a small `limit`.
+
+    Asserted one layer below the canonical store that does the withholding, with
+    the same `per_item` the tool passes.
+    """
+    from theurian.application.retrieval_service import RetrievalService, SearchRequest
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(crowded.load()["demo"]["rootPath"])
+    (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
+    outcome = RetrievalService(SqliteIndexStore(built)).search(
+        SearchRequest(query=f"gateway {LEAKED_CREDENTIAL}", project_id="demo", per_item=1),
+        NOTHING_WITHHELD,
+    )
+    items = [candidate.item_id for candidate in outcome.candidates]
+
+    assert "architecture.runbook" in items, "the probe must still reach the retracted document"
+    assert items.index("architecture.runbook") < len(items) - 1, (
+        "it must outrank at least one visible document, or its removal displaces nothing"
+    )
+    assert len([item for item in items if item != "architecture.runbook"]) >= CROWD, (
+        "and the caller must have enough visible documents to fill a `limit`"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", range(1, CROWD + 2))
+async def test_a_withheld_hit_never_costs_a_visible_one_its_place(
+    crowded: ProjectRegistry, limit: int
+) -> None:
+    """SEC-13, T-15, T-17. The whole response, compared field by field.
+
+    Run across every `limit` from one to one past the crowd, because the leak is
+    a boundary effect: it appears exactly when the withheld candidate falls
+    inside `limit` and disappears once `limit` exceeds everything that matched.
+    A single `limit` would have been the one that passed.
+
+    `maxTokens` is generous on purpose. This test is about the gate, not about
+    the budget, and a budget tight enough to drop results would make the two
+    calls differ over which of them the caller could afford rather than over what
+    they were allowed to see.
+    """
+    probe = await _call(
+        crowded,
+        "knowledge.search",
+        projectId="demo",
+        query=f"gateway {LEAKED_CREDENTIAL}",
+        limit=limit,
+        maxTokens=32_000,
+    )
+    control = await _call(
+        crowded,
+        "knowledge.search",
+        projectId="demo",
+        query=f"gateway {CROWD_CONTROL}",
+        limit=limit,
+        maxTokens=32_000,
+    )
+
+    assert probe["count"] == min(limit, CROWD), "the caller gets every document they may read"
+    assert _without_query(probe) == _without_query(control), (
+        "anything that differs here is a bit an attacker reads per call"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_withheld_hit_does_not_move_the_scores_of_the_visible_ones(
+    crowded: ProjectRegistry,
+) -> None:
+    """The same oracle one field to the right, stated on its own so it stays shut.
+
+    `count` is a single number and saturates: once `limit` is smaller than the
+    number of visible matches it stops moving. `fusedScore` does not. It is
+    published per hit to six decimal places and every one of them shifts by a
+    rank when a withheld chunk ranks above it, so a saturated `count` and a full
+    result set still carried the signal.
+
+    The fix was first to re-fuse over what survived the gate, and is now to fuse
+    only what the gate ever admitted — the retrievers are read through a
+    `Visibility`, so the ranks that reach RRF are already the ranks an index
+    without the withheld document would have produced. That is not an
+    approximation of the number it replaces; it is the number.
+    """
+    probe = await _call(
+        crowded,
+        "knowledge.search",
+        projectId="demo",
+        query=f"gateway {LEAKED_CREDENTIAL}",
+        maxTokens=32_000,
+    )
+    control = await _call(
+        crowded,
+        "knowledge.search",
+        projectId="demo",
+        query=f"gateway {CROWD_CONTROL}",
+        maxTokens=32_000,
+    )
+
+    assert [hit["fusedScore"] for hit in probe["results"]] == [
+        hit["fusedScore"] for hit in control["results"]
+    ]
+    assert [hit["itemId"] for hit in probe["results"]] == [
+        hit["itemId"] for hit in control["results"]
+    ], "nor may the order move, which is the same read one step less directly"
 
 
 # -- One status authority, reached from every tool ---------------------------
@@ -1037,3 +2112,647 @@ async def test_relations_to_withheld_items_are_not_published(
     )
 
     assert all("caching-draft" not in relation["targetItemId"] for relation in result["relations"])
+
+
+# -- The candidate depth itself, and the equality that closes the family ------
+#
+# The three sections above each closed one number by moving it past the gate:
+# `usedTokens`, then `count`, then `fusedScore`. Two more were left, and neither
+# is a number:
+#
+# - `CANDIDATE_DEPTH` rows were read from each retriever *before* anything asked
+#   who may see them, so a withheld row took one of the fifty and the fiftieth
+#   visible row fell off the end. Measured on the shipped code: 442 ordinary
+#   `knowledge.search` calls recovered a sixteen-character credential, at the
+#   **default** token budget, because `droppedForBudget` publishes the size of
+#   the gate-cleared set. On a Japanese corpus the precondition is automatic —
+#   `unicode61` cannot segment CJK, so the trigram retriever's fifty slots *are*
+#   the candidate list.
+# - `diversify(per_item=...)` also ran before the gate, so *which chunk* of a
+#   document survived was decided by a ranking that included withheld rows.
+#   Re-fusing afterwards cannot undo that: the discarded chunk is gone. Measured
+#   over 20,000 random rank arrangements, chunk identity moved 9.1% of the time,
+#   visible item order 3.4%, published `fusedScore` 3.6% — a different `excerpt`
+#   for the same document, from two queries differing only in a token no visible
+#   document contains.
+#
+# Both are the same defect, and it is not one a comparison of two *queries* can
+# state fully: `count` saturates, `fusedScore` needs a tie, and under
+# `useDense=True` two different query strings legitimately produce different
+# dense ranks for visible documents, so a whole-response comparison would fail
+# for an honest reason.
+#
+# So the property is stated against two *corpora* and one query: the response
+# must equal what an index that never held the withheld document would return.
+# Nothing about the query varies, which is what makes the comparison total —
+# every field, `useDense` included.
+
+#: Enough approved documents to fill every retriever's candidate depth. Smaller
+#: and the boundary is unreachable: the withheld document has to take a slot a
+#: visible one would otherwise have had, which cannot happen until the slots run
+#: out.
+#:
+#: **An absolute number, not `CANDIDATE_DEPTH + 5`.** Written as an offset from
+#: the constant, the crowd resized itself whenever the constant moved, so the
+#: fixture saturated the pipeline at any depth and pinned none: `CANDIDATE_DEPTH`
+#: was set to 5 and to 200 and this whole module passed. Fifty-five is fifty —
+#: the depth the T-17 measurements were taken at — plus the five that make the
+#: fiftieth visible row displaceable. If the pipeline's depth ever exceeds this,
+#: `test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_depth`
+#: fails, which is the correct outcome: the fixture would no longer reach the
+#: boundary it exists to sit on.
+DEPTH_CROWD = 55
+
+#: The number of visible rows the pipeline is documented to read per retriever,
+#: and the depth every T-17 and SEC-13 measurement in the threat model was taken
+#: at. Stated here in its own right so the fixture describes a *corpus* rather
+#: than restating whatever the implementation currently holds.
+DOCUMENTED_DEPTH = 50
+
+#: The two fields excluded from the comparisons below, and the only two.
+#:
+#: They name *which* build and *which* canonical state answered, and two
+#: separately created projects cannot share either: `indexBuildId` is a fresh
+#: ULID per build and `snapshotId` is a hash over content that differs by the
+#: withheld document itself. Excluding a field is how a comparison quietly gets
+#: narrower than the property it claims, so both are covered instead by
+#: `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`,
+#: which shows they are the same for every query against one project and
+#: therefore cannot answer "did this query match something withheld?".
+BUILD_IDENTITY = ("indexBuildId", "snapshotId")
+
+#: One template for the whole crowd. `EXTRA_MIGRATION` above encodes its ids as
+#: a single letter, which runs out well before `CANDIDATE_DEPTH` documents.
+DEPTH_NOTE_MIGRATION = """apiVersion: theurian.dev/v1
+id: {mid}
+createdAt: 2026-08-02T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.{slug}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.{slug}
+    revisionId: {rid}
+    contentFile: ../knowledge/architecture/{slug}.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/{slug}.md
+"""
+
+DEPTH_RUNBOOK_ID = "01K1FAAAAA01234567890ABCDE"
+DEPTH_RETIRE_ID = "01K1GAAAAA01234567890ABCDE"
+DEPTH_LATE_ID = "01K1HAAAAA01234567890ABCDE"
+
+
+def _depth_ulid(tag: str, number: int) -> str:
+    """A deterministic ULID for the crowd, so every project mints the same ones.
+
+    Chunk ids are `<revision ULID>#<ordinal>` and every tie in this corpus of
+    near-identical notes breaks on chunk id, so two projects that disagree about
+    these ids would produce two different orders for honest reasons and the
+    comparison would prove nothing.
+
+    ``tag`` is Crockford base32, which has no ``I``, ``L``, ``O`` or ``U``.
+    """
+    return f"01K1{tag}{number:03d}".ljust(26, "0")[:26]
+
+
+@dataclass(frozen=True, slots=True)
+class _DepthCorpus:
+    """One writing system's version of the crowd, and how retrieval behaves on it.
+
+    The equality property was pinned against English only, and English is the
+    easy case: `unicode61` splits it on word boundaries, so the word index ranks
+    the whole crowd and the trigram index is a second opinion. Japanese is the
+    case the trigram index exists for (ADR-0023), and the situation there is
+    materially different — and worse. `unicode61` cannot segment CJK, so a run of
+    Japanese between two punctuation marks is *one* token: the word index cannot
+    match `ゲートウェイ` inside it and has nothing to contribute, which makes the
+    trigram retriever's fifty candidate slots the entire candidate list. That is
+    why the extraction attack needed no filler trick on a Japanese corpus — and
+    why a property held only against English was held against the writing system
+    that needs it least.
+
+    Held equal across both: the ids, the crowd size, the query's shape (a common
+    term the crowd matches plus the credential only the withheld document holds),
+    and the staleness of every index.
+    """
+
+    #: The pytest parameter id, so a failure names the writing system.
+    id: str
+    #: Matches the crowd through its common term and the withheld document
+    #: through the credential — the two halves the channel needs.
+    query: str
+    #: The crowd note body and title, by ordinal.
+    note: str
+    note_title: str
+    #: The document that gets withheld, with and without the thing worth
+    #: stealing. Both bodies match the crowd's own term, so in both projects the
+    #: withheld document is a real candidate the retrievers rank. Only one of
+    #: them can be reached by a query for the credential, which is the single
+    #: difference the response is required not to notice.
+    runbook: str
+    runbook_secret_tail: str
+    runbook_clean_tail: str
+    runbook_title: str
+    #: The unrelated item created after the build in the project that never held
+    #: the runbook, so that project is left exactly as stale as the other two.
+    unrelated_title: str
+    unrelated_body: str
+    #: How many rows the *word* index can offer for `query` at
+    #: :data:`DOCUMENTED_DEPTH`, measured rather than reasoned about. This is the
+    #: number that says the two corpora are different machines: fifty in English,
+    #: and in Japanese exactly one — the withheld document, reached through the
+    #: credential, which is the only part of the query `unicode61` can tokenize
+    #: out of that corpus.
+    word_index_rows: int
+
+    def body(self, number: int) -> str:
+        return self.note.format(number=number)
+
+    def title(self, number: int) -> str:
+        return self.note_title.format(number=number)
+
+    def runbook_body(self, *, secret: bool) -> str:
+        tail = self.runbook_secret_tail if secret else self.runbook_clean_tail
+        return self.runbook.format(tail=tail)
+
+
+ENGLISH_DEPTH = _DepthCorpus(
+    id="english",
+    query=f"gateway {LEAKED_CREDENTIAL}",
+    note=(
+        "# Gateway note {number}\n\nThe shared gateway meters every request for "
+        "tenant {number}. The gateway rejects an unsigned request and records it "
+        "in the ledger.\n"
+    ),
+    note_title="Gateway note {number}",
+    runbook=(
+        "# Tenant quarantine playbook\n\nWhen the shared gateway vault {tail}, the "
+        "responder isolates the affected tenant and records the rehearsal in the ledger.\n"
+    ),
+    runbook_secret_tail=f"credential {LEAKED_CREDENTIAL} leaks",
+    runbook_clean_tail="credential is rotated on schedule",
+    runbook_title=RUNBOOK_TITLE,
+    unrelated_title="Ledger retention",
+    unrelated_body="# Ledger retention\n\nRecords are kept for seven years.\n",
+    word_index_rows=DOCUMENTED_DEPTH,
+)
+
+JAPANESE_DEPTH = _DepthCorpus(
+    id="japanese",
+    query=f"ゲートウェイ {LEAKED_CREDENTIAL}",
+    note=(
+        "# ゲートウェイ運用メモ {number}\n\n共有ゲートウェイはテナント {number} の全リクエストを"
+        "計測する。ゲートウェイは署名のないリクエストを拒否し、その記録を台帳に残す。\n"
+    ),
+    note_title="ゲートウェイ運用メモ {number}",
+    runbook=(
+        "# テナント隔離手順書\n\n共有ゲートウェイの金庫で {tail} 、対応者は影響を受けた"
+        "テナントを隔離し、予行演習の結果を台帳に記録する。\n"
+    ),
+    runbook_secret_tail=f"認証情報 {LEAKED_CREDENTIAL} が漏洩した場合",
+    runbook_clean_tail="認証情報が定期的に更新される場合",
+    runbook_title="テナント隔離手順書",
+    unrelated_title="台帳の保存期間",
+    unrelated_body="# 台帳の保存期間\n\n記録は七年間保存する。\n",
+    # Measured, not assumed: the word index returns the withheld runbook and
+    # nothing else, because the credential is ASCII and the fifty-five Japanese
+    # notes are one token each.
+    word_index_rows=1,
+)
+
+DEPTH_CORPORA = (ENGLISH_DEPTH, JAPANESE_DEPTH)
+
+
+def _build_depth_project(
+    root: Path, corpus: _DepthCorpus, *, secret: bool, holds_the_document: bool
+) -> None:
+    """One project: a crowd, optionally a withheld document, and a stale index.
+
+    The three projects differ in exactly one thing each, and everything else is
+    held equal on purpose — the ids, the bodies of the crowd, and the *freshness*
+    of the index. The last one matters more than it looks: `stale` changes the
+    `note`, the `note` is priced into the envelope, and the envelope decides how
+    many results fit a default budget. A control whose index was merely fresh
+    differed from the probe by two results for that reason alone, which is an
+    honest difference and a useless comparison. So the project that never held
+    the document gets an unrelated item created after its build, and is left
+    exactly as far behind as the other two.
+    """
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _run("init")
+    _run("project", "register")
+    knowledge = root / ".theurian/knowledge/architecture"
+    migrations = root / ".theurian/migrations"
+
+    for number in range(DEPTH_CROWD):
+        slug = f"gateway-note-{number:02d}"
+        (knowledge / f"{slug}.md").write_text(corpus.body(number))
+        (migrations / f"{_depth_ulid('N', number)}-{slug}.yaml").write_text(
+            DEPTH_NOTE_MIGRATION.format(
+                mid=_depth_ulid("N", number),
+                rid=_depth_ulid("R", number),
+                slug=slug,
+                title=corpus.title(number),
+            )
+        )
+    if holds_the_document:
+        (knowledge / "runbook.md").write_text(corpus.runbook_body(secret=secret))
+        (migrations / f"{DEPTH_RUNBOOK_ID}-runbook.yaml").write_text(
+            RUNBOOK_MIGRATION.format(title=corpus.runbook_title)
+        )
+
+    _run("migrate", "apply")
+    _run("index", "build")
+
+    if holds_the_document:
+        (migrations / f"{DEPTH_RETIRE_ID}-deprecate.yaml").write_text(DEPRECATION_MIGRATION)
+    else:
+        (knowledge / "ledger-retention.md").write_text(corpus.unrelated_body)
+        (migrations / f"{DEPTH_LATE_ID}-ledger.yaml").write_text(
+            DEPTH_NOTE_MIGRATION.format(
+                mid=DEPTH_LATE_ID,
+                rid=_depth_ulid("P", 0),
+                slug="ledger-retention",
+                title=corpus.unrelated_title,
+            )
+        )
+    _run("migrate", "apply")
+
+
+@dataclass(frozen=True, slots=True)
+class _DepthProjects:
+    """Three projects built from one corpus, and the corpus that describes them."""
+
+    registry: ProjectRegistry
+    corpus: _DepthCorpus
+
+
+@pytest.fixture(scope="module", params=DEPTH_CORPORA, ids=[c.id for c in DEPTH_CORPORA])
+def three_indexes(
+    tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest
+) -> _DepthProjects:
+    """The same crowd, indexed three ways, in each writing system.
+
+    ``depth-probe``      the withheld document holds the credential
+    ``depth-same-shape`` the withheld document holds nothing worth stealing
+    ``depth-absent``     the document was never written at all
+
+    Each writing system gets its own data directory, so the three project ids
+    are the same in both and every test below can name them without knowing
+    which corpus it was handed.
+
+    Module-scoped because it builds three real projects through the real CLI and
+    every test below asks it the same question. Measured at 2.9 s per corpus.
+    """
+    corpus: _DepthCorpus = request.param
+    base = tmp_path_factory.mktemp(f"depth-{corpus.id}")
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(base / "datadir"))
+    try:
+        for name, secret, holds in (
+            ("depth-probe", True, True),
+            ("depth-same-shape", False, True),
+            ("depth-absent", False, False),
+        ):
+            root = base / name
+            root.mkdir()
+            monkey.chdir(root)
+            _build_depth_project(root, corpus, secret=secret, holds_the_document=holds)
+    finally:
+        monkey.undo()
+    return _DepthProjects(registry=ProjectRegistry.default(base / "datadir"), corpus=corpus)
+
+
+def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_depth(
+    three_indexes: _DepthProjects,
+) -> None:
+    """Guards the guard: proves this fixture can violate the invariant.
+
+    Three preconditions. The withheld document must still be in the index and
+    still be matched — otherwise the equality below holds because there is
+    nothing to withhold. It must rank inside the depth the pipeline reads, or it
+    takes no slot from anyone. And the crowd must be able to fill that depth, or
+    the fiftieth visible row does not exist to be displaced.
+
+    **The rows are counted at :data:`DOCUMENTED_DEPTH`, not at
+    ``CANDIDATE_DEPTH``.** Asked at the constant's own value, every count here
+    moved with it and the assertion held at a depth of 5 and of 200 — a guard
+    that resizes itself guards nothing. Counting at fifty makes this a claim
+    about the corpus: fifty-five near-identical notes really do offer fifty rows
+    to the retriever that carries them. The one thing that must still be read off
+    the implementation is the last assertion, which says the depth the pipeline
+    actually reads is a depth this corpus can fill — if it ever is not, every
+    equality assertion below is vacuous and this is where that gets said.
+
+    It also records *which* retriever is doing the work, because that is the
+    whole difference between the two corpora and it is not visible from the
+    response. English fills both retrievers. Japanese fills only the trigram
+    one: `unicode61` treats an unbroken run of CJK as a single token, so the
+    fifty-five notes are one token each and the word index cannot match
+    `ゲートウェイ` inside any of them — the single row it does return is the
+    withheld document, reached through the ASCII credential. Fifty trigram slots
+    are therefore the entire candidate list, which is why the attack needed no
+    filler trick there.
+
+    Ranked through the index directly, one layer below the canonical store that
+    does the withholding — which is what the retrievers saw before this
+    milestone.
+    """
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    corpus = three_indexes.corpus
+    root = Path(three_indexes.registry.load()["depth-probe"]["rootPath"])
+    (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
+    index = SqliteIndexStore(built)
+
+    words = index.search_lexical(corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH)
+    trigrams = index.search_substring(
+        corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
+    )
+
+    assert (len(words), len(trigrams)) == (corpus.word_index_rows, DOCUMENTED_DEPTH), (
+        "the crowd must fill the depth it is there to fill, on the retriever that carries it"
+    )
+    assert "architecture.runbook" in [row.item_id for row in trigrams], (
+        "the withheld document must take one of the slots, or nothing is displaced"
+    )
+    assert "architecture.runbook" in [row.item_id for row in words], (
+        "and it must be reachable through the word index too, or `dense` and "
+        "`lexical` below prove nothing about it"
+    )
+    assert CANDIDATE_DEPTH <= DOCUMENTED_DEPTH, (
+        "the pipeline reads deeper than this crowd can fill, so no visible row is "
+        "displaced and every equality asserted below holds vacuously"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_three_projects_are_equally_behind_their_own_knowledge(
+    three_indexes: _DepthProjects,
+) -> None:
+    """Guards the guard: the confound that makes an honest difference look like a leak.
+
+    `stale` decides the `note`, the `note` is priced into the envelope, and the
+    envelope decides how many results fit a default budget. A control whose index
+    was merely *fresh* differed from the probe by two results for that reason
+    alone — a real difference, nothing to do with the withheld document, and
+    indistinguishable in the comparison below from the leak it is looking for.
+
+    So `depth-absent` is given an unrelated item after its build, purely to leave
+    it as far behind as the two that retired the runbook. That is a fixture
+    detail nothing else would notice breaking: remove it and every equality
+    assertion below starts failing for a reason that is not a security defect,
+    and the obvious response is to relax the assertion. This says out loud which
+    of the two it is.
+    """
+    projects = ("depth-probe", "depth-same-shape", "depth-absent")
+
+    answers = [
+        await _call(
+            three_indexes.registry,
+            "knowledge.search",
+            projectId=project,
+            query=three_indexes.corpus.query,
+        )
+        for project in projects
+    ]
+
+    assert [answer["retrieval"]["stale"] for answer in answers] == [True, True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_who_asks_for_the_published_maximum_receives_it(
+    three_indexes: _DepthProjects,
+) -> None:
+    """FR-R4. What `CANDIDATE_DEPTH` owes the published contract.
+
+    `MAX_RESULTS` is a number this product states: a caller may ask for fifty
+    results and the tool clamps anything larger to it. A candidate depth below
+    that quietly makes the published maximum unreachable — the retrievers are cut
+    to their depth *before* fusion, so the answer runs out of candidates before
+    it runs out of limit, and a caller asking for fifty over a corpus of
+    fifty-six documents gets however many the depth happened to allow.
+
+    Nothing said so. `CANDIDATE_DEPTH` was set to 5 and every test in this module
+    passed, including the equality comparisons above — they compare two projects
+    against each other, so a depth that truncates both truncates them equally.
+
+    Asked against `depth-absent`, which withholds nothing: this is a claim about
+    reach, and mixing it with a corpus that has something to hide would put two
+    effects on one measurement.
+    """
+    answer = await _call(
+        three_indexes.registry,
+        "knowledge.search",
+        projectId="depth-absent",
+        query=three_indexes.corpus.query,
+        limit=MAX_RESULTS,
+        maxTokens=32_000,
+    )
+
+    assert answer["retrieval"]["indexed"] is True, "this must be the ranked path"
+    assert answer["count"] == MAX_RESULTS, (
+        "the corpus holds more matching documents than the published cap, so a "
+        "caller who asks for the cap must receive it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_default_budget_does_not_hand_back_the_whole_ranking(
+    three_indexes: _DepthProjects,
+) -> None:
+    """FR-R4. The half of `DEFAULT_BUDGET_TOKENS` that bounds it from above.
+
+    "Small enough that a caller who forgot the parameter is not handed their
+    whole window back" is the constant's own promise, and the caller it is
+    written for is exactly this one: they set `limit` to the published maximum
+    and left `maxTokens` alone. Fifty results is several thousand tokens of
+    payload; a default that let all of them through would spend a context window
+    the caller never agreed to spend.
+
+    Paired with `test_the_default_budget_answers_an_ordinary_query_in_full`,
+    which bounds it from below. Neither alone is a bound: the default was set to
+    200 and the whole suite passed, because every budget assertion in this module
+    states its own `maxTokens` and the one that does not was too small to notice.
+
+    **A band, not a value.** The pair holds the default between roughly 800 and
+    8,000 tokens — measured by mutation: 700 fails below, 12,000 fails above on
+    the English corpus and 16,000 on both. 2,000 sits inside it, and nothing in
+    the requirements fixes it more tightly than that, so nothing here pretends to.
+    """
+    answer = await _call(
+        three_indexes.registry,
+        "knowledge.search",
+        projectId="depth-absent",
+        query=three_indexes.corpus.query,
+        limit=MAX_RESULTS,
+    )
+
+    assert answer["retrieval"]["droppedForBudget"] >= 1, (
+        "fifty results must not fit a budget the caller never chose"
+    )
+    assert answer["count"] < MAX_RESULTS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control", ["depth-same-shape", "depth-absent"])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"limit": MAX_RESULTS},
+        {"limit": MAX_RESULTS - 1, "maxTokens": 32_000},
+        {"limit": MAX_RESULTS, "maxTokens": 32_000},
+        {"limit": MAX_RESULTS, "maxTokens": 32_000, "useDense": True},
+    ],
+    ids=["defaults", "at-the-depth", "one-below", "generous", "dense"],
+)
+async def test_a_withheld_document_changes_nothing_a_caller_can_see(
+    three_indexes: _DepthProjects, control: str, arguments: dict[str, Any]
+) -> None:
+    """SEC-13, T-15. The property, by construction rather than by comparison.
+
+    One query, two corpora: one whose index holds a document the caller may not
+    read, one whose does not. Every published value must be equal — `count`,
+    `usedTokens`, `droppedForBudget`, every hit's `fusedScore`, `foundBy`,
+    `excerpt` and position, and the whole `retrieval` block bar the two build
+    identities named in `BUILD_IDENTITY`.
+
+    Three earlier rounds compared a probe query against a control query and
+    passed while a sibling channel stayed open, because a comparison of two
+    queries is only as wide as the fields those two queries happen to move. This
+    one has no such gap: the query is *identical*, so anything that differs
+    differs because of the withheld document and nothing else.
+
+    It is also the only shape in which the dense retriever can be asserted at
+    all. Two different query strings legitimately produce different dense ranks
+    for documents the caller *can* see, so a two-query comparison under
+    `useDense=True` fails for an honest reason; one query against two corpora
+    does not.
+
+    **Both writing systems, and the Japanese one is not a formality.** Measured
+    again, per parameter set, against a mutation that takes the depth loop off
+    the trigram retriever alone:
+
+    - English notices only at `maxTokens=32_000` — `generous` and `dense` — where
+      the whole ranking is published and `usedTokens` moves.
+    - Japanese notices at `at-the-depth`, which is `limit=50` at the **default**
+      token budget: `droppedForBudget` reads 43 against the control's 44. That is
+      the field and the budget the shipped extraction attack used, and the word
+      index cannot cover for it — `unicode61` cannot segment CJK, so the trigram
+      retriever's fifty slots are the entire candidate list.
+    - Japanese also notices at `generous` and `dense`, through `count` and
+      `usedTokens`.
+
+    **`defaults` and `one-below` stay green under that mutation, in both writing
+    systems, and that is not a gap in them.** With no parameters at all `limit`
+    is 10 and the budget admits 6, so a row displaced at candidate position 50 is
+    nowhere near the answer; `one-below` asks for 49 of a ranking that has 50, so
+    the fiftieth is the only one that moves and it was not published either way.
+    They are in the list for the *other* leaks — `defaults` is there because the
+    version this test closes leaked with no parameters set at all, and a
+    parameter set that no current mutation moves is still the one a future
+    regression may.
+
+    An earlier wording of this paragraph said "Japanese notices at the default
+    budget" without naming the parameter set, which reads as `defaults` — the one
+    case that does not. Stated by id here for that reason.
+    """
+    query = three_indexes.corpus.query
+    probe = await _call(
+        three_indexes.registry,
+        "knowledge.search",
+        projectId="depth-probe",
+        query=query,
+        **arguments,
+    )
+    other = await _call(
+        three_indexes.registry,
+        "knowledge.search",
+        projectId=control,
+        query=query,
+        **arguments,
+    )
+
+    assert probe["count"] > 0, "a comparison of two empty answers proves nothing"
+    assert probe["results"] == other["results"], (
+        "every field of every hit, including which chunk of a document was excerpted"
+    )
+    assert probe["count"] == other["count"]
+    assert {k: v for k, v in probe["retrieval"].items() if k not in BUILD_IDENTITY} == {
+        k: v for k, v in other["retrieval"].items() if k not in BUILD_IDENTITY
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_build_identity_a_search_reports_does_not_vary_with_the_query(
+    three_indexes: _DepthProjects,
+) -> None:
+    """What justifies excluding `indexBuildId` and `snapshotId` above.
+
+    A field left out of a comparison is a field nothing checks, so the two that
+    are left out are checked here instead, and by the only test that means
+    anything for them: they must be the same for *every* query against one
+    project. A value that cannot vary with the query cannot answer a question
+    about what the query matched.
+    """
+    matching = await _call(
+        three_indexes.registry,
+        "knowledge.search",
+        projectId="depth-probe",
+        query=three_indexes.corpus.query,
+    )
+    unrelated = await _call(
+        three_indexes.registry, "knowledge.search", projectId="depth-probe", query=NO_SUCH_TERM
+    )
+
+    assert {k: matching["retrieval"][k] for k in BUILD_IDENTITY} == {
+        k: unrelated["retrieval"][k] for k in BUILD_IDENTITY
+    }
+    assert all(matching["retrieval"][key] for key in BUILD_IDENTITY), "and neither is empty"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_index_still_names_the_canonical_state_that_answered(
+    three_indexes: _DepthProjects,
+) -> None:
+    """FR-R5. `snapshotId` is the canonical state's hash, never the index's.
+
+    The two are equal on a fresh index, so the test that pairs `snapshotId` with
+    `knowledge.status` proved nothing about which of them is being reported —
+    replacing the canonical hash with the index's build-time hash passed the
+    whole suite. They differ exactly when the index is behind, which is the state
+    this fixture is in and the state a caller most needs the answer for: an index
+    build id is not a canonical state, and a caller comparing the two strings to
+    decide whether their `knowledge.status` snapshot is still current would be
+    told "yes" by an index that had not been rebuilt since.
+    """
+    status = await _call(three_indexes.registry, "knowledge.status", projectId="depth-probe")
+    search = await _call(
+        three_indexes.registry,
+        "knowledge.search",
+        projectId="depth-probe",
+        query=three_indexes.corpus.query,
+    )
+
+    assert search["retrieval"]["stale"] is True, "an index that is not behind cannot show this"
+    assert search["retrieval"]["snapshotId"] == status["stateHash"]

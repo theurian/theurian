@@ -6,13 +6,18 @@ that would otherwise need a corpus, a model, and a machine to run them on.
 
 This module owns the middle of the pipeline::
 
-    filter → [ lexical ranking ] ┐
-                                 ├→ fuse → diversify → pack → results
-             [ dense ranking   ] ┘
+    filter → [ lexical ranking   ] ┐
+             [ substring ranking ] ├→ fuse → diversify → results → budget
+             [ dense ranking     ] ┘
 
 Filtering happens before ranking and belongs to the store (FR-R1). Provenance and
-trust labelling happen after packing and belong to :mod:`theurian.domain.retrieval`
+trust labelling happen after ranking and belong to :mod:`theurian.mcp.results`
 (FR-R5, FR-R6).
+
+The budget is last on purpose. It is applied to *results*, after the canonical
+store has decided which candidates may be shown at all, because a budget spent
+on a candidate that is then withheld is both a wrong number and a signal about
+withheld content (:func:`take_within_budget`).
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 from theurian.domain.errors import TheurianError
@@ -74,6 +80,16 @@ class RetrievalMode(StrEnum):
     LEXICAL = "lexical"
     DENSE = "dense"
     HYBRID = "hybrid"
+    #: No retriever contributed anything.
+    #:
+    #: Distinct from LEXICAL, which used to cover this case and so reported
+    #: "the word index answered" for a search where nothing answered at all.
+    #: That is the exact signature of the failures worth catching -- a v1 index
+    #: with no trigram table, an embedder whose vectors do not match the corpus,
+    #: a query in a script the lexical retriever cannot segment -- and it was
+    #: indistinguishable from a healthy search over a corpus that simply had no
+    #: match.
+    NONE = "none"
 
 
 class RankingError(TheurianError):
@@ -109,6 +125,15 @@ class Fused:
     #: explainable rather than merely reproducible.
     ranks: Mapping[str, int] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # `frozen=True` freezes the binding, not what it points at. A plain dict
+        # here was reachable and mutable through every candidate this module
+        # hands out, and `found_by` derived from it goes out on the wire as
+        # `foundBy` -- so one caller editing it changes another caller's answer.
+        # Copied first, so the dict the constructor was given is not a way in
+        # either.
+        object.__setattr__(self, "ranks", MappingProxyType(dict(self.ranks)))
+
     @property
     def found_by(self) -> tuple[str, ...]:
         return tuple(sorted(self.ranks))
@@ -132,6 +157,24 @@ def reciprocal_rank_fusion(
     chunk found at rank 1 by one retriever and rank 40 by another outranks a
     chunk found at rank 3 by one and nowhere by the other — which is the
     behaviour worth having, because agreement is evidence.
+
+    Known limitation, and the reason the tie-break below is documented twice.
+    Two chunks ranked ``(i, j)`` and ``(j, i)`` by two retrievers score
+    *exactly* equal — the sum is symmetric — so the tie-break, not the fusion,
+    decides which comes first. It breaks on ``chunk_id``, which is
+    ``<revision ULID>#<ordinal>``, so those pairs come out in **revision
+    creation order**: a determinism device standing in for a relevance
+    judgement it cannot make.
+
+    Not rare. Measured over a 30-document corpus and 15 queries with the lexical
+    and trigram retrievers: 12 of 135 adjacent top-10 pairs, 9%, were exact
+    ties. The share is corpus-dependent — an independent measurement on a
+    different corpus put it at 16% — but the mechanism is not.
+
+    Breaking such a tie on relevance needs a per-retriever weighting, which is a
+    decision this milestone did not take (M6). Until then the order within a tie
+    is reproducible and arbitrary, and saying so is better than letting a caller
+    read it as ranking.
 
     Args:
         rankings: Retriever name to its ordered results, best first.
@@ -225,17 +268,6 @@ def estimate_tokens(text: str) -> int:
     return max(1, math.ceil(dense * _DENSE_TOKENS_PER_CHAR) + -(-sparse // CHARS_PER_TOKEN))
 
 
-@dataclass(frozen=True, slots=True)
-class Packed:
-    """What fitted in the budget, and what did not."""
-
-    candidates: tuple[Fused, ...]
-    used_tokens: int
-    #: Candidates dropped for space. Reported rather than discarded, so a caller
-    #: can tell "nothing else matched" from "your budget ran out".
-    dropped: int = 0
-
-
 def take_within_budget(costs: Sequence[int], *, budget_tokens: int) -> tuple[int, int]:
     """How many leading items fit a budget, and what they cost (FR-R4).
 
@@ -247,10 +279,13 @@ def take_within_budget(costs: Sequence[int], *, budget_tokens: int) -> tuple[int
     than the single best result is better served by one over-long answer they can
     truncate than by an empty one they cannot act on.
 
-    Separate from :func:`pack` because the budget rule outlived the type it was
-    written for. Retrieval's unranked substring fallback owes the caller the same
-    promise, and had no `Fused` to pass — so it honoured no budget at all, which
-    is how FR-R4 came to hold on one of two answer paths.
+    The only budget rule in the system, and deliberately so. There was a second
+    one — a `pack` over chunk sizes, applied to *candidates* before they were
+    resolved into results — and having two meant the number reported to the
+    caller was measured on something other than what was sent to them: a chunk
+    body rather than a result payload, and a candidate set that still held
+    entries the canonical store would later withhold. Both defects follow from
+    charging in one place and sending from another, so there is now one place.
 
     Returns:
         ``(count, used_tokens)``.
@@ -267,36 +302,25 @@ def take_within_budget(costs: Sequence[int], *, budget_tokens: int) -> tuple[int
     return len(costs), used
 
 
-def pack(
-    candidates: Sequence[Fused],
-    sizes: Mapping[str, int],
-    *,
-    budget_tokens: int,
-) -> Packed:
-    """Take candidates in rank order until the budget is spent (FR-R4).
-
-    See :func:`take_within_budget` for the rule this applies.
-    """
-    # A missing size means the caller could not price this candidate. Charging
-    # the whole budget is the conservative reading; treating it as free is how a
-    # budget is silently exceeded, and `estimate_tokens` already errs high for
-    # the same reason.
-    costs = [sizes.get(candidate.chunk_id, budget_tokens) for candidate in candidates]
-    kept, used = take_within_budget(costs, budget_tokens=budget_tokens)
-
-    return Packed(
-        candidates=tuple(candidates[:kept]), used_tokens=used, dropped=len(candidates) - kept
-    )
-
-
-def mode_of(rankings: Mapping[str, Sequence[Ranked]]) -> RetrievalMode:
-    """Which retrievers actually contributed anything.
+def mode_of(contributors: Iterable[str]) -> RetrievalMode:
+    """Which retrievers are behind a set of results.
 
     A dense index that is missing or empty degrades a search to lexical. Saying
     so is the difference between a caller trusting a hybrid answer and a caller
     trusting a worse answer that looks identical.
+
+    Takes the retriever names *carried by the results being returned*, not the
+    rankings that produced them, even though the canonical store's gate now runs
+    before fusion (:class:`~theurian.application.retrieval_service.Visibility`),
+    so a ranking should already hold nothing the caller may not see. Deriving the
+    mode from the results themselves rather than trusting an upstream ordering
+    to hold is what keeps a caller from learning anything through this field if
+    that ordering ever regresses — SEC-13 is not supposed to depend on this
+    function remembering where the gate currently lives.
     """
-    contributing = {name for name, results in rankings.items() if results}
+    contributing = set(contributors)
+    if not contributing:
+        return RetrievalMode.NONE
     if DENSE in contributing and contributing - {DENSE}:
         return RetrievalMode.HYBRID
     if contributing == {DENSE}:

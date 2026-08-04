@@ -1,17 +1,15 @@
-"""Shaping one knowledge result, and deciding whether it may be shown.
+"""Shaping one knowledge result: what a hit looks like on the wire.
 
-Both rules live here rather than beside the tool that needed them first, because
-both have already been broken by being written twice:
+One function, called from every tool, because the trust labels were attached by
+the substring path and, for one milestone, not by the ranked one — which is a
+knowledge body arriving at an agent with nothing saying it is a document rather
+than an instruction (SEC-15). A shape constructed in two places drifts in one of
+them.
 
-- the status gate reached ``knowledge.search`` through three separate code paths
-  and ``knowledge.get`` through none, so a fix applied three times still left
-  rejected content reachable in one more call (SEC-13);
-- the trust labels were attached by the substring path and, for one milestone,
-  not by the ranked one — which is a knowledge body arriving at an agent with
-  nothing saying it is a document rather than an instruction (SEC-15).
-
-One function each, called from every tool, is what makes those failures
-structurally unavailable rather than merely fixed.
+The companion rule — *whether* a hit may be shown at all — used to live here too
+and now lives in :func:`theurian.domain.enums.may_surface`. It was reached from
+three layers, including the application-layer index builder, which cannot import
+this module (ADR-0003) and so kept its own copy of the comparison.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Final
 
-from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.knowledge import KnowledgeRevision
 
 #: Attached to every knowledge-bearing result (SEC-15). Theurian labels; the
@@ -34,19 +32,6 @@ SAFETY: Final[dict[str, object]] = {
 #: Excerpt length. Long enough to judge relevance, short enough that ten hits do
 #: not become the whole answer.
 EXCERPT_CHARS: Final = 280
-
-
-def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
-    """Whether a caller may see an item in this state.
-
-    ``include_unapproved`` widens which statuses are allowed. It never disables
-    the check: retired knowledge — deprecated, superseded, rejected — is reachable
-    through no flag, because a rejected revision is where the secret that caused
-    the rejection still lives.
-    """
-    if status not in SURFACEABLE_STATUSES:
-        return False
-    return include_unapproved or status is KnowledgeStatus.APPROVED
 
 
 def excerpt(text: str) -> str:

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/project-list-response.schema.json",
+  "title": "Output of the `project.list` MCP tool",
+  "description": "The whole response. `project.list` is the tool an agent calls to find out what this daemon can answer for, so its shape is as much of the contract as a search result's is — and it went unpublished for three milestones while the tools around it were described in detail.\n\nFour keys, always all four. `projects` is what can be queried, `unreadable` is what the registry holds and nothing can serve, `count` sizes the first of those, and `remedy` says what to do about the second. `projects` and `unreadable` are two independent reads of the same file, not a partition of one snapshot: `load()` keeps the entries naming a root path and `unreadable_ids()` reports the ids of the ones that do not, and a registration landing between the two reads can leave an id in both lists or in neither. Do not compute the size of the registry by adding `count` and the length of `unreadable`, and do not treat membership in one as proof of absence from the other.",
+  "type": "object",
+  "required": ["count", "projects", "unreadable", "remedy"],
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The number of entries in `projects`, and nothing else. It answers \"how many projects can I query\", so it excludes the unreadable ids — an entry naming no root path can be queried by nothing. It is not the size of the registry file: `projects` and `unreadable` are independent reads of that file, not a partition, so their lengths do not sum to a count of anything."
+    },
+    "projects": {
+      "type": "array",
+      "description": "Every registration this daemon could read, sorted by id. Deliberately narrower than `theurian project list`, which prints each entry whole: only the two fields a caller acts on cross the wire.",
+      "items": {
+        "type": "object",
+        "required": ["projectId", "rootPath"],
+        "additionalProperties": false,
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "description": "The id to pass as `projectId` to every project-scoped tool (ADR-0002).\n\n**No pattern, on purpose.** Ids that Theurian creates are lowercase kebab-case, and `ProjectId` enforces that — but this value is a *key* of the registry file, and no reader validates a key. The registry lives in the user's home directory and is hand-edited; that is the premise of `unreadable` below. So an entry whose key is not a slug but whose `rootPath` is valid loads, and is published here verbatim. Constraining this to the slug pattern would make the schema reject a response the product really produces, which is the exact defect the wire-contract test exists to catch. If key validation is ever added at the point the file is read, the pattern belongs here and not before.\n\n**No `minLength` either, for the same reason.** An empty string is as valid a JSON object key as any other, and `load()` only inspects `rootPath` — a registry hand-edited to `{\"\": {\"rootPath\": \"/valid\"}}` loads and `project.list` publishes `projectId: \"\"` verbatim (reproduced by calling the tool against exactly that file). A `minLength` bound would reject that real response for the same reason a pattern would."
+          },
+          "rootPath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Absolute path to the repository the id resolves to. Never empty: an entry naming no root, or naming `\"\"` — which resolves to whatever directory the reading process happens to be in — is precisely what makes an entry unreadable, and such an entry appears in `unreadable` instead of here."
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "description": "Ids present in the registry whose entries could not be parsed, sorted.\n\nPublished because a skipped entry that nothing reports is a project that disappeared in silence, and because the id is the argument `theurian project unregister` needs — a remedy naming an id no surface prints is not a remedy. Every other tool refuses these ids; this is where a caller finds out why.\n\n**Always present, empty array included.** Emitting the key only when it is non-empty makes \"nothing is unreadable\" indistinguishable from \"this daemon predates the field\", and a client that has to branch on key presence eventually forgets to.\n\nUnconstrained strings for the same reason `projectId` above carries no pattern, and more strongly: an unreadable entry is by definition one a hand edit broke, so its key is whatever was typed.",
+      "items": { "type": "string" }
+    },
+    "remedy": {
+      "type": ["string", "null"],
+      "description": "What to do about `unreadable`, or `null` when it is empty.\n\nNull-carrying rather than absent, which is the convention `retrieval-metadata.schema.json` already holds: one shape on every response, so a client never branches on key presence. `theurian project list` emits its equivalent key only when it applies; that is a rendering choice for a human reading one command's output, and it is not what a wire contract should ask a client to handle.\n\nGeneric rather than naming the ids. `unreadable` is where the ids are, and a remedy that repeated them would be a second copy free to drift from the list beside it."
+    }
+  }
+}

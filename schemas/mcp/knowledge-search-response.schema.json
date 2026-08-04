@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/knowledge-search-response.schema.json",
+  "title": "Output of the `knowledge.search` MCP tool",
+  "description": "The whole response, not a fragment of it. A client validates what arrives, and publishing only the hit shape leaves the keys around it — `count`, `results`, and the `retrieval` block that says how the answer was produced — as an undeclared contract that drifts without anything noticing.\n\nBoth answer paths produce this shape: ranked retrieval against a published index, and the unranked canonical scan used when no index can answer. The fallback is not a degraded contract but the same one, because a project that has applied migrations and not yet indexed would otherwise answer every query with nothing — which an agent reads as \"we have no such decision\" rather than \"ask me again in a moment\".",
+  "type": "object",
+  "required": ["projectId", "query", "count", "results", "retrieval"],
+  "additionalProperties": false,
+  "properties": {
+    "projectId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 200,
+      "description": "Echoed from the request. Always a registered id: an unregistered one is an error, never an empty result (ADR-0002, SEC-13)."
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "The string that was actually searched for, which is not always the string that was sent. It is truncated at 2,000 characters and re-encoded to replace anything that cannot cross UTF-8 — a lone surrogate, for instance — *before* the search runs, so the echo and the search agree. Without the cap, a 20 MB query came back verbatim as a 20 MB response to one search."
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50,
+      "description": "The number of entries in `results`. Bounded by `limit`, which is clamped to 50 — a caller asking for 10,000 wants \"everything\", and refusing helps nobody while honouring it would blow their context budget.\n\nComputed from the results the caller receives. It is never a count of what matched: a count that moves when withheld content matches is a truth oracle, and the trigram retriever matches any three-character substring.\n\nNeither half of that is checkable by a validator, so neither is stated here as a constraint. That `count` equals the length of `results` could be spelled out, but only as fifty-one conditional branches saying what a client computes in one line; it is asserted against real responses in the wire-contract tests instead. That `count` is *independent of withheld content* is not expressible in any schema at all — it is a relation between two responses, and a validator sees one. What holds it is where the bound is applied: `limit` truncates results the canonical store has already admitted, never the candidates a retriever ranked. Truncating candidates is how this was last broken, and the schema said this sentence throughout. Read it as a claim the project owes a differential test, not as one this file enforces."
+    },
+    "results": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "https://theurian.dev/schemas/knowledge/retrieval-result.schema.json" },
+      "description": "Best first on the ranked path; in canonical scan order on the unranked one. Every entry is resolved through the canonical store, so it reflects the revision as it is now rather than as the index recorded it (FR-R5)."
+    },
+    "retrieval": {
+      "$ref": "https://theurian.dev/schemas/mcp/retrieval-metadata.schema.json"
+    }
+  }
+}

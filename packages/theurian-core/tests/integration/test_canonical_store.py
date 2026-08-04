@@ -372,3 +372,54 @@ def test_migration_history_records_order_and_checksums(database: Path, lock: Pat
         history = store.applied_migrations(PROJECT)
 
     assert history == ((MIGRATION, "checksum-one"), (second, "checksum-two"))
+
+
+# -- Session lifetime ------------------------------------------------------
+
+
+def test_entering_a_read_session_opens_before_the_first_read(database: Path) -> None:
+    """`CanonicalReadSession.__enter__` acquires the handle, and it is timed.
+
+    Not tidiness about `__exit__` having something to close. `ResultGate` opens
+    one of these, ranks through it, and shows the caller none of what the
+    canonical store withheld -- so a session that connected at its *first read*
+    charged `sqlite3.connect`, the pragmas and the schema-version check only to
+    requests that found something, and "found something" is exactly the fact a
+    `count: 0` response is refusing to state.
+
+    `CanonicalVisibility.cleared` is a comprehension, so zero rows means zero
+    `get_item` calls and, before this, zero connections. Measured on a
+    61-document Japanese corpus: one ordinary `knowledge.search` classified a
+    probe against a one-character-different control 88.3% of the time, +0.60 ms
+    at the median, and six characters of a credential no response contains came
+    back in 836 calls with the body never read. Opening in `__enter__` takes the
+    same measurement to 57.8%, which is chance.
+
+    Asserted on the private attribute deliberately: the observable this closes
+    *is* whether a connection exists, so a public proxy for it would be a proxy
+    for the wrong thing. `return self` restores the leak and fails here.
+    """
+    with SqliteCanonicalStore(database) as store:
+        assert store._connection is not None, "the handle is acquired on entry, not on first read"
+        opened = store._connection
+
+        # A whole session that reads nothing -- the shape a query matching no
+        # indexed chunk takes -- must still have paid for the connection.
+        assert store._connection is opened
+
+    assert store._connection is None, "and released on exit"
+
+
+def test_a_read_session_reports_a_missing_database_when_it_is_opened(tmp_path: Path) -> None:
+    """Eager opening moves this error to the `with`, so the remedy is named there.
+
+    A consequence of the change above rather than a separate decision, recorded
+    because it changes *where* a caller sees the failure: it used to surface at
+    whichever read happened to run first, which on a search that matched nothing
+    was never.
+    """
+    with (
+        pytest.raises(FileNotFoundError, match="No state database at"),
+        SqliteCanonicalStore(tmp_path / "absent.sqlite"),
+    ):
+        pass  # pragma: no cover - the context manager raises on entry
