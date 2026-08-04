@@ -392,19 +392,50 @@ def _run(*args: str) -> None:
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
 
+def _rendered_traceback(exc: BaseException) -> str:
+    """Every exception a Rich traceback would print for ``exc``, message included.
+
+    **The chain, not the exception.** ``rich.traceback`` follows ``__cause__``
+    and ``__context__`` and renders each link with its own message, so `raise
+    ... from exc` publishes the cause to whoever reads the terminal. That is the
+    whole disclosure surface of an uncaught failure here:
+    `StateDatabaseUnreadableError` withholds the cell from its own message and
+    keeps the real exception on ``__cause__`` for whoever holds the traceback --
+    which, for a CLI command, is the operator.
+
+    Measured against the real `theurian migrate status` with
+    `migration_history.checksum` overwritten: exit 1, empty stdout, and the last
+    line of the boxed traceback reading ``DomainError: ContentHash must be 64
+    lowercase hex characters, got '<the cell>'``. Appending only
+    ``type(exc).__name__`` and ``str(exc)`` -- what stood here -- reproduced the
+    *withheld* half and made this sweep blind to the half that is published.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(f"{type(current).__name__}: {current}")
+        following = current.__cause__
+        if following is None and not current.__suppress_context__:
+            following = current.__context__
+        current = following
+    return "\n".join(parts)
+
+
 def _invoke(*args: str) -> tuple[int, str]:
-    """Run a CLI command, returning its exit code and everything it printed."""
+    """Run a CLI command, returning its exit code and everything it printed.
+
+    An uncaught exception *does* reach a terminal as text: Typer installs a Rich
+    traceback and renders it to stderr. ``CliRunner`` swallows it onto
+    ``result.exception`` instead, so :func:`_rendered_traceback` is what keeps
+    this sweep looking at what an operator sees rather than at what the runner
+    happened to keep.
+    """
     result = runner.invoke(app, [*args, "--json"])
     text = (result.stdout or "") + (result.stderr or "")
     if result.exception is not None and not isinstance(result.exception, SystemExit):
-        # An uncaught exception *does* reach a terminal as text: Typer installs a
-        # Rich traceback, which prints the exception's own message under the
-        # frame that raised it. `CliRunner` swallows it instead of rendering it,
-        # so appending it here is what keeps this sweep looking at what an
-        # operator sees. Measured with `schema_metadata.schema_version`
-        # overwritten: the real `theurian migrate apply` printed a boxed
-        # traceback ending in the cell, exit 1, with empty JSON on stdout.
-        text += f"{type(result.exception).__name__}: {result.exception}"
+        text += _rendered_traceback(result.exception)
     return result.exit_code, text
 
 
@@ -1063,30 +1094,35 @@ async def test_every_refusal_over_a_damaged_database_names_a_remedy(corpus: Corp
     )
 
 
-def test_every_cli_failure_over_a_damaged_database_carries_a_remedy(corpus: Corpus) -> None:
+def _published_remedy(text: str) -> str:
+    """The ``remedy`` field of a ``--json`` failure, or the empty string."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    return str(payload.get("remedy", "")) if isinstance(payload, dict) else ""
+
+
+def test_every_cli_failure_over_a_damaged_database_carries_a_remedy(
+    cli_observations: dict[tuple[str, str, str], tuple[int, str]],
+) -> None:
     """The CLI publishes `remedy` as a field, so the check is the field itself.
 
     `--json` output is a contract: a failure is `{"error": ..., "remedy": ...}`.
     A command that failed with an empty or absent `remedy` has broken that
-    contract, and no amount of prose in `error` substitutes for it.
+    contract, and no amount of prose in `error` substitutes for it -- including
+    prose in an uncaught exception's message, which is where this property is
+    hardest and where a one-command sweep could not look. An exception that
+    escapes a `--json` command prints a Rich traceback and *nothing* on stdout,
+    so a caller parsing the contract gets an empty document and no field at all.
     """
-    without: dict[str, str] = {}
-    for column in corruptible_columns(corpus.database):
-        assert corrupt(corpus.database, column), f"{column} took no value"
-        try:
-            code, text = _invoke("index", "build")
-            if code == 0:
-                continue
-            try:
-                remedy = json.loads(text).get("remedy", "")
-            except json.JSONDecodeError:
-                remedy = ""
-            if not remedy:
-                without[str(column)] = text
-        finally:
-            restore(corpus)
+    without = {
+        position: text
+        for position, (code, text) in cli_observations.items()
+        if code != 0 and not _published_remedy(text)
+    }
 
-    assert not without, f"`index build` failed without a remedy: {without}"
+    assert not without, f"{len(without)} command failures carried no remedy: {without}"
 
 
 # -- The sweep really reaches each converter family ------------------------

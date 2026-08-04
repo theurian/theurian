@@ -10,7 +10,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import typer
 
@@ -58,6 +58,7 @@ from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, 
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
+    WriteLockTimeoutError,
     create_database,
     write_transaction,
 )
@@ -103,6 +104,51 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
     else:
         sys.stderr.write(f"error: {message}\n{remedy}\n")
     raise typer.Exit(code)
+
+
+#: Cure for a canonical state database this build cannot open or interpret.
+#:
+#: State is derived and git-ignored (ADR-0004) and is never migrated in place
+#: (ADR-0017), so the answer is always to discard the file and replay the
+#: Git-tracked migrations. Repeats what ``StateDatabaseUnreadableError`` already
+#: says in its own message on purpose: ``remedy`` is a field a caller reads
+#: without parsing ``error``, and a contract field that is sometimes empty is one
+#: every caller eventually stops checking.
+STATE_REBUILD_REMEDY: Final = (
+    "Delete `.theurian/state/` and run `theurian migrate apply` to rebuild it from the "
+    "Git-tracked migrations. Nothing authored is lost."
+)
+
+
+def _state_remedy(exc: TheurianError) -> str:
+    """What to run after a command failed while reaching the canonical store.
+
+    **Called from a catch-all, because a guard's promise reaches only as far as
+    the exception is caught.** ``StateDatabaseUnreadableError`` keeps the
+    corrupted cell out of its own message and keeps the real exception on
+    ``__cause__``; Typer then renders a Rich traceback that prints ``__cause__``
+    one line below it. Measured against the real CLI with one cell overwritten,
+    ``theurian migrate status --json`` and ``theurian migrate apply --json``
+    published it from six positions that way -- ``DomainError: ContentHash must
+    be 64 lowercase hex characters, got '<the cell>'`` -- each with exit 1 and an
+    empty stdout where ``--json`` promises a document (CP-2). Converting the
+    escape is what makes the guard's withholding worth anything, so the ``except``
+    is over ``TheurianError`` rather than over the types known to arrive today.
+
+    Three unrelated families reach it: a file this build cannot interpret,
+    another process holding the write lock, and a migration set the store
+    refused. One cure for all three would send two of the three callers to the
+    wrong file -- and :data:`STATE_REBUILD_REMEDY` is the one that deletes
+    something, so it is the one that must never be the default.
+    """
+    if isinstance(exc, StateDatabaseUnreadableError | SchemaVersionMismatchError):
+        return STATE_REBUILD_REMEDY
+    if isinstance(exc, WriteLockTimeoutError):
+        return "Wait for the other `theurian` process to finish, then retry."
+    return (
+        "Fix the migration set, then retry. `theurian migrate validate` reports what can "
+        "be checked without touching state."
+    )
 
 
 def _context_remedy(exc: TheurianError, *, default: str) -> str:
@@ -694,22 +740,30 @@ def migrate_status(as_json: JsonOption = False) -> None:
         )
         return
 
-    with write_transaction(database, context.paths.write_lock) as connection:
-        writer = SqliteWriter(connection)
-        engine = MigrationEngine(context.clock, context.loaded.content_by_hash)
-        try:
+    # The `try` wraps `write_transaction` itself, not merely the body of the
+    # `with`. Opening a connection interprets the file -- `_prepare` runs the
+    # PRAGMA loop and `int()`s `schema_metadata.schema_version` -- so a guard
+    # around the body alone, which is what stood here, could not see the failure
+    # that arrives first.
+    try:
+        with write_transaction(database, context.paths.write_lock) as connection:
+            writer = SqliteWriter(connection)
+            engine = MigrationEngine(context.clock, context.loaded.content_by_hash)
             plan = engine.plan(writer, context.project_id, context.loaded.migration_set)
-        except MigrationChecksumMismatchError as exc:
-            _fail(
-                str(exc),
-                remedy=(
-                    "Restore the original migration file, or write a new migration. "
-                    "Never edit an applied migration, and never 'fix' the recorded checksum."
-                ),
-                as_json=as_json,
-                code=EXIT_STATE_ERROR,
-            )
-            return
+    except MigrationChecksumMismatchError as exc:
+        _fail(
+            str(exc),
+            remedy=(
+                "Restore the original migration file, or write a new migration. "
+                "Never edit an applied migration, and never 'fix' the recorded checksum."
+            ),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    except TheurianError as exc:
+        _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
+        return
 
     _emit(
         {
@@ -806,6 +860,9 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
+        return
+    except TheurianError as exc:
+        _fail(str(exc), remedy=_state_remedy(exc), as_json=as_json, code=EXIT_STATE_ERROR)
         return
 
     active = write_active_state(
