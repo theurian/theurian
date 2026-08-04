@@ -38,8 +38,10 @@ from theurian.application.project_service import (
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import SURFACEABLE_STATUSES, may_surface
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.knowledge import KnowledgeRelation
+from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.state import ActiveState
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -68,6 +70,51 @@ MAX_QUERY_CHARS: Final = 2_000
 
 class ToolError(TheurianError):
     """A tool could not answer. Carries a remedy, never a stack trace."""
+
+
+def _relation_is_visible(
+    store: CanonicalReadSession,
+    context: RequestContext,
+    relation: KnowledgeRelation,
+    *,
+    include_unapproved: bool,
+) -> bool:
+    """Whether **both** ends of ``relation`` are items this caller may see.
+
+    Gating the target alone was not enough, because ``list_relations`` returns
+    edges in both directions and mirrors only the four types in
+    ``INVERSE_RELATIONS`` on the way out. For every other type -- ``rejects``,
+    ``related_to``, ``contradicts``, ``depends_on`` -- an *incoming* edge comes
+    back in its stored orientation, so ``target_item_id`` is the item being
+    fetched. A gate on the target therefore looked up the item the caller
+    already holds, found it surfaceable by definition, and published the row.
+
+    Measured against a real project: a ``rejected`` item pointing at an approved
+    one via ``contradicts`` published its own note, ``REJECTED BECAUSE
+    sessions.token held raw bearer tokens until 2026-07``, on the approved item's
+    response. The withheld id never appeared -- the rejection rationale did,
+    which is the content :func:`knowledge_get` says a rejected revision is
+    withheld *for*.
+
+    **Both ends, not "the end that is not the fetched item".** The latter has to
+    infer direction by comparing an id against the one the caller passed, and
+    that comparison is sound only while ``list_relations`` resolves aliases to
+    exactly the id ``get_item`` returned -- an assumption held in another layer,
+    where nothing announces breaking it. Asking about both ends needs no such
+    assumption and no special case for an edge whose two ends are equal:
+    :class:`KnowledgeRelation` rejects a self-relation at construction so one
+    cannot reach here, but this predicate answers it correctly anyway (that edge
+    has no endpoint other than the visible fetched item, so it is published).
+    The cost is one extra primary-key lookup per edge for the near end, which is
+    the fetched item and has already cleared this same predicate.
+    """
+    for endpoint_id in (relation.source_item_id, relation.target_item_id):
+        endpoint = store.get_item(context, endpoint_id)
+        if endpoint is None or not may_surface(
+            endpoint.status, include_unapproved=include_unapproved
+        ):
+            return False
+    return True
 
 
 def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the set
@@ -193,6 +240,20 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # already answered the only question that set could settle.
             raise _unresolvable(project_id, entries)
 
+        # `ProjectPaths.of` takes a knowledge directory and the registry entry
+        # records one, and it is deliberately still not passed. Honouring it
+        # *here alone* would be worse than ignoring it: every writer hardcodes
+        # `DEFAULT_KNOWLEDGE_DIRECTORY` (`init`, `project register`, `migrate
+        # apply`) and `cli/context.py` resolves paths with the same default, so
+        # a non-default recorded value would send this daemon looking for state
+        # under a directory nothing ever writes -- reporting "no built knowledge
+        # state" for a project that has one. It also arrives unvalidated:
+        # `ProjectRegistry.load` checks `rootPath` and nothing else, while
+        # `Project` rejects an absolute knowledge directory at construction, and
+        # `of` joins without that check (`resolved / str(directory)` is `/etc`
+        # for `/etc`). Making the directory configurable is one change across
+        # the writer, the CLI and here; until then the default is the single
+        # authority and the recorded field is documentation.
         paths = ProjectPaths.of(Path(entry["rootPath"]))
         active = read_active_state(paths)
         if active is None:
@@ -318,8 +379,32 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         _, database, _ = _resolve(projectId)
         context = RequestContext(project_id=ProjectId(projectId))
 
+        try:
+            wanted = ItemId(itemId)
+        except InvalidIdentifierError as exc:
+            # `InvalidIdentifierError` carries no remedy, and the SDK re-raises
+            # whatever escapes a tool as `Error executing tool knowledge.get:
+            # {exc}` -- so a caller got a format rule and no next action, the
+            # same drop `_registry_failure` was changed to stop. Raised here
+            # rather than left to escape so the message names the tool that
+            # finds a real id.
+            #
+            # Separating "malformed" from "not present" discloses nothing that
+            # SEC-13 protects: every stored id passed this same validation, so a
+            # string failing it cannot name an item, withheld or otherwise. The
+            # rejected string is not echoed by this line: `str(exc)` quotes it
+            # only after the length check has passed, and reports the length
+            # alone when it has not. Measured, a 20,000-character `itemId`
+            # produces a 183-character error rather than 20 kB of itself, which
+            # is the failure `MAX_QUERY_CHARS` closes for `query`.
+            msg = (
+                f"`itemId` is not a usable identifier: {exc}. "
+                f"Run `knowledge.search` on project {projectId!r} to find an item id."
+            )
+            raise ToolError(msg) from exc
+
         with SqliteCanonicalStore(database) as store:
-            item = store.get_item(context, ItemId(itemId))
+            item = store.get_item(context, wanted)
             withheld = item is not None and not may_surface(
                 item.status, include_unapproved=includeUnapproved
             )
@@ -338,12 +423,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             relations = tuple(
                 relation
                 for relation in store.list_relations(context, item.item_id)
-                # A relation to a retired item is itself a pointer to withheld
-                # content -- it is how the rejected id was found in the first
-                # place. Withholding the body while publishing the id would be
-                # withholding nothing that matters.
-                if (target := store.get_item(context, relation.target_item_id)) is not None
-                and may_surface(target.status, include_unapproved=includeUnapproved)
+                # A relation touching a retired item is itself a pointer to
+                # withheld content -- it is how the rejected id was found in the
+                # first place, and its `note` is written by whichever side
+                # authored the edge, not by whichever side is being fetched.
+                # Withholding the body while publishing either would be
+                # withholding nothing that matters. See `_relation_is_visible`
+                # for why the gate asks about both ends.
+                if _relation_is_visible(
+                    store, context, relation, include_unapproved=includeUnapproved
+                )
             )
 
         payload = result_payload(revision, item.status, datetime.now(UTC))
