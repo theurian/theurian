@@ -318,6 +318,62 @@ def names_a_remedy(text: str, *, commands: frozenset[str], tools: frozenset[str]
     )
 
 
+# -- The CLI population ----------------------------------------------------
+
+#: Every command path this file corrupts the database underneath.
+#:
+#: Chosen by what is *safe to run against one corpus a few hundred times*, not
+#: by what is believed to read the canonical store -- believing it is how this
+#: sweep came to be one command wide while two HIGH findings walked out through
+#: `migrate status` and `migrate apply`. What the population actually reaches is
+#: measured rather than asserted here, by
+#: :func:`test_exactly_these_commands_notice_a_single_damaged_cell`.
+CLI_SWEEP: Final = (
+    ("index", "build"),
+    ("index", "status"),
+    ("migrate", "status"),
+    ("migrate", "validate"),
+    ("migrate", "apply"),
+    ("project", "list"),
+    ("project", "status"),
+    ("version",),
+)
+
+#: Every remaining command path, with the reason it cannot be swept. Held as an
+#: exact partition of the real Typer app by
+#: :func:`test_every_shipped_command_is_swept_or_excluded_with_a_reason`, so a
+#: command added in a later milestone has to be classified rather than
+#: forgotten.
+CLI_NOT_SWEPT: Final = {
+    "auth rotate": "rotates a stored token, so the corpus stops being the same corpus",
+    "compat check": "requires --core-version and friends; resolves no project",
+    "daemon start": "spawns a process and binds a port",
+    "daemon status": "probes for a daemon this suite must not have running",
+    "daemon stop": "signals a process this suite must not have running",
+    "doctor": "a health report, not a command over this project's state: it exits "
+    "non-zero on a healthy corpus because the fixture installs no Claude Code",
+    "ingest": "writes migration files, which moves the state hash and so the database",
+    "init": "writes .theurian/ and appends to .gitignore in the working directory",
+    "project register": "rewrites the registry the corpus was built from",
+    "project unregister": "deletes the registration every other command resolves",
+    "setup": "writes ~/.claude.json and a LaunchAgent on the developer's own machine",
+    "uninstall": "removes what `setup` installed, on the developer's own machine",
+}
+
+#: The commands a single damaged cell can actually make fail, stated exactly.
+#:
+#: The vacuity guard for :data:`CLI_SWEEP`. "No swept command leaked" is
+#: satisfied perfectly by a sweep whose commands never open the database at all,
+#: and five of the eight above are exactly that today -- they resolve the
+#: project, read the pointer and answer from files this corruption never
+#: touches. Stating which three do the work means a change that stops one of
+#: them reaching the store fails here rather than quietly hollowing out both
+#: properties below.
+COMMANDS_THAT_NOTICE_A_DAMAGED_CELL: Final = frozenset(
+    {"index build", "migrate status", "migrate apply"}
+)
+
+
 # -- The corpus ------------------------------------------------------------
 
 
@@ -352,14 +408,14 @@ def _invoke(*args: str) -> tuple[int, str]:
     return result.exit_code, text
 
 
-@pytest.fixture
-def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
-    """One project holding a row in every table a migration can write.
+def _build_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
+    """Build the corpus under ``tmp_path``, with `HOME` and the data directory moved.
 
-    Indexed as well as migrated, so `knowledge.search` answers through
-    ``ResultGate`` -- the canonical read site reached by
-    ``store_factory=SqliteCanonicalStore`` rather than by a direct construction,
-    and therefore the one a search for ``SqliteCanonicalStore(`` does not find.
+    Both redirections are made through ``monkeypatch`` and never through
+    ``os.environ``, so a corpus built for a module-scoped fixture leaves nothing
+    behind when its context closes. ``chdir`` is here too: the CLI resolves a
+    project from the working directory, so a sweep that forgot it would resolve
+    the developer's own checkout.
     """
     root = tmp_path / "demo"
     root.mkdir()
@@ -388,6 +444,18 @@ def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
     pristine = tmp_path / "pristine-state.sqlite"
     shutil.copy2(database, pristine)
     return Corpus(ProjectRegistry.default(data_dir), root, database, pristine)
+
+
+@pytest.fixture
+def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
+    """One project holding a row in every table a migration can write.
+
+    Indexed as well as migrated, so `knowledge.search` answers through
+    ``ResultGate`` -- the canonical read site reached by
+    ``store_factory=SqliteCanonicalStore`` rather than by a direct construction,
+    and therefore the one a search for ``SqliteCanonicalStore(`` does not find.
+    """
+    return _build_corpus(tmp_path, monkeypatch)
 
 
 # -- Corrupting one cell ---------------------------------------------------
@@ -589,6 +657,47 @@ async def sweep(corpus: Corpus) -> dict[tuple[str, str, str], Answer]:
     return observed
 
 
+def cli_sweep(corpus: Corpus) -> dict[tuple[str, str, str], tuple[int, str]]:
+    """The same sweep over :data:`CLI_SWEEP`, one command per corruption.
+
+    The database is restored between *commands*, not merely between columns.
+    ``migrate apply`` opens a write transaction and upserts the project row, so
+    a shared corruption would be a different corruption by the time the next
+    command ran, and an observation attributed to the wrong cell is worse than
+    no observation.
+    """
+    observed: dict[tuple[str, str, str], tuple[int, str]] = {}
+    for column in corruptible_columns(corpus.database):
+        for command in CLI_SWEEP:
+            assert corrupt(corpus.database, column), f"{column} took no value"
+            try:
+                observed[" ".join(command), column.table, column.name] = _invoke(*command)
+            finally:
+                restore(corpus)
+    return observed
+
+
+@pytest.fixture(scope="module")
+def cli_observations(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[tuple[str, str, str], tuple[int, str]]:
+    """One CLI sweep -- 99 columns by eight commands -- read by three properties.
+
+    Module-scoped over its own corpus, never over the function-scoped one. The
+    sweep is corpus-neutral by construction (every corruption is restored before
+    the next command runs), so sharing the *result* is safe; sharing the corpus
+    with tests that damage a schema or open a write transaction would not be,
+    which is why this builds its own.
+
+    Shared because it is the expensive thing in this file. Recomputing it per
+    property meant roughly 2,400 CLI invocations for three assertions over the
+    same 792 observations.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        corpus = _build_corpus(tmp_path_factory.mktemp("cli-sweep"), patch)
+        return cli_sweep(corpus)
+
+
 # -- The corpus really covers the schema ----------------------------------
 
 
@@ -681,12 +790,69 @@ async def test_an_intact_state_database_answers_every_tool(corpus: Corpus) -> No
 
 
 def test_an_intact_state_database_answers_the_cli(corpus: Corpus) -> None:
-    """The control for the CLI half. `index build` reads the canonical store
-    through ``IndexBuilder``, which is the second `store_factory=` site."""
-    codes = {" ".join(cmd): _invoke(*cmd) for cmd in (("index", "build"), ("index", "status"))}
+    """The control for the CLI half, over the whole swept population.
+
+    Every non-zero exit the CLI sweeps observe has to be caused by the damaged
+    cell. Asserted for all of :data:`CLI_SWEEP` rather than for the two commands
+    that used to be swept, because a command that already fails on a healthy
+    corpus contributes only noise to the remedy property below -- which is why
+    `doctor`, whose non-zero exit means "problems found", is excluded from the
+    population rather than tolerated inside it.
+    """
+    codes = {" ".join(cmd): _invoke(*cmd) for cmd in CLI_SWEEP}
 
     assert [name for name, (code, _) in codes.items() if code != 0] == [], (
         f"a command failed against an undamaged database: {codes}"
+    )
+
+
+def test_every_shipped_command_is_swept_or_excluded_with_a_reason() -> None:
+    """The CLI population is a partition of the real app, not a list someone kept.
+
+    This sweep was one command wide -- `index build` -- while the shipped CLI had
+    twenty, and the two findings that walked out of `migrate status` and
+    `migrate apply` were invisible to every property in this file. A list of
+    commands to sweep cannot fail; a partition of the command set can, and a
+    command added in a later milestone fails here until someone says which half
+    it belongs in.
+    """
+    swept = frozenset(" ".join(command) for command in CLI_SWEEP)
+    excluded = frozenset(CLI_NOT_SWEPT)
+
+    assert swept & excluded == frozenset(), (
+        f"a command is both swept and excluded: {sorted(swept & excluded)}"
+    )
+    assert swept | excluded == _command_paths(), (
+        f"unclassified commands: {sorted(_command_paths() - swept - excluded)}; "
+        f"classified but no longer shipped: {sorted((swept | excluded) - _command_paths())}"
+    )
+    assert all(CLI_NOT_SWEPT.values()), "an exclusion without a reason is a command someone forgot"
+
+
+def test_exactly_these_commands_notice_a_single_damaged_cell(
+    cli_observations: dict[tuple[str, str, str], tuple[int, str]],
+) -> None:
+    """The vacuity guard for the CLI sweeps. Measured, and stated exactly.
+
+    Both CLI properties below are quantified over :data:`CLI_SWEEP`, and both are
+    satisfied trivially by a command that never opens the state database. Five of
+    the eight are in that position today -- they answer from the registry, the
+    active pointer and the migration files, none of which this corruption
+    touches -- so without this the sweep could lose `migrate apply` to a
+    refactor and keep reporting green over seven commands that assert nothing.
+
+    An exact set rather than "at least one": a command that *starts* reading the
+    canonical store is a new surface for the same class, and it should arrive as
+    a failure here rather than as a leak found in a review round.
+    """
+    noticed = {
+        command for (command, _table, _name), (code, _text) in cli_observations.items() if code != 0
+    }
+
+    assert noticed == COMMANDS_THAT_NOTICE_A_DAMAGED_CELL, (
+        "the set of commands a damaged cell reaches has moved; "
+        f"newly reaching it: {sorted(noticed - COMMANDS_THAT_NOTICE_A_DAMAGED_CELL)}, "
+        f"no longer reaching it: {sorted(COMMANDS_THAT_NOTICE_A_DAMAGED_CELL - noticed)}"
     )
 
 
@@ -829,7 +995,9 @@ async def test_a_broken_invariant_over_a_withheld_row_publishes_neither_operand(
     )
 
 
-def test_no_cli_output_repeats_a_byte_of_the_state_database(corpus: Corpus) -> None:
+def test_no_cli_output_repeats_a_byte_of_the_state_database(
+    cli_observations: dict[tuple[str, str, str], tuple[int, str]],
+) -> None:
     """The same property on the CLI half of the class.
 
     `theurian index build` reads every project, item and revision through the
@@ -839,18 +1007,23 @@ def test_no_cli_output_repeats_a_byte_of_the_state_database(corpus: Corpus) -> N
     and paths and never a document's content: a cell in its output came from a
     converter's complaint whatever the exit code.
 
+    Over the whole population rather than over the command that reaches the
+    store widest. `index build` walks every table and so looked like the strong
+    case, but breadth is not reach: `migration_history.checksum` is a column it
+    exits 0 over and all three MCP tools stay silent about, and it published
+    that cell verbatim through both `migrate status` and `migrate apply` while
+    this file reported green over 297 positions.
     """
-    leaked: dict[str, tuple[str, ...]] = {}
-    for column in corruptible_columns(corpus.database):
-        assert corrupt(corpus.database, column), f"{column} took no value"
-        try:
-            _code, text = _invoke("index", "build")
-            if fragments := leaked_fragments(text):
-                leaked[str(column)] = fragments
-        finally:
-            restore(corpus)
+    leaked = {
+        position: max(fragments, key=len)
+        for position, (_code, text) in cli_observations.items()
+        if (fragments := leaked_fragments(text))
+    }
 
-    assert not leaked, f"`index build` published the corrupted cell: {leaked}"
+    assert not leaked, (
+        f"{len(leaked)} command outputs published the corrupted cell "
+        f"(longest fragment each): {leaked}"
+    )
 
 
 # -- The remedy property --------------------------------------------------
