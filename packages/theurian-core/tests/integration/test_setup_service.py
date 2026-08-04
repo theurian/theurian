@@ -16,8 +16,10 @@ from typing import Any, override
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 
+from theurian.application.project_service import ProjectRegistry
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.application.setup_steps import probe_project_registered
 from theurian.domain.setup import SetupState, StepId, StepOutcome, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
@@ -181,8 +183,9 @@ def test_a_second_run_does_not_touch_the_mcp_entry(context: SetupContext) -> Non
 
 
 def test_a_conflict_stops_before_replacing_anything(tmp_path: Path) -> None:
-    """A conflict means something the user did not put there is about to be
-    replaced. Silence is not agreement."""
+    """A conflict means setup found something it did not install. It stops to say
+    so and creates nothing while the answer is pending -- and replaces nothing
+    after one either. Silence is not agreement."""
     context = _with(tmp_path, service=FakeService(installed=True, difference="ExecStart differs"))
 
     report = _service(context).run()
@@ -203,13 +206,66 @@ def test_the_conflict_is_reported_with_its_difference(tmp_path: Path) -> None:
     assert "ExecStart differs" in step.detail
 
 
-def test_an_approved_conflict_is_resolved(tmp_path: Path) -> None:
+def test_approving_a_conflict_lets_the_run_proceed_and_leaves_the_conflict_unapplied(
+    tmp_path: Path,
+) -> None:
+    """What consent actually buys, which is not what this test used to be called.
+
+    ``approve_conflicts`` is a gate on the *run*, not an authorisation to
+    replace: ``_apply`` only ever calls a step's action when the plan said
+    ``would_change``, and a CONFLICTING step is recorded ``UNCHANGED`` and
+    skipped. So the difference the user acknowledged is still there when the run
+    ends, and the verification pass says so rather than reporting success.
+
+    Named ``..._is_resolved`` before, asserting only that the state was one of
+    two values and that the data directory existed -- both true of a run that
+    replaced the user's service definition without asking, and both true of this
+    one, which replaces nothing. The outcome is what tells them apart.
+    """
     context = _with(tmp_path, service=FakeService(installed=True, difference="ExecStart differs"))
 
     report = _service(context).run(SetupRequest(approve_conflicts=True))
 
-    assert report.state in {SetupState.CONVERGED, SetupState.DEGRADED}
-    assert context.data_dir.exists()
+    step = report.step(StepId.DAEMON_SERVICE)
+    assert step is not None
+    assert step.outcome is StepOutcome.UNCHANGED, "consent is not authority to overwrite"
+    assert step.status is StepStatus.CONFLICTING, "the difference survives the run"
+    assert (context.auth_dir / TOKEN_KEY).is_file(), "the steps that were not in conflict did run"
+    assert report.state is SetupState.DEGRADED, "an unresolved conflict is a warning, not success"
+    assert any("daemon-service is still conflicting" in w for w in report.warnings)
+
+
+def test_the_consent_warning_does_not_promise_a_replacement_it_will_not_make(
+    tmp_path: Path,
+) -> None:
+    """The regression a text has no other way of being caught by.
+
+    "needs your approval before anything is replaced" was the wording here, and
+    it described a behaviour that does not exist: nothing is replaced with
+    approval either. The same sentence had propagated to the ``--approve-conflicts``
+    help, to ``SetupRequest``'s comment and to two module docstrings before
+    anyone measured it -- prose spreads by being copied, and no test in this
+    suite reads prose.
+
+    Asserted as a prohibition plus a positive, because either alone is weak. The
+    prohibition allows any correct wording rather than pinning one phrasing a
+    rewrite would have to update; the positive stops it being satisfied by an
+    empty or uninformative warning, and names the flag the user has to type,
+    which is the one part of this string that is not editorial. No assertion
+    pins a *particular* correct sentence: that would make an editorial
+    improvement fail a test, which is how a test gets relaxed rather than
+    obeyed.
+    """
+    context = _with(tmp_path, service=FakeService(installed=True, difference="ExecStart differs"))
+
+    report = _service(context).run()
+
+    assert report.state is SetupState.AWAITING_CONSENT
+    warning = next(w for w in report.warnings if "daemon-service" in w)
+    assert "--approve-conflicts" in warning, "the warning has to name the way forward"
+    assert "before anything is replaced" not in warning, (
+        "consent releases the run, not the step; nothing is replaced with approval either"
+    )
 
 
 def test_a_dry_run_still_reports_a_conflict_without_asking(tmp_path: Path) -> None:
@@ -222,6 +278,185 @@ def test_a_dry_run_still_reports_a_conflict_without_asking(tmp_path: Path) -> No
     assert report.state is SetupState.PLAN_BUILT
     step = report.step(StepId.DAEMON_SERVICE)
     assert step is not None and step.needs_consent
+
+
+# -- Inside a repository (§6.2 row 11) ---------------------------------------
+#
+# Every other test in this module leaves `project_root` at `None`, which is the
+# state the CLI produces outside a Git working tree -- so `probe_project_
+# registered` reported NOT_APPLICABLE for all of them and the entire in-a-
+# repository branch had never executed. Not the CONFLICTING arm that an
+# unreadable registry entry reaches, and not SATISFIED or MISSING either.
+#
+# A plain directory rather than a real Git repository: `project_root` is
+# whatever `find_git_root` handed the context, and this probe re-checks nothing
+# about it. Initialising a repository here would test `git init`.
+
+
+def _repository(tmp_path: Path) -> Path:
+    root = tmp_path / "api"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+def _registry_holding(context: SetupContext, entries: dict[str, Any]) -> Path:
+    """Put ``entries`` in the registry file this context's probes will read.
+
+    Addressed through `ProjectRegistry.default` rather than by filename, so the
+    test cannot come to disagree with the probe about where the registry lives.
+    """
+    return _registry_bytes(context, json.dumps(entries).encode("utf-8"))
+
+
+def _registry_bytes(context: SetupContext, raw: bytes) -> Path:
+    """The same file, written as bytes.
+
+    Separate from :func:`_registry_holding` because that one goes through
+    ``json.dumps`` and therefore *cannot* produce the shape the whole-file
+    branch needs: a file that does not parse at all. Every existing registry
+    fixture in this module has that limitation, which is why the branch had no
+    test.
+    """
+    path = ProjectRegistry.default(context.data_dir).path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return path
+
+
+def test_a_repository_that_is_registered_is_reported_satisfied(tmp_path: Path) -> None:
+    """The convergent case, and the one that makes the others mean something.
+
+    A probe that reported MISSING unconditionally would satisfy the test below
+    and every idempotence assertion in this module, because nothing else in it
+    is ever inside a repository.
+    """
+    root = _repository(tmp_path)
+    context = _with(tmp_path, project_root=root)
+    _registry_holding(context, {"api": {"rootPath": str(root.resolve())}})
+
+    step = probe_project_registered(context)
+
+    assert step.status is StepStatus.SATISFIED
+    assert not step.would_change, "a registered repository must not be re-registered"
+
+
+def test_an_unregistered_repository_is_reported_missing_with_the_command_to_fix_it(
+    tmp_path: Path,
+) -> None:
+    """A MISSING step must say what it would do; the plugin renders `action`."""
+    root = _repository(tmp_path)
+    context = _with(tmp_path, project_root=root)
+    _registry_holding(context, {"other": {"rootPath": str(tmp_path / "elsewhere")}})
+
+    step = probe_project_registered(context)
+
+    assert step.status is StepStatus.MISSING
+    assert "theurian project register" in step.action
+    assert str(ProjectRegistry.default(context.data_dir).path) in step.paths
+
+
+def test_an_unreadable_entry_makes_registration_undecidable_rather_than_missing(
+    tmp_path: Path,
+) -> None:
+    """SEC-13. The arm this milestone added, and the one a `load()` scan gets wrong.
+
+    An unreadable entry is exactly one that names no root path, so nothing in
+    the file says it is not *this* repository's own registration. Reporting
+    MISSING would pair that guess with a remedy that cannot work: `register`
+    refuses while the broken entry holds the id, and this step is the first
+    screen a person reads when something is wrong.
+
+    ``paths`` stays empty, unlike a MISSING step's. This step never writes to
+    the registry whatever the user decides, and listing the file would claim
+    setup "would touch" something it only ever reads.
+    """
+    root = _repository(tmp_path)
+    context = _with(tmp_path, project_root=root)
+    _registry_holding(context, {"payments": {"defaultBranch": "main"}})
+
+    step = probe_project_registered(context)
+
+    assert step.status is StepStatus.CONFLICTING
+    assert "theurian project unregister payments" in step.detail
+    assert step.paths == (), "a step that only reads must not appear in the changed-files list"
+
+
+@pytest.mark.parametrize(
+    ("corruption", "raw"),
+    [
+        ("truncated JSON", b'{"api": {"rootPath"'),
+        ("a JSON array", b"[]"),
+        ("arbitrary bytes", b"\xff\xfe\x00\x01theurian"),
+    ],
+    ids=["truncated-json", "json-array", "arbitrary-bytes"],
+)
+def test_a_registry_that_does_not_parse_is_not_reported_as_a_bad_entry(
+    tmp_path: Path, corruption: str, raw: bytes
+) -> None:
+    """The other refusal that reaches this probe, and the one that had no test.
+
+    ``ids_for_root`` raises for two different reasons and only one of them is
+    about an entry. A file whose top level does not parse has no entries to
+    speak of, so a summary saying it "holds an entry that cannot be read" sends
+    the reader looking for an offending line in a file that has none -- and
+    disagrees in kind with the ``detail`` beside it, which carries the
+    delete-and-re-register cure for the whole file.
+
+    All three shapes, because they arrive by different routes:
+    ``JSONDecodeError`` for truncated text, a type check for a JSON array, and
+    ``UnicodeDecodeError`` -- a ``ValueError`` that is not a ``JSONDecodeError``
+    -- for arbitrary bytes. A handler catching only the first two leaves the
+    third escaping as a traceback.
+    """
+    root = _repository(tmp_path)
+    context = _with(tmp_path, project_root=root)
+    _registry_bytes(context, raw)
+
+    step = probe_project_registered(context)
+
+    assert step.status is StepStatus.CONFLICTING, f"{corruption} must be reported, not raised"
+    assert "entry" not in step.summary, (
+        "nothing entry-level is knowable when the file itself will not parse"
+    )
+    assert "re-register each project with `theurian project register`" in step.detail, (
+        "the file-level failure has one reliable cure and the detail is where it travels"
+    )
+    assert step.paths == (), "a step that only reads must not appear in the changed-files list"
+
+
+def test_an_undecidable_registration_halts_the_run_before_anything_is_created(
+    tmp_path: Path,
+) -> None:
+    """One corrupted registry entry stops a machine-wide install, on purpose (SEC-18).
+
+    A conflict is a step Theurian will not change without being told to
+    proceed -- and will still not change afterwards: ``_apply`` only ever runs a
+    step whose plan said ``would_change``, so a CONFLICTING one is recorded
+    ``UNCHANGED`` whatever the user answers. What consent releases is the *run*,
+    not the step. Until it is given the run does not start, so a broken entry
+    belonging to some *other* project blocks the token, the service registration
+    and the MCP entry as well. That is a wide consequence for a narrow cause, and
+    it is a decision rather than an accident: the alternative is a setup that
+    runs to completion while the repository it was run in may or may not be
+    registered, reported as though it were.
+
+    Asserted on the artifacts rather than on the state alone: a run that reached
+    AWAITING_CONSENT after generating a token would satisfy the state and still
+    have written a secret nobody approved.
+    """
+    root = _repository(tmp_path)
+    context = _with(tmp_path, project_root=root)
+    _registry_holding(context, {"payments": {"defaultBranch": "main"}})
+
+    report = _service(context).run(SetupRequest(approve_conflicts=False))
+
+    conflicted = report.step(StepId.PROJECT_REGISTERED)
+    assert conflicted is not None and conflicted.status is StepStatus.CONFLICTING
+    assert report.state is SetupState.AWAITING_CONSENT
+    assert not (context.auth_dir / TOKEN_KEY).exists(), "no token may be generated"
+    assert not context.env_file.exists()
+    assert isinstance(context.service, FakeService) and not context.service.installed
+    assert context.mcp_config.installed_entry() is None
 
 
 # -- Degrading rather than failing (§6.1) ------------------------------------

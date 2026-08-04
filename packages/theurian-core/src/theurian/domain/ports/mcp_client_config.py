@@ -40,9 +40,10 @@ class McpClientConfig(Protocol):
     def difference(self, spec: Any) -> str:
         """Empty when the installed entry matches ``spec``, else what differs.
 
-        A string rather than a bool because the user is asked to approve
-        replacing whatever is there, and "it differs" is not enough to decide on
-        (SEC-18).
+        A string rather than a bool because the difference is put to the user,
+        who decides whether the run proceeds *around* whatever is there -- setup
+        leaves a conflicting entry exactly as it found it, with or without
+        consent (SEC-18). "It differs" is not enough to decide that on.
         """
         ...
 

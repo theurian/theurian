@@ -54,8 +54,9 @@ def test_a_missing_step_must_say_what_it_would_do() -> None:
 
 
 def test_a_conflicting_step_must_carry_the_difference() -> None:
-    """The user is asked to approve an overwrite. Asking without showing the
-    difference is asking them to guess (SEC-18)."""
+    """The user is asked whether the run may proceed past the difference, which
+    setup leaves in place either way. Asking without showing it is asking them to
+    guess (SEC-18)."""
     with pytest.raises(SetupError, match="difference"):
         SetupStep(
             step_id=StepId.MCP_CONNECTION,
@@ -89,8 +90,10 @@ def test_a_plan_with_one_missing_step_is_not_empty() -> None:
 
 
 def test_a_plan_that_only_conflicts_still_requires_consent() -> None:
-    """A conflict changes nothing by itself, but resolving it does. Treating
-    "nothing to create" as "nothing to ask" would overwrite silently."""
+    """A conflicting step is never applied, so it changes nothing by itself and
+    consent does not change that. What consent releases is the rest of the run,
+    which builds around a configuration setup did not install -- and treating
+    "nothing to create" as "nothing to ask" would do that silently (SEC-18)."""
     plan = SetupPlan(steps=(_satisfied(), _conflicting()))
 
     assert not plan.is_empty

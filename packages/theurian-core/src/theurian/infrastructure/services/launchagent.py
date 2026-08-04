@@ -110,8 +110,10 @@ class LaunchAgentManager:
 
         Compared by parsed content, not bytes: a plist rewritten by
         ``launchctl`` or edited by hand keeps its meaning while changing its
-        formatting, and reporting that as a conflict would ask the user to
-        approve an overwrite that changes nothing.
+        formatting, and reporting that as a conflict would halt the run for
+        consent over a difference that means nothing. Worse than noise: setup
+        never rewrites a conflicting step, so the formatting would keep being
+        reported and every later run would end DEGRADED with no way to converge.
         """
         if not self.plist_path.exists():
             return ""

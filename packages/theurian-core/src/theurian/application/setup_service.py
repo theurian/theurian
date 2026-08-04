@@ -39,9 +39,13 @@ class SetupRequest:
     """What the caller is asking for."""
 
     dry_run: bool = False
-    #: Consent to resolve steps that reported ``CONFLICTING``. Withheld by
-    #: default: a conflict means something the user did not put there is about to
-    #: be replaced, and silence is not agreement (SEC-18).
+    #: Consent to *proceed past* steps that reported ``CONFLICTING``, which is
+    #: not consent to resolve them: :meth:`SetupService._apply` applies a step
+    #: only where the plan said ``MISSING``, so a conflicting step is left
+    #: exactly as the user has it and reported as conflicting again by the
+    #: verification pass. Withheld by default even so, because proceeding still
+    #: installs everything else around a configuration the user did not put
+    #: there, and silence is not agreement (SEC-18).
     approve_conflicts: bool = False
 
 
@@ -128,7 +132,9 @@ class SetupService:
                 steps=plan.steps,
                 serena_detected=self._context.mcp_config.serena_detected(),
                 warnings=tuple(
-                    f"{s.step_id.value} needs your approval before anything is replaced."
+                    f"{s.step_id.value} conflicts with what setup would install, and setup "
+                    f"never replaces it. Re-run with --approve-conflicts to leave it as it "
+                    f"is and apply the remaining steps."
                     for s in plan.conflicting_steps
                 ),
             )
@@ -151,6 +157,14 @@ class SetupService:
                 continue
 
             if not planned.would_change:
+                # `would_change` is ``MISSING`` and nothing else, so a
+                # ``CONFLICTING`` step is recorded ``UNCHANGED`` and never
+                # applied -- including when ``approve_conflicts`` let the run
+                # reach here. That is the design, not an omission: approval buys
+                # progress on the rest of the list, never an overwrite of a file
+                # the user owns (SEC-18, ADR-0012), and `_verify` reports the
+                # step as still conflicting so the run ends DEGRADED rather than
+                # claiming a convergence it did not reach.
                 applied.append(planned.applied(StepOutcome.UNCHANGED))
                 continue
 
@@ -228,11 +242,14 @@ class SetupService:
 
 
 def _blocking_conflicts(plan: SetupPlan) -> tuple[SetupStep, ...]:
-    """Conflicts that no amount of consent can resolve.
+    """Conflicts that consent cannot let the run proceed past.
 
-    An unsupported platform or an unlocatable executable is not a decision the
-    user can approve their way past, so setup stops before it creates anything
-    it would then have to explain.
+    Not "conflicts consent cannot resolve": consent resolves none of them, since
+    a ``CONFLICTING`` step is left exactly as it is whatever the user answers. What
+    separates these two is that approval buys progress on the rest of the list for
+    every other conflict and buys nothing here -- an unsupported platform or an
+    unlocatable executable leaves nothing worth installing around it, so setup
+    stops before it creates anything it would then have to explain.
     """
     return tuple(
         step

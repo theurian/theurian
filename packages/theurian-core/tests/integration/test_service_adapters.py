@@ -196,8 +196,9 @@ def test_an_identical_plist_reports_no_difference(home: Path) -> None:
 
 def test_a_reformatted_plist_is_not_reported_as_a_conflict(home: Path) -> None:
     """Compared by parsed content, not bytes. launchctl rewrites plists in
-    binary form; reporting that as a conflict asks the user to approve an
-    overwrite that changes nothing."""
+    binary form; reporting that as a conflict would halt the run for consent
+    over a difference that means nothing -- and setup never rewrites a
+    conflicting step, so it could never converge afterwards."""
     manager = LaunchAgentManager(executable="/opt/theurian", home=home)
     manager.plist_path.parent.mkdir(parents=True)
     parsed = plistlib.loads(manager.render(port=7419, data_directory="/data"))
@@ -356,7 +357,8 @@ async def test_a_different_existing_unit_is_backed_up(home: Path) -> None:
 
 
 def test_a_changed_unit_is_reported_as_a_diff(home: Path) -> None:
-    """The user is asked to approve the overwrite, so they have to see it."""
+    """The user is asked whether the run may proceed around this unit, which
+    setup leaves as it is, so they have to see what differs."""
     manager = SystemdUserManager(executable="/opt/theurian", home=home)
     manager.unit_path.parent.mkdir(parents=True)
     manager.unit_path.write_text(manager.render(port=9999, data_directory="/data"))

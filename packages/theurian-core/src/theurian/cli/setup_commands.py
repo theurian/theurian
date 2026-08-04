@@ -94,7 +94,11 @@ def setup_command(
         bool,
         typer.Option(
             "--approve-conflicts",
-            help="Replace configuration that differs from what Theurian would install.",
+            help=(
+                "Proceed past configuration that differs from what Theurian would "
+                "install, applying the remaining steps. The differing configuration is "
+                "reported, never replaced."
+            ),
         ),
     ] = False,
     port: PortOption = DEFAULT_PORT,
