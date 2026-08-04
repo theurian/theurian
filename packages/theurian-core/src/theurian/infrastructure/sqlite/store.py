@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -199,20 +199,30 @@ class SqliteCanonicalStore:
     # -- Reading ----------------------------------------------------------
 
     def _read_one[T](
-        self, sql: str, parameters: Sequence[str], mapper: Callable[[sqlite3.Row], T]
+        self, sql: str, parameters: tuple[str, ...], mapper: Callable[[sqlite3.Row], T]
     ) -> T | None:
         """One row, mapped inside the guard that answers for this file.
 
-        ``parameters`` is ``Sequence[str]`` rather than the ``list[Any]`` that
-        used to sit in `list_items`: every value this class binds is already a
-        string, and saying so removes an `Any` from the module.
+        ``parameters`` is a tuple rather than the ``list[Any]`` that used to sit
+        in `list_items`: every value this class binds is already a string, and
+        saying so removes an `Any` from the module.
+
+        **Not ``Sequence[str]``, which was the first attempt at that and did not
+        exclude the mistake it was introduced to exclude.** `str` is itself a
+        `Sequence[str]`, so a forgotten comma type-checked under `mypy --strict`
+        and bound one parameter per *character*. Measured on SQLite 3.51.2: a
+        four-character value against one placeholder raises `ProgrammingError:
+        Incorrect number of bindings supplied. The current statement uses 1, and
+        there are 4 supplied` -- inside :func:`_reading`, so a caller was told
+        their state database was damaged -- and a one-character value against one
+        placeholder raises nothing at all and answers with the wrong rows.
         """
         with _reading():
             row = self._conn().execute(sql, parameters).fetchone()
             return None if row is None else mapper(row)
 
     def _read_all[T](
-        self, sql: str, parameters: Sequence[str], mapper: Callable[[sqlite3.Row], T]
+        self, sql: str, parameters: tuple[str, ...], mapper: Callable[[sqlite3.Row], T]
     ) -> tuple[T, ...]:
         """Every row, mapped inside the guard.
 
@@ -290,14 +300,14 @@ class SqliteCanonicalStore:
         current_at: datetime | None = None,
     ) -> tuple[KnowledgeItem, ...]:
         sql = "SELECT * FROM knowledge_items WHERE project_id = ?"
-        params: list[str] = [context.project_id.value]
+        params: tuple[str, ...] = (context.project_id.value,)
         if namespace is not None:
             sql += " AND namespace = ?"
-            params.append(namespace)
+            params += (namespace,)
         if current_at is not None:
             # Half-open window, matching ValidityPeriod.contains.
             sql += " AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)"
-            params.extend([current_at.isoformat(), current_at.isoformat()])
+            params += (current_at.isoformat(), current_at.isoformat())
         sql += " ORDER BY item_id"
         return self._read_all(sql, params, _item_from_row)
 
