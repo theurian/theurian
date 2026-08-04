@@ -57,15 +57,12 @@ from theurian.domain.values import MediaType
 from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseUnreadableError,
     create_database,
     write_transaction,
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
-from theurian.infrastructure.sqlite.store import (
-    SqliteCanonicalStore,
-    SqliteWriter,
-    StateDatabaseUnreadableError,
-)
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 
 #: Exit code for a knowledge-state problem the user must resolve: a checksum
 #: mismatch, a revision conflict, a dependency cycle. Distinct from 1 so a script

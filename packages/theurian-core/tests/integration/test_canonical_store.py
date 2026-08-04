@@ -35,16 +35,13 @@ from theurian.domain.project import Project
 from theurian.domain.values import MARKDOWN, ValidityPeriod
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseUnreadableError,
     create_database,
     open_read_connection,
     write_transaction,
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
-from theurian.infrastructure.sqlite.store import (
-    SqliteCanonicalStore,
-    SqliteWriter,
-    StateDatabaseUnreadableError,
-)
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 
 pytestmark = pytest.mark.integration
 

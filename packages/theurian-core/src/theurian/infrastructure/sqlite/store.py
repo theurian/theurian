@@ -28,7 +28,7 @@ from theurian.domain.enums import (
     SpecificationStatus,
     TrustLevel,
 )
-from theurian.domain.errors import InvariantViolationError, TheurianError
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
@@ -50,54 +50,9 @@ from theurian.domain.values import (
 )
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseUnreadableError,
     open_read_connection,
 )
-
-
-class StateDatabaseUnreadableError(TheurianError):
-    """A stored value in this state database is not the value it claims to be.
-
-    **Carries the failing exception's type and never its message, which is the
-    whole of this class.** Every converter this module reaches for puts the value
-    it would not accept into the error it raises: `datetime.fromisoformat` quotes
-    the string, each of the six enums quotes the member it could not find, and
-    every domain value object -- `MediaType`, `ContentHash`, `ItemId` -- renders
-    its argument with ``!r``. Under corruption that value is whatever bytes were
-    on the page, and this store holds *every* revision, `draft` and `rejected`
-    included (ADR-0006). So the message a caller receives had to stop being a
-    function of the cell.
-
-    Measured through ``build_server(registry).call_tool`` against a database
-    built by the real CLI: overwriting any of `created_at`, `valid_from`,
-    `content_type` or `status` published that cell verbatim to an MCP client,
-    through both ``knowledge.get`` and ``knowledge.search`` -- eight of eight,
-    with the driver's own text arriving as ``ToolError: Error executing tool
-    knowledge.get: Invalid isoformat string: '<the cell>'``.
-
-    **The type name is the whole detail, including for `sqlite3`'s own errors.**
-    :class:`~theurian.infrastructure.sqlite.index_store.IndexUnreadableError`
-    passes `str(exc)` through for those on the grounds that a driver complaint is
-    structural. It nearly always is. Measured on SQLite 3.51.2, damaging one
-    `sqlite_master.sql` cell gives ``DatabaseError: malformed database schema
-    (payroll_secret_band_l7) - incomplete input`` -- a name read straight out of
-    the file -- so "nearly" is a case analysis over SQLite's error catalogue that
-    the next release can invalidate. Enumerating what a broken file can say is
-    the exact method that reopened this class twice; one rule that needs no
-    enumeration replaces it.
-
-    The cause travels by ``raise ... from``, so whoever holds the traceback still
-    has the real exception with its real message.
-    """
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(
-            f"This project's state database cannot be read ({detail}): it is damaged, or "
-            f"holds a value this build cannot interpret. A state database is derived and "
-            f"git-ignored (ADR-0004), so delete `.theurian/state/` and run "
-            f"`theurian migrate apply` to rebuild it from the Git-tracked migrations. "
-            f"Nothing authored is lost."
-        )
-
 
 #: What a read can raise that is *not* this file's bytes failing to be a value.
 #:
