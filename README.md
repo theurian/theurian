@@ -104,9 +104,10 @@ the `//` comments did not.
 The excerpt is one flattened line cut at 280 characters. On the ranked path it
 is the passage that matched — this hit is the document's first chunk, so it
 opens with the title, which the indexer prepends to the body once before
-chunking so that a title-only query still matches. A hit on a later chunk opens
-with that chunk's own heading, and the unranked fallback path, having no
-passage, excerpts the head of the document whatever matched.
+chunking so that a title-only query still matches. Any later chunk opens where
+its own passage starts, at a section heading or mid-section; and the unranked
+fallback path, having no passage at all, excerpts the head of the document
+whatever matched.
 
 Alongside the hits, `retrieval` reports `snapshotId`, `mode`, `usedTokens`,
 `droppedForBudget`, whether the index is `stale`, and a `fallbackReason` when
