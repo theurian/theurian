@@ -1,5 +1,7 @@
 <div align="center">
-  <img src="assets/theurian-logo.svg" alt="Theurian" width="360">
+  <img src="assets/theurian-logo.png" alt="Theurian" width="420">
+
+  <h1>Theurian — Git-native engineering knowledge for AI agents</h1>
 
   <h3>Stop your AI from re-proposing what your team rejected in March.</h3>
 
@@ -47,42 +49,54 @@ unreviewed draft from a ruling the team actually made.
 
 </td><td valign="top">
 
-The agent calls one local daemon and gets the approved decision, who owns it,
-how far it can be trusted, whether it is still valid, and the commit and line
-range it came from.
+The agent calls one local daemon and gets the approved decision, how far it can
+be trusted, whether it is still inside its validity window, and the source
+anchor to check the claim against.
 
 An unreviewed draft can never come back labelled as a team decision — because
 **no MCP tool in Theurian can write approved knowledge.** Not behind a flag, not
 behind a permission. Write-intent tools emit a proposal for a human to merge.
 
-Pin the `snapshotId` it reports, and the same question returns the same answer
-in six months.
+Every response names the `snapshotId` of the canonical state that answered it,
+so an agent can tell whether two answers came from the same knowledge or from
+two different states of it.
 
 </td></tr>
 </table>
 
 ## What comes back
 
-Real output from `knowledge.search`, trimmed to a single hit:
+One hit from a `knowledge.search` response. Every value below came off the wire;
+the `//` comments did not.
 
 ```jsonc
 {
   "itemId": "architecture.auth-policy",
+  "revisionId": "01K1ABCREV01234567890ABCDE",
   "title": "Authentication and authorization policy",
-  "excerpt": "Every service-to-service call carries a signed JWT issued by the platform identity service…",
+  "excerpt": "Authentication and authorization policy  # Authentication and authorization policy  ## Decision  Every service-to-service call carries a signed JWT issued by the platform identity service. Services verify the signature and the `aud` claim on every request. No service accepts an u...",
+  "contentType": "text/markdown",
 
   "status": "approved",          // a human approved this
   "trustLevel": "reviewed",      // …at this level of scrutiny
-  "sensitivity": "internal",     // …and it is never summarized together with another level
-  "freshness": { "isWithinValidity": true, "ageDays": 21 },
+  "sensitivity": "internal",
+  "freshness": {
+    "revisionCreatedAt": "2026-07-15T10:00:00+09:00",
+    "isWithinValidity": true,    // false means it is outside its declared validity window
+    "ageDays": 21
+  },
 
-  "sourceAnchors": [{            // no anchor, no result — the schema sets minItems: 1
-    "filePath": "docs/adr/0031-service-auth-policy.md",
+  "sourceAnchors": [{            // provider and sourceUri always; the rest when the source pins them
+    "provider": "git",
+    "sourceUri": "git://local/docs/adr/0031-service-auth-policy.md",
+    "repository": "local",
     "commitSha": "a3f9c21d4e5b6a7c8d9e0f1a2b3c4d5e6f7a8b9c",
-    "lineStart": 12, "lineEnd": 28
+    "filePath": "docs/adr/0031-service-auth-policy.md",
+    "lineStart": 12,
+    "lineEnd": 28
   }],
 
-  "contentClassification": "untrusted-knowledge",  // indexed text is data, never instructions
+  "contentClassification": "untrusted-knowledge",  // your agent framework decides what to do with this
   "mayContainInstructions": true,
   "executable": false,
 
@@ -91,9 +105,25 @@ Real output from `knowledge.search`, trimmed to a single hit:
 }
 ```
 
-Alongside it, `retrieval` reports `snapshotId`, `usedTokens`,
-`droppedForBudget`, whether the index is `stale`, and which retrievers ran. An
-agent is never left guessing whether it saw everything.
+The excerpt is one flattened line of the passage that matched, cut at 280
+characters, and it opens with the document's title because the indexer prepends
+the title to the body — otherwise a query matching only the title would find
+nothing.
+
+Alongside the hits, `retrieval` reports `snapshotId`, `mode`, `usedTokens`,
+`droppedForBudget`, whether the index is `stale`, and a `fallbackReason` when
+the ranked path stood aside. So a degraded answer is distinguishable from an
+empty one.
+
+**It deliberately does not say what it left out.** `droppedForBudget` counts
+only results this caller was entitled to see. A per-query count of withheld
+matches was published once and then removed: the trigram retriever matches any
+substring of three characters, so such a count does not detect, it extracts —
+257 ordinary searches recovered a twenty-character credential from a document
+whose superseding revision had redacted it ([SEC-13,
+T-15](docs/security/threat-model.md)). Nor is every recall limit reported: when
+a query's terms are all under three characters, the substring retriever scans
+for the first eight of them and drops the rest, and no field says so.
 
 ## Why not just a vector store over your docs?
 
@@ -101,24 +131,33 @@ agent is never left guessing whether it saw everything.
 | :-- | :-- | :-- | :-- |
 | Answers | "what text is similar" | "where is this symbol" | **"what did we decide, and why"** |
 | Who writes it | the AI, automatically | the compiler | **a human, by approving it** |
-| Rejected approaches | gone | n/a | **returned, marked as rejected** |
-| Provenance | an embedding | a file path | **commit + file + line range** |
-| Trust | uniform | n/a | owner, trust level, validity window |
-| Reproducible later | no | n/a | **pin a `snapshotId`** |
+| Rejected approaches | gone | n/a | **inside the approved decision that rejected them** |
+| Provenance | an embedding | a file path | **provider + URI, with commit and line range when the source pins them** |
+| Trust | uniform | n/a | status, trust level, validity window |
+| Did the answer change? | no way to tell | n/a | **every response names its `snapshotId`** |
+
+An item whose own status is `rejected` is not returned, under any flag: a
+rejected revision is where the secret that caused the rejection still lives.
+What comes back is the approved decision, which is where the rejected
+alternative and the reasoning against it are written down.
 
 > Memory is what your agent remembers. Governance is what your team decided.
 > Theurian is the second one — not a Markdown search tool, and not a
 > general-purpose long-term memory.
 
-## Five properties that define it
+## Four properties that define it
 
 |  |  |
 | :-- | :-- |
-| **Engineering knowledge governance** | Knowledge has an owner, a trust level, a validity window, and an approver. An unreviewed draft can never be mistaken for a team decision. |
+| **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. An unreviewed draft can never be mistaken for a team decision. |
 | **AI proposes, humans approve** | A resolved review thread becomes a *candidate*. A human turns candidates into rules. Never the reverse. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
-| **Specification traceability** | Requirement → spec → ADR → PR → review → code → test → operational evidence, as a queryable graph. |
-| **Evidence-backed retrieval** | Every result resolves to a commit, a file, and a line range. No anchor, no result. |
-| **Reproducible knowledge state** | State is content-addressed, and no revision is ever overwritten. Pin a `snapshotId` and an agent's run is reproducible months later. ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md)) |
+| **Evidence-backed retrieval** | Every result carries the anchors its revision declares. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
+| **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. Every response names the `snapshotId` that answered it. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
+
+Specification traceability — requirement → spec → ADR → PR → review → code →
+test → evidence, as a queryable graph — is the design this is built toward and
+is not built yet. `system.capabilities` reports `traceability: false`; it is
+Milestone 8.
 
 ## Quick start
 
@@ -127,19 +166,38 @@ reaches PyPI.
 
 ```sh
 git clone https://github.com/theurian/theurian && cd theurian
-uv sync
+uv tool install './packages/theurian-core[all]'   # puts `theurian` on your PATH
 ```
 
-Point it at a repository and build a knowledge base:
+`uv sync` sets up the development environment and the test suite, but it does
+not put `theurian` on `PATH` — and the daemon's service unit invokes Theurian by
+absolute path, because launchd and systemd start with a PATH that is not your
+shell's. That is what `uv tool install` is for.
+
+Build a knowledge base inside a repository:
 
 ```sh
 cd /path/to/your/repo
 theurian init                  # create .theurian/ and the .gitignore entries
 theurian project register      # register this working tree
-theurian migrate apply         # apply the migrations under .theurian/migrations/
-theurian ingest                # normalize knowledge and specification sources
+# author a migration under .theurian/migrations/, then:
+theurian migrate validate      # what can be checked without touching state
+theurian migrate apply         # apply it
+theurian ingest                # normalize the sources under .theurian/
 theurian index build           # rank search instead of scanning substrings
 ```
+
+**`init` creates the directories, not the content.** `.theurian/migrations/`
+starts empty, and the rest of that sequence does not object: run verbatim
+against a fresh repository, it reports `operationsApplied: 0` and `ingested: 0`,
+then publishes an index of `chunks: 0`. `ingest` reads `.theurian/knowledge` and
+`.theurian/specifications` only — it does not walk the repository's own `docs/`.
+
+The migration format is [docs/protocol/migrations.md](docs/protocol/migrations.md),
+and [`examples/sample-project/`](examples/sample-project/) has a migration with
+its content files to copy the shape from. Every revision needs at least one
+entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
+`migrate apply` refuses a revision with neither.
 
 Then install the daemon and wire it to your agent:
 
@@ -164,16 +222,22 @@ theurian daemon status               # what is running, and where its data lives
 curl http://127.0.0.1:7419/health    # no credential needed; this is what the hook calls
 ```
 
-Starting a second daemon is safe: it detects the first, reports `reuse`, and
-exits 0. One process serves every project you register and every agent that
-connects.
+Starting a second daemon against the same data directory is safe: it detects the
+first, reports `reuse`, and exits 0. One process serves every project you
+register and every agent that connects. A second daemon pointed at a *different*
+data directory is a different matter — on this foreground path it reports
+`conflict` and exits 1 rather than answering queries from the wrong knowledge
+base.
 
 Requests to `/mcp` need a bearer token, which `daemon start` mints into
 `~/.theurian/auth/mcp-token` (mode 0600) on first run. Streamable HTTP is
 session-based: `initialize` returns an `mcp-session-id` header that every later
 request must carry, so `tools/list` on its own answers `400 Missing session ID`.
-Your MCP client handles this; see
-[docs/security/local-mcp.md](docs/security/local-mcp.md) for the full exchange.
+Your MCP client handles this.
+[docs/security/local-mcp.md](docs/security/local-mcp.md) covers the controls
+around that endpoint — binding, `Origin` and `Host` validation, where the token
+lives, and how to get it to a client without writing it down — not the JSON-RPC
+exchange itself.
 
 **A project's id defaults to its directory name, which is not unique on a
 machine.** `team-one/api` and `team-two/api` both propose `api`. The second
@@ -187,19 +251,41 @@ theurian project register --project-id team-two-api
 
 </details>
 
-See [`examples/sample-project/`](examples/sample-project/) for a `.theurian/`
-to copy from.
+**If two repositories on your machine have the same directory name**, the second
+`project register` is refused rather than given the first one's id — see the
+fold above for how to break the tie.
 
 ## Works with
 
-Theurian exposes no client-specific surface. Anything that speaks **MCP over
-Streamable HTTP** to `http://127.0.0.1:7419/mcp` with a bearer token can use it;
-Claude Code is simply the one this repository tests end to end.
+Theurian exposes no client-specific surface: anything that speaks **MCP over
+Streamable HTTP** to `http://127.0.0.1:7419/mcp` can use it. The daemon does put
+four conditions on the request — one of them authentication, the other three
+because a loopback port is reachable from any page your browser opens
+(SEC-2, T-2):
+
+| Your client must | Or the request gets |
+| :-- | :-- |
+| carry the bearer token | `401 unauthorized` |
+| send `Host:` as `127.0.0.1:7419`, `localhost:7419`, or `[::1]:7419` | `421 Invalid Host header` |
+| send no `Origin`, or one of those three as `http://…` | `403 Invalid Origin header` |
+| send `Content-Type: application/json` on POST | `400 Invalid Content-Type header` |
+
+Read the token at connect time from `~/.theurian/auth/mcp-token` (mode 0600) or
+from `${THEURIAN_MCP_TOKEN}`. **Never paste it into a client's config file** — a
+config file gets copied between machines, committed, and pasted into issues; the
+token should not follow it (SEC-5, T-8,
+[ADR-0011](docs/adr/0011-local-mcp-authentication.md)).
 
 | Client | Status |
 | :-- | :-- |
-| Claude Code | Ships a plugin, covered by this repository's E2E tests |
-| Any MCP Streamable HTTP client | Same endpoint, same five tools; not covered by this repository's tests |
+| Claude Code | Ships a plugin and a `/theurian:setup` command that wires the connection |
+| Any MCP Streamable HTTP client | Same endpoint, same five tools, no client-specific surface |
+
+`tests/e2e/` drives the real daemon over the real endpoint. No test in this
+repository starts the plugin inside Claude Code; that side is held by CI's
+static checks — the plugin must contain no Python, import no Core, declare no
+MCP server, and template the token as `${THEURIAN_MCP_TOKEN}` — plus
+`claude plugin validate`.
 
 Five read-only tools: `knowledge.search`, `knowledge.get`, `knowledge.status`,
 `project.list`, `system.capabilities`.
@@ -220,7 +306,7 @@ shows a plan first, and running it twice changes nothing.
 
 ```mermaid
 flowchart LR
-    SRC["Markdown · ADRs · specs<br/>Git commits · GitHub PRs"]
+    SRC["Markdown · ADRs · specs<br/>YAML migrations under .theurian/"]
     GIT[("Git — the record of truth")]
     subgraph CORE["Theurian Core"]
         STORE["Canonical store<br/>immutable revisions"]
@@ -239,9 +325,16 @@ flowchart LR
     MCP --> ANY
 ```
 
-Git holds the record of truth. SQLite, embeddings, and RAPTOR trees are derived
-artifacts, rebuilt on demand and never committed
+Git holds the record of truth. SQLite, embeddings, and — when Milestone 6 builds
+them — RAPTOR trees are derived artifacts, rebuilt on demand and never committed
 ([ADR-0004](docs/adr/0004-sqlite-is-a-derived-artifact.md)).
+
+**An applied migration cannot change.** Its checksum is recorded when it is
+applied; a file that no longer hashes to it is fatal and never auto-repaired,
+because the recorded history and the file on disk make different claims about
+what was applied. Conflicting edits are reported rather than merged: a revision
+names the revision it expects to replace, and a mismatch stops the migration
+([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md)).
 
 **One daemon per machine, over HTTP — never stdio.** A stdio MCP server is
 spawned once per client. Ten subagents would mean ten processes writing to one
@@ -251,7 +344,7 @@ not slowness, it is corruption.
 
 **No vendor lock-in, and no API key.** Embedding, summarization, and reranking
 sit behind ports with deterministic in-tree defaults. `git clone && uv sync &&
-pytest` passes offline, for free, on any machine.
+uv run pytest` passes offline, for free, on any machine.
 ([ADR-0009](docs/adr/0009-no-llm-vendor-lock-in.md))
 
 ## Retrieval
@@ -274,6 +367,13 @@ a Japanese project was invisible. The trigram index sits *beside* the word index
 rather than replacing it, because trigrams are worse at what engineering queries
 are made of: a trigram search for `cat` also matches `concatenate`. Fusing both
 means each covers the other's blind spot.
+
+**Not solved: a short term mixed with a long one.** `認証 トークン` searches the
+substring retriever for `トークン` alone. The two-character term is dropped from
+the trigram expression, and the floor that would fall back to a scan does not
+fire because the expression is not empty. The long term still answers, so this
+is a recall loss rather than the blackout the all-short case was; closing it is
+Milestone 6 ranking work.
 ([ADR-0023](docs/adr/0023-trigram-index-beside-the-word-index.md))
 
 <details>
@@ -290,16 +390,38 @@ turning it on by default would add noise and call it recall. Pass
 an n-gram search is never mistaken for a semantic one.
 ([ADR-0021](docs/adr/0021-rank-fusion-over-score-normalisation.md))
 
-**A stale index answers with less, never with more.** A document retired or
-superseded since the last build is checked against the canonical store and
-withheld — and the retrievers are read *through* that check rather than filtered
-after it, so `count`, `usedTokens`, `fusedScore`, and which paragraph is
-excerpted are exactly what they would be if that document had never been
-indexed. One consequence is not covered by that equality, is recorded rather
-than implied, and is removed by `theurian index build`: BM25 scores against
-corpus statistics taken over the whole index file, so a withheld row can still
-shift the relative order of rows you *can* see.
-([T-17, T-17a](docs/security/threat-model.md))
+**A stale index answers with less, never with more, and does not say what it
+left out.** A document retired or superseded since the last build is checked
+against the canonical store and withheld — and the retrievers are read *through*
+that check rather than filtered after it, so no withheld row occupies a result
+slot, a rank, or a published number. `retrieval.stale` says the index is behind,
+which is a fact about the index and not about your query.
+([T-17](docs/security/threat-model.md))
+
+**Search ranking is where that stops holding, and it is not fixed in this
+milestone.** BM25 scores a row against corpus statistics computed over the whole
+index file, and until the next build the withheld rows are still in that file
+being counted. So a withheld document can move `fusedScore`, the order of the
+hits, and which paragraph of a visible document is excerpted. Two different
+things move here, and they are not the same size:
+
+- **The order moves for any withheld content, whatever it says.** One of those
+  statistics is the average document length, so a withheld document that shares
+  not one word with your query still changes the score of every visible row — by
+  a different amount for each, which is why the order moves. Measured against
+  SQLite FTS5, not argued; an earlier version of this section claimed the
+  opposite.
+- **Reading content back out of the ranking is narrower.** That needs a term
+  which also occurs in content you *can* read, so what it can answer is whether
+  a withheld document contains a term you have already seen somewhere — not a
+  term you do not already have.
+
+`theurian index build` closes both, along with every other consequence of a
+stale index; eliminating the stale window itself is Milestone 6's blue/green
+builds. **If a project's ranking must not depend on retired content at all,
+rebuild the index as part of retiring it rather than on a schedule.** Accepted
+deliberately, with the argument and the measurements recorded.
+([T-17a](docs/security/threat-model.md))
 
 **Rebuild the index after upgrading.** An index built under an older schema is
 detected on open and reported rather than silently losing half of itself:
@@ -314,11 +436,11 @@ found beside the version it expects.
 |  |  |
 | :-- | :-- |
 | **Nothing leaves your machine** | Loopback only, bearer token at mode 0600, no telemetry, no account, no API key. |
-| **Indexed text is data, never instructions** | Every result is labelled `untrusted-knowledge` with `mayContainInstructions` and `executable`, so an agent framework can refuse to act on retrieved prose (T-3). |
-| **Sensitivity levels cannot be summarized together** | A RAPTOR node's tree identity includes project, tenant, sensitivity, ACL group, and namespace, so a summary spanning a restricted incident report and a public API guide cannot be constructed. Structural, not a check someone could forget. ([ADR-0008](docs/adr/0008-raptor-forest.md)) |
+| **Indexed text is labelled as data, not as instructions** | Every result carries `untrusted-knowledge`, `mayContainInstructions`, and `executable`. **Theurian labels; it does not enforce.** Acting on the label is the calling agent's responsibility, and no MCP server can take it over (T-3). |
 | **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. A citation to a revision id means the same thing forever. |
 | **Apache-2.0, DCO, no CLA** | Core cannot be relicensed away from Apache-2.0 without every contributor's agreement. ([ADR-0015](docs/adr/0015-dco-over-cla.md)) |
-| **Checksums and a CycloneDX SBOM per release** | `/theurian:setup` verifies the checksum before installing and aborts rather than installing an artifact it could not verify (T-16). |
+| **Artifact verification is not implemented** | There is no published release manifest yet, so `theurian setup` reports the artifact-integrity step as `not-applicable` rather than claiming a check it did not make. Checksums, a CycloneDX SBOM, and a setup step that aborts on a mismatch arrive with the first tagged release ([release process](docs/contributing/release.md), T-16). |
+| **Cross-sensitivity summaries are prevented by design, and nothing summarizes yet** | A RAPTOR node's tree identity includes project, tenant, sensitivity, ACL group, and namespace, so a node combining two levels has no tree to belong to — structural rather than a check someone could forget. No summary is built today: `system.capabilities` reports `raptor: false`, and the forest is Milestone 6. ([ADR-0008](docs/adr/0008-raptor-forest.md)) |
 
 The full [threat model](docs/security/threat-model.md) names what is *not* solved
 yet, and grades it.
@@ -340,7 +462,7 @@ yet stable enough to promise upgrade paths.
 ## Documentation
 
 - [Requirements and architecture analysis](docs/architecture/requirements-analysis.md) — the reasoning behind everything here
-- [Architecture decision records](docs/adr/README.md) — twenty-three decisions, and the alternatives rejected
+- [Architecture decision records](docs/adr/README.md) — every decision, and the alternatives rejected
 - [Threat model](docs/security/threat-model.md) · [Local MCP security](docs/security/local-mcp.md)
 - [Migration format](docs/protocol/migrations.md) · [Plugin/Core compatibility](docs/protocol/plugin-core-compatibility.md)
 - [Claude Code integration](docs/integrations/claude-code.md) · [Serena](docs/integrations/serena.md) — different questions, designed to be used together
@@ -359,8 +481,10 @@ its own repository.
 packages/theurian-core/   Python package: CLI, daemon, MCP server, domain, adapters
 plugins/claude-code/      Claude Code plugin — separately versioned and released
 schemas/                  Public JSON Schemas: the contract between the two
+tests/                    Cross-artifact contract and E2E tests
 docs/                     Architecture, ADRs, protocol, security, integrations
-examples/                 A runnable sample project
+examples/                 A sample `.theurian/` to copy the shape from
+packaging/                macOS, Linux, and Windows packaging
 ```
 
 </details>
