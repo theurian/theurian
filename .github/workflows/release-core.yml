@@ -35,6 +35,12 @@ env:
   # anyone has run the difference.
   UV_VERSION: "0.7.2"
   CYCLONEDX_VERSION: "7.3.1"
+  # The release trust root, space separated. A `core-v*` tag is published only
+  # if its signature verifies against a public key GitHub holds for one of
+  # these accounts — the same keys behind the "Verified" badge on a tag page.
+  # Adding an account here grants it the ability to cut a release, so it is a
+  # review decision, not a configuration detail.
+  RELEASE_SIGNERS: "utchy"
 
 jobs:
   # A tag push does not trigger core.yml — it filters on `branches: [main]`.
@@ -91,17 +97,105 @@ jobs:
           echo "version=${declared}" >> "$GITHUB_OUTPUT"
           echo "Releasing ${declared}"
 
-      - name: Require the tag to carry a signature
+      - name: Require the tag to be signed by a release signer
         if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # This proves a signature block is present on the tag object. It does
-          # not verify that signature — the runner has no keyring, and importing
-          # one here would only move the trust decision, not make it. Verifying
-          # against the maintainer keyring stays a human step (release.md §4).
-          if ! git cat-file tag "$GITHUB_REF_NAME" \
-               | grep -qE '^-----BEGIN (PGP|SSH) SIGNATURE-----'; then
-            echo "::error::${GITHUB_REF_NAME} is not a signed tag. Use 'git tag -s'."
+          # What this establishes: the tag object carries a signature that
+          # verifies against a public key GitHub holds for one of
+          # RELEASE_SIGNERS. What it does not establish: that the tag push was
+          # legitimate. A push to refs/tags runs this workflow from the tagged
+          # commit, so whoever chooses that commit chooses this file too. The
+          # step catches a tag that is unsigned or signed with a key nobody
+          # registered; it is not a barrier to anyone who can already push
+          # tags, and nothing in this file can be.
+          #
+          # It replaced a `git cat-file tag | grep '^-----BEGIN'` test, which
+          # read the tag *message* as well as the signature and so accepted
+          # `git tag -a` with the banner pasted into the message. No
+          # syntactic check can separate the two: a tag object appends its
+          # signature to the message with no delimiter, so even git's own
+          # `%(contents:signature)` extracts the forgery. Verification is the
+          # only thing that tells them apart, which is why the probes below
+          # run before the verdict on the real tag is believed.
+          trust="${RUNNER_TEMP}/release-trust-root"
+          rm -rf "$trust"
+          install -d -m 700 "$trust"
+          signers="${trust}/allowed_signers"
+          : > "$signers"
+
+          # Word splitting on RELEASE_SIGNERS is deliberate; it is a list.
+          for account in ${RELEASE_SIGNERS}; do
+            gh api "users/${account}/gpg_keys" \
+               --jq '.[].raw_key | select(. != null)' > "${RUNNER_TEMP}/${account}.asc"
+            if [ -s "${RUNNER_TEMP}/${account}.asc" ]; then
+              GNUPGHOME="$trust" gpg --batch --quiet --import "${RUNNER_TEMP}/${account}.asc"
+            fi
+            # `*` as the principal: the key is the identity under test. The
+            # tagger line is self-asserted and binds nothing.
+            gh api "users/${account}/ssh_signing_keys" --jq '.[] | "* " + .key' >> "$signers"
+          done
+
+          openpgp="$(GNUPGHOME="$trust" gpg --list-keys --with-colons 2>/dev/null \
+                     | grep -c '^pub:' || true)"
+          ssh_keys="$(grep -c . "$signers" || true)"
+          echo "Trust root: ${openpgp} OpenPGP and ${ssh_keys} SSH keys for ${RELEASE_SIGNERS}."
+          # An empty trust root rejects every tag, including a good one, so the
+          # release would fail anyway — but it would fail saying the tag was
+          # unsigned, which is a lie about the tag.
+          if [ "$((openpgp + ssh_keys))" -eq 0 ]; then
+            echo "::error::No public signing keys are registered for ${RELEASE_SIGNERS}."
+            exit 1
+          fi
+
+          # One code path for the probes and for the release tag. A probe that
+          # exercised a different command would prove nothing about this check.
+          verify() {  # repo, tag ref, GNUPGHOME, allowed signers file
+            GNUPGHOME="$3" git -C "$1" -c gpg.ssh.allowedSignersFile="$4" verify-tag "$2"
+          }
+
+          probe="${RUNNER_TEMP}/signature-guard-probe"
+          rm -rf "$probe"
+          mkdir -p "$probe"
+          git -C "$probe" init -q -b main
+          git -C "$probe" config user.name 'signature guard probe'
+          git -C "$probe" config user.email 'probe@invalid'
+          git -C "$probe" commit -q --allow-empty -m probe
+          printf 'release 9.9.9\n\n-----BEGIN PGP SIGNATURE-----\nnot a signature\n-----END PGP SIGNATURE-----\n' \
+            > "${probe}/pgp-banner.txt"
+          printf 'release 9.9.8\n\n-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAWZha2U=\n-----END SSH SIGNATURE-----\n' \
+            > "${probe}/ssh-banner.txt"
+          git -C "$probe" tag -a probe-pgp-banner -F "${probe}/pgp-banner.txt"
+          git -C "$probe" tag -a probe-ssh-banner -F "${probe}/ssh-banner.txt"
+          git -C "$probe" tag -a probe-unsigned -m 'no signature at all'
+          git -C "$probe" tag probe-lightweight
+          for probe_tag in probe-pgp-banner probe-ssh-banner probe-unsigned probe-lightweight; do
+            if verify "$probe" "refs/tags/${probe_tag}" "$trust" "$signers" >/dev/null 2>&1; then
+              echo "::error::The guard accepted ${probe_tag}, which carries no signature."
+              exit 1
+            fi
+          done
+
+          # A guard that rejected everything would pass all four probes, so it
+          # also has to say yes to something: the same function, against a
+          # trust root holding a throwaway key, on a tag genuinely signed by it.
+          ssh-keygen -q -t ed25519 -N '' -C probe -f "${probe}/key"
+          printf '* %s\n' "$(cat "${probe}/key.pub")" > "${probe}/probe_signers"
+          git -C "$probe" -c gpg.format=ssh -c user.signingkey="${probe}/key.pub" \
+              tag -s probe-signed -m 'genuinely signed'
+          if ! verify "$probe" refs/tags/probe-signed "$trust" "${probe}/probe_signers"; then
+            echo "::error::The guard rejected a genuinely signed tag; its verdict means nothing."
+            exit 1
+          fi
+          echo "Guard checked: rejects four unsigned tags, accepts a signed one."
+
+          # git's own output above this line says which of the three it was:
+          # no signature, a signature from a key outside the trust root, or no
+          # annotated tag object at all.
+          if ! verify . "refs/tags/${GITHUB_REF_NAME}" "$trust" "$signers"; then
+            echo "::error::${GITHUB_REF_NAME} did not verify against ${RELEASE_SIGNERS}. Re-tag with 'git tag -s' using a key registered on that GitHub account (release.md §4)."
             exit 1
           fi
 
