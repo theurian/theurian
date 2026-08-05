@@ -3,6 +3,10 @@
 Deliberately exposes no method that updates a revision. Immutability (ADR-0006)
 is expressed in the type signature, not only in prose -- an adapter cannot offer
 an update path without violating the Protocol.
+
+Two Protocols live here, not two ports. :class:`CanonicalReadSession` is a
+narrowing of :class:`CanonicalStore`, so the port set ADR-0003 fixes is
+unchanged.
 """
 
 from __future__ import annotations
@@ -143,3 +147,67 @@ class CanonicalStore(Protocol):
         (ADR-0005).
         """
         ...
+
+
+@runtime_checkable
+class CanonicalReadSession(Protocol):
+    """One pass over canonical state, opened and closed by the caller.
+
+    **Not a fifteenth port.** This is the read subset of :class:`CanonicalStore`
+    that a derived-artifact builder needs, plus the one thing that port
+    deliberately does not express: when the underlying handle is released. The
+    port set ADR-0003 fixes is unchanged.
+
+    The lifetime belongs in the contract because index building is the use case
+    that has to get it right. It walks the whole store once and must then let
+    the handle go -- ``sqlite3.connect`` used as a context manager commits but
+    does not close, which leaked a handle per call in Milestone 1.
+
+    It exists at all because the alternative in place was
+    ``Callable[[Path], Any]``. That typed the index builder's only collaborator
+    as nothing whatsoever: strict mypy could not tell whether the object it was
+    handed could answer these questions, and nothing stopped an adapter's
+    ``sqlite3.Row`` from reaching the application layer -- the same failure
+    :mod:`theurian.domain.ports.index_store` was written to record.
+
+    Deliberately no write method. A builder that could append to canonical state
+    would make a derived artifact authoritative, which ADR-0004 rules out.
+    """
+
+    def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
+        """Every item in the request's project, scoped by the context (SEC-13)."""
+        ...
+
+    def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        """Fetch an item, resolving aliases.
+
+        Narrowed in from :class:`CanonicalStore` because resolving a ranked
+        chunk into a result needs the *item*'s status, not the revision's. The
+        index stamps each chunk with the status that was in force when it was
+        built; only the item says what is approved now, and answering a search
+        from the build-time copy is how a retired document comes back wearing
+        the label it had before it was retired (FR-R5, SEC-13).
+        """
+        ...
+
+    def get_revision(
+        self, context: RequestContext, revision_id: RevisionId
+    ) -> KnowledgeRevision | None: ...
+
+    def __enter__(self) -> CanonicalReadSession:
+        """Acquire the handle **here**, not at the first read.
+
+        Part of the contract rather than an adapter's business, because the one
+        caller that matters is a security gate. ``ResultGate`` opens a session,
+        asks the retrievers for rows *through* it, and shows the caller none of
+        what it withheld — so a session that acquires lazily charges its setup
+        only to requests that found something, and "found something" is exactly
+        the fact the response is refusing to state. The SQLite adapter leaked
+        0.6 ms that way, enough to classify a single call 88.3% of the time.
+
+        An adapter with nothing to acquire satisfies this trivially. An adapter
+        that connects, authenticates or handshakes must do it here.
+        """
+        ...
+
+    def __exit__(self, *details: object) -> None: ...

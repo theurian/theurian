@@ -52,6 +52,16 @@ CREATE TABLE projects (
 -- Knowledge -----------------------------------------------------------------
 -- Revisions are immutable (ADR-0006). There is no UPDATE path for this table in
 -- the store adapter; corrections append a new row.
+--
+-- `revision_id` alone is the key, so it is unique across every project sharing
+-- this database -- while every read of the table is scoped by `project_id` as
+-- well, and `knowledge_items` below is keyed `(project_id, item_id)`. The two
+-- do not meet: a project id changing over an unchanged root leaves revisions
+-- stranded under the old id, behind a foreign key that `PRAGMA
+-- foreign_key_check` reports as satisfied. Filed for Milestone 6 as
+-- https://github.com/theurian/theurian/issues/24, which also owns the four
+-- `# pragma: no cover` branches whose "the pointer is a foreign key"
+-- justification this falsifies.
 CREATE TABLE knowledge_revisions (
     revision_id     TEXT PRIMARY KEY,
     item_id         TEXT NOT NULL,

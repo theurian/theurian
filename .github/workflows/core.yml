@@ -9,6 +9,7 @@ on:
       - "packages/theurian-core/**"
       - "schemas/**"
       - "tests/**"
+      - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/core.yml"
@@ -17,6 +18,7 @@ on:
       - "packages/theurian-core/**"
       - "schemas/**"
       - "tests/**"
+      - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/core.yml"
@@ -44,8 +46,8 @@ jobs:
       # --frozen so a resolution change fails here rather than silently
       # landing in a release (ADR-0014).
       - run: uv sync --frozen
-      - run: uv run ruff format --check packages tests
-      - run: uv run ruff check --output-format=github packages tests
+      - run: uv run ruff format --check packages tests tools
+      - run: uv run ruff check --output-format=github packages tests tools
       - run: uv run mypy
 
   test:

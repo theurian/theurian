@@ -69,10 +69,123 @@ class WriteLockTimeoutError(TheurianError):
         )
 
 
+class StateDatabaseUnreadableError(TheurianError):
+    """A stored value in this state database is not the value it claims to be.
+
+    **Carries the failing exception's type and never its message.** Every
+    converter the store reaches for puts the value it would not accept into the
+    error it raises: `datetime.fromisoformat` quotes the string, each of the six
+    enums quotes the member it could not find, and every domain value object --
+    `MediaType`, `ContentHash`, `ItemId` -- renders its argument with ``!r``.
+    Under corruption that value is whatever bytes were on the page, and the
+    canonical store holds *every* revision, `draft` and `rejected` included
+    (ADR-0006). So the message a caller receives had to stop being a function of
+    the cell.
+
+    Measured through ``build_server(registry).call_tool`` against a database
+    built by the real CLI: overwriting any of `created_at`, `valid_from`,
+    `content_type` or `status` published that cell verbatim to an MCP client,
+    through both ``knowledge.get`` and ``knowledge.search`` -- eight of eight,
+    with the driver's own text arriving as ``ToolError: Error executing tool
+    knowledge.get: Invalid isoformat string: '<the cell>'``.
+
+    **All of that is true of this exception and false of the class it belongs
+    to.** Keeping the cell out of one message is not withholding it. The cause
+    travels on ``__cause__`` by design, and Typer renders the whole chain, so
+    until `f8d6e5d` the CLI printed one line below this message exactly what the
+    constructor had just withheld -- six (command, column) positions: ``migrate
+    status`` and ``migrate apply`` over `migration_history.migration_id`,
+    `migration_history.checksum` and `schema_metadata.schema_version`. The
+    boundary is the CLI's ``--json`` surface, where the message is the only thing
+    rendered, and not this constructor. `c7d59b4` closed the same shape one site
+    further out, at a second store session opened outside ``_run_build``'s
+    conversion and reachable only by a build that indexed zero chunks.
+
+    **The closure condition, stated so it can be checked: no ``TheurianError``
+    escapes a ``--json`` command.** A property over all of them, not over the two
+    that leaked -- enumerating the leaks is what left the second site standing
+    behind the first. Checked over damaged-cell inputs in
+    ``tests/integration/test_canonical_store_corruption.py``:
+    `test_every_shipped_command_is_swept_or_excluded_with_a_reason` keeps the
+    swept population a partition of the shipped app rather than a list someone
+    maintains, `test_every_cli_failure_over_a_damaged_database_carries_a_remedy`
+    goes RED on the missing `remedy` field an escape leaves behind -- a Rich
+    traceback and no JSON document at all -- and
+    `test_exactly_these_commands_notice_a_single_damaged_cell` stops both from
+    passing vacuously.
+
+    **The type name is the whole detail, including for `sqlite3`'s own errors.**
+    :class:`~theurian.infrastructure.sqlite.index_store.IndexUnreadableError`
+    passes `str(exc)` through for those on the grounds that a driver complaint is
+    structural. It nearly always is. Measured on SQLite 3.51.2, damaging one
+    `sqlite_master.sql` cell gives ``DatabaseError: malformed database schema
+    (payroll_secret_band_l7) - incomplete input`` -- a name read straight out of
+    the file -- so "nearly" is a case analysis over SQLite's error catalogue that
+    the next release can invalidate. Enumerating what a broken file can say is
+    the exact method that reopened this class twice; one rule that needs no
+    enumeration replaces it.
+
+    The cause travels by ``raise ... from``, so whoever holds the traceback still
+    has the real exception with its real message. That is what pays for how wide
+    :func:`_prepare` catches: a genuine programming error inside the guarded block
+    now reports as a damaged database, and ``__cause__`` is the only thing left
+    that names it correctly.
+
+    Lives here rather than beside the store that raises it most, because opening
+    a connection interprets this file too and :func:`write_transaction` opens one
+    without going through the store at all -- see :func:`_prepare`.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            f"This project's state database cannot be read ({detail}): it is damaged, or "
+            f"holds a value this build cannot interpret. A state database is derived and "
+            f"git-ignored (ADR-0004), so delete `.theurian/state/` and run "
+            f"`theurian migrate apply` to rebuild it from the Git-tracked migrations. "
+            f"Nothing authored is lost."
+        )
+
+
 def _configure(connection: sqlite3.Connection) -> None:
     for pragma in CONNECTION_PRAGMAS:
         connection.execute(pragma)
     connection.row_factory = sqlite3.Row
+
+
+def _prepare(connection: sqlite3.Connection, database_path: Path) -> None:
+    """Make a fresh connection usable, answering for what the file may hold.
+
+    Both of these lines interpret bytes that came out of the database.
+    ``_configure`` runs the PRAGMA loop, where `sqlite3` decodes SQLite's own
+    error text and a corrupt schema makes that text invalid UTF-8;
+    ``_assert_schema_version`` runs a `SELECT` against a table that may be
+    missing and then `int()`s the cell it finds.
+
+    Called from both openers because the failure is a property of the file, not
+    of the direction of travel. Measured with `schema_metadata.schema_version`
+    overwritten by a sentinel: ``theurian index build`` -- which reads through
+    the store, whose own guard covered it -- named a remedy, while ``migrate
+    status`` and ``migrate apply`` raised ``ValueError: invalid literal for
+    int() with base 10: '<the cell>'`` from here, uncaught, with the cell in the
+    text and an empty JSON stdout.
+
+    The scope stops short of ``BEGIN IMMEDIATE`` on purpose. Past that point a
+    failure is the caller's statement against the caller's data -- a constraint
+    violation, a conflicting write -- and reporting one of those as a damaged
+    database would name the wrong cause and hand out a remedy that deletes the
+    state.
+    """
+    try:
+        _configure(connection)
+        _assert_schema_version(connection, database_path)
+    except SchemaVersionMismatchError:
+        # The header was interpreted *successfully* and said a number this build
+        # does not support. It already names the same remedy family and carries
+        # no cell, so re-wrapping it would replace a precise answer with a vague
+        # one.
+        raise
+    except Exception as exc:
+        raise StateDatabaseUnreadableError(type(exc).__name__) from exc
 
 
 def open_read_connection(database_path: Path) -> sqlite3.Connection:
@@ -80,6 +193,7 @@ def open_read_connection(database_path: Path) -> sqlite3.Connection:
 
     Raises:
         SchemaVersionMismatchError: If the database was written by another build.
+        StateDatabaseUnreadableError: If the file cannot be interpreted at all.
         FileNotFoundError: If the database does not exist.
     """
     if not database_path.exists():
@@ -89,8 +203,7 @@ def open_read_connection(database_path: Path) -> sqlite3.Connection:
     # a misconfigured caller then fails loudly instead of silently writing.
     connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, isolation_level=None)
     try:
-        _configure(connection)
-        _assert_schema_version(connection, database_path)
+        _prepare(connection, database_path)
     except Exception:
         connection.close()
         raise
@@ -181,13 +294,17 @@ def write_transaction(database_path: Path, lock_path: Path) -> Iterator[sqlite3.
     Milestone 3 without touching application code (ADR-0018).
 
     NFR-8: no external I/O inside. Read and hash content files *before* entering.
+
+    Raises:
+        StateDatabaseUnreadableError: If the file cannot be interpreted far
+            enough to start a transaction. Raised before ``BEGIN IMMEDIATE`` and
+            never after it -- see :func:`_prepare`.
     """
     lock = WriteLock(lock_path)
     with lock.held():
         connection = sqlite3.connect(database_path, isolation_level=None)
         try:
-            _configure(connection)
-            _assert_schema_version(connection, database_path)
+            _prepare(connection, database_path)
             connection.execute("BEGIN IMMEDIATE")
             try:
                 yield connection

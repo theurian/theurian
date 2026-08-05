@@ -54,6 +54,30 @@ _PEP440_PRE_LABELS: Final = {
 #: The wire protocol this build of Core speaks.
 CURRENT_PROTOCOL_VERSION: Final = "theurian/v1"
 
+#: ``^``/``$``, not ``\A``/``\Z``, and the difference is a known open finding
+#: rather than an oversight. Python's ``$`` also matches immediately before a
+#: trailing newline, so ``"theurian/v1\n"`` constructs here while the published
+#: ``schemas/protocol/compatibility.schema.json`` pattern refuses it under
+#: ECMA-262 and RE2, where ``$`` means end of input. ``domain/identifiers.py``
+#: took the other answer for the four identifier types in ``80f94b6``; this
+#: pattern, ``MediaType`` and ``ContentHash`` are its three remaining siblings.
+#:
+#: **Measured, because ``80f94b6`` recorded a claim about this one without
+#: measuring it.** The claim was that it is fail-closed and costs only a confusing
+#: error message. Both halves hold: ``resolve_compatibility`` returns
+#: ``PROTOCOL_MISMATCH`` and the CLI exits 3, ``CompatibilityVerdict``'s published
+#: ``protocolVersion`` carries Core's clean value rather than the declaration's,
+#: and the message reads ``plugin speaks theurian/v1\n, Core speaks
+#: theurian/v1.`` -- two strings a human reads as one.
+#:
+#: What the claim left out is the third face: the constructor and the published
+#: schema disagree about a value, which is the same defect the agreement oracle in
+#: ``tests/unit/test_schemas.py`` holds for ``itemId``, ``revisionId``,
+#: ``contentType`` and ``projectId``. That schema is not in the oracle at all.
+#: ``MediaType``'s disagreement is held by a strict xfail; this one and
+#: ``ContentHash``'s are held by nothing. All three are filed for Milestone 6 as
+#: https://github.com/theurian/theurian/issues/28, which also owes the two
+#: missing fields to the agreement oracle.
 _PROTOCOL_PATTERN: Final = re.compile(r"^theurian/v[1-9]\d*$")
 
 

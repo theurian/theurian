@@ -76,9 +76,20 @@ def extract_bearer(header_value: str | None) -> str | None:
 def redact(text: str, token: str) -> str:
     """Replace a token wherever it appears in text.
 
-    Applied at the logging sink rather than at each call site. Relying on every
-    present and future call site to remember is how tokens end up in logs
-    (SEC-6).
+    **Nothing in the product calls this.** It is here for whoever adds a logging
+    sink, to be applied *at* that sink rather than at each call site — relying on
+    every present and future call site to remember is how tokens end up in logs
+    (SEC-6). Until such a sink exists there is no place to apply it.
+
+    What keeps the token out of the daemon's log meanwhile is **not**
+    :mod:`theurian.daemon.runner`'s ``access_log=False``, though that is what the
+    threat model used to say. Measured with both uvicorn arguments switched back
+    on: `uvicorn.logging.AccessFormatter` writes ``client_addr``, ``method``,
+    ``full_path``, ``http_version`` and ``status_code``, and no header among
+    them, so the token appeared nowhere in the output. The property holds because
+    nothing in this stack logs request headers -- which is wider than the stated
+    reason and much less deliberate. See T-9 for the measurement and for what
+    a future sink would therefore need this function for.
     """
     if not token or len(token) < MIN_TOKEN_LENGTH:
         return text

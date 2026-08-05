@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/project-list-response.schema.json",
+  "title": "Output of the `project.list` MCP tool",
+  "description": "The whole response. `project.list` is the tool an agent calls to find out what this daemon can answer for, so its shape is as much of the contract as a search result's is — and it went unpublished for three milestones while the tools around it were described in detail.\n\nFour keys, always all four. `projects` is what can be queried, `unreadable` is what the registry holds and nothing can serve, `count` sizes the first of those, and `remedy` says what to do about the second. `projects` and `unreadable` are two independent reads of the same file, not a partition of one snapshot: `load()` keeps the entries whose key builds as a `ProjectId` *and* whose value names a root path, `unreadable_ids()` reports the ids that fail either test, and a registration landing between the two reads can leave an id in both lists or in neither. Do not compute the size of the registry by adding `count` and the length of `unreadable`, and do not treat membership in one as proof of absence from the other.",
+  "type": "object",
+  "required": ["count", "projects", "unreadable", "remedy"],
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The number of entries in `projects`, and nothing else. It answers \"how many projects can I query\", so it excludes the unreadable ids — an entry naming no root path can be queried by nothing. It is not the size of the registry file: `projects` and `unreadable` are independent reads of that file, not a partition, so their lengths do not sum to a count of anything."
+    },
+    "projects": {
+      "type": "array",
+      "description": "Every registration this daemon could read, sorted by id. Deliberately narrower than `theurian project list`, which prints each entry whole: only the two fields a caller acts on cross the wire.",
+      "items": {
+        "type": "object",
+        "required": ["projectId", "rootPath"],
+        "additionalProperties": false,
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "description": "The id to pass as `projectId` to every project-scoped tool (ADR-0002).\n\n**Constrained, and it was not always.** This value is a *key* of the registry file, which lives in the user's home directory and is hand-edited. While keys went unvalidated, `load()` published whatever the file held: a key of `\"\"` or `\"Team One/API\"` with a valid `rootPath` was published here verbatim, and then refused by every project-scoped tool and by `theurian project unregister` — the escape command's remedy pointing back at the command that printed the id. A pattern would have rejected the product's own output, so this field carried none, and said that the pattern would belong here once key validation reached the file read.\n\nIt has. `_usable_id` now excludes from `load()` any key that cannot be constructed as a `ProjectId`, and reports it through `unreadable` instead. So the promise `projects` makes is once again true — an id published here is an id every project-scoped surface accepts — and the constraint above is what holds the schema to it. The bounds mirror `ProjectId._validate` exactly: 1 to 200 characters, lowercase kebab-case.\n\n**The trailing `\\n?` this pattern carried until Milestone 5 was load-bearing, and what changed is the constructor rather than the reasoning.** `ProjectId` validated against a `$`-anchored Python `re`, whose `$` matches at end of input *or immediately before a trailing newline*, so `ProjectId(\"demo\\n\")` constructed. A registry hand-edited to `{\"demo\\n\": {\"rootPath\": \"/valid\"}}` was therefore loaded and published here — reproduced by calling the tool against exactly that file, which answered with `\"demo\"` and `\"demo\\n\"` in one array, two entries a reader sees as one id. A bare slug pattern would have rejected that real response in exactly the ECMA-262 and RE2 clients this schema is published for, so the concession was what kept the schema true of its own product. The fix that anchored every pattern in `domain/identifiers.py` with `\\A`/`\\Z` removed the input, not the argument: `ProjectId(\"demo\\n\")` no longer constructs, and nothing can publish the value the `\\n?` existed to admit.\n\n**Which leaves it pointing the wrong way, and that much is simply false now.** Under ECMA-262 and RE2 a `\\n?` tail admits a value the constructor refuses — the defect it was written to prevent, with the sign flipped. Measured under `node` and Go against `ProjectId` itself: the form above agrees with the constructor exactly in both dialects, and is loose by one string per accepted id — the id with a single trailing newline — under a Python-backed validator, where the `\\n?` form was loose by two. Exactness in all three is not on offer. The form that has it ends `(?![\\s\\S])`, and RE2 will not compile a negative lookahead at all (`invalid or unsupported Perl syntax: (?!`), which is a worse failure than admitting a shape nothing emits. Over-acceptance under-documents; under-acceptance breaks the product — and it is now the bare `$` that over-accepts.\n\n**No Python-backed test can see the difference, which is now the hazard rather than the alibi.** `jsonschema` evaluates `pattern` through Python's `re`, so `demo\\n` satisfies this field under either form and the suite stays green while the schema and the domain drift apart. That is why the `\\n?` could not be defended by a failing test when it was added, and why its removal cannot be defended by one either. Both directions were settled by running the patterns under `node` and Go rather than under the suite, which is the treatment the next `$` written into a published schema will need."
+          },
+          "rootPath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Absolute path to the repository the id resolves to. Never empty: an entry naming no root, or naming `\"\"` — which resolves to whatever directory the reading process happens to be in — is precisely what makes an entry unreadable, and such an entry appears in `unreadable` instead of here."
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "description": "Ids present in the registry that `load()` skips, sorted. An entry is skipped for either of two reasons: its value names no root path, or its key cannot be constructed as a `ProjectId`.\n\nPublished because a skipped entry that nothing reports is a project that disappeared in silence, and because the id is the argument `theurian project unregister` needs — a remedy naming an id no surface prints is not a remedy. Every other tool refuses these ids; this is where a caller finds out why.\n\n**Always present, empty array included.** Emitting the key only when it is non-empty makes \"nothing is unreadable\" indistinguishable from \"this daemon predates the field\", and a client that has to branch on key presence eventually forgets to.\n\n**Unconstrained strings, and the pattern on `projectId` above is precisely why.** These are the keys that failed that pattern, plus the entries that named no root; applying it here would forbid the values this array exists to report, and a validator would reject the one response a user needs in order to repair the file. An unreadable id is whatever a hand edit left behind — spaces, quotes, an empty string — and it is carried verbatim so it can be copied into the command that removes it.",
+      "items": { "type": "string" }
+    },
+    "remedy": {
+      "type": ["string", "null"],
+      "description": "What to do about `unreadable`, or `null` when it is empty.\n\nNull-carrying rather than absent, which is the convention `retrieval-metadata.schema.json` already holds: one shape on every response, so a client never branches on key presence. `theurian project list` emits its equivalent key only when it applies; that is a rendering choice for a human reading one command's output, and it is not what a wire contract should ask a client to handle.\n\nGeneric rather than naming the ids. `unreadable` is where the ids are, and a remedy that repeated them would be a second copy free to drift from the list beside it."
+    }
+  }
+}

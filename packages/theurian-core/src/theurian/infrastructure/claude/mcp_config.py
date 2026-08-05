@@ -15,15 +15,19 @@ were each confirmed against the real CLI rather than assumed:
    never enters a config file.
 
 Reading it directly is safe and is what the probe does, because ``claude mcp
-get`` cannot report *why* an entry differs and the user has to be shown that
-before approving an overwrite.
+get`` cannot report *why* an entry differs, and a differing entry is reported as
+a conflict the user has to see: setup leaves it in place and asks only whether
+the rest of the run may proceed around it.
 
-One verified quirk drives the whole design: ``claude mcp add`` refuses to touch
-an existing entry — it prints "already exists" and exits non-zero, leaving the
-old entry in place. So a conflicting entry cannot be repaired by adding over it;
-it has to be removed first. The write is confirmed by reading the file back
-rather than by trusting an exit code, because "the command succeeded" and "the
-entry is now what we wanted" are different claims.
+One verified quirk shapes the write path: ``claude mcp add`` refuses to touch an
+existing entry — it prints "already exists" and exits non-zero, leaving the old
+entry in place. So an existing entry cannot be changed by adding over it; it
+would have to be removed first. Setup never reaches that: a differing entry
+probes as ``CONFLICTING`` and is left exactly as it is, so ``install`` is called
+only where there was no entry at all. The remove-first branch it still carries is
+reachable only by a race, and says so. The write is confirmed by reading the file
+back rather than by trusting an exit code, because "the command succeeded" and
+"the entry is now what we wanted" are different claims.
 """
 
 from __future__ import annotations
@@ -145,8 +149,9 @@ class ClaudeCodeMcpConfig:
         """Empty when the installed entry already matches, else what differs.
 
         Compared field by field rather than by equality alone, because the user
-        is being asked to approve replacing whatever is there and "it differs"
-        is not enough to decide on.
+        is being asked whether the run may proceed around whatever is there --
+        setup does not replace it -- and "it differs" is not enough to decide
+        that on.
         """
         installed = self.installed_entry()
         if installed is None:
@@ -179,8 +184,27 @@ class ClaudeCodeMcpConfig:
 
         if installed is not None:
             # `claude mcp add` will not overwrite -- it reports "already exists"
-            # and leaves the old entry. Removing first is the only way to change
-            # one, and the caller has already shown the difference and asked.
+            # and leaves the old entry -- so removing first is the only way to
+            # change one.
+            #
+            # This branch is not reached through `SetupService`. Measured against
+            # `probe_mcp_connection`: no entry -> MISSING, a differing entry ->
+            # CONFLICTING, an identical entry -> SATISFIED; and `SetupService.
+            # _apply` runs a step's action only where the plan said MISSING. So
+            # setup calls `install` only when there is nothing installed, and the
+            # sole route here is a race -- an entry appearing between the probe
+            # and this call, in which nobody has been shown a difference or asked
+            # anything. The comment this replaces said "the caller has already
+            # shown the difference and asked", which described a workflow that
+            # does not exist.
+            #
+            # Kept rather than deleted: whether a branch only a race can reach
+            # should exist at all is a decision for review, not a cleanup. If it
+            # stays, note that it destroys the user's entry with no backup taken
+            # here -- `back_up` is a separate call this path does not make, where
+            # `LaunchAgentManager.install` calls its own before overwriting.
+            # That decision is filed for Milestone 6 as
+            # https://github.com/theurian/theurian/issues/27 (SEC-18).
             removal = self._claude("mcp", "remove", SERVER_NAME, "--scope", "user")
             if not removal.ok:
                 return f"Could not remove the existing entry: {removal.output}"

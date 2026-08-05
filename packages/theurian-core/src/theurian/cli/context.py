@@ -140,25 +140,48 @@ class CommandContext:
         return MigrationEngine(self.clock, self.loaded.content_by_hash)
 
 
-def resolve_context(start: Path | None = None) -> CommandContext:
+def resolve_context(
+    start: Path | None = None, project_id: ProjectId | None = None
+) -> CommandContext:
     """Build a command context for the project containing ``start``.
 
+    The id is resolved in three steps, most authoritative first: an explicit
+    argument (how a user breaks a collision), then the registry keyed by root
+    path, then the directory-name default. Skipping the registry lookup would
+    mean a project registered under a disambiguated id was addressed by the
+    colliding default on its own command line — the CLI writing to one project
+    while every agent reads the other.
+
+    The fallback to ``derive_project_id`` is only safe because the middle step
+    raises rather than returning ``None`` when it cannot read an entry. ``or``
+    cannot tell "no registration names this root" from "a registration might and
+    is unreadable", and while it could, the second case took the fallback and
+    produced exactly the misrouting the paragraph above describes
+    (:meth:`ProjectRegistry.ids_for_root`). An explicit ``project_id``
+    short-circuits before the lookup, which is what keeps every project on the
+    machine addressable while a broken entry is being removed.
+
     Raises:
-        ProjectError: If ``start`` is not inside a Git repository.
+        ProjectError: If ``start`` is not inside a Git repository, if its root is
+            registered under more than one project id, or if the registry holds
+            an entry that cannot be read and no explicit ``project_id`` was
+            given.
+        MigrationError: If the migrations under it do not load or validate.
     """
     cwd = (start or Path.cwd()).resolve()
     root = find_git_root(cwd)
     if root is None:
         raise ProjectError(
             f"{cwd} is not inside a Git repository. Theurian scopes a project to a "
-            f"Git working tree, so that branches and worktrees stay isolated."
+            f"Git working tree, so that branches and worktrees stay isolated.",
+            remedy="Run this inside a Git repository.",
         )
 
     paths = ProjectPaths.of(root)
     loaded = load_migrations(paths.root, paths.migrations, schema_root())
 
     return CommandContext(
-        project_id=derive_project_id(root),
+        project_id=project_id or registry().id_for_root(root) or derive_project_id(root),
         paths=paths,
         loaded=loaded,
         state_hash=resolve_state_hash(loaded, SCHEMA_VERSION),

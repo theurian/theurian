@@ -32,9 +32,10 @@ from theurian.domain.knowledge import (
     SourceAnchor,
 )
 from theurian.domain.project import Project
-from theurian.domain.values import MARKDOWN, ValidityPeriod
+from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
+    StateDatabaseUnreadableError,
     create_database,
     open_read_connection,
     write_transaction,
@@ -50,6 +51,10 @@ REV_1 = RevisionId("01K1REV00101234567890ABCDE")
 REV_2 = RevisionId("01K1REV00201234567890ABCDE")
 MIGRATION = MigrationId("01K1AAAAAA01234567890ABCDE")
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+
+#: A cell that is a digest to no reader, holding nothing this codebase says
+#: elsewhere, so a fragment of it in a message came out of the database file.
+SENTINEL = "ROTATE-ME sk-live-9f2a7c41d8e3 payroll band L7 = 240000"
 ANCHOR = SourceAnchor(
     provider="git",
     source_uri="git://demo/.theurian/knowledge/a.md",
@@ -147,8 +152,15 @@ def test_a_revision_survives_a_round_trip(database: Path, lock: Path) -> None:
 
 
 def test_reading_a_revision_verifies_its_content_hash(database: Path, lock: Path) -> None:
-    """INV-3 is checked on read, so a tampered stored hash is caught rather than
-    trusted."""
+    """INV-3 is checked on read, so a tampered stored hash is caught rather than trusted.
+
+    The refusal now arrives as `StateDatabaseUnreadableError` rather than as the
+    bare `InvariantViolationError`, and the change is deliberate: INV-3's message
+    names ``content_sha256.short`` and the hash of the *stored body*, which is a
+    12-character confirmation oracle over a revision the caller may not be
+    entitled to read. The violation still travels as ``__cause__``, which is what
+    this asserts -- the check is unchanged, only who is told what.
+    """
     with write_transaction(database, lock) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(_project())
@@ -160,8 +172,17 @@ def test_reading_a_revision_verifies_its_content_hash(database: Path, lock: Path
             ("tampered", REV_1.value),
         )
 
-    with SqliteCanonicalStore(database) as store, pytest.raises(InvariantViolationError):
+    with (
+        SqliteCanonicalStore(database) as store,
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+    ):
         store.get_revision(RequestContext(project_id=PROJECT), REV_1)
+
+    assert isinstance(caught.value.__cause__, InvariantViolationError), (
+        "INV-3 must still be what refused it"
+    )
+    assert "content hash mismatch" in str(caught.value.__cause__)
+    assert "theurian migrate apply" in str(caught.value), "and the refusal must name a remedy"
 
 
 # -- ADR-0006: immutability ------------------------------------------------
@@ -187,6 +208,43 @@ def test_rewriting_a_revision_with_different_content_is_refused(database: Path, 
 
         with pytest.raises(InvariantViolationError, match="immutable"):
             writer.append_revision(_revision(body="rewritten"))
+
+
+def test_a_damaged_stored_hash_is_not_reported_as_an_immutability_violation(
+    database: Path, lock: Path
+) -> None:
+    """The remedy INV-1 prints is harmful when the mismatch is a damaged cell.
+
+    The comparison above has two causes and only one message. A stored
+    ``content_sha256`` that is not a digest at all differs from the caller's hash
+    exactly as a rewritten body does, so re-applying an unchanged migration --
+    the FR-K8 path, which repeats every append -- reported ``Revisions are
+    immutable; write a new revision instead``. An author who follows that appends
+    a duplicate into a database that is already damaged.
+
+    Asserted through the *unchanged* revision on purpose: this is the input that
+    must succeed, and it is the one the misdiagnosis fired on.
+    """
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.append_revision(_revision())
+
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute(
+            "UPDATE knowledge_revisions SET content_sha256 = ? WHERE revision_id = ?",
+            (SENTINEL, REV_1.value),
+        )
+
+    with (
+        write_transaction(database, lock) as connection,
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+    ):
+        SqliteWriter(connection).append_revision(_revision())
+
+    assert "theurian migrate apply" in str(caught.value), "a refusal a caller cannot act on"
+    assert "immutable" not in str(caught.value), "the immutability remedy is the harmful one here"
+    assert SENTINEL not in str(caught.value), "and the cell stays inside the guard"
 
 
 def test_history_is_preserved_across_revisions(database: Path, lock: Path) -> None:
@@ -361,14 +419,71 @@ def test_a_query_never_crosses_a_project_boundary(database: Path, lock: Path) ->
 
 def test_migration_history_records_order_and_checksums(database: Path, lock: Path) -> None:
     second = MigrationId("01K1BBBBBB01234567890ABCDE")
+    # Real digests, because the read side now refuses anything that is not one:
+    # the only production writer is `MigrationEngine.apply` passing
+    # `migration.checksum.value`, and a placeholder here was testing a round
+    # trip that cannot happen.
+    first_checksum = ContentHash.of_text("one").value
+    second_checksum = ContentHash.of_text("two").value
 
     with write_transaction(database, lock) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(_project())
-        writer.record_migration(PROJECT, MIGRATION, "checksum-one", NOW)
-        writer.record_migration(PROJECT, second, "checksum-two", NOW)
+        writer.record_migration(PROJECT, MIGRATION, first_checksum, NOW)
+        writer.record_migration(PROJECT, second, second_checksum, NOW)
 
     with SqliteCanonicalStore(database) as store:
         history = store.applied_migrations(PROJECT)
 
-    assert history == ((MIGRATION, "checksum-one"), (second, "checksum-two"))
+    assert history == ((MIGRATION, first_checksum), (second, second_checksum))
+
+
+# -- Session lifetime ------------------------------------------------------
+
+
+def test_entering_a_read_session_opens_before_the_first_read(database: Path) -> None:
+    """`CanonicalReadSession.__enter__` acquires the handle, and it is timed.
+
+    Not tidiness about `__exit__` having something to close. `ResultGate` opens
+    one of these, ranks through it, and shows the caller none of what the
+    canonical store withheld -- so a session that connected at its *first read*
+    charged `sqlite3.connect`, the pragmas and the schema-version check only to
+    requests that found something, and "found something" is exactly the fact a
+    `count: 0` response is refusing to state.
+
+    `CanonicalVisibility.cleared` is a comprehension, so zero rows means zero
+    `get_item` calls and, before this, zero connections. Measured on a
+    61-document Japanese corpus: one ordinary `knowledge.search` classified a
+    probe against a one-character-different control 88.3% of the time, +0.60 ms
+    at the median, and six characters of a credential no response contains came
+    back in 836 calls with the body never read. Opening in `__enter__` takes the
+    same measurement to 57.8%, which is chance.
+
+    Asserted on the private attribute deliberately: the observable this closes
+    *is* whether a connection exists, so a public proxy for it would be a proxy
+    for the wrong thing. `return self` restores the leak and fails here.
+    """
+    with SqliteCanonicalStore(database) as store:
+        assert store._connection is not None, "the handle is acquired on entry, not on first read"
+        opened = store._connection
+
+        # A whole session that reads nothing -- the shape a query matching no
+        # indexed chunk takes -- must still have paid for the connection.
+        assert store._connection is opened
+
+    assert store._connection is None, "and released on exit"
+
+
+def test_a_read_session_reports_a_missing_database_when_it_is_opened(tmp_path: Path) -> None:
+    """Eager opening moves this error to the `with`, so the remedy is named there.
+
+    A consequence of the change above rather than a separate decision, recorded
+    because it changes *where* a caller sees the failure: it used to surface at
+    whichever read happened to run first, which on a search that matched nothing
+    was never.
+    """
+    with (
+        pytest.raises(FileNotFoundError, match="No state database at"),
+        SqliteCanonicalStore(tmp_path / "absent.sqlite"),
+    ):
+        pass  # pragma: no cover - the context manager raises on entry

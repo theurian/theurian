@@ -38,13 +38,20 @@ this table will list a supported window.
 ### What Theurian protects
 
 - **The local endpoint.** The daemon binds `127.0.0.1` only, validates `Origin`
-  and `Host` against DNS rebinding, and requires a bearer token with ≥256 bits of
-  entropy on every request. `GET /health` is the sole unauthenticated endpoint
-  and returns only liveness and version.
+  and `Host` against DNS rebinding on every request the MCP app serves, and
+  requires a bearer token with ≥256 bits of entropy on all of them. `GET /health`
+  is the sole endpoint outside both, and it is outside both rather than only
+  outside the token: it answers a cross-origin request with `{status, version,
+  protocolVersion, dataDir, startedAt}`. That is nothing about projects or
+  knowledge, and it is not nothing — `dataDir` is `~/.theurian`, so it names the
+  OS user. See T-2 in the threat model.
 - **The token.** Stored in a 0600 file inside a 0700 directory, and in the OS
   secret store where one is available. A world-readable token file is refused,
-  not used. The token never appears in a config file, a log, an error message, or
-  `doctor` output — redaction happens at the logging sink, not at each call site.
+  not used. The token appears in no config file, no response body, and not in the
+  daemon's log — the last asserted against a real daemon, and true because
+  nothing in the stack logs request headers rather than because access logging is
+  off. Redaction at a logging sink is the design ADR-0011 records and it is **not
+  implemented**; there is no sink yet to apply it at.
 - **The filesystem boundary.** Every path is resolved with `realpath` and checked
   for containment in the project root. `..` traversal, absolute paths, and
   symlinks that leave the root are all refused, including symlinks on
@@ -79,6 +86,31 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   audience and scope validation, and tenant isolation — none of which the local
   daemon implements, because it does not need them and shipping half of them
   would be worse than shipping none.
+- **Search ranking, while the retrieval index is out of date.** A document you
+  retire or supersede is withheld from results immediately, but it stays in the
+  index file until the next `theurian index build` — and BM25 scores every result
+  against statistics computed over that whole file. So a withheld document can
+  change the relative order of two documents you *can* see, and which paragraph
+  of one of them is excerpted.
+
+  **Any withheld content can do that, whatever it says.** One of those statistics
+  is the average document length, so a withheld document that shares not one word
+  with your query still changes the score of every visible row — by a different
+  amount for each, which is why the order moves. This was measured against SQLite
+  FTS5 rather than reasoned about; an earlier version of this section claimed the
+  opposite.
+
+  Reading content back out of the ranking is narrower. That needs a term which
+  also occurs in content you *can* read, so what it can answer is whether a
+  withheld document contains a term you have already seen somewhere — not a term
+  you do not already have.
+
+  `theurian index build` closes both, along with every other consequence of a
+  stale index. It is accepted for now rather than fixed for now — the reasoning,
+  the measurements and the scheduled fix are T-17a in
+  [the threat model](docs/security/threat-model.md). **If a project's ranking
+  order must not depend on retired content at all, rebuild the index as part of
+  retiring it rather than on a schedule.**
 
 ## Personal data in review knowledge
 
@@ -98,9 +130,17 @@ policy to `.theurian/`.
 
 ## Sharing diagnostics safely
 
-`theurian doctor --report --json` redacts credentials and knowledge bodies by
-default. Review its output before posting it anywhere public — your knowledge
-base may contain information your issue does not need.
+`theurian doctor --report --json` redacts by default rather than on request, and
+what it redacts is **absolute paths**, wherever they appear in the payload: your
+home directory becomes `~`, the repository root becomes `<repository>`, and the
+token file's path becomes `<token file>`. Those name your account and your
+repositories, which is someone's private information even though none of them is
+a credential.
+
+It is not a credential filter and does not claim to be one — no credential value
+and no knowledge body enters that payload for it to remove — and it removes
+nothing but those three roots. Review its output before posting it anywhere
+public: a path outside them, or a revealing filename, goes out verbatim.
 
 ## Dependencies
 
@@ -110,7 +150,7 @@ Each release carries a CycloneDX SBOM and SHA-256 checksums.
 
 ## Further reading
 
-- [Threat model](docs/security/threat-model.md) — trust boundaries and sixteen enumerated threats
+- [Threat model](docs/security/threat-model.md) — trust boundaries and eighteen enumerated threats (T-1..T-17, plus T-17a)
 - [Local MCP security](docs/security/local-mcp.md)
 - [ADR-0011: local MCP authentication](docs/adr/0011-local-mcp-authentication.md)
 - [ADR-0013: AI writes produce proposals](docs/adr/0013-ai-writes-produce-proposals.md)

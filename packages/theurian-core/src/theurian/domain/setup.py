@@ -56,7 +56,8 @@ class StepStatus(StrEnum):
 
     Three states rather than a boolean because "already correct" and "present
     but different" demand opposite responses: one is skipped silently, the other
-    must never be overwritten without consent (SEC-18).
+    stops the run to be shown to the user and is then left exactly as it was --
+    setup overwrites nothing it did not install, with or without consent (SEC-18).
     """
 
     SATISFIED = "satisfied"
@@ -130,7 +131,8 @@ class SetupStep:
     critical: bool = True
     outcome: StepOutcome = StepOutcome.NOT_ATTEMPTED
     #: Present when a step is CONFLICTING or FAILED: the difference found, or
-    #: the reason. Shown to the user before anything is overwritten.
+    #: the reason. Shown to the user, who decides whether the run proceeds around
+    #: it; what was found is left in place either way.
     detail: str = ""
 
     def __post_init__(self) -> None:
@@ -150,7 +152,11 @@ class SetupStep:
 
     @property
     def needs_consent(self) -> bool:
-        """A conflict is never resolved silently, whatever the step (SEC-18)."""
+        """No conflict is passed over in silence, whatever the step (SEC-18).
+
+        Consent to *proceed past* it, never to resolve it: the step is left
+        exactly as it was found either way.
+        """
         return self.status is StepStatus.CONFLICTING
 
     def applied(self, outcome: StepOutcome, detail: str = "") -> Self:

@@ -131,3 +131,80 @@ Landed in Milestone 4:
 - `tests/integration/test_daemon.py::test_stopping_without_a_registered_service_is_refused`
   — `daemon stop` asks the service manager rather than signalling a PID, because
   point 5's advisory lock exists precisely because PIDs are recycled.
+
+Landed in Milestone 5 — two ways SEC-13 was reachable despite the above:
+
+- `tests/integration/test_mcp_tools.py::test_knowledge_get_will_not_hand_over_what_search_withheld`
+  — every path through `knowledge.search` was gated on status and
+  `knowledge.get` was not, so a caller read an approved item, took a
+  `targetItemId` off one of its relations, and fetched the withheld body in one
+  further call. No flag and no guessing were required.
+- `test_relations_to_withheld_items_are_not_published` — the id itself is the
+  disclosure. Withholding the body while publishing the pointer to it withholds
+  nothing that matters.
+- `test_the_withheld_message_does_not_confirm_the_item_exists` — the refusal for
+  a withheld item is byte-identical to the one for an absent item, so the error
+  cannot be used as an existence oracle.
+- `test_asking_for_unapproved_reaches_a_draft_through_get` — the gate narrows
+  what is surfaceable; it does not remove the caller's ability to opt in to
+  drafts.
+
+Point 4 said a call for Project A cannot observe Project B. It could, because ids
+were not unique. Directory names repeat, so `team-one/api` and `team-two/api`
+both proposed `api`, and `ProjectRegistry.register` overwrote — silently
+re-pointing the id at the newer root, after which an agent working in `team-one`
+that asked for `api` was served `team-two`'s knowledge with nothing in the answer
+naming the repository. Pinned by
+`tests/integration/test_project_registry.py`:
+
+- `test_a_second_repository_with_the_same_directory_name_is_refused` and
+  `test_the_registry_itself_refuses_the_clash_not_only_the_cli` — the refusal
+  lives in the registry, so it cannot be bypassed by a caller that is not the
+  CLI.
+- `test_the_first_registration_survives_a_refused_collision` — a refusal that
+  had already corrupted the registry would be worse than the overwrite.
+- `test_a_distinct_id_registers_the_colliding_repository` — `--project-id` is a
+  real remedy and not just better wording on an error.
+- `test_a_registered_repository_resolves_to_its_registered_id_without_the_flag`
+  and `test_a_root_is_looked_up_by_path_not_by_directory_name` — resolution asks
+  the registry by root path before falling back to the directory name.
+  Otherwise a project registered under a disambiguated id would still be
+  addressed by the colliding default on its own command line.
+- `test_the_id_that_lost_the_clash_still_points_at_the_first_repository` and
+  `test_the_other_repositorys_knowledge_is_never_returned` — the same property
+  end to end, through the MCP tools, which is where the disclosure happened.
+- `test_re_registering_the_same_root_stays_idempotent` and
+  `test_re_registering_a_disambiguated_project_stays_idempotent` — the refusal
+  does not cost FR-L2.
+
+Landed in Milestone 5, review round 5 — a third route to the same disclosure,
+through an entry the registry could not read. `ProjectRegistry.load` returned
+whatever `json.loads` produced, and `id_for_root` compared
+`Path(entry.get("rootPath", "")).resolve()`. `Path("").resolve()` is the
+*calling process's* current working directory, so an entry with no `rootPath`
+matched **every** directory a command ran from — reproduced against the previous
+code, where `id_for_root` returned that id for a repository it had no relation
+to. The entry shape is what a hand edit leaves behind, and point 4's guarantee
+does not distinguish "reached through a collision" from "reached through a
+corrupt line". Pinned by `tests/integration/test_project_registry.py`:
+
+- `test_a_corrupt_entry_does_not_hand_a_working_tree_the_id_it_collided_with` —
+  the regression stated on the resolved **id** rather than on something having
+  been refused, because some other exception for some other reason would satisfy
+  `pytest.raises` while the id is what the defect got wrong.
+- `test_an_unreadable_entry_refuses_a_root_it_could_not_possibly_be` — the
+  refusal is deliberately broader than the entry that caused it. An entry naming
+  no root cannot be attributed to a directory at all, so per-root decidability is
+  unavailable rather than merely expensive.
+- `test_one_unreadable_entry_does_not_hide_the_projects_that_are_fine` and
+  `test_the_daemon_keeps_serving_a_readable_project_beside_a_broken_entry` — the
+  other half, and the one that belongs to *this* ADR: one daemon serves every
+  project on the machine, so refusing all of them for one hand-edited line
+  repeats at machine scale the failure `IndexUnreadableError` exists to avoid at
+  project scale.
+- `test_registration_is_refused_while_the_file_holds_an_unreadable_entry`,
+  `test_re_registering_the_id_whose_own_entry_is_broken_names_that_id_not_the_file`,
+  and `test_removing_the_unreadable_entry_restores_resolution` — the refusal
+  names an id a user can actually type, and the remedy it names works.
+- `test_every_id_in_the_file_is_either_loaded_or_reported_unreadable` — the
+  partition is total, so no id can vanish from both `load` and `unreadable_ids`.

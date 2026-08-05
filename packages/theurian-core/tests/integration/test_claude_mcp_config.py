@@ -147,7 +147,8 @@ def test_a_matching_entry_reports_no_difference(home: Path) -> None:
 
 
 def test_a_differing_entry_shows_both_sides(home: Path) -> None:
-    """The user approves an overwrite, so "it differs" is not enough."""
+    """The user decides whether the run proceeds around this entry, which setup
+    leaves in place either way, so "it differs" is not enough to decide on."""
     _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://127.0.0.1:9999/mcp"}})
 
     difference = _config(home).difference(ConnectionSpec())

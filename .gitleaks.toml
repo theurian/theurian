@@ -1,0 +1,65 @@
+# Gitleaks configuration for the `Secret scan` job in
+# .github/workflows/security.yml.
+#
+# `gitleaks git ... .` auto-loads `<source>/.gitleaks.toml`, so this file governs
+# the full-history scan without the workflow naming it. It is read from the
+# checked-out worktree, not from each historical commit, which is what lets a
+# present-day allowlist clear a finding in a commit that is already published.
+
+# The default ruleset is extended, never replaced. A config that omits this
+# leaves gitleaks with zero rules, and a secret scan with no rules is a green job
+# that has stopped checking.
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Two test fixtures are deliberately shaped like credentials.
+#
+# Their values are measured inputs to tests that demonstrate a disclosure, so
+# they cannot be rewritten to look innocuous: a sentinel that no longer looks
+# like a secret no longer demonstrates that a secret would have leaked. This is
+# the same reason the CJK retrieval fixtures are not translated.
+#
+# Each allowlist below is narrowed three ways at once, combined with
+# `condition = "AND"`:
+#
+#   targetRules  the one rule that misfires, so every other rule still applies
+#                to these same strings
+#   paths        where the fixture actually lives
+#   regexes      the secret itself, fully anchored with ^...$, so an allowlisted
+#                value must be the whole secret and not a substring of one
+#
+# A real credential committed to either of these files still fails the scan: it
+# matches no value pattern here, and `AND` means the path alone allows nothing.
+#
+# Neither entry uses `commits` or fingerprints. Those pin to SHAs, and this
+# repository is squash-merge only, so the history scan on `main` sees different
+# SHAs than the one that ran on the pull request branch.
+# ---------------------------------------------------------------------------
+
+# Synthetic ULIDs used as document and revision ids throughout the test suite.
+# Every one of them ends in the literal `01234567890ABCDE`, padding chosen to be
+# obviously unreal; no credential carries an ascending digit run followed by A-F.
+# Five of them trip `generic-api-key` only because the item id beside them reads
+# `architecture.token-quota` and similar, and `token` is one of that rule's
+# keywords -- the ULIDs themselves are ids, not secrets.
+[[allowlists]]
+description = "Synthetic ULID fixtures; `token` in a neighbouring item id trips generic-api-key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['^packages/theurian-core/tests/']
+regexes = ['^01K1[0-9A-HJKMNP-TV-Z]{5,6}01234567890ABCDE$']
+
+# The extraction target for the T-17 information-disclosure tests. Those tests
+# assert that a withheld document's content cannot be recovered through
+# `usedTokens`, `count` or candidate displacement, and they recover this exact
+# string when the withholding fails. It is a fabricated sixteen-character token
+# that appears in no English word list, chosen so that a hit is unambiguous and a
+# miss is not a tokenizer accident. `generic-api-key` fires on the constant's
+# name, not on any property of the value.
+[[allowlists]]
+description = "T-17 extraction sentinel; the tests recover it by design"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['^packages/theurian-core/tests/integration/test_mcp_tools\.py$']
+regexes = ['^ZQXJVBWKPLMNTRD9$']

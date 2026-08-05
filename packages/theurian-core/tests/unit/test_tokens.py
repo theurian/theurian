@@ -95,8 +95,19 @@ def test_surrounding_whitespace_is_tolerated() -> None:
 
 
 def test_redaction_removes_the_token() -> None:
-    """Applied at the logging sink, not at each call site: relying on every
-    present and future call site to remember is how tokens reach logs."""
+    """SEC-6, T-9. Spare capacity, pinned so it is correct when it is first used.
+
+    An earlier wording of this said the function is "applied at the logging sink,
+    not at each call site". There is no sink. `redact` has **no production
+    caller** — this test is the only one in the repository — and until something
+    writes log records there is no place to apply it. The threat model recorded
+    the same absent control and was corrected with this docstring.
+
+    What the test is still for: whoever adds that sink inherits a function whose
+    two obligations are already fixed — the token disappears, and the line around
+    it survives, so a redacted record is still a usable record. Both are asserted
+    here rather than discovered later against a live log.
+    """
     token = generate_token()
     text = f"request failed with Authorization: Bearer {token} on /mcp"
 

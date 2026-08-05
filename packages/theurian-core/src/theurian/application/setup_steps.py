@@ -7,7 +7,9 @@ a real run, and what lets the whole state machine be tested against a temporary
 home directory.
 
 A probe never writes. An apply is only ever reached for a step whose probe said
-:attr:`StepStatus.MISSING`, or one whose conflict the user approved.
+:attr:`StepStatus.MISSING` -- a conflicting step is never applied, whatever the
+user approved, because approval here is consent to *proceed past* a conflict and
+not consent to overwrite it (:class:`SetupRequest`, SEC-18).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from pathlib import Path
 from typing import Final
 
 from theurian.application.project_service import (
+    ProjectError,
     ProjectPaths,
     ProjectRegistry,
     read_active_state,
@@ -440,7 +443,48 @@ def probe_single_instance(context: SetupContext) -> SetupStep:
 # -- 11 & 12 & 13. The repository -------------------------------------------
 
 
+def _unreadable_registry_summary(registry: ProjectRegistry, root: Path) -> str:
+    """Why the registry could not say, in terms that shape of failure allows.
+
+    Two different refusals reach :meth:`ProjectRegistry.ids_for_root`'s caller and
+    only one of them is about an *entry*. A file whose top level does not parse
+    -- not JSON, a JSON array, arbitrary bytes -- has no entries to speak of, so
+    "holds an entry that cannot be read" is a claim nothing supports: it invites
+    the reader to go and find the offending line in a file that has none, and it
+    disagreed in kind with the ``detail`` beside it, which already carried the
+    file-level cure.
+
+    Told apart by asking for the ids: an unreadable *entry* leaves the set
+    computable and non-empty, an unreadable *file* leaves it uncomputable. A
+    second read of a small file is the honest price -- the alternative is
+    inferring the shape from the exception's message text.
+    """
+    try:
+        registry.unreadable_ids()
+    except ProjectError:
+        return (
+            f"Cannot tell whether {root.name} is registered: {registry.path} cannot be "
+            f"read at all, so nothing in it can be checked."
+        )
+    return (
+        f"Cannot tell whether {root.name} is registered: {registry.path} holds "
+        f"an entry that cannot be read, and it might be this repository's own."
+    )
+
+
 def probe_project_registered(context: SetupContext) -> SetupStep:
+    """Whether this repository is registered -- or, honestly, that it cannot be told.
+
+    Uses :meth:`ProjectRegistry.ids_for_root`, not a hand-rolled scan of
+    ``load()``: a malformed entry names no root path, so there is no way to tell
+    whether it is *this* directory's own registration -- the same impossibility
+    ``ids_for_root`` itself refuses on rather than guesses. A scan of ``load()``
+    would have silently skipped that entry and reported ``MISSING`` beside a
+    remedy that cannot work: registering while an unreadable entry might hold
+    this very root's id is refused by :meth:`ProjectRegistry.register`, and the
+    step this report is shown on is the first screen a person reads when
+    something is broken.
+    """
     root = context.project_root
     if root is None:
         return SetupStep(
@@ -450,13 +494,24 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
         )
 
     registry = ProjectRegistry.default(context.data_dir)
-    for entry in registry.load().values():
-        if Path(entry.get("rootPath", "")).resolve() == root.resolve():
-            return SetupStep(
-                step_id=StepId.PROJECT_REGISTERED,
-                status=StepStatus.SATISFIED,
-                summary=f"{root.name} is registered.",
-            )
+    try:
+        found = registry.ids_for_root(root)
+    except ProjectError as exc:
+        # `paths` is left empty, unlike a MISSING step's: this step never writes
+        # to `registry.path`, whatever the user decides, so listing it there
+        # would claim setup "would touch" a file it only ever reads.
+        return SetupStep(
+            step_id=StepId.PROJECT_REGISTERED,
+            status=StepStatus.CONFLICTING,
+            summary=_unreadable_registry_summary(registry, root),
+            detail=f"{exc} {exc.remedy}".strip(),
+        )
+    if found:
+        return SetupStep(
+            step_id=StepId.PROJECT_REGISTERED,
+            status=StepStatus.SATISFIED,
+            summary=f"{root.name} is registered.",
+        )
     return SetupStep(
         step_id=StepId.PROJECT_REGISTERED,
         status=StepStatus.MISSING,

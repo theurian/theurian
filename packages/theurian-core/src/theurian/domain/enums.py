@@ -1,7 +1,10 @@
-"""Closed vocabularies.
+"""Closed vocabularies, and the one rule that reads one of them.
 
 These are ``StrEnum`` so they serialise to their own names in JSON and YAML, which
 keeps migration files and MCP payloads readable without a mapping table.
+
+:func:`may_surface` is here rather than beside a caller because it has four
+callers in three layers -- see its docstring.
 """
 
 from __future__ import annotations
@@ -195,3 +198,40 @@ class ContentClassification(StrEnum):
 
     UNTRUSTED_KNOWLEDGE = "untrusted-knowledge"
     SYSTEM_METADATA = "system-metadata"
+
+
+#: Statuses `includeUnapproved` may surface (SEC-13, T-15).
+#:
+#: `REJECTED` is deliberately absent and there is no flag that adds it. A
+#: rejected revision is one the team decided must *not* be followed, and it is
+#: also where a secret that caused the rejection still lives. Everything else
+#: unapproved is work in progress, which an author asking for it has a reason to
+#: see.
+SURFACEABLE_STATUSES: frozenset[KnowledgeStatus] = frozenset(
+    {
+        KnowledgeStatus.APPROVED,
+        KnowledgeStatus.DRAFT,
+        KnowledgeStatus.PROPOSED,
+    }
+)
+
+
+def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
+    """Whether a caller may see an item in this state (SEC-13, T-15).
+
+    ``include_unapproved`` widens which statuses are allowed. It never disables
+    the check: retired knowledge -- deprecated, superseded, rejected -- is
+    reachable through no flag, because a rejected revision is where the secret
+    that caused the rejection still lives.
+
+    Beside the set it reads, and in the domain, because it is consulted from
+    three layers: the index builder decides what to write, ``knowledge.search``
+    decides what to return on each of its two answer paths, and
+    ``knowledge.get`` decides what to hand over by id. The builder used to
+    inline the two comparisons instead of calling this, which is one copy of a
+    security rule too many -- ``knowledge.get`` having *no* copy is how a caller
+    who could not search for a withheld item could still fetch it.
+    """
+    if status not in SURFACEABLE_STATUSES:
+        return False
+    return include_unapproved or status is KnowledgeStatus.APPROVED

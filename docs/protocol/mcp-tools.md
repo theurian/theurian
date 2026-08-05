@@ -139,7 +139,7 @@ and the outcomes must still exist as data
 
 | Tool | Purpose | Project-scoped |
 | :-- | :-- | :-- |
-| `project.list` | Registered projects | no |
+| `project.list` | Registered projects, and the ids nothing can serve | no |
 | `project.status` | Migration, index, and commit state | yes |
 | `system.health` | Liveness and version | no |
 | `system.capabilities` | What this build supports | no |
@@ -148,6 +148,44 @@ and the outcomes must still exist as data
 `system.capabilities` exists so a client can degrade per feature rather than
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
 everything else should still work.
+
+### `project.list`
+
+Four keys, all four always present. The contract is
+[`schemas/mcp/project-list-response.schema.json`](../../schemas/mcp/project-list-response.schema.json).
+
+```json
+{
+  "count": 1,
+  "projects": [{ "projectId": "demo", "rootPath": "/home/dev/demo" }],
+  "unreadable": ["api"],
+  "remedy": "Remove them with `theurian project unregister <id>`, then register each project again from its repository. …"
+}
+```
+
+| Key | Meaning |
+| :-- | :-- |
+| `count` | The length of `projects`, and nothing else — how many projects can be queried |
+| `projects` | Every registration the daemon could read, sorted by id. Two fields per entry, not the whole registry record |
+| `unreadable` | Ids present in the registry whose entries name no root path, sorted. Every other tool refuses these ids; this is where a caller finds out why |
+| `remedy` | What to do about `unreadable`, or `null` when it is empty |
+
+`unreadable` and `remedy` are **required**, empty array and `null` included.
+Emitting a key only when it applies makes "nothing is unreadable"
+indistinguishable from "this daemon predates the field", and a client that has to
+branch on key presence eventually forgets to.
+
+**`projects` and `unreadable` are not a partition of one snapshot.** They come
+from two independent reads of the registry file, so an id can appear in both or
+in neither if a registration lands between them. Do not compute the size of the
+registry by adding the two, and do not read membership of one as absence from the
+other.
+
+`projectId` carries no pattern. Ids Theurian creates are lowercase kebab-case,
+but this value is a *key* of a hand-editable file and nothing validates keys on
+read, so an entry keyed `Not An Id` with a valid `rootPath` loads and is
+published verbatim. A pattern here would make the schema reject output the
+product really produces.
 
 ## Errors
 
@@ -186,8 +224,12 @@ Every knowledge-bearing result carries the same three fields, always:
 }
 ```
 
-`executable` is `const: false` in the schema and cannot be set true in the domain
-type.
+`executable` is `const: false` in the schema, and a real tool response carrying
+`executable: true` is rejected by it (`tests/integration/test_wire_contract.py`).
+This used to add "and cannot be set true in the domain type": the type that
+refuses it, `domain.retrieval.SafetyMetadata`, is not on the path that produces
+this value. See the round-eight correction to T-3 in
+[the threat model](../security/threat-model.md).
 
 **Theurian labels; it does not enforce.** A calling agent must treat retrieved
 content as data. An agent that follows instructions found inside a document will
@@ -201,3 +243,18 @@ Additive changes (a new optional field, a new tool) are MINOR and do not bump
 `protocolVersion`. Removing a field, tightening a type, adding a required field,
 or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
+
+**`protocolVersion` is still `theurian/v1` after Milestone 5, which made three
+breaking changes to this contract.** That is a decision, recorded here because
+the alternative reading is that somebody forgot. The rule above governs changes
+*from a released protocol*: `theurian/v1` has never been released — Core is
+`0.1.0.dev0`, there is no release tag, and every one of those changes is under
+*Unreleased* in the changelog — so no client can be pinned to a `v1` that lacks
+them, and bumping would publish a `theurian/v2` whose `v1` never shipped.
+Milestone 5's breaking set is the *content* of `v1`, not a departure from it.
+
+The three, so that "breaking but unbumped" is checkable rather than asserted:
+the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
+and the two required fields `project.list` gained. Each is named as BREAKING in
+the changelog, which is what protects an integrator reading this branch. The
+first bump is the first breaking change after `theurian/v1` is released.

@@ -71,6 +71,27 @@ each call site cannot.
 - Reads need neither mechanism. WAL allows concurrent readers during a write,
   which is the property that lets search keep serving during a rebuild (NFR-4).
 
+  > **Amended in Milestone 5. The first sentence holds; the citation of NFR-4
+  > does not, and it names a requirement that is currently unmet.**
+  >
+  > This point said WAL is "the property that lets search keep serving during a
+  > rebuild". WAL is a property of one SQLite database, and the rebuild NFR-4 is
+  > about is the *retrieval index*, which since ADR-0022 lives in its own file
+  > and is republished by writing a new file and swapping a pointer. No WAL
+  > connection spans that: `SqliteIndexStore` holds no handle between calls, and
+  > `theurian index build` reaps every build the new pointer does not name, so a
+  > search racing a rebuild falls back to the substring scan rather than
+  > answering from the previous build. See the amendment to ADR-0022 point 6,
+  > where the guarantee was withdrawn rather than delivered.
+  >
+  > What this point is right about is the canonical store: a `migrate apply`
+  > write does not block readers of the state database, and that is what
+  > `infrastructure/sqlite/store.py` cites. **NFR-4 — "the previously published
+  > index answers every query while a new build runs, zero read downtime" — is
+  > owed to Milestone 6's blue/green work and is not discharged here.** It was
+  > cited as satisfied by a mechanism that does not reach the artifact it is
+  > about.
+
 ## Alternatives considered
 
 | Alternative | Why rejected |
@@ -88,3 +109,27 @@ each call site cannot.
   project and asserts serialisation, a consistent final state, and no error.
 - A test asserts a second application of the same migration set is a no-op.
 - A lint check keeps `import sqlite3` inside `infrastructure/sqlite/`.
+
+Still owed, with the milestone that will satisfy it:
+
+- **The derived index has no single-writer contract at all** (Milestone 6,
+  [#15](https://github.com/theurian/theurian/issues/15)). Everything above is
+  about `CanonicalStore`. Milestone 5 gave the product a second writable SQLite
+  artifact — the retrieval index — and `theurian index build` is today its only
+  writer, serialised by nothing but the fact that a person runs it. Point 1's
+  rule, that a guarantee behind one interface can change mechanism while a
+  guarantee held by convention at each call site cannot, has not been applied to
+  it.
+
+  This becomes load-bearing rather than theoretical in Milestone 6. T-17a's root
+  fix removes withdrawn rows from the index, and the shape chosen for it is a
+  **single-writer incremental purge, not a purge on read** — purging on read
+  would put a write on the retrieval path, and tombstones do not work here
+  because what leaks is FTS5's collection statistics, which count rows a
+  tombstone would leave in place. So Milestone 6 adds a second writer to a file
+  that searches are reading, and this ADR is where the interface it writes
+  through has to be named. Blue/green (ADR-0022) decides whether that write
+  produces a new build and swaps, or mutates the published one under a lock;
+  this ADR decides that there is exactly one thing allowed to do it.
+- **NFR-4 is not discharged**, per the amendment above. It belongs with the same
+  blue/green work.

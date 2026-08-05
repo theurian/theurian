@@ -64,6 +64,19 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 | FR-R7 | Pin a `snapshotId` so results are reproducible for the lifetime of a task. |
 | FR-R8 | Search across several registered Projects in one call when the caller is authorized for all of them. |
 
+FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
+`retrieval` block, not repeated on every hit in `results`. One
+`knowledge.search` response is answered from exactly one canonical state, and,
+when ranked, from exactly one index build; a per-hit copy would repeat one
+string per result and could never differ between hits. Verified:
+`retrieval.snapshotId` is byte-identical to `knowledge.status.stateHash`,
+because both are read from the same `ActiveState` within one request, so
+provenance can be cross-checked without a second call. What stays per hit is
+the part that makes an individual claim checkable — `itemId`, `revisionId`,
+`sourceAnchors` — which is what a citation actually needs. See
+`schemas/mcp/retrieval-metadata.schema.json` and
+`schemas/knowledge/retrieval-result.schema.json` for the normative shape.
+
 ### 1.5 Review knowledge
 
 | ID | Requirement |
@@ -760,7 +773,7 @@ flowchart TB
 | T-3 | Instructions embedded in knowledge steer an agent | Tampering / EoP | High | SEC-15, SEC-16, R-4 |
 | T-4 | A crafted `contentFile` path reads `~/.ssh/id_ed25519` | Information disclosure | Critical | SEC-7, FR-S6 |
 | T-5 | A symlink inside the repo points outside it | Information disclosure | Critical | SEC-7 |
-| T-6 | A zip/YAML bomb exhausts memory during ingestion | DoS | Medium | SEC-8 |
+| T-6 | A zip/YAML bomb at ingestion, or a search query that burns seconds of CPU | DoS | Medium | SEC-8 |
 | T-7 | A hostile Git URL triggers an internal request | SSRF | Medium | SEC-10 |
 | T-8 | The token is written into a config file that gets committed | Information disclosure | High | SEC-5, ADR-0011 |
 | T-9 | The token appears in a log or a crash report | Information disclosure | High | SEC-6 |
