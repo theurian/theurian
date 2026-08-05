@@ -153,8 +153,8 @@ alternative and the reasoning against it are written down.
 
 Specification traceability — requirement → spec → ADR → PR → review → code →
 test → evidence, as a queryable graph — is the design this is built toward and
-is not built yet. `system.capabilities` reports `traceability: false`; it is
-Milestone 8.
+is not built yet. It is Milestone 8; `system.capabilities` reports whether it
+has arrived, under `traceability`.
 
 ## Quick start
 
