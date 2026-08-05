@@ -292,7 +292,9 @@ config file gets copied between machines, committed, and pasted into issues; the
 token should not follow it (SEC-5, T-8,
 [ADR-0011](docs/adr/0011-local-mcp-authentication.md)).
 
-With Claude Code:
+With Claude Code — though **the marketplace entry is not published yet**:
+`theurian/theurian-plugins` is an empty repository, so the first two of these
+find no `marketplace.json` to read and no entry to install.
 
 ```text
 /plugin marketplace add theurian/theurian-plugins
@@ -301,7 +303,8 @@ With Claude Code:
 ```
 
 Installing the plugin does nothing on its own — no daemon starts, no OS service
-is registered. `/theurian:setup` is the only command that installs anything.
+is registered. `/theurian:setup` is the only command that installs anything, and
+what it runs is the `theurian setup` from the quick start above.
 
 `tests/e2e/` drives the real daemon over the real endpoint, but no test in this
 repository starts the plugin inside Claude Code. That side is held by four
