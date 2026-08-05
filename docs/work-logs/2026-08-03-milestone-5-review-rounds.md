@@ -1,12 +1,26 @@
 # Milestone 5: what the first five review rounds actually found
 
-Milestone 5 turned `knowledge.search` into hybrid retrieval. **Eight review
-rounds ran before the PR — `39ce944`'s message attests the count — and this log
-accounts for the first five.** Rounds six to eight are not covered here; their
-converted findings are issues
-[#17](https://github.com/theurian/theurian/issues/17) to
-[#20](https://github.com/theurian/theurian/issues/20), and the arc across all
-eight is in the pull request description.
+Milestone 5 turned `knowledge.search` into hybrid retrieval. **Nine review rounds
+ran before the PR — `39ce944` attests the first eight and `153cd16`, which
+descends from it, attests one more — and this log accounts for the first five.**
+Rounds six to nine are not covered here; the arc across all nine is in the pull
+request description. Three findings ship converted rather than fixed — graded
+HIGH and shipped as a recorded decision rather than a patch:
+[#15](https://github.com/theurian/theurian/issues/15),
+[#19](https://github.com/theurian/theurian/issues/19) and
+[#30](https://github.com/theurian/theurian/issues/30). That set is the
+milestone's, not the uncovered rounds': #15 is T-17a, raised in round four and
+re-accepted in round five, and the account below covers it.
+
+This paragraph said *eight* until the ninth round ran, and gave the converted
+findings as the range [#17](https://github.com/theurian/theurian/issues/17) to
+[#20](https://github.com/theurian/theurian/issues/20) — in which #17 is MEDIUM,
+#20 is a LOW bundle and [#18](https://github.com/theurian/theurian/issues/18) has
+since been fixed and closed, so #19 was the only conversion it ever held. That is
+the error the rest of this log is about, made by the log about its own scope: a
+list asserts that its items are what it says they are, and this one asserted it
+of a span of issue numbers never checked against a key. It is recorded rather
+than silently corrected, on the same rule as everything below.
 
 Two rules in [`CLAUDE.md`](../../CLAUDE.md) came out of it — *a finding is closed
 by a closure argument, not by a fix*, and *the orchestrator has no reviewer*.
