@@ -558,11 +558,115 @@ revision or retiring the item — with its own window. See T-17: performing
 exactly that remediation is what re-opened a channel to read the secret back,
 through `knowledge.search` rather than through the revision itself.
 
-#### T-16 — A compromised release artifact is installed (Tampering, **Critical**)
+#### T-16 — A compromised release artifact is installed (Tampering, **Critical** — publication ships, install-time verification does not)
 
-**Controls:** SHA-256 verification before install as an explicit setup step;
-checksums published with every release; SBOM attached; setup aborts rather than
-installing an artifact it could not verify.
+**Controls:** [`release-core.yml`](../../.github/workflows/release-core.yml) runs
+on a `core-v*` tag and, before anything is published: builds, then installs the
+wheel into a clean environment and runs `theurian version --json` against it;
+produces a reproducible CycloneDX 1.6 SBOM from that verified install rather than
+from the lock file (OSS-7); writes `SHA256SUMS` over every artifact including the
+SBOM (OSS-11); publishes to PyPI over Trusted Publishing with PEP 740
+attestations, so no maintainer holds a credential that could publish a different
+artifact; and attaches the checksums and the SBOM to the GitHub release. **Every
+one of these acts on production. None acts on installation**, which is the
+residual below.
+
+**The tag-signature step is not among them.** The workflow requires a signature
+block on the tag object, and the runner has no keyring, so validity is never
+established — the step says as much itself. Against this threat that leaves
+nothing: T-16's actor is one who can get a release published, and a check run
+over a tag that same actor authored cannot separate them from a maintainer. What
+it buys is catching a maintainer who forgot `-s`. Verifying a tag against the
+maintainer keyring stays a human step (`release.md` §4).
+
+> **Corrected in review of this change, which overstated the check twice.** The
+> entry first listed the step among the controls, then narrowed it to "refuses a
+> tag carrying no signature block — presence, not validity". That is still
+> stronger than the code: the check greps the whole output of `git cat-file tag`,
+> which includes the tag *message*, so an unsigned `git tag -a` whose message
+> contains the banner line satisfies it. Reproduced against real Git — on such a
+> tag the check exits 0 while `git tag -v` exits 1. The grep is being tightened
+> in the workflow, separately from this entry. The paragraph above is written to
+> what the step can establish rather than to how it is spelled, so the correction
+> does not change it.
+
+**Residual: nothing verifies any of it at install time. Critical, unmitigated.**
+This entry previously listed "SHA-256 verification before install as an explicit
+setup step" and "setup aborts rather than installing an artifact it could not
+verify" as controls. Neither exists. `probe_artifact_integrity` in
+`theurian.application.setup_steps` is a single unconditional return of
+`NOT_APPLICABLE`, so `theurian setup --dry-run --json` publishes
+`"status": "not-applicable"` for `artifact-integrity` on every machine, and no
+code under `plugins/` verifies a checksum either. The step is honest about
+itself — its docstring says a step reporting `satisfied` without checking
+anything would be a false assurance about supply chain integrity — and this
+entry, which is where a reader goes to find out what protects them, was not.
+
+**Two things are missing, not one, and the second is why the first went
+unnoticed.** There is no code that hashes an artifact and compares it against
+`SHA256SUMS`; and there is no point in the flow where such code would run.
+`theurian setup` does not download or install Core. Its `core-present` step
+checks that a `theurian` executable is already there and, when it is not, tells
+the user to run `uv tool install theurian` or `pipx install theurian`. The
+download belongs to the installer, so a probe added to setup would run after the
+artifact had already been installed and executed — it would report on code that
+had run. Closing this is a change to how Theurian is obtained, not a step added
+to setup, which is the part the old control list hid by naming setup step 3.
+
+**The class, by its root cause: documents describing an installation path setup
+does not have.** Deleting the verification claims does not close it. They were
+plausible *because* other documents say setup installs Theurian, and a step that
+installs is a step that could verify what it installed — so the premise
+regenerates the conclusion anywhere it survives, and a reader who starts at
+`theurian setup --help` rather than here meets it intact. The test for a member
+is therefore the premise and not the word "verify": does the text describe setup
+obtaining, installing or upgrading Core? Three surfaces did, and are corrected
+separately from this entry:
+
+| Surface | The premise it carried |
+| :-- | :-- |
+| `cli/setup_commands.py` | the docstring `theurian setup --help` prints |
+| `plugins/claude-code/commands/setup.md` | what `/theurian:setup` announces it will do |
+| `domain/compatibility.py` | a version-mismatch remedy telling a user with no Core on `PATH` to run `/theurian:setup` |
+
+The third is the sharpest, because it is unrunnable rather than merely
+inaccurate: `/theurian:setup` reaches Theurian, so a user who does not have
+Theurian cannot follow it. Setup cannot report that condition either. The
+executable in the context comes from `_executable()` in `cli/setup_commands.py`,
+which takes `shutil.which("theurian")` and falls back to `sys.argv[0]` — by
+construction the program currently running — so `probe_core` reports `Satisfied`
+in essentially every real invocation, and `Conflicting` needs an `argv[0]` that
+does not resolve. **Setup cannot tell you Core is missing, because setup is
+Core.** That is the same fact as the paragraph above, met from the other end.
+
+**What a user has today** is whatever their installer and PyPI give them.
+Theurian publishes PEP 740 attestations; whether an installer checks them is that
+installer's behaviour, and Theurian neither checks nor reports them.
+
+**Two strings in that step turn false at the first `core-v*` tag, and one of them
+cancels the only mitigation a user has.** `probe_artifact_integrity` reports
+`summary="No signed release manifest exists yet; nothing to verify against."` and
+`detail="Artifact verification arrives with the first tagged release (OSS-7,
+T-16)."` Neither is false today, because no tag has been cut. Both turn at the
+moment one is: `SHA256SUMS` is published on the GitHub release from that point,
+so the `detail` becomes an overdue promise, and the `summary` — the worse of the
+two — tells every user there is nothing to check against a record that exists and
+that they could have checked by hand, which is the entire mitigation until the
+control lands. This does not change this entry's grade, since nothing about it is
+true yet. It is a condition on the release, recorded as such in
+[#39](https://github.com/theurian/theurian/issues/39): correct the strings or
+land the control **before** the first tag is pushed.
+
+**Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
+this is tolerable. The requirement stands: OSS-11 requires the checksums and
+`requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and setup
+step 3. Filed at [#39](https://github.com/theurian/theurian/issues/39), which
+carries both the missing control and the release gate above. The schedule the
+code itself states — "Artifact verification arrives with the first tagged
+release" — came due when `release-core.yml` landed, since a first tagged release
+is what that workflow exists to cut. The severity stays Critical: the harm is
+unchanged, an attacker who substitutes an artifact runs code as the user, and
+every control above acts on production rather than on what a user installs.
 
 ### TB-3: the retrieval result
 
@@ -1815,7 +1919,7 @@ byte-for-byte.
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration | T | Medium | SEC-18 |
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 |
-| T-16 | Compromised release artifact | T | Critical | OSS-11 |
+| T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | `index build`; root fix M6 (#15) |
 

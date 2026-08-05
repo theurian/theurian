@@ -92,11 +92,46 @@ credential.
 5. publishes to PyPI over Trusted Publishing with PEP 740 attestations;
 6. cuts the GitHub release with the changelog section, checksums, and SBOM.
 
-`/theurian:setup` verifies the checksum before installing and aborts rather than
-installing an artifact it could not verify (T-16).
-
 To exercise every step except publication, run the workflow manually with
 `dry_run` left at its default.
+
+### Checksums are published; nothing verifies them at install time
+
+Steps 4 and 6 satisfy the publication half of T-16 (OSS-7, OSS-11): the record a
+verifier would check against exists on every release. **The verifying half does
+not exist.** `theurian setup`'s artifact-integrity step is an unconditional
+`return` of `not-applicable` —
+[`setup_steps.py`](../../packages/theurian-core/src/theurian/application/setup_steps.py),
+`probe_artifact_integrity` — so `theurian setup --dry-run --json` reports this,
+on a machine with a release installed or without one:
+
+```json
+{
+  "action": "",
+  "detail": "Artifact verification arrives with the first tagged release (OSS-7, T-16).",
+  "id": "artifact-integrity",
+  "outcome": "not-attempted",
+  "paths": [],
+  "status": "not-applicable",
+  "summary": "No signed release manifest exists yet; nothing to verify against."
+}
+```
+
+Dedented for reading: in real output this is one element of the `steps` array,
+so its fields sit at six spaces rather than two. The values are byte-identical.
+
+Two things are missing, not one. There is no code that hashes an artifact and
+compares it to `SHA256SUMS`, and there is no point in setup where such code would
+run: setup does not download or install Core. It checks that a `theurian`
+executable is already present and, when it is not, tells the user to run
+`uv tool install theurian` or `pipx install theurian`. So a user's integrity
+guarantee today is whatever their installer and PyPI give them — Theurian
+publishes PEP 740 attestations, but nothing in Theurian checks anything, and
+whether a given installer checks them is that installer's behaviour.
+
+Checking a download against `SHA256SUMS` is a manual step until this lands. T-16
+stays open on this half; the residual is recorded under T-16 in
+[the threat model](../security/threat-model.md).
 
 ### 6. Confirm before announcing
 
