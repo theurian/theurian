@@ -155,8 +155,8 @@ alternative and the reasoning against it are written down.
 
 Specification traceability — requirement → spec → ADR → PR → review → code →
 test → evidence, as a queryable graph — is the design this is built toward and
-is not built yet. It is Milestone 8; `system.capabilities` reports whether it
-has arrived, under `traceability`.
+is not built yet. It is Milestone 8; `system.capabilities` reports
+`traceability: false`.
 
 ## Quick start
 
@@ -175,7 +175,7 @@ with a PATH that is not your shell's. That is what `uv tool install` is for.
 Build a knowledge base inside a repository:
 
 ```sh
-cd /path/to/your/repo
+cd /path/to/your/repo          # a Git working tree; init exits 1 anywhere else
 theurian init                  # create .theurian/ and the .gitignore entries
 theurian project register      # register this working tree
 # author a migration under .theurian/migrations/, then:
@@ -309,7 +309,7 @@ shows a plan first, and running it twice changes nothing.
 repository starts the plugin inside Claude Code. That side is held by four
 static CI checks — the plugin must contain no Python, import no Core, declare no
 MCP server, and template the token as `${THEURIAN_MCP_TOKEN}`. `claude plugin
-validate` runs too, but no runner installs that CLI, so it skips and gates
+validate` runs too, but its job is `continue-on-error: true`, so it gates
 nothing.
 
 ## How it works
