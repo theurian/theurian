@@ -140,14 +140,20 @@ def test_maximum_is_exclusive() -> None:
     assert verdict.outcome is CompatibilityOutcome.CORE_TOO_NEW
 
 
-def test_missing_core_is_reported_as_run_setup() -> None:
-    """The normal "plugin installed, setup not yet run" case (FR-L3).
+def test_missing_core_is_reported_as_install_then_setup() -> None:
+    """The normal "plugin installed, Core not yet installed" case (FR-L3).
 
     It is not an error to repair automatically -- installing software from a
     compatibility check is exactly the surprising behaviour the design forbids.
+
+    The remedy has to name an installer, not only ``/theurian:setup``. Setup
+    shells out to the ``theurian`` binary whose absence produced this verdict,
+    so a remedy that named setup alone would be advice the user cannot follow.
     """
     verdict = resolve_compatibility(DECLARATION, None, None)
     assert verdict.outcome is CompatibilityOutcome.CORE_MISSING
+    assert "uv tool install theurian" in verdict.remedy
+    assert "pipx install theurian" in verdict.remedy
     assert "/theurian:setup" in verdict.remedy
 
 

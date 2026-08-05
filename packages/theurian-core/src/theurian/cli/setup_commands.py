@@ -86,6 +86,9 @@ def _repository_root() -> Path | None:
     return None
 
 
+# Typer prints a command's docstring verbatim, so the three below stay plain
+# prose with single backticks. A `:func:` role or a ``literal`` reaches the user
+# as its own markup -- which is how the reST first drafted here was caught.
 def setup_command(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Show the plan and change nothing.")
@@ -104,10 +107,19 @@ def setup_command(
     port: PortOption = DEFAULT_PORT,
     as_json: JsonFlag = False,
 ) -> None:
-    """Install and configure Theurian for this machine and repository.
+    """Configure this machine to run Theurian, and connect Claude Code to it.
 
-    The only command that installs software, registers an OS service, or writes
-    configuration. Running it twice changes nothing (FR-L2).
+    Creates the data directory, mints and stores the local access token, writes
+    the env file that references it, registers and starts the user-scoped OS
+    service, and writes the MCP connection entry. Nothing else registers the
+    service or writes that entry, and running it twice changes nothing (FR-L2).
+
+    It does not install Core, and no step here could: setup runs from the
+    installation it would have to create. Core arrives through
+    `uv tool install theurian` or `pipx install theurian`, which is what the
+    core-present step reports to a user whose PATH has no `theurian` on it.
+    The steps that are neither of these, project registration and the initial
+    index, only report and name the command that does the work.
     """
     service = SetupService(build_context(port=port))
     report = service.run(SetupRequest(dry_run=dry_run, approve_conflicts=approve_conflicts))

@@ -269,14 +269,23 @@ def resolve_compatibility(
 
     ``core_version`` is ``None`` when the ``theurian`` CLI is not on ``PATH``.
     That is not an error state to repair automatically -- it is the normal
-    "plugin installed, setup not yet run" case, and the remedy is to tell the
-    user to run ``/theurian:setup`` (FR-L3).
+    "plugin installed, Core not yet installed" case (FR-L3).
+
+    The remedy names the installer *before* ``/theurian:setup``, in the same
+    words the setup report's ``core-present`` step uses. Setup does not install
+    Core; it runs from an installed Core. Sending this user straight to
+    ``/theurian:setup`` is advice they cannot follow -- it shells out to the
+    ``theurian`` binary whose absence is the thing being reported.
     """
     if core_version is None:
         return CompatibilityVerdict(
             outcome=CompatibilityOutcome.CORE_MISSING,
             message="Theurian Core is not installed or is not on PATH.",
-            remedy="Run /theurian:setup once to install and configure Theurian.",
+            remedy=(
+                "Install Theurian with `uv tool install theurian` or "
+                "`pipx install theurian`, then run /theurian:setup to configure "
+                "this machine."
+            ),
             plugin_version=declaration.plugin_version,
             core_version=None,
             protocol_version=None,
