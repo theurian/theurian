@@ -71,27 +71,71 @@ git push origin release/core-0.2.0 --tags
 Core tags are `core-v*`; plugin tags are `plugin-v*`. Two release trains in one
 repository need unambiguous tag namespaces.
 
-### 5. Verify the artifacts
+**Pushing the tag is the release.** `.github/workflows/release-core.yml` takes
+over from here; there is no manual publish step and no maintainer holds a PyPI
+credential.
 
-CI builds, verifies, and publishes checksums. Confirm before announcing:
+### 5. What CI does with the tag
+
+[`release-core.yml`](../../.github/workflows/release-core.yml), in order:
+
+1. runs the full quality gate — a tag push does not trigger `core.yml`, so
+   without this a red commit could be tagged and published;
+2. refuses the tag unless `core-v<version>` matches `pyproject.toml`, the
+   installed package reports the same version, the tag carries a signature, and
+   `CHANGELOG.md` has a non-empty section for it;
+3. builds, then installs the wheel into a clean environment and runs
+   `theurian version --json` against it;
+4. produces a reproducible CycloneDX 1.6 SBOM from that verified environment —
+   from what a user installs, not from the lock file — and `SHA256SUMS` over
+   every artifact including the SBOM;
+5. publishes to PyPI over Trusted Publishing with PEP 740 attestations;
+6. cuts the GitHub release with the changelog section, checksums, and SBOM.
+
+`/theurian:setup` verifies the checksum before installing and aborts rather than
+installing an artifact it could not verify (T-16).
+
+To exercise every step except publication, run the workflow manually with
+`dry_run` left at its default.
+
+### 6. Confirm before announcing
 
 ```sh
-uv build --package theurian
 uv venv /tmp/verify
-VIRTUAL_ENV=/tmp/verify uv pip install dist/theurian-0.2.0-py3-none-any.whl
+VIRTUAL_ENV=/tmp/verify uv pip install theurian==0.2.0
 /tmp/verify/bin/theurian version --json
-sha256sum dist/*
 ```
 
-Every release carries SHA-256 checksums and a CycloneDX SBOM. `/theurian:setup`
-verifies the checksum before installing and aborts rather than installing an
-artifact it could not verify (T-16).
+Docker (`ghcr.io/theurian/theurian`) is not yet automated; it is published by
+hand until a `Dockerfile` lands.
 
-### 6. Publish
+## One-time setup: PyPI Trusted Publishing
 
-- PyPI: `theurian`
-- Docker: `ghcr.io/theurian/theurian:0.2.0` and `:latest`
-- GitHub release: changelog section, checksums, SBOM
+No PyPI token exists in this repository's secrets, and none should. Publication
+authenticates with a short-lived OIDC token minted per run, so there is nothing
+to leak, rotate, or scope wrongly.
+
+Two things must exist before the first release:
+
+**1. A GitHub environment named `pypi`.** Settings → Environments → New
+environment. Add required reviewers if a release should need a second pair of
+eyes; the workflow will wait for them.
+
+**2. A trusted publisher on PyPI**, registered at
+<https://pypi.org/manage/account/publishing/> — as a *pending* publisher until
+the project exists, which is what bootstraps the first upload:
+
+| Field | Value |
+| :-- | :-- |
+| PyPI project name | `theurian` |
+| Owner | `theurian` |
+| Repository name | `theurian` |
+| Workflow name | `release-core.yml` |
+| Environment name | `pypi` |
+
+The workflow filename and the environment name are part of the credential. A
+renamed workflow file stops publishing until the publisher is updated to match —
+which is the point.
 
 ## Releasing the plugin
 
@@ -150,17 +194,23 @@ Maintain this in the repository README as releases accumulate:
 
 ## Release checklist
 
-**Core**
+**Core.** Items marked *(CI)* fail the release workflow rather than relying on
+anyone remembering them; they are listed so it is clear what is already covered,
+not so they are checked twice.
 
-- [ ] Format, lint, mypy, tests, coverage green
+- [ ] *(CI)* Format, lint, mypy, tests green
+- [ ] Coverage reviewed
 - [ ] Empty-database rebuild matches the golden state
 - [ ] Every dependency pinned; `uv.lock` committed
-- [ ] `pyproject.toml` and `__version__` agree
-- [ ] CHANGELOG written for an upgrade decision
+- [ ] *(CI)* `pyproject.toml`, `__version__`, and the tag all agree
+- [ ] *(CI)* CHANGELOG has a non-empty section for the version
+- [ ] CHANGELOG written for an upgrade decision, not just present
 - [ ] Protocol change, if any, called out
-- [ ] Tagged `core-v*`, signed
-- [ ] Wheel installs into a clean environment and runs
-- [ ] Checksums and SBOM published
+- [ ] *(CI)* Tag is `core-v*` and carries a signature
+- [ ] Signature verifies against the maintainer keyring — CI has no keyring and
+      checks only that a signature is present
+- [ ] *(CI)* Wheel installs into a clean environment and runs
+- [ ] *(CI)* Checksums and SBOM published
 
 **Plugin**
 
