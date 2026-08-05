@@ -299,10 +299,11 @@ token should not follow it (SEC-5, T-8,
 | Any MCP Streamable HTTP client | Same endpoint, same five tools, no client-specific surface |
 
 `tests/e2e/` drives the real daemon over the real endpoint. No test in this
-repository starts the plugin inside Claude Code; that side is held by CI's
-static checks — the plugin must contain no Python, import no Core, declare no
-MCP server, and template the token as `${THEURIAN_MCP_TOKEN}` — plus
-`claude plugin validate`.
+repository starts the plugin inside Claude Code; that side is held by four
+static CI checks — the plugin must contain no Python, import no Core, declare no
+MCP server, and template the token as `${THEURIAN_MCP_TOKEN}`. `claude plugin
+validate` runs too, but no runner installs that CLI, so it skips and gates
+nothing.
 
 Five read-only tools: `knowledge.search`, `knowledge.get`, `knowledge.status`,
 `project.list`, `system.capabilities`.
