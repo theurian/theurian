@@ -238,10 +238,13 @@ curl http://127.0.0.1:7419/health    # no credential needed; this is what the ho
 
 Starting a second daemon against the same data directory is safe: it detects the
 first, reports `reuse`, and exits 0. One process serves every project you
-register and every agent that connects. A second daemon pointed at a *different*
-data directory is a different matter — on this foreground path it reports
-`conflict` and exits 1 rather than answering queries from the wrong knowledge
-base.
+register and every agent that connects.
+
+Point one at a *different* data directory and only `--foreground` catches it. It
+exits 1 with `serves a different data directory`, rather than answering queries
+from the wrong knowledge base. Plain `daemon start`, which hands the work to
+launchd or systemd, does not make that comparison: anything healthy on the port
+is reported as `reuse`.
 
 Requests to `/mcp` need a bearer token, which `daemon start` mints into
 `~/.theurian/auth/mcp-token` (mode 0600) on first run. Streamable HTTP is
