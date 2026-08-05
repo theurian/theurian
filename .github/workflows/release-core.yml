@@ -178,8 +178,10 @@ jobs:
           # `uv build` leaves a .gitignore in dist/; it is not a release artifact.
           rm -f dist/.gitignore
           cd dist && sha256sum * | tee SHA256SUMS
-          # Covers the wheel, the sdist, and the SBOM. /theurian:setup verifies
-          # this file before installing and aborts if it cannot (T-16).
+          # Covers the wheel, the sdist, and the SBOM. Publishing this file is
+          # the half of T-16 that ships; nothing verifies it at install time.
+          # `probe_artifact_integrity` returns not-applicable unconditionally, so
+          # a consumer of SHA256SUMS is a human until that changes.
 
       - uses: actions/upload-artifact@v7
         with:
