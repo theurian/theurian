@@ -36,11 +36,14 @@ quietly fall behind the DDL.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import re
 import shutil
 import sqlite3
 import subprocess
+import textwrap
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -60,6 +63,7 @@ from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, T
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeRevision, RevisionMetadata, SourceAnchor
 from theurian.domain.values import MARKDOWN, ValidityPeriod
+from theurian.infrastructure.sqlite import store as sqlite_store
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
@@ -1233,6 +1237,127 @@ WRITER_READS: Final = (
     ),
 )
 
+#: The other half of the partition: every read :class:`SqliteWriter` performs that
+#: is deliberately *outside* a ``_reading()`` block, with the reason it interprets
+#: nothing.
+#:
+#: Held against the shipped source together with :data:`WRITER_READS` by
+#: :func:`test_every_read_the_writer_performs_is_guarded_or_excluded_with_a_reason`,
+#: so a read added in a later milestone has to be classified rather than
+#: forgotten. Keyed by ``(method, table)`` -- the table the ``SELECT`` names, not
+#: the column, because one read may interpret several cells.
+WRITER_READS_NOT_GUARDED: Final = {
+    ("append_revision", "knowledge_revisions"): (
+        "compares two `content_sha256` strings and interprets neither, so no "
+        "converter can put the stored cell into a message. The mismatch branch "
+        "*does* interpret, and that one line -- `ContentHash(stored)` -- is "
+        "guarded on its own. Guarding the read itself would answer a conflicting "
+        "write with a remedy that deletes the state, which is what "
+        "`test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state` "
+        "holds."
+    ),
+}
+
+#: The context manager that marks a read as guarded, by name.
+#:
+#: Matched lexically, so :func:`_writer_reads` reports a read as guarded only when
+#: the read sits *inside* the block -- which is the distinction the whole
+#: partition rests on. `append_revision` calls `_reading()` and is still an
+#: unguarded read: its guard wraps the interpretation three lines further in, not
+#: the ``SELECT``. A scan keyed on "this method mentions `_reading`" would call it
+#: guarded and pass while the guard moved off the read entirely.
+_GUARD: Final = "_reading"
+
+#: What the scan counts as a read: the SQL verb that pulls bytes off the page, and
+#: the cursor methods that carry rows away from one.
+_READ_VERB: Final = "SELECT"
+_FETCH_METHODS: Final = frozenset({"fetchone", "fetchall", "fetchmany"})
+_TABLE_IN_SQL: Final = re.compile(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+#: Stands in for a table this scan could not read out of the SQL, so that such a
+#: read joins the population as an unclassifiable member rather than being
+#: dropped. A read the scanner cannot name must fail the partition, not vanish
+#: from it -- silently skipping the reads it does not understand is the one way a
+#: derived population degrades back into a list.
+_UNRESOLVED: Final = "<table not derivable from the SQL literal>"
+
+
+@dataclass(frozen=True)
+class ReadSite:
+    """One place :class:`SqliteWriter` pulls bytes out of the state database."""
+
+    method: str
+    table: str
+    guarded: bool
+
+
+def _select_table(node: ast.Call) -> str | None:
+    """The table an ``.execute("SELECT ...")`` reads, or ``None`` if not a read."""
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr == "execute"):
+        return None
+    if not (node.args and isinstance(node.args[0], ast.Constant)):
+        return None
+
+    sql = node.args[0].value
+    if not isinstance(sql, str) or not sql.lstrip().upper().startswith(_READ_VERB):
+        return None
+
+    found = _TABLE_IN_SQL.search(sql)
+    return found.group(1) if found else _UNRESOLVED
+
+
+def _unattributed_fetch(node: ast.Call) -> str | None:
+    """A ``fetch*`` whose rows came from a statement this scan could not read.
+
+    A ``fetch*`` chained straight onto a ``SELECT`` literal is the same read
+    :func:`_select_table` already counted, so it is not counted twice. One reached
+    through a variable -- ``cursor = conn.execute(sql); cursor.fetchall()`` -- is a
+    read whose SQL is not in the tree, and it enters the population unresolved.
+    """
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr in _FETCH_METHODS):
+        return None
+    receiver = node.func.value
+    if isinstance(receiver, ast.Call) and _select_table(receiver) is not None:
+        return None
+    return _UNRESOLVED
+
+
+def _opens_guard(node: ast.With | ast.AsyncWith) -> bool:
+    """Whether this ``with`` statement is the ``_reading()`` guard."""
+    return any(
+        isinstance(item.context_expr, ast.Call)
+        and isinstance(item.context_expr.func, ast.Name)
+        and item.context_expr.func.id == _GUARD
+        for item in node.items
+    )
+
+
+def _writer_reads() -> frozenset[ReadSite]:
+    """Every read in :class:`SqliteWriter`, read out of the shipped source.
+
+    Parsed from the source of the class *as imported*, so the tree scanned is the
+    tree the suite runs against rather than a path assembled relative to this
+    file, which can drift from the installed package.
+    """
+    found: set[ReadSite] = set()
+
+    def visit(node: ast.AST, method: str | None, guarded: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                visit(child, method or child.name, guarded)
+                continue
+            if isinstance(child, ast.With | ast.AsyncWith):
+                visit(child, method, guarded or _opens_guard(child))
+                continue
+            if isinstance(child, ast.Call) and method is not None:
+                table = _select_table(child) or _unattributed_fetch(child)
+                if table is not None:
+                    found.add(ReadSite(method, table, guarded))
+            visit(child, method, guarded)
+
+    visit(ast.parse(textwrap.dedent(inspect.getsource(SqliteWriter))), None, False)
+    return frozenset(found)
+
 
 def _write_lock(corpus: Corpus) -> Path:
     """The project's real write lock, so this writer serialises like any other."""
@@ -1389,6 +1514,93 @@ def _a_revision_the_store_already_holds(corpus: Corpus) -> KnowledgeRevision:
         # INV-4: a revision Theurian did not author needs somewhere it came
         # from, and `KnowledgeRevision.create` refuses one without it.
         source_anchors=(SourceAnchor(provider="git", source_uri="git://demo/rewritten.md"),),
+    )
+
+
+def test_the_scan_looks_for_a_guard_the_store_actually_defines() -> None:
+    """Guards the partition below, which matches a name and cannot resolve a type.
+
+    If ``_reading`` is renamed, every read in the writer reads as *unguarded*, and
+    the partition fails saying that three guarded reads disappeared and three
+    unclassified ones arrived. That is a rename reported as a wholesale loss of
+    protection, which is the kind of failure whose expectation gets updated
+    instead of read. This says which it was.
+    """
+    assert hasattr(sqlite_store, _GUARD), (
+        f"`{_GUARD}` no longer exists in the store module, so the scan below is "
+        f"looking for a guard the product has stopped using and will report every "
+        f"read as unguarded. Rename _GUARD with it"
+    )
+
+
+def test_every_read_the_writer_performs_is_guarded_or_excluded_with_a_reason() -> None:
+    """The writer's reads are a partition of the source, not a list someone kept.
+
+    :data:`WRITER_READS` was a `parametrize` list and nothing else: a fifth read
+    added to :class:`SqliteWriter` without a guard failed no test in this suite.
+    The same shape twice cost this file real accuracy -- two comments here said
+    the writer reads three times while a test in this same file said "guarded
+    three times *and not four*", and the prose was wrong for as long as nothing
+    checked it against the source.
+
+    **The key is reads, not interpretations, and that is the decision.**
+    ``_reading()`` exists to catch interpretations -- its own key is *does this
+    line interpret bytes that came out of this file?* -- and that question is not
+    decidable from a syntax tree. ``int(row["s"])`` interprets; ``stored !=
+    revision.content_sha256.value`` does not; both are expressions over a fetched
+    row. What the tree *does* decide is where bytes enter the writer: a ``SELECT``
+    handed to ``execute``, and any ``fetch*`` carrying rows away from one.
+
+    Reads are the safe side of that difference, because every interpretation is a
+    read. Quantifying over reads over-approximates the population the guard cares
+    about and therefore cannot miss one; quantifying over interpretations would
+    require the scan to infer which lines convert, and a scanner that infers that
+    wrongly says nothing and passes. So the semantic judgement is not made here at
+    all -- *this read interprets nothing* is written down per read, with its
+    reason, in :data:`WRITER_READS_NOT_GUARDED`.
+
+    That is what a future reader needs from a red run: the two repairs are
+    opposite. A new read that interprets a stored cell belongs in
+    :data:`WRITER_READS`, behind a guard, where the sweep above corrupts its table
+    and proves it refuses without quoting the cell. A new read that only moves
+    opaque bytes belongs in :data:`WRITER_READS_NOT_GUARDED` with the argument for
+    why -- and guarding it anyway is not the safe default, because past
+    ``BEGIN IMMEDIATE`` a guard offers to delete the operator's state database in
+    answer to a write that merely conflicted.
+    """
+    reads = _writer_reads()
+    guarded = frozenset((site.method, site.table) for site in reads if site.guarded)
+    unguarded = frozenset((site.method, site.table) for site in reads if not site.guarded)
+    swept = frozenset((method, table) for method, table, _name, _call in WRITER_READS)
+    excluded = frozenset(WRITER_READS_NOT_GUARDED)
+
+    assert reads, (
+        "no reads found in `SqliteWriter` at all -- the scan is looking at the "
+        "wrong tree, or `SELECT` stopped being written as a literal, and every "
+        "assertion below is vacuous"
+    )
+    assert guarded == swept, (
+        f"guarded reads in the source and the swept set disagree.\n"
+        f"  guarded in source but not swept by WRITER_READS: {sorted(guarded - swept)}\n"
+        f"  swept by WRITER_READS but not guarded in source: {sorted(swept - guarded)}\n"
+        f"A guarded read that WRITER_READS does not carry is never corrupted by "
+        f"the sweep above, so nothing shows that it refuses without quoting the "
+        f"cell. A swept entry the source no longer guards is a guard someone "
+        f"removed."
+    )
+    assert unguarded == excluded, (
+        f"unguarded reads in the source and the recorded exclusions disagree.\n"
+        f"  unguarded in source, unclassified: {sorted(unguarded - excluded)}\n"
+        f"  recorded as excluded but no longer present: {sorted(excluded - unguarded)}\n"
+        f"Every read in `SqliteWriter` is either guarded and swept -- add it to "
+        f"WRITER_READS with the column whose converter quotes what it would not "
+        f"accept -- or unguarded on purpose, in which case record in "
+        f"WRITER_READS_NOT_GUARDED why it interprets nothing. `{_UNRESOLVED}` "
+        f"means the scan could not read the table out of the SQL, not that the "
+        f"read is exempt."
+    )
+    assert all(WRITER_READS_NOT_GUARDED.values()), (
+        "an exclusion without a reason is a read someone forgot to guard"
     )
 
 
