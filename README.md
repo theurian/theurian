@@ -55,7 +55,8 @@ anchor to check the claim against.
 
 An unreviewed draft can never come back labelled as a team decision — because
 **no MCP tool in Theurian can write approved knowledge.** Not behind a flag, not
-behind a permission. Write-intent tools emit a proposal for a human to merge.
+behind a permission. There is no write-intent tool at all yet; when they arrive
+they will emit a proposal for a human to merge.
 
 Every `knowledge.search` response names the `snapshotId` of the canonical state
 that answered it, so an agent can tell whether two answers came from the same
@@ -150,7 +151,7 @@ alternative and the reasoning against it are written down.
 |  |  |
 | :-- | :-- |
 | **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. An unreviewed draft can never be mistaken for a team decision. |
-| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge: write-intent tools emit proposal files a human reviews and merges. Resolved review threads become *candidates* when Milestone 7 ingests them; the direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
+| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent tool exists today, and when one does it will emit a proposal file a human reviews and merges. Resolved review threads become *candidates* when Milestone 7 ingests them; the direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries the anchors its revision declares. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
 
