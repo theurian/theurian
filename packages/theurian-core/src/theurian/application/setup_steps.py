@@ -14,6 +14,9 @@ not consent to overwrite it (:class:`SetupRequest`, SEC-18).
 **Several steps have no apply at all** and are declared without one. They exist
 to say what is undone and name the command that does it: §6.2 rows 11-13 are
 `theurian init` and `theurian project register`, and setup performs neither.
+Such a step reports and names no paths, because every reader of ``paths`` -- the
+plan shown before consent, the changed-files list, ``uninstall --dry-run`` --
+reads it as a file setup would create or modify.
 """
 
 from __future__ import annotations
@@ -518,12 +521,15 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
             status=StepStatus.SATISFIED,
             summary=f"{root.name} is registered.",
         )
+    # `paths` is empty for the same reason it is empty above: this step has no
+    # apply, so setup never writes `registry.path` whatever the user decides.
+    # Naming it here put the file in the plan's "would be created or modified"
+    # list and then in `changed_paths`, for a run that only ever read it.
     return SetupStep(
         step_id=StepId.PROJECT_REGISTERED,
         status=StepStatus.MISSING,
         summary=f"{root.name} is not registered with this daemon.",
         action="Register this repository. Run `theurian project register`.",
-        paths=(str(registry.path),),
         critical=False,
     )
 
@@ -538,12 +544,14 @@ def probe_project_layout(context: SetupContext) -> SetupStep:
         )
     missing = [name for name in _REQUIRED_PROJECT_DIRS if not (directory / name).is_dir()]
     if missing:
+        # No `paths`: `init` creates these, not setup. The summary already names
+        # every directory that is absent, so nothing a reader needs is lost by
+        # keeping them out of a list that means "setup would write this".
         return SetupStep(
             step_id=StepId.PROJECT_LAYOUT,
             status=StepStatus.MISSING,
             summary=f"{directory} is missing {', '.join(missing)}.",
             action="Create the missing directories. Run `theurian init`.",
-            paths=tuple(str(directory / name) for name in missing),
             critical=False,
         )
     return SetupStep(
@@ -570,12 +578,14 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             status=StepStatus.SATISFIED,
             summary="Derived Theurian artifacts are ignored.",
         )
+    # No `paths`: `init` appends the block, setup only reads the file -- and it
+    # may not exist at all, which is how a `.gitignore` that was never created
+    # came to be reported as one setup had modified.
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
         summary="Derived Theurian artifacts are not ignored by Git.",
         action="Add the Theurian block to .gitignore. Run `theurian init`.",
-        paths=(str(gitignore),),
         critical=False,
     )
 

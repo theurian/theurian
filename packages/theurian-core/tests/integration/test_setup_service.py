@@ -343,7 +343,13 @@ def test_a_repository_that_is_registered_is_reported_satisfied(tmp_path: Path) -
 def test_an_unregistered_repository_is_reported_missing_with_the_command_to_fix_it(
     tmp_path: Path,
 ) -> None:
-    """A MISSING step must say what it would do; the plugin renders `action`."""
+    """A MISSING step must say what it would do; the plugin renders `action`.
+
+    ``paths`` stays empty here for the same reason the CONFLICTING arm below
+    leaves it empty, which is the reason this arm used to disagree with: this
+    step never writes to the registry, whatever the user decides. `register` is
+    what writes it, and the action says so.
+    """
     root = _repository(tmp_path)
     context = _with(tmp_path, project_root=root)
     _registry_holding(context, {"other": {"rootPath": str(tmp_path / "elsewhere")}})
@@ -352,7 +358,7 @@ def test_an_unregistered_repository_is_reported_missing_with_the_command_to_fix_
 
     assert step.status is StepStatus.MISSING
     assert "theurian project register" in step.action
-    assert str(ProjectRegistry.default(context.data_dir).path) in step.paths
+    assert step.paths == (), "a step that only reads must not appear in the changed-files list"
 
 
 def test_an_unreadable_entry_makes_registration_undecidable_rather_than_missing(
@@ -554,6 +560,19 @@ def test_a_file_setup_never_writes_is_not_listed_among_the_files_it_changed(
     phantom = _paths_setup_never_writes(in_a_repository)
     assert not phantom & set(report.changed_paths), "setup did not write these"
     assert not any(Path(p).exists() for p in phantom), "and nothing else wrote them either"
+
+
+def test_the_plan_does_not_offer_a_path_setup_will_not_touch(
+    in_a_repository: SetupContext,
+) -> None:
+    """The plan is what `--dry-run` shows before consent is asked for.
+
+    Same claim as the changed-files list, one stage earlier: a path offered here
+    is one the user is told setup would create or modify.
+    """
+    plan = _service(in_a_repository).plan()
+
+    assert not _paths_setup_never_writes(in_a_repository) & set(plan.paths)
 
 
 def test_a_step_setup_does_not_perform_is_not_journalled_as_applied(
