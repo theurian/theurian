@@ -1183,11 +1183,14 @@ async def test_the_corpus_reaches_each_converter_family(
 
 # -- Where the guard sits, on the writer -----------------------------------
 #
-# `SqliteWriter` reads three times and is guarded three times, and until now
-# nothing anywhere held that. Deleting any of the three left 1464 tests green
-# while the corrupted cell walked out of `theurian migrate status` -- so the
-# placement was correct and unproven, which is the state a later edit removes
-# without noticing.
+# `SqliteWriter` reads four times and is guarded three times, and until now
+# nothing anywhere held either half. Deleting any of the three guards left 1464
+# tests green while the corrupted cell walked out of `theurian migrate status`
+# -- so the placement was correct and unproven, which is the state a later edit
+# removes without noticing. The fourth read, `append_revision`'s
+# `content_sha256`, is unguarded on purpose, and
+# `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`
+# below is the half that holds the absence.
 #
 # Reached through the writer directly rather than through the CLI, and that is
 # forced rather than convenient. `record_migration`, `get_item` and
@@ -1203,8 +1206,10 @@ ITEM_ID: Final = ItemId("architecture.auth-policy")
 REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
-#: Each read :class:`SqliteWriter` performs, with a cell whose converter quotes
-#: what it would not accept. Every one of these three sits behind a guard today.
+#: Three of the four reads :class:`SqliteWriter` performs, each over a cell whose
+#: converter quotes what it would not accept. Every one of these three sits behind
+#: a guard today. The fourth, `append_revision`'s `content_sha256`, deliberately
+#: does not, and is held one test below rather than here.
 WRITER_READS: Final = (
     (
         "get_item",
