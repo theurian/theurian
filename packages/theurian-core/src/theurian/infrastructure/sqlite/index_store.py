@@ -321,8 +321,8 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 #:   indexed zero chunks runs it. `index build` was already in the CLI sweep in
 #:   `tests/integration/test_canonical_store_corruption.py`, over a corpus that
 #:   indexes chunks, so the branch was never taken and the sweep reported green
-#:   across it. Closed in `c7d59b4` — found by enumerating the call sites that
-#:   open or resolve a store session, and fixtured so the branch now has a
+#:   across it. Closed in `c7d59b4` — found by enumerating every CLI call site
+#:   that can raise `TheurianError`, and fixtured so the branch now has a
 #:   corpus. A closure argument whose evidence is a sweep claims no more than
 #:   the sweep's corpus can reach.
 #:
