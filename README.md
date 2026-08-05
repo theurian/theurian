@@ -200,9 +200,10 @@ their content files to copy the layout from. Every revision needs at least one
 entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
 `migrate apply` refuses a revision with neither.
 
-**Neither of those two shows that field, and the example does not satisfy the
+**The first of the two omits that field, so the example does not satisfy its own
 rule** — it validates, then fails to apply with `has no source anchor` and exit
-4 ([#36](https://github.com/theurian/theurian/issues/36)). Copy the layout and
+4, leaving `applied: 0` and never reaching the second, which does carry anchors
+([#36](https://github.com/theurian/theurian/issues/36)). Copy the layout and
 add:
 
 ```yaml
