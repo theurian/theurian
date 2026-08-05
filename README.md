@@ -170,10 +170,9 @@ git clone https://github.com/theurian/theurian && cd theurian
 uv tool install './packages/theurian-core[all]'   # puts `theurian` on your PATH
 ```
 
-`uv sync` sets up the development environment and the test suite, but it does
-not put `theurian` on `PATH` — and the daemon's service unit invokes Theurian by
-absolute path, because launchd and systemd start with a PATH that is not your
-shell's. That is what `uv tool install` is for.
+`uv sync` builds the development environment but leaves `theurian` off `PATH`,
+and the service unit invokes it by absolute path — launchd and systemd start
+with a PATH that is not your shell's. That is what `uv tool install` is for.
 
 Build a knowledge base inside a repository:
 
@@ -194,16 +193,19 @@ against a fresh repository, it reports `operationsApplied: 0` and `ingested: 0`,
 then publishes an index of `chunks: 0`. `ingest` reads `.theurian/knowledge` and
 `.theurian/specifications` only — it does not walk the repository's own `docs/`.
 
-The migration format is [docs/protocol/migrations.md](docs/protocol/migrations.md),
-and [`examples/sample-project/`](examples/sample-project/) has two migrations
-with their content files to copy the layout from. Every revision needs at least
-one entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
+<details>
+<summary><b>Authoring a migration, and the field the shipped example is missing</b></summary>
+
+The format is [docs/protocol/migrations.md](docs/protocol/migrations.md), and
+[`examples/sample-project/`](examples/sample-project/) has two migrations with
+their content files to copy the layout from. Every revision needs at least one
+entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
 `migrate apply` refuses a revision with neither.
 
 **Neither of those two shows that field, and the example does not satisfy the
-rule.** It validates and then fails to apply — `"valid": true`, then
-`has no source anchor` and exit 4. Copy the layout, and add the part they are
-missing ([#36](https://github.com/theurian/theurian/issues/36)):
+rule** — it validates, then fails to apply with `has no source anchor` and exit
+4 ([#36](https://github.com/theurian/theurian/issues/36)). Copy the layout and
+add:
 
 ```yaml
     metadata:
@@ -212,6 +214,8 @@ missing ([#36](https://github.com/theurian/theurian/issues/36)):
         - provider: git
           sourceUri: git://local/docs/adr/0031-service-auth-policy.md
 ```
+
+</details>
 
 Then install the daemon and wire it to your agent:
 
@@ -223,8 +227,8 @@ theurian doctor            # what is wrong, read-only
 
 `setup` registers a **user-scoped** service — a LaunchAgent on macOS, a systemd
 user unit on Linux — and never asks for root. It adds Theurian's MCP entry to
-Claude Code carrying `${THEURIAN_MCP_TOKEN}`, never a literal token. Anything it
-finds already configured differently is shown as a diff and left alone until you
+Claude Code carrying `${THEURIAN_MCP_TOKEN}`, never a literal token. Anything
+already configured differently is shown as a diff and left alone until you
 approve it.
 
 <details>
@@ -267,10 +271,6 @@ theurian project register --project-id team-two-api
 ```
 
 </details>
-
-**If two repositories on your machine have the same directory name**, the second
-`project register` is refused rather than given the first one's id — see the
-fold above for how to break the tie.
 
 ## Works with
 
