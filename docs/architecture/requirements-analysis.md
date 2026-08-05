@@ -278,6 +278,15 @@ Every step is a `SetupStep` with an independent tri-state probe result:
 | 18 | Serena detection | a `serena` MCP entry exists | — | report coexistence, change nothing |
 | 19 | Report | — | print the changed-files list | — |
 
+**Rows 2 and 3 are required, not implemented.** Setup neither installs Core nor
+verifies an artifact. `probe_core` reports `Satisfied` when a `theurian`
+executable is already on the path and `Conflicting` when it is not — there is no
+`Missing` outcome and no install — and `probe_artifact_integrity` returns
+`NotApplicable` unconditionally rather than reporting a check it cannot perform.
+Row 3 is what OSS-11 and T-16 require; the gap and why closing it is a change to
+how Theurian is obtained rather than a probe added here are recorded under
+[T-16](../security/threat-model.md).
+
 ### 6.3 Idempotence contract
 
 Running setup twice must produce a second report where every step is
