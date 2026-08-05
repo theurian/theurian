@@ -58,10 +58,6 @@ An unreviewed draft can never come back labelled as a team decision — because
 behind a permission. There is no write-intent tool at all yet; when they arrive
 they will emit a proposal for a human to merge.
 
-Every `knowledge.search` response names the `snapshotId` of the canonical state
-that answered it, so an agent can tell whether two answers came from the same
-knowledge or from two different states of it.
-
 </td></tr>
 </table>
 
@@ -275,10 +271,11 @@ theurian project register --project-id team-two-api
 ## Works with
 
 Theurian exposes no client-specific surface: anything that speaks **MCP over
-Streamable HTTP** to `http://127.0.0.1:7419/mcp` can use it. The daemon does put
-four conditions on the request — one of them authentication, the other three
-because a loopback port is reachable from any page your browser opens
-(SEC-2, T-2):
+Streamable HTTP** to `http://127.0.0.1:7419/mcp` can use it, and gets the same
+five read-only tools — `knowledge.search`, `knowledge.get`, `knowledge.status`,
+`project.list`, `system.capabilities`. The daemon does put four conditions on
+the request — one of them authentication, the other three because a loopback
+port is reachable from any page your browser opens (SEC-2, T-2):
 
 | Your client must | Or the request gets |
 | :-- | :-- |
@@ -293,21 +290,6 @@ config file gets copied between machines, committed, and pasted into issues; the
 token should not follow it (SEC-5, T-8,
 [ADR-0011](docs/adr/0011-local-mcp-authentication.md)).
 
-| Client | Status |
-| :-- | :-- |
-| Claude Code | Ships a plugin and a `/theurian:setup` command that wires the connection |
-| Any MCP Streamable HTTP client | Same endpoint, same five tools, no client-specific surface |
-
-`tests/e2e/` drives the real daemon over the real endpoint. No test in this
-repository starts the plugin inside Claude Code; that side is held by four
-static CI checks — the plugin must contain no Python, import no Core, declare no
-MCP server, and template the token as `${THEURIAN_MCP_TOKEN}`. `claude plugin
-validate` runs too, but no runner installs that CLI, so it skips and gates
-nothing.
-
-Five read-only tools: `knowledge.search`, `knowledge.get`, `knowledge.status`,
-`project.list`, `system.capabilities`.
-
 With Claude Code:
 
 ```text
@@ -319,6 +301,13 @@ With Claude Code:
 Installing the plugin does nothing on its own — no daemon starts, no OS service
 is registered. `/theurian:setup` is the only command that installs anything, it
 shows a plan first, and running it twice changes nothing.
+
+`tests/e2e/` drives the real daemon over the real endpoint, but no test in this
+repository starts the plugin inside Claude Code. That side is held by four
+static CI checks — the plugin must contain no Python, import no Core, declare no
+MCP server, and template the token as `${THEURIAN_MCP_TOKEN}`. `claude plugin
+validate` runs too, but no runner installs that CLI, so it skips and gates
+nothing.
 
 ## How it works
 
