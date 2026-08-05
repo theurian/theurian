@@ -1,15 +1,19 @@
 """The individual setup steps of §6.2.
 
-Each step is two functions over a :class:`SetupContext`: a **probe** that reports
-what it found without changing anything, and an **apply** that makes the probe's
-answer true. Keeping them apart is what makes ``--dry-run`` the same code path as
-a real run, and what lets the whole state machine be tested against a temporary
-home directory.
+Each step is a **probe** that reports what it found without changing anything,
+and — where setup acts on the answer — an **apply** that makes that answer true.
+Keeping them apart is what makes ``--dry-run`` the same code path as a real run,
+and what lets the whole state machine be tested against a temporary home
+directory.
 
 A probe never writes. An apply is only ever reached for a step whose probe said
 :attr:`StepStatus.MISSING` -- a conflicting step is never applied, whatever the
 user approved, because approval here is consent to *proceed past* a conflict and
 not consent to overwrite it (:class:`SetupRequest`, SEC-18).
+
+**Several steps have no apply at all** and are declared without one. They exist
+to say what is undone and name the command that does it: §6.2 rows 11-13 are
+`theurian init` and `theurian project register`, and setup performs neither.
 """
 
 from __future__ import annotations
@@ -61,13 +65,15 @@ class Step:
 
     step_id: StepId
     probe: Callable[[SetupContext], SetupStep]
-    apply: Callable[[SetupContext], None]
+    #: ``None`` for a step that only ever describes what it found. Absence
+    #: rather than a do-nothing function, because the do-nothing function was
+    #: indistinguishable from a real one at the call site: ``_apply`` called it,
+    #: found no exception, and recorded CHANGED -- so three steps that write
+    #: nothing reported five files as modified and journalled them as applied.
+    #: A step with no action is now something the runner can see.
+    apply: Callable[[SetupContext], None] | None = None
     #: A failure here rolls the run back rather than degrading it.
     critical: bool = True
-
-
-def _nothing(_: SetupContext) -> None:
-    """For steps that only report."""
 
 
 # -- 1. Platform ------------------------------------------------------------
@@ -724,22 +730,22 @@ def probe_serena(context: SetupContext) -> SetupStep:
 #: token must exist before the env file references it, and the service must be
 #: registered before anything tries to start it.
 STEPS: Final[tuple[Step, ...]] = (
-    Step(StepId.PLATFORM, probe_platform, _nothing),
-    Step(StepId.CORE_PRESENT, probe_core, _nothing),
-    Step(StepId.ARTIFACT_INTEGRITY, probe_artifact_integrity, _nothing),
+    Step(StepId.PLATFORM, probe_platform),
+    Step(StepId.CORE_PRESENT, probe_core),
+    Step(StepId.ARTIFACT_INTEGRITY, probe_artifact_integrity),
     Step(StepId.DATA_DIRECTORY, probe_data_directory, apply_data_directory),
     Step(StepId.TOKEN, probe_token, apply_token),
     Step(StepId.TOKEN_STORAGE, probe_token_storage, apply_token_storage),
     Step(StepId.ENV_REFERENCE, probe_env_reference, apply_env_reference),
     Step(StepId.DAEMON_SERVICE, probe_daemon_service, apply_daemon_service),
     Step(StepId.DAEMON_RUNNING, probe_daemon_running, apply_daemon_running, critical=False),
-    Step(StepId.SINGLE_INSTANCE, probe_single_instance, _nothing),
-    Step(StepId.PROJECT_REGISTERED, probe_project_registered, _nothing, critical=False),
-    Step(StepId.PROJECT_LAYOUT, probe_project_layout, _nothing, critical=False),
-    Step(StepId.GITIGNORE, probe_gitignore, _nothing, critical=False),
+    Step(StepId.SINGLE_INSTANCE, probe_single_instance),
+    Step(StepId.PROJECT_REGISTERED, probe_project_registered, critical=False),
+    Step(StepId.PROJECT_LAYOUT, probe_project_layout, critical=False),
+    Step(StepId.GITIGNORE, probe_gitignore, critical=False),
     Step(StepId.MCP_CONNECTION, probe_mcp_connection, apply_mcp_connection, critical=False),
-    Step(StepId.MCP_HEALTH, probe_mcp_health, _nothing, critical=False),
-    Step(StepId.MIGRATIONS_VALID, probe_migrations, _nothing, critical=False),
-    Step(StepId.INITIAL_INDEX, probe_initial_index, _nothing, critical=False),
-    Step(StepId.SERENA_DETECTION, probe_serena, _nothing, critical=False),
+    Step(StepId.MCP_HEALTH, probe_mcp_health, critical=False),
+    Step(StepId.MIGRATIONS_VALID, probe_migrations, critical=False),
+    Step(StepId.INITIAL_INDEX, probe_initial_index, critical=False),
+    Step(StepId.SERENA_DETECTION, probe_serena, critical=False),
 )

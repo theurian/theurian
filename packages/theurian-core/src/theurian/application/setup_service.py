@@ -156,6 +156,26 @@ class SetupService:
                 applied.append(planned.applied(StepOutcome.NOT_ATTEMPTED))
                 continue
 
+            action = definition.apply
+            if action is None:
+                # A step that only describes. §6.2 rows 11-13 report what
+                # `theurian init` and `theurian project register` would do and
+                # setup performs neither, so there is nothing here to record as
+                # done. This branch used to be reachable only through the one
+                # below, which tests ``would_change`` -- and ``would_change`` is
+                # ``MISSING`` and nothing else, so a report-only step that found
+                # something missing fell through to the apply, called a
+                # do-nothing function, and was recorded ``CHANGED`` with its
+                # paths added to `changed_paths` and an "applied" line in the
+                # journal. Five files, four of which no code writes, named as
+                # modified by every run including the second (FR-L2).
+                #
+                # What the user is told does not shrink: the step keeps its
+                # ``MISSING`` status and its ``action``, and `_verify` re-probes
+                # it, warns, and ends the run DEGRADED exactly as before.
+                applied.append(planned.applied(StepOutcome.UNCHANGED))
+                continue
+
             if not planned.would_change:
                 # `would_change` is ``MISSING`` and nothing else, so a
                 # ``CONFLICTING`` step is recorded ``UNCHANGED`` and never
@@ -169,7 +189,7 @@ class SetupService:
                 continue
 
             try:
-                definition.apply(self._context)
+                action(self._context)
             except Exception as exc:  # reported in the step, not propagated
                 reason = f"{type(exc).__name__}: {exc}"
                 applied.append(planned.applied(StepOutcome.FAILED, reason))

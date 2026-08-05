@@ -19,7 +19,7 @@ from fakes.setup import FakeMcpConfig, FakeService
 from theurian.application.project_service import ProjectRegistry
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
-from theurian.application.setup_steps import probe_project_registered
+from theurian.application.setup_steps import STEPS, probe_project_registered
 from theurian.domain.setup import SetupState, StepId, StepOutcome, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
@@ -457,6 +457,183 @@ def test_an_undecidable_registration_halts_the_run_before_anything_is_created(
     assert not context.env_file.exists()
     assert isinstance(context.service, FakeService) and not context.service.installed
     assert context.mcp_config.installed_entry() is None
+
+
+# -- Steps setup reports but does not perform (§6.2 rows 11-13) --------------
+#
+# Three steps probe something setup never acts on: whether the repository is
+# registered, whether `.theurian/` has its directories, and whether `.gitignore`
+# covers the derived artifacts. `theurian project register` does the first and
+# `theurian init` the other two; setup only says they are undone, and each one's
+# `action` names the command.
+#
+# Reaching any of that needs `project_root` set, which the module's `context`
+# fixture leaves at None -- so every test above them ran with all three reporting
+# NOT_APPLICABLE, and the idempotence assertion at the top of this file was green
+# against a machine where the branch had never executed. The blind fixture stays:
+# outside a Git working tree is a real way to run setup, and the machine-wide
+# steps behave the same either way.
+
+
+@pytest.fixture
+def in_a_repository(tmp_path: Path) -> SetupContext:
+    """Nothing set up yet, and setup invoked from inside a repository."""
+    return _with(tmp_path, project_root=_repository(tmp_path))
+
+
+#: §6.2 rows 11-13. Written out rather than derived from ``STEPS``, so that the
+#: tests below cannot quietly come to assert nothing; the population itself is
+#: checked against ``STEPS`` by the first test.
+REPORT_ONLY = (StepId.PROJECT_REGISTERED, StepId.PROJECT_LAYOUT, StepId.GITIGNORE)
+
+
+def _paths_setup_never_writes(context: SetupContext) -> set[str]:
+    """The five files the three report-only steps used to claim.
+
+    Spelled out rather than read off the plan. Reading the plan would make every
+    assertion below vacuous the moment the plan stopped naming them, which is
+    precisely the change these tests exist to hold in place.
+    """
+    root = context.project_root
+    assert root is not None
+    return {
+        str(ProjectRegistry.default(context.data_dir).path),
+        str(root / ".gitignore"),
+        *(str(root / ".theurian" / name) for name in ("migrations", "knowledge", "state")),
+    }
+
+
+def test_the_steps_that_report_without_acting_are_the_three_expected_ones(
+    in_a_repository: SetupContext,
+) -> None:
+    """A fourth one would be tested by nothing below until it is added here.
+
+    Measured on a cold machine rather than asserted statically: several steps
+    carry no action -- platform, single-instance, migrations-valid -- and what
+    distinguishes these three is that they are also the ones that report MISSING,
+    which is the only status that used to reach the apply branch.
+    """
+    plan = _service(in_a_repository).plan()
+    actionless = {step.step_id for step in STEPS if step.apply is None}
+
+    reported = {s.step_id for s in plan.steps if s.would_change and s.step_id in actionless}
+
+    assert reported == set(REPORT_ONLY)
+
+
+def test_a_step_setup_does_not_perform_is_never_reported_as_changed(
+    in_a_repository: SetupContext,
+) -> None:
+    """The defect this section was written for.
+
+    `would_change` is MISSING and nothing else, so a step with no action reached
+    the apply branch, called nothing, and was recorded CHANGED unconditionally.
+    """
+    report = _service(in_a_repository).run()
+
+    for step_id in REPORT_ONLY:
+        step = report.step(step_id)
+        assert step is not None
+        assert step.status is StepStatus.MISSING, "the fixture has to reach the branch"
+        assert step.outcome is not StepOutcome.CHANGED, (
+            f"{step_id.value} has no action; nothing about it changed"
+        )
+
+
+def test_a_file_setup_never_writes_is_not_listed_among_the_files_it_changed(
+    in_a_repository: SetupContext,
+) -> None:
+    """Four of the five were files that do not exist when the run ends.
+
+    Asserted on absence from the list *and* on absence from the disk, because
+    either alone is weak: a run that created them would satisfy the second, and a
+    run that silently dropped a real path would satisfy the first.
+    """
+    report = _service(in_a_repository).run()
+
+    phantom = _paths_setup_never_writes(in_a_repository)
+    assert not phantom & set(report.changed_paths), "setup did not write these"
+    assert not any(Path(p).exists() for p in phantom), "and nothing else wrote them either"
+
+
+def test_a_step_setup_does_not_perform_is_not_journalled_as_applied(
+    in_a_repository: SetupContext,
+) -> None:
+    """§6.4. The journal exists so a crash mid-run can be repaired afterwards.
+
+    An `applied` line for a step that ran nothing sends whoever reads it looking
+    for an inverse of an action that was never taken.
+    """
+    service = _service(in_a_repository)
+    service.run()
+
+    journalled = {
+        json.loads(line)["step"]
+        for line in service.journal_path.read_text().splitlines()
+        if line.strip()
+    }
+
+    assert not journalled & {step_id.value for step_id in REPORT_ONLY}
+
+
+def test_a_second_run_inside_a_repository_changes_nothing(
+    in_a_repository: SetupContext,
+) -> None:
+    """FR-L2 again, on the fixture that reaches rows 11-13.
+
+    The assertion at the top of this file is the same one, and it was green
+    because all three steps reported NOT_APPLICABLE there. A second run named the
+    same five files as the first.
+    """
+    first = _service(in_a_repository).run()
+    assert first.succeeded, first.warnings
+
+    second = _service(in_a_repository).run()
+
+    assert second.succeeded, second.warnings
+    assert second.changed_paths == (), "a converged machine must report no changes"
+    assert all(step.outcome is not StepOutcome.CHANGED for step in second.steps), (
+        "no step may change anything on a second run"
+    )
+
+
+def test_a_dry_run_inside_a_repository_still_creates_nothing(
+    in_a_repository: SetupContext,
+) -> None:
+    """The seeing half of `test_a_dry_run_changes_nothing_at_all`.
+
+    That one cannot see a probe in rows 11-13 that writes, because with
+    `project_root` at None none of them gets past its first branch. This one
+    checks the data directory *and* the repository, since the registry lives
+    under the first and the layout under the second.
+    """
+    report = _service(in_a_repository).run(SetupRequest(dry_run=True))
+
+    root = in_a_repository.project_root
+    assert report.state is SetupState.PLAN_BUILT
+    assert report.changed_paths == ()
+    assert not in_a_repository.data_dir.exists(), "a probe may not write while planning"
+    assert root is not None and not (root / ".theurian").exists()
+
+
+def test_setup_still_reports_what_it_declined_to_do(in_a_repository: SetupContext) -> None:
+    """Not doing the step is the design; not saying so would be a worse defect.
+
+    The point of probing rows 11-13 at all is the sentence a person reads, so the
+    fix has to leave the status, the remedy and the warning intact -- a run that
+    silently recorded UNCHANGED and said nothing would pass every assertion above
+    and help nobody.
+    """
+    report = _service(in_a_repository).run()
+
+    assert report.state is SetupState.DEGRADED, "an unperformed step is a warning, not silence"
+    for step_id in REPORT_ONLY:
+        step = report.step(step_id)
+        assert step is not None
+        assert step.action, "a MISSING step has to say what would fix it"
+        assert any(step_id.value in warning for warning in report.warnings)
+    registered = report.step(StepId.PROJECT_REGISTERED)
+    assert registered is not None and "theurian project register" in registered.action
 
 
 # -- Degrading rather than failing (§6.1) ------------------------------------
