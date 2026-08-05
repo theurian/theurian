@@ -83,7 +83,7 @@ the `//` comments did not.
     "ageDays": 21                // counted at query time, so this one keeps rising
   },
 
-  "sourceAnchors": [{            // provider and sourceUri always; the rest when the source pins them
+  "sourceAnchors": [{            // all seven keys always; null where the source pins nothing
     "provider": "git",
     "sourceUri": "git://local/docs/adr/0031-service-auth-policy.md",
     "repository": "local",
@@ -150,7 +150,7 @@ alternative and the reasoning against it are written down.
 | :-- | :-- |
 | **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. An unreviewed draft can never be mistaken for a team decision. |
 | **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent tool exists today, and when one does it will emit a proposal file a human reviews and merges. Resolved review threads become *candidates* when Milestone 7 ingests them; the direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
-| **Evidence-backed retrieval** | Every result carries the anchors its revision declares. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
+| **Evidence-backed retrieval** | Every result carries its revision's provenance: provider and URI, plus repository, commit, file and line range where the source pins them. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
 
 Specification traceability — requirement → spec → ADR → PR → review → code →
