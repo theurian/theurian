@@ -84,7 +84,7 @@ jobs:
       - run: uv sync --frozen
       - name: Generate a CycloneDX SBOM
         run: |
-          uv run --with cyclonedx-bom cyclonedx-py environment .venv \
+          uv run --with cyclonedx-bom==7.3.1 cyclonedx-py environment .venv \
             --output-format json --output-file sbom.json
 
       - name: The SBOM must actually contain components
@@ -111,7 +111,7 @@ jobs:
       - run: uv sync --frozen
       - name: No copyleft dependencies
         run: |
-          uv run --with pip-licenses pip-licenses --format=json > licenses.json
+          uv run --with pip-licenses==5.5.5 pip-licenses --format=json > licenses.json
           uv run python - <<'PY'
           import json, sys, pathlib
           DENIED = {"GPL", "AGPL", "SSPL"}
@@ -168,4 +168,36 @@ jobs:
                   print(f"  {b}")
               sys.exit(1)
           print("All dependencies are pinned.")
+          PY
+
+      # The check above reads pyproject.toml, so it cannot see a tool a
+      # workflow installs on the fly. Both of this repository's supply-chain
+      # records — the SBOM and the licence report — were produced by exactly
+      # such a tool, floating, while this job reported green.
+      - name: Every tool a workflow installs uses ==
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          # A spec carrying `==` anywhere is pinned, including one whose
+          # version comes from an env var.
+          INVOCATION = re.compile(
+              r"(?:--with|--from)[=\s]+[\"']?([A-Za-z0-9._-]+(?:\[[^\]]+\])?[^\s\"']*)"
+          )
+          # Prose describing this check would otherwise trip it. Shell and YAML
+          # comments both start at an unquoted `#`.
+          COMMENT = re.compile(r"(^|\s)#.*$")
+
+          bad = []
+          for path in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                  for spec in INVOCATION.findall(COMMENT.sub("", line)):
+                      if "==" not in spec:
+                          bad.append(f"{path}:{lineno} {spec}")
+          if bad:
+              print("::error::Tools installed by a workflow must be pinned with == (ADR-0014):")
+              for b in bad:
+                  print(f"  {b}")
+              sys.exit(1)
+          print("All workflow tool invocations are pinned.")
           PY
