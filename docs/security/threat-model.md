@@ -571,15 +571,95 @@ artifact; and attaches the checksums and the SBOM to the GitHub release. **Every
 one of these acts on production. None acts on installation**, which is the
 residual below.
 
-**The tag-signature step is not among them.** The workflow requires a signature
-block on the tag object, and the runner has no keyring, so validity is never
-established — the step says as much itself. Against this threat that leaves
-nothing: T-16's actor is one who can get a release published, and a check run
-over a tag that same actor authored cannot separate them from a maintainer. What
-it buys is catching a maintainer who forgot `-s`. Verifying a tag against the
-maintainer keyring stays a human step (`release.md` §4).
+**The tag-signature step joined them, and its reach is narrower than its name.**
+The workflow assembles a trust root per run from the public keys GitHub holds for
+the accounts named in `RELEASE_SIGNERS` — OpenPGP keys into a throwaway keyring,
+SSH signing keys into an allowed-signers file — and runs `git verify-tag` against
+it. `git verify-tag` selects its verifier from the signature, so either signing
+format works. An empty trust root is refused by name, because a keyring holding
+no keys rejects every tag and would otherwise blame the tag for it. The step also
+proves itself before it judges the release tag: four probe tags built in the
+runner's temp directory must be rejected and one genuinely signed tag accepted,
+all through the same function that then judges the release tag — "reject
+everything" would satisfy the first four alone.
 
-> **Corrected in review of this change, which overstated the check twice.** The
+**Validity is established.** Three classes the previous check let through are now
+rejected, a fourth it rejected for the wrong reason is rejected for the right
+one, and the one class it did catch still is:
+
+| Tag | Previous check | Now |
+| :-- | :-- | :-- |
+| `git tag -a` with a signature banner pasted into the message, PGP spelling | accepted | rejected |
+| the same, SSH spelling | accepted | rejected |
+| `git tag -s` with a key registered to nobody in `RELEASE_SIGNERS` | accepted | rejected |
+| a lightweight tag | reported as unsigned for the wrong reason: `git cat-file tag` aborts on it with `fatal: … bad file`, exit 128, which the `if !` swallowed | rejected |
+| `git tag -a`, plain message — a forgotten `-s` | rejected | rejected |
+
+**Two things it still does not establish, and T-16's actor turns on both.**
+
+1. **The signing key is not Theurian's to hold.** The trust root is fetched from
+   GitHub at run time, so the control is exactly as strong as the GitHub account
+   security of every account in `RELEASE_SIGNERS`. Someone who can add a signing
+   key to a listed account is a release signer from the next run, and nothing in
+   this repository would record it.
+2. **The push is not bound at all.** A `push` to `refs/tags` runs the workflow
+   from the tip commit pushed to the ref, and GitHub documents that this
+   "includes workflows that are not merged into the default branch"
+   ([events that trigger workflows, `push`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)).
+   Whoever chooses the tagged commit therefore chooses this workflow file too,
+   including a version of it with the verification removed. Closing that takes a
+   tag ruleset or a required reviewer on the `pypi` environment, and as of this
+   writing `gh api repos/theurian/theurian/rulesets` returns `[]` and the `pypi`
+   environment has not been created (it is listed as one-time setup still owed in
+   [`release.md`](../contributing/release.md)).
+
+So the honest reading is **release hygiene that binds the signer** — every
+published `core-v*` tag carries a signature that verifies against a named account,
+and a maintainer who forgets `-s` or signs with an unregistered key is stopped —
+not a barrier against someone who can push a tag. Nothing inside a workflow file
+can be that barrier.
+
+**`RELEASE_SIGNERS` is release authority spelled as a workflow env.** It holds
+`utchy` today. Adding an account to it grants that account the ability to cut a
+release, so an edit to that line is an authorization change and is reviewed as
+one; the workflow says so at the declaration. It carries the residual in (1)
+with it: the grant is to the *account*, and the keys it resolves to are whatever
+that account has registered on GitHub when the release runs.
+
+**None of this touches the residual below.** The step establishes who signed the
+tag, not what a user installs.
+
+> **Amended after [#41](https://github.com/theurian/theurian/pull/41), which
+> replaced the check rather than tightening it.**
+>
+> **What this entry said.** "The workflow requires a signature block on the tag
+> object, and the runner has no keyring, so validity is never established …
+> Against this threat that leaves nothing … Verifying a tag against the
+> maintainer keyring stays a human step (`release.md` §4)." The correction below
+> predicted that the fix would be a narrower grep and that this paragraph would
+> survive it unchanged.
+>
+> **What implementing it revealed.** The narrower grep does not work. A tag object
+> appends its signature to the message with no delimiter, so git locates the
+> signature by scanning for the banner — `git for-each-ref
+> --format='%(contents:signature)'`, the plumbing built for exactly this, returns
+> the forged block verbatim on the tag described below. No syntactic test
+> separates a signature from a message shaped like one. That left verification as
+> the only option, and verification needs a keyring, which the paragraph had
+> assumed away.
+>
+> **Why the new answer is better.** "The runner has no keyring" was a premise, not
+> a constraint. GitHub already publishes the signing keys registered to an
+> account, so a trust root can be assembled per run with no key material living
+> in this repository and no maintainer holding one. The prediction failed in both
+> directions: validity is now established, and the human step this entry deferred
+> to did not exist — `release.md` §4 was `git tag -s` and a push, with no keyring
+> check in it. Both are corrected here; §4 now states the precondition CI
+> enforces.
+
+> **Corrected in review of this change, which overstated the check twice.**
+> *(Kept as written. "The paragraph above" in its last sentence means the text
+> quoted in the amendment above, not the paragraph now standing there.)* The
 > entry first listed the step among the controls, then narrowed it to "refuses a
 > tag carrying no signature block — presence, not validity". That is still
 > stronger than the code: the check greps the whole output of `git cat-file tag`,

@@ -71,6 +71,30 @@ git push origin release/core-0.2.0 --tags
 Core tags are `core-v*`; plugin tags are `plugin-v*`. Two release trains in one
 repository need unambiguous tag namespaces.
 
+**`-s` must sign with a key GitHub holds for an account in `RELEASE_SIGNERS`.**
+That list is declared at the top of
+[`release-core.yml`](../../.github/workflows/release-core.yml) and holds `utchy`
+today. CI assembles a trust root from those accounts' registered keys and runs
+`git verify-tag` against it, so a locally valid signature made with a key that is
+not on the account fails the release. Either signing format works — `git
+verify-tag` picks the verifier from the signature.
+
+There is no human verification step to pair with this. CI checks the same thing a
+maintainer would, against the same keys, so a second pass by hand would be
+ceremony. What is worth doing before tagging is confirming the key you are about
+to sign with is the one GitHub has, because that is the failure this catches:
+
+```sh
+# SSH signing (gpg.format=ssh), with user.signingkey a path to the .pub file.
+# Prints "registered" or "NOT registered".
+gh api users/utchy/ssh_signing_keys --jq '.[].key' \
+  | grep -qxF "$(cut -d' ' -f1,2 "$(git config --get user.signingkey)")" \
+  && echo registered || echo "NOT registered"
+
+# OpenPGP signing. The key ID you sign with must appear in this list.
+gh api users/utchy/gpg_keys --jq '.[].key_id'
+```
+
 **Pushing the tag is the release.** `.github/workflows/release-core.yml` takes
 over from here; there is no manual publish step and no maintainer holds a PyPI
 credential.
@@ -82,7 +106,8 @@ credential.
 1. runs the full quality gate — a tag push does not trigger `core.yml`, so
    without this a red commit could be tagged and published;
 2. refuses the tag unless `core-v<version>` matches `pyproject.toml`, the
-   installed package reports the same version, the tag carries a signature, and
+   installed package reports the same version, the tag's signature **verifies**
+   against a key registered to an account in `RELEASE_SIGNERS`, and
    `CHANGELOG.md` has a non-empty section for it;
 3. builds, then installs the wheel into a clean environment and runs
    `theurian version --json` against it;
@@ -219,6 +244,10 @@ git push origin --tags
 
 Then update the marketplace entry.
 
+Nothing verifies this signature. No workflow triggers on `plugin-v*` —
+`release-plugin.yml` does not exist yet — so `-s` here is a convention, not a
+gate, and the `RELEASE_SIGNERS` trust root above does not reach this train.
+
 ## Compatibility matrix
 
 Maintain this in the repository README as releases accumulate:
@@ -241,9 +270,12 @@ not so they are checked twice.
 - [ ] *(CI)* CHANGELOG has a non-empty section for the version
 - [ ] CHANGELOG written for an upgrade decision, not just present
 - [ ] Protocol change, if any, called out
-- [ ] *(CI)* Tag is `core-v*` and carries a signature
-- [ ] Signature verifies against the maintainer keyring — CI has no keyring and
-      checks only that a signature is present
+- [ ] *(CI)* Tag is `core-v*` and its signature **verifies** against a key
+      registered to an account in `RELEASE_SIGNERS`
+- [ ] The key you are signing with is registered on that account (§4) — this is
+      the precondition, and the only half of the old "verify against the
+      maintainer keyring" item still left to a human. CI does the verifying now;
+      it did not when that item was written
 - [ ] *(CI)* Wheel installs into a clean environment and runs
 - [ ] *(CI)* Checksums and SBOM published
 
@@ -253,7 +285,8 @@ not so they are checked twice.
 - [ ] `plugin.json` version and `compatibility.yaml` agree
 - [ ] The declared range matches the Core actually tested
 - [ ] CHANGELOG updated
-- [ ] Tagged `plugin-v*`, signed
+- [ ] Tagged `plugin-v*`, signed — by hand; no workflow triggers on `plugin-v*`,
+      so nothing checks this
 - [ ] Marketplace entry updated
 
 ## Hotfixes
