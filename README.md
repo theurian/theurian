@@ -43,9 +43,9 @@ specification nobody has opened in six months.
 None of it is reachable, so the agent guesses — and often guesses something the
 team explicitly rejected.
 
-Grep does not help: the answer is a decision, not a string. A vector search over
-Markdown does not help either. It returns text, with no way to tell an
-unreviewed draft from a ruling the team actually made.
+Grep does not help: the answer is a decision, not a string. Nor does a vector
+search over Markdown, which returns text with no way to tell an unreviewed
+draft from a ruling the team actually made.
 
 </td><td valign="top">
 
@@ -55,8 +55,7 @@ anchor to check the claim against.
 
 An unreviewed draft can never come back labelled as a team decision — because
 **no MCP tool in Theurian can write approved knowledge.** Not behind a flag, not
-behind a permission. There is no write-intent tool at all yet; when they arrive
-they will emit a proposal for a human to merge.
+behind a permission.
 
 </td></tr>
 </table>
@@ -137,8 +136,7 @@ for the first eight of them and drops the rest, and no field says so.
 
 An item whose own status is `rejected` is not returned, under any flag: a
 rejected revision is where the secret that caused the rejection still lives.
-What comes back is the approved decision, which is where the rejected
-alternative and the reasoning against it are written down.
+The approved decision that rejected it is what comes back.
 
 > Memory is what your agent remembers. Governance is what your team decided.
 > Theurian is the second one — not a Markdown search tool, and not a
@@ -148,7 +146,7 @@ alternative and the reasoning against it are written down.
 
 |  |  |
 | :-- | :-- |
-| **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. An unreviewed draft can never be mistaken for a team decision. |
+| **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. |
 | **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent tool exists today, and when one does it will emit a proposal file a human reviews and merges. Resolved review threads become *candidates* when Milestone 7 ingests them; the direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries its revision's provenance: provider and URI, plus repository, commit, file and line range where the source pins them. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
@@ -302,8 +300,7 @@ With Claude Code:
 ```
 
 Installing the plugin does nothing on its own — no daemon starts, no OS service
-is registered. `/theurian:setup` is the only command that installs anything, it
-shows a plan first, and running it twice changes nothing.
+is registered. `/theurian:setup` is the only command that installs anything.
 
 `tests/e2e/` drives the real daemon over the real endpoint, but no test in this
 repository starts the plugin inside Claude Code. That side is held by four
@@ -454,7 +451,7 @@ found beside the version it expects.
 | :-- | :-- |
 | **Nothing leaves your machine** | Loopback only, bearer token at mode 0600, no telemetry, no account, no API key. |
 | **Indexed text is labelled as data, not as instructions** | Every result carries `untrusted-knowledge`, `mayContainInstructions`, and `executable`. **Theurian labels; it does not enforce.** Acting on the label is the calling agent's responsibility, and no MCP server can take it over (T-3). |
-| **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. A citation to a revision id means the same thing forever. |
+| **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. |
 | **Apache-2.0, DCO, no CLA** | Core cannot be relicensed away from Apache-2.0 without every contributor's agreement. ([ADR-0015](docs/adr/0015-dco-over-cla.md)) |
 | **Artifact verification is not implemented** | There is no published release manifest to check against, so setup reports its `artifact-integrity` step as `not-applicable` rather than claiming a check it did not make — `theurian setup --dry-run` prints it, and installs nothing. Checksums, a CycloneDX SBOM, and a step that aborts on a mismatch arrive with the first tagged release (T-16). |
 | **Cross-sensitivity summaries are prevented by design, and nothing summarizes yet** | A RAPTOR node's tree identity includes project, tenant, sensitivity, ACL group, and namespace, so a node combining two levels has no tree to belong to — structural rather than a check someone could forget. No summary is built today: `system.capabilities` reports `raptor: false`, and the forest is Milestone 6. ([ADR-0008](docs/adr/0008-raptor-forest.md)) |
@@ -464,9 +461,8 @@ yet, and grades it.
 
 ## Status
 
-**Alpha, Milestone 5 of 8.** The canonical store, ingestion, the daemon, setup,
-and ranked retrieval work today. It is usable against real repositories, and not
-yet stable enough to promise upgrade paths.
+**Alpha, Milestone 5 of 8.** Usable against real repositories, and not yet
+stable enough to promise upgrade paths.
 
 | Milestone | Scope | Status |
 | :-- | :-- | :-- |
