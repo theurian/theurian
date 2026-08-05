@@ -72,15 +72,15 @@ class WriteLockTimeoutError(TheurianError):
 class StateDatabaseUnreadableError(TheurianError):
     """A stored value in this state database is not the value it claims to be.
 
-    **Carries the failing exception's type and never its message, which is the
-    whole of this class.** Every converter the store reaches for puts the value
-    it would not accept into the error it raises: `datetime.fromisoformat` quotes
-    the string, each of the six enums quotes the member it could not find, and
-    every domain value object -- `MediaType`, `ContentHash`, `ItemId` -- renders
-    its argument with ``!r``. Under corruption that value is whatever bytes were
-    on the page, and the canonical store holds *every* revision, `draft` and
-    `rejected` included (ADR-0006). So the message a caller receives had to stop
-    being a function of the cell.
+    **Carries the failing exception's type and never its message.** Every
+    converter the store reaches for puts the value it would not accept into the
+    error it raises: `datetime.fromisoformat` quotes the string, each of the six
+    enums quotes the member it could not find, and every domain value object --
+    `MediaType`, `ContentHash`, `ItemId` -- renders its argument with ``!r``.
+    Under corruption that value is whatever bytes were on the page, and the
+    canonical store holds *every* revision, `draft` and `rejected` included
+    (ADR-0006). So the message a caller receives had to stop being a function of
+    the cell.
 
     Measured through ``build_server(registry).call_tool`` against a database
     built by the real CLI: overwriting any of `created_at`, `valid_from`,
@@ -88,6 +88,31 @@ class StateDatabaseUnreadableError(TheurianError):
     through both ``knowledge.get`` and ``knowledge.search`` -- eight of eight,
     with the driver's own text arriving as ``ToolError: Error executing tool
     knowledge.get: Invalid isoformat string: '<the cell>'``.
+
+    **All of that is true of this exception and false of the class it belongs
+    to.** Keeping the cell out of one message is not withholding it. The cause
+    travels on ``__cause__`` by design, and Typer renders the whole chain, so
+    until `f8d6e5d` the CLI printed one line below this message exactly what the
+    constructor had just withheld -- six (command, column) positions: ``migrate
+    status`` and ``migrate apply`` over `migration_history.migration_id`,
+    `migration_history.checksum` and `schema_metadata.schema_version`. The
+    boundary is the CLI's ``--json`` surface, where the message is the only thing
+    rendered, and not this constructor. `c7d59b4` closed the same shape one site
+    further out, at a second store session opened outside ``_run_build``'s
+    conversion and reachable only by a build that indexed zero chunks.
+
+    **The closure condition, stated so it can be checked: no ``TheurianError``
+    escapes a ``--json`` command.** A property over all of them, not over the two
+    that leaked -- enumerating the leaks is what left the second site standing
+    behind the first. Checked over damaged-cell inputs in
+    ``tests/integration/test_canonical_store_corruption.py``:
+    `test_every_shipped_command_is_swept_or_excluded_with_a_reason` keeps the
+    swept population a partition of the shipped app rather than a list someone
+    maintains, `test_every_cli_failure_over_a_damaged_database_carries_a_remedy`
+    goes RED on the missing `remedy` field an escape leaves behind -- a Rich
+    traceback and no JSON document at all -- and
+    `test_exactly_these_commands_notice_a_single_damaged_cell` stops both from
+    passing vacuously.
 
     **The type name is the whole detail, including for `sqlite3`'s own errors.**
     :class:`~theurian.infrastructure.sqlite.index_store.IndexUnreadableError`
@@ -101,7 +126,10 @@ class StateDatabaseUnreadableError(TheurianError):
     enumeration replaces it.
 
     The cause travels by ``raise ... from``, so whoever holds the traceback still
-    has the real exception with its real message.
+    has the real exception with its real message. That is what pays for how wide
+    :func:`_prepare` catches: a genuine programming error inside the guarded block
+    now reports as a damaged database, and ``__cause__`` is the only thing left
+    that names it correctly.
 
     Lives here rather than beside the store that raises it most, because opening
     a connection interprets this file too and :func:`write_transaction` opens one
