@@ -20,8 +20,15 @@ Installers for the platforms Theurian supports at 1.0.
    different contents is backed up and the difference reported (SEC-18).
 4. **Every created path is enumerable** by `theurian uninstall --dry-run`
    before anything is deleted (NFR-12).
-5. **Artifacts carry SHA-256 checksums**, verified before installation. Setup
-   aborts rather than installing something it could not verify (T-16).
+5. **Release artifacts carry SHA-256 checksums and a CycloneDX SBOM**, published
+   with every release by
+   [`release-core.yml`](../.github/workflows/release-core.yml) (OSS-7, OSS-11).
+   **Nothing verifies them at install time.** `theurian setup`'s
+   artifact-integrity step returns `not-applicable` without checking anything, so
+   no packaging target aborts on a mismatch today. OSS-11 still requires that it
+   will; T-16 is open on that half. See
+   [the release process](../docs/contributing/release.md) for what is published
+   and what is not consumed.
 
 ## Layout
 
