@@ -259,8 +259,8 @@ Every step is a `SetupStep` with an independent tri-state probe result:
 | # | Step | Probe | Action when `Missing` | Action when `Conflicting` |
 | :-- | :-- | :-- | :-- | :-- |
 | 1 | Platform check | `uname` / `platform` | — | abort with a clear message |
-| 2 | Core present | `theurian --version` on `PATH` | install (explicit user action) | version mismatch → offer `upgrade` |
-| 3 | Artifact integrity | SHA-256 vs the release manifest | verify before install | abort; never install an unverified artifact |
+| 2 | Core present | `theurian --version` on `PATH` | install (explicit user action) — **not implemented, see below** | version mismatch → offer `upgrade` |
+| 3 | Artifact integrity — **not implemented, see below** | SHA-256 vs the release manifest | verify before install | abort; never install an unverified artifact |
 | 4 | Data directory | `~/.theurian` exists, mode 0700 | `mkdir -p`, `chmod 700` | tighten mode, report the change |
 | 5 | Token | token exists and is ≥ 32 bytes | generate via CSPRNG | reuse; never regenerate silently |
 | 6 | Token storage | file mode 0600, or Keychain entry | write | `chmod`, report |
@@ -279,15 +279,25 @@ Every step is a `SetupStep` with an independent tri-state probe result:
 | 19 | Report | — | print the changed-files list | — |
 
 **Rows 2 and 3 are required, not implemented.** Setup neither installs Core nor
-verifies an artifact. `probe_core` reports `Satisfied` when a `theurian`
-executable is already on the path and `Conflicting` when it is not — there is no
-`Missing` outcome and no install — and `probe_artifact_integrity` returns
-`NotApplicable` unconditionally rather than reporting a check it cannot perform.
+verifies an artifact.
+
+- **Row 2 has no `Missing` branch and no install.** `probe_core` reports
+  `Satisfied` or `Conflicting`, and in practice reports `Satisfied`: the
+  executable it checks comes from `_executable()` in `cli/setup_commands.py`,
+  which falls back to `sys.argv[0]` — the program currently running — so
+  `Conflicting` needs an `argv[0]` that does not resolve. Setup cannot report
+  that Core is missing, because setup is Core.
+- **Row 3 performs no check.** `probe_artifact_integrity` returns
+  `NotApplicable` unconditionally rather than claiming one it cannot make, and
+  there is no download for it to check against: the user installs Core with
+  `uv tool install` or `pipx` before setup runs at all.
+
 Both rows stand as requirements. Row 3 is the setup-step half of T-16, which
 §19's threat table maps to OSS-7, OSS-11 and this row; OSS-11 itself — artifacts
-carry checksums — ships. The gap, and why closing it is a change to how Theurian
-is obtained rather than a probe added here, is recorded under
-[T-16](../security/threat-model.md).
+carry checksums — ships. The gap is filed as
+[#39](https://github.com/theurian/theurian/issues/39), and why closing it is a
+change to how Theurian is obtained rather than a probe added here is recorded
+under [T-16](../security/threat-model.md).
 
 ### 6.3 Idempotence contract
 

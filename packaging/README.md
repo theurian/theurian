@@ -23,10 +23,14 @@ Installers for the platforms Theurian supports at 1.0.
 5. **Release artifacts carry SHA-256 checksums and a CycloneDX SBOM**, published
    with every release by
    [`release-core.yml`](../.github/workflows/release-core.yml) (OSS-7, OSS-11).
-   **Nothing verifies them at install time.** `theurian setup`'s
-   artifact-integrity step returns `not-applicable` without checking anything, so
-   no packaging target aborts on a mismatch today. OSS-11 still requires that it
-   will; T-16 is open on that half. See
+   That much is satisfied — OSS-11 asks that artifacts carry checksums, not that
+   anything checks them. **Nothing verifies them at install time.** `theurian
+   setup`'s artifact-integrity step returns `not-applicable` without checking
+   anything, so no packaging target aborts on a mismatch today. The unmet half is
+   setup step 3 in
+   [§6.2 of the requirements](../docs/architecture/requirements-analysis.md);
+   T-16 is open on it, filed as
+   [#39](https://github.com/theurian/theurian/issues/39). See
    [the release process](../docs/contributing/release.md) for what is published
    and what is not consumed.
 

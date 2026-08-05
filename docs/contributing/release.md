@@ -117,6 +117,9 @@ on a machine with a release installed or without one:
 }
 ```
 
+Dedented for reading: in real output this is one element of the `steps` array,
+so its fields sit at six spaces rather than two. The values are byte-identical.
+
 Two things are missing, not one. There is no code that hashes an artifact and
 compares it to `SHA256SUMS`, and there is no point in setup where such code would
 run: setup does not download or install Core. It checks that a `theurian`
