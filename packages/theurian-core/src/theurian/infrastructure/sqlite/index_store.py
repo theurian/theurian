@@ -292,32 +292,58 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 #: wrong answers. "Rebuild your index" costs seconds and loses nothing
 #: (ADR-0004); a traceback at an agent names no remedy and repeats forever.
 #:
-#: **The key holds beyond this file, and no member of it is now open.** Re-drawn
-#: in `ef325c9`, it has two halves divided by who owns the error contract:
+#: **The key holds beyond this file. Where to ask it is a separate question, and
+#: every statement of that has so far been too small.** Re-drawn in `ef325c9`
+#: over two halves divided by who owns the error contract — the module containing
+#: the read (the state pointer, the registry, the ingestion manifest), and a port
+#: adapter under ADR-0003 (this store, and
+#: :class:`~theurian.infrastructure.sqlite.store.SqliteCanonicalStore`) — that
+#: statement said no member was open. Three were, and no reading of this comment
+#: found any of them:
 #:
-#: - the module containing the read — the state pointer, the registry and the
-#:   ingestion manifest;
-#: - a port adapter under ADR-0003 — this store, and
-#:   :class:`~theurian.infrastructure.sqlite.store.SqliteCanonicalStore`.
+#: - **the canonical half is not one module.** Opening a connection interprets
+#:   the file, and `write_transaction` opens one without going through the store
+#:   at all, so `int()` over `schema_metadata.schema_version` in
+#:   :func:`~theurian.infrastructure.sqlite.connection._assert_schema_version`
+#:   sat outside every guard on the write path and published that cell from
+#:   `theurian migrate status` and `theurian migrate apply`. Closed in `3893ab2`
+#:   by guarding :func:`~theurian.infrastructure.sqlite.connection._prepare`,
+#:   which is the one function both openers call;
+#: - **withholding a cell from a message is not withholding it.** The cause
+#:   travels on ``__cause__`` by design and Typer renders the chain, so the same
+#:   two commands published from six positions what the guard had just withheld.
+#:   That is a *different* class with a different root cause; it is named in
+#:   :class:`~theurian.infrastructure.sqlite.connection.StateDatabaseUnreadableError`
+#:   and closed at the CLI's ``--json`` boundary, not here.
+#: - **a sweep reaches only the branches its corpus takes.** `_refuse_if_empty`
+#:   in `cli/index_commands.py` opens a second store session, outside the
+#:   conversion `_run_build` puts one function above, and only a build that
+#:   indexed zero chunks runs it. `index build` was already in the CLI sweep in
+#:   `tests/integration/test_canonical_store_corruption.py`, over a corpus that
+#:   indexes chunks, so the branch was never taken and the sweep reported green
+#:   across it. Closed in `c7d59b4` — found by enumerating the call sites that
+#:   open or resolve a store session, and fixtured so the branch now has a
+#:   corpus. A closure argument whose evidence is a sweep claims no more than
+#:   the sweep's corpus can reach.
 #:
-#: The canonical store was the last one open, and it was a disclosure rather than
-#: the missing remedy issue #18 recorded: measured through
-#: ``build_server(...).call_tool`` against a database built by the real CLI, a
-#: corrupted `created_at`, `valid_from`, `content_type` or `status` cell reached
-#: an MCP client verbatim through both `knowledge.get` and `knowledge.search`,
-#: eight of eight — and that store holds `draft` and `rejected` revisions, so
-#: those bytes are bytes the caller may not read. It is closed by
-#: :func:`~theurian.infrastructure.sqlite.store._reading`, which applies the same
-#: key with two differences its own docstring records: the block is entered by a
-#: read *helper* rather than by a convention, so a read added later cannot
-#: forget it; and its detail is the exception type for `sqlite3.Error` too,
-#: where this file still passes `str(exc)` through.
+#: What is claimed here, and no more: **in this file**, all nine reads enter
+#: through :func:`_reading` and convert inside the block. Both counts need a
+#: command anchored to code, because a grep whose subject is a grep matches its
+#: own quotation: the first version of this paragraph offered
+#: ``grep -c 'with _reading(' index_store.py`` as the evidence for nine, and
+#: that command prints 13 — the quotation on this line, three docstrings that
+#: name the block, and the nine. Anchored, at `c7d59b4`:
 #:
-#: What that closure claims is the key, applied without exception, in both
-#: halves: the state pointer, the registry, the ingestion manifest, this store
-#: and the canonical store. It does not claim that no *other* line in Theurian
-#: interprets untrusted bytes — the key is a question to ask of a new read, not
-#: an inventory that stays true on its own.
+#: - ``grep -cE '^[[:space:]]+with _reading\(' index_store.py`` is 9;
+#: - ``grep -cE '^[^#]*\.fetch(all|one)\(\)' index_store.py`` is 9, over the
+#:   same nine method bodies.
+#:
+#: Nothing enforces that a tenth read joins them; this is a count, not a
+#: guarantee, and the same shape of sentence written one file over was the one
+#: three reviewers falsified. The canonical store states its own population and
+#: its own evidence in :func:`~theurian.infrastructure.sqlite.store._reading`.
+#: Neither claims an inventory of Theurian's reads of untrusted bytes — the key
+#: is a question to ask of a new read, and no comment stays true on its own.
 _UNREADABLE_VALUES: Final = (UnicodeDecodeError, struct.error, TypeError, ValueError)
 
 
