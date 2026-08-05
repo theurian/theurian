@@ -283,8 +283,10 @@ verifies an artifact. `probe_core` reports `Satisfied` when a `theurian`
 executable is already on the path and `Conflicting` when it is not — there is no
 `Missing` outcome and no install — and `probe_artifact_integrity` returns
 `NotApplicable` unconditionally rather than reporting a check it cannot perform.
-Row 3 is what OSS-11 and T-16 require; the gap and why closing it is a change to
-how Theurian is obtained rather than a probe added here are recorded under
+Both rows stand as requirements. Row 3 is the setup-step half of T-16, which
+§19's threat table maps to OSS-7, OSS-11 and this row; OSS-11 itself — artifacts
+carry checksums — ships. The gap, and why closing it is a change to how Theurian
+is obtained rather than a probe added here, is recorded under
 [T-16](../security/threat-model.md).
 
 ### 6.3 Idempotence contract
