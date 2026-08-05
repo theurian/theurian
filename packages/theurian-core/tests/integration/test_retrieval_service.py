@@ -194,12 +194,34 @@ def with_a_long_document(project: Path) -> Path:
 
 
 def _database(project: Path) -> Path:
-    # The canonical prefix, not `*.sqlite`: index builds live in the same
-    # directory, and a glob that caught them would hand a retrieval index to the
-    # canonical store and produce a baffling failure.
-    databases = list((project / ".theurian/state").glob("theurian-state-*.sqlite"))
-    assert databases, "the fixture must have built a canonical state"
-    return databases[0]
+    """The canonical state the *pointer* names, resolved the way production does.
+
+    A state database's filename is a content address, not a version, and applying
+    a migration writes a new one beside the old rather than replacing it — that is
+    what makes switching branches O(1) (ADR-0016). So any fixture that applies a
+    second migration leaves two, and enumerating the directory picks between them
+    by whatever order the filesystem hands back.
+
+    That is not a style point. This helper is the oracle for every test here that
+    retires an item and then asserts it is gone: reading the *stale* state gets an
+    `architecture.cache` that is still `approved`, an index that indexes it, and
+    a gate that admits it. macOS returned the fresh database and the suite was
+    green; Linux returned the stale one and five tests failed, three of them
+    SEC-13 assertions about retired knowledge never reaching a caller.
+
+    The macOS pass was a property of these filenames, not of the platform: a
+    standalone script running the same steps with shorter bodies — different
+    content hashes, so different names — got the superseded database first on
+    macOS too. Neither order is a guarantee anywhere.
+
+    `active.json` is the only authority on which state is current, and
+    `paths.state / active.database_filename` is exactly what `mcp/tools.py` and
+    `cli/index_commands.py` resolve before opening the canonical store.
+    """
+    paths = ProjectPaths.of(project)
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have published a canonical state"
+    return paths.state / active.database_filename
 
 
 def _build(project: Path, *, embedder: EmbeddingProvider | None) -> Path:
@@ -1040,6 +1062,80 @@ def _bare_shape(surfaced: Surfaced) -> dict[str, Any]:
     }
 
 
+def _enumerate_the_state_directory_worst_first(
+    monkeypatch: pytest.MonkeyPatch, project: Path
+) -> None:
+    """Make `Path.glob` hand back the state the pointer names *last*.
+
+    A directory's enumeration order is not a guarantee. Measured: APFS and ext4
+    disagree about the same two files, and APFS disagrees with itself for a
+    different pair — the names are content addresses, so a shorter document is a
+    different pair. A helper that enumerates therefore cannot be tested by
+    running it; whichever order the machine gives, the test measures the machine.
+
+    This removes the luck. The state the pointer names sorts last, so the *first*
+    entry is deterministically a state that is no longer current, on any
+    filesystem. Only the canonical prefix is reordered: `migrate apply` enumerates
+    the migrations directory through the same method, and re-sorts what it finds.
+    """
+    paths = ProjectPaths.of(project)
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have published a canonical state"
+    current = paths.state / active.database_filename
+    original = Path.glob
+
+    def worst_first(self: Path, pattern: str, **kwargs: Any) -> Iterator[Path]:
+        found = original(self, pattern, **kwargs)
+        if not pattern.startswith("theurian-state-"):
+            return found
+        # `sorted` is stable and exactly one entry compares True, so the last
+        # element is the pointer's and the first is not.
+        return iter(sorted(found, key=lambda path: path == current))
+
+    monkeypatch.setattr(Path, "glob", worst_first)
+
+
+def test_the_canonical_store_is_the_state_the_pointer_names(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-13, T-15, ADR-0016. The oracle every retirement test here rests on.
+
+    `_database` used to enumerate the state directory and take the first entry.
+    Applying a migration writes a *new* content-addressed database beside the old
+    one rather than replacing it, so from the second `migrate apply` onwards there
+    are two, and "first" is whatever the filesystem says. macOS said the fresh
+    one and the suite was green; Linux said the stale one, and five tests failed —
+    three of them SEC-13 assertions that retired knowledge never reaches a caller,
+    which were passing against a state in which nothing had been retired yet.
+
+    The two assertions are the mechanism and its consequence: the resolved
+    database must be the one that *records* the retirement, and an index built
+    from it must not hold the retired item even when explicitly asked for it.
+
+    This test cannot be green by luck. The order is forced adversarially rather
+    than observed, so an implementation that enumerates fails it on every
+    platform — including the one the defect hid on for the whole milestone.
+    """
+    _retire_after_the_build(project, "architecture.cache")
+    state = ProjectPaths.of(project).state
+    assert len(list(state.glob("theurian-state-*.sqlite"))) == 2, (
+        "the retirement must leave the superseded state on disk, or nothing is being chosen between"
+    )
+
+    _enumerate_the_state_directory_worst_first(monkeypatch, project)
+
+    with closing(sqlite3.connect(f"file:{_database(project)}?mode=ro", uri=True)) as raw:
+        recorded = raw.execute(
+            "SELECT status FROM knowledge_items WHERE item_id = ?", ("architecture.cache",)
+        ).fetchone()
+    assert recorded == ("deprecated",), "the resolved state is the one that records the retirement"
+
+    hits = SqliteIndexStore(_build(project, embedder=None)).search_lexical(
+        "caching", project_id="demo", limit=50, include_unapproved=True
+    )
+    assert hits == (), "and so the retired item is never written to the index"
+
+
 def test_the_limit_is_applied_to_results_and_not_to_candidates(project: Path) -> None:
     """SEC-13, FR-R5. A withheld candidate must not consume a result slot.
 
@@ -1560,21 +1656,6 @@ def _probe_document(project: Path, tag: str, slug: str, title: str, body: str) -
     )
 
 
-def _probe_database(project: Path) -> Path:
-    """The canonical state the *pointer* names, not whichever file a glob found.
-
-    Applying a migration writes a new state database, so after the retirement
-    there are two on disk and their names are content addresses rather than
-    versions. Reading the active pointer is what the MCP tool does, and it is the
-    only way to be sure both searches below run against the state that withholds
-    the incident note.
-    """
-    paths = ProjectPaths.of(project)
-    active = read_active_state(paths)
-    assert active is not None, "the fixture must have published a canonical state"
-    return paths.state / active.database_filename
-
-
 def _build_probe_index(project: Path, name: str, build_id: str) -> Path:
     index_path = project / f".theurian/state/theurian-index-{name}.sqlite"
     IndexBuilder(
@@ -1583,7 +1664,7 @@ def _build_probe_index(project: Path, name: str, build_id: str) -> Path:
         embedder=None,
     ).build(
         IndexRequest(
-            database=_probe_database(project),
+            database=_database(project),
             index_path=index_path,
             project_id="demo",
             state_hash="probe-state",
@@ -1691,7 +1772,7 @@ def _published_order(probe: _BM25Probe, index_path: Path) -> list[str]:
     request = SearchRequest(query=PROBE_QUERY, project_id="demo", per_item=1)
     resolved = ResultGate(store_factory=SqliteCanonicalStore, shape=_bare_shape).admit(
         ResultRequest(
-            database=_probe_database(probe.project),
+            database=_database(probe.project),
             project_id="demo",
             include_unapproved=False,
             limit=10,
