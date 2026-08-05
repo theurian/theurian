@@ -6,7 +6,7 @@
   <h3>Stop your AI from re-proposing what your team rejected in March.</h3>
 
   <p>
-    Theurian turns your ADRs, specs, and reviews into governed knowledge<br>
+    Theurian turns your ADRs and specifications into governed knowledge<br>
     that any AI agent can query — and that no AI agent can write to.
   </p>
 
@@ -150,7 +150,7 @@ alternative and the reasoning against it are written down.
 |  |  |
 | :-- | :-- |
 | **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. An unreviewed draft can never be mistaken for a team decision. |
-| **AI proposes, humans approve** | A resolved review thread becomes a *candidate*. A human turns candidates into rules. Never the reverse. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
+| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge: write-intent tools emit proposal files a human reviews and merges. Resolved review threads become *candidates* when Milestone 7 ingests them; the direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries the anchors its revision declares. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. Every response names the `snapshotId` that answered it. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
 
@@ -350,9 +350,9 @@ uv run pytest` passes offline, for free, on any machine.
 ## Retrieval
 
 `knowledge.search` runs several retrievers, fuses them with Reciprocal Rank
-Fusion, caps how many chunks one document may contribute, and packs the result
-into a `maxTokens` budget. Every hit reports `foundBy`, so a ranking can be
-explained rather than trusted.
+Fusion, publishes at most one chunk per document, and packs the result into a
+`maxTokens` budget. Every hit reports `foundBy`, so a ranking can be explained
+rather than trusted.
 
 | Retriever | What it is | Default |
 | :-- | :-- | :-- |
