@@ -76,6 +76,29 @@ concurrently:
 | `theurian-security-review` | Does it satisfy the SEC-* requirements and the threat model? |
 | `theurian-adversarial-review` | Can I break it, and can its tests actually fail? |
 
+**A prose-only change still gets the adversarial reviewer when it asserts
+something behavioural.** This project's documentation states measured
+properties. Six of Milestone 5's prose-only commits corrected a claim that
+measurement had falsified: a cost comparison that ran the other way, an ADR
+saying two things that were never true, a comment offering a count of nine that
+printed thirteen, a docstring claiming a guard its own file does not enforce, a
+test file stating three where its own test knew four. None changed behaviour —
+the four that touch `.py` files are AST-identical once docstrings are stripped —
+and each made a recorded decision wrong.
+
+Route by what would settle the claim, not by file type:
+
+| The change asserts | Reviewed by |
+| :-- | :-- |
+| something settled by running it — an invariant, a closure or acceptance argument, a measured cost, a count, "cannot / never / independent / identical", a claim that the suite holds something | all three, adversarial included |
+| something settled by reading the source — what the codebase contains, what SQLite or FTS5 guarantees | code and security review |
+| nothing behavioural — a changelog inventory, a link, an issue reference, wording | code review alone |
+
+**A false closure argument is the case that does not surface later.** It is
+consumed as a settled premise rather than re-examined: the BM25 residual's
+acceptance was approved, written into the threat model in the orchestrator's own
+words, and carried for two rounds before anyone measured it.
+
 Each brief must carry, explicitly:
 
 - the diff scope (`git diff main...HEAD`) and the files that matter

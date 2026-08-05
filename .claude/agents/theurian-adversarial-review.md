@@ -54,6 +54,10 @@ a claim to be falsified, not as documentation. Report any claim that is true onl
 for the examples the tests happen to use. Three such claims have been false here,
 and none was findable by reading.
 
+The ones worth your time assert something behavioural — an invariant, a measured
+cost, a count, a claim that a test holds something. A docstring that only
+explains a decision has nothing for you to run.
+
 **3. Hunt silent wrongness, not crashes.**
 A crash gets fixed. What ships is the plausible-but-wrong: a ranking subtly out
 of order, a filter that does not filter, content dropped between two stages, a
