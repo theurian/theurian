@@ -84,7 +84,7 @@ the `//` comments did not.
   "freshness": {
     "revisionCreatedAt": "2026-07-15T10:00:00+09:00",
     "isWithinValidity": true,    // false means it is outside its declared validity window
-    "ageDays": 21
+    "ageDays": 21                // counted at query time, so this one keeps rising
   },
 
   "sourceAnchors": [{            // provider and sourceUri always; the rest when the source pins them
