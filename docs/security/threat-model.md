@@ -558,11 +558,56 @@ revision or retiring the item — with its own window. See T-17: performing
 exactly that remediation is what re-opened a channel to read the secret back,
 through `knowledge.search` rather than through the revision itself.
 
-#### T-16 — A compromised release artifact is installed (Tampering, **Critical**)
+#### T-16 — A compromised release artifact is installed (Tampering, **Critical** — publication ships, install-time verification does not)
 
-**Controls:** SHA-256 verification before install as an explicit setup step;
-checksums published with every release; SBOM attached; setup aborts rather than
-installing an artifact it could not verify.
+**Controls that ship.** [`release-core.yml`](../../.github/workflows/release-core.yml)
+runs on a `core-v*` tag and, before anything is published: builds, then installs
+the wheel into a clean environment and runs `theurian version --json` against it;
+produces a reproducible CycloneDX 1.6 SBOM from that verified install rather than
+from the lock file (OSS-7); writes `SHA256SUMS` over every artifact including the
+SBOM (OSS-11); publishes to PyPI over Trusted Publishing with PEP 740
+attestations, so no maintainer holds a credential that could publish a different
+artifact; and attaches the checksums and the SBOM to the GitHub release. It also
+refuses a tag carrying no signature block — presence, not validity: the runner
+has no keyring, and the workflow step says so rather than implying more.
+
+**Residual: nothing verifies any of it at install time. Critical, unmitigated.**
+This entry previously listed "SHA-256 verification before install as an explicit
+setup step" and "setup aborts rather than installing an artifact it could not
+verify" as controls. Neither exists. `probe_artifact_integrity` in
+`theurian.application.setup_steps` is a single unconditional return of
+`NOT_APPLICABLE`, so `theurian setup --dry-run --json` publishes
+`"status": "not-applicable"` for `artifact-integrity` on every machine, and no
+code under `plugins/` verifies a checksum either. The step is honest about
+itself — its docstring says a step reporting `satisfied` without checking
+anything would be a false assurance about supply chain integrity — and this
+entry, which is where a reader goes to find out what protects them, was not.
+
+**Two things are missing, not one, and the second is why the first went
+unnoticed.** There is no code that hashes an artifact and compares it against
+`SHA256SUMS`; and there is no point in the flow where such code would run.
+`theurian setup` does not download or install Core. Its `core-present` step
+checks that a `theurian` executable is already there and, when it is not, tells
+the user to run `uv tool install theurian` or `pipx install theurian`. The
+download belongs to the installer, so a probe added to setup would run after the
+artifact had already been installed and executed — it would report on code that
+had run. Closing this is a change to how Theurian is obtained, not a step added
+to setup, which is the part the old control list hid by naming setup step 3.
+
+**What a user has today** is whatever their installer and PyPI give them.
+Theurian publishes PEP 740 attestations; whether an installer checks them is that
+installer's behaviour, and Theurian neither checks nor reports them.
+
+**Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
+this is tolerable. The requirement stands: OSS-11 requires the checksums and
+`requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and setup
+step 3. No issue tracks the gap. The only schedule statement anywhere in the
+repository is the step's own `detail` field — "Artifact verification arrives with
+the first tagged release (OSS-7, T-16)" — which `release-core.yml` has now made
+due, since a first tagged release is what that workflow exists to cut. The
+severity stays Critical: the harm is unchanged, an attacker who substitutes an
+artifact runs code as the user, and every control above acts on production rather
+than on what a user installs.
 
 ### TB-3: the retrieval result
 
@@ -1815,7 +1860,7 @@ byte-for-byte.
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration | T | Medium | SEC-18 |
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 |
-| T-16 | Compromised release artifact | T | Critical | OSS-11 |
+| T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification not implemented |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | `index build`; root fix M6 (#15) |
 
