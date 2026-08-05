@@ -404,37 +404,42 @@ meaning. Against a real corpus, 91% of *unrelated* natural-language questions
 cleared its similarity floor, while the lowest genuinely related query scored
 below the unrelated median. No threshold separates those distributions, so
 turning it on by default would add noise and call it recall. Pass
-`useDense: true` to switch it on; `retrieval.embeddingModel` names the model, so
-an n-gram search is never mistaken for a semantic one.
+`useDense: true` to switch it on. `retrieval.embeddingModel` then names the
+model, so an n-gram search is never mistaken for a semantic one; it is `""` on
+every request that did not ask for dense.
 ([ADR-0021](docs/adr/0021-rank-fusion-over-score-normalisation.md))
 
 **A stale index answers with less, never with more, and does not say what it
 left out.** A document retired or superseded since the last build is checked
 against the canonical store and withheld — and the retrievers are read *through*
 that check rather than filtered after it, so no withheld row occupies a result
-slot, a rank, or a published number. `retrieval.stale` says the index is behind,
-which is a fact about the index and not about your query.
-([T-17](docs/security/threat-model.md))
+slot, a rank, or a published number. The property that holds: one query against
+an index that still holds the withheld documents and one that never did returns
+the same results, in the same slots, with the same counts. `retrieval.stale`
+says the index is behind, which is a fact about the index and not about your
+query. ([T-17](docs/security/threat-model.md))
 
-**Search ranking is where that stops holding, and it is not fixed in this
-milestone.** BM25 scores a row against corpus statistics computed over the whole
-index file, and until the next build the withheld rows are still in that file
-being counted. So a withheld document can move `fusedScore`, the order of the
-hits, and which paragraph of a visible document is excerpted. Two different
-things move here, and they are not the same size:
+**Search ranking is where that equality stops holding, and it is not fixed in
+this milestone.** BM25 scores a row against corpus statistics computed over the
+whole index file, and until the next build the withheld rows are still in that
+file being counted. So a withheld document can move `fusedScore`, the order of
+the hits, and which paragraph of a visible document is excerpted. Three
+different things move here, and they are not the same size:
 
-- **The order moves for any withheld content, whatever it says.** One of those
-  statistics is the average document length, so a withheld document that shares
-  not one word with your query still changes the score of every visible row — by
-  a different amount for each, which is why the order moves. Measured against
-  SQLite FTS5, not argued; an earlier version of this section claimed the
-  opposite.
-- **Reading content back out of the ranking is narrower.** That needs a term
-  which also occurs in content you *can* read, so what it can answer is whether
-  a withheld document contains a term you have already seen somewhere — not a
-  term you do not already have.
+- **The scores move for any withheld content, whatever it says.** One of those
+  statistics is the average document length, so a withheld document sharing not
+  one word with your query still changes what the visible rows score.
+- **The order moves for some of it.** Whether a changed score reorders anything
+  depends on the corpus: across 2,000 random ones, every visible score moved in
+  99.9% and the ranking changed in 13.8%. Visible rows symmetric enough to take
+  an identical delta do not reorder at all. Measured against SQLite FTS5, not
+  argued — this section has claimed *never* and then *always* before now.
+- **Reading content back out of the ranking is narrower still.** That needs a
+  term which also occurs in content you *can* read, so what it can answer is
+  whether a withheld document contains a term you have already seen somewhere —
+  not a term you do not already have.
 
-`theurian index build` closes both, along with every other consequence of a
+`theurian index build` closes all three, along with every other consequence of a
 stale index; eliminating the stale window itself is Milestone 6's blue/green
 builds. **If a project's ranking must not depend on retired content at all,
 rebuild the index as part of retiring it rather than on a schedule.** Accepted
