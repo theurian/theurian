@@ -92,7 +92,7 @@ _ALREADY_ANSWERED: Final = (
 
 @contextmanager
 def _reading() -> Iterator[None]:
-    """One statement and the values it produces, with every failure mapped.
+    r"""One statement and the values it produces, with every failure mapped.
 
     **The block is the unit, not the converter.** An exception raised inside a
     ``with _reading()`` body is thrown into this generator at the ``yield``, so
@@ -102,12 +102,23 @@ def _reading() -> Iterator[None]:
     `sqlite3` decodes SQLite's own error text and a corrupt schema makes that
     text invalid UTF-8, and then `int()`s the stored schema version.
 
-    **Nothing goes inside a block but those three, and here that is structural
-    rather than a convention.** :meth:`SqliteCanonicalStore._read_one` and
-    :meth:`~SqliteCanonicalStore._read_all` take a statement and a mapper and are
-    the only way this class reads, so a read added later cannot escape the guard
-    by forgetting it -- the equivalent guard in the index store depends on the
-    next reader keeping a rule, and that is the difference between the two.
+    **Nothing goes inside a block but those three, and at `c7d59b4` every read
+    on this class goes through one -- which nothing enforces.**
+    :meth:`SqliteCanonicalStore._read_one` and
+    :meth:`~SqliteCanonicalStore._read_all` take a statement and a mapper, and
+    every read is written in terms of them today, so a read added later has a
+    helper to reach for rather than a rule to recall. That is the whole of the
+    difference from the index store's guard: :meth:`~SqliteCanonicalStore._conn`
+    is still a method on the class, and a new one that calls it directly
+    type-checks and lints. It has happened -- ``git grep -c 'self\._conn()'
+    67a792c -- '*sqlite/store.py'`` is 15, in a revision of this file with no
+    `_reading` in it at all.
+
+    An earlier version of this paragraph said "structural rather than a
+    convention", and three reviewers falsified it. Making it structural means an
+    AST test over the call sites, in the shape of
+    `tests/unit/test_gate_call_sites.py`. Until one exists, the sentence above is
+    a count at a commit and must be read as one.
 
     **The cost, stated rather than discovered later.** A genuine programming
     error inside such a block -- a mistyped column name, an argument count -- is
@@ -116,14 +127,25 @@ def _reading() -> Iterator[None]:
     `raise ... from exc` keeps the real cause for whoever has the traceback,
     while a `ValueError` reaching an agent names no remedy and repeats forever.
 
-    **Reads only, in both classes.** :class:`SqliteWriter` guards the three
-    places it reads a stored value and nothing else: an `INSERT` interprets the
-    caller's domain objects, not this file, and reporting a constraint violation
-    as an unreadable database would name the wrong cause. The index store draws
-    the same line between reads and writes for a reason that does *not* transfer
-    -- it withholds the guard from writes because "rebuild your index" is the
-    wrong remedy mid-build -- so the line is drawn here by the key instead, and
-    it happens to fall in the same place.
+    **Reads only, in both classes -- and on the writer, interpretations rather
+    than reads.** :class:`SqliteWriter` reads a stored value in four places --
+    `record_migration`, `applied_migrations`, `get_item` and `append_revision`
+    -- and guards three of them; an `INSERT` interprets the caller's domain
+    objects, not this file, and reporting a constraint violation as an
+    unreadable database would name the wrong cause. The fourth read is
+    `append_revision`'s ``SELECT content_sha256``, left outside a block
+    deliberately: past ``BEGIN IMMEDIATE`` a failure is the caller's write
+    against the caller's data, and "delete `.theurian/state/`" is
+    a destructive remedy for a write that simply did not apply. Only the
+    question of *why* that comparison failed is an interpretation, and that one
+    line is guarded. Both arms are held by
+    `test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it` and
+    `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`.
+
+    The index store draws the same line between reads and writes for a reason
+    that does *not* transfer -- it withholds the guard from writes because
+    "rebuild your index" is the wrong remedy mid-build -- so the line is drawn
+    here by the key instead, and it happens to fall in nearly the same place.
     """
     try:
         yield
@@ -739,9 +761,18 @@ class SqliteWriter:
 
 # -- Row mapping ----------------------------------------------------------
 #
-# Every function below runs inside a `_reading()` block and nowhere else. They
-# are named and module-level rather than inlined as lambdas so that the guard's
-# coverage is a property of *where they are called*, which is one place each.
+# Every function below runs inside a `_reading()` block at `c7d59b4`, and
+# nothing enforces that the next call site will. They are named and
+# module-level rather than inlined as lambdas so that the guard's coverage is a
+# property of *where they are called* -- a set small enough to read through,
+# but not the "one place each" this comment used to claim:
+# `grep -E '_from_row' store.py | grep -v '^#' | grep -vc '^def '` is 16 over
+# nine mappers, and six of the nine are reached from more than one place
+# (`grep -v '^#' store.py | grep -oE '_[a-z_]+_from_row' | sort | uniq -c`,
+# where a mapper reached once shows 2 -- its own `def` line and that one
+# reference). `_item_from_row` is reached from `get_item`, `list_items` and
+# `SqliteWriter.get_item`; `_anchor_from_row` from `_anchors_for` and from
+# inside `_evidence_from_row`, a mapper calling a mapper.
 
 
 def _project_from_row(row: sqlite3.Row) -> Project:
