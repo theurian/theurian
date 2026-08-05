@@ -82,7 +82,7 @@ the `//` comments did not.
     "ageDays": 21                // counted at query time, so this one keeps rising
   },
 
-  "sourceAnchors": [{            // all seven keys always; null where the source pins nothing
+  "sourceAnchors": [{            // all seven keys always; unpinned ones carry null
     "provider": "git",
     "sourceUri": "git://local/docs/adr/0031-service-auth-policy.md",
     "repository": "local",
@@ -417,14 +417,15 @@ file being counted. What that reaches is narrower than it sounds:
   says.** One of those statistics is the average document length, so a withheld
   document sharing not one word with your query still changes them. BM25 scores
   are not themselves published.
-- **The order moves for a minority of corpora, and the published values move with
-  it.** Across 2,000 random corpora, every visible score moved in 99.9% and the
-  order in 13.8%; rows symmetric enough to take an identical delta do not reorder
-  at all. Fusion is reciprocal rank fusion, which reads rank positions rather than
-  scores, so a moved score reaches `fusedScore` — and the excerpt, which is the
-  best-ranked chunk of its document — only by moving a rank first. What a caller
-  sees tracks the 13.8%, not the 99.9%. Measured against SQLite FTS5, not argued
-  — this section has claimed *never* and then *always* before now.
+- **The order moves for a minority of corpora, and the published values move
+  with it.** Across 2,000 random corpora, every visible score moved in 99.9%
+  and the order in 13.8%; rows symmetric enough to take an identical delta do
+  not reorder at all. Fusion is reciprocal rank fusion, which reads rank
+  positions rather than scores, so a moved score reaches `fusedScore` — and the
+  excerpt, which is the best-ranked chunk of its document — only by moving a
+  rank first. What a caller sees tracks the 13.8%, not the 99.9%. Measured
+  against SQLite FTS5, not argued — this section has claimed *never* and then
+  *always* before now.
 - **Reading content back out of the ranking is narrower still.** That needs a
   term which also occurs in content you *can* read, so what it can answer is
   whether a withheld document contains a term you have already seen somewhere —
