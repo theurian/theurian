@@ -51,6 +51,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   otherwise.
 - **`theurian project register --project-id <id>`**, which is how a directory
   name collision is broken. See the breaking change below.
+- **`StateDatabaseUnreadableError`**, the one error every read of the canonical
+  state database answers with when the file cannot be interpreted. It carries
+  the failing exception's **type** and never its message, because every
+  converter the store reaches for quotes the value it would not accept:
+  `datetime.fromisoformat` quotes the string, each enum quotes the member it
+  could not find, and every domain value object renders its argument with `!r`.
+  See Security, below, for what that used to cost.
+
+  It lives in `theurian.infrastructure.sqlite.connection`, not beside the store
+  that raises it most — opening a connection interprets the file too, and
+  `write_transaction` opens one without going through the store at all. The real
+  exception travels on `__cause__` for whoever debugs it; every CLI path that
+  would have rendered that cause to a terminal is converted (see Changed).
 
 #### Changed
 
@@ -401,6 +414,48 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   read protocol because clearing a ranked row needs the *item*'s status now, not
   the status the index recorded at build time.
 
+- **BREAKING — a damaged canonical state database is reported as
+  `{"error", "remedy"}`, and `theurian migrate status` and `theurian migrate
+  apply` exit 4 rather than 1.** These paths used to leave the command through a
+  Rich traceback: exit 1, an empty stdout where `--json` promises a document
+  (CP-2), and — because a traceback renders `__cause__` one line below the
+  exception — the corrupted cell printed to the operator anyway, undoing the
+  withholding described under Security.
+
+  | Command, over | Was | Is |
+  | :-- | :-- | :-- |
+  | `migrate status`, `migrate apply` — a damaged cell | exit 1, a traceback quoting the cell | exit 4, `{"error", "remedy"}` |
+  | `migrate apply` — a real immutability violation, **healthy** database | exit 1, a traceback | exit 4, `{"error", "remedy"}` |
+  | `index build` — zero chunks, canonical store unreadable | exit 1, a traceback quoting the cell | exit 1, `{"error", "remedy"}` |
+
+  A caller branching on exit 1 has to branch on 4; a caller parsing `--json` is
+  handed a payload where it used to be handed nothing. Failures print to stderr,
+  as every other failure in this CLI does. Measured across `migrate status` and
+  `migrate apply` over `migration_history.migration_id`,
+  `migration_history.checksum` and `schema_metadata.schema_version` — six
+  (command, column) positions, all six now exit 4 carrying both keys and none of
+  the cell. The immutability row keeps its own remedy, "Fix the migration set,
+  then retry", because it is the caller's migration set that is wrong and not
+  the file.
+
+  The `except` is over `TheurianError` rather than over the types known to
+  arrive today, because a guard's promise reaches only as far as the exception is
+  caught. It wraps `write_transaction` itself rather than the body of the `with`:
+  opening a connection interprets the file, so `schema_metadata.schema_version`
+  raises before the body runs. The remedy is chosen per family — a file this
+  build cannot interpret, another process holding the write lock, a migration set
+  the store refused — and the one that deletes something is the one that is never
+  the default.
+
+  `index build`'s row is a second read session, opened after the build to ask the
+  canonical store whether indexing nothing was correct, over rows the build never
+  reads. It is reached only when the build indexed zero chunks, which no fixture
+  produced; measured on a project whose only knowledge is `draft`, with
+  `projects.registered_at` or `projects.root_path` overwritten. The partially
+  built index file goes with the refusal, matching every other branch that
+  declines to publish — a file left behind is one a later `index status` finds
+  and believes.
+
 - `knowledge.search` gains a `maxTokens` parameter (FR-R4).
 - Searching a project with no index falls back to the previous substring scan
   and says so, rather than returning nothing — which would read as "we have no
@@ -481,8 +536,87 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Separately, `itemId` had no `maxLength` in the schema while the domain has
   rejected one over 200 characters since it was introduced; the schema now
   states the same bound.
+- **The disclosure fix below silently disabled the FR-K5 check for six
+  commands, and this branch is where that was found.** Recorded even though it
+  never shipped, because it is the most instructive thing that happened here:
+  `StateDatabaseUnreadableError` descends from `TheurianError`, and
+  `_verify_history` swallowed every `TheurianError` raised while reading the
+  *previously active* state database — on the correct grounds that a state
+  written at another schema version is not evidence about this one (ADR-0017).
+  The new error fell into the same `except`.
+
+  So a **tampered applied migration**, which is what FR-K5 and ADR-0005 exist to
+  catch, was reported as a clean history with exit 0 where a healthy database
+  refuses it with exit 4. The check is reached from `_require_project`, so the
+  silence covered `migrate status`, `migrate apply`, `migrate validate`,
+  `index build`, `index status` and `ingest`. `SchemaVersionMismatchError` keeps
+  the early return, because that is the case the comment describes; a database
+  this build cannot read is neither evidence of tampering nor evidence of its
+  absence, and now exits 4 naming the check that could not be performed and what
+  rebuilding costs — the rebuilt history records the files as they are now, so an
+  edit made before that point stops being detectable.
+- **A damaged `content_sha256` cell was diagnosed as a rewritten revision.**
+  `append_revision` compares the stored hash against the caller's, and two states
+  produce the same mismatch: an author rewriting a revision, which is INV-1, and
+  a cell that is not a digest at all. The second was answered with `Revisions are
+  immutable; write a new revision instead` — a remedy that appends a duplicate
+  into a database that is already damaged. The comparison stays a comparison of
+  opaque strings; only the question of *why* the two differ is an interpretation,
+  and it is now asked only on the branch that has already decided they do.
 
 #### Security
+
+- **A corrupted cell in the canonical state database was published to MCP
+  callers verbatim** (SEC-13). `SqliteCanonicalStore` handed the bytes it could
+  not interpret straight to the tool result: overwriting `created_at`,
+  `valid_from`, `content_type` or `status` came back as `Error executing tool
+  knowledge.get: Invalid isoformat string: '<the cell>'`, eight of eight across
+  `knowledge.get` and `knowledge.search`, against a control on an intact database
+  that raised nothing. Swept one cell at a time across the whole schema, the
+  damage reached an MCP client from **60 (column, tool) positions** on
+  `67a792c`, and `theurian index build` published the same cell as an unhandled
+  `ValueError`.
+
+  That store holds *every* revision — `draft` and `rejected` alongside `approved`
+  (ADR-0006) — so a cell it fails to interpret carries bytes the caller may not
+  read, and the retrieval gate never sees them: an exception raised while a row
+  is being interpreted goes around the gate entirely. This was on file as
+  [#18](https://github.com/theurian/theurian/issues/18), *a corrupt state
+  database reaches the caller with no remedy*, and stood under Known limitations
+  below through this milestone. That reading was wrong. The missing remedy was
+  the smaller half of it; the defect is an information disclosure.
+
+  Every line that turns a stored cell into a value now runs inside a guard that
+  answers with `StateDatabaseUnreadableError` (see Added), whose detail is the
+  failing exception's type and never its message. The block is entered by the two
+  functions that are the only way this class reads, so a read added later cannot
+  forget the convention. **The type name is the whole detail for `sqlite3`'s own
+  errors too**, which is a narrower rule than the index store's: damaging one
+  `sqlite_master.sql` cell gives `malformed database schema
+  (payroll_secret_band_l7) - incomplete input` on SQLite 3.51.2 — a name read
+  straight out of the file — so passing `str(exc)` through keeps a case analysis
+  over SQLite's error catalogue that a later release can invalidate.
+
+  Two cells travelled as *data* rather than inside an exception message, and both
+  are converted on the way out. `migration_history.checksum` was returned as a
+  plain string and rendered into `MigrationChecksumMismatchError`, so
+  `theurian migrate status --json` answered `Migration 01K1… was applied with
+  checksum <the cell> but the file on disk hashes to …`. And INV-3's refusal on a
+  tampered body named `content_sha256.short` together with the hash of the stored
+  body — a 12-character confirmation oracle over a revision the caller may not be
+  entitled to read. The invariant check is unchanged; what it publishes is not.
+
+  **The remedy discards the retrieval index, and does not rebuild it.** It reads
+  "delete `.theurian/state/` and run `theurian migrate apply`", and the index
+  lives under `.theurian/state/` as well, so following it literally takes the
+  index with the canonical state while `migrate apply` restores only the latter.
+  Run for real: `migrate apply` reports `databaseCreated: true` and the knowledge
+  is back, so nothing authored is lost; `theurian index status` then reports
+  `built: false` with a remedy of its own — run `theurian index build` — and
+  `knowledge.search` answers from the unranked substring scan with
+  `retrieval.fallbackReason: "no-index"`. The degradation announces itself at
+  both surfaces, but a project that was ranked stays unranked until `theurian
+  index build` runs.
 
 - **`knowledge.get` was not gated on status** (SEC-13). Closing every path
   through `knowledge.search` achieved nothing while this stood open: a caller
@@ -764,15 +898,37 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   pays for them. Recorded under T-6 and filed as
   [#17](https://github.com/theurian/theurian/issues/17); the bound is trivial and
   where it goes decides which of three tools change their error text.
-- **A corrupt canonical state database reaches the caller with no remedy.** A
-  truncated `theurian-state-*.sqlite` answers `knowledge.search`, `knowledge.get`
-  and `knowledge.status` with `Error executing tool knowledge.search: database
-  disk image is malformed`, and one corrupted JSON column answers the first two
-  with `Expecting value: line 1 column 1 (char 0)`. Neither names the file or the
-  cure, and canonical state rebuilds from Git-tracked migrations, so the cure is
-  cheap and worth naming — `theurian index build` and `theurian migrate apply`
-  both already print it for the same state. Present before this milestone.
-  [#18](https://github.com/theurian/theurian/issues/18).
+- **A damaged cell can make `knowledge.search` and `knowledge.status` answer
+  *successfully* with less than the database holds.** The byte-interpretation
+  guard under Security does not cover this and cannot: the corrupted column is
+  part of the item → revision pointer chain, so the lookup misses and **no value
+  is ever converted**, while that guard's whole key is whether a line interprets
+  bytes that came out of the file. A caller is told `count: 0` with
+  `stale: false`, or `itemCount: 0`, and has no way to tell either from a project
+  that genuinely holds nothing — `knowledge.status` contradicts itself inside one
+  body, reporting one applied migration beside zero items. Four positions, held
+  as an exact set rather than as an allowance, so the reach cannot grow in
+  silence and each entry disappears the moment its surface starts refusing
+  instead:
+
+  | Tool | Table | Column |
+  | :-- | :-- | :-- |
+  | `knowledge.search` | `knowledge_items` | `item_id` |
+  | `knowledge.search` | `knowledge_items` | `project_id` |
+  | `knowledge.status` | `knowledge_items` | `project_id` |
+  | `knowledge.status` | `migration_history` | `project_id` |
+
+  The same cause has a second face, and it is the same defect rather than a
+  second one: `knowledge.get`'s two id-resolution refusals — `'<itemId>' is not
+  present in project '<projectId>'.` and `'<itemId>' points at a missing
+  revision.` — **report damage as absence**, at four (tool, table, column)
+  positions of their own. A caller is told the item does not exist when its row
+  is in fact unreadable. Both faces fire before any cell is interpreted, so
+  neither message contains anything but the caller's own arguments: this is
+  wrong knowledge, not disclosure. Milestone 6, tracked as
+  [#30](https://github.com/theurian/theurian/issues/30); closing it is a change
+  to the retrieval gate, `knowledge.status` and `knowledge.get`, not to the
+  store the fix above changed.
 - **`knowledge.get` and `knowledge.status` publish no response schema.**
   `schemas/mcp/` describes `knowledge.search`, `project.list` and the tool
   context; two of the five tools have nothing a client in another language can
