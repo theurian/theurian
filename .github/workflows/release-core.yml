@@ -1,0 +1,260 @@
+name: Release Core
+
+# Cutting a Core release means pushing a signed `core-v*` tag. Core and the
+# plugin release independently (ADR-0001), which is why the tag namespace is
+# not optional — `release-plugin.yml` will own `plugin-v*`.
+#
+# This workflow is the executable form of docs/contributing/release.md §5–§6:
+# build, verify the artifact in a clean environment, produce an SBOM and
+# checksums, publish to PyPI, then cut the GitHub release. Before this file
+# existed, release.md claimed "CI builds, verifies, and publishes checksums"
+# and nothing did.
+on:
+  push:
+    tags: ["core-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify everything, publish nothing."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Never cancel a release in flight. PyPI refuses a second upload of a filename
+# it already holds, so a run cancelled between the two publish steps leaves a
+# version that can only be yanked, never repaired.
+concurrency:
+  group: release-core-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Deliberately the same toolchain core.yml tests with, not the newest. A
+  # release resolved by a different uv than CI exercised reaches users before
+  # anyone has run the difference.
+  UV_VERSION: "0.7.2"
+  CYCLONEDX_VERSION: "7.3.1"
+
+jobs:
+  # A tag push does not trigger core.yml — it filters on `branches: [main]`.
+  # Without this job, tagging a red commit would publish it.
+  quality:
+    name: Format, lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff format --check packages tests
+      - run: uv run ruff check --output-format=github packages tests
+      - run: uv run mypy
+      - run: uv run pytest -q
+
+  build:
+    name: Build, verify, and sign off the artifacts
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The annotated tag object itself, so the signature check below has
+          # something to read.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Resolve the version, and refuse a tag that disagrees with it
+        id: resolve
+        run: |
+          set -euo pipefail
+          declared="$(python3 -c "
+          import tomllib, pathlib
+          data = tomllib.loads(pathlib.Path('packages/theurian-core/pyproject.toml').read_text())
+          print(data['project']['version'])
+          ")"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tagged="${GITHUB_REF_NAME#core-v}"
+            if [ "$tagged" != "$declared" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} claims ${tagged}, pyproject.toml declares ${declared}."
+              exit 1
+            fi
+          fi
+          echo "version=${declared}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${declared}"
+
+      - name: Require the tag to carry a signature
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # This proves a signature block is present on the tag object. It does
+          # not verify that signature — the runner has no keyring, and importing
+          # one here would only move the trust decision, not make it. Verifying
+          # against the maintainer keyring stays a human step (release.md §4).
+          if ! git cat-file tag "$GITHUB_REF_NAME" \
+               | grep -qE '^-----BEGIN (PGP|SSH) SIGNATURE-----'; then
+            echo "::error::${GITHUB_REF_NAME} is not a signed tag. Use 'git tag -s'."
+            exit 1
+          fi
+
+      - name: Require a changelog section written for this version
+        run: |
+          set -euo pipefail
+          python3 - "${{ steps.resolve.outputs.version }}" <<'PY' > release-notes.md
+          import pathlib, re, sys
+
+          version = sys.argv[1]
+          text = pathlib.Path("packages/theurian-core/CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)",
+              text,
+              re.MULTILINE | re.DOTALL,
+          )
+          if match is None:
+              sys.exit(
+                  f"CHANGELOG.md has no '## [{version}]' section. "
+                  "Move [Unreleased] under the version before tagging (release.md §2)."
+              )
+          body = match.group(1).strip()
+          if not body:
+              sys.exit(f"The CHANGELOG section for {version} is empty.")
+          print(body)
+          PY
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - run: uv build --package theurian
+
+      - name: Install the built wheel into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/verify
+          VIRTUAL_ENV=/tmp/verify uv pip install dist/*.whl
+          /tmp/verify/bin/theurian version --json
+
+      - name: Refuse a wheel whose runtime version disagrees with the release
+        run: |
+          set -euo pipefail
+          expected="${{ steps.resolve.outputs.version }}"
+          reported="$(/tmp/verify/bin/theurian version --json \
+                      | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          # pyproject.toml and theurian.__version__ are two separate literals.
+          # This is the check that keeps release.md's "pyproject.toml and
+          # __version__ agree" from being a thing someone remembers to do.
+          if [ "$reported" != "$expected" ]; then
+            echo "::error::The installed package reports ${reported}; releasing ${expected}."
+            exit 1
+          fi
+          if ! ls dist/ | grep -q -- "-${expected}-\|-${expected}\.tar\.gz"; then
+            echo "::error::No artifact in dist/ carries version ${expected}."
+            exit 1
+          fi
+
+      - name: Build the CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          version="${{ steps.resolve.outputs.version }}"
+          # Taken from the verified environment rather than from the lock file,
+          # so the SBOM describes what a user actually installs.
+          # --output-reproducible drops timestamps and serial numbers, so
+          # rebuilding the same release produces a byte-identical SBOM.
+          uvx --from "cyclonedx-bom==${CYCLONEDX_VERSION}" cyclonedx-py environment \
+              /tmp/verify/bin/python \
+              --pyproject packages/theurian-core/pyproject.toml \
+              --of JSON --sv 1.6 --output-reproducible --validate \
+              -o "dist/theurian-${version}.cdx.json"
+
+      - name: Publish checksums
+        run: |
+          set -euo pipefail
+          # `uv build` leaves a .gitignore in dist/; it is not a release artifact.
+          rm -f dist/.gitignore
+          cd dist && sha256sum * | tee SHA256SUMS
+          # Covers the wheel, the sdist, and the SBOM. /theurian:setup verifies
+          # this file before installing and aborts if it cannot (T-16).
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-artifacts
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/theurian/${{ needs.build.outputs.version }}
+    permissions:
+      # Trusted Publishing (OIDC). No long-lived PyPI token exists in this
+      # repository's secrets, so there is none to leak or rotate.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-artifacts
+          path: artifacts
+
+      - name: Separate the distributions from the release-only files
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          cp artifacts/dist/*.whl artifacts/dist/*.tar.gz upload/
+          # SHA256SUMS and the SBOM belong on the GitHub release, not in a
+          # PyPI upload — twine rejects anything that is not a distribution.
+          ls -la upload
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          packages-dir: upload
+          # PEP 740 attestations, signed by this workflow's OIDC identity.
+          attestations: true
+          print-hash: true
+
+  github-release:
+    name: Cut the GitHub release
+    needs: [build, publish-pypi]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-artifacts
+          path: artifacts
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            cat artifacts/release-notes.md
+            echo
+            echo "---"
+            echo
+            echo "Install: \`uv tool install theurian==${VERSION}\`"
+            echo
+            echo "Every artifact below is covered by \`SHA256SUMS\`, and"
+            echo "\`theurian-${VERSION}.cdx.json\` is its CycloneDX 1.6 SBOM."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Theurian Core ${VERSION}" \
+            --notes-file notes.md \
+            --verify-tag \
+            artifacts/dist/*
