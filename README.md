@@ -194,10 +194,23 @@ then publishes an index of `chunks: 0`. `ingest` reads `.theurian/knowledge` and
 `.theurian/specifications` only — it does not walk the repository's own `docs/`.
 
 The migration format is [docs/protocol/migrations.md](docs/protocol/migrations.md),
-and [`examples/sample-project/`](examples/sample-project/) has a migration with
-its content files to copy the shape from. Every revision needs at least one
-entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
+and [`examples/sample-project/`](examples/sample-project/) has two migrations
+with their content files to copy the layout from. Every revision needs at least
+one entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
 `migrate apply` refuses a revision with neither.
+
+**Neither of those two shows that field, and the example does not satisfy the
+rule.** It validates and then fails to apply — `"valid": true`, then
+`has no source anchor` and exit 4. Copy the layout, and add the part they are
+missing ([#36](https://github.com/theurian/theurian/issues/36)):
+
+```yaml
+    metadata:
+      title: Authentication and authorization policy
+      sourceAnchors:                 # or the label `authored-in-theurian`
+        - provider: git
+          sourceUri: git://local/docs/adr/0031-service-auth-policy.md
+```
 
 Then install the daemon and wire it to your agent:
 
