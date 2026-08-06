@@ -26,44 +26,93 @@ bounty; this is a volunteer project.
 ## How we handle a vulnerability
 
 The section above is what a reporter does; this is what we do once a
-vulnerability is known. What decides the handling is the release state of the
-artifact it is in — and **it does not change what a reporter should do: report
-privately, whether or not a release exists.**
+vulnerability is known. **It does not change what a reporter should do: report
+privately, whether or not a release exists** — and a defect reported privately
+stays private until the reporter agrees otherwise.
 
-Theurian ships two artifacts on independent release trains
-([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md)), tagged
-`core-v*` and `plugin-v*`. Each carries its own boundary, and a defect is on
-whichever side its own artifact's first **pushed** tag puts it — pushed rather
-than created, because a tag sitting in a local clone distributes nothing.
-`git ls-remote --tags origin` is the check.
+What decides our handling is whether the artifact holding the defect has been
+released. Theurian ships two on independent release trains
+([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md)), and **they
+are not in the same state**:
 
-**Before that artifact's first pushed tag** — there is no released version a
-GitHub advisory could name. So a defect we find is fixed on a public branch,
-recorded in the Security section of its artifact's changelog
-([Core](packages/theurian-core/CHANGELOG.md),
-[plugin](plugins/claude-code/CHANGELOG.md)) and in the
-[threat model](docs/security/threat-model.md), and — where it is not fixed
-immediately — tracked as a public issue like any other defect.
+| Artifact | State | What settles it |
+| :-- | :-- | :-- |
+| Claude Code plugin | **Released**, at `0.1.0` | the `theurian` entry in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json` |
+| Theurian Core | **Pre-release**, until the first `core-v*` tag is pushed | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'` |
 
-Handling it in public is not defensible on the grounds that nobody is running the
-code. Theurian is installable before any tag, from source and through the plugin
-marketplace, and the threat model reasons about what a user has on that basis.
-The reason is decided per defect: one whose exploitation needs local access the
-attacker would already have gives them nothing by being described in public, and
-one that does not clear that bar is not described in public before its fix is on
-`main`.
+Core tags are `core-v*` and plugin tags are `plugin-v*`
+([release process](docs/contributing/release.md#4-tag)) — pushed to that URL
+rather than created, because a tag in a local clone or a fork distributes
+nothing. A defect in a tree the two artifacts share — `schemas/`,
+`tests/contract/`, `tests/e2e/` and `docs/`, co-owned under ADR-0001 §3 — belongs
+to neither, and is decided by the most-released artifact that touches it.
 
-**From that artifact's first pushed tag onward** — a vulnerability in a released
-version goes into a private advisory before the fix is public, whoever found it,
-is fixed in a PATCH release where the fix allows one, and the advisory is
-published with it. See [Yanking](docs/contributing/release.md#yanking).
+**The plugin's delivery point is the marketplace entry, not a merge here.** That
+entry pins a commit sha, so a fix on `main` reaches nobody until the pin moves to
+it — and what travels through it includes `hooks/hooks.json`, which wires
+`SessionStart` to a shell script that runs in the user's session.
 
-This is a recorded decision rather than an omission. `theurian doctor --report`
-could publish a bearer token it had read out of a client configuration while this
-file said no credential value entered that payload. Both were corrected before
-any release, in [#51](https://github.com/theurian/theurian/pull/51), where the
-fix and the account of it landed together, and no advisory was filed because no
-released version was affected.
+Either side of the boundary, the fix is recorded in the Security section of its
+artifact's changelog ([Core](packages/theurian-core/CHANGELOG.md),
+[Claude Code plugin](plugins/claude-code/CHANGELOG.md)) and in the
+[threat model](docs/security/threat-model.md).
+
+### A vulnerability in a released, supported artifact
+
+Whoever found it: a private advisory before the fix is public, a release that
+carries the fix, and the advisory published with it. Which releases are supported
+is the table below, and that table is the authority.
+
+The fix is written in the temporary private fork a
+[security advisory](https://github.com/theurian/theurian/security/advisories/new)
+provides, which is the only way a public repository has to hold one back. The
+advisory is published when the fix is *delivered* — for Core, with the release
+that carries it; for the plugin, when the marketplace pin moves.
+
+Yanking a broken release is
+[`release.md`'s procedure](docs/contributing/release.md#yanking), and this file is
+what its advisory step refers back to. Its "yank from PyPI" and "untag" steps are
+Core's alone: the plugin has neither, and untagging cancels nothing that a sha
+pin distributes.
+
+### A vulnerability in Core while it is pre-release
+
+No released version of Core exists for a GitHub advisory to name. That settles
+only that an advisory is not the mechanism; it does not make public handling
+automatic. A defect is fixed on a public branch — and, where it is not fixed at
+once, tracked as a public issue — only when **both** of these hold:
+
+- **It touches no credential.** Anything that could expose the MCP token, or
+  weaken the 0600 file inside a 0700 directory that protects it (SEC-4), is out.
+  So is a defect letting a local process read knowledge without presenting the
+  token: the threat model grades that High and in scope (T-1). Only its residual
+  — an account already compromised — is the row this file puts out of scope
+  further down.
+- **A public description does not help anyone acquire what the defect exposes.**
+  `theurian doctor --report` output is what people paste into public issues, so
+  describing a defect in that payload publishes a collection method rather than a
+  warning. Searching public issues is not local access.
+
+Anything else — and anything where the answer is unclear — takes the same private
+fork, and is described in public once the fix is on `main`, which is what an
+install from source gets.
+
+None of this rests on nobody running the code. Theurian is installable before any
+tag, from source and through the marketplace above, and the threat model reasons
+about what a user has on that basis.
+
+### The decision this records
+
+[#51](https://github.com/theurian/theurian/pull/51) fixed a `theurian doctor
+--report` that could publish a bearer token it had read out of a client
+configuration, while this file said no credential value entered that payload. No
+advisory was filed, because Core has no released version an advisory could name.
+That was a decision, and this section exists so that it reads as one.
+
+**It would not clear the bar above**, on either half — and its own pull request
+sat public for the two and three quarter hours before the fix merged, carrying a
+reproduction. The bar is written down because judgement in the moment produced
+that.
 
 ## Supported versions
 
