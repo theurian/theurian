@@ -256,5 +256,5 @@ from it.
 The three, so that "breaking but unbumped" is checkable rather than asserted:
 the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
 and the two required fields `project.list` gained. Each is named as BREAKING in
-the changelog, which is what protects an integrator reading this branch. The
-first bump is the first breaking change after `theurian/v1` is released.
+the changelog, which is what protects an integrator. The first bump is the
+first breaking change after `theurian/v1` is released.

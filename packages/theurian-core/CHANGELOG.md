@@ -372,7 +372,7 @@ does not do.
 - **BREAKING — `SearchRequest` has no `limit`, and `substring_answer` and
   `hybrid_answer` require the caller's `ActiveState`.** Both are Milestone 5
   APIs changed within Milestone 5, so no released version is affected; they are
-  named here because the branch is what anyone integrating against Core is
+  named here because this changelog is what anyone integrating against Core is
   reading.
 
   `SearchRequest(query=..., limit=10)` no longer type-checks. `limit` and the
@@ -1152,7 +1152,7 @@ does not do.
 #### Known limitations
 
 - Artifact integrity verification is reported as *not applicable* rather than
-  satisfied: there is no signed release manifest to check against yet, and a
+  satisfied: setup never obtains Core, so it holds no artifact to hash, and a
   step claiming success without checking anything would be a false assurance
   about supply chain integrity (T-16).
 - Rollback is a journal, not an undo. Every apply is a create-or-tighten, so a
