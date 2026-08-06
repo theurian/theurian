@@ -124,35 +124,98 @@ credential.
 upload of a filename it already holds, so an upload that succeeds cannot be
 retried, only yanked. If the release were cut after the upload, a failure
 between the two would leave a wheel that installs and checksums that exist
-nowhere — the state T-16's shipped mitigation is supposed to rule out. Drafting
-first means every way the run can die leaves one of two states: nothing is
-installable, or the wheel is on PyPI *and* the draft holding its checksums and
-SBOM already exists. The second is repaired with
+nowhere — the state T-16's shipped mitigation is supposed to rule out.
+
+### Never address a release by its tag
+
+**A tag does not identify a release.** Several releases can carry one tag —
+`gh release create --draft` does not refuse a duplicate — and the commands that
+take a tag then pick one of them by a rule nobody chose:
+
+| Command | Measured behaviour with more than one release on the tag |
+| :-- | :-- |
+| `gh release edit <tag> --draft=false` | publishes the **oldest** draft, 4 times out of 4 |
+| `gh release delete <tag>` | deleted the **published** release and left the draft |
+
+Both resolve through the same lookup, which races a REST call against a GraphQL
+one. So **every command below addresses a release by its numeric id**, and the
+workflow does the same from creation onward. Find the id — never act on the
+list without reading it first:
 
 ```sh
-gh release edit core-v<version> --draft=false
+gh api repos/theurian/theurian/releases --jq '.[] | {id, name, tag_name, draft}'
+gh api -X PATCH repos/theurian/theurian/releases/<id> -F draft=false   # publish
+gh api -X DELETE repos/theurian/theurian/releases/<id>                 # delete
 ```
 
-with nothing rebuilt and nothing yanked. A release rejected at step 6, or never
-approved, leaves the draft behind — delete it; nothing else was written.
+`draft-release` refuses to start if a draft already exists for the tag, so the
+workflow cannot walk into this. That guard is the reason step 5 is safe to
+re-run, and it is the one thing the *old* order gave for free: `gh release
+create` without `--draft` does refuse a duplicate tag, so a re-run used to fail
+loudly on its own.
+
+### What each failure leaves, and what to do
+
+**Delete drafts only when no run is in flight.** Deleting one mid-run is the one
+way to reach the state this ordering exists to prevent: the upload then succeeds
+with nothing left to publish.
+
+| Failed at | On PyPI | On GitHub | Do this |
+| :-- | :-- | :-- | :-- |
+| 1–4 | nothing | nothing | Fix, re-tag. |
+| 5 | nothing | a draft, possibly partial | Delete that draft **by id**, then re-run. Re-running without deleting fails at the guard, which is intended. |
+| 6, declined or unapproved | nothing | a complete draft | Delete it by id. |
+| 6, upload refused outright | nothing | a complete draft | Fix, re-run. |
+| 6, **partial** upload | some filenames permanently taken | a complete draft | See below. |
+| 7 | full upload | a complete draft | Publish it by id. Nothing rebuilt, nothing yanked. |
+
+**Use "Re-run failed jobs", not "Re-run all jobs".** The former skips step 5
+when it already succeeded, so the id the run published stays valid.
+
+**A partial upload is the one state with no clean recovery.** twine sends files
+in order and stops at the first failure, so the wheel can land while the sdist
+does not. Those filenames are now permanently taken, `skip-existing` is
+deliberately unset (see below), and no maintainer holds a PyPI credential to
+finish the upload by hand — so the only route is to yank and release a new
+version. Everything else on this page can be repaired without rebuilding or
+yanking; this cannot.
+
+Two artifacts of the design worth knowing. `skip-existing` is left unset on
+purpose: with it, a re-run would treat "this filename already exists" as success
+and publish a GitHub release pointing at a PyPI artifact this run did not
+upload. And `uv build` is byte-reproducible on this tree — two consecutive
+builds of the same commit produce identical checksums — so duplicate drafts from
+one commit carry the same checksum *values*; what differs between them is which
+files they carry.
+
+**One window stays open.** Between a successful upload and a successful step 7,
+the wheel is installable while the draft holding its checksums is readable only
+with push access. T-16's beneficiary is the person installing, so that window is
+real; it lasts one job.
+
+### A manual run proves less than it looks like
 
 A manual run (`workflow_dispatch`) is the rehearsal path and publishes nothing:
 steps 5–7 are all `if: github.event_name == 'push'`, so it stops once the
 artifacts exist. It does exercise the quality gate, the changelog guard, the
 build, the wheel install-back check that the installed package reports
-`pyproject.toml`'s version, the SBOM and `SHA256SUMS`. It cannot exercise the
-two checks that read the tag — `core-v<version>` agreeing with
-`pyproject.toml`, and the signature guard — so a green rehearsal is evidence
-about the build, not about the tag. There is no input to set: the workflow
-carried a `dry_run` boolean wired to nothing, and it is gone.
+`pyproject.toml`'s version, the SBOM and `SHA256SUMS`. There is no input to set:
+the workflow carried a `dry_run` boolean wired to nothing, and it is gone.
+
+What it cannot reach is most of what can go wrong. It skips the two checks that
+read a tag — `core-v<version>` agreeing with `pyproject.toml`, and the signature
+guard — and it skips steps 5, 6 and 7 entirely. **Nothing in the repository
+tests those three steps either**: no test names them, and there is no
+`actionlint`, `zizmor` or `yamllint`. A green rehearsal is evidence about the
+build, and about nothing downstream of it.
 
 ### Checksums are published; nothing verifies them at install time
 
 Steps 4, 5 and 7 satisfy the publication half of T-16 (OSS-7, OSS-11): on every
 release the record a verifier would check against is produced, attached to the
 release before the artifact is installable, and then made public. **The
-verifying half does not exist.** `theurian setup`'s artifact-integrity step is an unconditional
-`return` of `not-applicable` —
+verifying half does not exist.** `theurian setup`'s artifact-integrity step is
+an unconditional `return` of `not-applicable` —
 [`setup_steps.py`](../../packages/theurian-core/src/theurian/application/setup_steps.py),
 `probe_artifact_integrity` — so `theurian setup --dry-run --json` reports this,
 on a machine with a release installed or without one:
@@ -204,9 +267,29 @@ to leak, rotate, or scope wrongly.
 
 Two things must exist before the first release:
 
-**1. A GitHub environment named `pypi`.** Settings → Environments → New
-environment. Add required reviewers if a release should need a second pair of
-eyes; the workflow will wait for them.
+**1. A GitHub environment named `pypi`, with `core-maintainers` as a required
+reviewer.** Not optional: §5 states the approval as a fact of the release
+process, and `release-core.yml` rests an argument on it — `draft-release` holds
+`contents: write` before the reviewer sees anything, and the reason that is
+acceptable is that the reviewer stands between the draft and the upload. The
+setting lives in GitHub, not in this repository, so nothing here enforces it.
+Confirm it rather than recall it:
+
+```console
+$ gh api repos/theurian/theurian/environments/pypi \
+    --jq '.protection_rules[] | select(.type == "required_reviewers")
+          | {reviewers: [.reviewers[].reviewer.slug], prevent_self_review}'
+{"prevent_self_review":false,"reviewers":["core-maintainers"]}
+```
+
+**What that approval is and is not worth today.** `core-maintainers` has one
+member, `utchy` — the same account as `RELEASE_SIGNERS`. `prevent_self_review`
+is `false` and `can_admins_bypass` is `true`, both measured. So the gate stops a
+tag pushed by someone with write access who is not a maintainer, and it does not
+stop a maintainer approving their own release. `prevent_self_review` is left off
+deliberately: with one member, turning it on would make an ordinary release
+impossible except through the admin bypass. Revisit all three settings when the
+team gains a second member.
 
 **2. A trusted publisher on PyPI**, registered at
 <https://pypi.org/manage/account/publishing/> — as a *pending* publisher until
@@ -305,6 +388,13 @@ not so they are checked twice.
       it did not when that item was written
 - [ ] *(CI)* Wheel installs into a clean environment and runs
 - [ ] *(CI)* Checksums and SBOM published
+- [ ] The `pypi` environment still has `core-maintainers` as a required
+      reviewer — it is a GitHub setting, not a file in this repository, so
+      nothing here fails if it is removed. One command, above under *One-time
+      setup*
+- [ ] No leftover draft release on the tag you are about to push.
+      `draft-release` refuses to run if there is one; deleting it *by id* first
+      turns a failed release into a non-event
 
 **Plugin**
 
