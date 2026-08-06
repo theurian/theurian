@@ -37,10 +37,10 @@ whichever side its own artifact's first **pushed** tag puts it — pushed rather
 than created, because a tag sitting in a local clone distributes nothing.
 `git ls-remote --tags origin` is the check.
 
-**Before that artifact's first pushed tag** — there is no released version an
-advisory could name and no channel through which we could notify anyone. So a
-defect we find is fixed on a public branch, recorded in the Security section of
-its artifact's changelog ([Core](packages/theurian-core/CHANGELOG.md),
+**Before that artifact's first pushed tag** — there is no released version a
+GitHub advisory could name. So a defect we find is fixed on a public branch,
+recorded in the Security section of its artifact's changelog
+([Core](packages/theurian-core/CHANGELOG.md),
 [plugin](plugins/claude-code/CHANGELOG.md)) and in the
 [threat model](docs/security/threat-model.md), and — where it is not fixed
 immediately — tracked as a public issue like any other defect.
