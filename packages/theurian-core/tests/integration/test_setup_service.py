@@ -595,6 +595,43 @@ def test_the_plan_offers_none_of_the_five_paths_rows_11_to_13_used_to_name(
     assert not _paths_setup_never_writes(in_a_repository) & set(plan.paths)
 
 
+def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
+    in_a_repository: SetupContext,
+) -> None:
+    """The compensation, which was the untested half of removing `paths`.
+
+    Dropping `paths` from these three is only defensible because nothing a
+    reader needs goes with it, and for two of them that was made true by moving
+    the location into the summary rather than by its already being there. Both
+    the CHANGELOG and the probes' own comments assert it. Until this test,
+    shortening any of the three summaries to a sentence naming no location
+    passed the whole suite -- measured, as three surviving mutations.
+
+    `project-layout` needs no help and gets asserted anyway, because "its
+    summary already names them" is the reason it was left alone.
+    """
+    root = in_a_repository.project_root
+    assert root is not None
+    expected = {
+        StepId.PROJECT_REGISTERED: str(ProjectRegistry.default(in_a_repository.data_dir).path),
+        StepId.PROJECT_LAYOUT: str(root / ".theurian"),
+        StepId.GITIGNORE: str(root / ".gitignore"),
+    }
+
+    report = _service(in_a_repository).run()
+
+    for step_id, location in expected.items():
+        step = report.step(step_id)
+        assert step is not None
+        assert step.status is StepStatus.MISSING, "the fixture has to reach the branch"
+        assert location in step.summary, (
+            f"{step_id.value} no longer says where; `paths` was the only other place it lived"
+        )
+    registered = report.step(StepId.PROJECT_REGISTERED)
+    assert registered is not None
+    assert str(root) in registered.summary, "and which repository has no entry"
+
+
 # -- The property those five paths are one instance of -----------------------
 #
 # `SetupStep.paths` claims that a step with no action names none *whatever it
@@ -606,16 +643,24 @@ def test_the_plan_offers_none_of_the_five_paths_rows_11_to_13_used_to_name(
 # `probe_migrations` naming the directory it only reads -- both surviving the
 # whole suite while restoring the published defect.
 
-#: Every ``(step, status)`` pair the eleven actionless steps can reach, counted
-#: off their branches: platform 2, core-present 2, artifact-integrity 1,
-#: single-instance 3, project-registered 4, project-layout 3, gitignore 3,
-#: mcp-health 2, migrations-valid 2 (three returns, two of them NOT_APPLICABLE)
-#: initial-index 1 (two summaries, one status), serena-detection 2.
+#: Every ``(step, status)`` pair the eleven actionless steps reach across
+#: `_states`, counted off their branches: platform 2, core-present 2,
+#: artifact-integrity 1, single-instance 3, project-registered 4,
+#: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 2 (three
+#: returns, two of them NOT_APPLICABLE), initial-index 1 (two summaries, one
+#: status), serena-detection 2. Independently: 27 ``return SetupStep(...)``
+#: statements collapsing onto 25 pairs.
 #:
-#: `_states` walks all 25. A fall means a state stopped reaching an arm; a rise
-#: means an arm exists that no state is pointed at, which is the condition this
-#: whole section exists to prevent.
-REACHABLE_ACTIONLESS_ARMS = 25
+#: **What the assertion holds, exactly.** A fall means a state stopped reaching
+#: a status it used to. A rise means a step began emitting a status it did not
+#: emit before. It does *not* enumerate arms and cannot: an arm no state walks
+#: produces no observation, so deleting one is invisible here whenever another
+#: arm of the same step already emits that status. Measured -- deleting
+#: `probe_migrations`'s "No migrations directory yet." NOT_APPLICABLE arm
+#: survives this, because the `root is None` arm keeps emitting
+#: NOT_APPLICABLE. What catches a probe naming a path is the `paths` assertion
+#: in the loop, not this number.
+ACTIONLESS_STEP_STATUS_PAIRS = 25
 
 #: Any absolute path. What matters is only that a probe named one.
 _A_NAMED_PATH = "/tmp/a-file-this-step-only-reads"  # noqa: S108 - never opened
@@ -628,11 +673,28 @@ def _under(tmp_path: Path, name: str) -> Path:
 
 
 def _converged_repository(base: Path) -> SetupContext:
-    """Rows 11-13 all satisfied, with Serena present and a migration on disk."""
+    """Rows 11-13 satisfied, Serena present, a migration and a built state on disk.
+
+    The built state is the point of the ``active.json``: `probe_initial_index`
+    branches on `read_active_state`, and with no state ever built no context
+    reached the built side of it. A mutation naming a path only there survived
+    the whole suite.
+    """
     root = _repository(base)
     for name in ("migrations", "knowledge", "state"):
         (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
     (root / ".theurian" / "migrations" / "0001-initial.yaml").touch()
+    (root / ".theurian" / "state" / "active.json").write_text(
+        json.dumps(
+            {
+                "stateHash": "b" * 64,
+                "databaseFilename": "knowledge-bbbb.sqlite",
+                "migrationCount": 1,
+                "updatedAt": "2026-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
     (root / ".gitignore").write_text(".theurian/state/\n", encoding="utf-8")
     mcp_config = FakeMcpConfig()
     mcp_config.serena = True
@@ -642,8 +704,15 @@ def _converged_repository(base: Path) -> SetupContext:
 
 
 def _conflicted_repository(base: Path) -> SetupContext:
-    """Three conflicts at once: no executable, a foreign daemon, a broken entry."""
+    """Three conflicts at once: no executable, a foreign daemon, a broken entry.
+
+    Its `.theurian/` is *partly* built -- `migrations` alone -- because
+    `probe_project_layout` computes which directories are absent and no other
+    state leaves that list a proper subset. A mutation naming only the missing
+    ones survived while every state had either all three or none.
+    """
     root = _repository(base)
+    (root / ".theurian" / "migrations").mkdir(parents=True, exist_ok=True)
     context = _with(
         base,
         project_root=root,
@@ -662,10 +731,15 @@ def _initialised_but_empty_repository(base: Path) -> SetupContext:
     reaches its own directory-exists-but-is-empty case. A mutation that made
     that case report MISSING with the directory in `paths` survived the whole
     suite, because no state walked it.
+
+    Its `.gitignore` exists and says nothing about Theurian, which is the other
+    half of `probe_gitignore`'s MISSING status: everywhere else the file is
+    simply absent, so a mutation naming it only when it exists survived too.
     """
     root = _repository(base)
     for name in ("migrations", "knowledge", "state"):
         (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text("*.log\nnode_modules/\n", encoding="utf-8")
     return _with(base, project_root=root)
 
 
@@ -692,15 +766,22 @@ def _states(tmp_path: Path) -> dict[str, SetupContext]:
 def test_no_step_without_an_action_names_a_path_in_any_state_it_can_reach(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The source half of the guarantee, over every arm rather than a sample.
+    """The source half of the guarantee, across every state the probes branch on.
 
     Stripping in the runner (below) makes a probe that names a path harmless, not
     correct: the next reader of `probe_gitignore` would find `paths=(...)` in the
     source and `"paths": []` in the JSON and have to work out which one lied.
     This keeps the two agreeing.
 
+    The `paths` assertion is what does the work. `ACTIONLESS_STEP_STATUS_PAIRS`
+    is a coverage floor and nothing more -- see its comment for what it can and
+    cannot notice. What decides whether this test finds anything is the *states*:
+    three mutations survived an earlier version of it because no context here
+    had a `.gitignore` that existed without the marker, a built knowledge state,
+    or a partly-populated `.theurian/`.
+
     Both platform arms are walked by patching rather than by whichever host is
-    running, so Linux CI and a macOS laptop cover the same 25.
+    running, so Linux CI and a macOS laptop cover the same pairs.
     """
     states = _states(tmp_path)
     observed: set[tuple[StepId, StepStatus]] = set()
@@ -719,7 +800,7 @@ def test_no_step_without_an_action_names_a_path_in_any_state_it_can_reach(
 
     assert offenders == []
     assert {status for _, status in observed} == set(StepStatus), "every status has to be walked"
-    assert len(observed) == REACHABLE_ACTIONLESS_ARMS
+    assert len(observed) == ACTIONLESS_STEP_STATUS_PAIRS
 
 
 def _probe_naming_a_path(
