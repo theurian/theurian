@@ -213,12 +213,24 @@ Update `version` in `.claude-plugin/plugin.json` **and** `pluginVersion` in
 `compatibility.yaml`. They must agree —
 `test_the_version_claude_code_caches_is_the_version_the_plugin_declares` in
 [`test_plugin_boundary.py`](../../packages/theurian-core/tests/unit/test_plugin_boundary.py)
-asserts it, and `plugin.yml`'s `manifest` job runs that file on every pull
-request and every push to `main` that touches `plugins/**`.
+asserts it.
 
-That is a pull-request check, not a release gate. Nothing triggers on
-`plugin-v*` (§4), so a tag cut from a commit that never went through a pull
-request is still unchecked — which is why the item stays on the checklist below.
+Write `pluginVersion` as a plain unquoted scalar on one line. The SessionStart
+hook does not parse YAML — `lib.sh` reads the line with `sed` — so a quoted
+value is correct YAML that ships the quotes to `theurian compat check`, which
+then answers `invalid-declaration`.
+`test_the_shipped_hook_reads_the_same_version_the_yaml_parser_does` runs the
+real `lib.sh` and holds this.
+
+Both tests run in `plugin.yml`'s `manifest` job, which triggers when a pull
+request or a push to `main` touches `plugins/**`, `schemas/protocol/**`, or
+`plugin.yml` itself. Both files above are under `plugins/`, so editing either
+runs the check — and nothing else does: a change elsewhere in the repository
+does not run this job at all.
+
+It is also not a release gate. Nothing triggers on `plugin-v*` (§4), so a tag
+cut from a commit that never went through a pull request is unchecked — which is
+why the item stays on the checklist below.
 
 Review the range against the Core you actually tested with:
 
