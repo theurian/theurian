@@ -7,9 +7,12 @@
 Report privately through GitHub's ["Report a vulnerability"](https://github.com/theurian/theurian/security/advisories/new)
 form, which creates a private advisory visible only to maintainers.
 
-Please include: what you observed, how to reproduce it, the affected version
-(`theurian version --json`), your platform, and the impact as you see it. A
-proof of concept helps but is not required to report.
+Please include: what you observed, how to reproduce it, the affected version,
+your platform, and the impact as you see it. For Core that is
+`theurian version --json`; for the Claude Code plugin it is the version `/plugin`
+shows, or `version` in `plugins/claude-code/.claude-plugin/plugin.json` — the
+Core command reports Core and the protocol, and the plugin is not in it. A proof
+of concept helps but is not required to report.
 
 ### What to expect
 
@@ -27,8 +30,9 @@ bounty; this is a volunteer project.
 
 The section above is what a reporter does; this is what we do once a
 vulnerability is known. **It does not change what a reporter should do: report
-privately, whether or not a release exists** — and a defect reported privately
-stays private until the reporter agrees otherwise.
+privately, whether or not a release exists.** A defect reported privately is not
+described in public before its fix is delivered or the clock below runs out, and
+we name a reporter only with their agreement.
 
 What decides our handling is whether the artifact holding the defect has been
 released. Theurian ships two on independent release trains
@@ -40,24 +44,30 @@ are not in the same state**:
 | Claude Code plugin | **Released**, at `0.1.0` | the `theurian` entry in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json` |
 | Theurian Core | **Pre-release**, until the first `core-v*` tag is pushed | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'` |
 
-Core tags are `core-v*` and plugin tags are `plugin-v*`
-([release process](docs/contributing/release.md#4-tag)) — pushed to that URL
+Core tags are `core-v*` and plugin tags are `plugin-v*` (release process:
+[Core](docs/contributing/release.md#4-tag),
+[plugin](docs/contributing/release.md#4-tag-and-publish)) — pushed to that URL
 rather than created, because a tag in a local clone or a fork distributes
 nothing. No output from that command means no such tag; it exits 0 either way, so
 a network failure reads the same as an answer.
 
-A defect in a file neither artifact ships — a tree they co-own (`schemas/`,
-`tests/contract/`, `tests/e2e/`, `docs/`; ADR-0001 §3), or this file, the README,
-a workflow — is routed by **whose users it exposes**, not by which tree it sits
-in. A document that states a control wrongly is corrected in public: the
-correction is the mitigation, and a reader acting on a false claim is the harm.
-What that correction may *say* is still the bar's question. Where no artifact's
-users are reached, the defect is public.
+**A defect is routed by whose users it exposes, not by which tree it sits in**,
+and where the two differ the users decide: a control living in Core's test tree
+that keeps credentials out of what the plugin ships is routed by the plugin's
+users. Which tree ships with which artifact is a fact about the build, not about
+ownership — Core's wheel force-includes `schemas/` and an installed build reads
+that packaged copy first, so a defect there is Core's, while `tests/contract/`,
+`tests/e2e/` and `docs/` are shipped by neither, as are this file, the README and
+the workflows. A document that states a control wrongly is corrected in public:
+the correction is the mitigation, and a reader acting on a false claim is the
+harm — what that correction may *say* is still the conditions' question. Where no
+artifact's users are reached, the defect is public.
 
 **The plugin's delivery point is not a merge here.** The marketplace entry pins a
 commit sha, so a fix on `theurian/theurian@main` reaches nobody until the pin
-moves — and what travels through it includes `hooks/hooks.json`, which wires
-`SessionStart` to a shell script that runs in the user's session.
+moves *and* the declared version is bumped with it (below) — and what travels
+through it includes `hooks/hooks.json`, which wires `SessionStart` to a shell
+script that runs in the user's session.
 
 Either side of the boundary, the fix is recorded in the Security section of its
 artifact's changelog ([Core](packages/theurian-core/CHANGELOG.md),
@@ -75,29 +85,42 @@ updating a checkout, so the default flips to private.
 The fix is written in the temporary private fork a
 [security advisory](https://github.com/theurian/theurian/security/advisories/new)
 provides — the only route this repository uses to hold one back. The advisory is
-published when the fix is **delivered, or at the agreed disclosure date,
-whichever comes first**: a pin nobody moves must not extend an embargo past the
-90-day default above.
+published when the fix is **delivered, or ninety days after we confirmed the
+vulnerability, whichever comes first — whether or not there is a reporter.** Most
+of what this section governs we found ourselves, so a clock that starts at an
+agreed date does not start at all; and delivery is a hand-driven act, so an
+embargo without a deadline is one that ends when somebody remembers.
 
 Delivered means something different on each train, and for the plugin it is not
 the pin:
 
 - **Core** — the release that carries the fix.
-- **The plugin** — a bumped `version` in `plugin.json`, published by moving the
+- **The plugin** — a bumped `version` in
+  `plugins/claude-code/.claude-plugin/plugin.json`, published by moving the
   marketplace pin. Claude Code caches a plugin by its declared version
   ([release process](docs/contributing/release.md#2-version-and-compatibility)),
   so a pin that moves under an unchanged version reaches new installs only and
-  leaves every existing install on the cached copy. Nothing runs on a `plugin-v*`
-  tag today, so that train is hand-driven end to end.
+  leaves every existing install on the cached copy. `compatibility.yaml`'s
+  `pluginVersion` moves with it; `release.md` holds that procedure. Nothing runs
+  on a `plugin-v*` tag today, so that train is hand-driven end to end.
+
+**Delivered means fetchable, not arrived.** Both trains end at something the user
+does — an install command, `/plugin update` — and this repository documents no
+push channel. The trigger is our act, not their upgrade; the reason private is
+the default here is that a release leaves installs a reader cannot fix by
+updating a checkout.
 
 An advisory published here carries no package ecosystem, so it reaches people who
 read this repository and no dependency scanner. It is a public record, not a
 notification.
 
-**The private route is for a vulnerability in what an artifact ships.** A gap in
-the process around it — a release train with no CI, a marketplace repository
-without required review, an unverified download in a workflow — has no affected
-version an advisory could name, and is handled in public like any other defect.
+A gap in the process around a release — a train with no CI, a marketplace
+repository without required review, an unverified download in a workflow — has no
+affected version an advisory can name, so its record is a public issue rather
+than an advisory. **That is a statement about the mechanism, not a second routing
+rule**: routing is still by whose users are exposed. Where such a gap has already
+delivered something to those users, the fix takes the private fork above and the
+public record follows it.
 
 Yanking a broken release is
 [`release.md`'s procedure](docs/contributing/release.md#yanking), and this file is
@@ -114,25 +137,45 @@ once, tracked as a public issue or described in the
 [threat model](docs/security/threat-model.md), this project's most detailed
 public security channel — only when **both** of these hold:
 
-- **It exposes no credential, and no content held behind an access boundary.**
-  Out: anything that could expose the MCP token or weaken the 0600 file inside a
-  0700 directory protecting it (SEC-4); anything letting an untrusted actor —
-  another local process, a page the user visits, a repository contributor — read
-  knowledge without presenting the token (T-1, T-2); and anything letting an
-  authorized caller read content from a project, tenant or sensitivity level it
-  is not authorized for (T-11). What decides this is exposure or weakened
-  protection, not whether a credential appears in the story: a defect that leaves
-  a token where it belongs, still 0600, has not exposed it. Only the residual of
-  the first — an account already compromised — is the row this file puts out of
-  scope further down.
-- **A public description hands nobody reach they did not already have.**
-  Measured from an attacker who already holds whatever the defect requires: the
-  user's machine, or a token. `theurian doctor --report` output is what people
-  paste into public issues, so describing a defect in that payload publishes a
-  way to collect from strangers — searching public issues needs no access at all.
-  A defect an attacker can exercise only against a machine they are already on
-  gives them no such reach, which is why T-17a's ranking residual is described
-  further down this file, and measured in the threat model, rather than withheld.
+- **It exposes no credential, and no content held behind a boundary this product
+  enforces.** Four things are out, each taken from where the product enumerates
+  it rather than listed here from memory:
+
+  - the MCP token, and anything weakening the 0600 file inside a 0700 directory
+    that protects it (SEC-4);
+  - knowledge read without presenting the token by any actor the
+    [threat model's actor table](docs/security/threat-model.md) marks untrusted —
+    another local process, a visited web page, a repository contributor, an
+    external system, an agent reasoning over untrusted input (T-1, T-2);
+  - content read by an authorized caller from a project, tenant, sensitivity
+    level, ACL group or namespace it is not authorized for — the five components
+    of tree identity, filtered before ranking (T-11, SEC-13, FR-R1);
+  - content withheld by approval state, supersession or retirement, read
+    directly or **recovered** from a published value that moves with it (T-17).
+
+  What decides this is exposure or weakened protection, not whether a credential
+  appears in the story: a defect that leaves a token where it belongs, still
+  0600, has not exposed it. Only the residual of the first — an account already
+  compromised — is the row this file puts out of scope further down.
+- **A public description hands nobody reach they did not already have.** Measured
+  from an attacker holding exactly what the defect requires, and the possible
+  holdings are that same actor table plus one it does not list: **nothing at
+  all.** That last is the case this condition exists for. `theurian doctor
+  --report` output is what people paste into public issues, so describing a
+  defect in that payload publishes a way to collect from strangers, and searching
+  public issues needs no access. A defect an attacker can exercise only against a
+  machine, a token or a session they already hold gives them no such reach.
+
+**Recovered is the load-bearing word above, and it is measured rather than
+argued.** T-17 recovered a sixteen-character credential in 203 calls — an
+arbitrary secret, not a yes-or-no about a known one — and is Critical and
+private. T-17a moves published values too, but what it yields is bounded to a
+vocabulary the caller already has: it can confirm that a withheld document holds
+a term they have seen elsewhere, and cannot produce one they do not have. That is
+why it is described further down this file and measured in the threat model
+rather than withheld. **A new member of this family is private until somebody has
+measured which side of that line it falls on**, because the measurement is the
+argument.
 
 Both conditions ask about disclosure, so an integrity or availability defect
 clears them whatever its severity — a corrupted store and an unbounded query are
