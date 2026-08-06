@@ -76,7 +76,13 @@ one.**
 
 - `tests/unit/test_domain_invariants.py` asserts INV-1 through INV-3 and that
   revision objects are frozen at the type level.
-- An integration test applies two migrations with the same `expectedRevision` and
-  asserts the second raises `RevisionConflictError`.
+- `tests/unit/test_migration_engine.py::test_a_stale_expected_revision_is_a_conflict`
+  applies two migrations with the same `expectedRevision` and asserts the second
+  raises. `test_omitting_expected_revision_over_an_existing_item_is_a_conflict`
+  covers the adjacent case, and
+  `tests/integration/test_cli_commands.py::test_a_revision_conflict_is_reported_not_merged`
+  carries it to the CLI. This section called the first an integration test; it
+  runs against the in-memory fake, so what it holds is the engine's decision, not
+  the store's behaviour under a real transaction.
 - The `CanonicalStore` port exposes no revision-update method — the restriction is
   in the type signature, not only in the documentation.

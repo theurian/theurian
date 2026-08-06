@@ -313,8 +313,16 @@ under [T-16](../security/threat-model.md).
 ### 6.3 Idempotence contract
 
 Running setup twice must produce a second report where every step is
-`Satisfied` and the changed-files list is empty. This is asserted directly in
-`tests/e2e/test_setup_idempotence.py`.
+`Satisfied` and the changed-files list is empty.
+
+This said the contract "is asserted directly in
+`tests/e2e/test_setup_idempotence.py`". That file has never existed. What holds
+part of it is `tests/integration/test_setup_service.py`, against fake service and
+MCP-config adapters — `test_a_second_run_never_regenerates_the_token` and
+`test_a_step_setup_does_not_perform_is_never_reported_as_changed`. The end-to-end
+statement, against a real LaunchAgent in a disposable profile, is owed with the
+rest of the E2E suite: [#65](https://github.com/theurian/theurian/issues/65),
+and see `tests/e2e/README.md` for which acceptance criteria have no test at all.
 
 ### 6.4 Rollback
 

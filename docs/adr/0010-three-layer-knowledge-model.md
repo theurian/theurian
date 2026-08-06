@@ -116,10 +116,24 @@ The authority rules:
 
 ## Compliance
 
-- A test asserts a round trip for each format: parse → canonical → structured
-  fields preserved.
-- A test asserts every canonical record has at least one `SourceAnchor` or an
-  explicit `authored-in-theurian` marker (INV-8).
-- A test asserts `.theurian/generated/` is covered by the generated `.gitignore`.
-- A test asserts no metadata key is present in both front matter and a migration
-  for the same revision.
+- `tests/integration/test_ingestion.py::test_every_supported_format_is_ingested`
+  and `test_structured_documents_gain_a_projection` — parse → canonical, with
+  structured fields kept rather than flattened to text.
+- `tests/integration/test_ingestion.py::test_every_document_carries_an_anchor`
+  and `tests/unit/test_domain_invariants.py::test_revision_authored_in_theurian_needs_no_anchor`
+  — INV-8, both branches.
+- `tests/unit/test_project_and_traceability.py::test_gitignore_block_covers_every_derived_location`
+  — every derived location, `.theurian/generated/` included, is covered by the
+  block `theurian init` writes.
+
+Still owed, with the milestone that will satisfy it:
+
+- **Nothing asserts a key cannot appear in both front matter and a migration for
+  one revision.** This section claimed a test. What exists is one direction of
+  it: `tests/integration/test_ingestion.py::test_warnings_reach_the_report` and
+  `tests/integration/test_cli_commands.py::test_ingest_reports_a_governed_front_matter_key`
+  raise `front-matter-governed-field` when front matter carries a governed key,
+  which is ADR-0019's rule that front matter is data rather than governance.
+  Collision on a *non-governed* key — where both sources set it and one silently
+  wins — is unchecked, and the ADR does not say which should. Milestone 6, and
+  it needs the precedence decision before it can have a test.

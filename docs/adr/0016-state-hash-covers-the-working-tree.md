@@ -123,15 +123,33 @@ Two properties fall out, and both are the intended behaviour:
 
 ## Compliance
 
-- A golden-vector test asserts a fixture set hashes to a committed constant,
-  across runs and `PYTHONHASHSEED` values.
-- A test asserts the hash is unchanged when the project is moved to a different
-  absolute path.
-- A test asserts editing a migration file changes the hash, and reverting the
-  edit restores it.
-- A test computes a state hash with no Git repository present at all.
-- A test applies a migration, edits it, and asserts the next command exits 4
-  with a checksum-mismatch error -- the regression that motivated the section
-  above.
-- A test edits a *content* file instead and asserts a new state hash with no
-  error, so the two cases stay distinguishable.
+- `tests/unit/test_state_hash.py::test_golden_vector_is_stable` and
+  `test_hash_is_stable_across_processes` — a fixture set hashes to a committed
+  constant, across runs and `PYTHONHASHSEED` values.
+- `tests/e2e/test_migration_workflow.py::test_the_state_hash_does_not_depend_on_the_project_path`
+  — the hash is unchanged when the project moves to a different absolute path.
+- `tests/unit/test_state_hash.py::test_a_changed_migration_changes_the_hash` and
+  `test_a_changed_body_changes_the_hash` — editing either input changes the hash.
+- `tests/e2e/test_migration_workflow.py::test_editing_an_applied_migration_is_fatal`
+  — applies a migration, edits it, and asserts exit 4 with a checksum-mismatch
+  error: the regression that motivated the section above.
+- `tests/e2e/test_migration_workflow.py::test_editing_a_content_file_forks_a_new_state`
+  — a *content* edit produces a new state hash with no error, so the two cases
+  stay distinguishable.
+
+Note that four of the six above are e2e tests, and no CI job runs the e2e suite
+([#65](https://github.com/theurian/theurian/issues/65)).
+
+Still owed, with the milestone that will satisfy it:
+
+- **Nothing asserts that reverting an edit restores the hash.** This section
+  claimed the test above covered both directions. It covers one:
+  `test_a_changed_migration_changes_the_hash` compares an edited input against
+  the original and requires them to differ. Round-tripping is the property
+  branch switching depends on — check out the old commit and you must land back
+  on the state you already built — and it is untested. Milestone 6, with
+  ADR-0007's O(1) reuse item, which is the same property from the other end.
+- **Nothing computes a state hash with no Git repository present.** This section
+  claimed a test. ADR-0016's decision is that the hash covers the working tree
+  rather than `HEAD`, so working without Git at all is a supported case and this
+  is the test that would show it. Milestone 6.
