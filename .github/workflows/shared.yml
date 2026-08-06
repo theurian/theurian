@@ -40,10 +40,37 @@ jobs:
               # too. `docs/**` plus a root-level `*.md` left 35 of 88 Markdown
               # files unwatched, `packages/theurian-core/CHANGELOG.md` among
               # them: a change confined to one of those never ran the check.
-              # `docs/**` stays because a moved non-Markdown file under `docs/`
-              # breaks links pointing at it. This file lists itself for the same
-              # reason `core.yml` does: the checker lives here, so a change to it
-              # has to run it.
+              #
+              # `docs/**` is redundant today -- every tracked file under `docs/`
+              # is Markdown, so it selects nothing `**/*.md` does not. It is kept
+              # for the case where one is not: moving a non-Markdown file there
+              # breaks the links pointing at it.
+              #
+              # This file lists itself for the same reason `core.yml` does: the
+              # checker lives here, so a change to it has to run it.
+              #
+              # Two things are still uncovered, and they are different failures.
+              #
+              # Filter reach. Counting distinct existing relative targets that
+              # the checker's inline-link regex reaches and none of the three
+              # patterns below match: 16 -- 13 tracked files and 3 directories,
+              # across 20 links. Among them `release-core.yml` (3 referrers),
+              # `setup_steps.py`, five `*.schema.json`, `LICENSE`, `NOTICE` and
+              # `CODEOWNERS`. Renaming one breaks a link without running this
+              # job.
+              #
+              # Parser reach. The checker matches inline `[](...)` only, so the
+              # five relative links `README.md` writes in HTML are invisible to
+              # it whether or not this job fires. `assets/theurian-logo.png` is
+              # the one that matters: tracked, matched by no pattern below, and
+              # referenced by no inline link anywhere -- so the front-page logo
+              # is unprotected in both dimensions at once. Tracked in #62, which
+              # also records why extending the regex naively turns this job
+              # permanently red.
+              #
+              # Every count above is stated with the key it was counted under,
+              # because each is answerable several ways: 16 distinct targets,
+              # 13 if directories are excluded, 20 if links are counted instead.
               - 'docs/**'
               - '**/*.md'
               - '.github/workflows/shared.yml'
