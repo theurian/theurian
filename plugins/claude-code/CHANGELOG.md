@@ -24,6 +24,32 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Shell helpers that shell out to the `theurian` CLI and contain no Theurian
   logic.
 
+### Fixed
+
+- `/theurian:setup` no longer presents itself as the way Theurian Core gets onto
+  the machine. Its `description` — visible in Claude Code's command list — said
+  "Install and configure Theurian"; the document opened by calling itself the
+  only command that installs software; and it now begins by checking
+  `command -v theurian` and naming `uv tool install theurian` or
+  `pipx install theurian`. Setup runs *from* an installed Core and cannot be
+  what creates it.
+- The `SessionStart` hook told a user with no Core to run `/theurian:setup`,
+  which shells out to the `theurian` binary whose absence produced the warning.
+  It now names the installer first.
+- The plugin README's install sequence began at the marketplace and ended at
+  `/theurian:setup`, never mentioning Core. Core is now the first step.
+- Step 6 no longer tells the agent that a step reporting `missing` with an
+  `action` is one setup skips. All seven steps setup performs report exactly
+  that before they run, so an agent following the old rule would have asked the
+  user to go and "Create ~/.theurian with mode 0700" themselves.
+
+### Security
+
+- `/theurian:setup` narrows `allowed-tools` from `Bash(command:*)` to
+  `Bash(command -v:*)` and drops `Edit`. `command` is a shell builtin that runs
+  its argument, so the prefix pattern pre-approved arbitrary execution; the
+  document's own Rules section already forbade editing configuration files.
+
 ### Compatibility
 
 | | Version |
