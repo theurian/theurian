@@ -700,20 +700,45 @@ installs is a step that could verify what it installed — so the premise
 regenerates the conclusion anywhere it survives, and a reader who starts at
 `theurian setup --help` rather than here meets it intact. The test for a member
 is therefore the premise and not the word "verify": does the text describe setup
-obtaining, installing or upgrading Core? Three surfaces did, and are corrected
-separately from this entry:
+obtaining, installing or upgrading Core? **Six surfaces did.** Three were
+corrected first, and the other three were found only once the class was restated
+by that root cause instead of by the word the first three happened to share:
 
-| Surface | The premise it carried |
-| :-- | :-- |
-| `cli/setup_commands.py` | the docstring `theurian setup --help` prints |
-| `plugins/claude-code/commands/setup.md` | what `/theurian:setup` announces it will do |
-| `domain/compatibility.py` | a version-mismatch remedy telling a user with no Core on `PATH` to run `/theurian:setup` |
+| Surface | The premise it carried | Corrected |
+| :-- | :-- | :-- |
+| `cli/setup_commands.py` | the docstring `theurian setup --help` prints | first pass |
+| `plugins/claude-code/commands/setup.md` | what `/theurian:setup` announces it will do | first pass |
+| `domain/compatibility.py` | a version-mismatch remedy telling a user with no Core on `PATH` to run `/theurian:setup` | first pass |
+| `plugins/claude-code/scripts/session-start.sh` | "Core is not installed. Run /theurian:setup once to get started.", printed on every session that starts without `theurian` on `PATH` | second pass |
+| `plugins/claude-code/README.md` | a three-line install sequence ending at `/theurian:setup`, naming no installer anywhere in the file | second pass |
+| `docs/protocol/plugin-core-compatibility.md` | the published `core-missing` remedy that third-party plugins implement against | second pass |
 
-The third is the sharpest, because it is unrunnable rather than merely
-inaccurate: `/theurian:setup` reaches Theurian, so a user who does not have
-Theurian cannot follow it. Setup cannot report that condition either. The
-executable in the context comes from `_executable()` in `cli/setup_commands.py`,
-which takes `shutil.which("theurian")` and falls back to `sys.argv[0]` — by
+**The first pass called `domain/compatibility.py` the sharpest of them, and that
+was right about the shape and wrong about the reach.** It is unrunnable rather
+than merely inaccurate — `/theurian:setup` reaches Theurian, so a user who does
+not have Theurian cannot follow it — but `resolve_compatibility`'s only
+production call site is `cli.main.compat_check`, which passes
+`Version.parse_python(__version__)` and never `None`. `CORE_MISSING` is therefore
+reachable only from tests. The identical sentence in `session-start.sh` was the
+one that ran, on every session, and the pass that fixed the unreachable face left
+it in place. Ranking the faces by how wrong they read, rather than by which of
+them a user meets, is what produced that.
+
+**Three files still carry the premise**, in documents the second pass did not
+reach: `README.md:29,228` — "`/theurian:setup` is the only command that installs
+anything", in a README that contains no `uv tool install` or `pipx install`
+anywhere — and the two that *specify* corrected surfaces rather than being them,
+`docs/integrations/claude-code.md:101` (the `SessionStart` flowchart, which sends
+a Core-less user to setup and now disagrees with the shipped script) and
+`docs/architecture/requirements-analysis.md:643` ("CLI absent → Advise
+/theurian:setup"). Recorded here rather than left to whoever next runs the
+search, because a list of what was fixed is exactly what made this class look
+closed the first time.
+
+**Setup cannot report a missing Core either**, which is why no surface above
+could have been made true by wiring it to the step table instead. The executable
+in the context comes from `_executable()` in `cli/setup_commands.py`, which
+takes `shutil.which("theurian")` and falls back to `sys.argv[0]` — by
 construction the program currently running — so `probe_core` reports `Satisfied`
 in essentially every real invocation, and `Conflicting` needs an `argv[0]` that
 does not resolve. **Setup cannot tell you Core is missing, because setup is
