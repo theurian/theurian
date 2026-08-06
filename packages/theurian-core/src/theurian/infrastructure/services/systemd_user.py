@@ -27,6 +27,28 @@ UNIT_NAME: Final = "theurian.service"
 _UNIT_DIRECTORY: Final = ".config/systemd/user"
 
 
+def _directives(unit: str) -> dict[str, tuple[str, ...]]:
+    """A unit's ``Name=Value`` lines as a map, values kept in file order.
+
+    A tuple of values rather than one, because systemd lets a directive repeat
+    -- ``Environment=`` most of all -- and collapsing repeats would report two
+    units as equal when one of them sets a variable the other does not.
+
+    Section headers, comments and blank lines are dropped: this exists to answer
+    "which directives differ" for a report that may not carry their values, and
+    a section header is neither.
+    """
+    found: dict[str, list[str]] = {}
+    for line in unit.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";", "[")):
+            continue
+        name, separator, value = stripped.partition("=")
+        if separator:
+            found.setdefault(name.strip(), []).append(value.strip())
+    return {name: tuple(values) for name, values in found.items()}
+
+
 @final
 class SystemdUserManager:
     """Installs and controls the daemon as a systemd user unit."""
@@ -113,6 +135,32 @@ WantedBy=default.target
             lineterm="",
         )
         return "\n".join(diff)
+
+    def differing_keys(self, *, port: int, data_directory: str) -> tuple[str, ...]:
+        """Which unit directives differ, sorted, without a word about their values.
+
+        The diff :meth:`differs_from_installed` produces is whole lines of a
+        file Theurian did not write, and those lines carry
+        ``Environment=THEURIAN_MCP_TOKEN=...`` and paths outside the roots a
+        shared report substitutes. A directive's *name* is schema, not content.
+
+        Only directives are compared, so a unit differing solely in its comments
+        or section headers reports nothing here -- the caller's sentence says the
+        difference is withheld rather than naming fields, which stays true either
+        way, and the full diff is one ``theurian doctor`` away.
+        """
+        if not self.unit_path.exists():
+            return ()
+
+        wanted = _directives(self.render(port=port, data_directory=data_directory))
+        installed = _directives(self.unit_path.read_text(encoding="utf-8"))
+        return tuple(
+            sorted(
+                name
+                for name in set(installed) | set(wanted)
+                if installed.get(name) != wanted.get(name)
+            )
+        )
 
     # -- Lifecycle --------------------------------------------------------
 

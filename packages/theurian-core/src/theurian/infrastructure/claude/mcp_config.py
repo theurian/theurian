@@ -162,13 +162,37 @@ class ClaudeCodeMcpConfig:
             return ""
 
         lines = [f"The `{SERVER_NAME}` entry in {self.path} differs:"]
-        for key in sorted(set(installed) | set(wanted)):
+        for key in self.differing_keys(spec):
             have, want = installed.get(key), wanted.get(key)
-            if have != want:
-                lines.append(f"  {key}:")
-                lines.append(f"    installed: {_render(have)}")
-                lines.append(f"    Theurian:  {_render(want)}")
+            lines.append(f"  {key}:")
+            lines.append(f"    installed: {_render(have)}")
+            lines.append(f"    Theurian:  {_render(want)}")
         return "\n".join(lines)
+
+    def differing_keys(self, spec: ConnectionSpec) -> tuple[str, ...]:
+        """Which fields differ, sorted, without a word about their values.
+
+        What :meth:`difference` renders is the *installed* entry, and an
+        installed entry's values are not Theurian's to hand on. The state that
+        makes this step conflict at all is a ``theurian`` entry someone else
+        wrote, and the most likely reason they wrote it is that they pasted the
+        token in literally instead of by reference -- so the payload people
+        publish to ask why setup is stuck carried a live bearer token, and the
+        redaction that runs afterwards substitutes paths and had no anchor for
+        it.
+
+        A name still tells the reader which field to go and look at on their own
+        terminal, where :meth:`difference` prints it in full.
+        """
+        installed = self.installed_entry()
+        if installed is None:
+            return ()
+        wanted = spec.as_entry()
+        return tuple(
+            key
+            for key in sorted(set(installed) | set(wanted))
+            if installed.get(key) != wanted.get(key)
+        )
 
     # -- Writing, by way of the tool that owns the file --------------------
 

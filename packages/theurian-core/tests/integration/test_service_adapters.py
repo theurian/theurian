@@ -225,6 +225,31 @@ def test_an_unreadable_plist_is_reported_rather_than_parsed(home: Path) -> None:
     assert "not a readable plist" in manager.differs_from_installed(port=7419, data_directory="/d")
 
 
+def test_the_differing_plist_keys_carry_no_values(home: Path) -> None:
+    """What `doctor --report` publishes about a plist Theurian did not write.
+    `EnvironmentVariables` is a dictionary a person may put a token in."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    installed = plistlib.loads(manager.render(port=7419, data_directory="/data"))
+    installed["EnvironmentVariables"] = {"THEURIAN_MCP_TOKEN": "SentinelPlistTokenFFFF"}
+    manager.plist_path.write_bytes(plistlib.dumps(installed))
+
+    keys = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert keys == ("EnvironmentVariables",)
+    assert "SentinelPlistTokenFFFF" not in " ".join(keys)
+
+
+def test_a_plist_too_damaged_to_parse_names_no_keys(home: Path) -> None:
+    """Rather than guessing at names it cannot read. The caller's sentence
+    withholds the difference whole when this is empty."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    manager.plist_path.write_text("this is not a plist")
+
+    assert manager.differing_keys(port=7419, data_directory="/d") == ()
+
+
 # -- LaunchAgent: status ----------------------------------------------------
 
 
@@ -367,6 +392,52 @@ def test_a_changed_unit_is_reported_as_a_diff(home: Path) -> None:
 
     assert "--port 9999" in difference
     assert "--port 7419" in difference
+
+
+def test_the_differing_unit_directives_carry_no_values(home: Path) -> None:
+    """What `doctor --report` publishes about a unit Theurian did not write.
+    `Environment=` is where a hand-edited unit keeps a literal token."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Environment=THEURIAN_DATA_DIR=/data",
+            "Environment=THEURIAN_MCP_TOKEN=SentinelUnitTokenGGGG",
+        )
+    )
+
+    keys = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert keys == ("Environment",)
+    assert "SentinelUnitTokenGGGG" not in " ".join(keys)
+
+
+def test_a_repeated_directive_is_not_collapsed(home: Path) -> None:
+    """systemd lets `Environment=` repeat. Collapsing repeats would report two
+    units as equal when one of them sets a variable the other does not."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Environment=THEURIAN_DATA_DIR=/data",
+            "Environment=THEURIAN_DATA_DIR=/data\nEnvironment=THEURIAN_MCP_TOKEN=literal",
+        )
+    )
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == ("Environment",)
+
+
+def test_a_unit_differing_only_in_its_comments_names_no_directive(home: Path) -> None:
+    """A real difference the caller must still report, with no field to name.
+    The published sentence withholds it whole rather than claiming none exists."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data") + "# a note the operator left\n"
+    )
+
+    assert manager.differs_from_installed(port=7419, data_directory="/data") != ""
+    assert manager.differing_keys(port=7419, data_directory="/data") == ()
 
 
 @pytest.mark.asyncio

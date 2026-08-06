@@ -18,11 +18,18 @@ class FakeService:
 
     platform_id = "fake"
 
-    def __init__(self, *, installed: bool = False, difference: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        installed: bool = False,
+        difference: str = "",
+        differing: tuple[str, ...] = (),
+    ) -> None:
         self.installed = installed
         self.started = False
         self.uninstalled = False
         self._difference = difference
+        self._differing = differing
         self.plist_path = Path("/fake/service.plist")
 
     def is_supported(self) -> bool:
@@ -30,6 +37,9 @@ class FakeService:
 
     def differs_from_installed(self, *, port: int, data_directory: str) -> str:
         return self._difference
+
+    def differing_keys(self, *, port: int, data_directory: str) -> tuple[str, ...]:
+        return self._differing
 
     async def status(self) -> ServiceStatus:
         state = ServiceState.INSTALLED_STOPPED if self.installed else ServiceState.NOT_INSTALLED
@@ -73,6 +83,15 @@ class FakeMcpConfig:
         if self._entry is None or self._entry == spec.as_entry():
             return ""
         return f"installed={self._entry} wanted={spec.as_entry()}"
+
+    def differing_keys(self, spec: Any) -> tuple[str, ...]:
+        if self._entry is None:
+            return ()
+        wanted: dict[str, Any] = spec.as_entry()
+        entry = self._entry
+        return tuple(
+            key for key in sorted(set(entry) | set(wanted)) if entry.get(key) != wanted.get(key)
+        )
 
     def install(self, spec: Any) -> str:
         self.installs += 1

@@ -127,15 +127,37 @@ class LaunchAgentManager:
         if installed == wanted:
             return ""
 
-        differing = sorted(
-            key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key)
-        )
         lines = [f"{self.plist_path} differs from the definition Theurian would install:"]
         lines.extend(
             f"  {key}: installed={installed.get(key)!r} wanted={wanted.get(key)!r}"
-            for key in differing
+            for key in self.differing_keys(port=port, data_directory=data_directory)
         )
         return "\n".join(lines)
+
+    def differing_keys(self, *, port: int, data_directory: str) -> tuple[str, ...]:
+        """Which plist keys differ, sorted, without a word about their values.
+
+        An installed plist is whatever is on the machine, and what
+        :meth:`differs_from_installed` prints of it is not Theurian's to hand
+        on: ``EnvironmentVariables`` is a dictionary a person may have put a
+        literal ``THEURIAN_MCP_TOKEN`` into, and ``ProgramArguments`` names
+        paths outside the roots a shared report substitutes. The key names alone
+        say which line to go and read on the terminal.
+        """
+        if not self.plist_path.exists():
+            return ()
+
+        wanted = plistlib.loads(self.render(port=port, data_directory=data_directory))
+        try:
+            installed = plistlib.loads(self.plist_path.read_bytes())
+        except (plistlib.InvalidFileException, ValueError):
+            return ()
+
+        return tuple(
+            sorted(
+                key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key)
+            )
+        )
 
     # -- Lifecycle --------------------------------------------------------
 

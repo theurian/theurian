@@ -47,6 +47,17 @@ class McpClientConfig(Protocol):
         """
         ...
 
+    def differing_keys(self, spec: Any) -> tuple[str, ...]:
+        """Which fields differ from ``spec``, sorted, without their values.
+
+        On the port rather than left to each adapter because the caller that
+        needs it is the one building ``doctor --report``, whose output is meant
+        to be published: an installed entry's values were written by someone
+        other than Theurian and may be a literal credential, so no adapter is
+        free to answer this by rendering them (SEC-6, O-3).
+        """
+        ...
+
     def install(self, spec: Any) -> str:
         """Make the entry match ``spec``. Returns a failure message, or empty.
 
