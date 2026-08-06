@@ -132,13 +132,14 @@ directory you chose yourself — wherever they appear,
 including inside each step's `summary` and `detail`. Values Theurian did *not*
 write are withheld instead of substituted, because there is nothing to match them
 against: a step reporting a difference in Claude Code's MCP entry, a service unit,
-another daemon's reply or the project registry publishes the names of the fields
-that differ and not their values.
+another daemon's reply or the project registry says *that* they differ and names
+only the fields Theurian itself writes — a name read out of your file is your
+string, not Theurian's schema, so it is counted rather than named.
 
-It is still not a general credential filter. A path outside those anchors, a
-filename that is itself revealing, and the *name* of a configuration field still
-go out verbatim. Plain `theurian doctor`, without `--report`, prints everything
-in full and is meant for your own terminal.
+It is still not a general credential filter, and the list of what goes out is
+not exhaustive: a path outside those anchors, a revealing filename, and facts
+about your machine the diagnostic exists to report. Plain `theurian doctor`,
+without `--report`, prints everything in full and is meant for your own terminal.
 
 For a security vulnerability, use the private path in [SECURITY.md](SECURITY.md)
 instead of an issue.

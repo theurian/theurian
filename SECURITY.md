@@ -147,12 +147,20 @@ diagnostic reports on configuration somebody else owns — Claude Code's MCP ent
 a LaunchAgent plist or systemd unit, another daemon's reply, the project
 registry — and substitution cannot reach any of it, because a string the local
 process never held has nothing to match against. So under `--report` those steps
-publish what differs without publishing the values: the *names* of the fields
-that differ, a count of registry entries that cannot be read, `<another data
-directory>` for a daemon serving somewhere else, and an exception's type without
-its message. Plain `theurian doctor`, read by the person who ran it, still prints
-all of it in full — that is where the values belong, and where the remedy needs
-them.
+say what differs without saying what it holds: a count of registry entries that
+cannot be read, `<another data directory>` for a daemon serving somewhere else,
+an exception's type without its message, and — for a configuration that differs —
+**only the names of the fields Theurian itself writes**, with anything else
+reported as a count.
+
+That last rule is narrower than "names, not values", and deliberately.
+A field *name* is only Theurian's to publish if Theurian defined it: a name read
+out of your `~/.claude.json`, plist or unit file is whatever string you put in
+key position, and one of them was a bearer token on a continuation line. So the
+published vocabulary is fixed and already public in this repository.
+
+Plain `theurian doctor`, read by the person who ran it, still prints all of it in
+full — that is where the values belong, and where the remedy needs them.
 
 This is not a general credential filter, and knowing what it does not cover is
 part of using it:
@@ -163,12 +171,14 @@ part of using it:
   `${THEURIAN_MCP_TOKEN}`, and a token pasted into a service unit's environment.
   Both are now withheld under `--report`. Theurian never creates either state;
   it is what it finds when someone else has.
-- What is still published verbatim: a path outside the anchors above, a
-  revealing filename, and the *names* — never the values — of configuration
-  fields that differ from what Theurian would install.
+- Still published, and **this list is not exhaustive**: a path outside the
+  anchors above, a revealing filename, the mode of your data directory, how many
+  migrations your repository has, whether Serena is configured, and Theurian's
+  own field names. Every one of those is a fact about your machine that the
+  diagnostic exists to report.
 
-**Review its output before posting it anywhere public.** The list above is what
-that review is for.
+**Review its output before posting it anywhere public.** Redaction narrows what
+needs that review; it does not replace it.
 
 ## Dependencies
 

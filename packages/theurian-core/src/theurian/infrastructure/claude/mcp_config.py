@@ -33,11 +33,13 @@ back rather than by trusting an exit code, because "the command succeeded" and
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, final
 
+from theurian.domain.setup import DifferingFields
 from theurian.infrastructure.services.runner import (
     CommandResult,
     CommandRunner,
@@ -162,15 +164,17 @@ class ClaudeCodeMcpConfig:
             return ""
 
         lines = [f"The `{SERVER_NAME}` entry in {self.path} differs:"]
-        for key in self.differing_keys(spec):
+        # Every differing key, including ones Theurian never writes. This output
+        # is the operator's own; only `differing_keys` is publishable.
+        for key in _differing_names(installed, wanted):
             have, want = installed.get(key), wanted.get(key)
             lines.append(f"  {key}:")
             lines.append(f"    installed: {_render(have)}")
             lines.append(f"    Theurian:  {_render(want)}")
         return "\n".join(lines)
 
-    def differing_keys(self, spec: ConnectionSpec) -> tuple[str, ...]:
-        """Which fields differ, sorted, without a word about their values.
+    def differing_keys(self, spec: ConnectionSpec) -> DifferingFields:
+        """Which fields differ, without a word about their values.
 
         What :meth:`difference` renders is the *installed* entry, and an
         installed entry's values are not Theurian's to hand on. The state that
@@ -181,18 +185,19 @@ class ClaudeCodeMcpConfig:
         redaction that runs afterwards substitutes paths and had no anchor for
         it.
 
+        Only the fields :meth:`ConnectionSpec.as_entry` produces are named. The
+        rest are counted: this entry is a hand-editable object in somebody
+        else's state file, so a top-level key in it is as much data as a value
+        (see :class:`DifferingFields`).
+
         A name still tells the reader which field to go and look at on their own
         terminal, where :meth:`difference` prints it in full.
         """
         installed = self.installed_entry()
         if installed is None:
-            return ()
+            return DifferingFields()
         wanted = spec.as_entry()
-        return tuple(
-            key
-            for key in sorted(set(installed) | set(wanted))
-            if installed.get(key) != wanted.get(key)
-        )
+        return DifferingFields.over(_differing_names(installed, wanted), authored=wanted)
 
     # -- Writing, by way of the tool that owns the file --------------------
 
@@ -285,6 +290,13 @@ class ClaudeCodeMcpConfig:
         backup.write_bytes(self.path.read_bytes())
         backup.chmod(0o600)
         return backup
+
+
+def _differing_names(installed: Mapping[str, Any], wanted: Mapping[str, Any]) -> tuple[str, ...]:
+    """Every key whose value differs, sorted. Names only; nothing is rendered."""
+    return tuple(
+        sorted(key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key))
+    )
 
 
 def _render(value: object) -> str:

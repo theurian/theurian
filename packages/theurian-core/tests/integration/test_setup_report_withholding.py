@@ -36,11 +36,12 @@ from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS, Step
 from theurian.cli.setup_commands import _redacted
-from theurian.domain.setup import SetupStep, StepId
+from theurian.domain.setup import DifferingFields, SetupError, SetupStep, StepId, StepStatus
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.infrastructure.services.launchagent import LABEL, LaunchAgentManager
 from theurian.infrastructure.services.runner import CommandResult
+from theurian.infrastructure.services.systemd_user import SystemdUserManager
 
 pytestmark = pytest.mark.integration
 
@@ -50,6 +51,10 @@ PORT = 7419
 #: shaped like the thing it stands for.
 LITERAL_TOKEN = "SentinelBearerTokenAAAAAAAAAAAAAAAAAAAAAAAAA"  # noqa: S105
 PLIST_TOKEN = "SentinelPlistEnvTokenBBBBBBBBBBBBBBBBBBBBBBB"  # noqa: S105
+UNIT_TOKEN = "SentinelUnitExecTokenIIIIIIIIIIIIIIIIIIIIIII"  # noqa: S105
+UNIT_ENV_TOKEN = "SentinelUnitEnvTokenJJJJJJJJJJJJJJJJJJJJJJJ"  # noqa: S105
+FOREIGN_SCRIPT = "/opt/northwind-acquisition/preflight.sh"
+FOREIGN_CLIENT = "northwind-acquisition"
 FOREIGN_DATA_DIR = "/opt/somebody-elses/private-workspace"
 FOREIGN_PROJECT_ID = "acme-unreleased-merger-tooling"
 EXCEPTION_MESSAGE = "postgres://sentinel-user:SentinelDbPasswordEEE@db.internal:5432"
@@ -155,8 +160,12 @@ def test_a_bearer_token_in_the_installed_entry_never_reaches_a_report(
 def test_the_report_still_names_the_field_that_differs(
     with_a_literal_token: SetupContext,
 ) -> None:
-    """Withholding that removed the diagnosis would defeat the purpose. A field
-    name is schema, and it says which line to open on the terminal."""
+    """Withholding that removed the diagnosis would defeat the purpose.
+
+    `headers` is publishable because *Theurian writes it* -- it is a field of
+    `ConnectionSpec.as_entry`, not a string read out of the user's file -- and it
+    says which line to open on the terminal.
+    """
     detail = _detail(_published(with_a_literal_token), StepId.MCP_CONNECTION)
 
     assert "headers" in detail
@@ -169,6 +178,35 @@ def test_the_operators_own_terminal_still_shows_the_entry(
     """This is the assertion that fails if the difference is simply deleted. The
     person who has to fix the entry is looking at their own screen."""
     assert LITERAL_TOKEN in _on_the_terminal(with_a_literal_token)
+
+
+def test_a_field_name_someone_else_added_to_the_entry_is_counted_not_named(
+    tmp_path: Path,
+) -> None:
+    """`~/.claude.json` is a hand-editable object in somebody else's state file,
+    so a top-level key in it is data as much as a value is."""
+    context = _context(tmp_path)
+    (context.home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "theurian": {
+                        "type": "http",
+                        "url": f"http://127.0.0.1:{PORT}/mcp",
+                        "headers": {"Authorization": "Bearer ${THEURIAN_MCP_TOKEN}"},
+                        f"proxy-for-{FOREIGN_CLIENT}": "https://internal.example",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    published = _published(
+        replace(context, mcp_config=ClaudeCodeMcpConfig(home=context.home, runner=StubRunner()))
+    )
+
+    assert FOREIGN_CLIENT not in published
+    assert "1 further field" in _detail(published, StepId.MCP_CONNECTION)
 
 
 # -- The service definition: a credential in a plist somebody hand edited ------
@@ -222,18 +260,127 @@ def test_the_operators_own_terminal_still_shows_the_plist_difference(
 def test_a_service_difference_with_no_nameable_field_is_withheld_whole(
     tmp_path: Path,
 ) -> None:
-    """An adapter can differ with no *field* differing: a systemd unit whose
-    comments were edited, a plist too damaged to parse. The sentence must not
-    claim to name fields it has none of, and must still withhold the values."""
+    """An adapter can differ with no *field* differing -- a systemd unit whose
+    comments were edited. The sentence must not claim to name fields it has none
+    of, and must still withhold the values."""
     context = _context(
         tmp_path,
-        service=FakeService(installed=True, difference=f"corrupt: {LITERAL_TOKEN}", differing=()),
+        service=FakeService(
+            installed=True,
+            difference=f"corrupt: {LITERAL_TOKEN}",
+            differing=DifferingFields(),
+        ),
     )
     detail = _detail(_published(context), StepId.DAEMON_SERVICE)
 
     assert LITERAL_TOKEN not in detail
     assert "Fields that differ" not in detail
     assert "withheld" in detail
+
+
+def test_a_service_definition_that_does_not_parse_says_so_rather_than_withholding(
+    tmp_path: Path,
+) -> None:
+    """Through the real adapter, because the parse-failure branch is the adapter's.
+
+    "The installed values are withheld" was said of a plist whose values had
+    never been read -- asserting that something was held back, on the one input
+    where nothing was, and dropping the single fact the reader of that issue
+    needs. The path is anchored and the words are Theurian's, so there is
+    nothing here to withhold.
+    """
+    context = _context(tmp_path)
+    manager = LaunchAgentManager(
+        executable=context.executable, home=context.home, runner=StubRunner(), uid=501
+    )
+    manager.plist_path.write_text("this is not a plist", encoding="utf-8")
+
+    detail = _detail(_published(replace(context, service=manager)), StepId.DAEMON_SERVICE)
+
+    assert "is not a readable plist" in detail
+    assert "values are withheld" not in detail, "nothing was read, so nothing was held back"
+
+
+# -- The same step, through the other service manager -------------------------
+#
+# `daemon-service` was driven only through LaunchAgent here, and the CRITICAL
+# that asymmetry hid was in the systemd adapter alone: its parser derived a
+# directive *name* from a continuation line, which is the value of the line
+# above it, and published a bearer token as a field name. An adapter-level test
+# covered the parser; nothing asserted on the payload it feeds.
+
+
+@pytest.fixture
+def with_a_token_in_the_unit(tmp_path: Path) -> SetupContext:
+    """A unit whose `ExecStart` continues onto a second line carrying a token.
+
+    Written by hand rather than by editing `render`'s output, because what is
+    being tested is a unit somebody else wrote -- which is the only state that
+    makes this step conflict.
+    """
+    context = _context(tmp_path)
+    manager = SystemdUserManager(
+        executable=context.executable, home=context.home, runner=StubRunner()
+    )
+    manager.unit_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.unit_path.write_text(
+        f"""\
+[Unit]
+Description=Theurian knowledge daemon
+
+[Service]
+Type=simple
+ExecStart={context.executable} daemon start --foreground \\
+    --header "Authorization: Bearer {UNIT_TOKEN}" --port=7419
+Environment=THEURIAN_DATA_DIR={context.data_dir} \\
+    THEURIAN_MCP_TOKEN={UNIT_ENV_TOKEN}
+ExecStartPre={FOREIGN_SCRIPT}
+
+[Install]
+WantedBy=default.target
+""",
+        encoding="utf-8",
+    )
+    return replace(context, service=manager)
+
+
+def test_a_token_on_a_unit_continuation_line_never_reaches_a_report(
+    with_a_token_in_the_unit: SetupContext,
+) -> None:
+    """It arrived as a field *name*, not a value -- which is why "we publish only
+    names" was not by itself a safety argument."""
+    published = _published(with_a_token_in_the_unit)
+
+    assert UNIT_TOKEN not in published
+    assert UNIT_ENV_TOKEN not in published
+
+
+def test_a_directive_theurian_never_writes_never_reaches_a_report(
+    with_a_token_in_the_unit: SetupContext,
+) -> None:
+    """`ExecStartPre` names a third-party absolute path, and no anchor reaches
+    it. The name is Theurian's to publish only if Theurian writes it."""
+    published = _published(with_a_token_in_the_unit)
+
+    assert FOREIGN_SCRIPT not in published
+    assert "ExecStartPre" not in published
+
+
+def test_the_report_names_the_unit_directives_theurian_does_write(
+    with_a_token_in_the_unit: SetupContext,
+) -> None:
+    """Withholding that removed the diagnosis would defeat the purpose, and the
+    count is how the reader learns there is more on their terminal."""
+    detail = _detail(_published(with_a_token_in_the_unit), StepId.DAEMON_SERVICE)
+
+    assert "ExecStart" in detail
+    assert "further field" in detail
+
+
+def test_the_operators_own_terminal_still_shows_the_unit_difference(
+    with_a_token_in_the_unit: SetupContext,
+) -> None:
+    assert UNIT_TOKEN in _on_the_terminal(with_a_token_in_the_unit)
 
 
 # -- Single instance: a path off the wire from a process this one does not own -
@@ -348,3 +495,162 @@ def test_an_exception_message_never_reaches_a_report(tmp_path: Path) -> None:
 
 def test_the_operators_own_terminal_still_shows_the_exception_message(tmp_path: Path) -> None:
     assert EXCEPTION_MESSAGE in _on_the_terminal(_context(tmp_path), _EXPLODING)
+
+
+# -- The two halves cannot be used apart ---------------------------------------
+
+
+def test_redacting_a_run_that_did_not_withhold_is_refused(
+    with_a_literal_token: SetupContext,
+) -> None:
+    """Substitution alone reproduces the defect this PR closes.
+
+    Hand `_redacted` a payload from a context built without `for_publication`
+    and it stamps `"redacted": true` on output that still carries whatever the
+    steps read -- exactly the pre-PR behaviour, reachable by calling one half of
+    a two-half control. `doctor_command` is the only caller today; the guard is
+    for the one that does not exist yet.
+    """
+    local = replace(with_a_literal_token, for_publication=False)
+    payload = SetupService(local).run(SetupRequest(dry_run=True)).to_json()
+    assert LITERAL_TOKEN in json.dumps(payload), "the operator's own run must carry it"
+
+    with pytest.raises(SetupError, match="for_publication"):
+        _redacted(payload, local)
+
+
+# -- Every step, not the five that were known to be broken ---------------------
+
+
+def _leaked(published: str, seeds: dict[str, str]) -> list[str]:
+    """The sources whose seeded value reached the payload. The sweep's predicate."""
+    return sorted(source for source, value in seeds.items() if value in published)
+
+
+def _seed_every_external_source(context: SetupContext) -> tuple[SetupContext, dict[str, str]]:
+    """Put a distinctive string into everything the plan reads and does not own.
+
+    Keyed by the source, so a failure names the file rather than only the
+    sentinel. Each is placed the way a real machine would carry it: a
+    hand-edited config, a reply from another process, a file the user wrote.
+    """
+    home, data_dir = context.home, context.data_dir
+    root = context.project_root
+    assert root is not None
+
+    seeds = {
+        "claude.json theurian entry": "SweepClaudeEntryKKKK",
+        "claude.json foreign server": "SweepForeignServerLLLL",
+        "launchagent plist": "SweepPlistMMMM",
+        "another daemon's /health": "SweepForeignDataDirNNNN",
+        "project registry": "sweep-foreign-project-oooo",
+        ".gitignore": "SweepGitignorePPPP",
+        "env file": "SweepEnvFileQQQQ",
+        "token file": "SweepTokenFileRRRR",
+        "migration file": "SweepMigrationSSSS",
+    }
+
+    (home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "theurian": {
+                        "type": "http",
+                        "url": f"http://127.0.0.1:{PORT}/mcp",
+                        "headers": {
+                            "Authorization": f"Bearer {seeds['claude.json theurian entry']}"
+                        },
+                    },
+                    seeds["claude.json foreign server"]: {"type": "stdio"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = LaunchAgentManager(
+        executable=context.executable, home=home, runner=StubRunner(), uid=501
+    )
+    manager.plist_path.write_bytes(
+        plistlib.dumps(
+            {
+                "Label": LABEL,
+                "EnvironmentVariables": {"THEURIAN_MCP_TOKEN": seeds["launchagent plist"]},
+            },
+            sort_keys=True,
+        )
+    )
+    (data_dir / "projects.json").write_text(
+        json.dumps({seeds["project registry"]: {"noRootPath": True}}), encoding="utf-8"
+    )
+    (root / ".gitignore").write_text(f"{seeds['.gitignore']}\n", encoding="utf-8")
+    (data_dir / "env").write_text(f"export NOTE={seeds['env file']}\n", encoding="utf-8")
+    (data_dir / "auth").mkdir(parents=True, exist_ok=True)
+    (data_dir / "auth" / "mcp-token").write_text(seeds["token file"], encoding="utf-8")
+
+    migrations = root / ".theurian" / "migrations"
+    migrations.mkdir(parents=True, exist_ok=True)
+    (migrations / "0001-note.yaml").write_text(
+        f"note: {seeds['migration file']}\n", encoding="utf-8"
+    )
+
+    foreign_directory = f"/opt/{seeds["another daemon's /health"]}"
+    seeded = replace(
+        context,
+        mcp_config=ClaudeCodeMcpConfig(home=home, runner=StubRunner()),
+        service=manager,
+        health=lambda: {"status": "ok", "dataDir": foreign_directory},
+    )
+    return seeded, seeds
+
+
+def test_no_step_publishes_a_value_it_only_read(tmp_path: Path) -> None:
+    """The enumeration, rather than one test per route already known to break.
+
+    Per-route memory is what this class is made of: the routes fixed here were
+    separate discoveries, and another arrives the moment someone adds a
+    ``detail=`` to a step nobody thought about -- one line publishing a
+    ``.gitignore``'s contents passed the whole suite. This sweep covers every
+    step in ``STEPS`` at once, so the next one is caught by a test that already
+    exists rather than by the next reviewer.
+
+    It asserts the payload *and* that the run reached the steps: a sweep over a
+    plan whose steps all reported NOT_APPLICABLE would pass by not looking.
+    """
+    root = tmp_path / "this-repository"
+    (root / ".git").mkdir(parents=True)
+    context, seeds = _seed_every_external_source(_context(tmp_path, project_root=root))
+
+    published = _published(context)
+
+    assert not _leaked(published, seeds), (
+        f"published values Theurian did not write: {sorted(_leaked(published, seeds))}"
+    )
+
+    statuses = {step["id"]: step["status"] for step in json.loads(published)["steps"]}
+    assert len(statuses) == len(StepId), "the sweep must cover every step"
+    for reached in ("mcp-connection", "daemon-service", "single-instance", "project-registered"):
+        assert statuses[reached] == "conflicting", f"{reached} never read what was seeded"
+
+
+def test_the_sweep_rings_for_a_step_that_forgets_to_withhold(tmp_path: Path) -> None:
+    """The alarm's own test, wired to the line the next author might write.
+
+    A guard nobody has watched fail is a guard nobody knows the shape of. This
+    is the exact one-line addition that reopened the class during review -- a
+    step publishing a file's contents -- and it asserts the sweep sees it.
+    """
+    root = tmp_path / "this-repository"
+    (root / ".git").mkdir(parents=True)
+    context, seeds = _seed_every_external_source(_context(tmp_path, project_root=root))
+
+    def _leaky(_: SetupContext) -> SetupStep:
+        return SetupStep(
+            step_id=StepId.GITIGNORE,
+            status=StepStatus.CONFLICTING,
+            summary="Derived Theurian artifacts are not ignored by Git.",
+            detail=f"The file currently holds:\n{(root / '.gitignore').read_text()}",
+        )
+
+    published = _published(context, (Step(StepId.GITIGNORE, _leaky, _nothing, critical=False),))
+
+    assert _leaked(published, seeds) == [".gitignore"], "the sweep's alarm must be able to ring"

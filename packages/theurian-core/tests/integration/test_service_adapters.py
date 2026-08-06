@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.ports.daemon_manager import DaemonManager, ServiceState
+from theurian.domain.setup import DifferingFields
 from theurian.infrastructure.services import detect_manager
 from theurian.infrastructure.services.launchagent import LABEL, LaunchAgentManager
 from theurian.infrastructure.services.runner import CommandResult, SubprocessRunner
@@ -234,20 +235,39 @@ def test_the_differing_plist_keys_carry_no_values(home: Path) -> None:
     installed["EnvironmentVariables"] = {"THEURIAN_MCP_TOKEN": "SentinelPlistTokenFFFF"}
     manager.plist_path.write_bytes(plistlib.dumps(installed))
 
-    keys = manager.differing_keys(port=7419, data_directory="/data")
+    fields = manager.differing_keys(port=7419, data_directory="/data")
 
-    assert keys == ("EnvironmentVariables",)
-    assert "SentinelPlistTokenFFFF" not in " ".join(keys)
+    assert fields == DifferingFields(named=("EnvironmentVariables",))
+    assert "SentinelPlistTokenFFFF" not in " ".join(fields.named)
 
 
-def test_a_plist_too_damaged_to_parse_names_no_keys(home: Path) -> None:
-    """Rather than guessing at names it cannot read. The caller's sentence
-    withholds the difference whole when this is empty."""
+def test_a_plist_key_theurian_never_writes_is_counted_and_not_named(home: Path) -> None:
+    """A key in somebody else's file is data, not schema. `render` is the whole
+    vocabulary this adapter may publish, so anything outside it is a number."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    installed = plistlib.loads(manager.render(port=7419, data_directory="/data"))
+    installed["LimitLoadToSessionType-northwind-acquisition"] = "Aqua"
+    manager.plist_path.write_bytes(plistlib.dumps(installed))
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=(), unnamed=1)
+    assert "northwind" not in " ".join(fields.named)
+
+
+def test_a_plist_too_damaged_to_parse_says_so_rather_than_naming_nothing(home: Path) -> None:
+    """ "No key differs" and "the file does not parse" read as opposite things to
+    whoever gets the report, and only the second is an answer. Reported as a
+    reason rather than as an empty result, in this adapter's own words."""
     manager = LaunchAgentManager(executable="/opt/theurian", home=home)
     manager.plist_path.parent.mkdir(parents=True)
     manager.plist_path.write_text("this is not a plist")
 
-    assert manager.differing_keys(port=7419, data_directory="/d") == ()
+    fields = manager.differing_keys(port=7419, data_directory="/d")
+
+    assert fields == DifferingFields(unreadable="is not a readable plist")
+    assert not fields.named
 
 
 # -- LaunchAgent: status ----------------------------------------------------
@@ -406,10 +426,10 @@ def test_the_differing_unit_directives_carry_no_values(home: Path) -> None:
         )
     )
 
-    keys = manager.differing_keys(port=7419, data_directory="/data")
+    fields = manager.differing_keys(port=7419, data_directory="/data")
 
-    assert keys == ("Environment",)
-    assert "SentinelUnitTokenGGGG" not in " ".join(keys)
+    assert fields == DifferingFields(named=("Environment",))
+    assert "SentinelUnitTokenGGGG" not in " ".join(fields.named)
 
 
 def test_a_repeated_directive_is_not_collapsed(home: Path) -> None:
@@ -424,7 +444,56 @@ def test_a_repeated_directive_is_not_collapsed(home: Path) -> None:
         )
     )
 
-    assert manager.differing_keys(port=7419, data_directory="/data") == ("Environment",)
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields(
+        named=("Environment",)
+    )
+
+
+def test_a_continuation_line_is_the_value_above_it_and_never_a_name(home: Path) -> None:
+    """systemd continues a line ending in a backslash, so the next line is part
+    of the *value*. Split on its own `=`, its left-hand side became a directive
+    name -- and a directive name is what this adapter publishes:
+
+        ExecStart=… daemon start \\
+            --header "Authorization: Bearer <token>"
+
+    put the header into `Fields that differ`, inside the sentence that promises
+    the values are withheld. Two defences, both asserted here: the parser joins
+    the line, and the name would not have been published anyway because `render`
+    does not produce it.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "ExecStart=/opt/theurian daemon start --foreground --port 7419",
+            "ExecStart=/opt/theurian daemon start --foreground \\\n"
+            '    --header "Authorization: Bearer SentinelContinuationHHHH" --port=7419',
+        )
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=("ExecStart",))
+    assert "SentinelContinuationHHHH" not in " ".join(fields.named)
+
+
+def test_a_directive_theurian_never_writes_is_counted_and_not_named(home: Path) -> None:
+    """A unit file is somebody else's text in a format Theurian does not own, so
+    a name read out of it is data. Only `render`'s own vocabulary is published."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Restart=on-failure",
+            "Restart=on-failure\nExecStartPre=/opt/northwind-acquisition/preflight.sh",
+        )
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=(), unnamed=1)
+    assert "northwind" not in " ".join(fields.named)
 
 
 def test_a_unit_differing_only_in_its_comments_names_no_directive(home: Path) -> None:
@@ -437,7 +506,7 @@ def test_a_unit_differing_only_in_its_comments_names_no_directive(home: Path) ->
     )
 
     assert manager.differs_from_installed(port=7419, data_directory="/data") != ""
-    assert manager.differing_keys(port=7419, data_directory="/data") == ()
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields()
 
 
 @pytest.mark.asyncio

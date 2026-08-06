@@ -15,16 +15,45 @@ is still a working Theurian.
 from __future__ import annotations
 
 import difflib
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.ports.daemon_manager import ServiceState, ServiceStatus
+from theurian.domain.setup import DifferingFields
 from theurian.infrastructure.services.runner import CommandRunner, SubprocessRunner
 
 UNIT_NAME: Final = "theurian.service"
 
 _UNIT_DIRECTORY: Final = ".config/systemd/user"
+
+
+def _logical_lines(unit: str) -> Iterator[str]:
+    """A unit's lines with continuations joined, as systemd reads them.
+
+    A line ending in a backslash continues onto the next, and the next line is
+    therefore the *value* of the directive above it. Splitting it on its own
+    ``=`` invents a directive name out of somebody's value:
+
+        ExecStart=/usr/bin/theurian daemon start \\
+            --header "Authorization: Bearer <token>"
+
+    parsed line by line, yielded that header as a directive name. What stops
+    that name being published is :meth:`DifferingFields.over`, which keeps only
+    names Theurian's own renderer produces -- this function stops it being
+    *derived*, so the count beside the names is a count of real directives.
+    """
+    buffered = ""
+    for raw in unit.splitlines():
+        line = f"{buffered} {raw.strip()}" if buffered else raw.strip()
+        if line.endswith("\\"):
+            buffered = line[:-1].rstrip()
+            continue
+        buffered = ""
+        yield line
+    if buffered:  # a file whose last line dangles a continuation
+        yield buffered
 
 
 def _directives(unit: str) -> dict[str, tuple[str, ...]]:
@@ -39,11 +68,10 @@ def _directives(unit: str) -> dict[str, tuple[str, ...]]:
     a section header is neither.
     """
     found: dict[str, list[str]] = {}
-    for line in unit.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", ";", "[")):
+    for line in _logical_lines(unit):
+        if not line or line.startswith(("#", ";", "[")):
             continue
-        name, separator, value = stripped.partition("=")
+        name, separator, value = line.partition("=")
         if separator:
             found.setdefault(name.strip(), []).append(value.strip())
     return {name: tuple(values) for name, values in found.items()}
@@ -136,30 +164,37 @@ WantedBy=default.target
         )
         return "\n".join(diff)
 
-    def differing_keys(self, *, port: int, data_directory: str) -> tuple[str, ...]:
-        """Which unit directives differ, sorted, without a word about their values.
+    def differing_keys(self, *, port: int, data_directory: str) -> DifferingFields:
+        """Which unit directives differ, without a word about their values.
 
         The diff :meth:`differs_from_installed` produces is whole lines of a
         file Theurian did not write, and those lines carry
         ``Environment=THEURIAN_MCP_TOKEN=...`` and paths outside the roots a
-        shared report substitutes. A directive's *name* is schema, not content.
+        shared report substitutes.
+
+        Only directives Theurian's own :meth:`render` produces are named; the
+        rest are counted. A unit file is somebody else's text in a format
+        Theurian does not own, so a name read out of it is data -- see
+        :class:`DifferingFields`, which is where that argument lives.
 
         Only directives are compared, so a unit differing solely in its comments
-        or section headers reports nothing here -- the caller's sentence says the
-        difference is withheld rather than naming fields, which stays true either
-        way, and the full diff is one ``theurian doctor`` away.
+        or section headers names nothing and counts nothing -- the caller's
+        sentence then says the difference is withheld rather than naming fields,
+        which stays true either way, and the full diff is one ``theurian doctor``
+        away.
         """
         if not self.unit_path.exists():
-            return ()
+            return DifferingFields()
 
         wanted = _directives(self.render(port=port, data_directory=data_directory))
         installed = _directives(self.unit_path.read_text(encoding="utf-8"))
-        return tuple(
-            sorted(
+        return DifferingFields.over(
+            (
                 name
                 for name in set(installed) | set(wanted)
                 if installed.get(name) != wanted.get(name)
-            )
+            ),
+            authored=wanted,
         )
 
     # -- Lifecycle --------------------------------------------------------

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from theurian.domain.setup import DifferingFields
+
 
 class ServiceState(StrEnum):
     """Observed state of the daemon service."""
@@ -67,6 +69,27 @@ class DaemonManager(Protocol):
 
         Cheap and side-effect-free: this is what ``SessionStart`` calls, and it
         must stay within the latency budget in NFR-2.
+        """
+        ...
+
+    def differs_from_installed(self, *, port: int, data_directory: str) -> str:
+        """Empty when the installed definition matches, else what differs.
+
+        Renders the installed values, so this is the *operator's* output and
+        never a shared report's: an installed definition is a file somebody else
+        may have edited, and what they put in it is not Theurian's to publish.
+        """
+        ...
+
+    def differing_keys(self, *, port: int, data_directory: str) -> DifferingFields:
+        """The same difference, in the form ``doctor --report`` may publish.
+
+        On the port rather than left to each adapter, and reached by a direct
+        call rather than ``getattr``, because the failure mode is silent: a
+        manager implementing only :meth:`differs_from_installed` would publish
+        "the installed values are withheld" with no field names at all --
+        string-identical to a definition too damaged to parse -- and both the
+        type checker and the tests would pass (SEC-6, O-3).
         """
         ...
 

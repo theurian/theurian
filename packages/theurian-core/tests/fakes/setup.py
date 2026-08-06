@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from theurian.domain.ports.daemon_manager import ServiceState, ServiceStatus
+from theurian.domain.setup import DifferingFields
 
 
 class FakeService:
@@ -23,13 +24,13 @@ class FakeService:
         *,
         installed: bool = False,
         difference: str = "",
-        differing: tuple[str, ...] = (),
+        differing: DifferingFields | None = None,
     ) -> None:
         self.installed = installed
         self.started = False
         self.uninstalled = False
         self._difference = difference
-        self._differing = differing
+        self._differing = differing or DifferingFields()
         self.plist_path = Path("/fake/service.plist")
 
     def is_supported(self) -> bool:
@@ -38,7 +39,7 @@ class FakeService:
     def differs_from_installed(self, *, port: int, data_directory: str) -> str:
         return self._difference
 
-    def differing_keys(self, *, port: int, data_directory: str) -> tuple[str, ...]:
+    def differing_keys(self, *, port: int, data_directory: str) -> DifferingFields:
         return self._differing
 
     async def status(self) -> ServiceStatus:
@@ -84,13 +85,20 @@ class FakeMcpConfig:
             return ""
         return f"installed={self._entry} wanted={spec.as_entry()}"
 
-    def differing_keys(self, spec: Any) -> tuple[str, ...]:
+    def differing_keys(self, spec: Any) -> DifferingFields:
+        """Mirrors the real adapter's rule, including what it refuses to name.
+
+        A fake that named every differing key would let a caller pass a test the
+        adapter fails: the point of the type is that a key read out of the
+        installed entry is data.
+        """
         if self._entry is None:
-            return ()
+            return DifferingFields()
         wanted: dict[str, Any] = spec.as_entry()
         entry = self._entry
-        return tuple(
-            key for key in sorted(set(entry) | set(wanted)) if entry.get(key) != wanted.get(key)
+        return DifferingFields.over(
+            (key for key in set(entry) | set(wanted) if entry.get(key) != wanted.get(key)),
+            authored=wanted,
         )
 
     def install(self, spec: Any) -> str:

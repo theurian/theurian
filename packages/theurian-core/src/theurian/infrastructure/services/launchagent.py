@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import plistlib
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.ports.daemon_manager import ServiceState, ServiceStatus
+from theurian.domain.setup import DifferingFields
 from theurian.infrastructure.services.runner import (
     CommandRunner,
     SubprocessRunner,
@@ -26,6 +28,15 @@ from theurian.infrastructure.services.runner import (
 LABEL: Final = "dev.theurian.daemon"
 
 _AGENTS_DIRECTORY: Final = "Library/LaunchAgents"
+
+
+def _differing_names(
+    installed: Mapping[str, object], wanted: Mapping[str, object]
+) -> tuple[str, ...]:
+    """Every key whose value differs, sorted. Names only; nothing is rendered."""
+    return tuple(
+        sorted(key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key))
+    )
 
 
 @final
@@ -128,36 +139,42 @@ class LaunchAgentManager:
             return ""
 
         lines = [f"{self.plist_path} differs from the definition Theurian would install:"]
+        # Every differing key, including ones Theurian never writes. This output
+        # is the operator's own; only `differing_keys` is publishable.
         lines.extend(
             f"  {key}: installed={installed.get(key)!r} wanted={wanted.get(key)!r}"
-            for key in self.differing_keys(port=port, data_directory=data_directory)
+            for key in _differing_names(installed, wanted)
         )
         return "\n".join(lines)
 
-    def differing_keys(self, *, port: int, data_directory: str) -> tuple[str, ...]:
-        """Which plist keys differ, sorted, without a word about their values.
+    def differing_keys(self, *, port: int, data_directory: str) -> DifferingFields:
+        """Which plist keys differ, without a word about their values.
 
         An installed plist is whatever is on the machine, and what
         :meth:`differs_from_installed` prints of it is not Theurian's to hand
         on: ``EnvironmentVariables`` is a dictionary a person may have put a
         literal ``THEURIAN_MCP_TOKEN`` into, and ``ProgramArguments`` names
-        paths outside the roots a shared report substitutes. The key names alone
-        say which line to go and read on the terminal.
+        paths outside the roots a shared report substitutes.
+
+        Only keys Theurian's own :meth:`render` produces are named; a key
+        somebody else added is counted, because a key in a file Theurian did not
+        write is data rather than schema -- see :class:`DifferingFields`.
         """
         if not self.plist_path.exists():
-            return ()
+            return DifferingFields()
 
         wanted = plistlib.loads(self.render(port=port, data_directory=data_directory))
         try:
             installed = plistlib.loads(self.plist_path.read_bytes())
         except (plistlib.InvalidFileException, ValueError):
-            return ()
+            # Reported rather than answered with an empty result: "no key
+            # differs" and "the file does not parse" read as opposite things,
+            # and the second is the one the reader of a shared issue can act on.
+            # The fragment is this module's own words; the parser's message is
+            # not, and stays in `differs_from_installed`.
+            return DifferingFields(unreadable="is not a readable plist")
 
-        return tuple(
-            sorted(
-                key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key)
-            )
-        )
+        return DifferingFields.over(_differing_names(installed, wanted), authored=wanted)
 
     # -- Lifecycle --------------------------------------------------------
 
