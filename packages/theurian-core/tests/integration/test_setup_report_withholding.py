@@ -18,6 +18,11 @@ machine, then the real redaction, over a context built with `for_publication`
 set. Adapters are real wherever they read a file, because the file is what is
 being reported on. Only the two seams that would touch the developer's own
 machine -- `launchctl` and the `claude` CLI -- are stubbed.
+
+Nothing here holds the *weld* between the two halves of redaction; that is
+`test_redacting_a_run_that_did_not_withhold_is_refused`. What the sweep asserts
+about its own reach is bounded by `_OBSERVED_SEEDS`, which says which seeds are
+measurements and which are guards on a step that does not exist yet.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import plistlib
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
@@ -206,7 +211,36 @@ def test_a_field_name_someone_else_added_to_the_entry_is_counted_not_named(
     )
 
     assert FOREIGN_CLIENT not in published
-    assert "1 further field" in _detail(published, StepId.MCP_CONNECTION)
+    # The count reaches a person, so it is written as English: one field
+    # *differs*, several *differ*. Asserted because a sentence nobody reads back
+    # drifts, and this one is the reader's only signal that there is more.
+    assert "1 further field differs" in _detail(published, StepId.MCP_CONNECTION)
+
+
+def test_several_withheld_fields_are_counted_in_the_plural(tmp_path: Path) -> None:
+    """The other half of the same sentence."""
+    context = _context(tmp_path)
+    (context.home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "theurian": {
+                        "type": "http",
+                        "url": f"http://127.0.0.1:{PORT}/mcp",
+                        "headers": {"Authorization": "Bearer ${THEURIAN_MCP_TOKEN}"},
+                        f"proxy-for-{FOREIGN_CLIENT}": "https://internal.example",
+                        "audit-webhook": "https://internal.example/audit",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    published = _published(
+        replace(context, mcp_config=ClaudeCodeMcpConfig(home=context.home, runner=StubRunner()))
+    )
+
+    assert "2 further fields differ" in _detail(published, StepId.MCP_CONNECTION)
 
 
 # -- The service definition: a credential in a plist somebody hand edited ------
@@ -550,6 +584,28 @@ def test_redacting_a_run_that_did_not_withhold_is_refused(
 # -- Every step, not the five that were known to be broken ---------------------
 
 
+#: Seeds a step publishes today when nothing withholds, so their absence from a
+#: report is a measurement rather than a coincidence.
+#:
+#: The remaining seeds -- the `.gitignore`, the env file, the token file, a
+#: migration's contents, and a foreign server's name in `claude.json` -- are read
+#: by a step that publishes only a path, a count, or a boolean about them.
+#: Swapping one of those for another string is undetectable, **and that is what
+#: they are for**: they guard a step that does not exist yet, on the files a
+#: future step is most likely to start quoting.
+#:
+#: The split is measured, not asserted: `test_every_observable_seed_reaches_the
+#: _operators_own_output` fails if a seed listed here is not published unredacted,
+#: which is how `.gitignore` moved out of it. A sweep whose coverage is
+#: overstated is worse than a smaller one.
+_OBSERVED_SEEDS: Final = (
+    "claude.json theurian entry",
+    "launchagent plist",
+    "another daemon's /health",
+    "project registry",
+)
+
+
 def _leaked(published: str, seeds: dict[str, str]) -> list[str]:
     """The sources whose seeded value reached the payload. The sweep's predicate."""
     return sorted(source for source, value in seeds.items() if value in published)
@@ -642,7 +698,11 @@ def test_no_step_publishes_a_value_it_only_read(tmp_path: Path) -> None:
     exists rather than by the next reviewer.
 
     It asserts the payload *and* that the run reached the steps: a sweep over a
-    plan whose steps all reported NOT_APPLICABLE would pass by not looking.
+    plan whose steps all reported NOT_APPLICABLE would pass by not looking. That
+    the steps *conflict* is not the same as the seeds being what made them
+    conflict, though, so :data:`_OBSERVED_SEEDS` is checked against the
+    operator's own output as well -- see that constant for what the rest of the
+    seeds do and do not prove.
     """
     root = tmp_path / "this-repository"
     (root / ".git").mkdir(parents=True)
@@ -653,11 +713,36 @@ def test_no_step_publishes_a_value_it_only_read(tmp_path: Path) -> None:
     assert not _leaked(published, seeds), (
         f"published values Theurian did not write: {sorted(_leaked(published, seeds))}"
     )
+    # The redaction half of `_published`, which nothing else in this file needs:
+    # without it the sweep would pass with `_redacted` removed, while the module
+    # docstring claims to run it.
+    assert str(context.home) not in published
 
     statuses = {step["id"]: step["status"] for step in json.loads(published)["steps"]}
     assert len(statuses) == len(StepId), "the sweep must cover every step"
     for reached in ("mcp-connection", "daemon-service", "single-instance", "project-registered"):
         assert statuses[reached] == "conflicting", f"{reached} never read what was seeded"
+
+
+def test_every_observable_seed_reaches_the_operators_own_output(tmp_path: Path) -> None:
+    """The positive control the sweep needs to mean anything.
+
+    A seed proves something only if the payload would carry it when nothing
+    withholds. Without this, swapping an observed seed for another string leaves
+    the sweep green -- it would be asserting the absence of a value that was
+    never going to appear.
+
+    Runs the same fixture with ``for_publication`` off, and requires every seed
+    in :data:`_OBSERVED_SEEDS` to be there.
+    """
+    root = tmp_path / "this-repository"
+    (root / ".git").mkdir(parents=True)
+    context, seeds = _seed_every_external_source(_context(tmp_path, project_root=root))
+
+    local = _on_the_terminal(context)
+
+    missing = sorted(source for source in _OBSERVED_SEEDS if seeds[source] not in local)
+    assert not missing, f"seeds that no step publishes even unredacted: {missing}"
 
 
 def test_the_sweep_rings_for_a_step_that_forgets_to_withhold(tmp_path: Path) -> None:

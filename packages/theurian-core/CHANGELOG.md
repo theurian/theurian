@@ -605,6 +605,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Theurian's own renderer produces and counts the rest, which holds without
   depending on a parser being right about a third party's file format.
 
+  **And "the names Theurian's own renderer produces" had to stop being asked of
+  the renderer.** The vocabulary was computed by re-parsing `render()`'s output,
+  on the argument that a name Theurian writes cannot be a value it read. True of
+  `plistlib` and of a dict literal; not true of an f-string over a line-oriented
+  format. `SystemdUserManager.render` interpolates the data directory and the
+  executable, so a line break in either added a directive of the caller's
+  choosing to the "authored" set — and a name present only in the *installed*
+  unit was then published. Two faces of one root cause: the write side rendered
+  that injected directive into the user's unit file at all three interpolation
+  points. The vocabulary is now a stated constant, and a line break in an
+  interpolated value is refused rather than escaped, because systemd has no
+  escape that makes one part of a value. Not reachable in the shipped default
+  configuration — `THEURIAN_DATA_DIR` had to contain a newline.
+
   **The two halves cannot be used apart.** `_redacted` refuses a payload from a
   context that did not ask for publication, because stamping `redacted: true` on
   a run that did not withhold reproduces the original defect exactly — and

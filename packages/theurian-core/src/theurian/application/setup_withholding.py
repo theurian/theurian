@@ -65,10 +65,11 @@ def withheld_difference(subject: str, fields: DifferingFields) -> str:
     if fields.named:
         said.append(f"Fields that differ: {', '.join(fields.named)}.")
     if fields.unnamed:
-        plural = "field" if fields.unnamed == 1 else "fields"
+        one = fields.unnamed == 1
         said.append(
-            f"{fields.unnamed} further {plural} differ under names Theurian does not "
-            f"write, so the names are withheld with the values."
+            f"{fields.unnamed} further {'field differs' if one else 'fields differ'} "
+            f"under names Theurian does not write, so the names are withheld with "
+            f"the values."
         )
     detail = f" {' '.join(said)}" if said else ""
     return (

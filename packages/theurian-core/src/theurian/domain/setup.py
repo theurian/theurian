@@ -172,10 +172,6 @@ class DifferingFields:
             )
             raise SetupError(msg)
 
-    @property
-    def any(self) -> bool:
-        return bool(self.named) or bool(self.unnamed)
-
     @classmethod
     def over(cls, differing: Iterable[str], *, authored: Container[str]) -> Self:
         """Split differing names by whether Theurian's renderer produces them."""
