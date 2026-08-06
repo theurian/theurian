@@ -27,6 +27,7 @@ from theurian.domain.setup import SetupState
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore, default_data_dir
 from theurian.infrastructure.services import detect_manager
+from theurian.security.env_file import TOKEN_KEY
 
 #: A setup that could not converge. Distinct from 1 so a caller can tell "you
 #: need to decide something" from "it broke".
@@ -153,6 +154,47 @@ def doctor_command(
         raise typer.Exit(1)
 
 
+def _redaction_anchors(context: SetupContext) -> tuple[tuple[str, str], ...]:
+    """Every path worth hiding, longest first.
+
+    Longest first is the entire correctness argument. These are plain substring
+    replacements, so an anchor that is a prefix of another must go second or it
+    eats the prefix and leaves the rest: a checkout inside the home directory --
+    which is where most checkouts are -- had ``/home/u/work/api`` turned into
+    ``~/work/api`` by the home anchor before ``<repository>`` was ever tried, so
+    that substitution was a no-op on every ordinary machine and published the
+    repository's path relative to home.
+
+    Resolved *and* unresolved, because the two arrive here from different
+    places: ``context.home`` is whatever ``$HOME`` says while ``project_root``
+    is ``Path.cwd().resolve()``. On an account whose home is a symlink -- macOS
+    ``/var``, a Linux ``/home`` that points elsewhere -- the unresolved anchor
+    matched *inside* the resolved path and produced ``/private~/work/api/…``,
+    which discloses the tail it failed to replace.
+
+    Both faults were live in a shipped command and invisible to a test whose
+    fixture put the repository beside the home directory rather than inside it.
+    """
+    candidates: list[tuple[Path, str]] = [(context.auth_dir / TOKEN_KEY, "<token file>")]
+    if context.project_root is not None:
+        candidates.append((context.project_root, "<repository>"))
+    # A data directory inside HOME needs no anchor of its own -- `~/.theurian`
+    # discloses nothing and reads better than a placeholder. One outside HOME is
+    # a `THEURIAN_DATA_DIR` pointing at a mount or a shared path, and nothing
+    # else here covers it.
+    if not context.data_dir.is_relative_to(context.home):
+        candidates.append((context.data_dir, "<data directory>"))
+    candidates.append((context.home, "~"))
+
+    anchors: dict[str, str] = {}
+    for path, replacement in candidates:
+        for variant in (path, path.resolve()):
+            anchors.setdefault(str(variant), replacement)
+    # The path itself breaks length ties, so the order is total and the output
+    # does not depend on dict iteration.
+    return tuple(sorted(anchors.items(), key=lambda anchor: (-len(anchor[0]), anchor[0])))
+
+
 def _redacted(payload: dict[str, Any], context: SetupContext) -> dict[str, Any]:
     """Strip anything personal from a diagnostic meant to be shared (O-3).
 
@@ -161,14 +203,13 @@ def _redacted(payload: dict[str, Any], context: SetupContext) -> dict[str, Any]:
     account and their repositories; both are someone's private information even
     though neither is a credential.
     """
-    home = str(context.home)
-    token = str(context.auth_dir / "mcp-token")
+    anchors = _redaction_anchors(context)
 
     def scrub(value: Any) -> Any:
         if isinstance(value, str):
-            cleaned = value.replace(token, "<token file>").replace(home, "~")
-            root = context.project_root
-            return cleaned.replace(str(root), "<repository>") if root else cleaned
+            for needle, replacement in anchors:
+                value = value.replace(needle, replacement)
+            return value
         if isinstance(value, list):
             return [scrub(item) for item in value]
         if isinstance(value, dict):

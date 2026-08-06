@@ -485,11 +485,11 @@ def _unreadable_registry_summary(registry: ProjectRegistry, root: Path) -> str:
         registry.unreadable_ids()
     except ProjectError:
         return (
-            f"Cannot tell whether {root.name} is registered: {registry.path} cannot be "
+            f"Cannot tell whether {root} is registered: {registry.path} cannot be "
             f"read at all, so nothing in it can be checked."
         )
     return (
-        f"Cannot tell whether {root.name} is registered: {registry.path} holds "
+        f"Cannot tell whether {root} is registered: {registry.path} holds "
         f"an entry that cannot be read, and it might be this repository's own."
     )
 
@@ -506,6 +506,13 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
     this very root's id is refused by :meth:`ProjectRegistry.register`, and the
     step this report is shown on is the first screen a person reads when
     something is broken.
+
+    Every summary here names the repository by its **whole path**, never by
+    ``root.name``. `doctor --report` redacts by substituting known paths, and a
+    bare directory name is not a path: it survived every anchor and published
+    the repository's name into output meant for a public issue (O-3). The full
+    path redacts to ``<repository>`` and, unredacted, says which checkout --
+    which is the more useful answer to "not registered where?" anyway.
     """
     root = context.project_root
     if root is None:
@@ -532,7 +539,7 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
         return SetupStep(
             step_id=StepId.PROJECT_REGISTERED,
             status=StepStatus.SATISFIED,
-            summary=f"{root.name} is registered.",
+            summary=f"{root} is registered.",
         )
     # `paths` is empty for the same reason it is empty above: this step has no
     # apply, so setup never writes `registry.path` whatever the user decides.
@@ -546,7 +553,7 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
     return SetupStep(
         step_id=StepId.PROJECT_REGISTERED,
         status=StepStatus.MISSING,
-        summary=f"{root.name} has no entry in {registry.path}.",
+        summary=f"{root} has no entry in {registry.path}.",
         action="Register this repository. Run `theurian project register`.",
         critical=False,
     )
@@ -589,21 +596,31 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     gitignore = root / ".gitignore"
-    contents = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
+    exists = gitignore.is_file()
+    contents = gitignore.read_text(encoding="utf-8") if exists else ""
     if ".theurian/state" in contents:
         return SetupStep(
             step_id=StepId.GITIGNORE,
             status=StepStatus.SATISFIED,
             summary="Derived Theurian artifacts are ignored.",
         )
-    # No `paths`: `init` appends the block, setup only reads the file -- and it
-    # may not exist at all, which is how a `.gitignore` that was never created
-    # came to be reported as one setup had modified. The summary names it, since
-    # a repository can hold several and the step checks exactly this one.
+    # No `paths`: `init` appends the block, setup only reads the file, and the
+    # file may not be there at all -- which is how a `.gitignore` that was never
+    # created came to be reported as one setup had modified.
+    #
+    # Two summaries for one status, because the file's absence and its silence
+    # are different things to be told and the reader acts on them differently.
+    # Naming the path is what removing `paths` has to compensate for; saying "it
+    # does not ignore" of a file that is not there was how the first attempt at
+    # that got it wrong.
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
-        summary=f"{gitignore} does not ignore the derived Theurian artifacts.",
+        summary=(
+            f"{gitignore} has no Theurian block."
+            if exists
+            else f"{gitignore} does not exist, so nothing ignores the derived artifacts."
+        ),
         action="Add the Theurian block to .gitignore. Run `theurian init`.",
         critical=False,
     )
