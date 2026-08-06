@@ -249,6 +249,49 @@ def test_a_minimum_accepts_every_core_above_it(minimum: str) -> None:
     assert not holes, f"minimum {minimum} accepted {_RELEASE_TRAIN[first]} and then refused {holes}"
 
 
+#: Ceilings a declaration could plausibly write. `maximumExclusive` has to be
+#: above the minimum, and `0.0.1` is below the whole train.
+_CEILINGS: Final = (
+    "0.1.0-alpha.1",
+    "0.1.0-rc.0",
+    "0.1.0",
+    "0.2.0-dev.1",
+    "0.2.0-beta.2",
+    "0.2.0",
+)
+
+
+@pytest.mark.parametrize("maximum_exclusive", _CEILINGS)
+def test_a_maximum_refuses_every_core_at_or_above_it(maximum_exclusive: str) -> None:
+    """The mirror of upward closure, and the same root cause.
+
+    A ceiling is the other end of the same comparison, so a translation that
+    inverts order punches the same hole downwards: once a Core is refused as too
+    new, every Core above it has to be refused too. Testing only the floor would
+    have closed one face of the defect and left the other.
+    """
+    declaration = CompatibilityDeclaration(
+        plugin_version=Version.parse("0.1.0"),
+        # Below the whole train, so the only reason left for a refusal is the
+        # ceiling.
+        core_minimum=Version.parse("0.0.1"),
+        core_maximum_exclusive=Version.parse(maximum_exclusive),
+        protocol_version="theurian/v1",
+    )
+    refused = [
+        resolve_compatibility(declaration, Version.parse_python(core), "theurian/v1").outcome
+        is CompatibilityOutcome.CORE_TOO_NEW
+        for core in _RELEASE_TRAIN
+    ]
+    assert any(refused), f"maximumExclusive {maximum_exclusive} refused nothing on the train"
+    first = refused.index(True)
+    holes = [_RELEASE_TRAIN[i] for i in range(first, len(refused)) if not refused[i]]
+    assert not holes, (
+        f"maximumExclusive {maximum_exclusive} refused {_RELEASE_TRAIN[first]} "
+        f"and then accepted {holes}"
+    )
+
+
 #: Release-train forms mixed with pre-release shapes that are not on any release
 #: train -- a bare numeric, a phase with no number, words on either side of
 #: ``dev`` in ASCII, and the two identifiers a forgeable ordering marker would
@@ -284,7 +327,19 @@ def test_version_ordering_is_a_total_order() -> None:
     cyclic: ``cat`` sits between the two words in ASCII, so ``dev < alpha``
     by the train rule, ``alpha < cat`` and ``cat < dev`` by ASCII. ``Version``
     therefore rewrites first and compares once, and this holds that.
+
+    Measured, not assumed: substituting that implementation makes this test
+    report ``0.2.0-dev.0 < 0.2.0-alpha.0 < 0.2.0-cat but not 0.2.0-dev.0 <
+    0.2.0-cat``. Deleting the rewrite altogether leaves it green, because plain
+    SemVer §11.4 is already total -- so this one guards the fix rather than
+    reproducing the defect, and the two closure tests above are the ones that
+    go red on unmodified source.
     """
+    # The premise, measured rather than asserted -- those three words really do
+    # fall in that ASCII order, which is what closes the cycle. `0.2.0-cat` is
+    # in the corpus below for the same reason.
+    assert sorted(("dev", "cat", "alpha")) == ["alpha", "cat", "dev"]
+
     versions = [Version.parse(value) for value in _ORDER_CORPUS]
     for left, right in itertools.product(versions, repeat=2):
         trichotomy = (left < right) + (right < left) + (left == right)
