@@ -210,7 +210,15 @@ claude plugin validate ./plugins/claude-code --strict
 ### 2. Version and compatibility
 
 Update `version` in `.claude-plugin/plugin.json` **and** `pluginVersion` in
-`compatibility.yaml`. They must agree — a test asserts it.
+`compatibility.yaml`. They must agree —
+`test_the_version_claude_code_caches_is_the_version_the_plugin_declares` in
+[`test_plugin_boundary.py`](../../packages/theurian-core/tests/unit/test_plugin_boundary.py)
+asserts it, and `plugin.yml`'s `manifest` job runs that file on every pull
+request and every push to `main` that touches `plugins/**`.
+
+That is a pull-request check, not a release gate. Nothing triggers on
+`plugin-v*` (§4), so a tag cut from a commit that never went through a pull
+request is still unchecked — which is why the item stays on the checklist below.
 
 Review the range against the Core you actually tested with:
 
