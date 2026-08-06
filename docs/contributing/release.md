@@ -143,42 +143,72 @@ workflow does the same from creation onward. Find the id — never act on the
 list without reading it first:
 
 ```sh
-gh api repos/theurian/theurian/releases --jq '.[] | {id, name, tag_name, draft}'
+gh api repos/theurian/theurian/releases --paginate \
+  --jq '.[] | {id, name, tag_name, draft}'                             # find it
 gh api -X PATCH repos/theurian/theurian/releases/<id> -F draft=false   # publish
 gh api -X DELETE repos/theurian/theurian/releases/<id>                 # delete
 ```
 
-`draft-release` refuses to start if a draft already exists for the tag, so the
-workflow cannot walk into this. That guard is the reason step 5 is safe to
-re-run, and it is the one thing the *old* order gave for free: `gh release
-create` without `--draft` does refuse a duplicate tag, so a re-run used to fail
-loudly on its own.
+`--paginate` is not optional: without it you see the first page, and a page is
+not the list.
+
+`draft-release` refuses to start if the tag already has **any** release, draft
+or published. That guard is the one thing the *old* order gave for free — `gh
+release create` without `--draft` refuses a duplicate tag, so a re-run used to
+fail loudly on its own — and it is what makes step 5 safe to re-run.
+
+The API has a backstop underneath it: `POST /releases` returns **HTTP 422** for
+a second *published* release on one tag. It is real, and it fires *after* the
+upload, which is why the guard matches published releases too rather than
+leaving 422 to catch what it missed.
+
+### The re-run rule, which is not the obvious one
+
+**"Re-run failed jobs" does not re-run step 5 when step 5 succeeded — it reuses
+the release id that run recorded.** So the two buttons are not
+interchangeable, and choosing wrongly reaches the state this whole ordering
+exists to prevent:
+
+| You have | Use | Because |
+| :-- | :-- | :-- |
+| deleted the draft | **Re-run all jobs** | step 5 must run again to create a release and record a new id |
+| deleted nothing, and nothing is on PyPI | either | |
+| deleted nothing, and the upload succeeded | **Re-run failed jobs** | re-running all would re-upload, and PyPI refuses a duplicate filename |
+
+Deleting a draft and then pressing "Re-run failed jobs" was measured leaving a
+version on PyPI and no release on GitHub: step 5 is skipped, step 6 succeeds
+irreversibly, and step 7 fails with `HTTP 404` on an id that no longer exists.
+**Never delete a draft and re-run only the failed jobs.**
 
 ### What each failure leaves, and what to do
 
-**Delete drafts only when no run is in flight.** Deleting one mid-run is the one
-way to reach the state this ordering exists to prevent: the upload then succeeds
-with nothing left to publish.
-
 | Failed at | On PyPI | On GitHub | Do this |
 | :-- | :-- | :-- | :-- |
-| 1–4 | nothing | nothing | Fix, re-tag. |
-| 5 | nothing | a draft, possibly partial | Delete that draft **by id**, then re-run. Re-running without deleting fails at the guard, which is intended. |
-| 6, declined or unapproved | nothing | a complete draft | Delete it by id. |
-| 6, upload refused outright | nothing | a complete draft | Fix, re-run. |
-| 6, **partial** upload | some filenames permanently taken | a complete draft | See below. |
-| 7 | full upload | a complete draft | Publish it by id. Nothing rebuilt, nothing yanked. |
+| 1–4 | nothing | nothing | Fix and re-tag. Safe here, because nothing has been published — see the re-tagging warning below for when it is not. |
+| 5 | nothing | a draft, possibly partial | Delete that draft **by id**, then **re-run all jobs**. Re-running without deleting fails at the guard, which is intended. |
+| 6, declined or unapproved | nothing | a complete draft | Either approve and re-run the failed jobs, or delete the draft by id and **re-run all jobs**. Not: delete, then re-run failed. |
+| 6, upload refused outright | nothing | a complete draft | Fix the cause, **re-run failed jobs**, and do not delete the draft. |
+| 6, **partial** upload | some filenames permanently taken | a complete draft | No clean recovery — see below. |
+| 7, `404` | full upload | nothing — the draft was deleted | The bad state. Download this run's artifact before it expires and cut the release by hand. |
+| 7, other | full upload | a complete draft | Publish it by id. Nothing rebuilt, nothing yanked. |
 
-**Use "Re-run failed jobs", not "Re-run all jobs".** The former skips step 5
-when it already succeeded, so the id the run published stays valid.
+**Do not delete and re-push a tag that already has a published release.**
+Re-pushing silently reverts that release to a **draft** — measured — and the
+guard then blocks the next run, leaving no visible record and no way forward
+except deleting by id. Rows 1–4 fail before anything is published, so re-tagging
+is safe there; once step 7 has run, bump the version instead.
 
-**A partial upload is the one state with no clean recovery.** twine sends files
-in order and stops at the first failure, so the wheel can land while the sdist
-does not. Those filenames are now permanently taken, `skip-existing` is
-deliberately unset (see below), and no maintainer holds a PyPI credential to
-finish the upload by hand — so the only route is to yank and release a new
-version. Everything else on this page can be repaired without rebuilding or
-yanking; this cannot.
+**A partial upload has no clean recovery.** twine sends files in order and stops
+at the first failure, so the wheel can land while the sdist does not. Those
+filenames are now permanently taken, `skip-existing` is deliberately unset (see
+below), and no maintainer holds a PyPI credential to finish the upload by hand —
+so the only route is to yank and release a new version.
+
+The `404` row above has no clean recovery either, for a different reason: the
+artifact is public and its record was deleted. Everything else on this page is
+repaired without rebuilding or yanking. **Those two are the states worth
+recognising before you touch anything**, and both are reached by acting between
+steps rather than by any job failing on its own.
 
 Two artifacts of the design worth knowing. `skip-existing` is left unset on
 purpose: with it, a re-run would treat "this filename already exists" as success
