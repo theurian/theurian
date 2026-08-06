@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import pathlib
 
-from theurian.application.setup_steps import STEPS, _nothing
+from theurian.application import setup_steps
+from theurian.application.setup_steps import STEPS
 from theurian.cli.setup_commands import setup_command
 from theurian.domain.setup import StepId
 
@@ -29,6 +30,24 @@ PLUGIN_SETUP_DOC = REPO_ROOT / "plugins" / "claude-code" / "commands" / "setup.m
 #: The two installers :func:`probe_core` names. Every surface telling a user how
 #: Core arrives must name these rather than ``theurian setup``.
 INSTALLERS = ("uv tool install theurian", "pipx install theurian")
+
+
+def _steps_that_act() -> frozenset[StepId]:
+    """The steps that write something, derived from the step table itself.
+
+    Classified by whether a step's ``apply`` is one of the module's ``apply_*``
+    functions -- never by how "this step does nothing" happens to be spelled.
+    That spelling is a shared no-op function here and ``None`` on the branch of
+    https://github.com/theurian/theurian/pull/45, the two touch different files,
+    and Git merges them cleanly: a module that named the sentinel would import a
+    symbol the merged tree does not define, and a collection error aborts the
+    whole run rather than one test. Neither spelling is an ``apply_*``, so both
+    classify identically through this function.
+    """
+    actions: frozenset[object] = frozenset(
+        getattr(setup_steps, name) for name in dir(setup_steps) if name.startswith("apply_")
+    )
+    return frozenset(step.step_id for step in STEPS if step.apply in actions)
 
 
 def _collapsed(text: str) -> str:
@@ -47,7 +66,7 @@ def test_no_setup_step_installs_core_registers_a_project_or_builds_an_index() ->
     is exactly what invites a docstring to claim setup performs it, so the two
     that were misdescribed alongside it are pinned here too.
     """
-    report_only = {step.step_id for step in STEPS if step.apply is _nothing}
+    report_only = {step.step_id for step in STEPS} - _steps_that_act()
 
     assert StepId.CORE_PRESENT in report_only
     assert StepId.PROJECT_REGISTERED in report_only
