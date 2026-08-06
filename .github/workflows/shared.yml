@@ -35,8 +35,15 @@ jobs:
             schemas:
               - 'schemas/**'
             docs:
+              # The link checker below walks every `*.md` in the repository, so
+              # the filter that decides whether it runs has to watch every one
+              # too. `docs/**` plus a root-level `*.md` left 35 of 88 Markdown
+              # files unwatched, `packages/theurian-core/CHANGELOG.md` among
+              # them: a change confined to one of those never ran the check.
+              # `docs/**` stays because a moved non-Markdown file under `docs/`
+              # breaks links pointing at it.
               - 'docs/**'
-              - '*.md'
+              - '**/*.md'
 
   schemas:
     name: Schemas are valid
