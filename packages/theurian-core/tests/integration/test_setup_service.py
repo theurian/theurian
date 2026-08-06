@@ -10,6 +10,8 @@ amount of ``HOME`` redirection prevents.
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, override
 
@@ -19,8 +21,8 @@ from fakes.setup import FakeMcpConfig, FakeService
 from theurian.application.project_service import ProjectRegistry
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
-from theurian.application.setup_steps import probe_project_registered
-from theurian.domain.setup import SetupState, StepId, StepOutcome, StepStatus
+from theurian.application.setup_steps import STEPS, Step, probe_project_registered
+from theurian.domain.setup import SetupState, SetupStep, StepId, StepOutcome, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.security.env_file import TOKEN_KEY
@@ -65,7 +67,11 @@ def test_a_dry_run_changes_nothing_at_all(context: SetupContext) -> None:
 
 
 def test_the_plan_names_every_file_it_would_create(context: SetupContext) -> None:
-    """`uninstall --dry-run` has to be able to enumerate what setup created."""
+    """`uninstall --dry-run` has to be able to enumerate what setup created.
+
+    NFR-12, and a requirement rather than a description of today: `uninstall`
+    reads neither this aggregate nor the steps' own paths. See `SetupStep.paths`.
+    """
     plan = _service(context).plan()
 
     assert str(context.data_dir) in plan.paths
@@ -343,7 +349,13 @@ def test_a_repository_that_is_registered_is_reported_satisfied(tmp_path: Path) -
 def test_an_unregistered_repository_is_reported_missing_with_the_command_to_fix_it(
     tmp_path: Path,
 ) -> None:
-    """A MISSING step must say what it would do; the plugin renders `action`."""
+    """A MISSING step must say what it would do; the plugin renders `action`.
+
+    ``paths`` stays empty here for the same reason the CONFLICTING arm below
+    leaves it empty, which is the reason this arm used to disagree with: this
+    step never writes to the registry, whatever the user decides. `register` is
+    what writes it, and the action says so.
+    """
     root = _repository(tmp_path)
     context = _with(tmp_path, project_root=root)
     _registry_holding(context, {"other": {"rootPath": str(tmp_path / "elsewhere")}})
@@ -352,7 +364,7 @@ def test_an_unregistered_repository_is_reported_missing_with_the_command_to_fix_
 
     assert step.status is StepStatus.MISSING
     assert "theurian project register" in step.action
-    assert str(ProjectRegistry.default(context.data_dir).path) in step.paths
+    assert step.paths == (), "a step that only reads must not appear in the changed-files list"
 
 
 def test_an_unreadable_entry_makes_registration_undecidable_rather_than_missing(
@@ -457,6 +469,482 @@ def test_an_undecidable_registration_halts_the_run_before_anything_is_created(
     assert not context.env_file.exists()
     assert isinstance(context.service, FakeService) and not context.service.installed
     assert context.mcp_config.installed_entry() is None
+
+
+# -- Steps setup reports but does not perform (§6.2 rows 11-13) --------------
+#
+# Three steps probe something setup never acts on: whether the repository is
+# registered, whether `.theurian/` has its directories, and whether `.gitignore`
+# covers the derived artifacts. `theurian project register` does the first and
+# `theurian init` the other two; setup only says they are undone, and each one's
+# `action` names the command.
+#
+# Reaching any of that needs `project_root` set, which the module's `context`
+# fixture leaves at None -- so every test above them ran with all three reporting
+# NOT_APPLICABLE, and the idempotence assertion at the top of this file was green
+# against a machine where the branch had never executed. The blind fixture stays:
+# outside a Git working tree is a real way to run setup, and the machine-wide
+# steps behave the same either way.
+
+
+@pytest.fixture
+def in_a_repository(tmp_path: Path) -> SetupContext:
+    """Nothing set up yet, and setup invoked from inside a repository."""
+    return _with(tmp_path, project_root=_repository(tmp_path))
+
+
+#: §6.2 rows 11-13. Written out rather than derived from ``STEPS``, so that the
+#: tests below cannot quietly come to assert nothing; the population itself is
+#: checked against ``STEPS`` by the first test.
+REPORT_ONLY = (StepId.PROJECT_REGISTERED, StepId.PROJECT_LAYOUT, StepId.GITIGNORE)
+
+
+def _paths_setup_never_writes(context: SetupContext) -> set[str]:
+    """The five files the three report-only steps used to claim.
+
+    Spelled out rather than read off the plan. Reading the plan would make every
+    assertion below vacuous the moment the plan stopped naming them, which is
+    precisely the change these tests exist to hold in place.
+    """
+    root = context.project_root
+    assert root is not None
+    return {
+        str(ProjectRegistry.default(context.data_dir).path),
+        str(root / ".gitignore"),
+        *(str(root / ".theurian" / name) for name in ("migrations", "knowledge", "state")),
+    }
+
+
+def test_the_steps_that_report_without_acting_are_the_three_expected_ones(
+    in_a_repository: SetupContext,
+) -> None:
+    """A fourth one would be tested by nothing below until it is added here.
+
+    Measured on a cold machine rather than asserted statically: several steps
+    carry no action -- platform, single-instance, migrations-valid -- and what
+    distinguishes these three is that they are also the ones that report MISSING,
+    which is the only status that used to reach the apply branch.
+    """
+    plan = _service(in_a_repository).plan()
+    actionless = {step.step_id for step in STEPS if step.apply is None}
+
+    reported = {s.step_id for s in plan.steps if s.would_change and s.step_id in actionless}
+
+    assert reported == set(REPORT_ONLY)
+
+
+def test_a_step_setup_does_not_perform_is_never_reported_as_changed(
+    in_a_repository: SetupContext,
+) -> None:
+    """The defect this section was written for.
+
+    `would_change` is MISSING and nothing else, so a step with no action reached
+    the apply branch, called nothing, and was recorded CHANGED unconditionally.
+
+    The outcome is asserted by *value*, not as "not CHANGED". `outcome` is a
+    published field and the plugin's `setup.md` renders it, so which of the four
+    it is matters: NOT_ATTEMPTED means the run stopped before reaching the step,
+    which a completed run must never say about a step it probed twice. A
+    prohibition alone let that substitution through.
+    """
+    report = _service(in_a_repository).run()
+
+    for step_id in REPORT_ONLY:
+        step = report.step(step_id)
+        assert step is not None
+        assert step.status is StepStatus.MISSING, "the fixture has to reach the branch"
+        assert step.outcome is StepOutcome.UNCHANGED, (
+            f"{step_id.value} has no action; the run reached it and it did not change"
+        )
+
+
+def test_a_file_setup_never_writes_is_not_listed_among_the_files_it_changed(
+    in_a_repository: SetupContext,
+) -> None:
+    """All five were absent from the disk when the run ended.
+
+    Asserted on absence from the list *and* on absence from the disk, because
+    either alone is weak: a run that silently dropped a genuinely written path
+    would satisfy the first, and a run that stopped reporting nothing at all
+    while some probe quietly created the files would satisfy the second.
+    """
+    report = _service(in_a_repository).run()
+
+    phantom = _paths_setup_never_writes(in_a_repository)
+    assert not phantom & set(report.changed_paths), "setup did not write these"
+    assert not any(Path(p).exists() for p in phantom), "and nothing else wrote them either"
+
+
+def test_the_plan_offers_none_of_the_five_paths_rows_11_to_13_used_to_name(
+    in_a_repository: SetupContext,
+) -> None:
+    """The plan is what `--dry-run` shows before consent is asked for.
+
+    Same claim as the changed-files list, one stage earlier: a path offered here
+    is one the user is told setup would create or modify.
+
+    Named for the five, because five is what it checks. It is the concrete
+    regression and nothing wider -- the property that *no* actionless step names
+    a path in *any* state is two tests below, and this one went on holding a
+    universal in its title while intersecting against a hardcoded list.
+    """
+    plan = _service(in_a_repository).plan()
+
+    published = {path for step in plan.steps for path in step.paths}
+    assert not _paths_setup_never_writes(in_a_repository) & published
+    assert not _paths_setup_never_writes(in_a_repository) & set(plan.paths)
+
+
+def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
+    in_a_repository: SetupContext,
+) -> None:
+    """The compensation, which was the untested half of removing `paths`.
+
+    Dropping `paths` from these three is only defensible because nothing a
+    reader needs goes with it, and for two of them that was made true by moving
+    the location into the summary rather than by its already being there. Both
+    the CHANGELOG and the probes' own comments assert it. Until this test,
+    shortening any of the three summaries to a sentence naming no location
+    passed the whole suite -- measured, as three surviving mutations.
+
+    `project-layout` needs no help and gets asserted anyway, because "its
+    summary already names them" is the reason it was left alone.
+    """
+    root = in_a_repository.project_root
+    assert root is not None
+    expected = {
+        StepId.PROJECT_REGISTERED: str(ProjectRegistry.default(in_a_repository.data_dir).path),
+        StepId.PROJECT_LAYOUT: str(root / ".theurian"),
+        StepId.GITIGNORE: str(root / ".gitignore"),
+    }
+
+    report = _service(in_a_repository).run()
+
+    for step_id, location in expected.items():
+        step = report.step(step_id)
+        assert step is not None
+        assert step.status is StepStatus.MISSING, "the fixture has to reach the branch"
+        assert location in step.summary, (
+            f"{step_id.value} no longer says where; `paths` was the only other place it lived"
+        )
+    registered = report.step(StepId.PROJECT_REGISTERED)
+    assert registered is not None
+    assert str(root) in registered.summary, "and which repository has no entry"
+
+
+# -- The property those five paths are one instance of -----------------------
+#
+# `SetupStep.paths` claims that a step with no action names none *whatever it
+# found*, and that claim is about arms. Arms are where it broke:
+# `probe_project_registered` left `paths` empty on its CONFLICTING arm, with a
+# comment saying exactly why, and set it on the MISSING arm three lines below.
+# A test that intersects one state against five hardcoded paths cannot see that,
+# and two mutations proved it -- `probe_gitignore` naming a file again, and
+# `probe_migrations` naming the directory it only reads -- both surviving the
+# whole suite while restoring the published defect.
+
+#: Every ``(step, status)`` pair the eleven actionless steps reach across
+#: `_states`, counted off their branches: platform 2, core-present 2,
+#: artifact-integrity 1, single-instance 3, project-registered 4,
+#: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 2 (three
+#: returns, two of them NOT_APPLICABLE), initial-index 1 (two summaries, one
+#: status), serena-detection 2. Independently: 27 ``return SetupStep(...)``
+#: statements collapsing onto 25 pairs.
+#:
+#: **What the assertion holds, exactly.** A fall means a state stopped reaching
+#: a status it used to. A rise means a step began emitting a status it did not
+#: emit before. It does *not* enumerate arms and cannot: an arm no state walks
+#: produces no observation, so deleting one is invisible here whenever another
+#: arm of the same step already emits that status. Measured -- deleting
+#: `probe_migrations`'s "No migrations directory yet." NOT_APPLICABLE arm
+#: survives this, because the `root is None` arm keeps emitting
+#: NOT_APPLICABLE. What catches a probe naming a path is the `paths` assertion
+#: in the loop, not this number.
+ACTIONLESS_STEP_STATUS_PAIRS = 25
+
+#: Any absolute path. What matters is only that a probe named one.
+_A_NAMED_PATH = "/tmp/a-file-this-step-only-reads"  # noqa: S108 - never opened
+
+
+def _under(tmp_path: Path, name: str) -> Path:
+    directory = tmp_path / name
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _converged_repository(base: Path) -> SetupContext:
+    """Rows 11-13 satisfied, Serena present, a migration and a built state on disk.
+
+    The built state is the point of the ``active.json``: `probe_initial_index`
+    branches on `read_active_state`, and with no state ever built no context
+    reached the built side of it. A mutation naming a path only there survived
+    the whole suite.
+    """
+    root = _repository(base)
+    for name in ("migrations", "knowledge", "state"):
+        (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
+    (root / ".theurian" / "migrations" / "0001-initial.yaml").touch()
+    (root / ".theurian" / "state" / "active.json").write_text(
+        json.dumps(
+            {
+                "stateHash": "b" * 64,
+                "databaseFilename": "knowledge-bbbb.sqlite",
+                "migrationCount": 1,
+                "updatedAt": "2026-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / ".gitignore").write_text(".theurian/state/\n", encoding="utf-8")
+    mcp_config = FakeMcpConfig()
+    mcp_config.serena = True
+    context = _with(base, project_root=root, mcp_config=mcp_config)
+    _registry_holding(context, {"api": {"rootPath": str(root.resolve())}})
+    return context
+
+
+def _conflicted_repository(base: Path) -> SetupContext:
+    """Three conflicts at once: no executable, a foreign daemon, a broken entry.
+
+    Its `.theurian/` is *partly* built -- `migrations` alone -- because
+    `probe_project_layout` computes which directories are absent and no other
+    state leaves that list a proper subset. A mutation naming only the missing
+    ones survived while every state had either all three or none.
+    """
+    root = _repository(base)
+    (root / ".theurian" / "migrations").mkdir(parents=True, exist_ok=True)
+    context = _with(
+        base,
+        project_root=root,
+        executable="",
+        health=lambda: {"dataDir": "/somewhere/that/is/not/this/one"},
+    )
+    _registry_holding(context, {"payments": {"defaultBranch": "main"}})
+    return context
+
+
+def _initialised_but_empty_repository(base: Path) -> SetupContext:
+    """`theurian init` has run and nothing has been written yet.
+
+    The state right after `init`, and the one `_converged_repository` cannot
+    stand in for: seeding a migration there means `probe_migrations` never
+    reaches its own directory-exists-but-is-empty case. A mutation that made
+    that case report MISSING with the directory in `paths` survived the whole
+    suite, because no state walked it.
+
+    Its `.gitignore` exists and says nothing about Theurian, which is the other
+    half of `probe_gitignore`'s MISSING status: everywhere else the file is
+    simply absent, so a mutation naming it only when it exists survived too.
+    """
+    root = _repository(base)
+    for name in ("migrations", "knowledge", "state"):
+        (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text("*.log\nnode_modules/\n", encoding="utf-8")
+    return _with(base, project_root=root)
+
+
+def _states(tmp_path: Path) -> dict[str, SetupContext]:
+    """One context per shape a report-only step can be probed in."""
+    served = _under(tmp_path, "served")
+    served_data_dir = served / "home" / ".theurian"
+    return {
+        "outside a repository": _with(_under(tmp_path, "outside")),
+        "cold inside a repository": _with(
+            _under(tmp_path, "cold"), project_root=_repository(_under(tmp_path, "cold"))
+        ),
+        "initialised but empty": _initialised_but_empty_repository(_under(tmp_path, "initialised")),
+        "converged inside a repository": _converged_repository(_under(tmp_path, "converged")),
+        "conflicted": _conflicted_repository(_under(tmp_path, "conflicted")),
+        "a daemon already serving this data directory": _with(
+            served,
+            project_root=_repository(served),
+            health=lambda: {"dataDir": str(served_data_dir)},
+        ),
+    }
+
+
+def test_no_step_without_an_action_names_a_path_in_any_state_it_can_reach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source half of the guarantee, across every state the probes branch on.
+
+    Stripping in the runner (below) makes a probe that names a path harmless, not
+    correct: the next reader of `probe_gitignore` would find `paths=(...)` in the
+    source and `"paths": []` in the JSON and have to work out which one lied.
+    This keeps the two agreeing.
+
+    The `paths` assertion is what does the work. `ACTIONLESS_STEP_STATUS_PAIRS`
+    is a coverage floor and nothing more -- see its comment for what it can and
+    cannot notice. What decides whether this test finds anything is the *states*:
+    three mutations survived an earlier version of it because no context here
+    had a `.gitignore` that existed without the marker, a built knowledge state,
+    or a partly-populated `.theurian/`.
+
+    Both platform arms are walked by patching rather than by whichever host is
+    running, so Linux CI and a macOS laptop cover the same pairs.
+    """
+    states = _states(tmp_path)
+    observed: set[tuple[StepId, StepStatus]] = set()
+    offenders: list[str] = []
+
+    for platform_name in ("darwin", "win32"):
+        monkeypatch.setattr(sys, "platform", platform_name)
+        for label, context in states.items():
+            for step in STEPS:
+                if step.apply is not None:
+                    continue
+                probed = step.probe(context)
+                observed.add((probed.step_id, probed.status))
+                if probed.paths:
+                    offenders.append(f"{probed.step_id.value} names {probed.paths} when {label}")
+
+    assert offenders == []
+    assert {status for _, status in observed} == set(StepStatus), "every status has to be walked"
+    assert len(observed) == ACTIONLESS_STEP_STATUS_PAIRS
+
+
+def _probe_naming_a_path(
+    step_id: StepId, status: StepStatus
+) -> Callable[[SetupContext], SetupStep]:
+    """A probe that names a path in whichever status it is asked for."""
+
+    def probe(_: SetupContext) -> SetupStep:
+        return SetupStep(
+            step_id=step_id,
+            status=status,
+            summary="found something worth mentioning",
+            action="do the thing" if status is StepStatus.MISSING else "",
+            detail="differs from what setup installs" if status is StepStatus.CONFLICTING else "",
+            paths=(_A_NAMED_PATH,),
+        )
+
+    return probe
+
+
+def _an_action(_: SetupContext) -> None:
+    """A stand-in. Never called: the tests below only plan."""
+
+
+@pytest.mark.parametrize("status", list(StepStatus), ids=[s.value for s in StepStatus])
+def test_the_runner_drops_the_paths_a_step_without_an_action_names(
+    context: SetupContext, status: StepStatus
+) -> None:
+    """The guarantee belongs to the runner, not to each probe's every arm.
+
+    A probe is edited one arm at a time and there are 25 of them; there is one
+    funnel. §6.2's unimplemented rows will start reporting MISSING one day, with
+    no reason to have read any of this -- and `_probe` already takes `critical`
+    from the definition rather than the probe for exactly the same reason.
+    """
+    steps = (
+        Step(StepId.MIGRATIONS_VALID, _probe_naming_a_path(StepId.MIGRATIONS_VALID, status), None),
+    )
+
+    plan = SetupService(context, steps=steps).plan()
+
+    assert plan.steps[0].paths == ()
+    assert plan.paths == ()
+
+
+@pytest.mark.parametrize("status", list(StepStatus), ids=[s.value for s in StepStatus])
+def test_the_runner_keeps_the_paths_a_step_with_an_action_names(
+    context: SetupContext, status: StepStatus
+) -> None:
+    """The other half, without which `paths=()` for everyone would pass.
+
+    `data-directory`, `token` and `env-reference` are where the changed-files
+    list gets its contents, and emptying it would satisfy every prohibition in
+    this section.
+    """
+    steps = (
+        Step(
+            StepId.DATA_DIRECTORY, _probe_naming_a_path(StepId.DATA_DIRECTORY, status), _an_action
+        ),
+    )
+
+    plan = SetupService(context, steps=steps).plan()
+
+    assert plan.steps[0].paths == (_A_NAMED_PATH,)
+
+
+def test_a_step_setup_does_not_perform_is_not_journalled_as_applied(
+    in_a_repository: SetupContext,
+) -> None:
+    """§6.4. The journal exists so a crash mid-run can be repaired afterwards.
+
+    An `applied` line for a step that ran nothing sends whoever reads it looking
+    for an inverse of an action that was never taken.
+    """
+    service = _service(in_a_repository)
+    service.run()
+
+    journalled = {
+        json.loads(line)["step"]
+        for line in service.journal_path.read_text().splitlines()
+        if line.strip()
+    }
+
+    assert not journalled & {step_id.value for step_id in REPORT_ONLY}
+
+
+def test_a_second_run_inside_a_repository_changes_nothing(
+    in_a_repository: SetupContext,
+) -> None:
+    """FR-L2 again, on the fixture that reaches rows 11-13.
+
+    The assertion at the top of this file is the same one, and it was green
+    because all three steps reported NOT_APPLICABLE there. A second run named the
+    same five files as the first.
+    """
+    first = _service(in_a_repository).run()
+    assert first.succeeded, first.warnings
+
+    second = _service(in_a_repository).run()
+
+    assert second.succeeded, second.warnings
+    assert second.changed_paths == (), "a converged machine must report no changes"
+    assert all(step.outcome is not StepOutcome.CHANGED for step in second.steps), (
+        "no step may change anything on a second run"
+    )
+
+
+def test_a_dry_run_inside_a_repository_still_creates_nothing(
+    in_a_repository: SetupContext,
+) -> None:
+    """The seeing half of `test_a_dry_run_changes_nothing_at_all`.
+
+    That one cannot see a probe in rows 11-13 that writes, because with
+    `project_root` at None none of them gets past its first branch. This one
+    checks the data directory *and* the repository, since the registry lives
+    under the first and the layout under the second.
+    """
+    report = _service(in_a_repository).run(SetupRequest(dry_run=True))
+
+    root = in_a_repository.project_root
+    assert report.state is SetupState.PLAN_BUILT
+    assert report.changed_paths == ()
+    assert not in_a_repository.data_dir.exists(), "a probe may not write while planning"
+    assert root is not None and not (root / ".theurian").exists()
+
+
+def test_setup_still_reports_what_it_declined_to_do(in_a_repository: SetupContext) -> None:
+    """Not doing the step is the design; not saying so would be a worse defect.
+
+    The point of probing rows 11-13 at all is the sentence a person reads, so the
+    fix has to leave the status, the remedy and the warning intact -- a run that
+    silently recorded UNCHANGED and said nothing would pass every assertion above
+    and help nobody.
+    """
+    report = _service(in_a_repository).run()
+
+    assert report.state is SetupState.DEGRADED, "an unperformed step is a warning, not silence"
+    for step_id in REPORT_ONLY:
+        step = report.step(step_id)
+        assert step is not None
+        assert step.action, "a MISSING step has to say what would fix it"
+        assert any(step_id.value in warning for warning in report.warnings)
+    registered = report.step(StepId.PROJECT_REGISTERED)
+    assert registered is not None and "theurian project register" in registered.action
 
 
 # -- Degrading rather than failing (§6.1) ------------------------------------
