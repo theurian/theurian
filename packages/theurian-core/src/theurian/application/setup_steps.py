@@ -1,15 +1,24 @@
 """The individual setup steps of §6.2.
 
-Each step is two functions over a :class:`SetupContext`: a **probe** that reports
-what it found without changing anything, and an **apply** that makes the probe's
-answer true. Keeping them apart is what makes ``--dry-run`` the same code path as
-a real run, and what lets the whole state machine be tested against a temporary
-home directory.
+Each step is a **probe** that reports what it found without changing anything,
+and — where setup acts on the answer — an **apply** that makes that answer true.
+Keeping them apart is what makes ``--dry-run`` the same code path as a real run,
+and what lets the whole state machine be tested against a temporary home
+directory.
 
 A probe never writes. An apply is only ever reached for a step whose probe said
 :attr:`StepStatus.MISSING` -- a conflicting step is never applied, whatever the
 user approved, because approval here is consent to *proceed past* a conflict and
 not consent to overwrite it (:class:`SetupRequest`, SEC-18).
+
+**Several steps have no apply at all**, and are declared with an explicit
+``None``. They exist to say what is undone and name the command that does it:
+§6.2 rows 11-13 are `theurian init` and `theurian project register`, and setup
+performs neither. Such a step names no paths in any arm, because ``paths`` is
+read as "setup writes here" by the plan shown before consent and by the
+changed-files list. It does not have to remember: :meth:`SetupService._probe`
+drops them, the same way it takes criticality from the definition rather than
+from the probe.
 """
 
 from __future__ import annotations
@@ -61,13 +70,26 @@ class Step:
 
     step_id: StepId
     probe: Callable[[SetupContext], SetupStep]
-    apply: Callable[[SetupContext], None]
-    #: A failure here rolls the run back rather than degrading it.
+    #: ``None`` for a step that only ever describes what it found. Absence
+    #: rather than a do-nothing function, because the do-nothing function was
+    #: indistinguishable from a real one at the call site: ``_apply`` called it,
+    #: found no exception, and recorded CHANGED -- so three steps that write
+    #: nothing reported five files as modified and journalled them as applied.
+    #: A step with no action is now something the runner can see.
+    #:
+    #: Deliberately **not** defaulted. A default makes ``Step(id, probe)``
+    #: type-check, so an edit that drops a real action produces a plausible
+    #: degraded run instead of the ``Missing positional argument "apply"`` that
+    #: catches it before anything is committed. Every report-only step spells
+    #: the ``None`` out.
+    apply: Callable[[SetupContext], None] | None
+    #: A failure here rolls the run back rather than degrading it. Inert on a
+    #: step whose ``apply`` is ``None``: nothing there can fail, and
+    #: `_blocking_conflicts` consults only PLATFORM and CORE_PRESENT. Set
+    #: anyway, because it records what §6.2 says the step *is* rather than what
+    #: today's runner happens to read -- a step that later gains an action must
+    #: not acquire rollback authority silently along with it.
     critical: bool = True
-
-
-def _nothing(_: SetupContext) -> None:
-    """For steps that only report."""
 
 
 # -- 1. Platform ------------------------------------------------------------
@@ -463,11 +485,11 @@ def _unreadable_registry_summary(registry: ProjectRegistry, root: Path) -> str:
         registry.unreadable_ids()
     except ProjectError:
         return (
-            f"Cannot tell whether {root.name} is registered: {registry.path} cannot be "
+            f"Cannot tell whether {root} is registered: {registry.path} cannot be "
             f"read at all, so nothing in it can be checked."
         )
     return (
-        f"Cannot tell whether {root.name} is registered: {registry.path} holds "
+        f"Cannot tell whether {root} is registered: {registry.path} holds "
         f"an entry that cannot be read, and it might be this repository's own."
     )
 
@@ -484,6 +506,13 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
     this very root's id is refused by :meth:`ProjectRegistry.register`, and the
     step this report is shown on is the first screen a person reads when
     something is broken.
+
+    Every summary here names the repository by its **whole path**, never by
+    ``root.name``. `doctor --report` redacts by substituting known paths, and a
+    bare directory name is not a path: it survived every anchor and published
+    the repository's name into output meant for a public issue (O-3). The full
+    path redacts to ``<repository>`` and, unredacted, says which checkout --
+    which is the more useful answer to "not registered where?" anyway.
     """
     root = context.project_root
     if root is None:
@@ -510,14 +539,22 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
         return SetupStep(
             step_id=StepId.PROJECT_REGISTERED,
             status=StepStatus.SATISFIED,
-            summary=f"{root.name} is registered.",
+            summary=f"{root} is registered.",
         )
+    # `paths` is empty for the same reason it is empty above: this step has no
+    # apply, so setup never writes `registry.path` whatever the user decides.
+    # Naming it there put the file in the plan's "would be created or modified"
+    # list and then in `changed_paths`, for a run that only ever read it.
+    #
+    # The location moves into the summary rather than being dropped. It is the
+    # one fact here that is not recoverable from the rest of the step, and
+    # `paths` was carrying it by accident -- somebody asking "not registered
+    # *where*?" was the only reader that field served honestly.
     return SetupStep(
         step_id=StepId.PROJECT_REGISTERED,
         status=StepStatus.MISSING,
-        summary=f"{root.name} is not registered with this daemon.",
+        summary=f"{root} has no entry in {registry.path}.",
         action="Register this repository. Run `theurian project register`.",
-        paths=(str(registry.path),),
         critical=False,
     )
 
@@ -532,12 +569,14 @@ def probe_project_layout(context: SetupContext) -> SetupStep:
         )
     missing = [name for name in _REQUIRED_PROJECT_DIRS if not (directory / name).is_dir()]
     if missing:
+        # No `paths`: `init` creates these, not setup. The summary already names
+        # every directory that is absent, so nothing a reader needs is lost by
+        # keeping them out of a list that means "setup would write this".
         return SetupStep(
             step_id=StepId.PROJECT_LAYOUT,
             status=StepStatus.MISSING,
             summary=f"{directory} is missing {', '.join(missing)}.",
             action="Create the missing directories. Run `theurian init`.",
-            paths=tuple(str(directory / name) for name in missing),
             critical=False,
         )
     return SetupStep(
@@ -557,19 +596,32 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             summary="Not inside a Git repository.",
         )
     gitignore = root / ".gitignore"
-    contents = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else ""
+    exists = gitignore.is_file()
+    contents = gitignore.read_text(encoding="utf-8") if exists else ""
     if ".theurian/state" in contents:
         return SetupStep(
             step_id=StepId.GITIGNORE,
             status=StepStatus.SATISFIED,
             summary="Derived Theurian artifacts are ignored.",
         )
+    # No `paths`: `init` appends the block, setup only reads the file, and the
+    # file may not be there at all -- which is how a `.gitignore` that was never
+    # created came to be reported as one setup had modified.
+    #
+    # Two summaries for one status, because the file's absence and its silence
+    # are different things to be told and the reader acts on them differently.
+    # Naming the path is what removing `paths` has to compensate for; saying "it
+    # does not ignore" of a file that is not there was how the first attempt at
+    # that got it wrong.
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
-        summary="Derived Theurian artifacts are not ignored by Git.",
+        summary=(
+            f"{gitignore} has no Theurian block."
+            if exists
+            else f"{gitignore} does not exist, so nothing ignores the derived artifacts."
+        ),
         action="Add the Theurian block to .gitignore. Run `theurian init`.",
-        paths=(str(gitignore),),
         critical=False,
     )
 
@@ -724,22 +776,22 @@ def probe_serena(context: SetupContext) -> SetupStep:
 #: token must exist before the env file references it, and the service must be
 #: registered before anything tries to start it.
 STEPS: Final[tuple[Step, ...]] = (
-    Step(StepId.PLATFORM, probe_platform, _nothing),
-    Step(StepId.CORE_PRESENT, probe_core, _nothing),
-    Step(StepId.ARTIFACT_INTEGRITY, probe_artifact_integrity, _nothing),
+    Step(StepId.PLATFORM, probe_platform, None),
+    Step(StepId.CORE_PRESENT, probe_core, None),
+    Step(StepId.ARTIFACT_INTEGRITY, probe_artifact_integrity, None),
     Step(StepId.DATA_DIRECTORY, probe_data_directory, apply_data_directory),
     Step(StepId.TOKEN, probe_token, apply_token),
     Step(StepId.TOKEN_STORAGE, probe_token_storage, apply_token_storage),
     Step(StepId.ENV_REFERENCE, probe_env_reference, apply_env_reference),
     Step(StepId.DAEMON_SERVICE, probe_daemon_service, apply_daemon_service),
     Step(StepId.DAEMON_RUNNING, probe_daemon_running, apply_daemon_running, critical=False),
-    Step(StepId.SINGLE_INSTANCE, probe_single_instance, _nothing),
-    Step(StepId.PROJECT_REGISTERED, probe_project_registered, _nothing, critical=False),
-    Step(StepId.PROJECT_LAYOUT, probe_project_layout, _nothing, critical=False),
-    Step(StepId.GITIGNORE, probe_gitignore, _nothing, critical=False),
+    Step(StepId.SINGLE_INSTANCE, probe_single_instance, None),
+    Step(StepId.PROJECT_REGISTERED, probe_project_registered, None, critical=False),
+    Step(StepId.PROJECT_LAYOUT, probe_project_layout, None, critical=False),
+    Step(StepId.GITIGNORE, probe_gitignore, None, critical=False),
     Step(StepId.MCP_CONNECTION, probe_mcp_connection, apply_mcp_connection, critical=False),
-    Step(StepId.MCP_HEALTH, probe_mcp_health, _nothing, critical=False),
-    Step(StepId.MIGRATIONS_VALID, probe_migrations, _nothing, critical=False),
-    Step(StepId.INITIAL_INDEX, probe_initial_index, _nothing, critical=False),
-    Step(StepId.SERENA_DETECTION, probe_serena, _nothing, critical=False),
+    Step(StepId.MCP_HEALTH, probe_mcp_health, None, critical=False),
+    Step(StepId.MIGRATIONS_VALID, probe_migrations, None, critical=False),
+    Step(StepId.INITIAL_INDEX, probe_initial_index, None, critical=False),
+    Step(StepId.SERENA_DETECTION, probe_serena, None, critical=False),
 )

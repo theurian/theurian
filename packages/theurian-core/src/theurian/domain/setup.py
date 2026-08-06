@@ -125,7 +125,18 @@ class SetupStep:
     #: What applying this step would do. Empty when nothing would.
     action: str = ""
     #: Absolute paths this step would create or modify. Drives the changed-files
-    #: list, and `uninstall --dry-run` must be able to enumerate all of them.
+    #: list, and is published as ``steps[].paths``. A step that only reports
+    #: names none, whatever it found -- every reader takes this field as a
+    #: promise that setup writes there. The runner enforces that rather than
+    #: trusting each probe's every arm to remember it.
+    #:
+    #: NFR-12 -- every file Theurian creates is enumerable by
+    #: `uninstall --dry-run` before deletion -- is the requirement this field
+    #: exists to satisfy, and it is **not wired yet**: `uninstall_command` builds
+    #: its list from the service path and the MCP config alone and reads this
+    #: field nowhere. Recorded as a requirement rather than a description,
+    #: because it read as one for long enough to be repeated in three other
+    #: comments.
     paths: tuple[str, ...] = ()
     #: A step whose failure must roll the run back rather than degrade it.
     critical: bool = True
@@ -192,7 +203,12 @@ class SetupPlan:
 
     @property
     def paths(self) -> tuple[str, ...]:
-        """Every path any step would touch, de-duplicated, in plan order."""
+        """Every path any step would touch, de-duplicated, in plan order.
+
+        What ``setup --json`` publishes is each step's own ``paths`` through
+        :meth:`SetupReport.to_json`; this aggregate has no caller outside the
+        domain yet. A test that covers only this one covers nothing a user sees.
+        """
         seen: dict[str, None] = {}
         for step in self.steps:
             if step.would_change or step.needs_consent:

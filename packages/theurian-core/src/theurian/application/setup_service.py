@@ -89,13 +89,20 @@ class SetupService:
                 critical=step.critical,
             )
         # The step definition owns criticality; a probe should not be able to
-        # promote its own failure into one that rolls the whole run back.
+        # promote its own failure into one that rolls the whole run back. It owns
+        # `paths` for the same reason: the field is read as "setup writes here",
+        # and a step with no action writes nowhere in any of its arms. Enforced
+        # here rather than trusted to each probe, because the arms are the
+        # problem -- `probe_project_registered` left `paths` empty on the arm its
+        # author was thinking about and set it on the one beside it, and §6.2's
+        # unimplemented rows will start reporting MISSING one day with no reason
+        # to remember any of this.
         return SetupStep(
             step_id=probed.step_id,
             status=probed.status,
             summary=probed.summary,
             action=probed.action,
-            paths=probed.paths,
+            paths=probed.paths if step.apply is not None else (),
             critical=step.critical,
             outcome=probed.outcome,
             detail=probed.detail,
@@ -156,6 +163,29 @@ class SetupService:
                 applied.append(planned.applied(StepOutcome.NOT_ATTEMPTED))
                 continue
 
+            action = definition.apply
+            if action is None:
+                # A step that only describes. §6.2 rows 11-13 report what
+                # `theurian init` and `theurian project register` would do and
+                # setup performs neither, so there is nothing here to record as
+                # done. This branch used to be reachable only through the one
+                # below, which tests ``would_change`` -- and ``would_change`` is
+                # ``MISSING`` and nothing else, so a report-only step that found
+                # something missing fell through to the apply, called a
+                # do-nothing function, and was recorded ``CHANGED`` with its
+                # paths added to `changed_paths` and an "applied" line in the
+                # journal. Five paths, all five absent when the run ended, named
+                # as modified by every run including the second (FR-L2). Every
+                # one of them is written by *some* command -- `theurian init`
+                # writes four and `theurian project register` the fifth -- and
+                # none of them by this one, which is the whole confusion.
+                #
+                # What the user is told does not shrink: the step keeps its
+                # ``MISSING`` status and its ``action``, and `_verify` re-probes
+                # it, warns, and ends the run DEGRADED exactly as before.
+                applied.append(planned.applied(StepOutcome.UNCHANGED))
+                continue
+
             if not planned.would_change:
                 # `would_change` is ``MISSING`` and nothing else, so a
                 # ``CONFLICTING`` step is recorded ``UNCHANGED`` and never
@@ -169,7 +199,7 @@ class SetupService:
                 continue
 
             try:
-                definition.apply(self._context)
+                action(self._context)
             except Exception as exc:  # reported in the step, not propagated
                 reason = f"{type(exc).__name__}: {exc}"
                 applied.append(planned.applied(StepOutcome.FAILED, reason))
