@@ -700,18 +700,24 @@ installs is a step that could verify what it installed — so the premise
 regenerates the conclusion anywhere it survives, and a reader who starts at
 `theurian setup --help` rather than here meets it intact. The test for a member
 is therefore the premise and not the word "verify": does the text describe setup
-obtaining, installing or upgrading Core? **Six surfaces did.** Three were
-corrected first, and the other three were found only once the class was restated
-by that root cause instead of by the word the first three happened to share:
+obtaining, installing or upgrading Core? **Nine files carry a text that satisfies
+it. Six are corrected; three are open.** Counting only the corrected six is the
+same accounting error this entry warns about below, so both halves are stated
+here.
 
-| Surface | The premise it carried | Corrected |
+| Surface | The premise it carried | Corrected in |
 | :-- | :-- | :-- |
-| `cli/setup_commands.py` | the docstring `theurian setup --help` prints | first pass |
-| `plugins/claude-code/commands/setup.md` | what `/theurian:setup` announces it will do | first pass |
-| `domain/compatibility.py` | a version-mismatch remedy telling a user with no Core on `PATH` to run `/theurian:setup` | first pass |
-| `plugins/claude-code/scripts/session-start.sh` | "Core is not installed. Run /theurian:setup once to get started.", printed on every session that starts without `theurian` on `PATH` | second pass |
-| `plugins/claude-code/README.md` | a three-line install sequence ending at `/theurian:setup`, naming no installer anywhere in the file | second pass |
-| `docs/protocol/plugin-core-compatibility.md` | the published `core-missing` remedy that third-party plugins implement against | second pass |
+| `cli/setup_commands.py` | the docstring `theurian setup --help` prints | [#40](https://github.com/theurian/theurian/pull/40) |
+| `plugins/claude-code/commands/setup.md` | what `/theurian:setup` announces it will do | [#40](https://github.com/theurian/theurian/pull/40) |
+| `domain/compatibility.py` | a version-mismatch remedy telling a user with no Core on `PATH` to run `/theurian:setup` | [#40](https://github.com/theurian/theurian/pull/40) |
+| `plugins/claude-code/scripts/session-start.sh` | "Core is not installed. Run /theurian:setup once to get started.", printed on every session that starts without `theurian` on `PATH` | [#40](https://github.com/theurian/theurian/pull/40) |
+| `plugins/claude-code/README.md` | a three-line install sequence ending at `/theurian:setup`, naming no installer anywhere in the file | [#40](https://github.com/theurian/theurian/pull/40) |
+| `docs/protocol/plugin-core-compatibility.md` | the published `core-missing` remedy that third-party plugins implement against | [#40](https://github.com/theurian/theurian/pull/40) |
+
+All six in one change, but not in one pass. It named the first three, and review
+of it found the other three — only once the class was restated by that root cause
+instead of by the word the first three happened to share. The three it named were
+the three that used it.
 
 **The first pass called `domain/compatibility.py` the sharpest of them, and that
 was right about the shape and wrong about the reach.** It is unrunnable rather
@@ -724,16 +730,20 @@ one that ran, on every session, and the pass that fixed the unreachable face lef
 it in place. Ranking the faces by how wrong they read, rather than by which of
 them a user meets, is what produced that.
 
-**Three files still carry the premise**, in documents the second pass did not
-reach: `README.md:29,228` — "`/theurian:setup` is the only command that installs
-anything", in a README that contains no `uv tool install` or `pipx install`
-anywhere — and the two that *specify* corrected surfaces rather than being them,
-`docs/integrations/claude-code.md:101` (the `SessionStart` flowchart, which sends
-a Core-less user to setup and now disagrees with the shipped script) and
-`docs/architecture/requirements-analysis.md:643` ("CLI absent → Advise
-/theurian:setup"). Recorded here rather than left to whoever next runs the
-search, because a list of what was fixed is exactly what made this class look
-closed the first time.
+**The other three files still carry the premise**, in four places, in documents
+[#40](https://github.com/theurian/theurian/pull/40) did not reach:
+
+| Surface | What it says | Owner |
+| :-- | :-- | :-- |
+| `README.md:29` | "`theurian setup` installs the whole thing idempotently" | [#34](https://github.com/theurian/theurian/pull/34) |
+| `README.md:228` | "`/theurian:setup` is the only command that installs anything" — in a README with no `uv tool install` or `pipx install` anywhere in it | [#34](https://github.com/theurian/theurian/pull/34) |
+| `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
+| `docs/architecture/requirements-analysis.md:643` | the compatibility flowchart: "CLI absent → Advise /theurian:setup. Do not install anything." | — |
+
+The last two *specify* corrected surfaces rather than being them, which is why a
+search over user-facing text does not reach them. Recorded here rather than left
+to whoever next runs one, because a list of what was fixed is exactly what made
+this class look closed the first time.
 
 **Setup cannot report a missing Core either**, which is why no surface above
 could have been made true by wiring it to the step table instead. The executable

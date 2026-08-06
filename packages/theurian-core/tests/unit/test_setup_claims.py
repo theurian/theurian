@@ -1,16 +1,24 @@
 """What ``setup`` tells users it does, against what it does (FR-L1, FR-L3).
 
-Six surfaces told a user with no Theurian Core on the machine that
-``/theurian:setup`` is how Core arrives. None could be true -- setup runs *from*
-an installed Core, and every one of those surfaces is reached by shelling out to
-the binary whose absence is the thing being reported.
+Nine surfaces tell a user with no Theurian Core on the machine that
+``/theurian:setup`` is how Core arrives. None can be true -- setup runs *from* an
+installed Core, and every one of those surfaces is reached by shelling out to the
+binary whose absence is the thing being reported.
 
 The class is **a surface that offers setup as the way Core gets onto the
-machine**, not "three documents that used the word *installs*". The first
-attempt closed three faces and left three, including the only one a user meets
-without asking for it: the ``SessionStart`` hook, which prints its advice on
-every session. :data:`CORE_ARRIVAL_SURFACES` is the enumeration, and every entry
-is checked here rather than trusted.
+machine**, not "three documents that used the word *installs*". The first attempt
+closed three faces and left three more open, including the only one a user meets
+without asking for it: the ``SessionStart`` hook, which prints its advice on every
+session.
+
+**Six of the nine are corrected, and this module does not check all six.** Two are
+held where they are produced rather than as text -- ``setup_command.__doc__`` by
+:func:`test_the_cli_docstring_denies_installing_core_and_names_the_installer`
+below, and ``domain/compatibility.py``'s ``CORE_MISSING`` verdict by
+``test_compatibility.py::test_missing_core_is_reported_as_install_then_setup``.
+The remaining four are read from disk and listed in
+:data:`CORE_ARRIVAL_SURFACES`. **Three are not corrected at all**, and are
+recorded with line numbers in T-16 of ``docs/security/threat-model.md``.
 
 These pin fact and prose to each other in both directions. The fact, so that a
 setup which one day really did install Core fails here rather than quietly
@@ -46,12 +54,21 @@ from theurian.infrastructure.secrets.file_store import FileSecretStore
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
-#: Every surface that tells a reader how Theurian Core reaches the machine. The
-#: closure argument for this class is that no other file both states the
-#: "Core is absent" premise and offers a remedy for it: found with
-#: ``grep -rn`` over the premise *and* over ``/theurian:setup``, because two of
-#: these carry the premise with no verb at all -- the hook's warning string and
-#: the plugin README's bare three-line install block.
+#: The four corrected surfaces this module reads from disk, as repository-relative
+#: paths. **This is not the class and it is not a closure argument.** Two more
+#: corrected surfaces are checked where they are produced -- see the module
+#: docstring -- and three are not corrected at all: ``README.md``,
+#: ``docs/integrations/claude-code.md`` and
+#: ``docs/architecture/requirements-analysis.md``, each carrying the "Core is
+#: absent" premise beside a ``/theurian:setup`` remedy, enumerated with line
+#: numbers in T-16 of ``docs/security/threat-model.md``.
+#:
+#: An earlier version of this comment claimed no other file in the tree paired
+#: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
+#: ``CORE_MISSING`` message and remedy are the plainest instance of the pair --
+#: which is what a list of what *is* checked reads as when it is written in the
+#: completed tense. A deferral list is not a closure argument, however carefully
+#: the search behind it was run.
 CORE_ARRIVAL_SURFACES: Final = (
     "plugins/claude-code/commands/setup.md",
     "plugins/claude-code/README.md",
@@ -306,11 +323,13 @@ def test_the_cli_docstring_names_the_commands_those_steps_defer_to(
 
 
 def test_no_surface_that_says_how_core_arrives_claims_setup_installs_it() -> None:
-    """The class, over its whole enumeration rather than one member at a time.
+    """One rule over :data:`CORE_ARRIVAL_SURFACES`, rather than one member at a time.
 
-    Three rounds closed one face each. What ended it was naming the root cause
-    -- a surface that offers setup as the way Core gets onto the machine -- and
-    checking every member against the same rule.
+    What moved this along was naming the root cause -- a surface that offers
+    setup as the way Core gets onto the machine -- and applying the same rule to
+    every member instead of reading each document on its own terms. What it does
+    *not* do is decide the population: this is a regression test over the four
+    files listed there, and the class is larger than the list.
     """
     for name in CORE_ARRIVAL_SURFACES:
         claims = _install_claims_naming_no_installer((REPO_ROOT / name).read_text(encoding="utf-8"))
