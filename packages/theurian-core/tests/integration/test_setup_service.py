@@ -536,6 +536,13 @@ def test_a_step_setup_does_not_perform_is_never_reported_as_changed(
 
     `would_change` is MISSING and nothing else, so a step with no action reached
     the apply branch, called nothing, and was recorded CHANGED unconditionally.
+
+    The outcome is asserted by *value*, not as "anything but CHANGED". `outcome`
+    is a published field that the plugin's `setup.md` renders, so which of the
+    four it is matters: NOT_ATTEMPTED means the run stopped before reaching the
+    step, which a completed run must never say about one it probed twice. A
+    prohibition let that substitution through -- measured, as a surviving
+    mutation.
     """
     report = _service(in_a_repository).run()
 
@@ -543,8 +550,8 @@ def test_a_step_setup_does_not_perform_is_never_reported_as_changed(
         step = report.step(step_id)
         assert step is not None
         assert step.status is StepStatus.MISSING, "the fixture has to reach the branch"
-        assert step.outcome is not StepOutcome.CHANGED, (
-            f"{step_id.value} has no action; nothing about it changed"
+        assert step.outcome is StepOutcome.UNCHANGED, (
+            f"{step_id.value} has no action; the run reached it and it did not change"
         )
 
 
