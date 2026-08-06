@@ -95,9 +95,11 @@ gh api users/utchy/ssh_signing_keys --jq '.[].key' \
 gh api users/utchy/gpg_keys --jq '.[].key_id'
 ```
 
-**Pushing the tag is the release.** `.github/workflows/release-core.yml` takes
-over from here; there is no manual publish step and no maintainer holds a PyPI
-credential.
+**Pushing the tag starts the release, and the run stops once for a human.**
+`.github/workflows/release-core.yml` takes over from here. Nothing is uploaded
+by hand and no maintainer holds a PyPI credential, but the run does pause before
+the upload and wait for a `core-maintainers` approval on the `pypi`
+environment — step 6 below.
 
 ### 5. What CI does with the tag
 
@@ -331,11 +333,42 @@ the project exists, which is what bootstraps the first upload:
 | Owner | `theurian` |
 | Repository name | `theurian` |
 | Workflow name | `release-core.yml` |
-| Environment name | `pypi` |
+| Environment name | `pypi` — **fill this in; see below** |
 
 The workflow filename and the environment name are part of the credential. A
 renamed workflow file stops publishing until the publisher is updated to match —
 which is the point.
+
+### The environment row is a control, not a label
+
+**PyPI marks that field optional** — its own documentation says *"environment is
+optional but strongly recommended"* — and a publisher registered with it blank
+is the single easiest way to lose the required reviewer without anyone noticing.
+
+The reasoning, which is why it must not be left blank:
+
+- GitHub puts an `environment` claim in the OIDC token only for a job that
+  declares an environment. `publish-pypi` is the only job in `release-core.yml`
+  that declares `environment: pypi`.
+- If the publisher records `pypi`, a token from any *other* job does not match
+  it, and PyPI refuses with `invalid-publisher`. PyPI's troubleshooting page
+  names this case directly: check whether "the workflow is using the same
+  environment as configured when the publisher was configured on PyPI".
+- So the required reviewer becomes **the one control a tag-pusher who rewrites
+  this workflow cannot route around.** They can delete `environment: pypi` from
+  the job, but the token then carries no environment claim and PyPI rejects it.
+
+**Leave the field blank and that inverts.** Any job in `release-core.yml` can
+publish, including one added with no `environment:` and therefore no reviewer —
+and the tag-pusher chooses the commit the workflow is read from. The gate is
+still in the file; it just no longer gates anything.
+
+**Nothing in this repository can detect that.** PyPI's side is not observable
+from CI, and a pending publisher is visible only to the account that registered
+it, so there is no check to add and no failure to wait for. The threat model
+records it as an assumption it cannot verify; this is where a human makes it
+true. **Re-check it after any rename** of the workflow file, the repository or
+the environment, because each of those forces the publisher to be re-registered.
 
 ## Releasing the plugin
 
@@ -422,6 +455,11 @@ not so they are checked twice.
       reviewer — it is a GitHub setting, not a file in this repository, so
       nothing here fails if it is removed. One command, above under *One-time
       setup*
+- [ ] **After any rename** of the workflow file, the repository or the
+      environment: the re-registered PyPI publisher still has its *Environment
+      name* set to `pypi`. Blank is accepted by PyPI and removes the required
+      reviewer's teeth, and nothing in CI can see it — *The environment row is a
+      control, not a label*, above
 - [ ] No leftover draft release on the tag you are about to push.
       `draft-release` refuses to run if there is one; deleting it *by id* first
       turns a failed release into a non-event
