@@ -133,17 +133,27 @@ on a machine with a release installed or without one:
 ```json
 {
   "action": "",
-  "detail": "Artifact verification arrives with the first tagged release (OSS-7, T-16).",
+  "detail": "Setup never downloads or installs Core, and no code in Theurian compares an installed artifact against a checksum. Checking a download against the checksums published with it is a manual step, tracked at https://github.com/theurian/theurian/issues/39 (T-16).",
   "id": "artifact-integrity",
   "outcome": "not-attempted",
   "paths": [],
   "status": "not-applicable",
-  "summary": "No signed release manifest exists yet; nothing to verify against."
+  "summary": "Theurian does not verify the artifact it is running from."
 }
 ```
 
 Dedented for reading: in real output this is one element of the `steps` array,
-so its fields sit at six spaces rather than two. The values are byte-identical.
+so its fields sit at six spaces rather than two. The values are byte-identical,
+and
+`tests/unit/test_artifact_integrity_claim.py::test_the_release_document_quotes_what_setup_actually_publishes`
+parses this block and compares it to the step's published JSON, so the quotation
+cannot drift from the code.
+
+**Neither string says whether a record to check against exists**, and that is
+deliberate. They used to — "No signed release manifest exists yet; nothing to
+verify against" — which was true only until step 4 above ran for the first time.
+One function ships on both sides of that tag, so it states a property of
+Theurian rather than one of the world.
 
 Two things are missing, not one. There is no code that hashes an artifact and
 compares it to `SHA256SUMS`, and there is no point in setup where such code would

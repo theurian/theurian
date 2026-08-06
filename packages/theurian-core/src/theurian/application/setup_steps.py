@@ -160,18 +160,37 @@ def probe_core(context: SetupContext) -> SetupStep:
 
 
 def probe_artifact_integrity(_: SetupContext) -> SetupStep:
-    """Verify a downloaded artifact against the release manifest.
+    """§6.2 row 3: verify the installed artifact against the release manifest.
 
-    Not applicable while Theurian is pre-release: there is no published release
-    manifest to check against, and a step that reported ``satisfied`` without
-    checking anything would be a false assurance about supply chain integrity
-    (T-16). Reported as skipped so the gap is visible.
+    Theurian does not do it, and this step's business is to say so. Setup never
+    downloads or installs Core -- it runs from the very artifact it would have to
+    check -- and no code in the package hashes one and compares it to a published
+    checksum. A step that reported ``satisfied`` without checking anything would
+    be a false assurance about supply chain integrity (T-16), so the gap is
+    published as ``NOT_APPLICABLE`` rather than hidden.
+
+    **The premise is a property of Theurian, deliberately never one of the
+    world.** These strings previously read "No signed release manifest exists
+    yet; nothing to verify against" and "Artifact verification arrives with the
+    first tagged release". Both were true when they were written and both turn
+    false at the first ``core-v*`` tag, which publishes ``SHA256SUMS`` and a
+    CycloneDX SBOM on the GitHub release: the summary would tell every user not
+    to bother checking a record that is sitting in front of them -- cancelling
+    the only mitigation they have -- and the detail would become an overdue
+    promise. One function ships on both sides of that boundary, so it asserts
+    nothing the boundary moves. The schedule belongs to an issue, which has an
+    owner; a string does not.
     """
     return SetupStep(
         step_id=StepId.ARTIFACT_INTEGRITY,
         status=StepStatus.NOT_APPLICABLE,
-        summary="No signed release manifest exists yet; nothing to verify against.",
-        detail="Artifact verification arrives with the first tagged release (OSS-7, T-16).",
+        summary="Theurian does not verify the artifact it is running from.",
+        detail=(
+            "Setup never downloads or installs Core, and no code in Theurian compares an "
+            "installed artifact against a checksum. Checking a download against the "
+            "checksums published with it is a manual step, tracked at "
+            "https://github.com/theurian/theurian/issues/39 (T-16)."
+        ),
     )
 
 
