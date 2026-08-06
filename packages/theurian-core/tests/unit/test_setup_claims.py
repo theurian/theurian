@@ -59,11 +59,20 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: The four corrected surfaces this module reads from disk, as repository-relative
 #: paths. **This is not the class and it is not a closure argument.** Two more
 #: corrected surfaces are checked where they are produced -- see the module
-#: docstring -- and three are not corrected at all: ``README.md``,
+#: docstring -- and two are not corrected at all:
 #: ``docs/integrations/claude-code.md`` and
 #: ``docs/architecture/requirements-analysis.md``, each carrying the "Core is
 #: absent" premise beside a ``/theurian:setup`` remedy, enumerated with line
 #: numbers in T-16 of ``docs/security/threat-model.md``.
+#:
+#: ``README.md`` was the third of those and is corrected, but it stays **out** of
+#: this tuple rather than joining it:
+#: :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
+#: requires the literal ``uv tool install theurian``, and the README installs Core
+#: from the checkout because that distribution does not exist on PyPI yet. Adding
+#: it here would fail on the one surface whose instruction currently runs. T-16
+#: records the measurement and who owns moving the four surfaces above off an
+#: unresolvable installer.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
