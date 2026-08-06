@@ -889,10 +889,20 @@ more copy to go stale, and this one would be held by nothing.
 `tests/unit/test_artifact_integrity_claim.py` is what holds it: the retired
 wordings, the grammar that produced them, the absence of a schedule promise, and
 a text comparison against the JSON block in
-[`release.md`](../contributing/release.md). Those rules read **every string
-literal in the probe**, out of its AST, rather than one return value — a branch
-returning the retired strings on a condition true in every real run had otherwise
-survived the whole suite.
+[`release.md`](../contributing/release.md).
+
+> **What holds those rules is a constraint on the probe's shape, not a search of
+> its contents** — and this paragraph said the opposite for one round. It claimed
+> the rules read "every string literal in the probe, out of its AST". They did,
+> and that is not the same thing: moving the retired strings into a module-level
+> helper and calling it from a reached arm passed the whole module while the real
+> CLI emitted them, as do a module constant, a `dict` lookup, a file read, an
+> f-string placeholder, string concatenation, a default argument value and a
+> decorator argument. The test now refuses any probe that is not one
+> unconditional return of one directly constructed `SetupStep` whose every
+> argument is a literal or an enum member, which makes the publishable set
+> decidable. A reader of a function body is not a closure argument; a constraint
+> on what the function may be is.
 
 **The claim is on three surfaces, not one, and only the executing one is
 corrected here.** The other two are `README.md`'s honesty table and the
