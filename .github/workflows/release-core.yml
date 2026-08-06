@@ -10,22 +10,38 @@ name: Release Core
 # take that release out of draft. Before this file existed, release.md claimed
 # "CI builds, verifies, and publishes checksums" and nothing did.
 #
-# The release is drafted before the upload and published after it, so no failure
-# can leave a wheel installable from PyPI while the checksums a verifier would
-# check it against exist nowhere. That ordering is the shipped half of T-16 and
-# is argued in full in docs/contributing/release.md §5.
+# The release is drafted before the upload and published after it, so no job
+# failing or being cancelled leaves a wheel installable from PyPI while the
+# checksums a verifier would check it against exist nowhere. Publishing that
+# record is the half of T-16 that ships; this ordering is what makes it survive
+# a failure.
+#
+# Two things that claim does not cover, both stated rather than glossed:
+#
+#   * Between a successful upload and a successful `publish-release` the wheel
+#     is installable while the draft holding its checksums is readable only
+#     with push access. T-16's beneficiary is the installing user, so that
+#     window is real; it is bounded by one job.
+#   * Deleting the draft by hand mid-run does reach the bad state — the upload
+#     then succeeds with nothing left to publish. release.md §5 says to delete
+#     drafts only when no run is in flight, and to delete them by id.
+#
+# Argued in full in docs/contributing/release.md §5.
 on:
   push:
     tags: ["core-v*"]
-  # The rehearsal path, and it publishes nothing. `quality` and `build` run in
-  # full — the changelog guard, the build, installing the wheel into a clean
-  # environment and checking that it reports pyproject.toml's version, the SBOM,
-  # SHA256SUMS — and then the run stops, because all three publication jobs
-  # below are `if: github.event_name == 'push'`.
+  # The rehearsal path, and it publishes nothing. `quality` runs in full and
+  # `build` runs all but its tag-signature step — the changelog guard, the
+  # build, installing the wheel into a clean environment and checking that it
+  # reports pyproject.toml's version, the SBOM, SHA256SUMS — and then the run
+  # stops, because all three publication jobs below are
+  # `if: github.event_name == 'push'`.
   #
   # Two checks it cannot exercise, both because they read a tag that a manual
   # run does not have: `core-v<version>` agreeing with pyproject.toml, and the
-  # signature guard. A rehearsal is evidence about the build, not about the tag.
+  # signature guard. Nor does it exercise the three publication jobs at all. A
+  # green rehearsal is evidence about the build — not about the tag, and not
+  # about anything downstream of `build`.
   #
   # There is no input to set. A `dry_run` boolean lived here and was wired to
   # nothing: the jobs below were skipped by the `if`, never by the flag, so
@@ -317,19 +333,20 @@ jobs:
   # written first, announced last.
   #
   # If this job fails partway it leaves a draft holding some of the assets and
-  # nothing on PyPI, because `publish-pypi` waits on it. Delete the draft and
-  # re-run. That is safe precisely because nothing has been published yet, which
-  # is the property the whole ordering exists to buy.
+  # nothing on PyPI, because `publish-pypi` waits on it. `gh` does not clean that
+  # up: `cleanupDraftRelease` returns early when `--draft` was requested, by
+  # design. Delete the draft and re-run. That is safe precisely because nothing
+  # has been published yet, which is the property the whole ordering exists to
+  # buy — and the first step below refuses to run until it has been done, rather
+  # than trusting anyone to remember.
   #
   # This job reaches `contents: write` before the `pypi` environment's required
   # reviewer sees anything, which the old order did not. What that grants is
-  # bounded: a draft release for the pushed tag, not public, and `gh release
-  # create` refuses a tag that already has a release, so it cannot overwrite
-  # one. Reaching here at all needs a tag whose signature verified against
-  # RELEASE_SIGNERS, and an actor who can defeat that check is choosing the
-  # commit this file is read from, so they could grant themselves `contents:
-  # write` regardless. A rejected or never-approved deployment leaves the draft
-  # behind; delete it.
+  # bounded: a draft release for the pushed tag, not public. Reaching here at
+  # all needs a tag whose signature verified against RELEASE_SIGNERS, and an
+  # actor who can defeat that check is choosing the commit this file is read
+  # from, so they could grant themselves `contents: write` regardless. A
+  # rejected or never-approved deployment leaves the draft behind; delete it.
   draft-release:
     name: Draft the GitHub release
     needs: build
@@ -337,16 +354,70 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      # The identity of the release this run created. `publish-release` flips
+      # *this* object, never whatever a tag name happens to resolve to.
+      release_id: ${{ steps.draft.outputs.release_id }}
     steps:
-      - uses: actions/download-artifact@v8
+      # Pinned by digest rather than by the mutable `v8`: this is the first
+      # third-party code to run in a job holding `contents: write`, and it runs
+      # before the required reviewer has seen anything. `v8` is a lightweight
+      # tag the upstream repository can move. (Nothing else in this repository
+      # is digest-pinned yet; that is a larger change than this PR.)
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artifacts
           path: artifacts
 
+      # `gh release create --draft` does NOT refuse a tag that already has a
+      # release. Its duplicate check is guarded by `hasAssets && !opts.Draft`,
+      # and the helper behind it, `publishedReleaseExists`, issues
+      # `HEAD /releases/tags/{tag}`, which does not return drafts. So two drafts
+      # can share one tag, and `gh release edit <tag>` then resolves through
+      # `FetchRelease`, which races a REST lookup against a GraphQL
+      # `repository.release(tagName:)` — measured to return the *oldest* draft,
+      # 4 times out of 4.
+      #
+      # That was reproduced end to end on GitHub Actions, in a scratch
+      # repository. `draft-release` fails after attaching one asset; a
+      # maintainer clicks GitHub's own "Re-run failed jobs"; the second attempt
+      # creates a complete draft; and `publish-release` publishes the *first*,
+      # incomplete one. **Every job reports success.** The published release
+      # then describes a different build than the wheel on PyPI, under a body
+      # claiming every artifact is covered by its SHA256SUMS. No attacker, no
+      # error message, nothing to notice.
+      #
+      # The old order self-healed here, and this is the one respect in which it
+      # was better: `gh release create` *without* `--draft` does refuse a
+      # duplicate tag, so a re-run failed loudly. Drafting first gives that up,
+      # and this guard is what buys it back.
+      #
+      # This is an assertion, not a recovery branch. It only ever fails.
+      - name: Refuse to draft over an existing draft for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # One line per matching draft. `--paginate` concatenates per-page
+          # output, so counting lines is correct where summing lengths is not.
+          existing="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+                      --jq '.[] | select(.draft and .tag_name == env.TAG) | .id')"
+          if [ -n "$existing" ]; then
+            # Delete by id. `gh release delete <tag>` resolves through the same
+            # racing lookup and has been measured to delete the *published*
+            # release while leaving the draft — the exact inverse of intent.
+            echo "::error::A draft release already exists for ${TAG} (id: $(echo $existing)). Publishing would pick one of them, and not necessarily this run's. Delete it by id and re-run: gh api -X DELETE repos/${GITHUB_REPOSITORY}/releases/<id>"
+            exit 1
+          fi
+          echo "No existing draft for ${TAG}."
+
       - name: Create the release as a draft
+        id: draft
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           {
@@ -359,14 +430,44 @@ jobs:
             echo "Every artifact below is covered by \`SHA256SUMS\`, and"
             echo "\`theurian-${VERSION}.cdx.json\` is its CycloneDX 1.6 SBOM."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Theurian Core ${VERSION}" \
             --notes-file notes.md \
             --verify-tag \
             --draft \
             artifacts/dist/*
-          echo "Drafted ${GITHUB_REF_NAME}; not public until publish-release."
+
+          # Bind the rest of the run to the object just created; after this
+          # line nothing resolves by tag name.
+          #
+          # `GET /releases` is eventually consistent — a release created at
+          # 12:38:09 was measured absent from the list at 12:38:10 — so this
+          # retries rather than reading once. The guard above established that
+          # zero drafts existed for this tag, so the one that appears is ours;
+          # anything other than exactly one is a state nobody designed, and the
+          # step fails rather than picking.
+          ids=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+                   --jq '.[] | select(.draft and .tag_name == env.TAG) | .id')"
+            count="$(printf '%s\n' "$ids" | grep -c . || true)"
+            if [ "$count" -eq 1 ]; then
+              break
+            fi
+            if [ "$count" -gt 1 ]; then
+              echo "::error::Found ${count} drafts for ${TAG} after creating one: ${ids}. Refusing to choose."
+              exit 1
+            fi
+            echo "Draft for ${TAG} not in the list yet (attempt ${attempt}); retrying."
+            sleep 3
+          done
+          if [ "$(printf '%s\n' "$ids" | grep -c . || true)" -ne 1 ]; then
+            echo "::error::The draft for ${TAG} never appeared in the releases list. Nothing was published; delete any draft by id and re-run."
+            exit 1
+          fi
+          echo "release_id=${ids}" >> "$GITHUB_OUTPUT"
+          echo "Drafted ${TAG} as release ${ids}; not public until publish-release."
 
   publish-pypi:
     name: Publish to PyPI
@@ -388,7 +489,9 @@ jobs:
       # repository's secrets, so there is none to leak or rotate.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v8
+      # Digest-pinned for the same reason as in `draft-release`: this job holds
+      # `id-token: write`, which mints the credential PyPI trusts.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artifacts
           path: artifacts
@@ -410,18 +513,25 @@ jobs:
           print-hash: true
 
   # The artifact is reachable; make the record public. This job uploads nothing
-  # and rewrites nothing — `--draft=false` flips one field — so what becomes
-  # visible here is byte-for-byte what `draft-release` attached before the PyPI
-  # upload happened.
+  # and rewrites nothing: it PATCHes `draft` on one release, addressed by the
+  # numeric id `draft-release` emitted. That is what makes "what becomes visible
+  # is what was attached before the upload" structural rather than asserted — a
+  # tag name is a lookup that can resolve to something else, an id is the object.
   #
   # If this job fails, PyPI holds the version and the draft still holds its
-  # checksums and SBOM. Re-run it, or flip the draft by hand with
-  # `gh release edit <tag> --draft=false`. Nothing needs rebuilding, and nothing
-  # needs yanking — which was not true when this job created the release from
-  # scratch after the upload.
+  # checksums and SBOM. Re-run it; nothing needs rebuilding and nothing needs
+  # yanking. To finish it by hand, publish that id rather than the tag:
+  #   gh api -X PATCH repos/<owner>/<repo>/releases/<id> -F draft=false
+  # The id is in this job's log and in `draft-release`'s.
+  #
+  # If it fails with a 404 on that id, the draft was deleted while the run was
+  # in flight. The wheel is then on PyPI with no release to publish, and the
+  # checksums survive only as this run's expiring artifact — download it and
+  # cut the release by hand before it expires.
   publish-release:
     name: Publish the GitHub release
-    needs: [build, publish-pypi]
+    # `draft-release` is in `needs` for its output, not only for ordering.
+    needs: [build, draft-release, publish-pypi]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -431,9 +541,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          # Index syntax, not `needs.draft-release.outputs...`: in an expression
+          # `-` is also the subtraction operator, and this form cannot be read
+          # that way. Correct regardless of how the dotted form lexes.
+          RELEASE_ID: ${{ needs['draft-release'].outputs.release_id }}
         run: |
           set -euo pipefail
-          gh release edit "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft=false
-          echo "Theurian Core ${VERSION}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+          # Fail closed. If the id did not arrive for any reason, stop -- do not
+          # fall back to resolving the tag, which is the defect this replaced.
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::draft-release published no release id; refusing to guess from the tag."
+            exit 1
+          fi
+          # Publishing is irreversible in the sense that matters: the release
+          # becomes the public record for this version. Check that the object
+          # still is what draft-release left, and that it actually carries the
+          # checksums its own body claims cover every artifact.
+          verdict="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '
+            if .tag_name != env.TAG then "it is tagged \(.tag_name), not \(env.TAG)"
+            elif .draft != true then "it is already published"
+            elif ([.assets[].name] | index("SHA256SUMS")) == null then "it carries no SHA256SUMS asset"
+            else "ok" end')"
+          if [ "$verdict" != "ok" ]; then
+            echo "::error::Refusing to publish release ${RELEASE_ID}: ${verdict}."
+            exit 1
+          fi
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false --silent
+          echo "Theurian Core ${VERSION}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
