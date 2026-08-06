@@ -700,10 +700,32 @@ installs is a step that could verify what it installed — so the premise
 regenerates the conclusion anywhere it survives, and a reader who starts at
 `theurian setup --help` rather than here meets it intact. The test for a member
 is therefore the premise and not the word "verify": does the text describe setup
-obtaining, installing or upgrading Core? **Nine files carry a text that satisfies
-it. Six are corrected; three are open.** Counting only the corrected six is the
-same accounting error this entry warns about below, so both halves are stated
-here.
+obtaining, installing or upgrading Core?
+
+**Nine files satisfy the *installing* verb. Six are corrected; three are open.**
+That is a count of one of the test's three verbs, not of the class — it was
+derived from an install-verb search, and the number below is scoped to it for
+that reason. Counting only the corrected six would be the same accounting error
+this entry warns about further down; presenting an install-verb population as
+the class is that error one level up, which is where the previous two versions
+of this paragraph went wrong.
+
+**The upgrade verb is a second face of the same class, and it is worse than
+inaccurate.** `resolve_compatibility`'s `CORE_TOO_OLD` remedy reads "Upgrade Core
+with `theurian upgrade`, or run /theurian:upgrade", and `theurian upgrade` is not
+a registered command — `theurian upgrade --check --json` exits 2 with `No such
+command`. It reaches users on the surface this entry already singles out:
+`session-start.sh` prints the whole verdict to stderr on every session that finds
+an incompatible Core, and `/theurian:upgrade` is one of the twelve shipped plugin
+commands. Six sites carry it, and closing them needs a product decision — whether
+Theurian upgrades itself or delegates to `uv tool upgrade` — so it is tracked
+separately at [#42](https://github.com/theurian/theurian/issues/42) rather than
+folded in here. The *obtaining* verb has not been searched at all.
+
+**This is the third time this class has been declared closed on a key narrower
+than its own definition** — first the word "verify", then the word "installs",
+now the install verb standing in for a three-verb test — so treat any count here
+as the reach of the last search rather than the size of the class.
 
 | Surface | The premise it carried | Corrected in |
 | :-- | :-- | :-- |
@@ -744,6 +766,13 @@ The last two *specify* corrected surfaces rather than being them, which is why a
 search over user-facing text does not reach them. Recorded here rather than left
 to whoever next runs one, because a list of what was fixed is exactly what made
 this class look closed the first time.
+
+One surface is adjacent and is deliberately **not** counted among the nine:
+`docs/integrations/serena.md:172` diagnoses "Theurian tools missing" as "Setup
+not run" and prescribes `/theurian:setup`. It does not describe setup obtaining
+Core, so it fails this entry's member test — but a reader with no Core sees the
+same symptom and cannot run the cure. That is the *unrunnable remedy* shape, the
+one `domain/compatibility.py` had, arriving from a different premise.
 
 **Setup cannot report a missing Core either**, which is why no surface above
 could have been made true by wiring it to the step table instead. The executable
