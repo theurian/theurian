@@ -74,6 +74,13 @@ def test_malformed_versions_are_rejected(value: str) -> None:
         ("0.2.0b1", "0.2.0-beta.1"),
         ("1.2", "1.2.0"),
         ("0.3.0.rc2", "0.3.0-rc.2"),
+        ("0.2.0a1.dev3", "0.2.0-alpha.1.dev.3"),
+        # PEP 440 makes both segment numbers optional and defaults each to 0.
+        # A numberless dev segment used to be dropped whole, which parsed a
+        # development build as the finished release it precedes.
+        ("0.2.0a", "0.2.0-alpha.0"),
+        ("0.2.0.dev", "0.2.0-dev.0"),
+        ("0.2.0rc1.dev", "0.2.0-rc.1.dev.0"),
     ],
 )
 def test_pep440_translates_to_semver(pep440: str, expected: str) -> None:

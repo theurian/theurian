@@ -34,7 +34,12 @@ _PEP440_PATTERN: Final = re.compile(
     r"\.(?P<minor>0|[1-9]\d*)"
     r"(?:\.(?P<patch>0|[1-9]\d*))?"
     r"(?:[._-]?(?P<pre_label>a|b|c|rc|alpha|beta|pre|preview)[._-]?(?P<pre_number>\d+)?)?"
-    r"(?:[._-]?dev[._-]?(?P<dev_number>\d+)?)?$",
+    # ``dev`` is captured rather than matched literally because the segment's
+    # presence and its number are separate facts. PEP 440 makes the number
+    # optional and defaults it to 0, so a parser that keys off the number alone
+    # drops ``0.2.0.dev`` whole and reads a development build as the finished
+    # release it precedes.
+    r"(?:[._-]?(?P<dev_label>dev)[._-]?(?P<dev_number>\d+)?)?$",
     re.IGNORECASE,
 )
 
@@ -134,7 +139,7 @@ class Version:
         if match.group("pre_label"):
             label = _PEP440_PRE_LABELS[match.group("pre_label").lower()]
             prerelease.extend((label, match.group("pre_number") or "0"))
-        if match.group("dev_number") is not None:
+        if match.group("dev_label"):
             prerelease.extend(("dev", match.group("dev_number") or "0"))
 
         return cls(
