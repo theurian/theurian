@@ -963,11 +963,23 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `Path.cwd().resolve()`, so on an account whose home is a symlink the
   unresolved anchor matched *inside* the resolved path.
 
-  Anchors are now built in both spellings and applied longest first. Two further
-  members of the same class are closed with it: `THEURIAN_DATA_DIR` pointing
-  outside `$HOME` is now redacted to `<data directory>` (one inside `$HOME`
-  deliberately still reads as `~/.theurian`), and the setup steps stop naming
-  the repository by its bare directory name, which no path anchor can catch.
+  Anchors are now built in both spellings and applied longest first. The rest of
+  the class goes with it, since the root cause is naive substitution over
+  incomplete anchors rather than one ordering:
+
+  - **Only the default data directory is still legible as `~/.theurian`.** The
+    exemption used to cover every path under `$HOME`, on an argument about the
+    default alone, so `THEURIAN_DATA_DIR=$HOME/clients/<name>/store` was
+    published in full — `~` is anonymous, and the directory it sits in is what
+    identifies someone. Anything the operator chose is now `<data directory>`
+    wherever it points. This is also what stopped `~/work/api/.theurian-data`
+    from disclosing the checkout's path relative to home when `$HOME` is a
+    symlink and the data directory sits inside the repository.
+  - **The executable is redacted to `<executable>`**, since it is routinely a
+    virtualenv under a project directory. The install location is given up
+    deliberately; `platform` and `version` are still published.
+  - **The setup steps stop naming the repository by its bare directory name**,
+    which no path anchor can catch without corrupting unrelated prose.
 
 - **`theurian setup` reported files as changed that it never touched, and
   journalled them as applied.** Three steps — `project-registered`,
