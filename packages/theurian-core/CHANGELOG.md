@@ -946,6 +946,30 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed after Milestone 4
 
+- **`theurian setup` reported files as changed that it never touched, and
+  journalled them as applied.** Three steps — `project-registered`,
+  `project-layout` and `gitignore` — report what `theurian project register` and
+  `theurian init` would do, and setup performs neither. Their probes reported
+  `missing`, the runner recorded them `changed`, and five paths landed in
+  `changedPaths` with an `applied` line in the setup journal apiece. All five
+  were absent from the disk when the run ended, and a second run named the same
+  five having written nothing — so the report did not describe the idempotence
+  setup actually has (FR-L2). `setup --dry-run --json` offered the same five
+  under `steps[].paths`, which is what the user is shown before consenting.
+
+  **Published JSON changes** for those three steps: `outcome` is now `unchanged`
+  rather than `changed`, `paths` is now `[]`, and they no longer contribute to
+  `changedPaths`. What they report does not shrink — the `missing` status stays,
+  `action` still names the command that fixes it, and the run still ends
+  `degraded` with a warning for each. The two locations that only `paths` had
+  been carrying moved into `summary`: `project-registered` names the registry
+  file, `gitignore` names the `.gitignore` it checked.
+
+  The rule is now the runner's rather than each probe's — a step declared with no
+  action has its `paths` dropped centrally, the same way criticality is already
+  taken from the step definition instead of from the probe. Two mutations had
+  restored the defect from a single probe arm while the whole suite stayed green.
+
 - **`theurian auth rotate` did not exist**, while three user-facing messages told
   people to run it — including the one shown when a token is found readable by
   other users. A remedy that errors out is worse than no remedy, because it is
