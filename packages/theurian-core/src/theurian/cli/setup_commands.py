@@ -33,6 +33,10 @@ from theurian.security.env_file import TOKEN_KEY
 #: need to decide something" from "it broke".
 EXIT_NEEDS_CONSENT = 5
 
+#: The one data directory `doctor --report` leaves legible, as `~/.theurian`.
+#: Kept in step with :func:`default_data_dir`, which builds the same name.
+_DEFAULT_DATA_DIRNAME = ".theurian"
+
 PortOption = Annotated[int, typer.Option("--port", help="Port the daemon binds on 127.0.0.1.")]
 JsonFlag = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
 
@@ -174,16 +178,33 @@ def _redaction_anchors(context: SetupContext) -> tuple[tuple[str, str], ...]:
 
     Both faults were live in a shipped command and invisible to a test whose
     fixture put the repository beside the home directory rather than inside it.
+
+    ``project_root`` has only one spelling and needs only one: it arrives from
+    ``_repository_root``, and ``os.getcwd()`` is fully resolved on POSIX, so
+    there is no second form of it for ``.resolve()`` to have discarded. The
+    operator's own spelling of the repository still reaches the payload -- a
+    shell keeps it in ``$PWD``, and it arrives here inside whatever they typed
+    into ``THEURIAN_DATA_DIR``. That string is a data directory, and it is
+    anchored as one, which is where ``~/work/api/.theurian-data`` was coming
+    from.
     """
     candidates: list[tuple[Path, str]] = [(context.auth_dir / TOKEN_KEY, "<token file>")]
     if context.project_root is not None:
         candidates.append((context.project_root, "<repository>"))
-    # A data directory inside HOME needs no anchor of its own -- `~/.theurian`
-    # discloses nothing and reads better than a placeholder. One outside HOME is
-    # a `THEURIAN_DATA_DIR` pointing at a mount or a shared path, and nothing
-    # else here covers it.
-    if not context.data_dir.is_relative_to(context.home):
+    # Only the *default* data directory is left to the `~` substitution. `~` is
+    # anonymous and `~/.theurian` reads better than a placeholder, but that
+    # argument is about one path and the guard used to be about every path under
+    # HOME -- so `THEURIAN_DATA_DIR=$HOME/clients/northwind-acquisition/theurian`
+    # was published in full, on the strength of a comment reasoning from the
+    # default. Anything the operator chose is redacted, wherever it points.
+    if context.data_dir != context.home / _DEFAULT_DATA_DIRNAME:
         candidates.append((context.data_dir, "<data directory>"))
+    # The install location is genuinely useful for diagnosis and is given up
+    # deliberately: it is routinely a virtualenv under a project directory, so
+    # it names a repository as surely as the repository does. `platform` and
+    # `version` are still published, and the install method can be asked for.
+    if context.executable:
+        candidates.append((Path(context.executable), "<executable>"))
     candidates.append((context.home, "~"))
 
     anchors: dict[str, str] = {}

@@ -12,6 +12,7 @@ configuration.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from theurian.cli.main import app
 from theurian.cli.setup_commands import _redaction_anchors
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
+from theurian.security.env_file import TOKEN_KEY
 
 pytestmark = pytest.mark.integration
 
@@ -109,62 +111,104 @@ def test_the_report_mode_still_says_what_is_wrong(sandbox: Path) -> None:
     assert any(step["status"] == "missing" for step in payload["steps"])
 
 
+#: A directory name that names a client. Never appears in any layout's paths
+#: except `data-dir-under-home`, so asserting its absence is safe everywhere and
+#: meaningful in the one place it is built.
+CLIENT_NAME = "northwind-acquisition"
+
+
 def _repository_sandbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     relative_to_home: str | None,
-    data_dir_outside_home: bool = False,
+    data_dir: str = "default",
+    symlinked_home: bool = False,
 ) -> tuple[Path, Path, Path]:
     """A sandbox whose working directory *is* a repository.
 
     `sandbox` chdirs somewhere with no `.git` above it, so `_repository_root`
     returns None and §6.2 rows 11-13 report NOT_APPLICABLE -- meaning every
-    assertion in this module has been made against a payload those three steps
+    assertion in this module was once made against a payload those three steps
     were absent from, redaction included.
 
-    ``relative_to_home`` places the checkout inside the home directory or beside
-    it, and it is not a detail. `_redacted` substitutes plain substrings, so the
-    two arrangements exercise different code: beside HOME, the repository anchor
-    matches; inside it, the home anchor reaches the string first and would eat
-    the prefix if the anchors were not ordered longest-first. A fixture that
-    only tested the beside case reported the repository substitution as working
-    while it was a no-op on every ordinary machine.
+    Three knobs, each reaching an anchor nothing else reaches. None is a detail:
+    `_redacted` substitutes plain substrings, so the arrangement *is* the code
+    path, and every one of these was added after a mutation survived for want of
+    the layout that shows it.
 
-    ``data_dir_outside_home`` is the other arrangement with no anchor of its
-    own: `THEURIAN_DATA_DIR` pointed at a mount or a shared path is not covered
-    by the `~` substitution, and the registry file it holds is named in
-    `project-registered`'s summary.
+    ``relative_to_home`` puts the checkout inside the home directory or beside
+    it. Beside, the repository anchor matches; inside, the home anchor reaches
+    the string first and would eat the prefix if the anchors were not ordered
+    longest-first. A fixture that only built the beside case reported the
+    repository substitution as working while it was a no-op on every ordinary
+    machine.
+
+    ``data_dir`` selects which `THEURIAN_DATA_DIR` argument is being made.
+    ``"outside-home"`` is a mount or a shared path, which `~` does not reach.
+    ``"under-home"`` is the one the in-HOME exemption used to cover on the
+    strength of an argument about `~/.theurian`: `~` is anonymous and a path
+    under it is not. ``"in-repository"`` is what makes the repository's
+    *unresolved* spelling reach the payload at all.
+
+    ``symlinked_home`` is macOS `/var` and several Linux `/home` layouts. With
+    it, `$HOME` and `Path.cwd().resolve()` disagree about how to spell the same
+    directory, and an anchor that knows only one of them matches inside the
+    other.
 
     A bare `.git` directory rather than `git init`: `_repository_root` tests for
     its existence and nothing else reads it, so initialising a repository here
     would be testing Git.
     """
-    home = tmp_path / "home"
-    home.mkdir()
+    if symlinked_home:
+        real = tmp_path / "real"
+        real.mkdir()
+        home = tmp_path / "home"
+        home.symlink_to(real)
+    else:
+        home = tmp_path / "home"
+        home.mkdir()
+
     repository = home / relative_to_home if relative_to_home else tmp_path / "api"
     (repository / ".git").mkdir(parents=True)
-    data_dir = tmp_path / "elsewhere" / "theurian" if data_dir_outside_home else home / ".theurian"
+
+    directories = {
+        "default": home / ".theurian",
+        "outside-home": tmp_path / "elsewhere" / "store",
+        "under-home": home / "clients" / CLIENT_NAME / "store",
+        "in-repository": repository / ".theurian-data",
+    }
+    chosen = directories[data_dir]
+
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(chosen))
     monkeypatch.chdir(repository)
-    return home, repository, data_dir
+    return home, repository, chosen
 
 
 @pytest.mark.parametrize(
-    ("relative_to_home", "data_dir_outside_home"),
-    [("work/api", False), (None, False), ("work/api", True)],
+    ("relative_to_home", "data_dir", "symlinked_home"),
+    [
+        ("work/api", "default", False),
+        (None, "default", False),
+        ("work/api", "outside-home", False),
+        ("work/api", "under-home", False),
+        ("work/api", "in-repository", True),
+    ],
     ids=[
         "repository-under-home",
         "repository-beside-home",
-        "data-directory-outside-home",
+        "data-dir-outside-home",
+        "data-dir-under-home",
+        "symlinked-home-with-data-dir-in-the-repository",
     ],
 )
 def test_the_report_mode_redacts_the_locations_the_project_steps_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     relative_to_home: str | None,
-    data_dir_outside_home: bool,
+    data_dir: str,
+    symlinked_home: bool,
 ) -> None:
     """O-3, for the steps that only exist inside a repository.
 
@@ -173,24 +217,33 @@ def test_the_report_mode_redacts_the_locations_the_project_steps_name(
     itself are named -- and `doctor --report` output is what people paste into
     public issues.
 
-    Three arrangements, because `_redacted` substitutes plain substrings and
-    each one reaches a different anchor:
+    Five arrangements, because `_redacted` substitutes plain substrings and each
+    one reaches an anchor the others do not. Each was added after something got
+    through:
 
-    - **under HOME**, which is where checkouts live. This is the case that was
-      missing: with the repository *beside* HOME, deleting the `<repository>`
-      substitution goes RED, and with it under HOME the same deletion passed,
-      because the home anchor had already consumed the prefix and the
-      substitution had never been doing anything on an ordinary machine.
-    - **beside HOME**, the arrangement that did work, kept so that ordering the
-      anchors the other way round is caught from both directions.
-    - **`THEURIAN_DATA_DIR` outside HOME**, which the `~` substitution does not
-      reach and which holds the registry file named in `project-registered`.
+    - **repository under HOME**, which is where checkouts live. Deleting the
+      `<repository>` substitution goes RED only with the repository *beside*
+      HOME; under it, the home anchor had already consumed the prefix and the
+      substitution had never done anything on an ordinary machine.
+    - **repository beside HOME**, the arrangement that did work, kept so
+      misordering the anchors is caught from both directions.
+    - **`THEURIAN_DATA_DIR` outside HOME**, a mount or a shared path, which `~`
+      does not reach.
+    - **`THEURIAN_DATA_DIR` under HOME but not the default**, which the in-HOME
+      exemption used to cover on the strength of an argument about
+      `~/.theurian`. `~` is anonymous; `~/clients/<name>/store` is not.
+    - **a symlinked `$HOME` with the data directory inside the repository**,
+      which is what makes the repository's *unresolved* spelling reach the
+      payload: `_repository_root` resolves, so `(p, p.resolve())` gave the same
+      string twice and the operator's own spelling went out as
+      `~/work/api/.theurian-data`.
     """
-    home, repository, data_dir = _repository_sandbox(
+    home, repository, chosen_data_dir = _repository_sandbox(
         tmp_path,
         monkeypatch,
         relative_to_home=relative_to_home,
-        data_dir_outside_home=data_dir_outside_home,
+        data_dir=data_dir,
+        symlinked_home=symlinked_home,
     )
 
     _, payload = _invoke("doctor", "--report")
@@ -211,16 +264,26 @@ def test_the_report_mode_redacts_the_locations_the_project_steps_name(
     assert str(home.resolve()) not in blob
     assert str(repository) not in blob
     assert str(repository.resolve()) not in blob
-    assert str(data_dir) not in blob
+    assert str(chosen_data_dir) not in blob
+    assert str(chosen_data_dir.resolve()) not in blob
     assert "<repository>" in blob, "the substitution has to have fired, not merely not leaked"
     assert repository.name not in blob, (
         "a bare directory name is not a path and no anchor catches it; the summaries "
         "name the repository by its whole path so that this one can"
     )
+    # Vacuous in four of the five layouts and the point of the fifth. A path
+    # under `~` is not anonymised by `~`, and the name of the directory it sits
+    # in is the part that identifies someone.
+    assert CLIENT_NAME not in blob, "a data directory under HOME still names where it is"
+    # `_executable()` resolves to this virtualenv's `bin`, which on a real
+    # machine is routinely inside a project directory.
+    assert str(Path(sys.executable).parent) not in blob, "the install location names a directory"
 
 
-def _context_for_anchors(home: Path, data_dir: Path, project_root: Path | None) -> SetupContext:
-    """The four paths `_redaction_anchors` reads, and fakes for the rest."""
+def _context_for_anchors(
+    home: Path, data_dir: Path, project_root: Path | None, executable: str = ""
+) -> SetupContext:
+    """The paths `_redaction_anchors` reads, and fakes for the rest."""
     return SetupContext(
         home=home,
         data_dir=data_dir,
@@ -231,50 +294,75 @@ def _context_for_anchors(home: Path, data_dir: Path, project_root: Path | None) 
         secrets=FileSecretStore(data_dir),
         health=lambda: None,
         service=None,
-        executable="",
+        executable=executable,
     )
 
 
-def test_a_home_that_is_a_symlink_is_anchored_by_both_of_its_spellings(tmp_path: Path) -> None:
-    """Asserted on the anchors rather than through `doctor --report`.
+def test_every_anchored_path_is_anchored_under_both_of_its_spellings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim `_redaction_anchors`' docstring makes, over all of them.
 
-    Every string the report currently carries that holds a *resolved* path is
-    also under the repository, whose anchor is longer and fires first -- so no
-    end-to-end arrangement reaches this today and a mutation deleting the
-    resolved spelling survives the suite. It is kept because the mismatch is
-    real and measured: `context.home` is whatever `$HOME` says while
-    `project_root` is `Path.cwd().resolve()`, and before the anchors were
-    ordered the unresolved one matched *inside* the resolved path and published
-    `/private~/work/api/…`. Testing the helper directly is what holds a guard
-    whose subject the shipped report does not yet produce.
+    The previous version looked only at `home`, so an anchor that lost a
+    spelling anywhere else was invisible -- the same shape as every other
+    finding on this branch, where the fixture was the only place the subject
+    existed. Asserted over every candidate rather than the one that broke,
+    because the next candidate to arrive gets no test of its own by default.
+
+    `project_root` satisfies this trivially and deliberately so: it comes from
+    `_repository_root`, and `os.getcwd()` is fully resolved on POSIX, so it has
+    one spelling. Were it ever to arrive unresolved, this loop demands the
+    resolved form too and the existing `(p, p.resolve())` pass supplies it.
     """
-    real_home = tmp_path / "real-home"
-    real_home.mkdir()
+    real = tmp_path / "real"
+    (real / "work" / "api").mkdir(parents=True)
+    (real / "bin").mkdir()
     linked_home = tmp_path / "home"
-    linked_home.symlink_to(real_home)
-    context = _context_for_anchors(linked_home, linked_home / ".theurian", None)
+    linked_home.symlink_to(real)
+    repository = linked_home / "work" / "api"
+    monkeypatch.chdir(repository)
+    context = _context_for_anchors(
+        linked_home,
+        repository / ".theurian-data",
+        repository.resolve(),
+        executable=str(linked_home / "bin" / "theurian"),
+    )
 
     anchored = dict(_redaction_anchors(context))
 
-    assert anchored[str(linked_home)] == "~"
-    assert anchored[str(real_home)] == "~", "the resolved spelling reaches strings the other misses"
+    assert context.project_root is not None
+    for name, path in {
+        "home": linked_home,
+        "data directory": context.data_dir,
+        "token file": context.auth_dir / TOKEN_KEY,
+        "executable": Path(context.executable),
+        "repository": context.project_root,
+    }.items():
+        assert str(path) in anchored, f"{name} is not anchored as the operator spells it"
+        assert str(path.resolve()) in anchored, f"{name} is not anchored as Python resolves it"
 
 
-def test_a_data_directory_inside_home_is_left_to_the_home_anchor(tmp_path: Path) -> None:
-    """`~/.theurian` discloses nothing and reads better than a placeholder.
+def test_only_the_default_data_directory_is_left_to_the_home_anchor(tmp_path: Path) -> None:
+    """`~/.theurian` reads better than a placeholder and discloses nothing.
 
-    The pair to the `data-directory-outside-home` case above: the anchor is
-    added for the arrangement that needs it and withheld from the one that does
-    not, so this pins the withholding.
+    That argument is about *one* path, and the guard used to be about every path
+    under HOME -- so `THEURIAN_DATA_DIR=$HOME/clients/<name>/store` was published
+    in full. `~` is anonymous; the directory it sits in is what identifies
+    someone. The exemption now covers exactly the path the argument covers.
     """
     home = tmp_path / "home"
     home.mkdir()
 
-    inside = dict(_redaction_anchors(_context_for_anchors(home, home / ".theurian", None)))
-    outside = dict(_redaction_anchors(_context_for_anchors(home, tmp_path / "elsewhere", None)))
+    def anchors(data_dir: Path) -> dict[str, str]:
+        return dict(_redaction_anchors(_context_for_anchors(home, data_dir, None)))
 
-    assert "<data directory>" not in inside.values()
-    assert outside[str(tmp_path / "elsewhere")] == "<data directory>"
+    default = home / ".theurian"
+    under_home = home / "clients" / CLIENT_NAME / "store"
+    outside = tmp_path / "elsewhere"
+
+    assert "<data directory>" not in anchors(default).values(), "the one legible location"
+    assert anchors(under_home)[str(under_home)] == "<data directory>"
+    assert anchors(outside)[str(outside)] == "<data directory>"
 
 
 def test_the_anchors_are_ordered_longest_first(tmp_path: Path) -> None:
