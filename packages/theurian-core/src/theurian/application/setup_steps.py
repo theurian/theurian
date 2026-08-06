@@ -74,7 +74,13 @@ class Step:
     #: found no exception, and recorded CHANGED -- so three steps that write
     #: nothing reported five files as modified and journalled them as applied.
     #: A step with no action is now something the runner can see.
-    apply: Callable[[SetupContext], None] | None = None
+    #:
+    #: Deliberately **not** defaulted. A default makes ``Step(id, probe)``
+    #: type-check, so an edit that drops a real action produces a plausible
+    #: degraded run instead of the ``Missing positional argument "apply"`` that
+    #: catches it before it is ever committed. Every report-only step spells the
+    #: ``None`` out.
+    apply: Callable[[SetupContext], None] | None
     #: A failure here rolls the run back rather than degrading it.
     critical: bool = True
 
@@ -740,22 +746,22 @@ def probe_serena(context: SetupContext) -> SetupStep:
 #: token must exist before the env file references it, and the service must be
 #: registered before anything tries to start it.
 STEPS: Final[tuple[Step, ...]] = (
-    Step(StepId.PLATFORM, probe_platform),
-    Step(StepId.CORE_PRESENT, probe_core),
-    Step(StepId.ARTIFACT_INTEGRITY, probe_artifact_integrity),
+    Step(StepId.PLATFORM, probe_platform, None),
+    Step(StepId.CORE_PRESENT, probe_core, None),
+    Step(StepId.ARTIFACT_INTEGRITY, probe_artifact_integrity, None),
     Step(StepId.DATA_DIRECTORY, probe_data_directory, apply_data_directory),
     Step(StepId.TOKEN, probe_token, apply_token),
     Step(StepId.TOKEN_STORAGE, probe_token_storage, apply_token_storage),
     Step(StepId.ENV_REFERENCE, probe_env_reference, apply_env_reference),
     Step(StepId.DAEMON_SERVICE, probe_daemon_service, apply_daemon_service),
     Step(StepId.DAEMON_RUNNING, probe_daemon_running, apply_daemon_running, critical=False),
-    Step(StepId.SINGLE_INSTANCE, probe_single_instance),
-    Step(StepId.PROJECT_REGISTERED, probe_project_registered, critical=False),
-    Step(StepId.PROJECT_LAYOUT, probe_project_layout, critical=False),
-    Step(StepId.GITIGNORE, probe_gitignore, critical=False),
+    Step(StepId.SINGLE_INSTANCE, probe_single_instance, None),
+    Step(StepId.PROJECT_REGISTERED, probe_project_registered, None, critical=False),
+    Step(StepId.PROJECT_LAYOUT, probe_project_layout, None, critical=False),
+    Step(StepId.GITIGNORE, probe_gitignore, None, critical=False),
     Step(StepId.MCP_CONNECTION, probe_mcp_connection, apply_mcp_connection, critical=False),
-    Step(StepId.MCP_HEALTH, probe_mcp_health, critical=False),
-    Step(StepId.MIGRATIONS_VALID, probe_migrations, critical=False),
-    Step(StepId.INITIAL_INDEX, probe_initial_index, critical=False),
-    Step(StepId.SERENA_DETECTION, probe_serena, critical=False),
+    Step(StepId.MCP_HEALTH, probe_mcp_health, None, critical=False),
+    Step(StepId.MIGRATIONS_VALID, probe_migrations, None, critical=False),
+    Step(StepId.INITIAL_INDEX, probe_initial_index, None, critical=False),
+    Step(StepId.SERENA_DETECTION, probe_serena, None, critical=False),
 )
