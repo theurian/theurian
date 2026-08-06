@@ -94,9 +94,9 @@ class SetupService:
         # and a step with no action writes nowhere in any of its arms. Enforced
         # here rather than trusted to each probe, because the arms are the
         # problem -- `probe_project_registered` left `paths` empty on the arm its
-        # author was thinking about and set it on the one three lines below, and
-        # §6.2's unimplemented rows will start reporting MISSING one day with no
-        # reason to have read any of this.
+        # author was thinking about and set it on the one beside it, and §6.2's
+        # unimplemented rows will start reporting MISSING one day with no reason
+        # to remember any of this.
         return SetupStep(
             step_id=probed.step_id,
             status=probed.status,
@@ -174,8 +174,11 @@ class SetupService:
                 # something missing fell through to the apply, called a
                 # do-nothing function, and was recorded ``CHANGED`` with its
                 # paths added to `changed_paths` and an "applied" line in the
-                # journal. Five files, four of which no code writes, named as
-                # modified by every run including the second (FR-L2).
+                # journal. Five paths, all five absent when the run ended, named
+                # as modified by every run including the second (FR-L2). Every
+                # one of them is written by *some* command -- `theurian init`
+                # writes four and `theurian project register` the fifth -- and
+                # none of them by this one, which is the whole confusion.
                 #
                 # What the user is told does not shrink: the step keeps its
                 # ``MISSING`` status and its ``action``, and `_verify` re-probes

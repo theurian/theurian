@@ -11,12 +11,14 @@ A probe never writes. An apply is only ever reached for a step whose probe said
 user approved, because approval here is consent to *proceed past* a conflict and
 not consent to overwrite it (:class:`SetupRequest`, SEC-18).
 
-**Several steps have no apply at all** and are declared without one. They exist
-to say what is undone and name the command that does it: §6.2 rows 11-13 are
-`theurian init` and `theurian project register`, and setup performs neither.
-Such a step reports and names no paths, because every reader of ``paths`` -- the
-plan shown before consent, the changed-files list, ``uninstall --dry-run`` --
-reads it as a file setup would create or modify.
+**Several steps have no apply at all**, and are declared with an explicit
+``None``. They exist to say what is undone and name the command that does it:
+§6.2 rows 11-13 are `theurian init` and `theurian project register`, and setup
+performs neither. Such a step names no paths in any arm, because ``paths`` is
+read as "setup writes here" by the plan shown before consent and by the
+changed-files list. It does not have to remember: :meth:`SetupService._probe`
+drops them, the same way it takes criticality from the definition rather than
+from the probe.
 """
 
 from __future__ import annotations
@@ -78,10 +80,15 @@ class Step:
     #: Deliberately **not** defaulted. A default makes ``Step(id, probe)``
     #: type-check, so an edit that drops a real action produces a plausible
     #: degraded run instead of the ``Missing positional argument "apply"`` that
-    #: catches it before it is ever committed. Every report-only step spells the
-    #: ``None`` out.
+    #: catches it before anything is committed. Every report-only step spells
+    #: the ``None`` out.
     apply: Callable[[SetupContext], None] | None
-    #: A failure here rolls the run back rather than degrading it.
+    #: A failure here rolls the run back rather than degrading it. Inert on a
+    #: step whose ``apply`` is ``None``: nothing there can fail, and
+    #: `_blocking_conflicts` consults only PLATFORM and CORE_PRESENT. Set
+    #: anyway, because it records what §6.2 says the step *is* rather than what
+    #: today's runner happens to read -- a step that later gains an action must
+    #: not acquire rollback authority silently along with it.
     critical: bool = True
 
 
@@ -529,12 +536,17 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
         )
     # `paths` is empty for the same reason it is empty above: this step has no
     # apply, so setup never writes `registry.path` whatever the user decides.
-    # Naming it here put the file in the plan's "would be created or modified"
+    # Naming it there put the file in the plan's "would be created or modified"
     # list and then in `changed_paths`, for a run that only ever read it.
+    #
+    # The location moves into the summary rather than being dropped. It is the
+    # one fact here that is not recoverable from the rest of the step, and
+    # `paths` was carrying it by accident -- somebody asking "not registered
+    # *where*?" was the only reader that field served honestly.
     return SetupStep(
         step_id=StepId.PROJECT_REGISTERED,
         status=StepStatus.MISSING,
-        summary=f"{root.name} is not registered with this daemon.",
+        summary=f"{root.name} has no entry in {registry.path}.",
         action="Register this repository. Run `theurian project register`.",
         critical=False,
     )
@@ -586,11 +598,12 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
         )
     # No `paths`: `init` appends the block, setup only reads the file -- and it
     # may not exist at all, which is how a `.gitignore` that was never created
-    # came to be reported as one setup had modified.
+    # came to be reported as one setup had modified. The summary names it, since
+    # a repository can hold several and the step checks exactly this one.
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
-        summary="Derived Theurian artifacts are not ignored by Git.",
+        summary=f"{gitignore} does not ignore the derived Theurian artifacts.",
         action="Add the Theurian block to .gitignore. Run `theurian init`.",
         critical=False,
     )

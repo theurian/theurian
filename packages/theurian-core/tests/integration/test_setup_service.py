@@ -67,7 +67,11 @@ def test_a_dry_run_changes_nothing_at_all(context: SetupContext) -> None:
 
 
 def test_the_plan_names_every_file_it_would_create(context: SetupContext) -> None:
-    """`uninstall --dry-run` has to be able to enumerate what setup created."""
+    """`uninstall --dry-run` has to be able to enumerate what setup created.
+
+    NFR-12, and a requirement rather than a description of today: `uninstall`
+    reads neither this aggregate nor the steps' own paths. See `SetupStep.paths`.
+    """
     plan = _service(context).plan()
 
     assert str(context.data_dir) in plan.paths
@@ -537,12 +541,11 @@ def test_a_step_setup_does_not_perform_is_never_reported_as_changed(
     `would_change` is MISSING and nothing else, so a step with no action reached
     the apply branch, called nothing, and was recorded CHANGED unconditionally.
 
-    The outcome is asserted by *value*, not as "anything but CHANGED". `outcome`
-    is a published field that the plugin's `setup.md` renders, so which of the
-    four it is matters: NOT_ATTEMPTED means the run stopped before reaching the
-    step, which a completed run must never say about one it probed twice. A
-    prohibition let that substitution through -- measured, as a surviving
-    mutation.
+    The outcome is asserted by *value*, not as "not CHANGED". `outcome` is a
+    published field and the plugin's `setup.md` renders it, so which of the four
+    it is matters: NOT_ATTEMPTED means the run stopped before reaching the step,
+    which a completed run must never say about a step it probed twice. A
+    prohibition alone let that substitution through.
     """
     report = _service(in_a_repository).run()
 
@@ -558,11 +561,12 @@ def test_a_step_setup_does_not_perform_is_never_reported_as_changed(
 def test_a_file_setup_never_writes_is_not_listed_among_the_files_it_changed(
     in_a_repository: SetupContext,
 ) -> None:
-    """Four of the five were files that do not exist when the run ends.
+    """All five were absent from the disk when the run ended.
 
     Asserted on absence from the list *and* on absence from the disk, because
-    either alone is weak: a run that created them would satisfy the second, and a
-    run that silently dropped a real path would satisfy the first.
+    either alone is weak: a run that silently dropped a genuinely written path
+    would satisfy the first, and a run that stopped reporting nothing at all
+    while some probe quietly created the files would satisfy the second.
     """
     report = _service(in_a_repository).run()
 
