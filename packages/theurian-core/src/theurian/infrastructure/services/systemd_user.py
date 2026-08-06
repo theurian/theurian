@@ -268,7 +268,8 @@ WantedBy=default.target
         fixed here because it is a change to what this method *means* -- the
         effective definition rather than the file Theurian wrote -- and that
         wants its own decision about what ``install`` should then do with an
-        override it did not create (SEC-18). Filed for Milestone 6.
+        override it did not create (SEC-18). Filed as
+        https://github.com/theurian/theurian/issues/52.
         """
         if not self.unit_path.exists():
             return ""
