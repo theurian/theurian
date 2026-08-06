@@ -104,13 +104,29 @@ each call site cannot.
 ## Compliance
 
 - `CanonicalStore` exposes no connection object and no write method outside
-  `transaction()`; a test asserts the Protocol surface.
-- An integration test runs N concurrent `migrate apply` processes against one
-  project and asserts serialisation, a consistent final state, and no error.
-- A test asserts a second application of the same migration set is a no-op.
-- A lint check keeps `import sqlite3` inside `infrastructure/sqlite/`.
+  `transaction()`; `tests/unit/test_ports.py` asserts the Protocol surface.
+- `tests/unit/test_migration_engine.py::test_reapplying_the_same_set_is_a_no_op`
+  and `tests/integration/test_cli_commands.py::test_apply_is_idempotent` — a
+  second application of the same migration set changes nothing.
 
 Still owed, with the milestone that will satisfy it:
+
+- **Nothing runs two writers at once.** This section claimed an integration test
+  running N concurrent `migrate apply` processes against one project, asserting
+  serialisation, a consistent final state, and no error. No such test exists —
+  the only concurrency tests in the repository are
+  `tests/e2e/test_daemon_single_instance.py`'s two, which race daemon starts
+  rather than writes, and no CI job runs those either
+  ([#65](https://github.com/theurian/theurian/issues/65)). This is the ADR's
+  central claim, so its evidence is the one that was missing: everything above
+  holds that a *single* writer behaves, which is what an unserialised design
+  would also do. Milestone 6, with the index writer below.
+- **`sqlite3` is not confined, and is already imported outside
+  `infrastructure/sqlite/`.** This section claimed a lint check kept it there.
+  There is none, and `cli/index_commands.py` imports it directly.
+  `test_volatile_dependencies_are_confined` is the mechanism that would carry
+  the rule and is parametrised over `sqlite_vec` and `mcp` only.
+  [#66](https://github.com/theurian/theurian/issues/66).
 
 - **The derived index has no single-writer contract at all** (Milestone 6,
   [#15](https://github.com/theurian/theurian/issues/15)). Everything above is

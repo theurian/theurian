@@ -79,7 +79,22 @@ out by requiring that Core remain fully functional standalone.
 
 ## Compliance
 
-- `.github/workflows/dco.yml` verifies sign-off on every commit in a pull request
-  and is a required check.
+- `.github/workflows/shared.yml`, job `commits`, step "Every commit is signed off
+  (DCO)" verifies the trailer on every non-merge commit in a pull request and
+  names both remedies (`--amend -s` and `rebase --signoff`) in the failure. This
+  section said the check lived in `.github/workflows/dco.yml`, which has never
+  existed; the control does, under a different name.
 - `CONTRIBUTING.md` documents `git commit -s` and the amend fix.
 - A `.gitmessage` template is provided and referenced in the development guide.
+
+Still owed, with the milestone that will satisfy it:
+
+- **The DCO check is not a required check.** This section said it was.
+  `main`'s branch protection carries no `required_status_checks` at all, so the
+  job reports and does not block — a pull request with an unsigned commit can be
+  merged by anyone able to merge. Point 3 of the Decision calls it "a mechanical
+  gate, not a judgement call", and today it is neither, because nothing gates on
+  it. This is a repository setting rather than a file, which is why no amount of
+  reading the tree finds it; it is filed as
+  [#67](https://github.com/theurian/theurian/issues/67) so it is fixed before
+  the first outside contribution rather than after.

@@ -97,9 +97,30 @@ Several dependencies are also young:
 
 ## Compliance
 
-- A test asserts every dependency in both `pyproject.toml` files uses `==`.
+- `security.yml`'s `pinning` job, step "Every dependency uses `==`", fails if any
+  dependency in either `pyproject.toml` is unpinned. This section called it a
+  test; it is a workflow step, and it runs on every push and pull request. The
+  distinction is not pedantry — it does not run under `uv run pytest`, so a
+  contributor who checks locally the way `CONTRIBUTING.md` describes will not see
+  it fail.
 - CI runs `uv sync --frozen`.
-- A banned-import lint rule keeps `sqlite_vec` inside `infrastructure/vector/` and
-  `mcp` inside `mcp/` and `daemon/`.
-- The `VectorStore` conformance suite runs against both the `sqlite-vec` adapter
-  and the brute-force fallback.
+- `tests/unit/test_layering.py::test_volatile_dependencies_are_confined` keeps
+  `sqlite_vec` inside `infrastructure/` and `mcp` inside `mcp/` and `daemon/`,
+  by walking the import graph. This section called it "a banned-import lint
+  rule" and named `infrastructure/vector/` as the boundary. Neither was right:
+  `pyproject.toml`'s `[tool.ruff.lint.flake8-tidy-imports.banned-api]` has a
+  single entry, `theurian.infrastructure` (ADR-0003), and the boundary the test
+  enforces is the whole `infrastructure` package.
+
+Still owed, with the milestone that will satisfy it:
+
+- **There is no `VectorStore` conformance suite, and no `sqlite-vec` adapter.**
+  This section claimed a suite running against both that adapter and a
+  brute-force fallback. `infrastructure/vector/` contains only `__init__.py`,
+  `sqlite_vec` is imported nowhere in `src/`, and the vector search that ships is
+  an exact scan inside `SqliteIndexStore.search_dense` — deliberately, per
+  ADR-0021, because a local corpus is small enough that an exact scan is both
+  fast enough and reproducible. So the *second* implementation this item exists
+  to compare against has not been written and may never be. The item comes due
+  with the first ANN adapter; until then `test_volatile_dependencies_are_confined`
+  is guarding an import that does not happen.

@@ -108,12 +108,32 @@ Rules:
 
 ## Compliance
 
-- A CI job runs the full suite with network access blocked.
-- A test asserts the default configuration instantiates no adapter that opens a socket.
-- A shared Protocol-conformance suite runs against both the fake and (in an
-  opt-in credentialed job) each real adapter.
-- A grep-based CI check fails if a vendor name appears under `domain/` or
-  `application/`.
+- `core.yml`'s `offline` job runs the suite with network access blocked, and its
+  second step "Prove the sandbox actually blocks network" fails if the sandbox
+  stops sandboxing — without which the job would become a permanent false pass.
+- `tests/unit/test_layering.py::test_no_vendor_names_in_domain_or_application`
+  fails if `openai`, `anthropic`, `cohere`, `voyageai`, `pinecone`, `weaviate`
+  or `qdrant` appears anywhere under `domain/` or `application/`. This section
+  called it "a grep-based CI check"; it is a test, which runs in CI. The
+  substance is right and the artifact named was not, and the difference matters
+  to anyone who goes looking for it in `.github/`.
+
+Still owed, with the milestone that will satisfy it:
+
+- **No test asserts the default configuration opens no socket.** This section
+  claimed one. The `offline` job holds the *outcome* — the suite passes with no
+  network — which is a strictly weaker statement, because a suite that never
+  exercises a socket-opening default passes it too. Deferred with no milestone:
+  every adapter that could open a socket is unbuilt (`SummarizationProvider`,
+  `RerankingProvider` and `ReviewProvider` have no real implementation), so the
+  property holds vacuously and a test for it today would too.
+- **There is no opt-in credentialed job, and no shared conformance suite.** This
+  section claimed both, running against the fake and against each real adapter.
+  Neither exists; `EmbeddingProvider` is the only port with a bundled default,
+  and `tests/unit/test_hashing_embedding.py::test_it_satisfies_the_port` checks
+  that one adapter against that one Protocol. The item comes due when a second
+  implementation of any provider port lands, which is the first moment the two
+  can disagree.
 
 Landed in Milestone 5, for the `EmbeddingProvider` default specifically:
 
