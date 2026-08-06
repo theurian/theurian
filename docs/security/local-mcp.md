@@ -183,14 +183,50 @@ control that does not exist is the one nobody re-checks.
 
 The token is also asserted absent from the `/health` body, from the 401 body
 both in-process and over a real socket, from `theurian auth rotate` output, and
-from the generated MCP configuration and env file. There is no assertion covering
-a setup report or `doctor` output.
+from the generated MCP configuration and env file.
 
-`theurian doctor --report` redacts **absolute paths** by default — your home
-directory, the repository root, and the token file's path, replaced wherever they
-appear — because its output is what people paste into public issues. It is not a
-credential filter: no credential value enters that payload for it to remove, and
-it removes nothing but those three roots.
+`theurian doctor --report` redacts by default, because its output is what people
+paste into public issues, and it does so two ways. **Absolute paths Theurian
+itself put in the payload are substituted** — your home directory, the repository
+root, the token file, the executable, and any data directory you chose yourself,
+replaced wherever they appear. **Values Theurian
+did not write are withheld**, because substitution cannot reach them: a string
+read out of somebody else's configuration file was never held by this process, so
+there is nothing to match it against.
+
+That second half is not theoretical, and it is why it exists. A `theurian` MCP
+entry in `~/.claude.json` carrying `Authorization: Bearer <literal token>`
+instead of `${THEURIAN_MCP_TOKEN}` is precisely the state that makes the
+`mcp-connection` step conflict — so it is the state that gives someone a reason
+to run `doctor --report` and paste the result — and the step published the
+installed entry verbatim, inside a payload that said `redacted: true`. The same
+route ran through a service unit's environment, another daemon's `/health` reply,
+the ids of other repositories in the project registry, and any exception a probe
+raised.
+
+Under `--report` those steps now say what differs without saying what it holds:
+a count, `<another data directory>`, an exception's type, and — for a differing
+configuration — **only the names of the fields Theurian's own renderer
+produces**, with anything else counted.
+
+That last rule is narrower than "names, not values", and it had to be. The first
+version of this fix published the differing field names on the reasoning that a
+name is schema. It is not, unless Theurian defined it: the names came from a
+union with the installed file, so a systemd continuation line — which is the
+*value* of the directive above it — parsed alone as a directive name, and a
+bearer token was published as a field name inside the sentence promising the
+values were withheld. A name Theurian writes cannot be a value it read.
+
+Plain `theurian doctor` still prints everything, for the person who has to act
+on it. Asserted on the values themselves rather than on the shape of the output,
+in `packages/theurian-core/tests/integration/test_setup_report_withholding.py` —
+a test that only checked the path anchors passed before the fix and after it.
+That file sweeps every step in `STEPS` with a seeded sentinel rather than testing
+the routes already known to be broken, because one line added to an unrelated
+step reopened the class with the whole suite green.
+
+It remains true that no *knowledge body* enters that payload, and that a path
+outside the substituted anchors goes out verbatim.
 
 ## Filesystem boundary
 

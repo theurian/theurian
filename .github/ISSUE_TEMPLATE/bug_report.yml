@@ -8,9 +8,13 @@ body:
         Thanks for the report.
 
         **Before you paste diagnostics:** `theurian doctor --report --json`
-        redacts credentials and knowledge bodies, but your knowledge base may
-        still contain things a public issue does not need. Read the output before
-        posting it.
+        substitutes the paths Theurian wrote into its own output and withholds
+        the values it only read — an MCP entry, a service definition, the project
+        registry — naming only the fields Theurian itself writes, and counting
+        anything else rather than repeating a name out of your file. It
+        is not a general credential filter, and it cannot know what is sensitive
+        in a path outside your home directory or in a filename. Read the output
+        before posting it.
 
         For a **security vulnerability**, use the private path in
         [SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md)

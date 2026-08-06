@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from theurian.domain.setup import DifferingFields
+
 
 @runtime_checkable
 class McpClientConfig(Protocol):
@@ -44,6 +46,22 @@ class McpClientConfig(Protocol):
         who decides whether the run proceeds *around* whatever is there -- setup
         leaves a conflicting entry exactly as it found it, with or without
         consent (SEC-18). "It differs" is not enough to decide that on.
+        """
+        ...
+
+    def differing_keys(self, spec: Any) -> DifferingFields:
+        """Which fields differ from ``spec``, without their values.
+
+        On the port rather than left to each adapter because the caller that
+        needs it is the one building ``doctor --report``, whose output is meant
+        to be published: an installed entry's values were written by someone
+        other than Theurian and may be a literal credential, so no adapter is
+        free to answer this by rendering them (SEC-6, O-3).
+
+        The return type carries the second half of that rule. A field *name*
+        taken from the installed entry is data too -- it is a hand-editable
+        object in somebody else's state file -- so an implementation names only
+        what ``spec`` itself produces and counts the rest.
         """
         ...
 

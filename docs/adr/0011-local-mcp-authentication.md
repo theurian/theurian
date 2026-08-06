@@ -235,8 +235,23 @@ Landed in Milestone 4:
 - `tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`
   — `doctor --report` is what people paste into public issues, and it is
   redacted by default rather than on request (O-3). Note what this pins: the home
-  directory, not the token. No test asserts a token is absent from a setup report
-  or from `doctor` output.
+  directory, not the token. It went on passing while the payload carried a live
+  bearer token, because substitution reaches only values the local process put
+  there, and a `theurian` MCP entry someone configured with a literal
+  `Authorization` header was never one of them.
+- `tests/integration/test_setup_report_withholding.py` covers the other half:
+  a value a setup step reads but did not write is withheld under `--report`,
+  asserted by grepping the whole payload for the literal secret rather than by
+  checking the anchors. The credential cases are a literal bearer token in
+  Claude Code's entry, a token in a service unit's environment, and a token on a
+  systemd continuation line — which parsed as a field *name*, and is why the rule
+  is "only the names Theurian's own renderer produces", not "names, not values".
+
+  What that file asserts is a sweep, not a list of routes: one sentinel per
+  source a step reads and does not own, over every step in `STEPS`. The claim is
+  therefore "no step in the current plan publishes a seeded value", which is
+  checkable — not "every value, always", which is not. A step reading a source
+  the sweep does not seed is outside it, and the sweep is where to add one.
 - `test_a_second_run_never_regenerates_the_token` — setup mints a token only
   when there is none.
 

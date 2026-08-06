@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from theurian.domain.setup import (
+    DifferingFields,
     SetupError,
     SetupPlan,
     SetupReport,
@@ -263,3 +264,36 @@ def test_every_step_of_the_specification_has_an_identifier() -> None:
     """
     assert len(StepId) == 18
     assert StepId.PLATFORM is next(iter(StepId)), "platform check runs first"
+
+
+# -- DifferingFields --------------------------------------------------------
+
+
+def test_a_field_theurian_authors_is_named_and_the_rest_are_counted() -> None:
+    """The whole rule the type exists for. A name read out of somebody else's
+    file is whatever string sat in key position, so only the authored vocabulary
+    may be published -- and the result is sorted, because it reaches a sentence
+    two machines holding the same configuration must produce identically."""
+    fields = DifferingFields.over(
+        ["ExecStart", "X-Injected", "Environment"], authored={"ExecStart", "Environment"}
+    )
+
+    assert fields == DifferingFields(named=("Environment", "ExecStart"), unnamed=1)
+
+
+def test_an_unreadable_configuration_cannot_also_name_fields() -> None:
+    """`unreadable` means the comparison never happened. Fields beside it would
+    be a sentence claiming both that nothing could be read and that these
+    particular things differ."""
+    with pytest.raises(SetupError, match="yields no field names"):
+        DifferingFields(named=("ExecStart",), unreadable="is not a readable plist")
+
+    with pytest.raises(SetupError, match="yields no field names"):
+        DifferingFields(unnamed=1, unreadable="is not a readable plist")
+
+
+def test_a_negative_count_of_withheld_fields_is_refused() -> None:
+    """It reaches a sentence a person reads. "-1 further fields differ" is not a
+    diagnostic, and the arithmetic that produced it is the thing to fix."""
+    with pytest.raises(SetupError, match="cannot be negative"):
+        DifferingFields(unnamed=-1)

@@ -713,7 +713,7 @@ daemon, MCP tools, ingestion, retrieval, RAPTOR, GitHub. Those are Milestones 1â
 | :-- | :-- | :-- |
 | O-1 | "Theurian" collides with an existing trademark or PyPI/npm name | Check PyPI, npm, and trademark registries before the first public release; the name is a config value, not hardcoded in 400 places. |
 | O-2 | Users commit a SQLite file or a secret into `.theurian/` | Ship `.gitignore` entries at init; add a pre-commit hook example; `doctor` warns when a derived artifact is tracked. |
-| O-3 | An issue reporter pastes proprietary knowledge into a public issue | Issue templates warn explicitly; `theurian doctor --report` redacts bodies by default. |
+| O-3 | An issue reporter pastes proprietary knowledge into a public issue | Issue templates warn explicitly; no knowledge body ever enters a `doctor` payload; `theurian doctor --report` substitutes the paths Theurian wrote and withholds the configuration values it only read. Plain `doctor --json` redacts nothing and is not for sharing. |
 | O-4 | A dependency's license is incompatible with Apache-2.0 | License scan in CI with an allowlist; a copyleft dependency fails the build. |
 | O-5 | The security-report channel is unclear, so a vulnerability is filed publicly | SECURITY.md with a private reporting path and a stated response SLA. |
 | O-6 | Contributors are unclear whether this is community- or vendor-governed | GOVERNANCE.md states the model, the maintainer set, and how decisions are made, before external contributions start. |

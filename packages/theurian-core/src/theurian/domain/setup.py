@@ -16,6 +16,7 @@ which is what lets the whole state machine be tested without a machine to set up
 
 from __future__ import annotations
 
+from collections.abc import Container, Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Self
@@ -112,6 +113,73 @@ class SetupState(StrEnum):
 
 class SetupError(TheurianError):
     """Setup could not proceed. Carries a remedy, never a stack trace."""
+
+
+@dataclass(frozen=True, slots=True)
+class DifferingFields:
+    """Which fields of an installed configuration differ, in a form safe to publish.
+
+    A conflicting setup step is asked what differs by a report that gets pasted
+    into public issues, and the installed configuration is a file somebody else
+    wrote. Values were the obvious hazard and are never carried here. **Names are
+    the second hazard**, and the reason this type exists rather than a plain
+    tuple of strings.
+
+    A field name is only schema if Theurian is the one who defined it. Take the
+    names from the installed file and a name is data: ``~/.claude.json``'s
+    ``theurian`` entry may hold any top-level key a person put there, and a
+    systemd unit's directives are read out of a format Theurian does not own --
+    a continuation line, which is the *value* of the directive above it, parses
+    alone as a name, so
+
+        ExecStart=/usr/bin/theurian daemon start \\
+            --header "Authorization: Bearer <token>"
+
+    yielded that header as a differing field name, inside the sentence promising
+    the values were withheld.
+
+    So :meth:`over` intersects with the names Theurian's own renderer produces
+    and counts the rest. **A name Theurian writes cannot be a value it read**,
+    which closes that without resting on a parser being right about somebody
+    else's file format -- and a count still tells the reader there is more to
+    look at on their own terminal.
+    """
+
+    #: Differing field names Theurian itself authors. Sorted, so two machines
+    #: holding the same configuration produce the same sentence.
+    named: tuple[str, ...] = ()
+    #: How many further fields differ under names Theurian does not write. Their
+    #: names are withheld with their values.
+    unnamed: int = 0
+    #: Why there is nothing to name, when *unreadable* is the answer rather than
+    #: "nothing differs". A Theurian-authored fragment such as ``could not be
+    #: parsed`` -- never text taken from the file it describes, which is the
+    #: whole reason this type exists. Empty means the comparison succeeded.
+    #:
+    #: Told apart from an empty result because the two mean opposite things to a
+    #: reader: "no field differs" invites them to look elsewhere, and "the file
+    #: does not parse" is the answer.
+    unreadable: str = ""
+
+    def __post_init__(self) -> None:
+        if self.unnamed < 0:
+            msg = f"unnamed cannot be negative, got {self.unnamed}"
+            raise SetupError(msg)
+        if self.unreadable and (self.named or self.unnamed):
+            msg = (
+                f"a configuration that {self.unreadable} yields no field names; "
+                f"got named={self.named!r} unnamed={self.unnamed}"
+            )
+            raise SetupError(msg)
+
+    @classmethod
+    def over(cls, differing: Iterable[str], *, authored: Container[str]) -> Self:
+        """Split differing names by whether Theurian's renderer produces them."""
+        found = tuple(differing)
+        return cls(
+            named=tuple(sorted(name for name in found if name in authored)),
+            unnamed=sum(1 for name in found if name not in authored),
+        )
 
 
 @dataclass(frozen=True, slots=True)

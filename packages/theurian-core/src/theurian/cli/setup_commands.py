@@ -28,7 +28,7 @@ from theurian import __version__
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
-from theurian.domain.setup import SetupState
+from theurian.domain.setup import SetupError, SetupState
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore, default_data_dir
 from theurian.infrastructure.services import detect_manager
@@ -46,11 +46,28 @@ PortOption = Annotated[int, typer.Option("--port", help="Port the daemon binds o
 JsonFlag = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
 
 
-def build_context(port: int = DEFAULT_PORT, data_dir: Path | None = None) -> SetupContext:
+def build_context(
+    port: int = DEFAULT_PORT,
+    data_dir: Path | None = None,
+    *,
+    for_publication: bool = False,
+) -> SetupContext:
     """Assemble the context from this machine.
 
     Everything concrete is chosen here and nowhere else, which is what lets the
     state machine be tested against a temporary home directory.
+
+    ``for_publication`` is decided here for the same reason: this is the layer
+    that knows where the output is going, and a probe cannot find that out for
+    itself.
+
+    **It defaults to ``False``, which is fail-open, and that is deliberate.** The
+    default is what ``theurian setup`` and plain ``theurian doctor`` want, and
+    both are read on the terminal of the person who ran them. What makes the
+    default safe is that nothing publishes a payload without going through
+    :func:`_redacted`, which refuses a context that did not ask for publication
+    -- so the failure mode is a raised error, not a quiet disclosure. Any new
+    caller that shares output has to set this *and* redact; neither alone works.
     """
     resolved = data_dir or default_data_dir()
     home = Path.home()
@@ -67,6 +84,7 @@ def build_context(port: int = DEFAULT_PORT, data_dir: Path | None = None) -> Set
         health=lambda: probe_health(port=port),
         service=detect_manager(executable=_executable(), home=home),
         executable=_executable(),
+        for_publication=for_publication,
     )
 
 
@@ -163,7 +181,7 @@ def doctor_command(
     whose output you cannot trust, because you can no longer tell what was
     broken from what it just fixed.
     """
-    context = build_context(port=port)
+    context = build_context(port=port, for_publication=report_mode)
     report = SetupService(context).run(SetupRequest(dry_run=True))
     payload = report.to_json()
 
@@ -199,6 +217,12 @@ def _redaction_anchors(context: SetupContext) -> tuple[tuple[str, str], ...]:
 
     Both faults were live in a shipped command and invisible to a test whose
     fixture put the repository beside the home directory rather than inside it.
+
+    **This list is enumerated in prose in three places** -- ``SECURITY.md``,
+    ``CONTRIBUTING.md`` and ``docs/security/local-mcp.md`` -- because a reader
+    deciding whether to paste a report needs to know what was substituted. None
+    of them can be reached from here by a search for a symbol, so they are named
+    here: changing an anchor means changing four things.
 
     ``project_root`` has only one spelling and needs only one: it arrives from
     ``_repository_root``, and ``os.getcwd()`` is fully resolved on POSIX, so
@@ -244,7 +268,36 @@ def _redacted(payload: dict[str, Any], context: SetupContext) -> dict[str, Any]:
     redacted by default rather than on request. Absolute paths name the user's
     account and their repositories; both are someone's private information even
     though neither is a credential.
+
+    **This is half of the control, and it is the half that only reaches values
+    Theurian itself put in the payload.** Substitution is an allowlist of the
+    paths this context holds, so a string that came from another file, another
+    process, or an exception has no anchor here and goes out verbatim -- which is
+    how a literal ``Authorization: Bearer <token>``, read out of someone's
+    ``~/.claude.json``, once left in a report that said ``redacted: true``. The
+    other half is :attr:`SetupContext.for_publication`, which is set on the
+    context this payload was produced from and makes each probe withhold what it
+    did not author. Adding a value from outside to a step is not made safe by
+    anything in this function.
+
+    Which is why the two halves are welded together here. Calling this with a
+    context that was not built for publication produces a payload stamped
+    ``"redacted": true`` that still carries whatever the steps read -- the exact
+    defect this pair of mechanisms exists to close, reachable by using one of
+    them. It cannot happen today, because ``doctor_command`` is the only caller;
+    the guard is for the caller that does not exist yet.
+
+    Raises:
+        SetupError: If *context* was not built with ``for_publication``.
     """
+    if not context.for_publication:
+        msg = (
+            "A report can only be redacted from a run that withheld as it went: "
+            "build the context with `for_publication=True`. Stamping this payload "
+            "`redacted` would claim a review of values no anchor here can reach."
+        )
+        raise SetupError(msg)
+
     anchors = _redaction_anchors(context)
 
     def scrub(value: Any) -> Any:

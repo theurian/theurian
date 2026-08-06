@@ -22,8 +22,15 @@ matters, and the exact command that fixes it.
   where the safe action is not obvious, and an automatic repair of a suspected
   corruption is how data gets lost. Print the command; let the user run it.
 - Never delete anything.
-- If a finding involves the authentication token, do not print the token or any
-  part of it. `theurian doctor --json` redacts by default; do not disable that.
+- **`theurian doctor --json` does not redact.** It prints every path and every
+  differing configuration value in full, deliberately, because it is read on the
+  terminal of the person who ran it and the remedy needs them. Treat its output
+  as private: quote from it only what the finding needs, and if a finding
+  involves the authentication token, do not print the token or any part of it.
+  Only `--report` withholds, and there is no flag that turns redaction off.
 - If the user asks for a report to paste into a public issue, use
-  `theurian doctor --report --json`, which redacts knowledge bodies and
-  credentials, and remind them to review it before posting.
+  `theurian doctor --report --json`. It substitutes the paths Theurian wrote into
+  the payload and withholds the values it only read — an MCP entry, a service
+  unit, another daemon's reply, the project registry — naming only the fields
+  Theurian itself writes and counting anything else. It is not a general
+  credential filter, so remind them to review it before posting.

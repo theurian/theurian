@@ -130,17 +130,55 @@ policy to `.theurian/`.
 
 ## Sharing diagnostics safely
 
-`theurian doctor --report --json` redacts by default rather than on request, and
-what it redacts is **absolute paths**, wherever they appear in the payload: your
-home directory becomes `~`, the repository root becomes `<repository>`, and the
-token file's path becomes `<token file>`. Those name your account and your
-repositories, which is someone's private information even though none of them is
-a credential.
+`theurian doctor --report --json` redacts by default rather than on request,
+because its output is what people paste into public issues. Two different
+mechanisms do that, and they cover different things.
 
-It is not a credential filter and does not claim to be one — no credential value
-and no knowledge body enters that payload for it to remove — and it removes
-nothing but those three roots. Review its output before posting it anywhere
-public: a path outside them, or a revealing filename, goes out verbatim.
+**Paths Theurian itself put in the payload are substituted**, wherever they
+appear: your home directory becomes `~`, the repository root `<repository>`, the
+token file `<token file>`, the `theurian` executable `<executable>`, and a data
+directory you chose yourself `<data directory>` — only the default
+`~/.theurian` is left legible, because `~` is already anonymous. Those name your
+account and your repositories, which is someone's private information even though
+none of them is a credential.
+
+**Values Theurian did not write are withheld rather than substituted.** A
+diagnostic reports on configuration somebody else owns — Claude Code's MCP entry,
+a LaunchAgent plist or systemd unit, another daemon's reply, the project
+registry — and substitution cannot reach any of it, because a string the local
+process never held has nothing to match against. So under `--report` those steps
+say what differs without saying what it holds: a count of registry entries that
+cannot be read, `<another data directory>` for a daemon serving somewhere else,
+an exception's type without its message, and — for a configuration that differs —
+**only the names of the fields Theurian itself writes**, with anything else
+reported as a count.
+
+That last rule is narrower than "names, not values", and deliberately.
+A field *name* is only Theurian's to publish if Theurian defined it: a name read
+out of your `~/.claude.json`, plist or unit file is whatever string you put in
+key position, and one of them was a bearer token on a continuation line. So the
+published vocabulary is fixed and already public in this repository.
+
+Plain `theurian doctor`, read by the person who ran it, still prints all of it in
+full — that is where the values belong, and where the remedy needs them.
+
+This is not a general credential filter, and knowing what it does not cover is
+part of using it:
+
+- No knowledge body enters the payload for it to remove.
+- Two credentials could have reached it, both from configuration Theurian reads
+  and never writes: an `Authorization` header holding a literal token instead of
+  `${THEURIAN_MCP_TOKEN}`, and a token pasted into a service unit's environment.
+  Both are now withheld under `--report`. Theurian never creates either state;
+  it is what it finds when someone else has.
+- Still published, and **this list is not exhaustive**: a path outside the
+  anchors above, a revealing filename, the mode of your data directory, how many
+  migrations your repository has, whether Serena is configured, and Theurian's
+  own field names. Every one of those is a fact about your machine that the
+  diagnostic exists to report.
+
+**Review its output before posting it anywhere public.** Redaction narrows what
+needs that review; it does not replace it.
 
 ## Dependencies
 

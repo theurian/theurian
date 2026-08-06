@@ -125,12 +125,21 @@ history of the decision is the point.
 Use the [issue templates](.github/ISSUE_TEMPLATE/). For bugs, include
 `theurian version --json` output and `theurian doctor --report --json`.
 
-**Review the doctor output before posting it.** What `--report` redacts is
-absolute paths — your home directory, the repository root, and the token file's
-path — replaced wherever they appear, including inside each step's `summary` and
-`detail`. It is not a credential filter and removes nothing else, so a path
-outside those three roots, or a filename that is itself revealing, still goes out
-verbatim.
+**Review the doctor output before posting it.** `--report` does two things.
+Absolute paths Theurian itself put in the payload are substituted — your home
+directory, the repository root, the token file, the executable, and any data
+directory you chose yourself — wherever they appear,
+including inside each step's `summary` and `detail`. Values Theurian did *not*
+write are withheld instead of substituted, because there is nothing to match them
+against: a step reporting a difference in Claude Code's MCP entry, a service unit,
+another daemon's reply or the project registry says *that* they differ and names
+only the fields Theurian itself writes — a name read out of your file is your
+string, not Theurian's schema, so it is counted rather than named.
+
+It is still not a general credential filter, and the list of what goes out is
+not exhaustive: a path outside those anchors, a revealing filename, and facts
+about your machine the diagnostic exists to report. Plain `theurian doctor`,
+without `--report`, prints everything in full and is meant for your own terminal.
 
 For a security vulnerability, use the private path in [SECURITY.md](SECURITY.md)
 instead of an issue.

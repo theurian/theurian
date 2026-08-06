@@ -16,10 +16,16 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.ports.daemon_manager import DaemonManager, ServiceState
+from theurian.domain.setup import DifferingFields, SetupError
 from theurian.infrastructure.services import detect_manager
 from theurian.infrastructure.services.launchagent import LABEL, LaunchAgentManager
 from theurian.infrastructure.services.runner import CommandResult, SubprocessRunner
-from theurian.infrastructure.services.systemd_user import UNIT_NAME, SystemdUserManager
+from theurian.infrastructure.services.systemd_user import (
+    _RENDERED_DIRECTIVES,
+    UNIT_NAME,
+    SystemdUserManager,
+    _directives,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -225,6 +231,86 @@ def test_an_unreadable_plist_is_reported_rather_than_parsed(home: Path) -> None:
     assert "not a readable plist" in manager.differs_from_installed(port=7419, data_directory="/d")
 
 
+def test_the_differing_plist_keys_carry_no_values(home: Path) -> None:
+    """What `doctor --report` publishes about a plist Theurian did not write.
+    `EnvironmentVariables` is a dictionary a person may put a token in."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    installed = plistlib.loads(manager.render(port=7419, data_directory="/data"))
+    installed["EnvironmentVariables"] = {"THEURIAN_MCP_TOKEN": "SentinelPlistTokenFFFF"}
+    manager.plist_path.write_bytes(plistlib.dumps(installed))
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=("EnvironmentVariables",))
+    # Stated as a property of the whole result rather than of `named`: an exact
+    # equality above already pins `named`, so a second assertion over it cannot
+    # fail on its own. What the CRITICAL broke was a *name* carrying a secret,
+    # which is a claim about every string this returns.
+    assert "SentinelPlistTokenFFFF" not in repr(fields)
+
+
+def test_a_plist_path_that_cannot_be_read_is_reported_not_raised(home: Path) -> None:
+    """`exists()` is a race, not a guarantee, and the failure is not the parser's.
+
+    A directory where the plist should be passes `exists()` and raises
+    `IsADirectoryError` from `read_bytes` -- an `OSError`, which the parser's own
+    `except` clause does not name. It escaped as an unhandled exception and the
+    state machine degraded it into "could not check daemon-service".
+    """
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.mkdir(parents=True)
+
+    assert manager.differing_keys(port=7419, data_directory="/d") == DifferingFields(
+        unreadable="is not a readable plist"
+    )
+    assert "not a readable plist" in manager.differs_from_installed(port=7419, data_directory="/d")
+
+
+def test_a_plist_whose_root_is_not_a_dictionary_is_reported_not_raised(home: Path) -> None:
+    """Valid XML, valid plist, wrong shape. `.get` on a list raised
+    `AttributeError` past the parser's own `except`, and the state machine
+    degraded it into "could not check daemon-service" -- true, and two steps away
+    from "your plist has an array at the top"."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    manager.plist_path.write_bytes(plistlib.dumps(["not", "a", "dictionary"]))
+
+    assert manager.differing_keys(port=7419, data_directory="/d") == DifferingFields(
+        unreadable="is not a readable plist"
+    )
+    assert "not a readable plist" in manager.differs_from_installed(port=7419, data_directory="/d")
+
+
+def test_a_plist_key_theurian_never_writes_is_counted_and_not_named(home: Path) -> None:
+    """A key in somebody else's file is data, not schema. `render` is the whole
+    vocabulary this adapter may publish, so anything outside it is a number."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    installed = plistlib.loads(manager.render(port=7419, data_directory="/data"))
+    installed["LimitLoadToSessionType-northwind-acquisition"] = "Aqua"
+    manager.plist_path.write_bytes(plistlib.dumps(installed))
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=(), unnamed=1)
+    assert "northwind" not in repr(fields)
+
+
+def test_a_plist_too_damaged_to_parse_says_so_rather_than_naming_nothing(home: Path) -> None:
+    """ "No key differs" and "the file does not parse" read as opposite things to
+    whoever gets the report, and only the second is an answer. Reported as a
+    reason rather than as an empty result, in this adapter's own words."""
+    manager = LaunchAgentManager(executable="/opt/theurian", home=home)
+    manager.plist_path.parent.mkdir(parents=True)
+    manager.plist_path.write_text("this is not a plist")
+
+    fields = manager.differing_keys(port=7419, data_directory="/d")
+
+    assert fields == DifferingFields(unreadable="is not a readable plist")
+    assert not fields.named
+
+
 # -- LaunchAgent: status ----------------------------------------------------
 
 
@@ -367,6 +453,331 @@ def test_a_changed_unit_is_reported_as_a_diff(home: Path) -> None:
 
     assert "--port 9999" in difference
     assert "--port 7419" in difference
+
+
+def test_the_differing_unit_directives_carry_no_values(home: Path) -> None:
+    """What `doctor --report` publishes about a unit Theurian did not write.
+    `Environment=` is where a hand-edited unit keeps a literal token."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Environment=THEURIAN_DATA_DIR=/data",
+            "Environment=THEURIAN_MCP_TOKEN=SentinelUnitTokenGGGG",
+        )
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=("Environment",))
+    assert "SentinelUnitTokenGGGG" not in repr(fields)
+
+
+def test_a_repeated_directive_is_not_collapsed(home: Path) -> None:
+    """systemd lets `Environment=` repeat. Collapsing repeats would report two
+    units as equal when one of them sets a variable the other does not.
+
+    The extra line goes *before* Theurian's, which is what makes the property
+    observable. Placed after, a last-wins collapse still leaves the surviving
+    value equal to Theurian's, so both implementations answer
+    `named=('Environment',)` and the fixture pins nothing -- the same trap as the
+    comment-ordering test one section down, which this originally fell into.
+    Placed first, a collapse makes the two units compare *equal* and the answer
+    becomes `DifferingFields()`.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Environment=THEURIAN_DATA_DIR=/data",
+            "Environment=THEURIAN_MCP_TOKEN=literal\nEnvironment=THEURIAN_DATA_DIR=/data",
+        )
+    )
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields(
+        named=("Environment",)
+    )
+
+
+def test_the_named_fields_are_sorted(home: Path) -> None:
+    """Two machines holding the same unit must produce the same sentence.
+
+    Load-bearing only for this adapter: the plist and MCP callers hand
+    `DifferingFields.over` an already-sorted tuple, while this one hands it a
+    set, whose iteration order moves with `PYTHONHASHSEED`. Every other
+    assertion in this file names one field, so the sort has never been observed
+    -- removing it changed nothing and this is the test that notices.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data")
+        .replace("Restart=on-failure", "Restart=always")
+        .replace("Type=simple", "Type=exec")
+        .replace("WantedBy=default.target", "WantedBy=multi-user.target")
+        .replace("Environment=THEURIAN_DATA_DIR=/data", "Environment=THEURIAN_DATA_DIR=/elsewhere")
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields.named == ("Environment", "Restart", "Type", "WantedBy")
+
+
+# -- systemd: the vocabulary a report may publish ----------------------------
+
+
+def test_the_published_vocabulary_is_exactly_what_render_writes(home: Path) -> None:
+    """The constant and the renderer must not drift.
+
+    Stated as a constant rather than derived from `render`, because deriving it
+    was a disclosure: `render` interpolates the data directory into text that is
+    re-parsed as structure. This is the check that keeps the constant honest
+    when a directive is added, and it uses a benign input on purpose -- deriving
+    the expectation from a hostile one is the defect.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    written = {name for _, name in _directives(manager.render(port=7419, data_directory="/data"))}
+
+    assert written == set(_RENDERED_DIRECTIVES)
+
+
+@pytest.mark.parametrize(
+    ("executable", "data_directory"),
+    [
+        ("/opt/theurian", "/data\nX-Injected=value"),
+        ("/opt/theurian\nX-Injected=value", "/data"),
+        ("/opt/theurian", "/data\rX-Injected=value"),
+    ],
+)
+def test_a_line_break_in_an_interpolated_value_is_refused(
+    home: Path, executable: str, data_directory: str
+) -> None:
+    """A newline does not land in the field it was meant for; it starts a
+    directive. `install` writes the data directory at three interpolation
+    points, so an injected directive went into the user's unit file three times.
+    """
+    manager = SystemdUserManager(executable=executable, home=home)
+
+    with pytest.raises(SetupError, match="line break"):
+        manager.render(port=7419, data_directory=data_directory)
+
+
+def test_a_name_only_in_the_installed_unit_cannot_enter_the_vocabulary(home: Path) -> None:
+    """The second defence, asserted without the first.
+
+    Rejecting line breaks closes the route that was measured. This asserts the
+    property that makes the rejection a defence in depth rather than the only
+    one: `over` is handed the constant, so a name that is not in it is counted
+    whatever the input did.
+    """
+    fields = DifferingFields.over(
+        {"ExecStart", "X-Northwind-Deal-Code"}, authored=_RENDERED_DIRECTIVES
+    )
+
+    assert fields == DifferingFields(named=("ExecStart",), unnamed=1)
+
+
+def test_a_unit_that_is_not_text_says_so_rather_than_raising(home: Path) -> None:
+    """The plist adapter has had this since a directory where the plist should be
+    escaped its parser as an `OSError`; the unit adapter had no equivalent, so
+    invalid UTF-8 raised out of both comparison methods and the report degraded
+    to "could not check daemon-service"."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_bytes(b"[Service]\nExecStart=/opt/\xff\xfe not utf-8\n")
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields(
+        unreadable="is not a readable unit file"
+    )
+    assert "not a readable unit file" in manager.differs_from_installed(
+        port=7419, data_directory="/data"
+    )
+
+
+def test_a_unit_path_that_cannot_be_read_says_so_rather_than_raising(home: Path) -> None:
+    """`exists()` is a race, not a guarantee."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.mkdir(parents=True)
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields(
+        unreadable="is not a readable unit file"
+    )
+
+
+# -- systemd: the line parser ------------------------------------------------
+
+
+def test_a_continuation_joins_with_a_space_and_without_the_backslash(home: Path) -> None:
+    """The joined value is compared, so how it joins decides equality.
+
+    Joined without a separator, `ExecStart=a \\` + `b` becomes `ab`; joined
+    without stripping the backslash it keeps a stray `\\`. Either makes a unit
+    that means what Theurian wrote compare as differing, which is a conflict the
+    operator can never resolve -- setup does not rewrite a conflicting step.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "ExecStart=/opt/theurian daemon start --foreground --port 7419",
+            "ExecStart=/opt/theurian daemon start \\\n    --foreground --port 7419",
+        )
+    )
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields()
+
+
+def test_a_dangling_continuation_on_the_last_line_is_still_read(home: Path) -> None:
+    """A file whose final line ends in a backslash has no line after it to join.
+    Dropped, `ExecStart` disappears from the installed side and is reported as
+    differing when it does not differ."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text("[Service]\nExecStart=/opt/theurian daemon start \\")
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert "ExecStart" in fields.named
+    assert _directives("[Service]\nExecStart=/opt/x \\") == {
+        ("[Service]", "ExecStart"): ("/opt/x",)
+    }
+
+
+def test_whitespace_around_a_directive_is_not_part_of_it(home: Path) -> None:
+    """`Restart = on-failure` is the same directive as `Restart=on-failure`.
+    Unstripped, the name carries a trailing space and the value a leading one,
+    so a unit that agrees with Theurian's reports every one of those lines as
+    differing -- and an unstripped *name* is a name outside the vocabulary,
+    which turns a real difference into an unnamed count."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data")
+        .replace("Restart=on-failure", "Restart = on-failure")
+        .replace("Type=simple", "Type\t=\tsimple")
+    )
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields()
+
+
+def test_a_continuation_line_is_the_value_above_it_and_never_a_name(home: Path) -> None:
+    """systemd continues a line ending in a backslash, so the next line is part
+    of the *value*. Split on its own `=`, its left-hand side became a directive
+    name -- and a directive name is what this adapter publishes:
+
+        ExecStart=… daemon start \\
+            --header "Authorization: Bearer <token>"
+
+    put the header into `Fields that differ`, inside the sentence that promises
+    the values are withheld. Two defences, both asserted here: the parser joins
+    the line, and the name would not have been published anyway because `render`
+    does not produce it.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "ExecStart=/opt/theurian daemon start --foreground --port 7419",
+            "ExecStart=/opt/theurian daemon start --foreground \\\n"
+            '    --header "Authorization: Bearer SentinelContinuationHHHH" --port=7419',
+        )
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=("ExecStart",))
+    assert "SentinelContinuationHHHH" not in repr(fields)
+
+
+def test_a_directive_theurian_never_writes_is_counted_and_not_named(home: Path) -> None:
+    """A unit file is somebody else's text in a format Theurian does not own, so
+    a name read out of it is data. Only `render`'s own vocabulary is published."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Restart=on-failure",
+            "Restart=on-failure\nExecStartPre=/opt/northwind-acquisition/preflight.sh",
+        )
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert fields == DifferingFields(named=(), unnamed=1)
+    assert "northwind" not in repr(fields)
+
+
+def test_a_unit_differing_only_in_its_comments_names_no_directive(home: Path) -> None:
+    """A real difference the caller must still report, with no field to name.
+    The published sentence withholds it whole rather than claiming none exists.
+
+    The comment carries an `=` deliberately. Without one it is dropped for want
+    of a separator rather than for being a comment, so deleting the comment
+    filter entirely left this test green -- and `# ops note: legacy_key=abc`
+    would have gone out as a published field name.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data")
+        + "# ops note: legacy_key=northwind-acquisition\n"
+    )
+
+    fields = manager.differing_keys(port=7419, data_directory="/data")
+
+    assert manager.differs_from_installed(port=7419, data_directory="/data") != ""
+    assert fields == DifferingFields()
+    assert "northwind" not in repr(fields)
+
+
+def test_a_comment_ending_in_a_backslash_does_not_swallow_the_next_directive(
+    home: Path,
+) -> None:
+    """Comments are dropped before continuations are joined, not after.
+
+    Joined first, a comment ending in a backslash absorbs the line below it and
+    the absorbed directive disappears from the comparison. Whether systemd itself
+    continues a comment has varied by release, and this is not a format Theurian
+    owns, so the choice that cannot hide a difference is the one taken.
+
+    The directive below the comment is left *identical* to what Theurian would
+    install, which is what makes the two orderings distinguishable: swallowed,
+    `Restart` goes missing from the installed side and is named as differing
+    when it does not differ. A test that changed the directive as well would
+    report it as differing under either ordering and pin nothing -- which is what
+    the first version of this test did.
+    """
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data").replace(
+            "Restart=on-failure",
+            "# a note the operator left, ending in a backslash \\\nRestart=on-failure",
+        )
+    )
+
+    assert manager.differs_from_installed(port=7419, data_directory="/data") != ""
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields()
+
+
+def test_a_directive_in_the_wrong_section_is_reported_as_differing(home: Path) -> None:
+    """systemd's sections are not decoration: `Environment=` under `[Unit]` does
+    nothing. Compared on the bare name, a unit with it misplaced there read as
+    identical to a correct one, and the operator was told no directive differs."""
+    manager = SystemdUserManager(executable="/opt/theurian", home=home)
+    manager.unit_path.parent.mkdir(parents=True)
+    manager.unit_path.write_text(
+        manager.render(port=7419, data_directory="/data")
+        .replace("Environment=THEURIAN_DATA_DIR=/data\n", "")
+        .replace(
+            "Description=Theurian knowledge daemon",
+            "Description=Theurian knowledge daemon\nEnvironment=THEURIAN_DATA_DIR=/data",
+        )
+    )
+
+    assert manager.differing_keys(port=7419, data_directory="/data") == DifferingFields(
+        named=("Environment",)
+    )
 
 
 @pytest.mark.asyncio

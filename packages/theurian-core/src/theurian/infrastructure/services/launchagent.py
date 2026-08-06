@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import plistlib
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.ports.daemon_manager import ServiceState, ServiceStatus
+from theurian.domain.setup import DifferingFields
 from theurian.infrastructure.services.runner import (
     CommandRunner,
     SubprocessRunner,
@@ -26,6 +28,34 @@ from theurian.infrastructure.services.runner import (
 LABEL: Final = "dev.theurian.daemon"
 
 _AGENTS_DIRECTORY: Final = "Library/LaunchAgents"
+
+
+def _differing_names(
+    installed: Mapping[str, object], wanted: Mapping[str, object]
+) -> tuple[str, ...]:
+    """Every key whose value differs, sorted. Names only; nothing is rendered."""
+    return tuple(
+        sorted(key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key))
+    )
+
+
+def _installed_plist(path: Path) -> dict[str, object] | None:
+    """The plist as a mapping, or ``None`` if it is not one.
+
+    Three ways to fail, and the third was reaching callers as a traceback: the
+    file is unreadable (``OSError`` -- the ``exists()`` check above every caller
+    is a race, not a guarantee), it is not a plist (``InvalidFileException``,
+    ``ValueError``), or it parses into something that is not a dictionary. A
+    plist whose root is an array is valid XML and answered ``.get`` with
+    ``AttributeError``, which the state machine degraded into "could not check
+    daemon-service" -- true, but two steps removed from "your plist has an array
+    at the top".
+    """
+    try:
+        loaded = plistlib.loads(path.read_bytes())
+    except (plistlib.InvalidFileException, ValueError, OSError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 @final
@@ -119,23 +149,49 @@ class LaunchAgentManager:
             return ""
 
         wanted = plistlib.loads(self.render(port=port, data_directory=data_directory))
-        try:
-            installed = plistlib.loads(self.plist_path.read_bytes())
-        except (plistlib.InvalidFileException, ValueError):
+        installed = _installed_plist(self.plist_path)
+        if installed is None:
             return f"{self.plist_path} is not a readable plist."
 
         if installed == wanted:
             return ""
 
-        differing = sorted(
-            key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key)
-        )
         lines = [f"{self.plist_path} differs from the definition Theurian would install:"]
+        # Every differing key, including ones Theurian never writes. This output
+        # is the operator's own; only `differing_keys` is publishable.
         lines.extend(
             f"  {key}: installed={installed.get(key)!r} wanted={wanted.get(key)!r}"
-            for key in differing
+            for key in _differing_names(installed, wanted)
         )
         return "\n".join(lines)
+
+    def differing_keys(self, *, port: int, data_directory: str) -> DifferingFields:
+        """Which plist keys differ, without a word about their values.
+
+        An installed plist is whatever is on the machine, and what
+        :meth:`differs_from_installed` prints of it is not Theurian's to hand
+        on: ``EnvironmentVariables`` is a dictionary a person may have put a
+        literal ``THEURIAN_MCP_TOKEN`` into, and ``ProgramArguments`` names
+        paths outside the roots a shared report substitutes.
+
+        Only keys Theurian's own :meth:`render` produces are named; a key
+        somebody else added is counted, because a key in a file Theurian did not
+        write is data rather than schema -- see :class:`DifferingFields`.
+        """
+        if not self.plist_path.exists():
+            return DifferingFields()
+
+        wanted = plistlib.loads(self.render(port=port, data_directory=data_directory))
+        installed = _installed_plist(self.plist_path)
+        if installed is None:
+            # Reported rather than answered with an empty result: "no key
+            # differs" and "the file cannot be read as a plist" read as opposite
+            # things, and the second is the one the reader of a shared issue can
+            # act on. The fragment is this module's own words; the parser's
+            # message is not, and stays in `differs_from_installed`.
+            return DifferingFields(unreadable="is not a readable plist")
+
+        return DifferingFields.over(_differing_names(installed, wanted), authored=wanted)
 
     # -- Lifecycle --------------------------------------------------------
 

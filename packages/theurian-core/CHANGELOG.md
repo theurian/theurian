@@ -566,6 +566,76 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 #### Security
 
+- **`theurian doctor --report` published values Theurian had only read, inside a
+  payload that said `redacted: true`** (SEC-6, O-3). Redaction was a substitution
+  of the paths the local `SetupContext` holds, which by construction cannot
+  reach a string that came from another file, another process, or an exception —
+  and five setup steps put exactly such strings into the `detail` a report
+  carries. The one that matters is the MCP entry: `mcp-connection` renders the
+  installed entry so the user can decide whether the run may proceed around it,
+  and an entry configured with a literal `Authorization: Bearer <token>` instead
+  of `${THEURIAN_MCP_TOKEN}` is both the state that makes that step conflict and
+  the state that gives someone a reason to publish the report. Measured in the
+  shipped default configuration, with no flags: the token was in the output.
+
+  Theurian never writes such an entry (SEC-5) — it is what it finds. The same
+  route ran through a service unit's `EnvironmentVariables` / `Environment=`
+  lines, another daemon's `dataDir` from `/health`, the ids of other
+  repositories in the project registry, and the message of any exception a probe
+  raised.
+
+  Redaction now has a second half that runs before substitution rather than
+  after: `SetupContext.for_publication`, set by the composition root when
+  `--report` is passed, makes each of those steps withhold what it did not
+  author. What is published is which fields differ, a count of unreadable
+  registry entries, `<another data directory>`, and an exception's type. Plain
+  `theurian doctor` is unchanged and still prints everything, because it is read
+  by the person who has to act on it. Asserted on the values themselves in
+  `tests/integration/test_setup_report_withholding.py` — a test that only checked
+  the path anchors passed before this fix and after it.
+
+  **A field *name* is a value too, and that took a second pass to see.** The
+  first fix published the names of the differing fields on the reasoning that a
+  name is schema. It is not, unless Theurian defined it: the names came from a
+  union with the installed file, so what got published was whatever string sat in
+  key position in somebody else's. A systemd continuation line is the *value* of
+  the directive above it, and parsed alone its left-hand side became a directive
+  name — a bearer token, published as a field name inside the sentence promising
+  the values were withheld. `DifferingFields` now intersects with the names
+  Theurian's own renderer produces and counts the rest, which holds without
+  depending on a parser being right about a third party's file format.
+
+  **And "the names Theurian's own renderer produces" had to stop being asked of
+  the renderer.** The vocabulary was computed by re-parsing `render()`'s output,
+  on the argument that a name Theurian writes cannot be a value it read. True of
+  `plistlib` and of a dict literal; not true of an f-string over a line-oriented
+  format. `SystemdUserManager.render` interpolates the data directory and the
+  executable, so a line break in either added a directive of the caller's
+  choosing to the "authored" set — and a name present only in the *installed*
+  unit was then published. Two faces of one root cause: the write side rendered
+  that injected directive into the user's unit file at all three interpolation
+  points. The vocabulary is now a stated constant, and a line break in an
+  interpolated value is refused rather than escaped, because systemd has no
+  escape that makes one part of a value. Not reachable in the shipped default
+  configuration — `THEURIAN_DATA_DIR` had to contain a newline.
+
+  **The two halves cannot be used apart.** `_redacted` refuses a payload from a
+  context that did not ask for publication, because stamping `redacted: true` on
+  a run that did not withhold reproduces the original defect exactly — and
+  `tests/integration/test_setup_report_withholding.py` sweeps *every* step in
+  `STEPS` with a seeded sentinel rather than testing the routes that were known
+  to be broken, after a one-line addition to an unrelated step reopened the class
+  with the whole suite green.
+
+  **`SECURITY.md` and `docs/security/local-mcp.md` said this could not happen**
+  ("no credential value … enters that payload for it to remove"), which is what
+  told a reader the output was safe to paste. Both now describe the two
+  mechanisms and what review is still the reader's. `docs/adr/0011`,
+  `CONTRIBUTING.md`, `docs/architecture/requirements-analysis.md` and the bug
+  report template carried the same claim. The plugin's `/theurian:doctor` command
+  said plain `theurian doctor --json` "redacts by default" — it never has, and
+  now says so.
+
 - **A corrupted cell in the canonical state database was published to MCP
   callers verbatim** (SEC-13). `SqliteCanonicalStore` handed the bytes it could
   not interpret straight to the tool result: overwriting `created_at`,

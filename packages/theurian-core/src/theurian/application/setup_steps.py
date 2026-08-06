@@ -40,6 +40,12 @@ from theurian.application.project_service import (
     read_active_state,
 )
 from theurian.application.setup_context import SetupContext
+from theurian.application.setup_withholding import (
+    ANOTHER_DATA_DIRECTORY,
+    unreadable_registry_summary,
+    withheld_difference,
+    withheld_registry_detail,
+)
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.domain.setup import SetupStep, StepId, StepStatus
 from theurian.security.env_file import TOKEN_KEY, env_file_contents
@@ -345,13 +351,24 @@ def probe_daemon_service(context: SetupContext) -> SetupStep:
             paths=(_service_path(context),),
         )
 
-    difference = _service_difference(context)
+    directory = str(context.data_dir)
+    # Both called through the port rather than reached with `getattr`. A manager
+    # missing `differing_keys` used to answer `None` silently, which published a
+    # withholding sentence naming no field at all.
+    difference = service.differs_from_installed(port=context.port, data_directory=directory)
     if difference:
         return SetupStep(
             step_id=StepId.DAEMON_SERVICE,
             status=StepStatus.CONFLICTING,
             summary="A service is registered with a different definition.",
-            detail=difference,
+            detail=(
+                withheld_difference(
+                    _service_path(context),
+                    service.differing_keys(port=context.port, data_directory=directory),
+                )
+                if context.for_publication
+                else difference
+            ),
         )
     return SetupStep(
         step_id=StepId.DAEMON_SERVICE,
@@ -367,20 +384,20 @@ def apply_daemon_service(context: SetupContext) -> None:
 
 
 def _service_path(context: SetupContext) -> str:
+    """Where this platform's service definition lives.
+
+    Still ``getattr``, unlike the two comparison calls beside it, because the
+    attribute genuinely differs by platform -- ``plist_path`` or ``unit_path`` --
+    and neither is on the port. It fails to ``""``, which reaches a report as a
+    sentence missing its subject rather than as a disclosure, so it is left for
+    the milestone that gives :class:`DaemonManager` a definition path.
+    """
     service = context.service
     for attribute in ("plist_path", "unit_path"):
         path = getattr(service, attribute, None)
         if path is not None:
             return str(path)
     return ""  # pragma: no cover - both adapters expose one
-
-
-def _service_difference(context: SetupContext) -> str:
-    differ = getattr(context.service, "differs_from_installed", None)
-    if differ is None:  # pragma: no cover - both adapters expose it
-        return ""
-    result: str = differ(port=context.port, data_directory=str(context.data_dir))
-    return result
 
 
 # -- 9 & 10. Daemon running, single instance --------------------------------
@@ -445,12 +462,18 @@ def probe_single_instance(context: SetupContext) -> SetupStep:
 
     running_dir = str(health.get("dataDir", ""))
     if running_dir and Path(running_dir).resolve() != context.data_dir.resolve():
+        # The other daemon's directory came off the wire from a process this one
+        # does not own, so it is a path the local context never held and no
+        # anchor in `cli/setup_commands._redacted` can reach. Which directory it
+        # is only matters on the terminal of the person who has to go and stop
+        # it; a reader of a public issue needs to know that it is not this one.
+        served = ANOTHER_DATA_DIRECTORY if context.for_publication else running_dir
         return SetupStep(
             step_id=StepId.SINGLE_INSTANCE,
             status=StepStatus.CONFLICTING,
             summary="The daemon on this port serves a different data directory.",
             detail=(
-                f"Port {context.port} is held by a Theurian serving {running_dir}, not "
+                f"Port {context.port} is held by a Theurian serving {served}, not "
                 f"{context.data_dir}. Nothing was changed: stop it deliberately, or "
                 f"run this daemon on another port."
             ),
@@ -463,35 +486,6 @@ def probe_single_instance(context: SetupContext) -> SetupStep:
 
 
 # -- 11 & 12 & 13. The repository -------------------------------------------
-
-
-def _unreadable_registry_summary(registry: ProjectRegistry, root: Path) -> str:
-    """Why the registry could not say, in terms that shape of failure allows.
-
-    Two different refusals reach :meth:`ProjectRegistry.ids_for_root`'s caller and
-    only one of them is about an *entry*. A file whose top level does not parse
-    -- not JSON, a JSON array, arbitrary bytes -- has no entries to speak of, so
-    "holds an entry that cannot be read" is a claim nothing supports: it invites
-    the reader to go and find the offending line in a file that has none, and it
-    disagreed in kind with the ``detail`` beside it, which already carried the
-    file-level cure.
-
-    Told apart by asking for the ids: an unreadable *entry* leaves the set
-    computable and non-empty, an unreadable *file* leaves it uncomputable. A
-    second read of a small file is the honest price -- the alternative is
-    inferring the shape from the exception's message text.
-    """
-    try:
-        registry.unreadable_ids()
-    except ProjectError:
-        return (
-            f"Cannot tell whether {root} is registered: {registry.path} cannot be "
-            f"read at all, so nothing in it can be checked."
-        )
-    return (
-        f"Cannot tell whether {root} is registered: {registry.path} holds "
-        f"an entry that cannot be read, and it might be this repository's own."
-    )
 
 
 def probe_project_registered(context: SetupContext) -> SetupStep:
@@ -532,8 +526,12 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
         return SetupStep(
             step_id=StepId.PROJECT_REGISTERED,
             status=StepStatus.CONFLICTING,
-            summary=_unreadable_registry_summary(registry, root),
-            detail=f"{exc} {exc.remedy}".strip(),
+            summary=unreadable_registry_summary(registry, root),
+            detail=(
+                withheld_registry_detail(registry)
+                if context.for_publication
+                else f"{exc} {exc.remedy}".strip()
+            ),
         )
     if found:
         return SetupStep(
@@ -648,7 +646,14 @@ def probe_mcp_connection(context: SetupContext) -> SetupStep:
             step_id=StepId.MCP_CONNECTION,
             status=StepStatus.CONFLICTING,
             summary="Claude Code already has a different `theurian` MCP entry.",
-            detail=difference,
+            detail=(
+                withheld_difference(
+                    f"The Theurian MCP entry in {config.path}",
+                    config.differing_keys(context.connection),
+                )
+                if context.for_publication
+                else difference
+            ),
         )
     if config.installed_entry() is None:
         return SetupStep(

@@ -18,6 +18,7 @@ from typing import Final, final
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import STEPS, Step
+from theurian.application.setup_withholding import failure_detail
 from theurian.domain.setup import (
     SetupPlan,
     SetupReport,
@@ -85,7 +86,7 @@ class SetupService:
                 step_id=step.step_id,
                 status=StepStatus.CONFLICTING,
                 summary=f"Could not check {step.step_id.value}.",
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=failure_detail(exc, for_publication=self._context.for_publication),
                 critical=step.critical,
             )
         # The step definition owns criticality; a probe should not be able to
@@ -201,7 +202,12 @@ class SetupService:
             try:
                 action(self._context)
             except Exception as exc:  # reported in the step, not propagated
-                reason = f"{type(exc).__name__}: {exc}"
+                # The same rule as a failed *probe*, through the same function.
+                # Not reachable from `doctor --report` today, because that is a
+                # dry run and never reaches `_apply` -- but spelling it out here
+                # is what stops the two drifting: a bare f-string beside a
+                # withholding one is how the first of these was missed.
+                reason = failure_detail(exc, for_publication=self._context.for_publication)
                 applied.append(planned.applied(StepOutcome.FAILED, reason))
                 warnings.append(f"{definition.step_id.value}: {reason}")
                 self._journal(definition.step_id, "failed", reason)
