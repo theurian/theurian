@@ -13,7 +13,15 @@ coreCompatibility:
   # Pre-release-tolerant on purpose: Core reports PEP 440 versions such as
   # `0.1.0.dev0`, which translate to the SemVer pre-release `0.1.0-dev.0` and
   # therefore sort *before* `0.1.0`. Pinning the minimum at `0.1.0` would reject
-  # every development build of the version this plugin is written against.
+  # every pre-release build of the version this plugin is written against.
+  #
+  # `0.1.0-dev.0` is the *earliest* `0.1.0` Core can report, not merely an
+  # earlier one: Core orders these by its release train, so `dev` sits below
+  # `alpha`, `beta` and `rc` rather than between `beta` and `rc` where SemVer's
+  # ASCII rule would put it. Every `0.1.0` pre-release therefore clears this
+  # floor -- `0.1.0a1` and `0.1.0b1` as much as `0.1.0.dev1`. Before that
+  # ordering was fixed this floor accepted the dev builds and the rc, and
+  # refused every alpha and beta in between.
   minimum: 0.1.0-dev.0
   # Pre-1.0, a MINOR bump of Core may break the protocol, so the ceiling is the
   # next MINOR. Post-1.0 it becomes the next MAJOR.
