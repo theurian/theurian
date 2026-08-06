@@ -617,22 +617,128 @@ one, and the one class it did catch still is:
    security of every account in `RELEASE_SIGNERS`. Someone who can add a signing
    key to a listed account is a release signer from the next run, and nothing in
    this repository would record it.
-2. **The push is not bound at all.** A `push` to `refs/tags` runs the workflow
-   from the tip commit pushed to the ref, and GitHub documents that this
-   "includes workflows that are not merged into the default branch"
+2. **The push is not bound. The PyPI upload has been since 2026-08-06, and those
+   are two different claims.** A `push` to `refs/tags` runs the workflow from the
+   tip commit pushed to the ref, and GitHub documents that this "includes
+   workflows that are not merged into the default branch"
    ([events that trigger workflows, `push`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)).
    Whoever chooses the tagged commit therefore chooses this workflow file too,
-   including a version of it with the verification removed. Closing that takes a
-   tag ruleset or a required reviewer on the `pypi` environment, and as of this
-   writing `gh api repos/theurian/theurian/rulesets` returns `[]` and the `pypi`
-   environment has not been created (it is listed as one-time setup still owed in
-   [`release.md`](../contributing/release.md)).
+   including a version of it with the verification removed. That half is
+   untouched: `quality` and `build` run the pushed commit's code with nothing in
+   front of them.
 
-So the honest reading is **release hygiene that binds the signer** — every
-published `core-v*` tag carries a signature that verifies against a named account,
-and a maintainer who forgets `-s` or signs with an unregistered key is stopped —
-not a barrier against someone who can push a tag. Nothing inside a workflow file
-can be that barrier.
+   What changed is the one job that reaches PyPI. Measured 2026-08-06:
+
+   ```console
+   $ gh api repos/theurian/theurian/environments --jq '.environments[].name'
+   github-pages
+   pypi
+
+   $ gh api repos/theurian/theurian/environments/pypi \
+       --jq '"can_admins_bypass=\(.can_admins_bypass)", (.protection_rules[] | "\(.type) prevent_self_review=\(.prevent_self_review) \(.reviewers[].reviewer.slug)")'
+   can_admins_bypass=true
+   required_reviewers prevent_self_review=false core-maintainers
+
+   $ gh api 'repos/theurian/theurian/rulesets?includes_parents=true'
+   []
+   ```
+
+   The ruleset half of the sentence this entry used to carry still holds. The
+   environment half stopped holding on the day the environment was created, and
+   the entry went on asserting it — see the correction below.
+
+**A required reviewer on the `pypi` environment is the one control a tag pusher
+cannot edit out of the workflow.** The environment name is half of the PyPI
+credential rather than a property of the file: GitHub puts an `environment` claim
+in the OIDC token only for a job that declares one
+([OIDC token claims](https://docs.github.com/en/actions/reference/security/oidc)),
+and PyPI refuses a token whose claims do not match the registered publisher —
+`invalid-publisher`, whose first suggested cause is "check if the workflow is
+using the same environment as configured when the publisher was configured on
+PyPI"
+([PyPI troubleshooting](https://docs.pypi.org/trusted-publishers/troubleshooting/)).
+So every job that can mint a token PyPI accepts declares `environment: pypi`, and
+every job that declares it waits for a `core-maintainers` approval before its
+first step runs. `publish-pypi` is that job.
+
+**None of this has been observed firing.** No `core-v*` tag has been pushed, and
+`gh api 'repos/theurian/theurian/deployments?environment=pypi'` returns an empty
+list, so the gate has never been asked to hold. What is written here is GitHub's
+and PyPI's documented behaviour applied to this repository's measured
+configuration, not a run anyone has watched. The first tag is what tests it.
+
+**What the gate binds depends on who pushed the tag, and today that is nobody.**
+
+| The tag is pushed by | The approval does |
+| :-- | :-- |
+| an account with write access that is not in `core-maintainers` | stop `publish-pypi` before its first step; nothing reaches PyPI until a maintainer approves |
+| a `core-maintainers` member | nothing — `prevent_self_review` is unset, so the pusher approves their own run |
+| a repository admin | nothing — `can_admins_bypass` is true, so the deployment can be forced |
+
+**All three rows are the same account.** Measured 2026-08-06:
+
+```console
+$ gh api repos/theurian/theurian/collaborators --jq '.[] | "\(.login) \(.role_name)"'
+utchy admin
+
+$ gh api repos/theurian/theurian/teams --jq '.[] | "\(.slug) permission=\(.permission)"'
+core-maintainers permission=maintain
+claude-plugin-maintainers permission=push
+security permission=push
+
+$ for t in core-maintainers claude-plugin-maintainers security; do
+    gh api "orgs/theurian/teams/$t/members" --jq '.[].login'; done
+utchy
+utchy
+utchy
+```
+
+Three teams carry write access and every one of them has the same single member,
+who is also the sole collaborator, an admin, and the only account in
+`RELEASE_SIGNERS`. **The gate therefore binds nobody who can push a `core-v*` tag
+today.** It starts binding at the first account granted `push` or `maintain` that
+is not put in `core-maintainers`. Setting `prevent_self_review` does not close
+the second row while that is the membership: GitHub blocks the initiator of a
+deployment from approving it, so on a one-member team it makes an ordinary
+release unapprovable except through the admin bypass, which is the same account
+a third time.
+
+**The gate does not cover the GitHub release, and does not need to.**
+`draft-release` reaches `contents: write` before the reviewer sees anything, and
+`publish-release` is ordered after the approval by `needs` alone — a property of
+the file, which the same actor rewrites. Neither grants that actor anything:
+reaching either job means they chose the commit this workflow is read from, so
+they could give themselves `contents: write` directly. The bound on them is the
+tag push, not the token.
+
+**And the argument rests on one fact this repository cannot observe.** PyPI
+documents the environment field as optional, so the credential binds the
+environment only if the trusted publisher was registered with
+`Environment name: pypi`. Nothing here can check that; the publisher is still
+pending, because the project name is unclaimed as of the same date, measured
+under the residual below.
+
+**So the residual is narrowed, not closed.** This entry named its closure as a
+tag ruleset *or* a required reviewer on the `pypi` environment. One branch of
+that disjunction is now satisfied — and it is the branch that does not act on the
+actor the residual names. The reviewer stops an account that has write access and
+is not a `core-maintainers` member; the residual is *someone who can push a
+`core-v*` tag*, and every such account today is in that team, is the admin who
+can bypass the rule, and is the account the approval would be requested from. The
+ruleset branch, which is the one that would act on the push itself, is still
+empty.
+
+The honest reading of the signature step is therefore what it was: **release
+hygiene that binds the signer** — every published `core-v*` tag carries a
+signature that verifies against a named account, and a maintainer who forgets
+`-s` or signs with an unregistered key is stopped — not a barrier against someone
+who can push a tag, and nothing inside a workflow file can be that barrier. What
+changed is that a barrier now stands beside it, in the environment configuration
+and the PyPI publisher record rather than in the file. That is why rewriting the
+file does not remove it, and also why a reader of the file alone cannot see it.
+Two things would extend it to the actor the residual names, and neither is done:
+a ruleset restricting who may create `core-v*`, and a second maintainer, without
+whom `prevent_self_review` has nobody to fall back to.
 
 **`RELEASE_SIGNERS` is release authority spelled as a workflow env.** It holds
 `utchy` today. Adding an account to it grants that account the ability to cut a
@@ -684,6 +790,37 @@ tag, not what a user installs.
 > in the workflow, separately from this entry. The paragraph above is written to
 > what the step can establish rather than to how it is spelled, so the correction
 > does not change it.
+
+> **Corrected 2026-08-06: the `pypi` environment was created, and this entry went
+> on saying it had not been.**
+>
+> **What it said.** "Closing that takes a tag ruleset or a required reviewer on
+> the `pypi` environment, and as of this writing `gh api
+> repos/theurian/theurian/rulesets` returns `[]` and the `pypi` environment has
+> not been created (it is listed as one-time setup still owed in `release.md`)."
+>
+> **What was true.** The environment was created at `2026-08-06T09:52:15Z`, while
+> registering Trusted Publishing for the first release, with `core-maintainers`
+> as a required reviewer. Nobody came back to this paragraph or to `release.md`.
+> The ruleset half of the sentence was correct and still is.
+>
+> **Why the wording mattered more than the fact.** That sentence was not a stale
+> detail — it was a premise. The conclusion under it, that the signature guard is
+> hygiene rather than a barrier, was derived from *both* named controls being
+> absent. One of them stopped being absent and the conclusion was never
+> re-derived, so the entry was reasoning from a state of the world that had
+> changed three lines earlier. Re-deriving it is what produced the three things
+> above that the old text does not contain: that a job which omits the
+> environment cannot mint a token PyPI accepts, that `prevent_self_review` and
+> `can_admins_bypass` decide how much the reviewer binds, and that with one
+> maintainer they leave it binding nobody who can push a tag.
+>
+> **The failure mode this correction is closest to is the opposite one.** The
+> disjunction "a tag ruleset *or* a required reviewer" makes "the reviewer now
+> exists" look like closure, and writing it that way would have been the worse
+> error of the two: a control named as satisfied that does not act on the actor
+> the residual names. The half that was satisfied is the half that binds
+> approvers; the residual is about pushers. The grade does not move.
 
 **Residual: nothing verifies any of it at install time. Critical, unmitigated.**
 This entry previously listed "SHA-256 verification before install as an explicit
