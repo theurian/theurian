@@ -20,6 +20,7 @@ from typing import Any, override
 
 import pytest
 
+from theurian.domain.setup import DifferingFields
 from theurian.infrastructure.claude.mcp_config import (
     CONFIG_FILENAME,
     SERVER_NAME,
@@ -166,6 +167,33 @@ def test_a_stdio_entry_someone_hand_wrote_is_a_difference(home: Path) -> None:
     difference = _config(home).difference(ConnectionSpec())
 
     assert "command" in difference
+
+
+def test_the_operators_diff_names_keys_theurian_never_writes(home: Path) -> None:
+    """`difference` is the operator's own output and holds nothing back.
+
+    Worth its own test because its publishable sibling deliberately does the
+    opposite, and the two are one edit apart: `difference` once took its key
+    list from `differing_keys`, which would have silently dropped `command` and
+    `args` from the diff the user is asked to decide on.
+    """
+    _write_servers(home, {SERVER_NAME: {"command": "theurian", "args": ["mcp"]}})
+
+    difference = _config(home).difference(ConnectionSpec())
+
+    assert "command" in difference
+    assert "args" in difference
+    assert "url" in difference, "and the fields Theurian would install, missing here"
+
+
+def test_differing_keys_answers_for_an_absent_entry(home: Path) -> None:
+    """Reachable through the port, not only through `difference`.
+
+    Nothing in setup calls this without a difference in hand, but it is a public
+    method on `McpClientConfig`, and answering `AttributeError` to "what differs
+    from an entry that is not there" would be a poor contract.
+    """
+    assert _config(home).differing_keys(ConnectionSpec()) == DifferingFields()
 
 
 def test_a_malformed_config_reads_as_empty_rather_than_raising(home: Path) -> None:
