@@ -279,42 +279,98 @@ def test_session_start_hook_is_registered_with_a_timeout() -> None:
     assert 0 < hook["timeout"] <= 5, "SessionStart must be bounded (NFR-2)"
 
 
-#: A ``theurian::warn`` call and everything it is given to print, across the
-#: backslash continuations a multi-argument warning is wrapped over.
-_WARNING_TEXT = re.compile(r"theurian::warn\b(?:[^\n]*\\\n)*[^\n]*")
+#: A ``theurian::warn`` call *at the start of a line* and the quoted arguments it
+#: is given, across the backslash continuations a multi-argument warning wraps
+#: over. Group 1 is the call; group 2 is everything it prints.
+#:
+#: Every part of this is load-bearing, because the first version --
+#: ``theurian::warn\b(?:[^\n]*\\\n)*[^\n]*`` -- ran to end of line from wherever
+#: the name appeared and so deleted *executed* code from the scan below.
+#: Measured, on the four shapes it swallowed:
+#:
+#: - ``theurian::warn "..." ; uv tool install theurian`` -> ``theurian::warn``
+#: - the same with ``&&`` and with ``||``
+#: - ``msg="see theurian::warn"; uv tool install theurian``, on a mere mention
+#:
+#: So: anchored at line start, so a mention inside another string is not a call;
+#: only quoted arguments, so anything after the closing quote stays in the body;
+#: and ``[^"]*`` rather than ``[^"\n]*``, so an argument containing a real
+#: newline is one span the guard below can inspect rather than an unmatched
+#: fragment it cannot.
+_WARNING_ARGUMENTS = re.compile(r'(?m)^([ \t]*theurian::warn\b)((?:[ \t]*(?:\\\n[ \t]*)?"[^"]*")+)')
+
+#: The two spellings of command substitution, plus parameter expansion. The
+#: first two execute. ``${...}`` does not on its own, and is refused anyway
+#: because a warning built from a variable is no longer a literal, and a
+#: non-literal warning can carry anything -- terminal escapes included -- to a
+#: user who did not ask for a message at all.
+_EXECUTES = re.compile(r"\$\(|`|\$\{")
+
+
+def _strip_comments(script: str) -> str:
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _warning_arguments(script: str) -> list[str]:
+    """What each ``theurian::warn`` is given to print.
+
+    Exactly the spans :func:`_executed` removes -- the same regex, the same
+    group -- so that the guard judges what the exemption hides rather than a
+    shorter string that happens to look similar. The first version failed on
+    precisely that: it inspected a span that stopped at the first newline while
+    exempting one that did not, so a substitution written after a real newline
+    inside an argument was hidden from the forbidden list and invisible to the
+    guard at the same time.
+    """
+    return [match.group(2) for match in _WARNING_ARGUMENTS.finditer(_strip_comments(script))]
 
 
 def _executed(script: str) -> str:
-    """The part of a hook that runs, with comments and warning text removed.
+    """The part of a hook that runs, with comments and warning arguments removed.
 
     The forbidden list below is substring-matched, so *mentioning* an installer
     in a message was indistinguishable from *running* one -- and the message is
     the whole point of the Core-absent branch, which has nothing else to offer a
-    user whose ``PATH`` has no ``theurian`` on it. ``theurian::warn`` writes its
-    argument to stderr and does nothing else, so its argument is not work.
+    user whose ``PATH`` has no ``theurian`` on it. ``theurian::warn`` is
+    ``printf 'Theurian: %s\\n' "$*" >&2``: it writes its argument to stderr and
+    does nothing else, so its argument is not work.
 
-    The exemption is only sound while a warning cannot execute anything, which
-    :func:`test_a_session_start_warning_cannot_execute_anything` holds.
+    Only the argument is removed. The call itself stays, so anything chained
+    after it with ``;``, ``&&`` or ``||`` is still scanned.
     """
-    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
-    return _WARNING_TEXT.sub("theurian::warn", body)
+    return _WARNING_ARGUMENTS.sub(r"\1", _strip_comments(script))
 
 
 def test_a_session_start_warning_cannot_execute_anything() -> None:
     """What makes the exemption in :func:`_executed` sound.
 
     A message is exempt from the forbidden list because it is printed rather
-    than run. Command substitution inside one would run, so a warning that
-    contained ``$(...)`` or a backtick would carry an installer straight past
-    the check that the exemption exists to keep honest.
+    than run. Command substitution inside one *would* run, so a warning holding
+    ``$(...)`` or a backtick would carry an installer straight past the check
+    the exemption exists to keep honest.
     """
     script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
-    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
 
     substituting = [
-        call for call in _WARNING_TEXT.findall(body) if "$(" in call or "`" in call or "${" in call
+        argument for argument in _warning_arguments(script) if _EXECUTES.search(argument)
     ]
     assert not substituting, f"a SessionStart warning can execute: {substituting}"
+
+
+def test_a_session_start_warning_is_a_terminated_literal() -> None:
+    """The precondition under which an argument span cannot run past its argument.
+
+    :data:`_WARNING_ARGUMENTS` matches ``"[^"]*"``, which crosses newlines so
+    that a multi-line message is one inspectable span. That is safe only while
+    every quote in the script closes: an unterminated one would let a span run
+    on to the next quote in the file, taking real commands out of the scan with
+    it. Escapes are refused rather than counted, because ``\\"`` makes the count
+    lie.
+    """
+    script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
+
+    assert '\\"' not in script, "an escaped quote makes the quote count below meaningless"
+    assert script.count('"') % 2 == 0, "an unterminated string would widen the warning exemption"
 
 
 def test_session_start_hook_performs_no_heavy_or_mutating_work() -> None:
