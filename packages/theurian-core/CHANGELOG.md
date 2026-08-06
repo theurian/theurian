@@ -946,6 +946,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed after Milestone 4
 
+- **`theurian doctor --report` did not redact the repository on any machine
+  where the checkout lives inside the home directory** — which is most of them
+  (O-3). `_redacted` substitutes plain substrings and replaced `$HOME` with `~`
+  first, so by the time the `<repository>` substitution ran its needle was no
+  longer in the string. Same command, two layouts:
+
+  ```
+  repository beside HOME   <repository>/.theurian is missing migrations, knowledge, state.
+  repository under HOME    /private~/work/api/.theurian is missing migrations, knowledge, state.
+  ```
+
+  The second publishes the checkout's path relative to home into output meant
+  for a public issue, and the `/private~` is a second fault arriving with the
+  first: `context.home` is whatever `$HOME` says while the repository root is
+  `Path.cwd().resolve()`, so on an account whose home is a symlink the
+  unresolved anchor matched *inside* the resolved path.
+
+  Anchors are now built in both spellings and applied longest first. Two further
+  members of the same class are closed with it: `THEURIAN_DATA_DIR` pointing
+  outside `$HOME` is now redacted to `<data directory>` (one inside `$HOME`
+  deliberately still reads as `~/.theurian`), and the setup steps stop naming
+  the repository by its bare directory name, which no path anchor can catch.
+
 - **`theurian setup` reported files as changed that it never touched, and
   journalled them as applied.** Three steps — `project-registered`,
   `project-layout` and `gitignore` — report what `theurian project register` and
