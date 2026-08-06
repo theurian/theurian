@@ -127,8 +127,8 @@ class SetupStep:
     #: Absolute paths this step would create or modify. Drives the changed-files
     #: list, and `uninstall --dry-run` must be able to enumerate all of them.
     #: A step that only reports names none, whatever it found: every reader of
-    #: this field takes it as a promise that setup writes there, and a path
-    #: setup only ever *reads* is one `uninstall` would then offer to remove.
+    #: this field takes it as a promise that setup writes there. The runner
+    #: enforces that rather than trusting each probe's every arm to remember it.
     paths: tuple[str, ...] = ()
     #: A step whose failure must roll the run back rather than degrade it.
     critical: bool = True

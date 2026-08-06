@@ -10,6 +10,8 @@ amount of ``HOME`` redirection prevents.
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, override
 
@@ -19,8 +21,8 @@ from fakes.setup import FakeMcpConfig, FakeService
 from theurian.application.project_service import ProjectRegistry
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
-from theurian.application.setup_steps import STEPS, probe_project_registered
-from theurian.domain.setup import SetupState, StepId, StepOutcome, StepStatus
+from theurian.application.setup_steps import STEPS, Step, probe_project_registered
+from theurian.domain.setup import SetupState, SetupStep, StepId, StepOutcome, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.security.env_file import TOKEN_KEY
@@ -562,17 +564,215 @@ def test_a_file_setup_never_writes_is_not_listed_among_the_files_it_changed(
     assert not any(Path(p).exists() for p in phantom), "and nothing else wrote them either"
 
 
-def test_the_plan_does_not_offer_a_path_setup_will_not_touch(
+def test_the_plan_offers_none_of_the_five_paths_rows_11_to_13_used_to_name(
     in_a_repository: SetupContext,
 ) -> None:
     """The plan is what `--dry-run` shows before consent is asked for.
 
     Same claim as the changed-files list, one stage earlier: a path offered here
     is one the user is told setup would create or modify.
+
+    Named for the five, because five is what it checks. It is the concrete
+    regression and nothing wider -- the property that *no* actionless step names
+    a path in *any* state is two tests below, and this one went on holding a
+    universal in its title while intersecting against a hardcoded list.
     """
     plan = _service(in_a_repository).plan()
 
+    published = {path for step in plan.steps for path in step.paths}
+    assert not _paths_setup_never_writes(in_a_repository) & published
     assert not _paths_setup_never_writes(in_a_repository) & set(plan.paths)
+
+
+# -- The property those five paths are one instance of -----------------------
+#
+# `SetupStep.paths` claims that a step with no action names none *whatever it
+# found*, and that claim is about arms. Arms are where it broke:
+# `probe_project_registered` left `paths` empty on its CONFLICTING arm, with a
+# comment saying exactly why, and set it on the MISSING arm three lines below.
+# A test that intersects one state against five hardcoded paths cannot see that,
+# and two mutations proved it -- `probe_gitignore` naming a file again, and
+# `probe_migrations` naming the directory it only reads -- both surviving the
+# whole suite while restoring the published defect.
+
+#: Every ``(step, status)`` pair the eleven actionless steps can reach, counted
+#: off their branches: platform 2, core-present 2, artifact-integrity 1,
+#: single-instance 3, project-registered 4, project-layout 3, gitignore 3,
+#: mcp-health 2, migrations-valid 2 (three returns, two of them NOT_APPLICABLE)
+#: initial-index 1 (two summaries, one status), serena-detection 2.
+#:
+#: `_states` walks all 25. A fall means a state stopped reaching an arm; a rise
+#: means an arm exists that no state is pointed at, which is the condition this
+#: whole section exists to prevent.
+REACHABLE_ACTIONLESS_ARMS = 25
+
+#: Any absolute path. What matters is only that a probe named one.
+_A_NAMED_PATH = "/tmp/a-file-this-step-only-reads"  # noqa: S108 - never opened
+
+
+def _under(tmp_path: Path, name: str) -> Path:
+    directory = tmp_path / name
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _converged_repository(base: Path) -> SetupContext:
+    """Rows 11-13 all satisfied, with Serena present and a migration on disk."""
+    root = _repository(base)
+    for name in ("migrations", "knowledge", "state"):
+        (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
+    (root / ".theurian" / "migrations" / "0001-initial.yaml").touch()
+    (root / ".gitignore").write_text(".theurian/state/\n", encoding="utf-8")
+    mcp_config = FakeMcpConfig()
+    mcp_config.serena = True
+    context = _with(base, project_root=root, mcp_config=mcp_config)
+    _registry_holding(context, {"api": {"rootPath": str(root.resolve())}})
+    return context
+
+
+def _conflicted_repository(base: Path) -> SetupContext:
+    """Three conflicts at once: no executable, a foreign daemon, a broken entry."""
+    root = _repository(base)
+    context = _with(
+        base,
+        project_root=root,
+        executable="",
+        health=lambda: {"dataDir": "/somewhere/that/is/not/this/one"},
+    )
+    _registry_holding(context, {"payments": {"defaultBranch": "main"}})
+    return context
+
+
+def _initialised_but_empty_repository(base: Path) -> SetupContext:
+    """`theurian init` has run and nothing has been written yet.
+
+    The state right after `init`, and the one `_converged_repository` cannot
+    stand in for: seeding a migration there means `probe_migrations` never
+    reaches its own directory-exists-but-is-empty case. A mutation that made
+    that case report MISSING with the directory in `paths` survived the whole
+    suite, because no state walked it.
+    """
+    root = _repository(base)
+    for name in ("migrations", "knowledge", "state"):
+        (root / ".theurian" / name).mkdir(parents=True, exist_ok=True)
+    return _with(base, project_root=root)
+
+
+def _states(tmp_path: Path) -> dict[str, SetupContext]:
+    """One context per shape a report-only step can be probed in."""
+    served = _under(tmp_path, "served")
+    served_data_dir = served / "home" / ".theurian"
+    return {
+        "outside a repository": _with(_under(tmp_path, "outside")),
+        "cold inside a repository": _with(
+            _under(tmp_path, "cold"), project_root=_repository(_under(tmp_path, "cold"))
+        ),
+        "initialised but empty": _initialised_but_empty_repository(_under(tmp_path, "initialised")),
+        "converged inside a repository": _converged_repository(_under(tmp_path, "converged")),
+        "conflicted": _conflicted_repository(_under(tmp_path, "conflicted")),
+        "a daemon already serving this data directory": _with(
+            served,
+            project_root=_repository(served),
+            health=lambda: {"dataDir": str(served_data_dir)},
+        ),
+    }
+
+
+def test_no_step_without_an_action_names_a_path_in_any_state_it_can_reach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source half of the guarantee, over every arm rather than a sample.
+
+    Stripping in the runner (below) makes a probe that names a path harmless, not
+    correct: the next reader of `probe_gitignore` would find `paths=(...)` in the
+    source and `"paths": []` in the JSON and have to work out which one lied.
+    This keeps the two agreeing.
+
+    Both platform arms are walked by patching rather than by whichever host is
+    running, so Linux CI and a macOS laptop cover the same 25.
+    """
+    states = _states(tmp_path)
+    observed: set[tuple[StepId, StepStatus]] = set()
+    offenders: list[str] = []
+
+    for platform_name in ("darwin", "win32"):
+        monkeypatch.setattr(sys, "platform", platform_name)
+        for label, context in states.items():
+            for step in STEPS:
+                if step.apply is not None:
+                    continue
+                probed = step.probe(context)
+                observed.add((probed.step_id, probed.status))
+                if probed.paths:
+                    offenders.append(f"{probed.step_id.value} names {probed.paths} when {label}")
+
+    assert offenders == []
+    assert {status for _, status in observed} == set(StepStatus), "every status has to be walked"
+    assert len(observed) == REACHABLE_ACTIONLESS_ARMS
+
+
+def _probe_naming_a_path(
+    step_id: StepId, status: StepStatus
+) -> Callable[[SetupContext], SetupStep]:
+    """A probe that names a path in whichever status it is asked for."""
+
+    def probe(_: SetupContext) -> SetupStep:
+        return SetupStep(
+            step_id=step_id,
+            status=status,
+            summary="found something worth mentioning",
+            action="do the thing" if status is StepStatus.MISSING else "",
+            detail="differs from what setup installs" if status is StepStatus.CONFLICTING else "",
+            paths=(_A_NAMED_PATH,),
+        )
+
+    return probe
+
+
+def _an_action(_: SetupContext) -> None:
+    """A stand-in. Never called: the tests below only plan."""
+
+
+@pytest.mark.parametrize("status", list(StepStatus), ids=[s.value for s in StepStatus])
+def test_the_runner_drops_the_paths_a_step_without_an_action_names(
+    context: SetupContext, status: StepStatus
+) -> None:
+    """The guarantee belongs to the runner, not to each probe's every arm.
+
+    A probe is edited one arm at a time and there are 25 of them; there is one
+    funnel. §6.2's unimplemented rows will start reporting MISSING one day, with
+    no reason to have read any of this -- and `_probe` already takes `critical`
+    from the definition rather than the probe for exactly the same reason.
+    """
+    steps = (
+        Step(StepId.MIGRATIONS_VALID, _probe_naming_a_path(StepId.MIGRATIONS_VALID, status), None),
+    )
+
+    plan = SetupService(context, steps=steps).plan()
+
+    assert plan.steps[0].paths == ()
+    assert plan.paths == ()
+
+
+@pytest.mark.parametrize("status", list(StepStatus), ids=[s.value for s in StepStatus])
+def test_the_runner_keeps_the_paths_a_step_with_an_action_names(
+    context: SetupContext, status: StepStatus
+) -> None:
+    """The other half, without which `paths=()` for everyone would pass.
+
+    `data-directory`, `token` and `env-reference` are where the changed-files
+    list gets its contents, and emptying it would satisfy every prohibition in
+    this section.
+    """
+    steps = (
+        Step(
+            StepId.DATA_DIRECTORY, _probe_naming_a_path(StepId.DATA_DIRECTORY, status), _an_action
+        ),
+    )
+
+    plan = SetupService(context, steps=steps).plan()
+
+    assert plan.steps[0].paths == (_A_NAMED_PATH,)
 
 
 def test_a_step_setup_does_not_perform_is_not_journalled_as_applied(

@@ -89,13 +89,20 @@ class SetupService:
                 critical=step.critical,
             )
         # The step definition owns criticality; a probe should not be able to
-        # promote its own failure into one that rolls the whole run back.
+        # promote its own failure into one that rolls the whole run back. It owns
+        # `paths` for the same reason: the field is read as "setup writes here",
+        # and a step with no action writes nowhere in any of its arms. Enforced
+        # here rather than trusted to each probe, because the arms are the
+        # problem -- `probe_project_registered` left `paths` empty on the arm its
+        # author was thinking about and set it on the one three lines below, and
+        # §6.2's unimplemented rows will start reporting MISSING one day with no
+        # reason to have read any of this.
         return SetupStep(
             step_id=probed.step_id,
             status=probed.status,
             summary=probed.summary,
             action=probed.action,
-            paths=probed.paths,
+            paths=probed.paths if step.apply is not None else (),
             critical=step.critical,
             outcome=probed.outcome,
             detail=probed.detail,
