@@ -845,6 +845,27 @@ itself — its docstring says a step reporting `satisfied` without checking
 anything would be a false assurance about supply chain integrity — and this
 entry, which is where a reader goes to find out what protects them, was not.
 
+**The manual check that stands in for it is worth less than it looks, and this
+entry did not say so.** Two records ship, they have different authenticity, and
+Theurian verifies neither:
+
+| Record | Signed by | Forgeable by |
+| :-- | :-- | :-- |
+| `SHA256SUMS` | nothing — `sha256sum * \| tee SHA256SUMS` in the same `build` job that produced the artifacts, with no signing step anywhere in the workflow | anyone who can alter the release assets, and anyone who can push a `core-v*` tag |
+| PEP 740 attestations on PyPI | the workflow's own OIDC identity | only someone who can cause `release-core.yml` to run in this repository — which is anyone who can push a `core-v*` tag |
+
+So a user who does perform the manual check gains nothing against the actor
+described above. Whoever chooses the tagged commit runs the job that computes the
+checksums, so the record and the artifact are compromised together, and comparing
+one against the other confirms only that the same actor wrote both. The
+attestation is the stronger of the two — it cannot be produced by someone who can
+only edit a published release — but it is not stronger against a tag push, and
+nothing in Theurian reads it. `probe_artifact_integrity` returns
+`NOT_APPLICABLE`, and no code under `packages/` or `plugins/` reads `SHA256SUMS`
+or an attestation. What the checksums do defend against is the substituted
+download: a mirror, a proxy, or a wrong URL, where the artifact changes and the
+record does not.
+
 **Two things are missing, not one, and the second is why the first went
 unnoticed.** There is no code that hashes an artifact and compares it against
 `SHA256SUMS`; and there is no point in the flow where such code would run.
