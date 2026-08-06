@@ -188,7 +188,8 @@ from the generated MCP configuration and env file.
 `theurian doctor --report` redacts by default, because its output is what people
 paste into public issues, and it does so two ways. **Absolute paths Theurian
 itself put in the payload are substituted** â€” your home directory, the repository
-root, and the token file's path, replaced wherever they appear. **Values Theurian
+root, the token file, the executable, and any data directory you chose yourself,
+replaced wherever they appear. **Values Theurian
 did not write are withheld**, because substitution cannot reach them: a string
 read out of somebody else's configuration file was never held by this process, so
 there is nothing to match it against.
@@ -211,7 +212,7 @@ in `packages/theurian-core/tests/integration/test_setup_report_withholding.py` â
 a test that only checked the path anchors passed before the fix and after it.
 
 It remains true that no *knowledge body* enters that payload, and that a path
-outside the three substituted roots goes out verbatim.
+outside the substituted anchors goes out verbatim.
 
 ## Filesystem boundary
 

@@ -568,7 +568,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 - **`theurian doctor --report` published values Theurian had only read, inside a
   payload that said `redacted: true`** (SEC-6, O-3). Redaction was a substitution
-  of the four paths the local `SetupContext` holds, which by construction cannot
+  of the paths the local `SetupContext` holds, which by construction cannot
   reach a string that came from another file, another process, or an exception —
   and five setup steps put exactly such strings into the `detail` a report
   carries. The one that matters is the MCP entry: `mcp-connection` renders the

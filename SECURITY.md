@@ -134,11 +134,13 @@ policy to `.theurian/`.
 because its output is what people paste into public issues. Two different
 mechanisms do that, and they cover different things.
 
-**Paths Theurian itself put in the payload are substituted.** Your home
-directory becomes `~`, the repository root becomes `<repository>`, and the token
-file's path becomes `<token file>`, wherever they appear. Those name your account
-and your repositories, which is someone's private information even though none of
-them is a credential.
+**Paths Theurian itself put in the payload are substituted**, wherever they
+appear: your home directory becomes `~`, the repository root `<repository>`, the
+token file `<token file>`, the `theurian` executable `<executable>`, and a data
+directory you chose yourself `<data directory>` — only the default
+`~/.theurian` is left legible, because `~` is already anonymous. Those name your
+account and your repositories, which is someone's private information even though
+none of them is a credential.
 
 **Values Theurian did not write are withheld rather than substituted.** A
 diagnostic reports on configuration somebody else owns — Claude Code's MCP entry,
@@ -161,7 +163,7 @@ part of using it:
   `${THEURIAN_MCP_TOKEN}`, and a token pasted into a service unit's environment.
   Both are now withheld under `--report`. Theurian never creates either state;
   it is what it finds when someone else has.
-- What is still published verbatim: a path outside the three roots above, a
+- What is still published verbatim: a path outside the anchors above, a
   revealing filename, and the *names* — never the values — of configuration
   fields that differ from what Theurian would install.
 
