@@ -59,6 +59,20 @@ class SetupContext:
     #: how a literal ``Authorization: Bearer <token>`` in someone's
     #: ``~/.claude.json`` reached a redacted report.
     #:
+    #: A field *name* read out of such a place is one of those values. It is
+    #: whatever string sat in key position in somebody else's file, and a systemd
+    #: continuation line -- which is the value of the directive above it -- parsed
+    #: alone as a name carrying a token.
+    #:
+    #: **This flag is a requirement on each probe, not a mechanism that enforces
+    #: one.** Nothing stops a new ``detail=`` from ignoring it; that was measured
+    #: by adding one, and the suite stayed green. Two things catch it:
+    #: :func:`cli.setup_commands._redacted` refuses a context that did not ask
+    #: for publication, and
+    #: ``tests/integration/test_setup_report_withholding.py`` sweeps every step
+    #: in ``STEPS`` with a seeded sentinel. A step reading a source that sweep
+    #: does not seed is a step nothing checks -- add it there.
+    #:
     #: The flag lives here rather than as a probe parameter because the context
     #: is the only channel every step already has, and because the composition
     #: root -- which is the layer that knows where the output is going -- is

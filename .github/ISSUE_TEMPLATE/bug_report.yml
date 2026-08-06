@@ -10,7 +10,8 @@ body:
         **Before you paste diagnostics:** `theurian doctor --report --json`
         substitutes the paths Theurian wrote into its own output and withholds
         the values it only read — an MCP entry, a service definition, the project
-        registry — publishing which fields differ rather than what they hold. It
+        registry — naming only the fields Theurian itself writes, and counting
+        anything else rather than repeating a name out of your file. It
         is not a general credential filter, and it cannot know what is sensitive
         in a path outside your home directory or in a filename. Read the output
         before posting it.

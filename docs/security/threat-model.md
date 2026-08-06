@@ -192,7 +192,8 @@ config contains no high-entropy string.
 | the 401 body | `…test_daemon.py::test_the_401_names_the_fix_without_revealing_the_token`, and over a real socket in `tests/e2e/test_daemon_single_instance.py::test_mcp_without_a_token_is_refused` |
 | `theurian auth rotate` output | `…tests/integration/test_auth_rotate.py::test_the_new_token_never_appears_in_the_output` — also excludes the first eight characters |
 | the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
-| `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report` and `::test_a_token_in_the_installed_plist_never_reaches_a_report` |
+| `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report`, `::test_a_token_in_the_installed_plist_never_reaches_a_report`, and — through the *other* service manager, which is the one the defect was found in — `::test_a_token_on_a_unit_continuation_line_never_reaches_a_report` |
+| every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into all nine sources a step reads and does not own, and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
 
 `doctor --report` redacts two ways, and only the first was ever asserted. Path
 substitution is pinned by

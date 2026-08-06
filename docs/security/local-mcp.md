@@ -204,12 +204,26 @@ route ran through a service unit's environment, another daemon's `/health` reply
 the ids of other repositories in the project registry, and any exception a probe
 raised.
 
-Under `--report` those steps now name what differs without publishing the
-values: field names, a count, `<another data directory>`, an exception's type.
+Under `--report` those steps now say what differs without saying what it holds:
+a count, `<another data directory>`, an exception's type, and — for a differing
+configuration — **only the names of the fields Theurian's own renderer
+produces**, with anything else counted.
+
+That last rule is narrower than "names, not values", and it had to be. The first
+version of this fix published the differing field names on the reasoning that a
+name is schema. It is not, unless Theurian defined it: the names came from a
+union with the installed file, so a systemd continuation line — which is the
+*value* of the directive above it — parsed alone as a directive name, and a
+bearer token was published as a field name inside the sentence promising the
+values were withheld. A name Theurian writes cannot be a value it read.
+
 Plain `theurian doctor` still prints everything, for the person who has to act
 on it. Asserted on the values themselves rather than on the shape of the output,
 in `packages/theurian-core/tests/integration/test_setup_report_withholding.py` —
 a test that only checked the path anchors passed before the fix and after it.
+That file sweeps every step in `STEPS` with a seeded sentinel rather than testing
+the routes already known to be broken, because one line added to an unrelated
+step reopened the class with the whole suite green.
 
 It remains true that no *knowledge body* enters that payload, and that a path
 outside the substituted anchors goes out verbatim.
