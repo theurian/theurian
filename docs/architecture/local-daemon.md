@@ -113,13 +113,19 @@ sequenceDiagram
     A-->>D: yes / no
     D->>S: Resolve snapshotId (pinned, or the current active state)
     S-->>D: state hash + active index build
-    D->>R: Query with pre-filters (tenant, ACL, sensitivity, validity)
+    D->>R: Query with pre-filters (project, status)
     R-->>D: Results with provenance
     D-->>C: Results + trust labels
 ```
 
 Every step before retrieval is a gate. None of them consult ambient state: the
 project, the snapshot, and the principal all come from the request.
+
+The pre-filter step said "(tenant, ACL, sensitivity, validity)" until this pass,
+which is FR-R1's list of axes rather than the two `SqliteIndexStore._scope`
+emits. Filtering happens before ranking, which is the property FR-R1 exists for
+and which does hold; the other three axes are Milestone 6's scope filtering
+([#63](https://github.com/theurian/theurian/issues/63)).
 
 ## Health endpoint
 
