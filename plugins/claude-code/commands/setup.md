@@ -55,14 +55,21 @@ from that installation, so it cannot be what creates it.
    ~/.theurian with mode 0700" themselves. An `action` describes the work; it is
    not always a command anyone can run.
 
-   What is worth relaying is a step whose `status` is *still* `missing` or
+   What needs reporting is every step whose `status` is *still* `missing` or
    `conflicting` once the run has finished — the report lists those in
-   `warnings` too. There the `action` is the thing to pass on: it names the
-   command that resolves what setup left alone, such as `theurian init` or
-   `theurian project register`. Skip this paragraph unless `state` is
-   `converged` or `degraded`; in `plan-built`, `awaiting-consent` and
-   `rolled-back` the verification pass never ran, so `status` is still the plan
-   rather than the result.
+   `warnings` too. Split them by whether the `action` contains a command:
+
+   - **It names one** — `theurian init`, `theurian project register`. Setup does
+     not run these. Quote the command to the user.
+   - **It does not** — `daemon-running` ends `missing` with "Start the service
+     that was just registered." when nothing answers on the port. That is setup
+     describing its own work, which did not finish. Report it as unfinished and
+     point at `/theurian:doctor`; there is nothing here for the user to run.
+
+   Skip this step's second and third paragraphs unless `state` is `converged` or
+   `degraded`. In `plan-built`, `awaiting-consent`, `rolled-back` and `aborted`
+   the verification pass never ran, so `status` is still the plan rather than the
+   result.
 
 7. If the report's `serenaDetected` field is true, tell the user that Theurian
    and Serena are configured to work together, and briefly state the split:

@@ -42,13 +42,15 @@ import pathlib
 import re
 from typing import Final
 
+import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 
 from theurian.application import setup_steps
 from theurian.application.setup_context import SetupContext
+from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS
 from theurian.cli.setup_commands import setup_command
-from theurian.domain.setup import StepId
+from theurian.domain.setup import SetupReport, SetupState, StepId, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 
@@ -101,6 +103,27 @@ _INSTALL_COMMANDS: Final = (
 #: survivors. Setup installs the MCP entry and the OS service; it does not
 #: install Theurian, Core, "software" or "anything", so every one of these has
 #: to be either a denial or a sentence that names the installer doing it.
+#:
+#: **Its reach is one grammar, and that is recorded rather than chased.** Seven
+#: rephrasings were measured surviving it: a gerund, an inverted step 1, "download
+#: and set it up", the installer demoted to a footnote or offered as the
+#: alternative, passive "where Core gets installed", and "is the installer for".
+#: Two are worth naming because they are not near-misses:
+#:
+#: - :data:`_DENIAL` accepts *nothing* as a denial word, and step 1's own "If this
+#:   prints nothing" supplies one within six words -- so the rule is weakest
+#:   exactly where the claim is most likely to return.
+#: - :data:`_INSTALL_COMMANDS` masks ``/plugin install ...`` to ``<installer>``,
+#:   so a three-line block ending at ``/theurian:setup`` reads as compliant on the
+#:   ``<installer>``-in-tail branch. The plugin README is held by
+#:   :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
+#:   instead, which wants a Core installer by name.
+#:
+#: Tightening this until no rephrasing survives is the same defect one level up:
+#: a rule that pins grammar will always have a next grammar. What it is, and all
+#: it is, is a regression test over the wordings this class has actually taken.
+#: It is not a closure argument and neither is the tuple it runs over; see
+#: :data:`CORE_ARRIVAL_SURFACES`.
 _INSTALLS_THEURIAN: Final = re.compile(
     r"(?P<lead>(?:\S+\s+){0,6})\binstalls?\b(?:\s+\w+){0,3}?\s+"
     r"(?:theurian core|theurian|core|software|anything|it)\b(?P<tail>(?:\s+\S+){0,6})"
@@ -135,6 +158,14 @@ def _steps_that_act() -> frozenset[StepId]:
     symbol the merged tree does not define, and a collection error aborts the
     whole run rather than one test. Neither spelling is an ``apply_*``, so both
     classify identically through this function.
+
+    **Spelling-independent on the sentinel side, not on the writer side.** A step
+    wired to a lambda or a ``functools.partial`` rather than to a module-level
+    ``apply_*`` is classified report-only here, and the enumeration test below
+    then *requires* ``--help`` to list it as a step that only reports. Recorded
+    rather than closed: identifying a writer by anything weaker than the module's
+    own names -- an arity check, a name prefix on the callable -- trades a shape
+    this repository does not use for one it might.
     """
     actions: frozenset[object] = frozenset(
         getattr(setup_steps, name) for name in dir(setup_steps) if name.startswith("apply_")
@@ -169,6 +200,27 @@ def _context(tmp_path: pathlib.Path, *, executable: str = "") -> SetupContext:
         service=FakeService(),
         executable=executable,
     )
+
+
+def _degraded_report(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> SetupReport:
+    """A real run that ends ``DEGRADED`` -- probed *after* the verification pass.
+
+    The rule in step 6 of the plugin document is about the report a user is
+    shown at the end, and the test that used to hold it read the plan built at
+    the start. Those disagree in exactly the case the rule turns on: before the
+    run every writer is ``MISSING`` with an action; after it, the ones still
+    ``MISSING`` are the ones setup could not finish.
+
+    The scenario is the ordinary one -- the service is registered and started,
+    and nothing ever answers on the port. No apply raises. The start timeout is
+    patched to zero because :func:`apply_daemon_running` waits out
+    ``DAEMON_START_TIMEOUT_SECONDS`` for a daemon that will never arrive, and
+    fifteen seconds of real sleeping is not something a unit test should buy.
+    """
+    monkeypatch.setattr(setup_steps, "DAEMON_START_TIMEOUT_SECONDS", 0.0)
+    executable = tmp_path / "theurian"
+    executable.touch()
+    return SetupService(_context(tmp_path, executable=str(executable))).run(SetupRequest())
 
 
 def _collapsed(text: str) -> str:
@@ -279,6 +331,15 @@ def test_the_cli_docstring_enumerates_every_step_that_only_reports() -> None:
     which are exactly the ones a user is most likely to believe setup performs.
     Parsed out of the sentence and compared to the table, so the next rewrite
     either lists all of them or fails here.
+
+    **"Every write setup performs" is a claim about steps, and one write belongs
+    to no step**: :meth:`SetupService._journal` appends ``setup-journal.jsonl``
+    on every applied step, attributed to nothing and absent from
+    ``changedPaths``. It lands inside the ``~/.theurian`` the first clause
+    already announces, so the *footprint* the sentence describes is right and the
+    sentence is not. Recorded rather than reworded, because the honest fix is for
+    the journal to be reported, which is a change to the report and not to
+    ``--help``.
     """
     doc = _collapsed(setup_command.__doc__ or "")
 
@@ -303,6 +364,14 @@ def test_the_cli_docstring_names_the_commands_those_steps_defer_to(
     work instead". That is a claim about the step table, which is how this file
     got its two previous false sentences, so it is probed: every ``theurian``
     subcommand a report-only step offers has to appear in ``--help``.
+
+    **Only ``action`` is read, and two steps name their command in ``summary``
+    instead** -- ``initial-index`` offers ``theurian migrate apply`` there, and
+    ``migrations-valid`` offers ``theurian migrate validate`` once a migrations
+    directory exists. Neither is in ``--help``. Widening this to ``summary``
+    means deciding what a summary that merely mentions a command is promising,
+    and that is a question about the step table rather than about the docstring;
+    recorded here so the omission is a known one.
     """
     context = _context(tmp_path)
     report_only = set(_report_only_steps())
@@ -431,3 +500,42 @@ def test_the_plugin_document_does_not_call_a_writing_step_one_setup_skips(
     assert "a step that reports `missing` alongside an `action` is one setup does not" not in text
     for field in ("`status`", "`outcome`"):
         assert field in text, f"step 6 no longer tells the agent to read {field}"
+
+
+def test_the_plugin_document_relays_only_the_actions_that_name_a_command(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rule is about the finished report, so it is checked against one.
+
+    Its predecessor read the plan built *before* the run, where every writer is
+    ``MISSING`` with an action, and concluded that anything still ``MISSING``
+    afterwards carries a command to hand over. Measured on an ordinary
+    ``DEGRADED`` run -- no apply failure, the daemon simply never answers -- the
+    unresolved steps split two ways, and the writer's action is setup describing
+    its own unfinished work:
+
+        daemon-running    "Start the service that was just registered."
+        project-layout    "Create the missing directories. Run `theurian init`."
+
+    Both halves of the split are asserted to exist, so the document cannot be
+    checked against a report that happens to contain only one of them.
+    """
+    report = _degraded_report(tmp_path, monkeypatch)
+    assert report.state is SetupState.DEGRADED, f"the fixture no longer degrades: {report.state}"
+
+    unresolved = [step for step in report.steps if step.status is StepStatus.MISSING]
+    commands = {command for step in unresolved for command in _SUBCOMMAND.findall(step.action)}
+    describing = [step.action for step in unresolved if not _SUBCOMMAND.search(step.action)]
+
+    assert commands, "no unresolved step names a command; the document's first case is dead"
+    assert describing, "every unresolved action names a command; the second case is dead"
+
+    text = _collapsed(PLUGIN_SETUP_DOC.read_text(encoding="utf-8"))
+    for command in sorted(commands):
+        assert f"`{command}`" in text, f"step 6 does not tell the agent to relay `{command}`"
+
+    quoted = [action for action in describing if _collapsed(action).rstrip(".") in text]
+    assert quoted, (
+        f"step 6 quotes none of the actions that name no command, so nothing stops it "
+        f"from calling them instructions again: {describing}"
+    )
