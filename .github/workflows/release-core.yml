@@ -17,12 +17,22 @@ name: Release Core
 on:
   push:
     tags: ["core-v*"]
+  # The rehearsal path, and it publishes nothing. `quality` and `build` run in
+  # full — the changelog guard, the build, installing the wheel into a clean
+  # environment and checking that it reports pyproject.toml's version, the SBOM,
+  # SHA256SUMS — and then the run stops, because all three publication jobs
+  # below are `if: github.event_name == 'push'`.
+  #
+  # Two checks it cannot exercise, both because they read a tag that a manual
+  # run does not have: `core-v<version>` agreeing with pyproject.toml, and the
+  # signature guard. A rehearsal is evidence about the build, not about the tag.
+  #
+  # There is no input to set. A `dry_run` boolean lived here and was wired to
+  # nothing: the jobs below were skipped by the `if`, never by the flag, so
+  # setting it to false published nothing either. A control that controls
+  # nothing is worse than no control, because runs get reported as governed
+  # by it.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Build and verify everything, publish nothing."
-        type: boolean
-        default: true
 
 permissions:
   contents: read
