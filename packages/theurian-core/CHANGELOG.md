@@ -566,6 +566,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 #### Security
 
+- **`theurian doctor --report` published values Theurian had only read, inside a
+  payload that said `redacted: true`** (SEC-6, O-3). Redaction was a substitution
+  of the four paths the local `SetupContext` holds, which by construction cannot
+  reach a string that came from another file, another process, or an exception —
+  and five setup steps put exactly such strings into the `detail` a report
+  carries. The one that matters is the MCP entry: `mcp-connection` renders the
+  installed entry so the user can decide whether the run may proceed around it,
+  and an entry configured with a literal `Authorization: Bearer <token>` instead
+  of `${THEURIAN_MCP_TOKEN}` is both the state that makes that step conflict and
+  the state that gives someone a reason to publish the report. Measured in the
+  shipped default configuration, with no flags: the token was in the output.
+
+  Theurian never writes such an entry (SEC-5) — it is what it finds. The same
+  route ran through a service unit's `EnvironmentVariables` / `Environment=`
+  lines, another daemon's `dataDir` from `/health`, the ids of other
+  repositories in the project registry, and the message of any exception a probe
+  raised.
+
+  Redaction now has a second half that runs before substitution rather than
+  after: `SetupContext.for_publication`, set by the composition root when
+  `--report` is passed, makes each of those steps withhold what it did not
+  author. What is published is which fields differ, a count of unreadable
+  registry entries, `<another data directory>`, and an exception's type. Plain
+  `theurian doctor` is unchanged and still prints everything, because it is read
+  by the person who has to act on it. Asserted on the values themselves in
+  `tests/integration/test_setup_report_withholding.py` — a test that only checked
+  the path anchors passed before this fix and after it.
+
+  **`SECURITY.md` and `docs/security/local-mcp.md` said this could not happen**
+  ("no credential value … enters that payload for it to remove"), which is what
+  told a reader the output was safe to paste. Both now describe the two
+  mechanisms and what review is still the reader's; `docs/adr/0011` and
+  `CONTRIBUTING.md` carried the same claim and are corrected with them.
+
 - **A corrupted cell in the canonical state database was published to MCP
   callers verbatim** (SEC-13). `SqliteCanonicalStore` handed the bytes it could
   not interpret straight to the tool result: overwriting `created_at`,

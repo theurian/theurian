@@ -235,8 +235,15 @@ Landed in Milestone 4:
 - `tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`
   — `doctor --report` is what people paste into public issues, and it is
   redacted by default rather than on request (O-3). Note what this pins: the home
-  directory, not the token. No test asserts a token is absent from a setup report
-  or from `doctor` output.
+  directory, not the token. It went on passing while the payload carried a live
+  bearer token, because substitution reaches only values the local process put
+  there, and a `theurian` MCP entry someone configured with a literal
+  `Authorization` header was never one of them.
+- `tests/integration/test_setup_report_withholding.py` covers the other half:
+  every value a setup step reads but did not write is withheld under `--report`,
+  asserted by grepping the whole payload for the literal secret rather than by
+  checking the anchors. The credential cases are a literal bearer token in
+  Claude Code's entry and a token in a service unit's environment.
 - `test_a_second_run_never_regenerates_the_token` — setup mints a token only
   when there is none.
 

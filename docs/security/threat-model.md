@@ -192,12 +192,26 @@ config contains no high-entropy string.
 | the 401 body | `…test_daemon.py::test_the_401_names_the_fix_without_revealing_the_token`, and over a real socket in `tests/e2e/test_daemon_single_instance.py::test_mcp_without_a_token_is_refused` |
 | `theurian auth rotate` output | `…tests/integration/test_auth_rotate.py::test_the_new_token_never_appears_in_the_output` — also excludes the first eight characters |
 | the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
+| `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report` and `::test_a_token_in_the_installed_plist_never_reaches_a_report` |
 
-`doctor --report` redacts, and what is pinned is the home directory rather than
-the token:
-`…tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`
-asserts the sandbox path is absent from the payload. No assertion covers a token
-in a setup report or in `doctor` output.
+`doctor --report` redacts two ways, and only the first was ever asserted. Path
+substitution is pinned by
+`…tests/integration/test_setup_cli.py::test_the_report_mode_redacts_the_home_directory`,
+which asserts the sandbox path is absent from the payload — and that assertion
+held while the payload carried a live bearer token, because substitution reaches
+only values the local process put there.
+
+The credential in question is never one Theurian wrote. It is one it *read*: a
+`theurian` MCP entry someone configured with a literal `Authorization` header
+rather than `${THEURIAN_MCP_TOKEN}`, or a token pasted into a service unit's
+environment. Both are the state that makes a setup step conflict, so both are
+the state that gives someone a reason to publish the report. Those values are now
+withheld under `--report` at the step that reads them, and asserted absent on the
+value rather than on the shape, in
+`…tests/integration/test_setup_report_withholding.py`. The same module covers the
+non-credential members of the class: another daemon's data directory, the ids of
+other repositories in the registry, and the message of any exception a probe
+raises.
 
 **What keeps the token out of that log is not `access_log=False`, and this was
 measured rather than reasoned.** `daemon/runner.py` runs uvicorn with

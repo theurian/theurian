@@ -183,14 +183,35 @@ control that does not exist is the one nobody re-checks.
 
 The token is also asserted absent from the `/health` body, from the 401 body
 both in-process and over a real socket, from `theurian auth rotate` output, and
-from the generated MCP configuration and env file. There is no assertion covering
-a setup report or `doctor` output.
+from the generated MCP configuration and env file.
 
-`theurian doctor --report` redacts **absolute paths** by default — your home
-directory, the repository root, and the token file's path, replaced wherever they
-appear — because its output is what people paste into public issues. It is not a
-credential filter: no credential value enters that payload for it to remove, and
-it removes nothing but those three roots.
+`theurian doctor --report` redacts by default, because its output is what people
+paste into public issues, and it does so two ways. **Absolute paths Theurian
+itself put in the payload are substituted** — your home directory, the repository
+root, and the token file's path, replaced wherever they appear. **Values Theurian
+did not write are withheld**, because substitution cannot reach them: a string
+read out of somebody else's configuration file was never held by this process, so
+there is nothing to match it against.
+
+That second half is not theoretical, and it is why it exists. A `theurian` MCP
+entry in `~/.claude.json` carrying `Authorization: Bearer <literal token>`
+instead of `${THEURIAN_MCP_TOKEN}` is precisely the state that makes the
+`mcp-connection` step conflict — so it is the state that gives someone a reason
+to run `doctor --report` and paste the result — and the step published the
+installed entry verbatim, inside a payload that said `redacted: true`. The same
+route ran through a service unit's environment, another daemon's `/health` reply,
+the ids of other repositories in the project registry, and any exception a probe
+raised.
+
+Under `--report` those steps now name what differs without publishing the
+values: field names, a count, `<another data directory>`, an exception's type.
+Plain `theurian doctor` still prints everything, for the person who has to act
+on it. Asserted on the values themselves rather than on the shape of the output,
+in `packages/theurian-core/tests/integration/test_setup_report_withholding.py` —
+a test that only checked the path anchors passed before the fix and after it.
+
+It remains true that no *knowledge body* enters that payload, and that a path
+outside the three substituted roots goes out verbatim.
 
 ## Filesystem boundary
 
