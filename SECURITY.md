@@ -23,6 +23,31 @@ proof of concept helps but is not required to report.
 We will credit you in the advisory unless you prefer otherwise. There is no bug
 bounty; this is a volunteer project.
 
+### Defects we find ourselves
+
+Everything above is for someone reporting to us. What we do with a vulnerability
+we find in our own code depends on whether a release exists.
+
+**Before the first `core-v*` tag** — nothing installable has been published, so
+there is no user to coordinate disclosure with and no released version an
+advisory could name. A defect we find is fixed on a public branch, recorded in
+the Security section of the [Core changelog](packages/theurian-core/CHANGELOG.md)
+and in the [threat model](docs/security/threat-model.md), and — where it is not
+fixed immediately — tracked as a public issue like any other defect.
+[#47](https://github.com/theurian/theurian/issues/47), a token left on disk by a
+`theurian setup` that reports `rolled-back`, is open on those terms.
+
+**From the first release onward** — a vulnerability we find ourselves goes into a
+private advisory before the fix is public, is fixed in a PATCH release, and the
+advisory is published with it. See
+[Yanking](docs/contributing/release.md#yanking).
+
+This is a recorded decision rather than an omission. `theurian doctor --report`
+could publish a bearer token it had read out of a client configuration while this
+file said no credential value entered that payload. Both were corrected before
+any release, in [#51](https://github.com/theurian/theurian/pull/51), and no
+advisory was filed because no released version was affected.
+
 ## Supported versions
 
 Pre-1.0, only the latest MINOR release receives security fixes. Once 1.0 ships,
