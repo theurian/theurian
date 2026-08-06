@@ -269,14 +269,34 @@ def resolve_compatibility(
 
     ``core_version`` is ``None`` when the ``theurian`` CLI is not on ``PATH``.
     That is not an error state to repair automatically -- it is the normal
-    "plugin installed, setup not yet run" case, and the remedy is to tell the
-    user to run ``/theurian:setup`` (FR-L3).
+    "plugin installed, Core not yet installed" case (FR-L3).
+
+    **Nothing in production ever passes it.** The only production call site is
+    ``cli.main.compat_check``, which passes ``Version.parse_python(__version__)``
+    -- and it could not do otherwise, because reaching this function at all means
+    the binary was found. A client that cannot find Core resolves ``CORE_MISSING``
+    on its own side and never calls in; ``theurian::compat_check`` in the plugin's
+    ``lib.sh`` returns 1 before running anything. The branch exists so that the
+    outcome, its message and its remedy have one definition rather than one per
+    client, and it is reachable only from tests. Correcting the wording here
+    therefore changes nothing a user sees: the surfaces that do are enumerated in
+    ``CORE_ARRIVAL_SURFACES`` in ``tests/unit/test_setup_claims.py``.
+
+    The remedy names the installer *before* ``/theurian:setup``, in the same
+    words the setup report's ``core-present`` step uses. Setup does not install
+    Core; it runs from an installed Core. Sending this user straight to
+    ``/theurian:setup`` is advice they cannot follow -- it shells out to the
+    ``theurian`` binary whose absence is the thing being reported.
     """
     if core_version is None:
         return CompatibilityVerdict(
             outcome=CompatibilityOutcome.CORE_MISSING,
             message="Theurian Core is not installed or is not on PATH.",
-            remedy="Run /theurian:setup once to install and configure Theurian.",
+            remedy=(
+                "Install Theurian with `uv tool install theurian` or "
+                "`pipx install theurian`, then run /theurian:setup to configure "
+                "this machine."
+            ),
             plugin_version=declaration.plugin_version,
             core_version=None,
             protocol_version=None,

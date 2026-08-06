@@ -7,6 +7,11 @@ configuration, and the daemon's health probe (ADR-0003).
 ``/theurian:setup`` is a presentation shell over ``theurian setup --json``.
 There is one implementation of setup, because two would drift and the one that
 drifted would be the one the user ran.
+
+Typer prints a command's docstring and every ``typer.Option(help=...)`` string
+in this module verbatim, so both stay plain prose with single backticks. A
+``:func:`` role or a ``literal`` reaches the user as its own markup -- which is
+how the reST first drafted here was caught.
 """
 
 from __future__ import annotations
@@ -109,10 +114,26 @@ def setup_command(
     port: PortOption = DEFAULT_PORT,
     as_json: JsonFlag = False,
 ) -> None:
-    """Install and configure Theurian for this machine and repository.
+    """Configure this machine to run Theurian, and connect Claude Code to it.
 
-    The only command that installs software, registers an OS service, or writes
-    configuration. Running it twice changes nothing (FR-L2).
+    Creates the data directory or tightens an existing one to 0700, mints and
+    stores the local access token, writes the env file that references it,
+    registers and starts the user-scoped OS service, and writes the MCP
+    connection entry. Those 7 steps are every write setup performs. Nothing else
+    registers the service or writes that entry, and running it twice changes
+    nothing (FR-L2).
+
+    Setup cannot tell you Core is missing, because setup is Core: it runs from
+    the installation it would have to create, and a shell with no `theurian` on
+    its PATH never reaches this text at all. Core arrives through
+    `uv tool install theurian` or `pipx install theurian`, and no step here
+    installs anything.
+
+    The other 11 steps only report what they found: platform, core-present,
+    artifact-integrity, single-instance, project-registered, project-layout,
+    gitignore, mcp-health, migrations-valid, initial-index, serena-detection.
+    Several of them name the command that does the work instead --
+    `theurian init`, `theurian project register` -- and setup runs none of them.
     """
     service = SetupService(build_context(port=port))
     report = service.run(SetupRequest(dry_run=dry_run, approve_conflicts=approve_conflicts))

@@ -1,40 +1,77 @@
 ---
-description: Install and configure Theurian for this machine and repository. Run once.
-allowed-tools: Bash(theurian:*), Bash(command:*), Read, Edit
+description: Configure this machine to run Theurian, and connect Claude Code to it. Run once.
+allowed-tools: Bash(theurian:*), Bash(command -v:*), Read
 ---
 
 # /theurian:setup
 
-Run Theurian's first-time setup. This is the **only** command that installs
-software, registers an OS service, or writes configuration. Everything else in
-this plugin reads.
+Run Theurian's first-time setup. This is the **only** command that registers an
+OS service or writes the MCP connection entry. Everything else in this plugin
+reads.
+
+It does **not** install Theurian Core. Core is a prerequisite, installed with
+`uv tool install theurian` or `pipx install theurian` — `theurian setup` runs
+from that installation, so it cannot be what creates it.
 
 ## What to do
 
-1. Show the plan before changing anything:
+1. Confirm Core is installed. If this prints nothing, stop and tell the user to
+   run `uv tool install theurian` (or `pipx install theurian`) first. Steps 2
+   and 5 shell out to this binary and are the only things here that do any
+   work; without it they fail with `command not found`.
+
+   ```sh
+   command -v theurian
+   ```
+
+2. Show the plan before changing anything:
 
    ```sh
    theurian setup --dry-run --json
    ```
 
-2. Present the plan to the user as a short list of the steps that would run,
+3. Present the plan to the user as a short list of the steps that would run,
    grouped by what they touch (data directory, credentials, OS service, project
    registration, Claude Code MCP configuration). Name every file that would be
    created or modified.
 
-3. If the plan is empty, report that Theurian is already fully configured and
+4. If the plan is empty, report that Theurian is already fully configured and
    stop. Do not re-run anything.
 
-4. Otherwise ask the user to confirm, then run:
+5. Otherwise ask the user to confirm, then run:
 
    ```sh
    theurian setup --json
    ```
 
-5. Report the result using the report's `steps` array. Show what changed and
-   what was already satisfied.
+6. Report the result using the report's `steps` array. Every step carries a
+   `status` — what the final probe found — and an `outcome`, which is what this
+   run did to it: `changed`, `unchanged`, `failed` or `not-attempted`. Show what
+   changed and what was already satisfied.
 
-6. If the report's `serenaDetected` field is true, tell the user that Theurian
+   Do not treat `missing` plus an `action` as the mark of a step setup skips.
+   Every step setup performs reports exactly that while there is work to do, so
+   an agent relaying all of them would ask the user to go and "Create
+   ~/.theurian with mode 0700" themselves. An `action` describes the work; it is
+   not always a command anyone can run.
+
+   What needs reporting is every step whose `status` is *still* `missing` or
+   `conflicting` once the run has finished — the report lists those in
+   `warnings` too. Split them by whether the `action` contains a command:
+
+   - **It names one** — `theurian init`, `theurian project register`. Setup does
+     not run these. Quote the command to the user.
+   - **It does not** — `daemon-running` ends `missing` with "Start the service
+     that was just registered." when nothing answers on the port. That is setup
+     describing its own work, which did not finish. Report it as unfinished and
+     point at `/theurian:doctor`; there is nothing here for the user to run.
+
+   Skip this step's second and third paragraphs unless `state` is `converged` or
+   `degraded`. In `plan-built`, `awaiting-consent`, `rolled-back` and `aborted`
+   the verification pass never ran, so `status` is still the plan rather than the
+   result.
+
+7. If the report's `serenaDetected` field is true, tell the user that Theurian
    and Serena are configured to work together, and briefly state the split:
    Theurian answers "what did we decide and why", Serena answers "where is this
    symbol defined".

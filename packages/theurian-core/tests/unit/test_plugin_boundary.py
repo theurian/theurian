@@ -194,6 +194,53 @@ def test_no_unexpected_commands() -> None:
     assert present == set(REQUIRED_COMMANDS)
 
 
+#: ``Bash(x:*)`` is a prefix pattern, so the text before the colon has to be a
+#: whole command *and* its fixed arguments -- anything a user could append is
+#: pre-approved. ``Bash(command:*)`` was the case that mattered: ``command`` is a
+#: POSIX shell builtin that runs its argument, so it matched ``command curl … |
+#: sh``. Every grant a command document may hold is listed here rather than
+#: pattern-matched, because the question "is this prefix safe" has no general
+#: answer and a reviewer reading a diff of this tuple is the control.
+PERMITTED_BASH_GRANTS = frozenset(
+    {"Bash(theurian:*)", "Bash(git:*)", "Bash(curl:*)", "Bash(command -v:*)"}
+)
+
+#: Tools that write. `/theurian:propose` drafts a proposal, which is the one
+#: command whose whole purpose is to produce a file.
+PERMITTED_WRITE_TOOLS = {"propose": frozenset({"Write"})}
+
+
+@pytest.mark.parametrize("command", REQUIRED_COMMANDS)
+def test_command_grants_no_tool_it_does_not_use(command: str) -> None:
+    """``allowed-tools`` is a permission grant, and nothing else read it.
+
+    ``/theurian:setup`` carried ``Bash(command:*)`` and ``Edit`` -- arbitrary
+    execution, and a write grant contradicted by the document's own rule that
+    ``theurian setup`` owns every write. Narrowing them reverted with the whole
+    suite green, because the only assertion over this frontmatter was that
+    ``description`` is non-empty. A permission nothing holds is the weakest kind
+    of fix.
+    """
+    text = (PLUGIN / "commands" / f"{command}.md").read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(text.split("---", 2)[1])
+    granted = {entry.strip() for entry in (frontmatter.get("allowed-tools") or "").split(",")}
+    granted.discard("")
+
+    bash = {entry for entry in granted if entry.startswith("Bash(")}
+    assert bash <= PERMITTED_BASH_GRANTS, (
+        f"/theurian:{command} grants {sorted(bash - PERMITTED_BASH_GRANTS)}. Add it to "
+        f"PERMITTED_BASH_GRANTS only after checking the prefix cannot be extended "
+        f"into another command."
+    )
+
+    writes = (granted - bash) - {"Read"}
+    assert writes <= PERMITTED_WRITE_TOOLS.get(command, frozenset()), (
+        f"/theurian:{command} may write with {sorted(writes)}. Every configuration "
+        f"write belongs to `theurian setup` (CP-7); a command document that edits "
+        f"one directly is the drift that rule exists to prevent."
+    )
+
+
 @pytest.mark.parametrize("command", ["uninstall", "unregister-project"])
 def test_destructive_commands_state_what_is_preserved(command: str) -> None:
     """A user running these needs to know their team's knowledge is safe."""
@@ -279,6 +326,142 @@ def test_session_start_hook_is_registered_with_a_timeout() -> None:
     assert 0 < hook["timeout"] <= 5, "SessionStart must be bounded (NFR-2)"
 
 
+#: A ``theurian::warn`` call *at the start of a line* and the quoted arguments it
+#: is given, across the backslash continuations a multi-argument warning wraps
+#: over. Group 1 is the call; group 2 is everything it prints.
+#:
+#: Every part of this is load-bearing, because the first version --
+#: ``theurian::warn\b(?:[^\n]*\\\n)*[^\n]*`` -- ran to end of line from wherever
+#: the name appeared and so deleted *executed* code from the scan below.
+#: Measured, on the four shapes it swallowed:
+#:
+#: - ``theurian::warn "..." ; uv tool install theurian`` -> ``theurian::warn``
+#: - the same with ``&&`` and with ``||``
+#: - ``msg="see theurian::warn"; uv tool install theurian``, on a mere mention
+#:
+#: So: anchored at line start, so a mention inside another string is not a call;
+#: only double-quoted arguments, so anything after the closing quote stays in
+#: ``rest`` and is scanned; and ``[^"]*`` rather than ``[^"\n]*``, so an argument
+#: containing a real newline is one span the guards below can inspect rather than
+#: an unmatched fragment they cannot.
+#:
+#: ``arguments`` may be empty and ``rest`` carries whatever follows on the same
+#: logical line. Both are needed: an exemption that only *recognised* quoted
+#: arguments silently let an unquoted ``$(...)`` fall outside every check, which
+#: is what :func:`test_a_session_start_warning_takes_only_quoted_arguments`
+#: closes by requiring ``rest`` to begin a new command.
+_WARNING_CALL = re.compile(
+    r"(?m)^(?P<call>[ \t]*theurian::warn\b)"
+    r'(?P<arguments>(?:[ \t]*(?:\\\n[ \t]*)?"[^"]*")*)'
+    r"(?P<rest>(?:[^\n\\]|\\\n)*)"
+)
+
+#: Both spellings of command substitution, parameter expansion, and a bare
+#: ``$name``. The first two execute. The others cannot on their own, and are
+#: refused anyway because a warning built from a variable is not a literal, and
+#: a non-literal warning can carry anything -- terminal escapes included -- to a
+#: user who did not ask for a message at all.
+_EXECUTES = re.compile(r"\$[({\w]|`")
+
+#: What may follow a warning's arguments: nothing, or an operator that ends the
+#: command. Anything else is a further argument the exemption did not see.
+_ENDS_THE_COMMAND = frozenset(";&|)}#<>")
+
+
+def _strip_comments(script: str) -> str:
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _warning_calls(script: str) -> list[re.Match[str]]:
+    """Every ``theurian::warn`` call, as one match carrying all three parts.
+
+    One regex for the exemption and for both guards over it, so that what is
+    judged is what is hidden. The first version failed on exactly that
+    separation: it inspected a span stopping at the first newline while
+    exempting one that did not, so a substitution written after a real newline
+    inside an argument was invisible to the guard *and* removed from the
+    forbidden list.
+    """
+    return list(_WARNING_CALL.finditer(_strip_comments(script)))
+
+
+def _executed(script: str) -> str:
+    """The part of a hook that runs, with comments and warning arguments removed.
+
+    The forbidden list below is substring-matched, so *mentioning* an installer
+    in a message was indistinguishable from *running* one -- and the message is
+    the whole point of the Core-absent branch, which has nothing else to offer a
+    user whose ``PATH`` has no ``theurian`` on it. ``theurian::warn`` is
+    ``printf 'Theurian: %s\\n' "$*" >&2``: it writes its argument to stderr and
+    does nothing else, so its argument is not work.
+
+    Only ``arguments`` is removed. The call and everything after it survive, so
+    anything chained on with ``;``, ``&&`` or ``||`` is still scanned.
+    """
+    return _WARNING_CALL.sub(
+        lambda match: match.group("call") + match.group("rest"), _strip_comments(script)
+    )
+
+
+def test_a_session_start_warning_cannot_execute_anything() -> None:
+    """The first of two things that make the exemption in :func:`_executed` sound.
+
+    A message is exempt from the forbidden list because it is printed rather
+    than run. Command substitution inside one *would* run, so a warning holding
+    ``$(...)`` or a backtick would carry an installer straight past the check
+    the exemption exists to keep honest.
+    """
+    script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
+
+    substituting = [
+        match.group("arguments")
+        for match in _warning_calls(script)
+        if _EXECUTES.search(match.group("arguments"))
+    ]
+    assert not substituting, f"a SessionStart warning can execute: {substituting}"
+
+
+def test_a_session_start_warning_takes_only_quoted_arguments() -> None:
+    """The second, and the one the first cannot cover for.
+
+    :data:`_WARNING_CALL` recognises double-quoted arguments and nothing else,
+    so ``theurian::warn "a" $(curl ... | sh)`` leaves the substitution outside
+    ``arguments`` -- where the guard above does not look, and where the
+    forbidden-word list sees no forbidden word. Bash runs it all the same.
+
+    Requiring what follows the quotes to *end the command* is what makes
+    ``arguments`` provably the whole argument list, and therefore makes the
+    guard above complete rather than merely correct on what it happens to see.
+    """
+    script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
+
+    unquoted = [
+        match.group(0)
+        for match in _warning_calls(script)
+        if (tail := match.group("rest").lstrip()) and tail[0] not in _ENDS_THE_COMMAND
+    ]
+    assert not unquoted, (
+        f"a SessionStart warning is given an argument that is not a double-quoted "
+        f"literal, so nothing checks it: {unquoted}"
+    )
+
+
+def test_a_session_start_warning_is_a_terminated_literal() -> None:
+    """The precondition under which an argument span cannot run past its argument.
+
+    :data:`_WARNING_CALL` matches ``"[^"]*"``, which crosses newlines so
+    that a multi-line message is one inspectable span. That is safe only while
+    every quote in the script closes: an unterminated one would let a span run
+    on to the next quote in the file, taking real commands out of the scan with
+    it. Escapes are refused rather than counted, because ``\\"`` makes the count
+    lie.
+    """
+    script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
+
+    assert '\\"' not in script, "an escaped quote makes the quote count below meaningless"
+    assert script.count('"') % 2 == 0, "an unterminated string would widen the warning exemption"
+
+
 def test_session_start_hook_performs_no_heavy_or_mutating_work() -> None:
     """§8 of the brief, checked against the script rather than the docs.
 
@@ -286,7 +469,7 @@ def test_session_start_hook_performs_no_heavy_or_mutating_work() -> None:
     the user on a session they started for an unrelated reason.
     """
     script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
-    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    body = _executed(script)
 
     forbidden = (
         "theurian setup",
