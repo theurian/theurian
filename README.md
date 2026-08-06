@@ -292,9 +292,7 @@ config file gets copied between machines, committed, and pasted into issues; the
 token should not follow it (SEC-5, T-8,
 [ADR-0011](docs/adr/0011-local-mcp-authentication.md)).
 
-With Claude Code — though **the marketplace entry is not published yet**:
-`theurian/theurian-plugins` is an empty repository, so the first two of these
-find no `marketplace.json` to read and no entry to install.
+With Claude Code:
 
 ```text
 /plugin marketplace add theurian/theurian-plugins
