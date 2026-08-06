@@ -104,6 +104,59 @@ def test_the_report_mode_still_says_what_is_wrong(sandbox: Path) -> None:
     assert any(step["status"] == "missing" for step in payload["steps"])
 
 
+@pytest.fixture
+def repository_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A sandbox whose working directory *is* a repository.
+
+    `sandbox` chdirs somewhere with no `.git` above it, so `_repository_root`
+    returns None and §6.2 rows 11-13 report NOT_APPLICABLE -- meaning every
+    assertion in this module has been made against a payload those three steps
+    were absent from, redaction included.
+
+    A bare `.git` directory rather than `git init`: `_repository_root` tests for
+    its existence and nothing else reads it, so initialising a repository here
+    would be testing Git.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    repository = tmp_path / "api"
+    (repository / ".git").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(home / ".theurian"))
+    monkeypatch.chdir(repository)
+    return home, repository
+
+
+def test_the_report_mode_redacts_the_locations_the_project_steps_name(
+    repository_sandbox: tuple[Path, Path],
+) -> None:
+    """O-3, for the steps that only exist inside a repository.
+
+    Rows 11-13 have no action and therefore no `paths`, so their summaries are
+    the one place the registry file and the checked `.gitignore` are named --
+    and `doctor --report` output is what people paste into public issues.
+    """
+    home, repository = repository_sandbox
+
+    _, payload = _invoke("doctor", "--report")
+
+    project_steps = [
+        step
+        for step in payload["steps"]
+        if step["id"] in {"project-registered", "project-layout", "gitignore"}
+    ]
+    assert len(project_steps) == 3
+    assert all(step["status"] == "missing" for step in project_steps), (
+        "the fixture has to reach the branch, or this redacts nothing"
+    )
+    assert all(step["summary"] for step in project_steps)
+
+    blob = json.dumps(payload)
+    assert str(home) not in blob
+    assert str(repository) not in blob
+    assert str(repository.resolve()) not in blob
+
+
 # -- uninstall ---------------------------------------------------------------
 
 
