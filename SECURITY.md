@@ -23,30 +23,47 @@ proof of concept helps but is not required to report.
 We will credit you in the advisory unless you prefer otherwise. There is no bug
 bounty; this is a volunteer project.
 
-### Defects we find ourselves
+## How we handle a vulnerability
 
-Everything above is for someone reporting to us. What we do with a vulnerability
-we find in our own code depends on whether a release exists.
+The section above is what a reporter does; this is what we do once a
+vulnerability is known. What decides the handling is the release state of the
+artifact it is in — and **it does not change what a reporter should do: report
+privately, whether or not a release exists.**
 
-**Before the first `core-v*` tag** — nothing installable has been published, so
-there is no user to coordinate disclosure with and no released version an
-advisory could name. A defect we find is fixed on a public branch, recorded in
-the Security section of the [Core changelog](packages/theurian-core/CHANGELOG.md)
-and in the [threat model](docs/security/threat-model.md), and — where it is not
-fixed immediately — tracked as a public issue like any other defect.
-[#47](https://github.com/theurian/theurian/issues/47), a token left on disk by a
-`theurian setup` that reports `rolled-back`, is open on those terms.
+Theurian ships two artifacts on independent release trains
+([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md)), tagged
+`core-v*` and `plugin-v*`. Each carries its own boundary, and a defect is on
+whichever side its own artifact's first **pushed** tag puts it — pushed rather
+than created, because a tag sitting in a local clone distributes nothing.
+`git ls-remote --tags origin` is the check.
 
-**From the first release onward** — a vulnerability we find ourselves goes into a
-private advisory before the fix is public, is fixed in a PATCH release, and the
-advisory is published with it. See
-[Yanking](docs/contributing/release.md#yanking).
+**Before that artifact's first pushed tag** — there is no released version an
+advisory could name and no channel through which we could notify anyone. So a
+defect we find is fixed on a public branch, recorded in the Security section of
+its artifact's changelog ([Core](packages/theurian-core/CHANGELOG.md),
+[plugin](plugins/claude-code/CHANGELOG.md)) and in the
+[threat model](docs/security/threat-model.md), and — where it is not fixed
+immediately — tracked as a public issue like any other defect.
+
+Handling it in public is not defensible on the grounds that nobody is running the
+code. Theurian is installable before any tag, from source and through the plugin
+marketplace, and the threat model reasons about what a user has on that basis.
+The reason is decided per defect: one whose exploitation needs local access the
+attacker would already have gives them nothing by being described in public, and
+one that does not clear that bar is not described in public before its fix is on
+`main`.
+
+**From that artifact's first pushed tag onward** — a vulnerability in a released
+version goes into a private advisory before the fix is public, whoever found it,
+is fixed in a PATCH release where the fix allows one, and the advisory is
+published with it. See [Yanking](docs/contributing/release.md#yanking).
 
 This is a recorded decision rather than an omission. `theurian doctor --report`
 could publish a bearer token it had read out of a client configuration while this
 file said no credential value entered that payload. Both were corrected before
-any release, in [#51](https://github.com/theurian/theurian/pull/51), and no
-advisory was filed because no released version was affected.
+any release, in [#51](https://github.com/theurian/theurian/pull/51), where the
+fix and the account of it landed together, and no advisory was filed because no
+released version was affected.
 
 ## Supported versions
 
