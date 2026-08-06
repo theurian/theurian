@@ -85,7 +85,7 @@ class SetupService:
                 step_id=step.step_id,
                 status=StepStatus.CONFLICTING,
                 summary=f"Could not check {step.step_id.value}.",
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=_failure_detail(exc, for_publication=self._context.for_publication),
                 critical=step.critical,
             )
         # The step definition owns criticality; a probe should not be able to
@@ -269,6 +269,30 @@ class SetupService:
                 handle.write(json.dumps(entry, sort_keys=True) + "\n")
         except OSError:  # pragma: no cover - defensive
             return
+
+
+def _failure_detail(exc: Exception, *, for_publication: bool) -> str:
+    """What a broken probe is allowed to say, given where the report is going.
+
+    The message an exception carries is whatever raised it, and every probe
+    reads something Theurian did not write: a line of somebody's configuration,
+    a reply from another process, a path outside the roots
+    ``cli/setup_commands._redacted`` substitutes. There is no bound on it, so
+    there is no argument that publishing it is safe -- and no need for one,
+    because the type is what a reader of a shared issue acts on. The message
+    stays on the terminal, where ``theurian doctor`` prints it in full.
+
+    Recorded as a decision rather than left to a future reviewer to rediscover:
+    an arbitrary exception string is not publishable, and the deliberate cost is
+    that a bug report opens with a type name.
+    """
+    if for_publication:
+        return (
+            f"{type(exc).__name__}. The message is withheld from a shared report "
+            f"because an exception carries whatever raised it; run `theurian doctor` "
+            f"without --report to see it."
+        )
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _blocking_conflicts(plan: SetupPlan) -> tuple[SetupStep, ...]:

@@ -46,11 +46,20 @@ PortOption = Annotated[int, typer.Option("--port", help="Port the daemon binds o
 JsonFlag = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
 
 
-def build_context(port: int = DEFAULT_PORT, data_dir: Path | None = None) -> SetupContext:
+def build_context(
+    port: int = DEFAULT_PORT,
+    data_dir: Path | None = None,
+    *,
+    for_publication: bool = False,
+) -> SetupContext:
     """Assemble the context from this machine.
 
     Everything concrete is chosen here and nowhere else, which is what lets the
     state machine be tested against a temporary home directory.
+
+    ``for_publication`` is decided here for the same reason: this is the layer
+    that knows where the output is going, and a probe cannot find that out for
+    itself.
     """
     resolved = data_dir or default_data_dir()
     home = Path.home()
@@ -67,6 +76,7 @@ def build_context(port: int = DEFAULT_PORT, data_dir: Path | None = None) -> Set
         health=lambda: probe_health(port=port),
         service=detect_manager(executable=_executable(), home=home),
         executable=_executable(),
+        for_publication=for_publication,
     )
 
 
@@ -163,7 +173,7 @@ def doctor_command(
     whose output you cannot trust, because you can no longer tell what was
     broken from what it just fixed.
     """
-    context = build_context(port=port)
+    context = build_context(port=port, for_publication=report_mode)
     report = SetupService(context).run(SetupRequest(dry_run=True))
     payload = report.to_json()
 
@@ -244,6 +254,17 @@ def _redacted(payload: dict[str, Any], context: SetupContext) -> dict[str, Any]:
     redacted by default rather than on request. Absolute paths name the user's
     account and their repositories; both are someone's private information even
     though neither is a credential.
+
+    **This is half of the control, and it is the half that only reaches values
+    Theurian itself put in the payload.** Substitution is an allowlist of the
+    paths this context holds, so a string that came from another file, another
+    process, or an exception has no anchor here and goes out verbatim -- which is
+    how a literal ``Authorization: Bearer <token>``, read out of someone's
+    ``~/.claude.json``, once left in a report that said ``redacted: true``. The
+    other half is :attr:`SetupContext.for_publication`, which is set on the
+    context this payload was produced from and makes each probe withhold what it
+    did not author. Adding a value from outside to a step is not made safe by
+    anything in this function.
     """
     anchors = _redaction_anchors(context)
 

@@ -31,6 +31,9 @@ pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
+#: Another repository on this machine, as the registry would name it.
+FOREIGN_PROJECT_ID = "acme-unreleased-merger-tooling"
+
 
 @pytest.fixture
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -380,6 +383,52 @@ def test_the_anchors_are_ordered_longest_first(tmp_path: Path) -> None:
     lengths = [len(needle) for needle, _ in _redaction_anchors(context)]
 
     assert lengths == sorted(lengths, reverse=True)
+
+
+# -- What a report may say about things Theurian did not write ----------------
+
+
+def _with_a_foreign_registration(sandbox: Path) -> None:
+    """A registry entry naming no root, keyed by another repository's id.
+
+    Chosen for this pair because it needs no external binary, no network and no
+    particular platform: the whole state is one JSON file and one `.git`
+    directory, so both directions are asserted wherever the suite runs.
+    """
+    (sandbox / ".theurian").mkdir(parents=True, exist_ok=True)
+    (sandbox / ".theurian" / "projects.json").write_text(
+        json.dumps({FOREIGN_PROJECT_ID: {"noRootPath": True}}), encoding="utf-8"
+    )
+
+
+def test_report_mode_withholds_what_theurian_did_not_write(
+    sandbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wiring, asserted on a value. A project id is derived from a
+    repository's directory name, so the ids in this file name other people's
+    work -- and a bare name is not a path, so nothing in the payload's path
+    substitution can reach it (O-3, SEC-6)."""
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    _with_a_foreign_registration(sandbox)
+
+    _, payload = _invoke("doctor", "--report")
+
+    assert FOREIGN_PROJECT_ID not in json.dumps(payload)
+
+
+def test_plain_doctor_withholds_nothing_from_the_person_who_ran_it(
+    sandbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--report` is what asks for publication. Without it the output is read by
+    the operator, and the id is the argument `project unregister` takes."""
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    _with_a_foreign_registration(sandbox)
+
+    _, payload = _invoke("doctor")
+
+    assert FOREIGN_PROJECT_ID in json.dumps(payload)
 
 
 # -- uninstall ---------------------------------------------------------------

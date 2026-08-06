@@ -351,7 +351,11 @@ def probe_daemon_service(context: SetupContext) -> SetupStep:
             step_id=StepId.DAEMON_SERVICE,
             status=StepStatus.CONFLICTING,
             summary="A service is registered with a different definition.",
-            detail=difference,
+            detail=(
+                _withheld_difference(_service_path(context), _service_differing_keys(context))
+                if context.for_publication
+                else difference
+            ),
         )
     return SetupStep(
         step_id=StepId.DAEMON_SERVICE,
@@ -381,6 +385,38 @@ def _service_difference(context: SetupContext) -> str:
         return ""
     result: str = differ(port=context.port, data_directory=str(context.data_dir))
     return result
+
+
+def _service_differing_keys(context: SetupContext) -> tuple[str, ...]:
+    keys = getattr(context.service, "differing_keys", None)
+    if keys is None:  # pragma: no cover - both adapters expose it
+        return ()
+    result: tuple[str, ...] = keys(port=context.port, data_directory=str(context.data_dir))
+    return result
+
+
+def _withheld_difference(subject: str, fields: tuple[str, ...]) -> str:
+    """What a shared report may say about a configuration Theurian did not write.
+
+    ``doctor --report`` is redacted by substituting the paths the local context
+    holds, which can only reach values Theurian itself put there. What makes
+    these steps conflict is the opposite kind of value -- a plist somebody hand
+    edited, an MCP entry with the token pasted in literally -- and it goes out
+    verbatim because there is nothing to substitute it with. So the whole
+    difference is withheld and only the field *names* are published: a name is
+    schema, and it is what tells the reader which line to open on their own
+    terminal, where the unredacted ``theurian doctor`` prints the values.
+
+    Named fields are not promised to be exhaustive, which is why the sentence
+    does not claim they are: a systemd unit differing only in its comments, and
+    a plist too damaged to parse, both report none at all.
+    """
+    named = f" Fields that differ: {', '.join(fields)}." if fields else ""
+    return (
+        f"{subject} differs from what Theurian would install.{named} The installed "
+        f"values are withheld from a shared report because Theurian did not write "
+        f"them; run `theurian doctor` without --report to see them."
+    )
 
 
 # -- 9 & 10. Daemon running, single instance --------------------------------
@@ -445,12 +481,18 @@ def probe_single_instance(context: SetupContext) -> SetupStep:
 
     running_dir = str(health.get("dataDir", ""))
     if running_dir and Path(running_dir).resolve() != context.data_dir.resolve():
+        # The other daemon's directory came off the wire from a process this one
+        # does not own, so it is a path the local context never held and no
+        # anchor in `cli/setup_commands._redacted` can reach. Which directory it
+        # is only matters on the terminal of the person who has to go and stop
+        # it; a reader of a public issue needs to know that it is not this one.
+        served = "<another data directory>" if context.for_publication else running_dir
         return SetupStep(
             step_id=StepId.SINGLE_INSTANCE,
             status=StepStatus.CONFLICTING,
             summary="The daemon on this port serves a different data directory.",
             detail=(
-                f"Port {context.port} is held by a Theurian serving {running_dir}, not "
+                f"Port {context.port} is held by a Theurian serving {served}, not "
                 f"{context.data_dir}. Nothing was changed: stop it deliberately, or "
                 f"run this daemon on another port."
             ),
@@ -494,6 +536,38 @@ def _unreadable_registry_summary(registry: ProjectRegistry, root: Path) -> str:
     )
 
 
+def _withheld_registry_detail(registry: ProjectRegistry) -> str:
+    """What a shared report may say about a registry it cannot read.
+
+    :meth:`ProjectRegistry.ids_for_root` names the offending ids, and its remedy
+    names them again inside the ``theurian project unregister`` commands that
+    remove them -- correctly, because that is the only argument that fixes this.
+    But a project id is derived from a repository's directory name
+    (:func:`derive_project_id`), so those are the names of *other* repositories
+    on this machine, and a bare name is not a path: nothing in
+    ``cli/setup_commands._redacted`` has an anchor for it, and the ids of every
+    unreadable registration went out with the report.
+
+    A count carries what a reader of a public issue can act on -- whether this
+    is one hand edit or a corrupted file -- and the ids stay where they are
+    useful, on the terminal of the person who has to type them.
+    """
+    try:
+        count = len(registry.unreadable_ids())
+    except ProjectError:
+        return (
+            "The project registry cannot be read at all. Its contents are withheld "
+            "from a shared report; run `theurian doctor` without --report to see why."
+        )
+    entries = "entry" if count == 1 else "entries"
+    return (
+        f"{count} registry {entries} cannot be read. The ids and the commands that "
+        f"remove them are withheld from a shared report because they name other "
+        f"repositories on this machine; run `theurian doctor` without --report to "
+        f"see them."
+    )
+
+
 def probe_project_registered(context: SetupContext) -> SetupStep:
     """Whether this repository is registered -- or, honestly, that it cannot be told.
 
@@ -533,7 +607,11 @@ def probe_project_registered(context: SetupContext) -> SetupStep:
             step_id=StepId.PROJECT_REGISTERED,
             status=StepStatus.CONFLICTING,
             summary=_unreadable_registry_summary(registry, root),
-            detail=f"{exc} {exc.remedy}".strip(),
+            detail=(
+                _withheld_registry_detail(registry)
+                if context.for_publication
+                else f"{exc} {exc.remedy}".strip()
+            ),
         )
     if found:
         return SetupStep(
@@ -648,7 +726,14 @@ def probe_mcp_connection(context: SetupContext) -> SetupStep:
             step_id=StepId.MCP_CONNECTION,
             status=StepStatus.CONFLICTING,
             summary="Claude Code already has a different `theurian` MCP entry.",
-            detail=difference,
+            detail=(
+                _withheld_difference(
+                    f"The Theurian MCP entry in {config.path}",
+                    config.differing_keys(context.connection),
+                )
+                if context.for_publication
+                else difference
+            ),
         )
     if config.installed_entry() is None:
         return SetupStep(

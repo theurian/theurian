@@ -46,6 +46,24 @@ class SetupContext:
     #: invoke it. A relative name would resolve against launchd's PATH, which is
     #: not the user's.
     executable: str
+    #: True when this run's output is bound for somewhere the operator does not
+    #: control: ``doctor --report``, which exists to be pasted into a public
+    #: issue.
+    #:
+    #: **A probe that reads a value Theurian did not author must withhold it
+    #: when this is set.** Another process's reply, another user's configuration
+    #: file, an exception raised by a library -- none of it is Theurian's to
+    #: publish. ``cli/setup_commands._redacted`` cannot help there: it
+    #: substitutes the paths this context holds, and a string the local context
+    #: never held has no anchor to substitute, so it goes out verbatim. That is
+    #: how a literal ``Authorization: Bearer <token>`` in someone's
+    #: ``~/.claude.json`` reached a redacted report.
+    #:
+    #: The flag lives here rather than as a probe parameter because the context
+    #: is the only channel every step already has, and because the composition
+    #: root -- which is the layer that knows where the output is going -- is
+    #: what builds it.
+    for_publication: bool = False
 
     @property
     def auth_dir(self) -> Path:
