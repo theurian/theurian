@@ -114,17 +114,44 @@ credential.
 4. produces a reproducible CycloneDX 1.6 SBOM from that verified environment —
    from what a user installs, not from the lock file — and `SHA256SUMS` over
    every artifact including the SBOM;
-5. publishes to PyPI over Trusted Publishing with PEP 740 attestations;
-6. cuts the GitHub release with the changelog section, checksums, and SBOM.
+5. **drafts** the GitHub release carrying the changelog section, the checksums
+   and the SBOM — created, but visible only to accounts with push access;
+6. publishes to PyPI over Trusted Publishing with PEP 740 attestations, after
+   waiting for a `core-maintainers` approval on the `pypi` environment;
+7. takes the release out of draft, which is the moment it becomes public.
 
-To exercise every step except publication, run the workflow manually with
-`dry_run` left at its default.
+**Steps 5 and 7 sit either side of step 6 on purpose.** PyPI refuses a second
+upload of a filename it already holds, so an upload that succeeds cannot be
+retried, only yanked. If the release were cut after the upload, a failure
+between the two would leave a wheel that installs and checksums that exist
+nowhere — the state T-16's shipped mitigation is supposed to rule out. Drafting
+first means every way the run can die leaves one of two states: nothing is
+installable, or the wheel is on PyPI *and* the draft holding its checksums and
+SBOM already exists. The second is repaired with
+
+```sh
+gh release edit core-v<version> --draft=false
+```
+
+with nothing rebuilt and nothing yanked. A release rejected at step 6, or never
+approved, leaves the draft behind — delete it; nothing else was written.
+
+A manual run (`workflow_dispatch`) is the rehearsal path and publishes nothing:
+steps 5–7 are all `if: github.event_name == 'push'`, so it stops once the
+artifacts exist. It does exercise the quality gate, the changelog guard, the
+build, the wheel install-back check that the installed package reports
+`pyproject.toml`'s version, the SBOM and `SHA256SUMS`. It cannot exercise the
+two checks that read the tag — `core-v<version>` agreeing with
+`pyproject.toml`, and the signature guard — so a green rehearsal is evidence
+about the build, not about the tag. There is no input to set: the workflow
+carried a `dry_run` boolean wired to nothing, and it is gone.
 
 ### Checksums are published; nothing verifies them at install time
 
-Steps 4 and 6 satisfy the publication half of T-16 (OSS-7, OSS-11): the record a
-verifier would check against exists on every release. **The verifying half does
-not exist.** `theurian setup`'s artifact-integrity step is an unconditional
+Steps 4, 5 and 7 satisfy the publication half of T-16 (OSS-7, OSS-11): on every
+release the record a verifier would check against is produced, attached to the
+release before the artifact is installable, and then made public. **The
+verifying half does not exist.** `theurian setup`'s artifact-integrity step is an unconditional
 `return` of `not-applicable` —
 [`setup_steps.py`](../../packages/theurian-core/src/theurian/application/setup_steps.py),
 `probe_artifact_integrity` — so `theurian setup --dry-run --json` reports this,
