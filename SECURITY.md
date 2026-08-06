@@ -23,16 +23,25 @@ of concept helps but is not required to report.
 | Fix or mitigation for critical issues | 30 days |
 | Coordinated disclosure | by agreement, default 90 days |
 
-We will credit you in the advisory unless you prefer otherwise. There is no bug
-bounty; this is a volunteer project.
+We will credit you in the advisory unless you tell us not to; say so in the
+report and we will not name you. There is no bug bounty; this is a volunteer
+project.
 
 ## How we handle a vulnerability
 
 The section above is what a reporter does; this is what we do once a
 vulnerability is known. **It does not change what a reporter should do: report
-privately, whether or not a release exists.** A defect reported privately is not
-described in public before its fix is delivered or the clock below runs out, and
-we name a reporter only with their agreement.
+privately, whether or not a release exists**, and it does not change the credit
+above: opt-out, not opt-in.
+
+**Private handling ends when the fix is delivered, or ninety days after we
+confirmed the vulnerability, whichever comes first — whether or not there is a
+reporter to agree a date with.** Confirmation is the assessment the table above
+gives seven business days, so the clock starts at most seven business days after
+a report reaches us and, for a defect we found ourselves, when we accept it. Both
+branches below inherit this. It is not a target for the fix; it is the point past
+which the defect is described in public whether or not one has landed, because an
+embargo with no deadline ends when somebody remembers.
 
 What decides our handling is whether the artifact holding the defect has been
 released. Theurian ships two on independent release trains
@@ -41,7 +50,7 @@ are not in the same state**:
 
 | Artifact | State | What settles it |
 | :-- | :-- | :-- |
-| Claude Code plugin | **Released**, at `0.1.0` | the `theurian` entry in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json` |
+| Claude Code plugin | **Released**, at `0.1.0` | the sha the `theurian` entry pins in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json`, and the `version` in `plugin.json` at that sha |
 | Theurian Core | **Pre-release**, until the first `core-v*` tag is pushed | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'` |
 
 Core tags are `core-v*` and plugin tags are `plugin-v*` (release process:
@@ -54,14 +63,20 @@ a network failure reads the same as an answer.
 **A defect is routed by whose users it exposes, not by which tree it sits in**,
 and where the two differ the users decide: a control living in Core's test tree
 that keeps credentials out of what the plugin ships is routed by the plugin's
-users. Which tree ships with which artifact is a fact about the build, not about
-ownership — Core's wheel force-includes `schemas/` and an installed build reads
-that packaged copy first, so a defect there is Core's, while `tests/contract/`,
-`tests/e2e/` and `docs/` are shipped by neither, as are this file, the README and
-the workflows. A document that states a control wrongly is corrected in public:
-the correction is the mitigation, and a reader acting on a false claim is the
-harm — what that correction may *say* is still the conditions' question. Where no
-artifact's users are reached, the defect is public.
+users.
+
+Which tree an artifact ships is a fact about the build rather than about
+ownership, and it is answered by the build rather than by a list kept here.
+**`tar tzf` on the built sdist and `unzip -l` on the wheel are the answer for
+Core**; the marketplace entry's `path` is the answer for the plugin. What that
+returns today is wider than co-ownership suggests: `schemas/` is force-included
+into both, and `packages/theurian-core/tests/` ships in the sdist, which the
+release workflow uploads alongside the wheel. So a defect in either is Core's.
+A tree that neither build emits — `tests/contract/`, `tests/e2e/`, `docs/`, this
+file, the repository README, the workflows — reaches no artifact's users, and a
+defect there is public. A document that states a control wrongly is corrected in
+public: the correction is the mitigation, and a reader acting on a false claim is
+the harm — what that correction may *say* is still the conditions' question.
 
 **The plugin's delivery point is not a merge here.** The marketplace entry pins a
 commit sha, so a fix on `theurian/theurian@main` reaches nobody until the pin
@@ -81,6 +96,13 @@ carries the fix, and the advisory published with it. Which releases are supporte
 is the table below. There is no bar on this side, and the asymmetry is
 deliberate: once a release exists there are installs that a reader cannot fix by
 updating a checkout, so the default flips to private.
+
+**This applies to vulnerabilities, not to every defect.** A released artifact's
+ordinary bugs — a wrong message, a flaky test, a missing option — are public
+issues like any other. What makes a defect a vulnerability is that it fails one
+of the two conditions below; those conditions decide the *pre-release* branch on
+their own, and on this side they decide only whether the private route applies at
+all.
 
 The fix is written in the temporary private fork a
 [security advisory](https://github.com/theurian/theurian/security/advisories/new)
@@ -147,11 +169,19 @@ public security channel — only when **both** of these hold:
     [threat model's actor table](docs/security/threat-model.md) marks untrusted —
     another local process, a visited web page, a repository contributor, an
     external system, an agent reasoning over untrusted input (T-1, T-2);
-  - content read by an authorized caller from a project, tenant, sensitivity
-    level, ACL group or namespace it is not authorized for — the five components
-    of tree identity, filtered before ranking (T-11, SEC-13, FR-R1);
+  - content read by a caller not authorized for it. **Two axes are enforced on
+    the retrieval path today** — the project, and approval status through
+    `may_surface` — and a defect in either is out (T-11, SEC-13). Tenant,
+    sensitivity, ACL group and namespace are design intent that no retrieval
+    predicate implements yet; they hold no content today, so nothing routes on
+    them, and this list moves when they do;
   - content withheld by approval state, supersession or retirement, read
-    directly or **recovered** from a published value that moves with it (T-17).
+    directly or **recovered** from any observable that moves with it (T-17) —
+    not only a published field. The families are enumerated in
+    [`CLAUDE.md`](CLAUDE.md): which rows or which part of a row reached a field,
+    a duration, a statistic over rows the caller may not see, an error that
+    fires for one input and not another, a resource the query consumes, another
+    tool reaching the same content, and state or concurrency artefacts.
 
   What decides this is exposure or weakened protection, not whether a credential
   appears in the story: a defect that leaves a token where it belongs, still
@@ -166,16 +196,33 @@ public security channel — only when **both** of these hold:
   public issues needs no access. A defect an attacker can exercise only against a
   machine, a token or a session they already hold gives them no such reach.
 
-**Recovered is the load-bearing word above, and it is measured rather than
-argued.** T-17 recovered a sixteen-character credential in 203 calls — an
-arbitrary secret, not a yes-or-no about a known one — and is Critical and
-private. T-17a moves published values too, but what it yields is bounded to a
-vocabulary the caller already has: it can confirm that a withheld document holds
-a term they have seen elsewhere, and cannot produce one they do not have. That is
-why it is described further down this file and measured in the threat model
-rather than withheld. **A new member of this family is private until somebody has
-measured which side of that line it falls on**, because the measurement is the
-argument.
+**Recovered is the load-bearing word above.** T-17 recovered a sixteen-character
+credential in 203 calls — an arbitrary secret, not a yes-or-no about a known one
+— and condition 1's fourth item sorts it private. T-17a moves published values
+too, but what it yields is bounded to a vocabulary the caller already has: it can
+confirm that a withheld document holds a term they have seen elsewhere, and
+cannot produce one they do not have. That is why it is described further down
+this file and measured in the threat model rather than withheld.
+
+**A new member of that family is private until its side is established**, and two
+kinds of argument establish it, both taken from cases this repository has already
+settled:
+
+- a **measurement** that extraction is bounded to the caller's existing
+  vocabulary — the tables under T-17a in the threat model;
+- a **structural argument** that no probe exists at all, because the published
+  value does not vary with the query. `snapshotId` is the state hash and
+  `knowledge.status`'s `appliedMigrations` and `stateHash` are the same shape:
+  there is nothing for an attacker to vary, so there is nothing to measure.
+
+Neither is a guess, and an unexamined observable is not covered by either.
+
+**T-17 itself is published in full**, in the threat model and the changelog, and
+it predates this rule. That is not what the rule would choose today; it is what
+happened, and a description already public cannot be withdrawn — republishing
+the file without it would hide a Critical defect from readers who have to judge
+their own exposure, without removing anything from anyone who already has it. The
+rule governs what happens next, not what has already been said.
 
 Both conditions ask about disclosure, so an integrity or availability defect
 clears them whatever its severity — a corrupted store and an unbounded query are
@@ -204,6 +251,29 @@ reproduction. A source install from before `a5f1f18` still has the defect and
 should update past it. The conditions are written down because judgement in the
 moment produced that.
 
+### Where each list in this section comes from
+
+Every list above is derived rather than authored, and this table is how a later
+editor checks that rather than extending a list from whatever case is in front of
+them. Five review rounds found the same defect — a list written from the cases at
+hand — in five different lists, so the table is the control, not a courtesy.
+
+<details>
+<summary>The derivation, list by list</summary>
+
+| List | Derived from | Where to check it |
+| :-- | :-- | :-- |
+| Condition 1, the credential | SEC-4 | [requirements analysis](docs/architecture/requirements-analysis.md) |
+| Condition 1, the untrusted actors | every row the actor table marks untrusted | [threat model](docs/security/threat-model.md) |
+| Condition 1, the authorization axes | the predicates the retrieval path actually emits | `_scope` in `infrastructure/sqlite/index_store.py`; `may_surface` in `domain/enums.py` |
+| Condition 1, the observables that can carry withheld content | the families table | [`CLAUDE.md`](CLAUDE.md) |
+| Condition 2, what an attacker may already hold | the same actor table, plus *nothing at all*, which it does not list | [threat model](docs/security/threat-model.md) |
+| Which tree ships with which artifact | the built distributions, not the ownership list | `tar tzf` on the sdist and `unzip -l` on the wheel; the marketplace entry's `path` |
+| What *delivered* means on each train | the two release procedures | [release process](docs/contributing/release.md) |
+| What settles a new observable's side | measurement, and query-independence | T-17a's tables in the threat model; `snapshotId` in `mcp/search.py` |
+
+</details>
+
 ## Supported versions
 
 Pre-1.0, only an artifact's latest MINOR release receives security fixes. Once
@@ -215,9 +285,11 @@ Pre-1.0, only an artifact's latest MINOR release receives security fixes. Once
 | Claude Code plugin | < 0.1 | ❌ |
 | Theurian Core | none released | — |
 
-Core has no supported release until its first `core-v*` tag. The version the form
-above asks for, `theurian version --json`, reports `0.1.0.dev0` from a source
-install — that is a checkout, not a release.
+Core has no supported release until its first `core-v*` tag is pushed. Its
+changelog opens a `0.1.0.dev0` section ahead of that tag, because the release
+workflow requires the section to exist before it will build — **an open changelog
+section is not a release**, and `theurian version --json` reporting `0.1.0.dev0`
+is reporting a checkout. The tag and the published artifact are what settle it.
 
 ## Theurian's security model
 
