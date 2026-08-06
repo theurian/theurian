@@ -920,7 +920,15 @@ class SqliteIndexStore:
         return result
 
     def _scope(self, project_id: str, include_unapproved: bool) -> tuple[list[str], list[object]]:
-        """The FR-R1 filter, shared by every retriever so none can forget it.
+        """Project and status, shared by every retriever so none can forget it.
+
+        **Not "the FR-R1 filter", which is what this said until #63.** FR-R1 is
+        *filter by Project, tenant, ACL, sensitivity, and validity window before
+        ranking*; the two clauses below are Project, plus a status check FR-R1
+        does not name. `chunks` carries `sensitivity`, `trust_level` and
+        `namespace`, and no query reads any of them -- the schema says so beside
+        the columns, and this docstring said the opposite 850 lines later, which
+        is the version a reader inspecting the filter would have found.
 
         Every retriever means every retriever: lexical, substring, and dense all
         build their WHERE clause from here. That was not true when this docstring
@@ -932,7 +940,9 @@ class SqliteIndexStore:
 
         A comment claiming a single point of enforcement is worse than no comment
         when there are three, because it tells the next reader this is already
-        handled. It is now, and this is the one place to change it (SEC-13).
+        handled. It is now, and this is the one place to change it (SEC-13) --
+        which is the same reason the paragraph above names the axes this does
+        *not* filter on.
         """
         clauses = ["chunks.project_id = ?"]
         parameters: list[object] = [project_id]

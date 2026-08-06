@@ -64,6 +64,17 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 | FR-R7 | Pin a `snapshotId` so results are reproducible for the lifetime of a task. |
 | FR-R8 | Search across several registered Projects in one call when the caller is authorized for all of them. |
 
+**FR-R1 is one of five axes as of Milestone 5.** `SqliteIndexStore._scope`
+builds the WHERE clause every retriever uses, and it filters on Project and on
+status — a check FR-R1 does not name. Tenant and ACL have no column; the
+`chunks` table carries `sensitivity`, `trust_level` and `namespace` and no query
+reads them; the only validity-window filter,
+`SqliteCanonicalStore.list_items(current_at=…)`, has no caller in `src/`.
+Routing does not change today, because the four unenforced axes hold no content
+yet, which is why this is a deferral and not a defect. Milestone 6's scope
+filtering is where it comes due:
+[#63](https://github.com/theurian/theurian/issues/63).
+
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One
 `knowledge.search` response is answered from exactly one canonical state, and,
