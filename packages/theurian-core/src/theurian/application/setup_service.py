@@ -202,7 +202,12 @@ class SetupService:
             try:
                 action(self._context)
             except Exception as exc:  # reported in the step, not propagated
-                reason = f"{type(exc).__name__}: {exc}"
+                # The same rule as a failed *probe*, through the same function.
+                # Not reachable from `doctor --report` today, because that is a
+                # dry run and never reaches `_apply` -- but spelling it out here
+                # is what stops the two drifting: a bare f-string beside a
+                # withholding one is how the first of these was missed.
+                reason = failure_detail(exc, for_publication=self._context.for_publication)
                 applied.append(planned.applied(StepOutcome.FAILED, reason))
                 warnings.append(f"{definition.step_id.value}: {reason}")
                 self._journal(definition.step_id, "failed", reason)

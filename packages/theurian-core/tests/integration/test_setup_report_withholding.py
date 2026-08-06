@@ -497,6 +497,34 @@ def test_the_operators_own_terminal_still_shows_the_exception_message(tmp_path: 
     assert EXCEPTION_MESSAGE in _on_the_terminal(_context(tmp_path), _EXPLODING)
 
 
+def test_an_exception_from_an_apply_is_withheld_like_one_from_a_probe(tmp_path: Path) -> None:
+    """The sibling channel, asserted rather than reasoned about.
+
+    `doctor --report` is a dry run, so it never reaches `_apply` -- which is why
+    that path kept a bare f-string beside a withholding one for a round. Nothing
+    stops a caller running a real setup on a context built for publication, and
+    an apply raises for the same reasons a probe does.
+    """
+
+    def _explode_on_apply(_: SetupContext) -> None:
+        raise RuntimeError(EXCEPTION_MESSAGE)
+
+    def _missing(_: SetupContext) -> SetupStep:
+        return SetupStep(
+            step_id=StepId.MIGRATIONS_VALID,
+            status=StepStatus.MISSING,
+            summary="Something is missing.",
+            action="Create it.",
+        )
+
+    steps = (Step(StepId.MIGRATIONS_VALID, _missing, _explode_on_apply, critical=False),)
+    report = SetupService(_context(tmp_path), steps).run(SetupRequest())
+    payload = json.dumps(report.to_json())
+
+    assert EXCEPTION_MESSAGE not in payload
+    assert "RuntimeError" in payload
+
+
 # -- The two halves cannot be used apart ---------------------------------------
 
 

@@ -39,6 +39,25 @@ def _differing_names(
     )
 
 
+def _installed_plist(path: Path) -> dict[str, object] | None:
+    """The plist as a mapping, or ``None`` if it is not one.
+
+    Three ways to fail, and the third was reaching callers as a traceback: the
+    file is unreadable (``OSError`` -- the ``exists()`` check above every caller
+    is a race, not a guarantee), it is not a plist (``InvalidFileException``,
+    ``ValueError``), or it parses into something that is not a dictionary. A
+    plist whose root is an array is valid XML and answered ``.get`` with
+    ``AttributeError``, which the state machine degraded into "could not check
+    daemon-service" -- true, but two steps removed from "your plist has an array
+    at the top".
+    """
+    try:
+        loaded = plistlib.loads(path.read_bytes())
+    except (plistlib.InvalidFileException, ValueError, OSError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 @final
 class LaunchAgentManager:
     """Installs and controls the daemon as a user-scoped LaunchAgent."""
@@ -130,9 +149,8 @@ class LaunchAgentManager:
             return ""
 
         wanted = plistlib.loads(self.render(port=port, data_directory=data_directory))
-        try:
-            installed = plistlib.loads(self.plist_path.read_bytes())
-        except (plistlib.InvalidFileException, ValueError):
+        installed = _installed_plist(self.plist_path)
+        if installed is None:
             return f"{self.plist_path} is not a readable plist."
 
         if installed == wanted:
@@ -164,14 +182,13 @@ class LaunchAgentManager:
             return DifferingFields()
 
         wanted = plistlib.loads(self.render(port=port, data_directory=data_directory))
-        try:
-            installed = plistlib.loads(self.plist_path.read_bytes())
-        except (plistlib.InvalidFileException, ValueError):
+        installed = _installed_plist(self.plist_path)
+        if installed is None:
             # Reported rather than answered with an empty result: "no key
-            # differs" and "the file does not parse" read as opposite things,
-            # and the second is the one the reader of a shared issue can act on.
-            # The fragment is this module's own words; the parser's message is
-            # not, and stays in `differs_from_installed`.
+            # differs" and "the file cannot be read as a plist" read as opposite
+            # things, and the second is the one the reader of a shared issue can
+            # act on. The fragment is this module's own words; the parser's
+            # message is not, and stays in `differs_from_installed`.
             return DifferingFields(unreadable="is not a readable plist")
 
         return DifferingFields.over(_differing_names(installed, wanted), authored=wanted)

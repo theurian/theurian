@@ -30,7 +30,7 @@ _UNIT_DIRECTORY: Final = ".config/systemd/user"
 
 
 def _logical_lines(unit: str) -> Iterator[str]:
-    """A unit's lines with continuations joined, as systemd reads them.
+    """A unit's directive and section lines, with continuations joined.
 
     A line ending in a backslash continues onto the next, and the next line is
     therefore the *value* of the directive above it. Splitting it on its own
@@ -40,13 +40,24 @@ def _logical_lines(unit: str) -> Iterator[str]:
             --header "Authorization: Bearer <token>"
 
     parsed line by line, yielded that header as a directive name. What stops
-    that name being published is :meth:`DifferingFields.over`, which keeps only
-    names Theurian's own renderer produces -- this function stops it being
-    *derived*, so the count beside the names is a count of real directives.
+    that name being *published* is :meth:`DifferingFields.over`, which keeps only
+    names Theurian's own renderer produces; this function stops it being derived
+    at all, so the count beside the names counts real directives.
+
+    **A comment does not continue.** Dropping comments before joining rather
+    than after is a decision, not an ordering accident: joining first lets a
+    comment ending in a backslash swallow the directive on the next line, and a
+    swallowed directive vanishes from the comparison -- ``ExecStart`` differing
+    would be reported as no difference at all. Whether real systemd continues a
+    comment has varied across its releases, and this is not a format Theurian
+    owns; the choice that cannot hide a difference is the one taken.
     """
     buffered = ""
     for raw in unit.splitlines():
-        line = f"{buffered} {raw.strip()}" if buffered else raw.strip()
+        stripped = raw.strip()
+        if not buffered and (not stripped or stripped.startswith(("#", ";"))):
+            continue
+        line = f"{buffered} {stripped}" if buffered else stripped
         if line.endswith("\\"):
             buffered = line[:-1].rstrip()
             continue
@@ -56,25 +67,29 @@ def _logical_lines(unit: str) -> Iterator[str]:
         yield buffered
 
 
-def _directives(unit: str) -> dict[str, tuple[str, ...]]:
-    """A unit's ``Name=Value`` lines as a map, values kept in file order.
+def _directives(unit: str) -> dict[tuple[str, str], tuple[str, ...]]:
+    """A unit's ``Name=Value`` lines, keyed by section and name.
 
     A tuple of values rather than one, because systemd lets a directive repeat
     -- ``Environment=`` most of all -- and collapsing repeats would report two
     units as equal when one of them sets a variable the other does not.
 
-    Section headers, comments and blank lines are dropped: this exists to answer
-    "which directives differ" for a report that may not carry their values, and
-    a section header is neither.
+    **Keyed by section as well as name**, because systemd's sections are not
+    decoration: ``Environment=`` under ``[Unit]`` does nothing, and comparing on
+    the bare name reported a unit with it misplaced there as identical to one
+    with it in ``[Service]``. That is a difference the operator has to see, and
+    it was being answered with "no directive differs".
     """
-    found: dict[str, list[str]] = {}
+    found: dict[tuple[str, str], list[str]] = {}
+    section = ""
     for line in _logical_lines(unit):
-        if not line or line.startswith(("#", ";", "[")):
+        if line.startswith("["):
+            section = line
             continue
         name, separator, value = line.partition("=")
         if separator:
-            found.setdefault(name.strip(), []).append(value.strip())
-    return {name: tuple(values) for name, values in found.items()}
+            found.setdefault((section, name.strip()), []).append(value.strip())
+    return {key: tuple(values) for key, values in found.items()}
 
 
 @final
@@ -178,23 +193,24 @@ WantedBy=default.target
         :class:`DifferingFields`, which is where that argument lives.
 
         Only directives are compared, so a unit differing solely in its comments
-        or section headers names nothing and counts nothing -- the caller's
-        sentence then says the difference is withheld rather than naming fields,
-        which stays true either way, and the full diff is one ``theurian doctor``
-        away.
+        names nothing and counts nothing -- the caller's sentence then says the
+        difference is withheld rather than naming fields, which stays true either
+        way, and the full diff is one ``theurian doctor`` away.
         """
         if not self.unit_path.exists():
             return DifferingFields()
 
         wanted = _directives(self.render(port=port, data_directory=data_directory))
         installed = _directives(self.unit_path.read_text(encoding="utf-8"))
+        differing = {
+            key for key in set(installed) | set(wanted) if installed.get(key) != wanted.get(key)
+        }
+        # Compared by (section, name) and published by name alone: the section a
+        # directive sits in decides whether it does anything, but naming it says
+        # nothing more than the directive already does.
         return DifferingFields.over(
-            (
-                name
-                for name in set(installed) | set(wanted)
-                if installed.get(name) != wanted.get(name)
-            ),
-            authored=wanted,
+            {name for _, name in differing},
+            authored={name for _, name in wanted},
         )
 
     # -- Lifecycle --------------------------------------------------------
