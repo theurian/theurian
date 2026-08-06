@@ -314,10 +314,10 @@ does not do.
 - **`protocolVersion` stays `theurian/v1`, and that is a decision rather than an
   omission.** Milestone 5 makes several breaking wire changes — the
   `knowledge.search` response reshape, the removal of `withheldSuperseded`, and
-  the two required fields above — and none of them bumps it. All three land in
-  Core's first published version, so no client ever held a `theurian/v1` without
-  them, no plugin can be pinned to a v1 that lacks these fields, and bumping
-  would publish a `theurian/v2` whose v1 was never shipped. The version's unit
+  the two required fields above — and none of them bumps it. No published
+  version of Core has ever lacked them, so no plugin can be pinned to a v1 that
+  lacks these fields, and bumping would publish a `theurian/v2` whose v1 was
+  never shipped. The version's unit
   is a released protocol; what protects an integrator is this changelog, which
   names each break. `protocolVersion` bumps on the first breaking change *after*
   the version that first carries `theurian/v1` — Milestone 5's set is the
