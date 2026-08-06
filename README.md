@@ -159,8 +159,8 @@ is not built yet. It is Milestone 8; `system.capabilities` reports
 
 ## Quick start
 
-Theurian is pre-release; install from source until the first tagged release
-reaches PyPI.
+Theurian is pre-release; the command below builds and installs Core from a
+checkout of this repository.
 
 ```sh
 git clone https://github.com/theurian/theurian && cd theurian

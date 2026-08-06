@@ -314,17 +314,16 @@ does not do.
 - **`protocolVersion` stays `theurian/v1`, and that is a decision rather than an
   omission.** Milestone 5 makes several breaking wire changes — the
   `knowledge.search` response reshape, the removal of `withheldSuperseded`, and
-  the two required fields above — and none of them bumps it. Nothing has been
-  released: Core is `0.1.0.dev0`, there is no release tag, and every change here
-  is under *Unreleased*. `theurian/v1` has therefore never reached a client, so
-  no plugin can be pinned to a v1 that lacks these fields, and bumping would
-  publish a `theurian/v2` whose v1 was never shipped. The version's unit is a
-  released protocol; what protects an integrator reading this branch is this
-  changelog, which names each break. `protocolVersion` bumps on the first
-  breaking change *after* `theurian/v1` ships — Milestone 5's set is the content
-  of v1, not a departure from it. Recorded here because a reader who finds three
-  breaking wire changes and an unchanged protocol version is entitled to know
-  which of the two is the mistake.
+  the two required fields above — and none of them bumps it. All three land in
+  Core's first published version, so no client ever held a `theurian/v1` without
+  them, no plugin can be pinned to a v1 that lacks these fields, and bumping
+  would publish a `theurian/v2` whose v1 was never shipped. The version's unit
+  is a released protocol; what protects an integrator is this changelog, which
+  names each break. `protocolVersion` bumps on the first breaking change *after*
+  the version that first carries `theurian/v1` — Milestone 5's set is the
+  content of v1, not a departure from it. Recorded here because a reader who
+  finds three breaking wire changes and an unchanged protocol version is
+  entitled to know which of the two is the mistake.
 
 - **Every project-scoped MCP tool now tells "not registered" from "registered
   and unreadable".** The two need opposite remedies and used to share one
