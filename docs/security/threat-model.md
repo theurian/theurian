@@ -580,11 +580,22 @@ on a `core-v*` tag and, before anything is published: builds, then installs the
 wheel into a clean environment and runs `theurian version --json` against it;
 produces a reproducible CycloneDX 1.6 SBOM from that verified install rather than
 from the lock file (OSS-7); writes `SHA256SUMS` over every artifact including the
-SBOM (OSS-11); publishes to PyPI over Trusted Publishing with PEP 740
-attestations, so no maintainer holds a credential that could publish a different
-artifact; and attaches the checksums and the SBOM to the GitHub release. **Every
-one of these acts on production. None acts on installation**, which is the
-residual below.
+SBOM (OSS-11); drafts the GitHub release carrying both; publishes to PyPI over
+Trusted Publishing with PEP 740 attestations, so no maintainer holds a credential
+that could publish a different artifact; and only then takes the release out of
+draft.
+
+**The order is itself a control: the checksums and the SBOM are fixed in a draft
+release before the artifact they cover is installable.** `build → draft-release →
+publish-pypi → publish-release`. Until `draft-release` runs, `SHA256SUMS` and the
+SBOM exist only inside the workflow run, which expires; after it, no failure can
+leave an installable wheel whose record survives nowhere, and PyPI's refusal to
+re-upload a filename it already holds means an upload cannot be walked back. The
+draft is visible only to accounts with push access, so the record is written
+first and announced last.
+
+**Every one of these acts on production. None acts on installation**, which is
+the residual below.
 
 **The tag-signature step joined them, and its reach is narrower than its name.**
 The workflow assembles a trust root per run from the public keys GitHub holds for
