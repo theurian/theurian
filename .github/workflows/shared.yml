@@ -41,9 +41,12 @@ jobs:
               # files unwatched, `packages/theurian-core/CHANGELOG.md` among
               # them: a change confined to one of those never ran the check.
               # `docs/**` stays because a moved non-Markdown file under `docs/`
-              # breaks links pointing at it.
+              # breaks links pointing at it. This file lists itself for the same
+              # reason `core.yml` does: the checker lives here, so a change to it
+              # has to run it.
               - 'docs/**'
               - '**/*.md'
+              - '.github/workflows/shared.yml'
 
   schemas:
     name: Schemas are valid
