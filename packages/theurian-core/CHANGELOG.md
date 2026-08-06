@@ -12,6 +12,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev0] - 2026-08-06
+
+A development release, published to claim the `theurian` name on PyPI. Until
+this, the name was unregistered while `theurian setup` and the plugin's
+SessionStart hook both told a user whose machine has no Core to run
+`uv tool install theurian` — a command that could not work, and that would have
+installed somebody else's package had the name been taken first.
+
+Everything below happened before Theurian had released anything at all:
+Milestones 0 through 5. The breaking changes named in it broke nothing that had
+shipped, and the `#### Known limitations` sections are where this says what it
+does not do.
+
 ### Milestone 5 — hybrid retrieval
 
 #### Added
@@ -1325,4 +1338,5 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/commits/main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev0...main
+[0.1.0.dev0]: https://github.com/theurian/theurian/releases/tag/core-v0.1.0.dev0
