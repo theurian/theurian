@@ -1,6 +1,6 @@
 ---
 description: Configure this machine to run Theurian, and connect Claude Code to it. Run once.
-allowed-tools: Bash(theurian:*), Bash(command:*), Read, Edit
+allowed-tools: Bash(theurian:*), Bash(command -v:*), Read
 ---
 
 # /theurian:setup
