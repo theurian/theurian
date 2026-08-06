@@ -717,10 +717,10 @@ regenerates the conclusion anywhere it survives, and a reader who starts at
 is therefore the premise and not the word "verify": does the text describe setup
 obtaining, installing or upgrading Core?
 
-**Nine files satisfy the *installing* verb. Six are corrected; three are open.**
+**Nine files satisfy the *installing* verb. Seven are corrected; two are open.**
 That is a count of one of the test's three verbs, not of the class — it was
 derived from an install-verb search, and the number below is scoped to it for
-that reason. Counting only the corrected six would be the same accounting error
+that reason. Counting only the corrected seven would be the same accounting error
 this entry warns about further down; presenting an install-verb population as
 the class is that error one level up, which is where the previous two versions
 of this paragraph went wrong.
@@ -750,11 +750,14 @@ as the reach of the last search rather than the size of the class.
 | `plugins/claude-code/scripts/session-start.sh` | "Core is not installed. Run /theurian:setup once to get started.", printed on every session that starts without `theurian` on `PATH` | [#40](https://github.com/theurian/theurian/pull/40) |
 | `plugins/claude-code/README.md` | a three-line install sequence ending at `/theurian:setup`, naming no installer anywhere in the file | [#40](https://github.com/theurian/theurian/pull/40) |
 | `docs/protocol/plugin-core-compatibility.md` | the published `core-missing` remedy that third-party plugins implement against | [#40](https://github.com/theurian/theurian/pull/40) |
+| `README.md` | "`theurian setup` installs the whole thing idempotently", and "`/theurian:setup` is the only command that installs anything" | [#34](https://github.com/theurian/theurian/pull/34) |
 
-All six in one change, but not in one pass. It named the first three, and review
-of it found the other three — only once the class was restated by that root cause
-instead of by the word the first three happened to share. The three it named were
-the three that used it.
+[#40](https://github.com/theurian/theurian/pull/40) took the first six in one
+change, but not in one pass. It named the first three, and review of it found the
+other three — only once the class was restated by that root cause instead of by
+the word the first three happened to share. The three it named were the three
+that used it. `README.md` is the seventh, corrected separately because it was
+being rewritten in parallel.
 
 **The first pass called `domain/compatibility.py` the sharpest of them, and that
 was right about the shape and wrong about the reach.** It is unrunnable rather
@@ -767,20 +770,61 @@ one that ran, on every session, and the pass that fixed the unreachable face lef
 it in place. Ranking the faces by how wrong they read, rather than by which of
 them a user meets, is what produced that.
 
-**The other three files still carry the premise**, in four places, in documents
+**Two of those three files still carry the premise**, in documents
 [#40](https://github.com/theurian/theurian/pull/40) did not reach:
 
 | Surface | What it says | Owner |
 | :-- | :-- | :-- |
-| `README.md:29` | "`theurian setup` installs the whole thing idempotently" | [#34](https://github.com/theurian/theurian/pull/34) |
-| `README.md:228` | "`/theurian:setup` is the only command that installs anything" — in a README with no `uv tool install` or `pipx install` anywhere in it | [#34](https://github.com/theurian/theurian/pull/34) |
 | `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
 | `docs/architecture/requirements-analysis.md:643` | the compatibility flowchart: "CLI absent → Advise /theurian:setup. Do not install anything." | — |
 
-The last two *specify* corrected surfaces rather than being them, which is why a
-search over user-facing text does not reach them. Recorded here rather than left
-to whoever next runs one, because a list of what was fixed is exactly what made
-this class look closed the first time.
+Both *specify* corrected surfaces rather than being them, which is why a search
+over user-facing text does not reach them. Recorded here rather than left to
+whoever next runs one, because a list of what was fixed is exactly what made this
+class look closed the first time.
+
+**`README.md`'s two places were corrected in
+[#34](https://github.com/theurian/theurian/pull/34).** "`theurian setup` installs
+the whole thing idempotently" is gone, and the quick start it sat above now opens
+with `uv tool install './packages/theurian-core[all]'` — so the file names an
+installer where it had none. "`/theurian:setup` is the only command that installs
+anything" now denies installing Theurian and states the order it depends on: Core
+has to be on the machine before `/theurian:setup`, which checks for the binary
+and stops if it is absent. **Nothing holds either sentence.** `README.md` is deliberately
+outside `CORE_ARRIVAL_SURFACES`, because
+`test_every_surface_that_says_how_core_arrives_names_the_installer` requires the
+literal `uv tool install theurian`, which is the one installer the README must
+*not* name — see the next paragraph for why.
+
+**The installer every corrected surface names does not resolve, and the name is
+unclaimed.** Measured 2026-08-06: `https://pypi.org/pypi/theurian/json` and
+`https://pypi.org/simple/theurian/` both return **404**, as does `theurian-core`.
+The distribution name in `packages/theurian-core/pyproject.toml` is `theurian`
+and `release-core.yml` publishes to `https://pypi.org/project/theurian/`, so the
+name is registrable by anyone until the first release claims it. A user who
+follows the shipped instruction today gets a resolution failure; whoever
+registers the name first decides what that instruction installs tomorrow, which
+is this entry's own actor arriving through the sentence that was written to send
+users somewhere safe.
+
+The population is **16 files** containing `uv tool install theurian` or `pipx
+install theurian` — that string is the key, so a rephrasing is outside the count.
+Two of them execute: `application/setup_steps.py` (`probe_core`'s detail) and
+`domain/compatibility.py` (`CORE_MISSING`'s remedy). Four are the corrected
+surfaces above. Three are tests that pin the literal, `INSTALLERS` in
+`test_setup_claims.py` among them, so the string cannot be changed in one place
+alone. The rest are `packaging/macos/README.md`, `docs/contributing/release.md`,
+`docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md`,
+`cli/setup_commands.py`'s docstring, `release-core.yml`, `plugins/claude-code/CHANGELOG.md`,
+and this file.
+
+This is the mirror of the two `probe_artifact_integrity` strings above: those
+turn false *at* the first tag, these are false *until* it. `README.md` avoids it
+only because it installs from the checkout. **Not fixed here** — all 16 move
+together, and which way they move is a release decision: claim the PyPI name now,
+or document the source install everywhere until the first tag. Tracked with the
+rest of the release gate in
+[#39](https://github.com/theurian/theurian/issues/39).
 
 One surface is adjacent and is deliberately **not** counted among the nine:
 `docs/integrations/serena.md:172` diagnoses "Theurian tools missing" as "Setup

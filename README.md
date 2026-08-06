@@ -301,8 +301,10 @@ With Claude Code:
 ```
 
 Installing the plugin does nothing on its own — no daemon starts, no OS service
-is registered. `/theurian:setup` is the only command that installs anything, and
-what it runs is the `theurian setup` from the quick start above.
+is registered. `/theurian:setup` runs the `theurian setup` from the quick start
+above. **It does not install Theurian**: Core has to be on the machine before
+that third line, which checks for the `theurian` binary and stops if it is
+absent (T-16).
 
 `tests/e2e/` drives the real daemon over the real endpoint, but no test in this
 repository starts the plugin inside Claude Code. That side is held by four
