@@ -33,6 +33,56 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   is covered by `SHA256SUMS` — which is the defect this entry records, and a
   changelog is no place to reintroduce it.
 
+### Fixed
+
+- **A `minimum` did not bound anything, and neither did a `maximumExclusive`.**
+  `theurian compat check` translates Core's PEP 440 version into SemVer before
+  comparing it against a plugin's declared range, and the translation put
+  versions in the wrong order. Declaring `minimum: 0.1.0-dev.0` — the floor this
+  repository's own plugin ships, and the one the documentation recommends for an
+  unreleased Core — accepted `0.1.0.dev1`, refused `0.1.0a1`, `0.1.0a2` and
+  `0.1.0b1`, then accepted `0.1.0rc1` and `0.1.0` again. A floor with a hole in
+  the middle is not a stricter floor; it is a floor that means nothing.
+
+  Two rules disagree between the ecosystems, and both were live. PEP 440 sorts
+  `.devN` below every pre-release phase, while SemVer §11.4.2 compares the phase
+  words as ASCII and puts `dev` between `beta` and `rc`. PEP 440 sorts
+  `0.2.0a1.dev1` below `0.2.0a1`, while SemVer §11.4.4 ranks the longer
+  identifier list higher. Over the release train the tests now enumerate — 40
+  versions of one release, so 780 ordered pairs — 99 came out backwards.
+
+  `maximumExclusive` is the same comparison read from the other end and failed
+  the same way: a ceiling of `0.1.0-alpha.1` refused `0.1.0.dev0`, which is
+  *below* it, and accepted `0.1.0a0`, which is above.
+
+  Both bounds are now ordered by Core's release train — `dev` < `alpha` <
+  `beta` < `rc` < final, with a development build below the pre-release it
+  precedes — applied to the declaration's bounds and to Core's own version
+  alike. Declarations keep their existing spelling and verdicts keep printing
+  it; neither `compatibility.yaml` nor the published schema changes.
+
+  **Not breaking, measured rather than argued.** Every `minimum`/
+  `maximumExclusive` pair this repository declares was resolved against 200
+  versions spanning five releases, under the old comparison and the new one. No
+  pair changes verdict against the Core that ships (`0.1.0.dev0`), and the only
+  pair whose meaning changes at all is `0.1.0-dev.0`/`0.2.0`, where all 24
+  changes run `core-too-old` → `compatible`: versions that were wrongly refused
+  are now accepted, and nothing that was accepted is now refused.
+
+  What *can* move the restrictive way is a bound that names a pre-release phase.
+  A ceiling of `0.1.0-dev.0` stops accepting every `0.1.0` alpha — correctly,
+  because those are newer than it. If you maintain a client whose `minimum` or
+  `maximumExclusive` carries a `-dev`, `-alpha`, `-beta` or `-rc` segment,
+  re-read it against the ordering above. A bound with no pre-release segment is
+  unaffected.
+- **A PEP 440 development segment carrying no number was dropped whole.** PEP
+  440 makes that number optional and defaults it to 0, but the parser decided
+  the segment was *present* by asking whether its number was — so `0.2.0.dev`
+  parsed as `0.2.0`, a development build read as the finished release it
+  precedes. That is the failure this translation exists to prevent, inverted:
+  rather than being told Core was missing, a client would have been told it had
+  shipped.
+
 ## [0.1.0.dev0] - 2026-08-06
 
 A development release, published to claim the `theurian` name on PyPI. Until
