@@ -314,6 +314,42 @@ def test_plugin_and_core_versions_are_independent() -> None:
     assert manifest["version"] != __version__
 
 
+def test_the_version_claude_code_caches_is_the_version_the_plugin_declares() -> None:
+    """One artifact, two files that name its version, and nothing joined them.
+
+    ``plugin.json``'s ``version`` is the only field that decides *delivery*:
+    Claude Code caches a plugin by it, ``/plugin update`` compares it, and
+    ``SECURITY.md`` makes bumping it the act that ships a plugin fix to users.
+    ``compatibility.yaml``'s ``pluginVersion`` is the only field that decides
+    what the plugin *says it is*: ``theurian compat check`` reports it, the
+    SessionStart hook reads it through ``lib.sh``, and ``shared.yml`` passes it
+    to ``--plugin-version``.
+
+    A maintainer who bumps only the first delivers a new plugin that identifies
+    itself as the old one everywhere a user, a compatibility verdict, or a
+    security advisory would look. ``docs/contributing/release.md`` told them a
+    test caught that. Until this one, none did.
+
+    Compared as written text, not as parsed versions: the cache key is the
+    literal string, so ``0.2.0`` and ``0.2.0+build.1`` are two different
+    deliveries even though SemVer §10 excludes build metadata from precedence.
+    That the declared value is well-formed SemVer at all is
+    :func:`test_compatibility_declaration_matches_its_schema`'s question.
+    """
+    manifest = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    declaration = yaml.safe_load((PLUGIN / "compatibility.yaml").read_text(encoding="utf-8"))
+
+    cached_version = manifest["version"]
+    declared_version = declaration["pluginVersion"]
+
+    assert cached_version == declared_version, (
+        f".claude-plugin/plugin.json declares version {cached_version!r} but "
+        f"compatibility.yaml declares pluginVersion {declared_version!r}. Claude Code "
+        f"would cache the plugin as {cached_version!r} while `theurian compat check` "
+        f"and the SessionStart hook report {declared_version!r}. Bump both."
+    )
+
+
 # -- FR-L4: the SessionStart hook stays cheap ------------------------------
 
 
