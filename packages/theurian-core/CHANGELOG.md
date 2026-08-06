@@ -594,11 +594,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `tests/integration/test_setup_report_withholding.py` — a test that only checked
   the path anchors passed before this fix and after it.
 
+  **A field *name* is a value too, and that took a second pass to see.** The
+  first fix published the names of the differing fields on the reasoning that a
+  name is schema. It is not, unless Theurian defined it: the names came from a
+  union with the installed file, so what got published was whatever string sat in
+  key position in somebody else's. A systemd continuation line is the *value* of
+  the directive above it, and parsed alone its left-hand side became a directive
+  name — a bearer token, published as a field name inside the sentence promising
+  the values were withheld. `DifferingFields` now intersects with the names
+  Theurian's own renderer produces and counts the rest, which holds without
+  depending on a parser being right about a third party's file format.
+
+  **The two halves cannot be used apart.** `_redacted` refuses a payload from a
+  context that did not ask for publication, because stamping `redacted: true` on
+  a run that did not withhold reproduces the original defect exactly — and
+  `tests/integration/test_setup_report_withholding.py` sweeps *every* step in
+  `STEPS` with a seeded sentinel rather than testing the routes that were known
+  to be broken, after a one-line addition to an unrelated step reopened the class
+  with the whole suite green.
+
   **`SECURITY.md` and `docs/security/local-mcp.md` said this could not happen**
   ("no credential value … enters that payload for it to remove"), which is what
   told a reader the output was safe to paste. Both now describe the two
-  mechanisms and what review is still the reader's; `docs/adr/0011` and
-  `CONTRIBUTING.md` carried the same claim and are corrected with them.
+  mechanisms and what review is still the reader's. `docs/adr/0011`,
+  `CONTRIBUTING.md`, `docs/architecture/requirements-analysis.md` and the bug
+  report template carried the same claim. The plugin's `/theurian:doctor` command
+  said plain `theurian doctor --json` "redacts by default" — it never has, and
+  now says so.
 
 - **A corrupted cell in the canonical state database was published to MCP
   callers verbatim** (SEC-13). `SqliteCanonicalStore` handed the bytes it could

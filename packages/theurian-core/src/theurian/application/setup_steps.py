@@ -384,6 +384,14 @@ def apply_daemon_service(context: SetupContext) -> None:
 
 
 def _service_path(context: SetupContext) -> str:
+    """Where this platform's service definition lives.
+
+    Still ``getattr``, unlike the two comparison calls beside it, because the
+    attribute genuinely differs by platform -- ``plist_path`` or ``unit_path`` --
+    and neither is on the port. It fails to ``""``, which reaches a report as a
+    sentence missing its subject rather than as a disclosure, so it is left for
+    the milestone that gives :class:`DaemonManager` a definition path.
+    """
     service = context.service
     for attribute in ("plist_path", "unit_path"):
         path = getattr(service, attribute, None)
