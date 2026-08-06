@@ -89,8 +89,30 @@ through a migration — not rescued from a git-ignored directory.
 
 - Root `.gitignore` and the `.gitignore` block written by `theurian init` cover
   every derived path.
-- CI job `empty-db-rebuild` applies all migrations to an empty database and
-  compares the resulting canonical state against a golden fixture.
-- `theurian doctor` warns when a derived artifact is tracked by Git.
-- An integration test asserts a second rebuild from the same inputs produces an
-  identical state hash.
+  `tests/unit/test_project_and_traceability.py::test_gitignore_block_covers_every_derived_location`
+  and `tests/e2e/test_migration_workflow.py::test_gitignore_covers_every_derived_path`.
+
+Still owed, with the milestone that will satisfy it:
+
+- **Nothing rebuilds from an empty database and compares the result.** This
+  section said "CI job `empty-db-rebuild` applies all migrations to an empty
+  database and compares the resulting canonical state against a golden fixture".
+  No such job exists — the name appeared in four documents and in no workflow —
+  and no test or script does the equivalent. FR-K4 is what this
+  ADR's whole argument rests on, so the gap is at the load-bearing point:
+  [#64](https://github.com/theurian/theurian/issues/64) (Milestone 6).
+- **`theurian doctor` does not ask Git what is tracked.** This section said it
+  warns when a derived artifact is tracked. `probe_gitignore` reads
+  `.gitignore` and checks for the string `.theurian/state`; a database committed
+  before the block was added stays committed and the probe reports
+  `SATISFIED`. The check the ADR describes — `git ls-files` over the derived
+  paths — is the one worth having, and is filed with #64 because it is the same
+  guarantee from the other end.
+- **The rebuild-determinism test is over the hash function, not over a
+  rebuild.** This section claimed an integration test asserting a second rebuild
+  from the same inputs produces an identical state hash.
+  `tests/unit/test_state_hash.py::test_hash_is_stable_across_processes` is the
+  test that exists: it calls `compute_state_hash` in three separate interpreters
+  under differing `PYTHONHASHSEED` values and requires one answer. That holds
+  determinism of the *function*. Nothing applies a migration set twice and
+  compares what the store ended up holding. Also #64.

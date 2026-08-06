@@ -32,11 +32,18 @@ uv run mypy
 uv run pytest --cov
 ```
 
-Then confirm the things CI checks that are easy to forget:
+One thing CI checks that is easy to forget locally:
 
-- Every dependency is pinned with `==` and `uv.lock` is committed.
-- The empty-database rebuild produces the golden canonical state.
-- `CURRENT_PROTOCOL_VERSION` matches what the CHANGELOG claims.
+- Every dependency is pinned with `==` and `uv.lock` is committed. Failing this
+  fails the `pinning` job in `security.yml`, not the release workflow, so it is
+  worth seeing before the tag.
+
+Two items stood here that CI does not check and nothing else does either: "the
+empty-database rebuild produces the golden canonical state" and
+"`CURRENT_PROTOCOL_VERSION` matches what the CHANGELOG claims". Neither is
+runnable — there is no rebuild command and no CHANGELOG-to-constant comparison —
+so under a heading promising CI coverage they were the opposite of a check. The
+rebuild is [#64](https://github.com/theurian/theurian/issues/64).
 
 ### 2. Version and changelog
 
@@ -264,7 +271,6 @@ not so they are checked twice.
 
 - [ ] *(CI)* Format, lint, mypy, tests green
 - [ ] Coverage reviewed
-- [ ] Empty-database rebuild matches the golden state
 - [ ] Every dependency pinned; `uv.lock` committed
 - [ ] *(CI)* `pyproject.toml`, `__version__`, and the tag all agree
 - [ ] *(CI)* CHANGELOG has a non-empty section for the version
