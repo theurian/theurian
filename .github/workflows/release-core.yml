@@ -6,9 +6,14 @@ name: Release Core
 #
 # This workflow is the executable form of docs/contributing/release.md §5–§6:
 # build, verify the artifact in a clean environment, produce an SBOM and
-# checksums, publish to PyPI, then cut the GitHub release. Before this file
-# existed, release.md claimed "CI builds, verifies, and publishes checksums"
-# and nothing did.
+# checksums, draft the GitHub release that carries them, publish to PyPI, then
+# take that release out of draft. Before this file existed, release.md claimed
+# "CI builds, verifies, and publishes checksums" and nothing did.
+#
+# The release is drafted before the upload and published after it, so no failure
+# can leave a wheel installable from PyPI while the checksums a verifier would
+# check it against exist nowhere. That ordering is the shipped half of T-16 and
+# is argued in full in docs/contributing/release.md §5.
 on:
   push:
     tags: ["core-v*"]
@@ -23,8 +28,11 @@ permissions:
   contents: read
 
 # Never cancel a release in flight. PyPI refuses a second upload of a filename
-# it already holds, so a run cancelled between the two publish steps leaves a
-# version that can only be yanked, never repaired.
+# it already holds, so a run cancelled during or after the upload leaves a
+# version that can only be yanked, never repaired. What a cancellation no longer
+# costs is the record: the draft release created before the upload already holds
+# that version's checksums and SBOM, so publishing it takes one command and no
+# rebuild.
 concurrency:
   group: release-core-${{ github.ref }}
   cancel-in-progress: false
@@ -285,11 +293,83 @@ jobs:
             release-notes.md
           if-no-files-found: error
 
-  publish-pypi:
-    name: Publish to PyPI
+  # The record, before the artifact it describes is reachable.
+  #
+  # `SHA256SUMS` and the SBOM are what a verifier checks a download against, and
+  # until this job runs they exist only inside the workflow run, which expires.
+  # Creating the release here means no failure after this point can leave an
+  # installable wheel with no record of its checksums anywhere: PyPI refuses a
+  # second upload of a filename it already holds, so an upload that succeeds
+  # cannot be undone by retrying, only yanked.
+  #
+  # It is a *draft*, which is visible only to accounts with push access, so the
+  # release becomes public in `publish-release` and not before — the record is
+  # written first, announced last.
+  #
+  # If this job fails partway it leaves a draft holding some of the assets and
+  # nothing on PyPI, because `publish-pypi` waits on it. Delete the draft and
+  # re-run. That is safe precisely because nothing has been published yet, which
+  # is the property the whole ordering exists to buy.
+  #
+  # This job reaches `contents: write` before the `pypi` environment's required
+  # reviewer sees anything, which the old order did not. What that grants is
+  # bounded: a draft release for the pushed tag, not public, and `gh release
+  # create` refuses a tag that already has a release, so it cannot overwrite
+  # one. Reaching here at all needs a tag whose signature verified against
+  # RELEASE_SIGNERS, and an actor who can defeat that check is choosing the
+  # commit this file is read from, so they could grant themselves `contents:
+  # write` regardless. A rejected or never-approved deployment leaves the draft
+  # behind; delete it.
+  draft-release:
+    name: Draft the GitHub release
     needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-artifacts
+          path: artifacts
+
+      - name: Create the release as a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            cat artifacts/release-notes.md
+            echo
+            echo "---"
+            echo
+            echo "Install: \`uv tool install theurian==${VERSION}\`"
+            echo
+            echo "Every artifact below is covered by \`SHA256SUMS\`, and"
+            echo "\`theurian-${VERSION}.cdx.json\` is its CycloneDX 1.6 SBOM."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Theurian Core ${VERSION}" \
+            --notes-file notes.md \
+            --verify-tag \
+            --draft \
+            artifacts/dist/*
+          echo "Drafted ${GITHUB_REF_NAME}; not public until publish-release."
+
+  publish-pypi:
+    name: Publish to PyPI
+    # `draft-release` is a hard prerequisite, not a convenience: it is what
+    # makes the checksums exist before the artifact they cover is installable.
+    needs: [build, draft-release]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # This environment carries `core-maintainers` as a required reviewer, so the
+    # run stops here and waits for a human. It stops *after* the draft exists,
+    # which is the point of the ordering: the maintainer approving an upload can
+    # read the release notes, SHA256SUMS and the SBOM they are approving instead
+    # of approving a job name.
     environment:
       name: pypi
       url: https://pypi.org/project/theurian/${{ needs.build.outputs.version }}
@@ -319,38 +399,31 @@ jobs:
           attestations: true
           print-hash: true
 
-  github-release:
-    name: Cut the GitHub release
+  # The artifact is reachable; make the record public. This job uploads nothing
+  # and rewrites nothing — `--draft=false` flips one field — so what becomes
+  # visible here is byte-for-byte what `draft-release` attached before the PyPI
+  # upload happened.
+  #
+  # If this job fails, PyPI holds the version and the draft still holds its
+  # checksums and SBOM. Re-run it, or flip the draft by hand with
+  # `gh release edit <tag> --draft=false`. Nothing needs rebuilding, and nothing
+  # needs yanking — which was not true when this job created the release from
+  # scratch after the upload.
+  publish-release:
+    name: Publish the GitHub release
     needs: [build, publish-pypi]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: release-artifacts
-          path: artifacts
-
-      - name: Create the release
+      - name: Take the release out of draft
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          {
-            cat artifacts/release-notes.md
-            echo
-            echo "---"
-            echo
-            echo "Install: \`uv tool install theurian==${VERSION}\`"
-            echo
-            echo "Every artifact below is covered by \`SHA256SUMS\`, and"
-            echo "\`theurian-${VERSION}.cdx.json\` is its CycloneDX 1.6 SBOM."
-          } > notes.md
-          gh release create "$GITHUB_REF_NAME" \
+          gh release edit "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Theurian Core ${VERSION}" \
-            --notes-file notes.md \
-            --verify-tag \
-            artifacts/dist/*
+            --draft=false
+          echo "Theurian Core ${VERSION}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
