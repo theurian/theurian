@@ -16,8 +16,9 @@ from that installation, so it cannot be what creates it.
 ## What to do
 
 1. Confirm Core is installed. If this prints nothing, stop and tell the user to
-   run `uv tool install theurian` (or `pipx install theurian`) first; every step
-   below shells out to this binary and will fail without it.
+   run `uv tool install theurian` (or `pipx install theurian`) first. Steps 2
+   and 5 shell out to this binary and are the only things here that do any
+   work; without it they fail with `command not found`.
 
    ```sh
    command -v theurian
@@ -43,10 +44,23 @@ from that installation, so it cannot be what creates it.
    theurian setup --json
    ```
 
-6. Report the result using the report's `steps` array. Show what changed and
-   what was already satisfied. A step that reports `missing` alongside an
-   `action` is one setup does not perform itself — relay the command it names
-   rather than implying setup handled it.
+6. Report the result using the report's `steps` array. Every step carries a
+   `status` — what the final probe found — and an `outcome`, which is what this
+   run did to it: `changed`, `unchanged`, `failed` or `not-attempted`. Show what
+   changed and what was already satisfied.
+
+   Do not read `action` as a command to hand to the user. All seven steps setup
+   performs report `missing` with an `action` *before* they run, so relaying
+   every one of them would tell the user to go and "Create ~/.theurian with mode
+   0700" themselves. It is a description of the work, not a command.
+
+   What is worth relaying is whatever is still unresolved once the run ends. The
+   report lists those in `warnings`, and several of them name the command that
+   does the work — `theurian init`, `theurian project register` — which setup
+   runs for you under no circumstances. Skip this paragraph unless `state` is
+   `converged` or `degraded`: in `plan-built`, `awaiting-consent` and
+   `rolled-back` the verification pass never ran, so no `outcome` means anything
+   yet.
 
 7. If the report's `serenaDetected` field is true, tell the user that Theurian
    and Serena are configured to work together, and briefly state the split:

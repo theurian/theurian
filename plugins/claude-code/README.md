@@ -13,6 +13,16 @@ own — every command is a thin adapter over the `theurian` CLI.
 
 ## Install
 
+Theurian Core is a prerequisite, not something this plugin brings with it. Every
+command here shells out to the `theurian` binary, so it goes on the machine
+first:
+
+```sh
+uv tool install theurian    # or: pipx install theurian
+```
+
+Then, in Claude Code:
+
 ```text
 /plugin marketplace add theurian/theurian-plugins
 /plugin install theurian@theurian-plugins
@@ -21,8 +31,9 @@ own — every command is a thin adapter over the `theurian` CLI.
 
 Installing the plugin **does nothing** on its own: no daemon starts, no OS
 service is registered, no file outside the plugin directory is written. The
-third line is what performs setup, and it is idempotent — run it as many times
-as you like.
+third line is what performs setup — it configures the machine around the Core
+you already put there, never installs Core itself, and it is idempotent, so run
+it as many times as you like.
 
 ## Why setup is a separate step
 

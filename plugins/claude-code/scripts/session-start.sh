@@ -33,7 +33,16 @@ set -uo pipefail
 
 main() {
   if ! theurian::cli_present; then
-    theurian::warn "Core is not installed. Run /theurian:setup once to get started."
+    # Naming /theurian:setup here was advice nobody could follow: that command
+    # shells out to the `theurian` binary whose absence produced this warning,
+    # and so does every step in its document. The installer goes first, in the
+    # same words `probe_core` and the CORE_MISSING remedy use, so a user landing
+    # on any of the three reads one instruction (FR-L3).
+    #
+    # Printed, never run. `theurian::warn` writes its argument to stderr and
+    # nothing else, which is the whole of this hook's remit under §8.
+    theurian::warn "Core is not installed. Install it with 'uv tool install theurian'" \
+      "or 'pipx install theurian', then run /theurian:setup to configure this machine."
     return 0
   fi
 

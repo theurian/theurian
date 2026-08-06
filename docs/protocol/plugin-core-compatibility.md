@@ -97,7 +97,7 @@ resolves to `core-too-old`.
 ```mermaid
 flowchart TD
     A["Read compatibility.yaml"] --> B["theurian compat check"]
-    B -->|"CLI not on PATH"| Z1["core-missing<br/>→ 'Run /theurian:setup once.'"]
+    B -->|"CLI not on PATH"| Z1["core-missing<br/>→ 'uv tool install theurian,<br/>then /theurian:setup.'"]
     B --> C{"core >= minimum?"}
     C -->|no| Z2["core-too-old<br/>→ 'Upgrade Core.'"]
     C -->|yes| D{"core < maximumExclusive?"}
@@ -118,10 +118,21 @@ flowchart TD
 | Outcome | Meaning | Remedy |
 | :-- | :-- | :-- |
 | `compatible` | Proceed | — |
-| `core-missing` | The CLI is not on `PATH` | Run `/theurian:setup` once. **Not an error to repair automatically** — this is the normal "plugin installed, setup not yet run" state (FR-L3). |
+| `core-missing` | The CLI is not on `PATH` | Install Core with `uv tool install theurian` or `pipx install theurian`, then run `/theurian:setup`. **Not an error to repair automatically** — this is the normal "plugin installed, Core not yet installed" state (FR-L3). |
 | `core-too-old` | Core predates `minimum` | Upgrade Core |
 | `core-too-new` | Core is at or past `maximumExclusive` | Update the **plugin**. Downgrading Core would break every other client on the machine. |
 | `protocol-mismatch` | Wire protocols differ | Update both to a matching pair |
+
+Show the verdict's own `remedy` string rather than a copy of this column. The
+column says what the outcome means; `remedy` is the sentence Core has already
+written for the user, and the two staying in step is why it is in the response
+at all.
+
+`core-missing` is the one where that matters most: the client cannot reach Core
+to ask, so it must not offer a remedy that needs Core to carry it out.
+`/theurian:setup` is such a remedy — it shells out to the `theurian` binary
+whose absence produced the verdict — which is why the installer is named first
+here and in every other surface that answers this question.
 
 ## What "stop" means
 

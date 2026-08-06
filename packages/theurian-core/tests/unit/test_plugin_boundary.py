@@ -279,6 +279,44 @@ def test_session_start_hook_is_registered_with_a_timeout() -> None:
     assert 0 < hook["timeout"] <= 5, "SessionStart must be bounded (NFR-2)"
 
 
+#: A ``theurian::warn`` call and everything it is given to print, across the
+#: backslash continuations a multi-argument warning is wrapped over.
+_WARNING_TEXT = re.compile(r"theurian::warn\b(?:[^\n]*\\\n)*[^\n]*")
+
+
+def _executed(script: str) -> str:
+    """The part of a hook that runs, with comments and warning text removed.
+
+    The forbidden list below is substring-matched, so *mentioning* an installer
+    in a message was indistinguishable from *running* one -- and the message is
+    the whole point of the Core-absent branch, which has nothing else to offer a
+    user whose ``PATH`` has no ``theurian`` on it. ``theurian::warn`` writes its
+    argument to stderr and does nothing else, so its argument is not work.
+
+    The exemption is only sound while a warning cannot execute anything, which
+    :func:`test_a_session_start_warning_cannot_execute_anything` holds.
+    """
+    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    return _WARNING_TEXT.sub("theurian::warn", body)
+
+
+def test_a_session_start_warning_cannot_execute_anything() -> None:
+    """What makes the exemption in :func:`_executed` sound.
+
+    A message is exempt from the forbidden list because it is printed rather
+    than run. Command substitution inside one would run, so a warning that
+    contained ``$(...)`` or a backtick would carry an installer straight past
+    the check that the exemption exists to keep honest.
+    """
+    script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
+    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+    substituting = [
+        call for call in _WARNING_TEXT.findall(body) if "$(" in call or "`" in call or "${" in call
+    ]
+    assert not substituting, f"a SessionStart warning can execute: {substituting}"
+
+
 def test_session_start_hook_performs_no_heavy_or_mutating_work() -> None:
     """§8 of the brief, checked against the script rather than the docs.
 
@@ -286,7 +324,7 @@ def test_session_start_hook_performs_no_heavy_or_mutating_work() -> None:
     the user on a session they started for an unrelated reason.
     """
     script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
-    body = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    body = _executed(script)
 
     forbidden = (
         "theurian setup",
