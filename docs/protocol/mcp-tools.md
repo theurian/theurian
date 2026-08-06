@@ -247,14 +247,13 @@ or renaming a tool is breaking and bumps it. See
 **`protocolVersion` is still `theurian/v1` after Milestone 5, which made three
 breaking changes to this contract.** That is a decision, recorded here because
 the alternative reading is that somebody forgot. The rule above governs changes
-*from a released protocol*: `theurian/v1` has never been released — Core is
-`0.1.0.dev0`, there is no release tag, and every one of those changes is under
-*Unreleased* in the changelog — so no client can be pinned to a `v1` that lacks
-them, and bumping would publish a `theurian/v2` whose `v1` never shipped.
-Milestone 5's breaking set is the *content* of `v1`, not a departure from it.
+*from a released protocol*: no published version of Core has ever lacked them,
+so no client can be pinned to a `v1` that lacks them, and bumping would publish
+a `theurian/v2` whose `v1` never shipped. Milestone 5's breaking set is the
+*content* of `v1`, not a departure from it.
 
 The three, so that "breaking but unbumped" is checkable rather than asserted:
 the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
 and the two required fields `project.list` gained. Each is named as BREAKING in
-the changelog, which is what protects an integrator reading this branch. The
-first bump is the first breaking change after `theurian/v1` is released.
+the changelog, which is what protects an integrator. The first bump is the
+first breaking change after the version that first carries `theurian/v1`.

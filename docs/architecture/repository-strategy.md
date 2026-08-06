@@ -86,7 +86,7 @@ A plugin-only pull request should not pay for a Core test matrix.
 | `plugins/**` | Boundary checks, shellcheck, manifest validation |
 | `schemas/**` | Schema validation **plus both** artifacts' suites |
 | Both trees | Everything, plus cross-artifact compatibility |
-| `docs/**`, `*.md` | Documentation link check |
+| `docs/**`, any `*.md`, `shared.yml` itself | Documentation link check |
 
 Security workflows (CodeQL, dependency review, secret scan, SBOM, licence scan)
 run on every change regardless.

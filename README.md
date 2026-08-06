@@ -159,8 +159,8 @@ is not built yet. It is Milestone 8; `system.capabilities` reports
 
 ## Quick start
 
-Theurian is pre-release; install from source until the first tagged release
-reaches PyPI.
+Theurian is pre-release; the command below builds and installs Core from a
+checkout of this repository.
 
 ```sh
 git clone https://github.com/theurian/theurian && cd theurian
@@ -458,7 +458,7 @@ found beside the version it expects.
 | **Indexed text is labelled as data, not as instructions** | Every result carries `untrusted-knowledge`, `mayContainInstructions`, and `executable`. **Theurian labels; it does not enforce.** Acting on the label is the calling agent's responsibility, and no MCP server can take it over (T-3). |
 | **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. |
 | **Apache-2.0, DCO, no CLA** | Core cannot be relicensed away from Apache-2.0 without every contributor's agreement. ([ADR-0015](docs/adr/0015-dco-over-cla.md)) |
-| **Artifact verification is not implemented** | There is no published release manifest to check against, so setup reports its `artifact-integrity` step as `not-applicable` rather than claiming a check it did not make — `theurian setup --dry-run` prints it, and installs nothing. Checksums, a CycloneDX SBOM, and a step that aborts on a mismatch arrive with the first tagged release (T-16). |
+| **Artifact verification is not implemented** | `SHA256SUMS` and a CycloneDX SBOM are published with every release, so the record a verifier would check against exists on every release — and **nothing in Theurian checks it**. Setup has no artifact to hash and no point in its flow where a check would run: it does not obtain Core, and cannot even report Core missing, because setup *is* Core. `artifact-integrity` reports `not-applicable` rather than claiming a check it did not make — `theurian setup --dry-run` prints it, and installs nothing. Checking a download against the `SHA256SUMS` on [its release](https://github.com/theurian/theurian/releases) is a manual step, and a narrow one: the checksums are unsigned and published by the pipeline that built the artifact, so they catch a substituted download, not a compromised release. ([#39](https://github.com/theurian/theurian/issues/39), T-16) |
 | **Cross-sensitivity summaries are prevented by design, and nothing summarizes yet** | A RAPTOR node's tree identity includes project, tenant, sensitivity, ACL group, and namespace, so a node combining two levels has no tree to belong to — structural rather than a check someone could forget. No summary is built today: `system.capabilities` reports `raptor: false`, and the forest is Milestone 6. ([ADR-0008](docs/adr/0008-raptor-forest.md)) |
 
 The full [threat model](docs/security/threat-model.md) names what is *not* solved
