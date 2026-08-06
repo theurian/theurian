@@ -34,7 +34,7 @@ import pathlib
 import re
 from typing import Final
 
-from fakes.setup import FakeMcpConfig
+from fakes.setup import FakeMcpConfig, FakeService
 
 from theurian.application import setup_steps
 from theurian.application.setup_context import SetupContext
@@ -136,7 +136,9 @@ def _context(tmp_path: pathlib.Path, *, executable: str = "") -> SetupContext:
 
     A repository with nothing in it is the environment where the project steps
     have a remedy to offer; a converged one would report ``SATISFIED`` and name
-    no command at all.
+    no command at all. A service manager is present for the same reason: with
+    ``service=None`` the two daemon steps report ``NOT_APPLICABLE`` and drop out
+    of the seven, which is a fixture that quietly weakens the count below.
     """
     return SetupContext(
         home=tmp_path,
@@ -147,7 +149,7 @@ def _context(tmp_path: pathlib.Path, *, executable: str = "") -> SetupContext:
         mcp_config=FakeMcpConfig(),
         secrets=FileSecretStore(tmp_path / "data"),
         health=lambda: None,
-        service=None,
+        service=FakeService(),
         executable=executable,
     )
 
@@ -387,10 +389,11 @@ def test_the_plugin_document_does_not_call_a_writing_step_one_setup_skips(
 ) -> None:
     """``missing`` plus an ``action`` is not the signal it was said to be.
 
-    Every one of the seven steps setup performs reports exactly that before it
-    runs -- ``status`` is what the probe found *before* the run -- so an agent
-    following the old rule would have told the user to go and run "Create
-    ~/.theurian with mode 0700" themselves. Probed here rather than argued.
+    Every one of the steps setup performs reports exactly that while there is
+    work to do, so an agent following the old rule would have told the user to
+    go and run "Create ~/.theurian with mode 0700" themselves. Probed against
+    the real step table rather than argued -- and the count is asserted, because
+    the rule was false for *every* writer, not for an unlucky one.
     """
     context = _context(tmp_path)
     acting = _steps_that_act()
@@ -400,8 +403,12 @@ def test_the_plugin_document_does_not_call_a_writing_step_one_setup_skips(
         if step.step_id in acting and (probed := step.probe(context)).would_change and probed.action
     }
 
-    assert writers_that_look_skippable, "the premise of this test no longer holds"
+    assert len(writers_that_look_skippable) == len(acting), (
+        f"only {sorted(writers_that_look_skippable)} of {len(acting)} writers report "
+        f"missing with an action; the rule this test refutes may have become true"
+    )
 
     text = _collapsed(PLUGIN_SETUP_DOC.read_text(encoding="utf-8"))
     assert "a step that reports `missing` alongside an `action` is one setup does not" not in text
-    assert "`outcome`" in text, "step 6 no longer distinguishes what ran from what was found"
+    for field in ("`status`", "`outcome`"):
+        assert field in text, f"step 6 no longer tells the agent to read {field}"

@@ -49,18 +49,20 @@ from that installation, so it cannot be what creates it.
    run did to it: `changed`, `unchanged`, `failed` or `not-attempted`. Show what
    changed and what was already satisfied.
 
-   Do not read `action` as a command to hand to the user. All seven steps setup
-   performs report `missing` with an `action` *before* they run, so relaying
-   every one of them would tell the user to go and "Create ~/.theurian with mode
-   0700" themselves. It is a description of the work, not a command.
+   Do not treat `missing` plus an `action` as the mark of a step setup skips.
+   Every step setup performs reports exactly that while there is work to do, so
+   an agent relaying all of them would ask the user to go and "Create
+   ~/.theurian with mode 0700" themselves. An `action` describes the work; it is
+   not always a command anyone can run.
 
-   What is worth relaying is whatever is still unresolved once the run ends. The
-   report lists those in `warnings`, and several of them name the command that
-   does the work — `theurian init`, `theurian project register` — which setup
-   runs for you under no circumstances. Skip this paragraph unless `state` is
-   `converged` or `degraded`: in `plan-built`, `awaiting-consent` and
-   `rolled-back` the verification pass never ran, so no `outcome` means anything
-   yet.
+   What is worth relaying is a step whose `status` is *still* `missing` or
+   `conflicting` once the run has finished — the report lists those in
+   `warnings` too. There the `action` is the thing to pass on: it names the
+   command that resolves what setup left alone, such as `theurian init` or
+   `theurian project register`. Skip this paragraph unless `state` is
+   `converged` or `degraded`; in `plan-built`, `awaiting-consent` and
+   `rolled-back` the verification pass never ran, so `status` is still the plan
+   rather than the result.
 
 7. If the report's `serenaDetected` field is true, tell the user that Theurian
    and Serena are configured to work together, and briefly state the split:
