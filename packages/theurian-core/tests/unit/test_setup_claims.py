@@ -269,7 +269,11 @@ def _degraded_report(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) ->
     """
     monkeypatch.setattr(setup_steps, "DAEMON_START_TIMEOUT_SECONDS", 0.0)
     executable = tmp_path / "theurian"
-    executable.touch()
+    # 0755, not `touch()`: `probe_core` requires a path a service manager could
+    # exec, and a 0644 file makes `core-present` abort the run, so every claim
+    # below would be asserted against a plan that never ran (#49).
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
     return SetupService(_context(tmp_path, executable=str(executable))).run(SetupRequest())
 
 

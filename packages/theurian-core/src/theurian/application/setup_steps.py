@@ -161,6 +161,36 @@ def _missing_daemon_modules() -> tuple[str, ...]:
     return tuple(missing)
 
 
+def _is_runnable_absolute_path(candidate: Path) -> bool:
+    """Whether ``candidate`` is an absolute path to a regular file marked executable.
+
+    Exactly those three things, and **not** "a service manager could exec this".
+    That stronger claim was written here and is false: five shapes satisfy all
+    three predicates and still fail to exec, measured on macOS --
+
+    ===================================================  =======================
+    shape                                                ``execve`` answers
+    ===================================================  =======================
+    0755 script whose shebang names a removed binary     ENOENT
+    0755 console script whose shebang is a dangling link ENOENT
+    0755 text with no shebang                            ENOEXEC
+    0755 zero-byte file                                  ENOEXEC
+    0755 Linux ELF on macOS                              ENOEXEC
+    ===================================================  =======================
+
+    All five are file *format* and shebang, which no ``stat`` can see. Nothing
+    short of running the thing separates them, and running it would still be a
+    check-to-use race, so the predicate is stated at the width it actually has.
+
+    Deliberately not ``exists()``: that is true of a directory, and it resolves
+    a relative name against whatever directory setup happened to run in, while
+    the string is written verbatim into a launchd plist or a systemd unit.
+    ``is_file`` also rejects FIFOs, dangling symlinks, symlink loops and
+    directories, which is what it earns its place for.
+    """
+    return candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK)
+
+
 def probe_core(context: SetupContext) -> SetupStep:
     """Whether Core is installed *and* can do what the rest of the plan needs.
 
@@ -169,6 +199,33 @@ def probe_core(context: SetupContext) -> SetupStep:
     launchd and systemd start with a PATH that is not the user's, so an
     installation reachable only through a shell alias or a virtualenv on
     ``PATH`` produces a service that cannot start.
+
+    **Three shapes reported ``satisfied`` that no service manager could start**,
+    all measured: a bare name, which ``exists()`` resolves against the current
+    working directory; a *directory*, which ``exists()`` is also true of; and a
+    regular file without the executable bit. The last two survived the first fix
+    for #49, which is why the check names three predicates rather than the one
+    the summary happened to mention.
+
+    What that check establishes is narrower than "Core will start", and
+    :func:`_is_runnable_absolute_path` records the five shapes that pass it and
+    still fail to exec. This step does not close that gap and does not claim to;
+    a Core in any of those states could not have run the ``setup`` command that
+    is asking.
+
+    ``is_file`` **and** ``os.access(X_OK)``, because neither alone is enough and
+    each admits precisely what the other rejects: ``X_OK`` is true of a
+    directory, where the bit means "searchable", and ``is_file`` is true of a
+    0644 file. Both follow symlinks on purpose -- ``uv tool install`` and
+    ``pipx`` put a symlink on ``PATH`` pointing into the tool's virtualenv, and
+    that is what ``shutil.which`` hands back, so ``lstat`` semantics here would
+    reject every real installation.
+
+    ``_executable()`` resolves before it returns and ``shutil.which`` answers
+    ``None`` for all three shapes, so no shipped caller reaches them today. The
+    requirement is still the check's to state rather than its current caller's
+    -- the same argument that closed the bare-name case, applied to the rest of
+    it (#49).
 
     And the ``daemon`` extra has to be present. That arm exists because the path
     check alone reported ``satisfied`` for ``uv tool install theurian`` -- the
@@ -194,7 +251,8 @@ def probe_core(context: SetupContext) -> SetupStep:
     named executable on every ``doctor`` run -- buys a subprocess to cover the
     case of a user who already has two Cores.
     """
-    if not (context.executable and Path(context.executable).exists()):
+    executable = Path(context.executable) if context.executable else None
+    if executable is None or not _is_runnable_absolute_path(executable):
         return SetupStep(
             step_id=StepId.CORE_PRESENT,
             status=StepStatus.CONFLICTING,

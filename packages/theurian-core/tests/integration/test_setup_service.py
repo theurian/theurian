@@ -37,15 +37,21 @@ def context(tmp_path: Path) -> SetupContext:
 
 
 def _installed_executable(tmp_path: Path) -> str:
-    """A file that really exists.
+    """A file a service manager could really exec.
 
-    The `core-present` probe requires an absolute path that resolves, because a
-    service unit invokes Theurian by absolute path -- so a fixture pointing at a
-    path that does not exist would be testing the abort case by accident.
+    The `core-present` probe requires an absolute path that resolves *and can be
+    started*, because a service unit invokes Theurian by absolute path -- so a
+    fixture pointing at a path that does not exist, or at a 0644 file, would be
+    testing the abort case by accident.
+
+    The mode is load-bearing rather than decorative: this fixture used
+    `touch()`, and every setup test in this file asserted `satisfied` against a
+    Core that could not be executed (#49).
     """
     executable = tmp_path / "bin" / "theurian"
     executable.parent.mkdir(parents=True, exist_ok=True)
-    executable.touch()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
     return str(executable)
 
 
