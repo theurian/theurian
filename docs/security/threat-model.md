@@ -907,13 +907,35 @@ anything would be a false assurance about supply chain integrity — and this
 entry, which is where a reader goes to find out what protects them, was not.
 
 **The manual check that stands in for it is worth less than it looks, and this
-entry did not say so.** Two records ship, they have different authenticity, and
-Theurian verifies neither:
+entry did not say so.** Both records are now published objects rather than
+things the workflow would produce: `core-v0.1.0.dev0` carries `SHA256SUMS`, the
+wheel, the sdist and the CycloneDX SBOM as release assets, and PyPI holds a PEP
+740 attestation for each of the two distributions. They have different
+authenticity, and Theurian verifies neither:
 
 | Record | Signed by | Forgeable by |
 | :-- | :-- | :-- |
-| `SHA256SUMS` | nothing — `sha256sum * \| tee SHA256SUMS` in the same `build` job that produced the artifacts, with no signing step anywhere in the workflow | anyone who can alter the release assets, and anyone who can push a `core-v*` tag |
+| `SHA256SUMS` on the GitHub release | nothing — `sha256sum` output over `dist/`, written in the same `build` job that produced the artifacts, with no signing step anywhere in the workflow | anyone who can alter the release assets, and anyone who can push a `core-v*` tag |
 | PEP 740 attestations on PyPI | the workflow's own OIDC identity | only someone who can cause `release-core.yml` to run in this repository — which is anyone who can push a `core-v*` tag |
+
+**The check runs, and running it is what shows the record covers what a user
+installs.** Against the shipped release:
+
+```console
+$ gh release download core-v0.1.0.dev0 --repo theurian/theurian --dir .
+$ shasum -a 256 -c SHA256SUMS
+theurian-0.1.0.dev0-py3-none-any.whl: OK
+theurian-0.1.0.dev0.cdx.json: OK
+theurian-0.1.0.dev0.tar.gz: OK
+```
+
+Three entries, and the file does not list itself — the `build` job expands the
+glob into a variable before `tee` creates the file, rather than piping
+`sha256sum *` straight into it, because the two sides of a pipeline are separate
+subshells and the file can otherwise appear in its own listing. The wheel and
+sdist digests in it equal the `sha256` digests PyPI reports for the same two
+filenames, so the record on the GitHub release describes the bytes an installer
+fetches, and the two publication channels agree.
 
 So a user who does perform the manual check gains nothing against the actor
 described above. Whoever chooses the tagged commit runs the job that computes the
