@@ -17,8 +17,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - `theurian setup` and `theurian doctor` now explain the `artifact-integrity`
   step's `not-applicable` as a property of Theurian rather than of the world.
   The old wording denied that any record existed to check against, and promised
-  verification at the first tagged release. Both were true only until a `core-v*`
-  tag is cut — and from that point the first of them would tell every user not to
+  verification at the first tagged release. Both hold only until a `core-v*` tag
+  is cut — none has been, so neither is false as this is written — and from the
+  moment one is, the first of them would tell every user not to
   bother checking a file published on that very release page, which is the only
   mitigation available while the control is unimplemented. The step still reports
   `not-applicable` and still verifies nothing; it now says that Theurian does not

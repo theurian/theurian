@@ -929,10 +929,10 @@ above it — measured on the body assembled from the changelog before
 [#56](https://github.com/theurian/theurian/pull/56), where the section ran 1326
 lines and the claim was at line 1140. Distant, and on the same page.
 
-**Both of those surfaces were corrected by #56, merged on 2026-08-06**, which
-replaced the changelog's premise with "setup never obtains Core, so it holds no
-artifact to hash" and the README row with one that states the published records
-exist and that nothing in Theurian checks them. An earlier revision of this entry
+**Both of those surfaces were corrected by #56, merged into `main` on
+2026-08-06**, which replaced the changelog's premise with "setup never obtains
+Core, so it holds no artifact to hash" and the README row with one that states
+the published records exist and that nothing in Theurian checks them. An earlier revision of this entry
 called #56 open, which it was when that revision was written and is not now. The
 mechanism it exercised is unchanged: `release-core.yml` still publishes that
 section verbatim, so a future edit to it reaches the release page the same way.
