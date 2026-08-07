@@ -56,6 +56,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   true of a population this change has split in two, and re-deriving that count
   belongs to whichever of those lands last.
 
+- **The `core-too-old` remedy named a subcommand that does not exist.** It read
+  "Upgrade Core with `theurian upgrade`, or run /theurian:upgrade"; `upgrade` has
+  never been registered in `cli/main.py`, so `theurian upgrade` exits 2 with
+  `No such command` and `/theurian:upgrade` failed the same way
+  ([#42](https://github.com/theurian/theurian/issues/42)). It now reads
+  `uv tool upgrade theurian` / `pipx upgrade theurian`, from a single
+  `CORE_UPGRADERS` constant.
+
+  This is the compatibility outcome with a production path — `CORE_MISSING` is
+  reachable only from tests, because `cli.main.compat_check` always passes a
+  parsed version, while `core-too-old` fires against any installed Core below the
+  plugin's declared minimum. The plugin's `SessionStart` hook prints the whole
+  verdict to stderr on every session that hits it, so the remedy that could not
+  be followed was the one most likely to be read.
+
+  **Delegation is the decision, not an omission.** A real `theurian upgrade`
+  would make Theurian the thing that fetches its own wheel, and with it T-16's
+  install-time verification; that is a larger commitment than a remedy string and
+  is deliberately not taken. The remedy names no extra because both installers
+  re-resolve the spec they recorded, so an install carrying `[daemon]` keeps it
+  across an upgrade — measured against uv 0.7.2 and pipx 1.16.6. Naming it would
+  imply that upgrading repairs a bare install, which it does not.
+
 ## [0.1.0.dev0] - 2026-08-07
 
 A development release, published to claim the `theurian` name on PyPI. Until

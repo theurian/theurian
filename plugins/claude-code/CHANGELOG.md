@@ -52,6 +52,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `action` is one setup skips. All seven steps setup performs report exactly
   that before they run, so an agent following the old rule would have asked the
   user to go and "Create ~/.theurian with mode 0700" themselves.
+- **`/theurian:upgrade` ran a command that does not exist.** It called
+  `theurian upgrade --check --json` and then `theurian upgrade --json`; `upgrade`
+  has never been a registered Core subcommand and both exit 2 with `No such
+  command` ([#42](https://github.com/theurian/theurian/issues/42)). The command
+  now reports the compatibility verdict from `theurian version` and
+  `theurian compat check`, then prints `uv tool upgrade theurian` /
+  `pipx upgrade theurian` for the user to run. It never upgrades anything, and
+  its `allowed-tools` is `Bash(theurian:*)`, so it cannot invoke an installer
+  even by mistake — Theurian does not obtain its own artifacts.
+
+  The command is kept rather than removed: `REQUIRED_COMMANDS` in
+  `tests/unit/test_plugin_boundary.py` pins `upgrade` as one of the twelve §9
+  commands, and both this README's command table and
+  `docs/integrations/claude-code.md` list it. What changed is what it does.
 
 ### Security
 
