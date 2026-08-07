@@ -64,12 +64,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `uv tool upgrade theurian` / `pipx upgrade theurian`, from a single
   `CORE_UPGRADERS` constant.
 
-  This is the compatibility outcome with a production path — `CORE_MISSING` is
-  reachable only from tests, because `cli.main.compat_check` always passes a
-  parsed version, while `core-too-old` fires against any installed Core below the
-  plugin's declared minimum. The plugin's `SessionStart` hook prints the whole
+  `CORE_MISSING` is the only outcome `cli.main.compat_check` cannot produce,
+  because it always passes a parsed version. `core-too-old`, `core-too-new` and
+  `protocol-mismatch` all reach production and all exit 3, so this is a remedy a
+  user can really be handed. The plugin's `SessionStart` hook prints the whole
   verdict to stderr on every session that hits it, so the remedy that could not
   be followed was the one most likely to be read.
+
+  It is not reachable in the shipped configuration, and that is a property of
+  the current version rather than of the code: Core `0.1.0.dev0` renders as
+  `0.1.0-dev.0` and the plugin's declared floor is `0.1.0-dev.0`, so
+  `core < floor` is false. The first Core release that moves either number makes
+  it reachable.
 
   **Delegation is the decision, not an omission.** A real `theurian upgrade`
   would make Theurian the thing that fetches its own wheel, and with it T-16's
@@ -77,7 +83,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   is deliberately not taken. The remedy names no extra because both installers
   re-resolve the spec they recorded, so an install carrying `[daemon]` keeps it
   across an upgrade — measured against uv 0.7.2 and pipx 1.16.6. Naming it would
-  imply that upgrading repairs a bare install, which it does not.
+  imply that upgrading repairs a bare install, and the converse was measured too:
+  a bare install upgraded with `uv tool upgrade` re-resolves to a bare install,
+  with the extra's dependency absent before and after. That user needs
+  `uv tool install 'theurian[daemon]'`, not an upgrade.
 
 ## [0.1.0.dev0] - 2026-08-07
 

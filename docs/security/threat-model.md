@@ -987,10 +987,25 @@ command`. It reached users on the surface this entry already singles out:
 an incompatible Core, and `/theurian:upgrade` is one of the twelve shipped plugin
 commands. Unlike `CORE_MISSING`, which `cli.main.compat_check` cannot reach
 because it always passes a parsed version, `CORE_TOO_OLD` fires against any
-installed Core below the plugin's declared minimum — measured, `theurian compat
-check --core-minimum 99.0.0` exits 3, which is `THEURIAN_EXIT_INCOMPATIBLE` in
-the plugin's `lib.sh` and is exactly the branch that prints the verdict. The
-remedy nobody could follow was the one most likely to be read.
+installed Core below the plugin's declared minimum. Measured — the whole command,
+because a partial one exits 2 on the missing options and a raised floor alone
+exits 2 on `maximumExclusive (0.2.0) must be greater than minimum (99.0.0)`:
+
+```console
+$ theurian compat check --plugin-version 0.1.0 --core-minimum 99.0.0 \
+    --core-maximum-exclusive 100.0.0 --protocol-version theurian/v1 --json
+{ "outcome": "core-too-old", … }
+$ echo $?
+3
+```
+
+3 is `THEURIAN_EXIT_INCOMPATIBLE` in the plugin's `lib.sh`. The remedy nobody
+could follow was the one most likely to be read.
+
+`core-too-old` is not the only outcome with a production path — `core-too-new`
+and `protocol-mismatch` both resolve through the same call and both exit 3,
+measured. What is true of this one specifically is that `CORE_MISSING` is the
+single outcome `compat_check` *cannot* produce.
 
 > **Resolved by delegation in
 > [#42](https://github.com/theurian/theurian/issues/42).** The decision the six
