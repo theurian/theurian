@@ -978,17 +978,49 @@ this entry warns about further down; presenting an install-verb population as
 the class is that error one level up, which is where the previous two versions
 of this paragraph went wrong.
 
-**The upgrade verb is a second face of the same class, and it is worse than
-inaccurate.** `resolve_compatibility`'s `CORE_TOO_OLD` remedy reads "Upgrade Core
+**The upgrade verb was a second face of the same class, and it was worse than
+inaccurate.** `resolve_compatibility`'s `CORE_TOO_OLD` remedy read "Upgrade Core
 with `theurian upgrade`, or run /theurian:upgrade", and `theurian upgrade` is not
 a registered command — `theurian upgrade --check --json` exits 2 with `No such
-command`. It reaches users on the surface this entry already singles out:
+command`. It reached users on the surface this entry already singles out:
 `session-start.sh` prints the whole verdict to stderr on every session that finds
 an incompatible Core, and `/theurian:upgrade` is one of the twelve shipped plugin
-commands. Six sites carry it, and closing them needs a product decision — whether
-Theurian upgrades itself or delegates to `uv tool upgrade` — so it is tracked
-separately at [#42](https://github.com/theurian/theurian/issues/42) rather than
-folded in here. The *obtaining* verb has not been searched at all.
+commands. Unlike `CORE_MISSING`, which `cli.main.compat_check` cannot reach
+because it always passes a parsed version, `CORE_TOO_OLD` fires against any
+installed Core below the plugin's declared minimum — measured, `theurian compat
+check --core-minimum 99.0.0` exits 3, which is `THEURIAN_EXIT_INCOMPATIBLE` in
+the plugin's `lib.sh` and is exactly the branch that prints the verdict. The
+remedy nobody could follow was the one most likely to be read.
+
+> **Resolved by delegation in
+> [#42](https://github.com/theurian/theurian/issues/42).** The decision the six
+> sites were waiting on — whether Theurian upgrades itself or delegates — went
+> the way the rest of this entry already points. `CORE_TOO_OLD` now reads
+> `uv tool upgrade theurian` / `pipx upgrade theurian`, from `CORE_UPGRADERS` in
+> `domain/compatibility.py`, and `/theurian:upgrade` reports the verdict and
+> prints that command rather than running a subcommand that does not exist. The
+> plugin command is kept rather than deleted because `REQUIRED_COMMANDS` in
+> `tests/unit/test_plugin_boundary.py` pins it as one of the twelve §9 commands;
+> what changed is what it does, not whether it ships.
+>
+> **Implementing `theurian upgrade` was the alternative, and it was rejected for
+> a reason this entry owns.** A Theurian that fetches its own wheel is a Theurian
+> that must verify it, which makes T-16's install-time verification Theurian's
+> control rather than `uv`'s — a strictly larger commitment than the one being
+> discharged here, taken by writing a remedy string. Delegation keeps the
+> property the module docstring already states: a mismatch is reported, never
+> resolved by installing anything.
+>
+> The remedy deliberately names no extra. Both installers record the spec they
+> were given and re-resolve *it*, so an install carrying `[daemon]` keeps it —
+> measured against uv 0.7.2 (`black[d]` 24.1.0 → 24.10.0, `uv-receipt.toml`
+> still recording `extras = ["d"]`) and pipx 1.16.6 (`upgrading black from spec
+> 'black[d]'`). Naming the extra would assert that upgrading repairs a bare
+> install, which it does not; that user's answer is `DAEMON_INSTALLERS`. Note
+> this is the opposite of the *install* asymmetry recorded above, where a plain
+> `pipx install` over an existing installation is a no-op and needs `--force`.
+
+The *obtaining* verb has not been searched at all.
 
 **This is the third time this class has been declared closed on a key narrower
 than its own definition** — first the word "verify", then the word "installs",
