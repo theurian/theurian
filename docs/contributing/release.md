@@ -224,9 +224,11 @@ real `lib.sh` and holds this.
 
 Both tests run in `plugin.yml`'s `manifest` job, which triggers when a pull
 request or a push to `main` touches `plugins/**`, `schemas/protocol/**`, or
-`plugin.yml` itself. Both files above are under `plugins/`, so editing either
-runs the check — and nothing else does: a change elsewhere in the repository
-does not run this job at all.
+`plugin.yml` itself. Both files above are under `plugins/`, so bumping either
+runs the check. They are also ordinary unit tests, so `core.yml`'s test matrix
+runs them whenever it runs at all — the check is not confined to plugin-only
+pull requests. What runs neither job is a change touching neither tree: a
+docs-only pull request does not run this check.
 
 It is also not a release gate. Nothing triggers on `plugin-v*` (§4), so a tag
 cut from a commit that never went through a pull request is unchecked — which is
