@@ -580,11 +580,22 @@ on a `core-v*` tag and, before anything is published: builds, then installs the
 wheel into a clean environment and runs `theurian version --json` against it;
 produces a reproducible CycloneDX 1.6 SBOM from that verified install rather than
 from the lock file (OSS-7); writes `SHA256SUMS` over every artifact including the
-SBOM (OSS-11); publishes to PyPI over Trusted Publishing with PEP 740
-attestations, so no maintainer holds a credential that could publish a different
-artifact; and attaches the checksums and the SBOM to the GitHub release. **Every
-one of these acts on production. None acts on installation**, which is the
-residual below.
+SBOM (OSS-11); drafts the GitHub release carrying both; publishes to PyPI over
+Trusted Publishing with PEP 740 attestations, so no maintainer holds a credential
+that could publish a different artifact; and only then takes the release out of
+draft.
+
+**The order is itself a control: the checksums and the SBOM are fixed in a draft
+release before the artifact they cover is installable.** `build → draft-release →
+publish-pypi → publish-release`. Until `draft-release` runs, `SHA256SUMS` and the
+SBOM exist only inside the workflow run, which expires; after it, no failure can
+leave an installable wheel whose record survives nowhere, and PyPI's refusal to
+re-upload a filename it already holds means an upload cannot be walked back. The
+draft is visible only to accounts with push access, so the record is written
+first and announced last.
+
+**Every one of these acts on production. None acts on installation**, which is
+the residual below.
 
 **The tag-signature step joined them, and its reach is narrower than its name.**
 The workflow assembles a trust root per run from the public keys GitHub holds for
@@ -617,22 +628,190 @@ one, and the one class it did catch still is:
    security of every account in `RELEASE_SIGNERS`. Someone who can add a signing
    key to a listed account is a release signer from the next run, and nothing in
    this repository would record it.
-2. **The push is not bound at all.** A `push` to `refs/tags` runs the workflow
-   from the tip commit pushed to the ref, and GitHub documents that this
-   "includes workflows that are not merged into the default branch"
+2. **The push is not bound. The PyPI upload has been since 2026-08-06, and those
+   are two different claims.** A `push` to `refs/tags` runs the workflow from the
+   tip commit pushed to the ref, and GitHub documents that this "includes
+   workflows that are not merged into the default branch"
    ([events that trigger workflows, `push`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)).
    Whoever chooses the tagged commit therefore chooses this workflow file too,
-   including a version of it with the verification removed. Closing that takes a
-   tag ruleset or a required reviewer on the `pypi` environment, and as of this
-   writing `gh api repos/theurian/theurian/rulesets` returns `[]` and the `pypi`
-   environment has not been created (it is listed as one-time setup still owed in
-   [`release.md`](../contributing/release.md)).
+   including a version of it with the verification removed. That half is
+   untouched: `quality` and `build` run the pushed commit's code with nothing in
+   front of them.
 
-So the honest reading is **release hygiene that binds the signer** — every
-published `core-v*` tag carries a signature that verifies against a named account,
-and a maintainer who forgets `-s` or signs with an unregistered key is stopped —
-not a barrier against someone who can push a tag. Nothing inside a workflow file
-can be that barrier.
+   What changed is the one job that reaches PyPI. Measured 2026-08-06:
+
+   ```console
+   $ gh api repos/theurian/theurian/environments --jq '.environments[].name'
+   github-pages
+   pypi
+
+   $ gh api repos/theurian/theurian/environments/pypi \
+       --jq '"can_admins_bypass=\(.can_admins_bypass)", (.protection_rules[] | "\(.type) prevent_self_review=\(.prevent_self_review) \(.reviewers[].reviewer.slug)")'
+   can_admins_bypass=true
+   required_reviewers prevent_self_review=false core-maintainers
+
+   $ gh api 'repos/theurian/theurian/rulesets?includes_parents=true'
+   []
+   ```
+
+   Re-measured after `core-v0.1.0.dev0`: byte-identical, rulesets still `[]`.
+   The ruleset half of the sentence this entry used to carry still holds, and the
+   release did not change it. The environment half stopped holding on the day the
+   environment was created, and the entry went on asserting it — see the
+   correction below.
+
+**A required reviewer on the `pypi` environment is the one control a tag pusher
+cannot edit out of the workflow.** The environment name is half of the PyPI
+credential rather than a property of the file: GitHub puts an `environment` claim
+in the OIDC token only for a job that declares one
+([OIDC token claims](https://docs.github.com/en/actions/reference/security/oidc)),
+and PyPI refuses a token whose claims do not match the registered publisher —
+`invalid-publisher`, whose first suggested cause is "check if the workflow is
+using the same environment as configured when the publisher was configured on
+PyPI"
+([PyPI troubleshooting](https://docs.pypi.org/trusted-publishers/troubleshooting/)).
+So every job that can mint a token PyPI accepts declares `environment: pypi`, and
+every job that declares it waits for a `core-maintainers` approval before its
+first step runs. `publish-pypi` is that job.
+
+**It has now been observed firing.** This paragraph said the first tag was what
+would test it. `core-v0.1.0.dev0` was pushed on 2026-08-07 at `f665ecf` and ran
+[`31166532134`](https://github.com/theurian/theurian/actions/runs/31166532134),
+which finished `success`:
+
+```console
+$ gh api repos/theurian/theurian/actions/runs/31166532134/jobs \
+    --jq '.jobs[] | "\(.started_at)  \(.conclusion)  \(.name)"'
+2026-08-07T09:35:30Z  success  Format, lint, types, tests
+2026-08-07T09:37:52Z  success  Build, verify, and sign off the artifacts
+2026-08-07T09:38:18Z  success  Draft the GitHub release
+2026-08-07T09:50:58Z  success  Publish to PyPI
+2026-08-07T09:51:22Z  success  Publish the GitHub release
+
+$ gh api repos/theurian/theurian/deployments/5792255782/statuses \
+    --jq '.[] | "\(.created_at)  \(.state)"'
+2026-08-07T09:51:14Z  success
+2026-08-07T09:50:59Z  in_progress
+2026-08-07T09:50:58Z  queued
+2026-08-07T09:38:31Z  waiting
+```
+
+Every other job in the run took seconds. `publish-pypi` sat in `waiting` from
+`09:38:31` to `09:50:58` — **12 minutes 27 seconds** — while the three jobs
+before it had already finished, and it is the only job in the workflow that
+declares the environment. So the gate stopped the one job that reaches PyPI, and
+held it until somebody approved. That is the mechanism above, measured rather
+than derived from documentation.
+
+**What the gate binds depends on who pushed the tag, and the first real push
+took the row that binds least.**
+
+| The tag is pushed by | The approval does |
+| :-- | :-- |
+| an account with write access that is not in `core-maintainers` | stop `publish-pypi` before its first step; nothing reaches PyPI until a maintainer approves |
+| a `core-maintainers` member | nothing — `prevent_self_review` is unset, so the pusher approves their own run |
+| a repository admin | nothing — `can_admins_bypass` is true, so the deployment can be forced |
+
+**The first release took the second row, and the row's prediction is what
+happened.** The run's actor is the account that pushed the tag, and it is the
+account that approved the deployment:
+
+```console
+$ gh api repos/theurian/theurian/actions/runs/31166532134 \
+    --jq '"event=\(.event) actor=\(.actor.login) head_branch=\(.head_branch)"'
+event=push actor=utchy head_branch=core-v0.1.0.dev0
+
+$ gh api repos/theurian/theurian/actions/runs/31166532134/approvals \
+    --jq '.[] | "\(.state) by \(.user.login) on \(.environments[].name)"'
+approved by utchy on pypi
+```
+
+`state` is `approved`, not a bypass, so `prevent_self_review` being unset is what
+allowed it rather than `can_admins_bypass` — the third row was not exercised. The
+twelve minutes are how long the approval took to arrive, and nothing more: they
+are not a second person's consent. **A gate a tag pusher clears by approving
+himself records a release; it does not authorize one** — which is the row as
+written, now with a run behind it instead of a configuration reading.
+
+**All three rows are the same account.** Measured 2026-08-06 and unchanged when
+re-measured after the release:
+
+```console
+$ gh api repos/theurian/theurian/collaborators --jq '.[] | "\(.login) \(.role_name)"'
+utchy admin
+
+$ gh api repos/theurian/theurian/teams --jq '.[] | "\(.slug) permission=\(.permission)"'
+core-maintainers permission=maintain
+claude-plugin-maintainers permission=push
+security permission=push
+
+$ for t in core-maintainers claude-plugin-maintainers security; do
+    gh api "orgs/theurian/teams/$t/members" --jq '.[].login'; done
+utchy
+utchy
+utchy
+```
+
+Three teams carry write access and every one of them has the same single member,
+who is also the sole collaborator, an admin, and the only account in
+`RELEASE_SIGNERS`. **The gate therefore binds nobody who can push a `core-v*` tag
+today.** It starts binding at the first account granted `push` or `maintain` that
+is not put in `core-maintainers`. Setting `prevent_self_review` does not close
+the second row while that is the membership: GitHub blocks the initiator of a
+deployment from approving it, so on a one-member team it makes an ordinary
+release unapprovable except through the admin bypass, which is the same account
+a third time.
+
+**The gate does not cover the GitHub release, and does not need to.**
+`draft-release` reaches `contents: write` before the reviewer sees anything, and
+`publish-release` is ordered after the approval by `needs` alone — a property of
+the file, which the same actor rewrites. Neither grants that actor anything:
+reaching either job means they chose the commit this workflow is read from, so
+they could give themselves `contents: write` directly. The bound on them is the
+tag push, not the token.
+
+**The one fact this repository could not observe is now published.** PyPI
+documents the environment field as optional, so the credential binds the
+environment only if the trusted publisher was registered with
+`Environment name: pypi`. While the publisher was pending, nothing outside PyPI's
+own settings page could confirm that. The upload published it — PyPI's integrity
+endpoint names the publisher that authenticated each file, environment included:
+
+```console
+$ curl -sS https://pypi.org/integrity/theurian/0.1.0.dev0/theurian-0.1.0.dev0-py3-none-any.whl/provenance \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["attestation_bundles"][0]["publisher"]))'
+{"environment": "pypi", "kind": "GitHub", "repository": "theurian/theurian", "workflow": "release-core.yml"}
+```
+
+The sdist returns the same record. The field is filled in, so a job that omits
+`environment: pypi` mints a token whose claims do not match the publisher, and
+the argument above stands on a record any reader can fetch rather than on a
+setting only a PyPI maintainer can see. **This is what the anonymous reader can
+check; it is not a second control.** It reports the publisher that authenticated
+an upload that already happened, so it confirms the configuration was right for
+that release rather than constraining the next one.
+
+**So the residual is narrowed, not closed.** This entry named its closure as a
+tag ruleset *or* a required reviewer on the `pypi` environment. One branch of
+that disjunction is now satisfied — and it is the branch that does not act on the
+actor the residual names. The reviewer stops an account that has write access and
+is not a `core-maintainers` member; the residual is *someone who can push a
+`core-v*` tag*, and every such account today is in that team, is the admin who
+can bypass the rule, and is the account the approval was requested from and
+granted by in the release above. The ruleset branch, which is the one that would
+act on the push itself, is still empty.
+
+The honest reading of the signature step is therefore what it was: **release
+hygiene that binds the signer** — every published `core-v*` tag carries a
+signature that verifies against a named account, and a maintainer who forgets
+`-s` or signs with an unregistered key is stopped — not a barrier against someone
+who can push a tag, and nothing inside a workflow file can be that barrier. What
+changed is that a barrier now stands beside it, in the environment configuration
+and the PyPI publisher record rather than in the file. That is why rewriting the
+file does not remove it, and also why a reader of the file alone cannot see it.
+Two things would extend it to the actor the residual names, and neither is done:
+a ruleset restricting who may create `core-v*`, and a second maintainer, without
+whom `prevent_self_review` has nobody to fall back to.
 
 **`RELEASE_SIGNERS` is release authority spelled as a workflow env.** It holds
 `utchy` today. Adding an account to it grants that account the ability to cut a
@@ -685,6 +864,37 @@ tag, not what a user installs.
 > what the step can establish rather than to how it is spelled, so the correction
 > does not change it.
 
+> **Corrected 2026-08-06: the `pypi` environment was created, and this entry went
+> on saying it had not been.**
+>
+> **What it said.** "Closing that takes a tag ruleset or a required reviewer on
+> the `pypi` environment, and as of this writing `gh api
+> repos/theurian/theurian/rulesets` returns `[]` and the `pypi` environment has
+> not been created (it is listed as one-time setup still owed in `release.md`)."
+>
+> **What was true.** The environment was created at `2026-08-06T09:52:15Z`, while
+> registering Trusted Publishing for the first release, with `core-maintainers`
+> as a required reviewer. Nobody came back to this paragraph or to `release.md`.
+> The ruleset half of the sentence was correct and still is.
+>
+> **Why the wording mattered more than the fact.** That sentence was not a stale
+> detail — it was a premise. The conclusion under it, that the signature guard is
+> hygiene rather than a barrier, was derived from *both* named controls being
+> absent. One of them stopped being absent and the conclusion was never
+> re-derived, so the entry was reasoning from a state of the world that had
+> changed three lines earlier. Re-deriving it is what produced the three things
+> above that the old text does not contain: that a job which omits the
+> environment cannot mint a token PyPI accepts, that `prevent_self_review` and
+> `can_admins_bypass` decide how much the reviewer binds, and that with one
+> maintainer they leave it binding nobody who can push a tag.
+>
+> **The failure mode this correction is closest to is the opposite one.** The
+> disjunction "a tag ruleset *or* a required reviewer" makes "the reviewer now
+> exists" look like closure, and writing it that way would have been the worse
+> error of the two: a control named as satisfied that does not act on the actor
+> the residual names. The half that was satisfied is the half that binds
+> approvers; the residual is about pushers. The grade does not move.
+
 **Residual: nothing verifies any of it at install time. Critical, unmitigated.**
 This entry previously listed "SHA-256 verification before install as an explicit
 setup step" and "setup aborts rather than installing an artifact it could not
@@ -696,6 +906,49 @@ code under `plugins/` verifies a checksum either. The step is honest about
 itself — its docstring says a step reporting `satisfied` without checking
 anything would be a false assurance about supply chain integrity — and this
 entry, which is where a reader goes to find out what protects them, was not.
+
+**The manual check that stands in for it is worth less than it looks, and this
+entry did not say so.** Both records are now published objects rather than
+things the workflow would produce: `core-v0.1.0.dev0` carries `SHA256SUMS`, the
+wheel, the sdist and the CycloneDX SBOM as release assets, and PyPI holds a PEP
+740 attestation for each of the two distributions. They have different
+authenticity, and Theurian verifies neither:
+
+| Record | Signed by | Forgeable by |
+| :-- | :-- | :-- |
+| `SHA256SUMS` on the GitHub release | nothing — `sha256sum` output over `dist/`, written in the same `build` job that produced the artifacts, with no signing step anywhere in the workflow | anyone who can alter the release assets, and anyone who can push a `core-v*` tag |
+| PEP 740 attestations on PyPI | the workflow's own OIDC identity | only someone who can cause `release-core.yml` to run in this repository — which is anyone who can push a `core-v*` tag |
+
+**The check runs, and running it is what shows the record covers what a user
+installs.** Against the shipped release:
+
+```console
+$ gh release download core-v0.1.0.dev0 --repo theurian/theurian --dir .
+$ shasum -a 256 -c SHA256SUMS
+theurian-0.1.0.dev0-py3-none-any.whl: OK
+theurian-0.1.0.dev0.cdx.json: OK
+theurian-0.1.0.dev0.tar.gz: OK
+```
+
+Three entries, and the file does not list itself — the `build` job expands the
+glob into a variable before `tee` creates the file, rather than piping
+`sha256sum *` straight into it, because the two sides of a pipeline are separate
+subshells and the file can otherwise appear in its own listing. The wheel and
+sdist digests in it equal the `sha256` digests PyPI reports for the same two
+filenames, so the record on the GitHub release describes the bytes an installer
+fetches, and the two publication channels agree.
+
+So a user who does perform the manual check gains nothing against the actor
+described above. Whoever chooses the tagged commit runs the job that computes the
+checksums, so the record and the artifact are compromised together, and comparing
+one against the other confirms only that the same actor wrote both. The
+attestation is the stronger of the two — it cannot be produced by someone who can
+only edit a published release — but it is not stronger against a tag push, and
+nothing in Theurian reads it. `probe_artifact_integrity` returns
+`NOT_APPLICABLE`, and no code under `packages/` or `plugins/` reads `SHA256SUMS`
+or an attestation. What the checksums do defend against is the substituted
+download: a mirror, a proxy, or a wrong URL, where the artifact changes and the
+record does not.
 
 **Two things are missing, not one, and the second is why the first went
 unnoticed.** There is no code that hashes an artifact and compares it against
@@ -856,27 +1109,54 @@ Core.** That is the same fact as the paragraph above, met from the other end.
 Theurian publishes PEP 740 attestations; whether an installer checks them is that
 installer's behaviour, and Theurian neither checks nor reports them.
 
-**Two strings in that step would go false at the first `core-v*` tag, and one of
-them would cancel the only mitigation a user has.** `probe_artifact_integrity`
-reported `summary="No signed release manifest exists yet; nothing to verify
-against."` and `detail="Artifact verification arrives with the first tagged
-release (OSS-7, T-16)."` Neither is false as this is written, because **no
-`core-v*` tag has been cut and no release exists**. Both turn the moment one is:
-`release-core.yml` builds `SHA256SUMS` over every artifact and a reproducible
-CycloneDX SBOM, and its release job attaches them to the release it cuts (steps
-4 and 6 of [`release.md`](../contributing/release.md)). From that point the
-`detail` is an overdue promise, and the `summary` — the worse of the two — tells
-every user there is nothing to check against a record that exists and that they
-could check by hand, which is the entire mitigation until the control lands.
+**Two strings in that step would have gone false at the first `core-v*` tag, and
+one of them would have cancelled the only mitigation a user has.**
+`probe_artifact_integrity` reported `summary="No signed release manifest exists
+yet; nothing to verify against."` and `detail="Artifact verification arrives with
+the first tagged release (OSS-7, T-16)."` Both were true when they were written.
+**`core-v0.1.0.dev0` was pushed on 2026-08-07, and both would be false now**: the
+release carries `SHA256SUMS` and a reproducible CycloneDX SBOM as assets, so the
+`detail` would be an overdue promise and the `summary` — the worse of the two —
+would tell every user there is nothing to check against a record sitting on the
+page they downloaded from, which is the entire mitigation until the control
+lands.
 
-> **What has actually been measured, and what has not.** Release dry run
-> `31094621296` against `main` finished `success` with *Build the CycloneDX SBOM*
-> and *Publish checksums* both green. That run **skipped `Cut the GitHub
-> release`**, because skipping publication is what `dry_run` means — so it
-> establishes that the two files are produced, not that they reach a release
-> page. The claim above rests on the workflow's release job, which no run has
-> exercised. It is also in flight:
-> [#59](https://github.com/theurian/theurian/pull/59) changes that job.
+**They were retired before the tag, so no published artifact carries them.** That
+is the half of [#39](https://github.com/theurian/theurian/issues/39)'s release
+gate that was met — *correct the strings or land the control before the first tag
+is pushed* — and it is checkable on the wheel rather than on the repository:
+
+```console
+$ unzip -q theurian-0.1.0.dev0-py3-none-any.whl -d x && cd x
+$ grep -rq "No signed release manifest exists yet" . ; echo "exit $?"
+exit 1
+$ grep -h "summary=" theurian/application/setup_steps.py | grep -i verify
+        summary="Theurian does not verify the artifact it is running from.",
+```
+
+`3280bc9` ([#60](https://github.com/theurian/theurian/pull/60)) retired both and
+is an ancestor of the tagged commit `f665ecf`. **The guard arrived in that same
+commit and so could not have forced it.** `3280bc9` also added
+`tests/unit/test_artifact_integrity_claim.py`, whose
+`test_the_step_cannot_assert_a_retired_claim` holds both wordings, and the
+`quality` job runs `uv run pytest -q` — so from that commit on, a release
+re-introducing either string fails. Before it there was no such test, because the
+test and the fix are the same change: had #60 landed a day later, the release
+would have carried the strings and passed every check in the workflow. What met
+this gate was the ordering of two commits; what holds it from here is a test.
+
+> **What has now been measured.** This blockquote recorded that no run had
+> exercised the release job: dry run `31094621296` produced *Build the CycloneDX
+> SBOM* and *Publish checksums* but **skipped `Cut the GitHub release`**, because
+> skipping publication is what `dry_run` means. Run
+> [`31166532134`](https://github.com/theurian/theurian/actions/runs/31166532134)
+> is not a dry run. `Draft the GitHub release` and `Publish the GitHub release`
+> both finished `success`, and `SHA256SUMS`, the SBOM, the wheel and the sdist
+> are on the release page. [#59](https://github.com/theurian/theurian/pull/59),
+> recorded here as in flight, landed as `c2a5406` and is an ancestor of the
+> tagged commit — so the run that published used the reordered job, and the
+> ordering claim at the top of this entry describes what ran rather than what was
+> intended.
 
 **The executing surface is corrected here**, which is half of what
 [#39](https://github.com/theurian/theurian/issues/39) recorded as a condition on
