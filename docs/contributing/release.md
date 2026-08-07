@@ -202,9 +202,13 @@ do not delete it.
 
 ### What each failure leaves, and what to do
 
-| Failed at | On PyPI | On GitHub | Do this |
+Every cell below is **what this run did**, not what exists. A previous run may
+have put this version on PyPI already — nothing in the workflow can see PyPI, so
+check before you delete anything.
+
+| Failed at | This run put on PyPI | This run left on GitHub | Do this |
 | :-- | :-- | :-- | :-- |
-| 1–4 | nothing | nothing | Fix and re-tag. Safe here, because nothing has been published — see the re-tagging warning below for when it is not. |
+| 1–4 | nothing | nothing | Fix and re-tag — safe as long as this version is not already on PyPI from an earlier run. Check, then see the re-tagging warning below. |
 | 5 | nothing | a draft, possibly partial | Delete that draft **by id**, then **re-run all jobs**. Re-running without deleting fails at the guard, which is intended. |
 | 6, declined or unapproved | nothing | a complete draft | Either approve and re-run the failed jobs, or delete the draft by id and **re-run all jobs**. Not: delete, then re-run failed. |
 | 6, upload refused outright | nothing | a complete draft | Fix the cause, **re-run failed jobs**, and do not delete the draft. |

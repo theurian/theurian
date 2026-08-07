@@ -342,13 +342,15 @@ jobs:
   # release becomes public in `publish-release` and not before — the record is
   # written first, announced last.
   #
-  # If this job fails partway it leaves a draft holding some of the assets and
-  # nothing on PyPI, because `publish-pypi` waits on it. `gh` does not clean that
-  # up: `cleanupDraftRelease` returns early when `--draft` was requested, by
-  # design. Delete the draft and re-run. That is safe precisely because nothing
-  # has been published yet, which is the property the whole ordering exists to
-  # buy — and the first step below refuses to run until it has been done, rather
-  # than trusting anyone to remember.
+  # If this job fails partway it leaves a draft holding some of the assets, and
+  # *this run* uploads nothing, because `publish-pypi` waits on it. `gh` does not
+  # clean the draft up: `cleanupDraftRelease` returns early when `--draft` was
+  # requested, by design.
+  #
+  # Deleting that draft and re-running is the usual repair, and it is safe only
+  # when this version is not already on PyPI — which a *previous* run may have
+  # put there. Nothing in this job can see PyPI, so it does not claim to; the
+  # guard below prints the version's PyPI URL and leaves the check to a human.
   #
   # This job reaches `contents: write` before the `pypi` environment's required
   # reviewer sees anything, which the old order did not. What that grants is
@@ -460,7 +462,7 @@ jobs:
             echo "::error::${TAG} already has a release; see this step's log before deleting anything."
             exit 1
           fi
-          echo "No release exists for ${TAG}."
+          echo "No existing release found for ${TAG}."
 
       - name: Create the release as a draft
         id: draft
@@ -506,7 +508,7 @@ jobs:
           release_id="$(printf '%s' "$created" | jq -r '.id')"
           upload_url="$(printf '%s' "$created" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
           if [ -z "$release_id" ] || [ "$release_id" = "null" ]; then
-            echo "::error::Creating the draft returned no id. Nothing was published."
+            echo "::error::Creating the draft returned no id. This run uploaded nothing to PyPI and created no usable release."
             exit 1
           fi
           echo "Created draft release ${release_id} for ${TAG}."
@@ -542,7 +544,16 @@ jobs:
                   --jq '[.assets[].name] | sort | join(" ")')"
           want="$(ls artifacts/dist | sort | tr '\n' ' ' | sed 's/ $//')"
           if [ "$have" != "$want" ]; then
-            echo "::error::Draft ${release_id} carries [${have}] but should carry [${want}]. Nothing was published; delete it by id and re-run all jobs."
+            echo "Draft ${release_id} carries [${have}] but should carry [${want}]."
+            echo "This run uploaded nothing to PyPI. Whether a PREVIOUS run did is"
+            echo "not something this job can see — check before deleting anything:"
+            echo "  https://pypi.org/project/theurian/${VERSION}/"
+            echo ""
+            echo "NOT on PyPI -> delete this draft by id and re-run ALL jobs:"
+            echo "                 gh api -X DELETE repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            echo "ON PyPI     -> do not delete blindly; that version's record may be"
+            echo "               the only one there is. See release.md section 5."
+            echo "::error::Draft ${release_id} is missing artifacts; see this step's log before deleting anything."
             exit 1
           fi
 
@@ -634,7 +645,7 @@ jobs:
           # Fail closed. If the id did not arrive for any reason, stop -- do not
           # fall back to resolving the tag, which is the defect this replaced.
           if [ -z "$RELEASE_ID" ]; then
-            echo "::error::draft-release published no release id; refusing to guess from the tag."
+            echo "::error::draft-release emitted no release id; refusing to guess from the tag."
             exit 1
           fi
           # Publishing is irreversible in the sense that matters: the release
