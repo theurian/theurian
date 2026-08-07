@@ -134,8 +134,15 @@ real control, because only it can resolve symlinks.
 ### Rebuildability
 
 Applying every migration to an empty database reproduces the complete canonical
-state. This is enforced by the `empty-db-rebuild` CI job, and it is what makes
-SQLite safe to treat as a derived artifact.
+state. That is the design (FR-K4), and it is what makes SQLite safe to treat as
+a derived artifact.
+
+**Nothing checks it.** This paragraph said the property was "enforced by the
+`empty-db-rebuild` CI job"; that job does not exist, and no test rebuilds from
+empty and compares. Tracked as
+[#64](https://github.com/theurian/theurian/issues/64). Until it lands, a change
+that made the migration engine's output depend on something outside the
+Git-tracked inputs would not be caught here.
 
 ## Application
 

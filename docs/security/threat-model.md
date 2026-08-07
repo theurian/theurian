@@ -976,7 +976,7 @@ registers the name first decides what that instruction installs tomorrow, which
 is this entry's own actor arriving through the sentence that was written to send
 users somewhere safe.
 
-The population is **16 files** containing `uv tool install theurian` or `pipx
+The population is **17 files** containing `uv tool install theurian` or `pipx
 install theurian` — that string is the key, so a rephrasing is outside the count.
 Two of them execute: `application/setup_steps.py` (`probe_core`'s detail) and
 `domain/compatibility.py` (`CORE_MISSING`'s remedy). Four are the corrected
@@ -985,14 +985,24 @@ surfaces above. Three are tests that pin the literal, `INSTALLERS` in
 alone. The rest are `packaging/macos/README.md`, `docs/contributing/release.md`,
 `docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md`,
 `cli/setup_commands.py`'s docstring, `release-core.yml`, `plugins/claude-code/CHANGELOG.md`,
-and this file.
+`packages/theurian-core/CHANGELOG.md`, and this file.
 
-This is the mirror of the two `probe_artifact_integrity` strings above: those
-turn false *at* the first tag, these are false *until* it. `README.md` avoids it
-only because it installs from the checkout. **Not fixed here** — all 16 move
-together, and which way they move is a release decision: claim the PyPI name now,
-or document the source install everywhere until the first tag. Tracked with the
-rest of the release gate in
+> **The count was 16 and is 17.** The seventeenth is
+> `packages/theurian-core/CHANGELOG.md`, which acquired the literal when
+> [#54](https://github.com/theurian/theurian/pull/54) opened the `[0.1.0.dev0]`
+> section — measured with the paragraph's own key at both commits: 16 at
+> `30ada4d`, 17 at `eb17a2e`. A number that carries a deferral argument goes
+> stale the moment anything else in the repository moves, which is the cost of
+> stating one; it is stated anyway, because "all of them move together" is not
+> checkable without it.
+
+This is the mirror of the two `probe_artifact_integrity` strings below: those
+would be false *from* the first tag, these are false *until* it. That pair has
+been corrected — see the paragraph that records it — and this one has not.
+`README.md` avoids it only because it installs from the checkout. **Not fixed
+here** — all 17 move together, and which way they move is a release decision:
+claim the PyPI name now, or document the source install everywhere until the
+first tag. Tracked with the rest of the release gate in
 [#39](https://github.com/theurian/theurian/issues/39).
 
 One surface is adjacent and is deliberately **not** counted among the nine:
@@ -1015,28 +1025,102 @@ Core.** That is the same fact as the paragraph above, met from the other end.
 Theurian publishes PEP 740 attestations; whether an installer checks them is that
 installer's behaviour, and Theurian neither checks nor reports them.
 
-**Two strings in that step turn false at the first `core-v*` tag, and one of them
-cancels the only mitigation a user has.** `probe_artifact_integrity` reports
-`summary="No signed release manifest exists yet; nothing to verify against."` and
-`detail="Artifact verification arrives with the first tagged release (OSS-7,
-T-16)."` Neither is false today, because no tag has been cut. Both turn at the
-moment one is: `SHA256SUMS` is published on the GitHub release from that point,
-so the `detail` becomes an overdue promise, and the `summary` — the worse of the
-two — tells every user there is nothing to check against a record that exists and
-that they could have checked by hand, which is the entire mitigation until the
-control lands. This does not change this entry's grade, since nothing about it is
-true yet. It is a condition on the release, recorded as such in
-[#39](https://github.com/theurian/theurian/issues/39): correct the strings or
-land the control **before** the first tag is pushed.
+**Two strings in that step would go false at the first `core-v*` tag, and one of
+them would cancel the only mitigation a user has.** `probe_artifact_integrity`
+reported `summary="No signed release manifest exists yet; nothing to verify
+against."` and `detail="Artifact verification arrives with the first tagged
+release (OSS-7, T-16)."` Neither is false as this is written, because **no
+`core-v*` tag has been cut and no release exists**. Both turn the moment one is:
+`release-core.yml` builds `SHA256SUMS` over every artifact and a reproducible
+CycloneDX SBOM, and its release job attaches them to the release it cuts (steps
+4 and 6 of [`release.md`](../contributing/release.md)). From that point the
+`detail` is an overdue promise, and the `summary` — the worse of the two — tells
+every user there is nothing to check against a record that exists and that they
+could check by hand, which is the entire mitigation until the control lands.
+
+> **What has actually been measured, and what has not.** Release dry run
+> `31094621296` against `main` finished `success` with *Build the CycloneDX SBOM*
+> and *Publish checksums* both green. That run **skipped `Cut the GitHub
+> release`**, because skipping publication is what `dry_run` means — so it
+> establishes that the two files are produced, not that they reach a release
+> page. The claim above rests on the workflow's release job, which no run has
+> exercised. It is also in flight:
+> [#59](https://github.com/theurian/theurian/pull/59) changes that job.
+
+**The executing surface is corrected here**, which is half of what
+[#39](https://github.com/theurian/theurian/issues/39) recorded as a condition on
+the release: *correct the strings or land the control before the first tag is
+pushed.* The control is not landed. The step still reports `NOT_APPLICABLE` and
+still verifies nothing; only the premise moved, from a property of the world to
+one of Theurian, and the two strings are not reproduced here — a quotation is one
+more copy to go stale, and this one would be held by nothing.
+`application/setup_steps.py` is the source, and
+`tests/unit/test_artifact_integrity_claim.py` is what holds it: the retired
+wordings, the grammar that produced them, the absence of a schedule promise, and
+a text comparison against the JSON block in
+[`release.md`](../contributing/release.md).
+
+> **What holds those rules is a constraint on the probe's shape, not a search of
+> its contents** — and this paragraph said the opposite for one round. It claimed
+> the rules read "every string literal in the probe, out of its AST". They did,
+> and that is not the same thing: moving the retired strings into a module-level
+> helper and calling it from a reached arm passed the whole module while the real
+> CLI emitted them, as do a module constant, a `dict` lookup, a file read, an
+> f-string placeholder, string concatenation, a default argument value and a
+> decorator argument. The test now refuses any probe that is not one
+> unconditional return of one directly constructed `SetupStep` whose every
+> argument is a `Constant` or an `Attribute`. A reader of a function body is not
+> a closure argument; a constraint on what the function may be is.
+>
+> **The shape is one of three links, and stating it alone was the same mistake a
+> size smaller.** `Attribute` is in that list so `StepId.ARTIFACT_INTEGRITY` can
+> be written, and it admits `summary=_Legacy.SUMMARY` on a module-level class
+> just as readily — decidable by that rule and invisible to it. What refuses that
+> is a second test requiring the strings the probe *returns* to be among the
+> constants the rules read. And all of it describes one function, which is worth
+> nothing if the step table runs another: replacing the registration with a
+> lambda returning both retired strings left every rule green and came back
+> `1 failed, 1603 passed, 1 xfailed` — one test in the whole suite, the byte
+> comparison against `release.md`, and it catches it only because it is the one
+> rule that runs the step through `SetupService`. A third test now holds the
+> `STEPS` entry to the pinned function. Each link was measured by breaking it, in
+> the isolated trees of `tools/mutate.py`.
+
+**The claim is on three surfaces, not one, and only the executing one is
+corrected here.** The other two are `README.md`'s honesty table and the
+`#### Known limitations` section of `CHANGELOG.md`'s `0.1.0.dev0` entry. The
+second reaches furthest and is why this is a release gate rather than a tidy-up:
+`release-core.yml` extracts that section verbatim into `release-notes.md` and
+`gh release create --notes-file` publishes it as the GitHub release body, then
+appends a line stating that every artifact below is covered by `SHA256SUMS`. The
+denial therefore sat **above** the assertion it contradicts, about 191 lines
+above it — measured on the body assembled from the changelog before
+[#56](https://github.com/theurian/theurian/pull/56), where the section ran 1326
+lines and the claim was at line 1140. Distant, and on the same page.
+
+**Both of those surfaces were corrected by #56, merged into `main` on
+2026-08-06**, which replaced the changelog's premise with "setup never obtains
+Core, so it holds no artifact to hash" and the README row with one that states
+the published records exist and that nothing in Theurian checks them. An earlier revision of this entry
+called #56 open, which it was when that revision was written and is not now. The
+mechanism it exercised is unchanged: `release-core.yml` still publishes that
+section verbatim, so a future edit to it reaches the release page the same way.
+Nothing in this repository holds any of the three to the step's own words — no
+test reads `README.md`, `packages/theurian-core/CHANGELOG.md` or this file, and
+`test_setup_claims.py` reads the *plugin's* README, not the root one — and that
+is the gap #39 inherits.
 
 **Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
 this is tolerable. The requirement stands: OSS-11 requires the checksums and
 `requirements-analysis.md`'s threat table maps T-16 to OSS-7, OSS-11 and setup
 step 3. Filed at [#39](https://github.com/theurian/theurian/issues/39), which
-carries both the missing control and the release gate above. The schedule the
-code itself states — "Artifact verification arrives with the first tagged
-release" — came due when `release-core.yml` landed, since a first tagged release
-is what that workflow exists to cut. The severity stays Critical: the harm is
+carries both the missing control and the release gate above. **The code no longer
+states a schedule**, and that is the lesson rather than a tidy-up: the retired
+`detail` promised "Artifact verification arrives with the first tagged release",
+which came due the moment `release-core.yml` landed, since a first tagged release
+is what that workflow exists to cut. An issue has an owner and can be reassigned;
+a string in a probe is read by users and paged by nobody. The severity stays
+Critical: the harm is
 unchanged, an attacker who substitutes an artifact runs code as the user, and
 every control above acts on production rather than on what a user installs.
 

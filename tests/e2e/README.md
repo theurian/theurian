@@ -4,11 +4,22 @@ These drive the real CLI, the real daemon, and real OS service registration
 inside a disposable user profile. They are the only tests that can catch a
 packaging, service-registration, or single-instance failure.
 
-**Status:** the suite is specified in
+**Status:** partial. The suite is specified in
 [requirements-analysis §20](../../docs/architecture/requirements-analysis.md#20-theuriansetup-test-strategy)
-and lands with Milestones 3 and 4, when the daemon and setup service exist.
+and this said it "lands with Milestones 3 and 4, when the daemon and setup
+service exist". Both milestones are done and it did not land. What exists is
+`test_daemon_single_instance.py` and `test_migration_workflow.py`; of the
+acceptance criteria below, the daemon ones are covered under different names —
+`test_many_concurrent_clients_share_one_daemon` and
+`test_concurrent_starts_produce_one_winner` — and the setup, uninstall and
+coexistence rows have nothing. Those need a disposable machine to register a
+real LaunchAgent against, which is the same obstacle ADR-0012 records for its
+own Still-owed E2E item.
 
 ## What they will assert
+
+None of the test names in this table exists yet; the table is the specification,
+not an index.
 
 | Acceptance criterion | Test |
 | :-- | :-- |
@@ -32,7 +43,15 @@ and lands with Milestones 3 and 4, when the daemon and setup service exist.
 uv run pytest -m e2e
 ```
 
-They are excluded from the default CI test job (`-m "not e2e"`) and run in a
-dedicated job on macOS and Linux runners. They mutate a temporary `HOME` and
-register real OS services, so they must never run against a developer's own
-profile — every fixture asserts an isolated `HOME` before doing anything.
+They mutate a temporary `HOME` and register real OS services, so they must never
+run against a developer's own profile — every fixture asserts an isolated `HOME`
+before doing anything.
+
+**No CI job runs them.** This paragraph said they "run in a dedicated job on
+macOS and Linux runners". Both occurrences of `e2e` in `.github/workflows/`
+*exclude* the marker (`-m "not e2e"`, in `core.yml`'s `test` and `offline`
+jobs); the dedicated job has never existed. So the 25 tests in the two files
+here run only when someone runs them by hand — including the SEC-7 path- and
+symlink-containment cases, and the tests ADR-0002, ADR-0004, ADR-0011, ADR-0013
+and ADR-0016 each cite by name to discharge a compliance item. Tracked as
+[#65](https://github.com/theurian/theurian/issues/65).

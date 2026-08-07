@@ -79,9 +79,20 @@ loss. Because it is not, it is a cache miss.
 
 ## Compliance
 
-- A test asserts changing `SCHEMA_VERSION` changes the state hash.
-- A test asserts opening a database whose recorded `schema_version` differs from
-  the constant raises rather than reading it.
-- A test asserts `schema_version` is stored inside the database and matches the
-  constant on creation.
-- The `empty-db-rebuild` CI job proves the recovery path works.
+- `tests/unit/test_state_hash.py::test_schema_version_changes_the_hash` — a
+  changed `SCHEMA_VERSION` changes the state hash.
+- `tests/integration/test_canonical_store.py::test_a_foreign_schema_version_is_refused`
+  — a database whose recorded `schema_version` differs from the constant raises
+  rather than being read. `tests/integration/test_canonical_store_corruption.py::test_an_unsupported_schema_version_is_reported_as_a_version_not_as_damage`
+  covers the adjacent case: it is reported as a version, not as corruption.
+- `tests/integration/test_canonical_store.py::test_schema_version_is_recorded_inside_the_database`
+  — the version is stored in the database and matches the constant on creation.
+
+Still owed, with the milestone that will satisfy it:
+
+- **Nothing proves the recovery path works.** This section said "the
+  `empty-db-rebuild` CI job proves the recovery path works". That job does not
+  exist. The three tests above hold that a mismatched version is *detected*;
+  what is unproven is the half this ADR offers as the remedy — that deleting the
+  database and rebuilding from Git-tracked migrations gets the state back.
+  [#64](https://github.com/theurian/theurian/issues/64) (Milestone 6).

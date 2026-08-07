@@ -12,6 +12,77 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- `theurian setup` and `theurian doctor` now explain the `artifact-integrity`
+  step's `not-applicable` as a property of Theurian rather than of the world.
+  The old wording denied that any record existed to check against, and promised
+  verification at the first tagged release. Both hold only until a `core-v*` tag
+  is cut — none has been, so neither is false as this is written — and from the
+  moment one is, the first of them would tell every user not to
+  bother checking a file published on that very release page, which is the only
+  mitigation available while the control is unimplemented. The step still reports
+  `not-applicable` and still verifies nothing; it now says that Theurian does not
+  verify the artifact it is running from, which holds on both sides of a tag.
+  Checking a download against the checksums published with it remains a manual
+  step ([#39](https://github.com/theurian/theurian/issues/39), T-16).
+
+  *The superseded sentences are deliberately not reproduced here.* This section
+  is moved under the version at release time and published verbatim as the GitHub
+  release body, a short distance above a line stating that every artifact below
+  is covered by `SHA256SUMS` — which is the defect this entry records, and a
+  changelog is no place to reintroduce it.
+
+### Fixed
+
+- **A `minimum` did not bound anything, and neither did a `maximumExclusive`.**
+  `theurian compat check` translates Core's PEP 440 version into SemVer before
+  comparing it against a plugin's declared range, and the translation put
+  versions in the wrong order. Declaring `minimum: 0.1.0-dev.0` — the floor this
+  repository's own plugin ships, and the one the documentation recommends for an
+  unreleased Core — accepted `0.1.0.dev1`, refused `0.1.0a1`, `0.1.0a2` and
+  `0.1.0b1`, then accepted `0.1.0rc1` and `0.1.0` again. A floor with a hole in
+  the middle is not a stricter floor; it is a floor that means nothing.
+
+  Two rules disagree between the ecosystems, and both were live. PEP 440 sorts
+  `.devN` below every pre-release phase, while SemVer §11.4.2 compares the phase
+  words as ASCII and puts `dev` between `beta` and `rc`. PEP 440 sorts
+  `0.2.0a1.dev1` below `0.2.0a1`, while SemVer §11.4.4 ranks the longer
+  identifier list higher. Over the release train the tests now enumerate — 40
+  versions of one release, so 780 ordered pairs — 99 came out backwards.
+
+  `maximumExclusive` is the same comparison read from the other end and failed
+  the same way: a ceiling of `0.1.0-alpha.1` refused `0.1.0.dev0`, which is
+  *below* it, and accepted `0.1.0a0`, which is above.
+
+  Both bounds are now ordered by Core's release train — `dev` < `alpha` <
+  `beta` < `rc` < final, with a development build below the pre-release it
+  precedes — applied to the declaration's bounds and to Core's own version
+  alike. Declarations keep their existing spelling and verdicts keep printing
+  it; neither `compatibility.yaml` nor the published schema changes.
+
+  **Not breaking, measured rather than argued.** Every `minimum`/
+  `maximumExclusive` pair this repository declares was resolved against 200
+  versions spanning five releases, under the old comparison and the new one. No
+  pair changes verdict against the Core that ships (`0.1.0.dev0`), and the only
+  pair whose meaning changes at all is `0.1.0-dev.0`/`0.2.0`, where all 24
+  changes run `core-too-old` → `compatible`: versions that were wrongly refused
+  are now accepted, and nothing that was accepted is now refused.
+
+  What *can* move the restrictive way is a bound that names a pre-release phase.
+  A ceiling of `0.1.0-dev.0` stops accepting every `0.1.0` alpha — correctly,
+  because those are newer than it. If you maintain a client whose `minimum` or
+  `maximumExclusive` carries a `-dev`, `-alpha`, `-beta` or `-rc` segment,
+  re-read it against the ordering above. A bound with no pre-release segment is
+  unaffected.
+- **A PEP 440 development segment carrying no number was dropped whole.** PEP
+  440 makes that number optional and defaults it to 0, but the parser decided
+  the segment was *present* by asking whether its number was — so `0.2.0.dev`
+  parsed as `0.2.0`, a development build read as the finished release it
+  precedes. That is the failure this translation exists to prevent, inverted:
+  rather than being told Core was missing, a client would have been told it had
+  shipped.
+
 ## [0.1.0.dev0] - 2026-08-06
 
 A development release, published to claim the `theurian` name on PyPI. Until
@@ -314,17 +385,16 @@ does not do.
 - **`protocolVersion` stays `theurian/v1`, and that is a decision rather than an
   omission.** Milestone 5 makes several breaking wire changes — the
   `knowledge.search` response reshape, the removal of `withheldSuperseded`, and
-  the two required fields above — and none of them bumps it. Nothing has been
-  released: Core is `0.1.0.dev0`, there is no release tag, and every change here
-  is under *Unreleased*. `theurian/v1` has therefore never reached a client, so
-  no plugin can be pinned to a v1 that lacks these fields, and bumping would
-  publish a `theurian/v2` whose v1 was never shipped. The version's unit is a
-  released protocol; what protects an integrator reading this branch is this
-  changelog, which names each break. `protocolVersion` bumps on the first
-  breaking change *after* `theurian/v1` ships — Milestone 5's set is the content
-  of v1, not a departure from it. Recorded here because a reader who finds three
-  breaking wire changes and an unchanged protocol version is entitled to know
-  which of the two is the mistake.
+  the two required fields above — and none of them bumps it. No published
+  version of Core has ever lacked them, so no plugin can be pinned to a v1 that
+  lacks these fields, and bumping would publish a `theurian/v2` whose v1 was
+  never shipped. The version's unit
+  is a released protocol; what protects an integrator is this changelog, which
+  names each break. `protocolVersion` bumps on the first breaking change *after*
+  the version that first carries `theurian/v1` — Milestone 5's set is the
+  content of v1, not a departure from it. Recorded here because a reader who
+  finds three breaking wire changes and an unchanged protocol version is
+  entitled to know which of the two is the mistake.
 
 - **Every project-scoped MCP tool now tells "not registered" from "registered
   and unreadable".** The two need opposite remedies and used to share one
@@ -373,7 +443,7 @@ does not do.
 - **BREAKING — `SearchRequest` has no `limit`, and `substring_answer` and
   `hybrid_answer` require the caller's `ActiveState`.** Both are Milestone 5
   APIs changed within Milestone 5, so no released version is affected; they are
-  named here because the branch is what anyone integrating against Core is
+  named here because this changelog is what anyone integrating against Core is
   reading.
 
   `SearchRequest(query=..., limit=10)` no longer type-checks. `limit` and the
@@ -1153,7 +1223,7 @@ does not do.
 #### Known limitations
 
 - Artifact integrity verification is reported as *not applicable* rather than
-  satisfied: there is no signed release manifest to check against yet, and a
+  satisfied: setup never obtains Core, so it holds no artifact to hash, and a
   step claiming success without checking anything would be a false assurance
   about supply chain integrity (T-16).
 - Rollback is a journal, not an undo. Every apply is a create-or-tighten, so a

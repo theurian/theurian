@@ -43,7 +43,9 @@ that reimplements them will get a different subset right.
 
 There is also a cross-ecosystem seam: Core is a Python package, so it reports
 PEP 440 (`0.1.0.dev0`, `0.2.0rc1`), while plugins declare SemVer. Core owns that
-translation too.
+translation too, and it is the sharpest of the three edges — a client that
+implements SemVer §11.4 *faithfully* still gets the next section wrong, because
+the two ecosystems disagree about where a development build sits.
 
 ```sh
 theurian compat check \
@@ -80,17 +82,44 @@ from "the command failed", because the remedies are completely different.
 | Core reports | Treated as | Sorts |
 | :-- | :-- | :-- |
 | `0.1.0` | `0.1.0` | — |
-| `0.1.0.dev0` | `0.1.0-dev.0` | before `0.1.0` |
+| `0.1.0.dev0` | `0.1.0-dev.0` | before every `0.1.0` pre-release |
+| `0.2.0a3` | `0.2.0-alpha.3` | before `0.2.0-beta.1` |
+| `0.2.0a3.dev1` | `0.2.0-alpha.3.dev.1` | before `0.2.0-alpha.3` |
 | `0.2.0rc1` | `0.2.0-rc.1` | before `0.2.0` |
-| `0.2.0a3` | `0.2.0-alpha.3` | before `0.2.0-rc.1` |
 | `1.2` | `1.2.0` | — |
+| `1.2.0a` | `1.2.0-alpha.0` | PEP 440 defaults an omitted number to 0 |
 
-Ordering is preserved in both ecosystems. A development build sorts below its
-release under PEP 440 and under SemVer alike.
+Both sides are ordered by Core's release train, not by the alphabet. Within one
+release that order is
 
-The practical consequence: a plugin developed against Core `0.1.0` should declare
-`minimum: 0.1.0-dev.0` while Core is unreleased, or every development build
-resolves to `core-too-old`.
+```
+dev  <  alpha  <  beta  <  rc  <  final
+```
+
+and a development build of a pre-release sorts below that pre-release
+(`0.2.0-alpha.3.dev.1` before `0.2.0-alpha.3`). Both rules come from PEP 440 and
+both differ from a literal reading of SemVer §11.4, which compares the phase
+words as ASCII — putting `dev` between `beta` and `rc` — and ranks a longer
+identifier list higher — putting `alpha.3.dev.1` above `alpha.3`.
+
+Core applies the release-train order to the declaration's bounds and to its own
+version alike. Applying it to one side only would move the version and leave the
+floor behind.
+
+**This is why a client must not compare versions itself.** A client that gets
+SemVer §11.4 exactly right produces a floor with a hole in the middle:
+`minimum: 0.1.0-dev.0` would accept `0.1.0.dev1` and `0.1.0rc1` while refusing
+every alpha and beta between them — a `minimum` that is not a minimum. Getting
+SemVer right is not the same as getting *this* right, so there is no level of
+care at which reimplementing it becomes safe.
+
+The practical consequence for a declaration: a plugin developed against Core
+`0.1.0` should declare `minimum: 0.1.0-dev.0` while Core is unreleased. That is
+the earliest `0.1.0` Core can report, so every pre-release of `0.1.0` —
+`0.1.0.dev1`, `0.1.0a1`, `0.1.0b1`, `0.1.0rc1` — sorts above it and resolves
+`compatible`. Pinning the minimum at `0.1.0` instead rejects all of them, and
+the reason is the ordering rather than the spelling: `0.1.0rc1` carries no
+development segment and is still below `0.1.0`.
 
 ## Resolution
 
@@ -183,3 +212,16 @@ clients that keep working against a changed contract are not.
 - `tests/unit/test_compatibility.py` — SemVer ordering, PEP 440 translation, every outcome, range boundaries
 - `tests/unit/test_plugin_boundary.py` — the declaration validates, and the Core beside it is inside the declared range
 - `tests/contract/test_cli_contract.py` — exit codes and JSON shape, against the installed binary
+
+Inside `test_compatibility.py`, the ordering above is held by properties rather
+than by a table of cases, because a table agrees with an ordering that is wrong.
+The one that preceded them asserted only same-kind pairs — `a1` against `a2` —
+which is the single comparison the translation never got wrong. Over a release
+train enumerated exhaustively from the grammar:
+
+- the translation is strictly monotone;
+- a `minimum`'s accepted set is upward-closed — once a Core is accepted, every
+  Core above it is;
+- a `maximumExclusive`'s refused set is closed the other way — once a Core is
+  refused as too new, every Core above it is. It is the same comparison read
+  from the other end, so it fails the same way and needs holding separately.

@@ -108,10 +108,28 @@ flowchart TB
 
 ## Compliance
 
-- `tests/unit/test_raptor_scope.py` asserts that constructing a node from
-  children with differing scope tuples raises, and that the tree-id function is
-  total over the tuple.
-- A test asserts an in-progress `index_build` is never returned by search.
-- A test asserts a node whose `summary_prompt_hash` differs from the active
-  configuration is treated as stale.
-- Retrieval evaluation includes a groundedness check on generated summaries.
+**Nothing here is built, so nothing here is enforced.**
+`infrastructure/raptor/` contains a module docstring and no code; there is no
+node type, no tree-id function and no summary node in the index schema. This
+section was written as though the four items below had landed, and every one of
+them names a test that does not exist. They are stated as owed, against
+Milestone 6, which is where the README roadmap puts the RAPTOR forest.
+
+Still owed, with the milestone that will satisfy it:
+
+- **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
+  differing scope tuples must raise, and the tree-id function must be total over
+  the tuple. This is the item that carries the ADR's security argument: the
+  Context above says cross-sensitivity leakage is prevented *structurally*
+  rather than by a policy check, and a structural guarantee with no test is a
+  policy check with no policy. The file has never existed (Milestone 6).
+- **An in-progress `index_build` is never returned by search** (Milestone 6).
+  The equivalent for the chunk index is
+  `tests/integration/test_index_store.py::test_building_over_an_existing_file_is_refused`;
+  a summary node has no counterpart yet, and the wider concurrent-rebuild
+  guarantee is ADR-0022's Still-owed blue/green item.
+- **A node whose `summary_prompt_hash` differs from the active configuration is
+  treated as stale** (Milestone 6). No column holds a `summary_prompt_hash`.
+- **Retrieval evaluation includes a groundedness check on generated summaries**
+  (Milestone 6). There is no retrieval evaluation harness, and no summary to
+  ground: `SummarizationProvider` has no implementation.

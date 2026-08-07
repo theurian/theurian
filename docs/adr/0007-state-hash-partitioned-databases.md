@@ -112,10 +112,32 @@ flowchart TD
 
 ## Compliance
 
-- A golden-vector test asserts the state hash of a fixture set is a fixed,
-  committed value across machines and Python runs (`PYTHONHASHSEED` independence).
-- An integration test switches between three states and asserts O(1) reuse and
-  correct content.
-- A test asserts a query during an in-progress build returns the previous
-  complete state and never a partial one.
-- A test asserts two worktrees of one repository maintain independent active states.
+- `tests/unit/test_state_hash.py::test_golden_vector_is_stable` and
+  `test_hash_is_stable_across_processes` — the hash of a fixture set is a fixed,
+  committed value, held across three interpreters under differing
+  `PYTHONHASHSEED` values. `test_database_filename_is_derived_from_the_hash` and
+  `test_two_distinct_states_get_distinct_filenames` hold the partitioning
+  itself.
+
+Still owed, with the milestone that will satisfy it:
+
+- **Nothing asserts O(1) reuse across states.** This section claimed an
+  integration test switching between three states and asserting reuse and
+  correct content. No test switches states. The tests above hold that two states
+  get two filenames, which is the mechanism; the property the ADR sells —
+  switching back to a state you have already built costs nothing — is untested.
+  Milestone 6, with the incremental-rebuild work.
+- **Nothing asserts a query during an in-progress build sees the previous
+  complete state.** This section claimed a test. There is none, and the claim is
+  worse than untested: [ADR-0022](0022-index-lives-in-its-own-database.md)
+  records under Still owed that "a search concurrent with a rebuild is not
+  protected", and [ADR-0018](0018-single-writer-synchronous-in-m1.md) records
+  that NFR-4 is not discharged. This bullet asserted as tested exactly what two
+  other ADRs record as missing. It belongs with the blue/green work (Milestone
+  6).
+- **Nothing asserts two worktrees keep independent active states.** This section
+  claimed a test; the string `worktree` does not appear anywhere under
+  `tests/`. This is the case ADR-0016's amendment makes load-bearing — the state
+  hash covers the working tree, so two worktrees of one repository at different
+  commits must not share an active state — and it is the one with no coverage.
+  Milestone 6.

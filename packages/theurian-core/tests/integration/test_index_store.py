@@ -539,7 +539,7 @@ def test_a_raw_row_is_never_returned_for_another_projects_chunk(
 def test_a_passage_is_never_returned_for_another_projects_chunk(
     store: SqliteIndexStore,
 ) -> None:
-    """SEC-13, defence in depth behind the FR-R1 filter on every retriever.
+    """SEC-13, defence in depth behind the scope filter on every retriever.
 
     ``chunk_texts`` is what turns a ranked chunk id into the *body text* a
     caller reads, so its scoping is the last thing standing between a scoping

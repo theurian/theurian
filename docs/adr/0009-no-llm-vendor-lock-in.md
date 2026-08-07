@@ -108,12 +108,51 @@ Rules:
 
 ## Compliance
 
-- A CI job runs the full suite with network access blocked.
-- A test asserts the default configuration instantiates no adapter that opens a socket.
-- A shared Protocol-conformance suite runs against both the fake and (in an
-  opt-in credentialed job) each real adapter.
-- A grep-based CI check fails if a vendor name appears under `domain/` or
-  `application/`.
+- `core.yml`'s `offline` job runs the suite with network access blocked, and its
+  second step "Prove the sandbox actually blocks network" fails if the sandbox
+  stops sandboxing — without which the job would become a permanent false pass.
+- `tests/unit/test_layering.py::test_no_vendor_names_in_domain_or_application`
+  fails if `openai`, `anthropic`, `cohere`, `voyageai`, `pinecone`, `weaviate`
+  or `qdrant` appears anywhere under `domain/` or `application/`. This section
+  called it "a grep-based CI check"; it is a test, which runs in CI. The
+  substance is right and the artifact named was not, and the difference matters
+  to anyone who goes looking for it in `.github/`.
+
+Still owed, with the milestone that will satisfy it:
+
+- **No test asserts the default configuration opens no socket.** This section
+  claimed one. The `offline` job holds the *outcome* — the suite passes with no
+  network — which is a strictly weaker statement, because a suite that never
+  exercises a socket-opening default passes it too. Deferred with no milestone:
+  every adapter that could open a socket is unbuilt (`SummarizationProvider`,
+  `RerankingProvider` and `ReviewProvider` have no real implementation), so the
+  property holds vacuously and a test for it today would too.
+- **There is no opt-in credentialed job.** This section claimed one, running
+  each real adapter against a shared Protocol-conformance suite. No workflow
+  takes a credential, and no provider port has an adapter that needs one:
+  `SummarizationProvider`, `RerankingProvider` and `ReviewProvider` are
+  docstring-only. The item comes due with the first adapter that calls a hosted
+  API, which is the same moment the socket item above stops being vacuous.
+- **There is no shared conformance suite, and the moment for one has already
+  arrived.** This bullet first read "`EmbeddingProvider` is the only port with a
+  bundled default" and "the item comes due when a second implementation of any
+  provider port lands". Both are false, and the second is the one that misleads:
+  it defers the work past a condition that is already met.
+
+  Ports with a bundled in-tree implementation, counted rather than recalled:
+  `SourceParser` (four — `MarkdownParser`, `OpenApiParser`, `YamlParser`,
+  `JsonParser`, from `default_parsers()`), `DaemonManager` (two —
+  `LaunchAgentManager`, `SystemdUserManager`), `EmbeddingProvider`, `SecretStore`,
+  `CanonicalStore`, `Clock`, `IdGenerator`.
+
+  Two of those already have several implementations, so two adapters can already
+  disagree about one Protocol. `DaemonManager` also already has the answer:
+  `tests/integration/test_service_adapters.py::test_both_adapters_satisfy_the_daemon_manager_port`
+  asserts both satisfy the port, precisely because the composition root types
+  against it and drift would surface only where it is wired up. That is one port
+  covered by one bespoke test rather than a suite every port shares, which is
+  what this ADR asked for. Milestone 6, and `SourceParser` — four
+  implementations and no equivalent check — is where it is worth most.
 
 Landed in Milestone 5, for the `EmbeddingProvider` default specifically:
 
