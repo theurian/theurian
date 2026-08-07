@@ -112,7 +112,24 @@ SESSION_START_HOOK: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[2]
 #: ``theurian setup``, and
 #: :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports` holds
 #: this tuple to the step's own words.
-INSTALLERS: Final = ("uv tool install theurian", "pipx install theurian")
+#:
+#: **The ``[daemon]`` extra is part of the literal, and that is the correction
+#: #78 made.** Without it, ``uv tool install theurian`` resolves, installs, and
+#: leaves a Theurian whose ``daemon start`` fails on ``uvicorn`` -- so every
+#: surface below was true in the only sense this tuple could measure (the
+#: command runs) and false in the sense a reader uses it (the install works).
+#:
+#: **Still two literals rather than an import of
+#: :data:`~theurian.domain.extras.DAEMON_INSTALLERS`**, which production now
+#: has. Extracting it would make this module green for whatever that constant
+#: says, including ``brew install theurian`` -- the exact drift the docstring of
+#: :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports`
+#: describes, arriving one indirection further away. What makes the check mean
+#: anything is that the two are written independently and asserted equal.
+INSTALLERS: Final = (
+    "uv tool install 'theurian[daemon]'",
+    "pipx install 'theurian[daemon]'",
+)
 
 #: Commands that legitimately contain "install theurian": the two Core
 #: installers, and Claude Code's own plugin installer. Masked out before the

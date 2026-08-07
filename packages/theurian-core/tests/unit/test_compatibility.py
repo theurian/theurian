@@ -412,11 +412,20 @@ def test_missing_core_is_reported_as_install_then_setup() -> None:
     The remedy has to name an installer, not only ``/theurian:setup``. Setup
     shells out to the ``theurian`` binary whose absence produced this verdict,
     so a remedy that named setup alone would be advice the user cannot follow.
+
+    **The installer has to carry the ``daemon`` extra.** Spelled out here rather
+    than read from :data:`~theurian.domain.extras.DAEMON_INSTALLERS`: importing
+    the constant the production code formats would make this test green for
+    ``brew install theurian`` as readily as for the right answer, which is the
+    one thing it is here to notice. The bracket is the assertion -- a bare
+    ``uv tool install theurian`` resolves and installs a Core whose daemon
+    cannot start (#78), so this remedy would send the user from one outcome in
+    this enum straight into another.
     """
     verdict = resolve_compatibility(DECLARATION, None, None)
     assert verdict.outcome is CompatibilityOutcome.CORE_MISSING
-    assert "uv tool install theurian" in verdict.remedy
-    assert "pipx install theurian" in verdict.remedy
+    assert "uv tool install 'theurian[daemon]'" in verdict.remedy
+    assert "pipx install 'theurian[daemon]'" in verdict.remedy
     assert "/theurian:setup" in verdict.remedy
 
 

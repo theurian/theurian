@@ -47,7 +47,12 @@ from theurian.application.setup_withholding import (
     withheld_difference,
     withheld_registry_detail,
 )
-from theurian.domain.extras import DAEMON_EXTRA, DAEMON_EXTRA_REMEDY, DAEMON_MODULES
+from theurian.domain.extras import (
+    DAEMON_EXTRA,
+    DAEMON_EXTRA_REMEDY,
+    DAEMON_INSTALLERS,
+    DAEMON_MODULES,
+)
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.domain.setup import SetupStep, StepId, StepStatus
 from theurian.security.env_file import TOKEN_KEY, env_file_contents
@@ -195,9 +200,9 @@ def probe_core(context: SetupContext) -> SetupStep:
             status=StepStatus.CONFLICTING,
             summary="Could not determine an absolute path to the theurian executable.",
             detail=(
-                "The daemon service must invoke Theurian by absolute path, because a "
-                "service manager starts with a PATH that is not your shell's. Install "
-                "Theurian with `uv tool install theurian` or `pipx install theurian`."
+                f"The daemon service must invoke Theurian by absolute path, because a "
+                f"service manager starts with a PATH that is not your shell's. Install "
+                f"Theurian with `{DAEMON_INSTALLERS[0]}` or `{DAEMON_INSTALLERS[1]}`."
             ),
         )
 
