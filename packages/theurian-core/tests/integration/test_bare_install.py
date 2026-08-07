@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import importlib.abc
 import importlib.machinery
+import importlib.util
 import json
 import sys
 from collections.abc import Iterator, Sequence
@@ -37,10 +38,17 @@ from types import ModuleType
 from typing import Final, override
 
 import pytest
+from fakes.setup import FakeMcpConfig, FakeService
 from typer.testing import CliRunner
 
+from theurian.application.setup_context import SetupContext
+from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.application.setup_steps import probe_core
 from theurian.cli.main import app
-from theurian.domain.extras import DAEMON_MODULES
+from theurian.domain.extras import DAEMON_EXTRA, DAEMON_MODULES
+from theurian.domain.setup import SetupState, SetupStep, StepStatus
+from theurian.infrastructure.claude.mcp_config import ConnectionSpec
+from theurian.infrastructure.secrets.file_store import FileSecretStore
 
 runner: Final = CliRunner()
 
@@ -222,6 +230,104 @@ def test_the_lock_file_name_is_written_once_in_the_source() -> None:
     ]
 
     assert occurrences == ["daemon/instance.py"], occurrences
+
+
+def _existing_executable(tmp_path: Path) -> str:
+    executable = tmp_path / "bin" / "theurian"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.touch()
+    return str(executable)
+
+
+def _setup_context(tmp_path: Path, *, executable: str) -> SetupContext:
+    """A machine with nothing set up, outside a repository, no daemon running."""
+    data_dir = tmp_path / "home" / ".theurian"
+    return SetupContext(
+        home=tmp_path / "home",
+        data_dir=data_dir,
+        port=7419,
+        project_root=None,
+        connection=ConnectionSpec(port=7419),
+        mcp_config=FakeMcpConfig(),
+        secrets=FileSecretStore(data_dir),
+        health=lambda: None,
+        service=FakeService(),
+        executable=executable,
+    )
+
+
+def _core_present(tmp_path: Path) -> SetupStep:
+    """The ``core-present`` step against an executable that really exists.
+
+    A path that does not resolve reaches the step's *other* conflicting arm, so a
+    fixture that skipped this would report the abort it was looking for and
+    prove nothing about the extra.
+    """
+    return probe_core(_setup_context(tmp_path, executable=_existing_executable(tmp_path)))
+
+
+def test_core_present_is_not_satisfied_by_a_core_whose_daemon_cannot_start(
+    tmp_path: Path,
+) -> None:
+    """The step reported `satisfied` for the install this whole file is about.
+
+    It checked that a file exists at a path. Everything after it in the plan --
+    the service unit, the daemon, the MCP connection, its health check -- is
+    about a daemon that this Core cannot run, so `satisfied` was not a small
+    overstatement: it was the last chance to say so before setup registered a
+    launchd job that fails on every start.
+    """
+    with _without(*DAEMON_MODULES):
+        step = _core_present(tmp_path)
+
+    assert step.status is StepStatus.CONFLICTING
+    assert DAEMON_EXTRA in step.summary
+    assert "uv tool install 'theurian[daemon]'" in step.detail
+
+
+def test_core_present_is_satisfied_when_the_extra_is_there(tmp_path: Path) -> None:
+    """The other half, or the step above would pass by always conflicting."""
+    step = _core_present(tmp_path)
+
+    assert step.status is StepStatus.SATISFIED
+
+
+def test_a_missing_extra_looks_the_same_when_find_spec_answers_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real bare install and this file's blocker fail differently.
+
+    ``importlib.util.find_spec`` *returns* ``None`` for a module that was never
+    installed, and *raises* for one this file's meta-path finder refuses. Only
+    the first is what a user has, so the probe is checked against it directly
+    rather than trusted to the simulation everywhere else here.
+    """
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, package=None: None)  # noqa: ARG005
+
+    step = _core_present(tmp_path)
+
+    assert step.status is StepStatus.CONFLICTING
+    assert DAEMON_EXTRA in step.summary
+
+
+def test_setup_stops_before_registering_a_service_that_cannot_start(tmp_path: Path) -> None:
+    """`core-present` is one of the two conflicts consent cannot buy past.
+
+    That set exists for steps that "leave nothing worth installing around
+    them", and a Core with no daemon is exactly that: every remaining step
+    either serves the daemon or connects a client to it. Reporting the run
+    ABORTED and writing nothing is better than a DEGRADED run that leaves a
+    registered launchd job crash-looping and a user to work out why.
+    """
+    context = _setup_context(tmp_path, executable=_existing_executable(tmp_path))
+
+    with _without(*DAEMON_MODULES):
+        report = SetupService(context).run(SetupRequest())
+
+    assert report.state is SetupState.ABORTED
+    assert report.changed_paths == ()
+    assert not context.data_dir.exists()
+    assert any(warning.startswith("core-present:") for warning in report.warnings)
 
 
 def test_the_lock_filename_module_is_free_of_the_extra() -> None:

@@ -644,12 +644,19 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 # whole suite while restoring the published defect.
 
 #: Every ``(step, status)`` pair the eleven actionless steps reach across
-#: `_states`, counted off their branches: platform 2, core-present 2,
-#: artifact-integrity 1, single-instance 3, project-registered 4,
-#: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 2 (three
-#: returns, two of them NOT_APPLICABLE), initial-index 1 (two summaries, one
-#: status), serena-detection 2. Independently: 27 ``return SetupStep(...)``
-#: statements collapsing onto 25 pairs.
+#: `_states`, counted off their branches: platform 2, core-present 2 (three
+#: returns, two of them CONFLICTING), artifact-integrity 1, single-instance 3,
+#: project-registered 4, project-layout 3, gitignore 3, mcp-health 2,
+#: migrations-valid 2 (three returns, two of them NOT_APPLICABLE), initial-index
+#: 1 (two summaries, one status), serena-detection 2. Independently: 28
+#: ``return SetupStep(...)`` statements collapsing onto 25 pairs.
+#:
+#: `core-present`'s third return -- Core installed without its ``daemon`` extra
+#: (#78) -- is not reachable from any state here, because the test process is a
+#: development environment that always has the extra. It is walked by
+#: ``tests/integration/test_bare_install.py``, which blocks the modules instead
+#: of varying the context. The count above is what the arm costs this number:
+#: nothing, since the other CONFLICTING arm already supplies the pair.
 #:
 #: **What the assertion holds, exactly.** A fall means a state stopped reaching
 #: a status it used to. A rise means a step began emitting a status it did not
