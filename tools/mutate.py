@@ -222,15 +222,24 @@ _COPY_IGNORE: Final = shutil.ignore_patterns(
 )
 
 _PYTEST_ARGS: Final = (
-    "-q",
-    "--no-header",
-    "--tb=no",
     # Deterministic collection order, so a fail-fast stop is comparable across
     # mutations, and no cache written into the throwaway tree.
     "-p",
     "no:randomly",
     "-p",
     "no:cacheprovider",
+    # These come *after* the plugin flags on purpose, and the order is load
+    # bearing. A run started here lives for minutes inside a checkout where
+    # other work is also running `pytest -q`, and the usual way to stop that
+    # work is `pkill -f "pytest -q"` -- which matches on the whole argv, so
+    # leading with `-q` volunteers this harness for everyone else's cleanup.
+    # Killed mid-run it reports `control-red` or a false SURVIVED, and neither
+    # says "someone shot me". The prepared-tree runner has always ordered them
+    # this way; the verdict path had not, which is why only the verdict path
+    # kept dying.
+    "-q",
+    "--no-header",
+    "--tb=no",
 )
 
 _CONTROL_LABEL: Final = "__control__"
