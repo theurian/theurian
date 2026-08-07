@@ -46,6 +46,37 @@ The rule that makes this work is point 1. A guarantee implemented behind a
 single interface can change mechanism. A guarantee implemented by convention at
 each call site cannot.
 
+> **Amended in Milestone 5.** Points 1 and 3 name `CanonicalStore.transaction()`.
+> **There is no such method, and there never has been** —
+> `git grep "def transaction" -- packages/theurian-core/src` returns nothing.
+>
+> What implementing it revealed: the port publishes its twelve write methods
+> directly (`append_revision`, `put_item`, `add_relation`, …), and exclusivity
+> lives one layer down, in `write_transaction()` in
+> `infrastructure/sqlite/connection.py`, a context manager that takes the OS
+> advisory file lock point 2 describes and yields a connection.
+>
+> So the mechanism point 2 specifies is real and works. What is false is the
+> claim that makes it *durable*: writes do not go through one interface, and
+> `CanonicalStore` does expose write methods a caller can reach without any
+> lock. The guarantee is held by convention at each call site — which is the
+> exact failure this ADR's closing sentence says cannot be repaired later.
+>
+> The decision is not superseded, because the decision is right: a single
+> interface is still what this should have. The ADR was describing an interface
+> that was planned and never built, and the correct record is that the interface
+> is owed, not that the design changed. Tracked with the index writer in
+> [#15](https://github.com/theurian/theurian/issues/15), which Milestone 6 has to
+> answer for both stores at once.
+>
+> GOVERNANCE says an accepted ADR is superseded rather than edited. This is
+> recorded as an amendment instead, and the judgement is deliberate: superseding
+> is for a decision that turned out wrong, and nothing here decided wrongly. What
+> changed is a fact about the codebase the ADR asserted and never checked. The
+> Decision text above is left standing so the amendment has something to amend;
+> a reader who takes point 1 at face value and stops reading gets the same wrong
+> answer as before, which is the cost of this choice and the reason it is stated.
+
 ## Consequences
 
 ### Positive
@@ -103,13 +134,28 @@ each call site cannot.
 
 ## Compliance
 
-- `CanonicalStore` exposes no connection object and no write method outside
-  `transaction()`; `tests/unit/test_ports.py` asserts the Protocol surface.
 - `tests/unit/test_migration_engine.py::test_reapplying_the_same_set_is_a_no_op`
   and `tests/integration/test_cli_commands.py::test_apply_is_idempotent` — a
   second application of the same migration set changes nothing.
 
 Still owed, with the milestone that will satisfy it:
+
+- **Nothing holds point 1, and this section claimed a test that does not check
+  it.** The bullet here read "`CanonicalStore` exposes no connection object and
+  no write method outside `transaction()`; `tests/unit/test_ports.py` asserts the
+  Protocol surface." On `main` the same claim was unattributed — *"a test asserts
+  the Protocol surface"* — and naming a file made it more believable without
+  making it true. `test_ports.py` holds `CanonicalStore` as one string in
+  `EXPECTED_PORTS` and checks properties common to every port: that it is a
+  runtime-checkable `Protocol`, has no implementation body, declares a member,
+  annotates its methods. None of that is about *which* methods.
+
+  Measured, not argued: adding a `connection()` method to the `CanonicalStore`
+  Protocol leaves `test_ports.py` green at 90 passed, **and the whole suite green
+  at 1567 passed**. The escape hatch this ADR says cannot exist can be added and
+  nothing notices. Milestone 6, with
+  [#15](https://github.com/theurian/theurian/issues/15) — the interface has to
+  exist before a test can pin its surface.
 
 - **Nothing runs two writers at once.** This section claimed an integration test
   running N concurrent `migrate apply` processes against one project, asserting
