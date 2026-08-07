@@ -93,7 +93,10 @@ def _context(tmp_path: Path, *, for_publication: bool = True, **overrides: Any) 
     data_dir.mkdir(parents=True, exist_ok=True)
     executable = tmp_path / "bin" / "theurian"
     executable.parent.mkdir(parents=True, exist_ok=True)
-    executable.touch()
+    # 0755, not `touch()`: `probe_core` requires a path a service manager could
+    # exec, and a 0644 file aborts the run before any report is withheld (#49).
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
 
     defaults: dict[str, Any] = {
         "home": home,

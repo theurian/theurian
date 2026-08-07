@@ -233,9 +233,16 @@ def test_the_lock_file_name_is_written_once_in_the_source() -> None:
 
 
 def _existing_executable(tmp_path: Path) -> str:
+    """Runnable, not merely present.
+
+    `probe_core` requires a path a service manager could exec. `touch()` leaves
+    0644, which reaches the step's *path* arm -- so these tests would report the
+    conflict they are looking for without ever consulting the extra (#49).
+    """
     executable = tmp_path / "bin" / "theurian"
     executable.parent.mkdir(parents=True, exist_ok=True)
-    executable.touch()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
     return str(executable)
 
 

@@ -161,6 +161,16 @@ def _missing_daemon_modules() -> tuple[str, ...]:
     return tuple(missing)
 
 
+def _is_runnable_absolute_path(candidate: Path) -> bool:
+    """Whether a service manager could exec ``candidate`` as it is written.
+
+    Deliberately not ``exists()``: that is true of a directory, and it resolves
+    a relative name against whatever directory setup happened to run in, while
+    the string is written verbatim into a launchd plist or a systemd unit.
+    """
+    return candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK)
+
+
 def probe_core(context: SetupContext) -> SetupStep:
     """Whether Core is installed *and* can do what the rest of the plan needs.
 
@@ -170,13 +180,27 @@ def probe_core(context: SetupContext) -> SetupStep:
     installation reachable only through a shell alias or a virtualenv on
     ``PATH`` produces a service that cannot start.
 
-    **Absolute is checked here rather than assumed of the caller.** ``exists()``
-    alone resolves a bare name against the current working directory, so
-    ``theurian`` reported ``satisfied`` with the summary "Core is installed at
-    theurian" -- a path no service manager can act on, from the one step whose
-    job is to say the flow can proceed. ``_executable()`` resolves before it
-    returns, so no shipped caller reached that; the requirement the docstring
-    already stated is now the requirement the code tests (#49).
+    **The predicate is "a service manager could exec this", and it is checked
+    here rather than assumed of the caller.** Three shapes reported ``satisfied``
+    while failing it, all measured: a bare name, which ``exists()`` resolves
+    against the current working directory; a *directory*, which ``exists()`` is
+    also true of; and a regular file without the executable bit. The last two
+    survived the first fix for #49, which is why the check now names all three
+    predicates instead of the one the summary happened to mention.
+
+    ``is_file`` **and** ``os.access(X_OK)``, because neither alone is enough and
+    each admits precisely what the other rejects: ``X_OK`` is true of a
+    directory, where the bit means "searchable", and ``is_file`` is true of a
+    0644 file. Both follow symlinks on purpose -- ``uv tool install`` and
+    ``pipx`` put a symlink on ``PATH`` pointing into the tool's virtualenv, and
+    that is what ``shutil.which`` hands back, so ``lstat`` semantics here would
+    reject every real installation.
+
+    ``_executable()`` resolves before it returns and ``shutil.which`` answers
+    ``None`` for all three shapes, so no shipped caller reaches them today. The
+    requirement is still the check's to state rather than its current caller's
+    -- the same argument that closed the bare-name case, applied to the rest of
+    it (#49).
 
     And the ``daemon`` extra has to be present. That arm exists because the path
     check alone reported ``satisfied`` for ``uv tool install theurian`` -- the
@@ -203,7 +227,7 @@ def probe_core(context: SetupContext) -> SetupStep:
     case of a user who already has two Cores.
     """
     executable = Path(context.executable) if context.executable else None
-    if executable is None or not (executable.is_absolute() and executable.exists()):
+    if executable is None or not _is_runnable_absolute_path(executable):
         return SetupStep(
             step_id=StepId.CORE_PRESENT,
             status=StepStatus.CONFLICTING,

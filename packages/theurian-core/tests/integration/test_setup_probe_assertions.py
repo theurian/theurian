@@ -116,13 +116,77 @@ def test_a_relative_executable_is_not_core_being_present(tmp_path: Path) -> None
     )
 
 
-def test_an_absolute_executable_that_exists_is_core_being_present(tmp_path: Path) -> None:
-    """The other half, or both tests above would pass by always conflicting."""
-    present = tmp_path / "bin" / "theurian"
-    present.parent.mkdir(parents=True)
-    present.touch()
+def _runnable(path: Path) -> Path:
+    """A file a service manager could actually exec.
 
-    step = probe_core(_context(tmp_path, executable=str(present)))
+    ``touch()`` leaves 0644. Six fixtures across five files built their fake
+    Core that way and every one of them expected ``satisfied`` -- which is the
+    measurement that says nothing was testing this predicate, rather than a
+    detail of how they were written.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_a_directory_at_the_executable_path_is_not_core_being_present(tmp_path: Path) -> None:
+    """`exists()` is true of a directory, and `os.access(X_OK)` is true of one too.
+
+    Measured, both of them, which is why the check needs ``is_file`` *and*
+    ``X_OK`` and neither alone: a directory answers ``X_OK`` true because the
+    bit means "searchable" there, and a 0644 regular file answers ``is_file``
+    true. Each predicate admits exactly what the other rejects.
+    """
+    a_directory = tmp_path / "theurian"
+    a_directory.mkdir()
+
+    step = probe_core(_context(tmp_path, executable=str(a_directory)))
+
+    assert step.status is StepStatus.CONFLICTING
+
+
+def test_a_file_without_the_executable_bit_is_not_core_being_present(tmp_path: Path) -> None:
+    """The step that decides whether setup may proceed approved a 0644 file.
+
+    ``CORE_PRESENT`` is one of the two verdicts `_blocking_conflicts` reads, so
+    a wrong ``satisfied`` here is what lets `apply_daemon_service` write a
+    launchd plist whose ``ProgramArguments[0]`` cannot be executed -- a service
+    that fails at every start, from the one step whose stated job is to notice
+    exactly that.
+    """
+    not_executable = tmp_path / "bin" / "theurian"
+    not_executable.parent.mkdir(parents=True)
+    not_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    not_executable.chmod(0o644)
+
+    step = probe_core(_context(tmp_path, executable=str(not_executable)))
+
+    assert step.status is StepStatus.CONFLICTING
+
+
+def test_an_absolute_runnable_executable_is_core_being_present(tmp_path: Path) -> None:
+    """The other half, or every test above would pass by always conflicting."""
+    step = probe_core(_context(tmp_path, executable=str(_runnable(tmp_path / "bin" / "theurian"))))
+
+    assert step.status is StepStatus.SATISFIED
+
+
+def test_a_symlink_to_a_runnable_executable_is_core_being_present(tmp_path: Path) -> None:
+    """The shape a real install has, so the check cannot be tightened into it.
+
+    `uv tool install` and `pipx` both put a symlink on `PATH` pointing into the
+    tool's own virtualenv, and `shutil.which` returns that symlink. A check
+    written with `lstat` semantics -- `is_symlink`, or `stat` without following
+    -- would reject every genuine installation, so this is the case that keeps
+    the fix from overshooting.
+    """
+    target = _runnable(tmp_path / "venv" / "bin" / "theurian")
+    link = tmp_path / "bin" / "theurian"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target)
+
+    step = probe_core(_context(tmp_path, executable=str(link)))
 
     assert step.status is StepStatus.SATISFIED
 
