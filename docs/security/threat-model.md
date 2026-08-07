@@ -727,10 +727,11 @@ approved by utchy on pypi
 ```
 
 `state` is `approved`, not a bypass, so `prevent_self_review` being unset is what
-allowed it rather than `can_admins_bypass`. The twelve minutes were a person
-deciding, not a second person consenting. **A gate that a tag pusher clears by
-approving themselves records the release; it does not authorize it** — which is
-the row as written, now with a run behind it instead of a configuration reading.
+allowed it rather than `can_admins_bypass` — the third row was not exercised. The
+twelve minutes are how long the approval took to arrive, and nothing more: they
+are not a second person's consent. **A gate a tag pusher clears by approving
+himself records a release; it does not authorize one** — which is the row as
+written, now with a run behind it instead of a configuration reading.
 
 **All three rows are the same account.** Measured 2026-08-06 and unchanged when
 re-measured after the release:
