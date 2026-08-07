@@ -12,6 +12,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- `theurian setup` and `theurian doctor` now explain the `artifact-integrity`
+  step's `not-applicable` as a property of Theurian rather than of the world.
+  The old wording denied that any record existed to check against, and promised
+  verification at the first tagged release. Both hold only until a `core-v*` tag
+  is cut — none has been, so neither is false as this is written — and from the
+  moment one is, the first of them would tell every user not to
+  bother checking a file published on that very release page, which is the only
+  mitigation available while the control is unimplemented. The step still reports
+  `not-applicable` and still verifies nothing; it now says that Theurian does not
+  verify the artifact it is running from, which holds on both sides of a tag.
+  Checking a download against the checksums published with it remains a manual
+  step ([#39](https://github.com/theurian/theurian/issues/39), T-16).
+
+  *The superseded sentences are deliberately not reproduced here.* This section
+  is moved under the version at release time and published verbatim as the GitHub
+  release body, a short distance above a line stating that every artifact below
+  is covered by `SHA256SUMS` — which is the defect this entry records, and a
+  changelog is no place to reintroduce it.
+
 ## [0.1.0.dev0] - 2026-08-06
 
 A development release, published to claim the `theurian` name on PyPI. Until
