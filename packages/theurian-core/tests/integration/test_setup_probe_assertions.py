@@ -31,6 +31,7 @@ repository is ready for an ``ingest`` that will walk an absent ``knowledge/``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
@@ -135,24 +136,44 @@ def test_no_executable_at_all_is_not_core_being_present(tmp_path: Path) -> None:
 
 # -- project-layout ----------------------------------------------------------
 
+#: The layout `theurian init` writes, spelled out rather than imported from the
+#: constant under test. Deriving it from `_REQUIRED_PROJECT_DIRS` was measured to
+#: not work: parametrising over the tuple means shrinking the tuple *deletes*
+#: cases instead of failing them, so the `("migrations",)` mutation still
+#: survived -- control 1728 passed, mutant 1726 passed, and pytest counts a case
+#: that never ran as neither. A hand-written literal is the same choice
+#: `INSTALLERS` in `test_setup_claims.py` makes, for the same reason: a test that
+#: reads its expectation out of the thing it is checking is green for whatever
+#: that thing says.
+_EXPECTED_PROJECT_DIRS: Final = ("migrations", "knowledge", "state")
 
-@pytest.mark.parametrize("absent", _REQUIRED_PROJECT_DIRS)
+
+def test_the_required_layout_is_exactly_these_three_directories() -> None:
+    """The tuple's contents, asserted directly.
+
+    The kill that does not depend on any probe behaviour: an edit that drops an
+    entry, adds one, or reorders it fails here with the diff in the message.
+    """
+    assert _REQUIRED_PROJECT_DIRS == _EXPECTED_PROJECT_DIRS
+
+
+@pytest.mark.parametrize("absent", _EXPECTED_PROJECT_DIRS)
 def test_every_required_directory_is_one_the_layout_is_not_complete_without(
     tmp_path: Path, absent: str
 ) -> None:
-    """Parametrised over the tuple, so shortening it cannot leave a green suite.
+    """Each directory withheld in turn, against the literal above.
 
     The surviving mutation reduced ``_REQUIRED_PROJECT_DIRS`` to
     ``("migrations",)``. Nothing caught it because the states the suite probes
     hold either all three directories or none: with none, a one-element tuple
     still reports MISSING, so the *status* was identical and only the summary
-    moved. Asking for each directory separately is what makes the tuple's
-    contents observable -- drop any entry and the case that names it goes red,
-    because the layout that omits it is then reported SATISFIED.
+    moved. Withholding one directory at a time is what makes the tuple's
+    contents observable -- under that mutation the ``knowledge`` and ``state``
+    cases find a layout the probe now calls complete, and go red.
     """
     root = tmp_path / "repo"
     theurian_dir = root / ".theurian"
-    for name in _REQUIRED_PROJECT_DIRS:
+    for name in _EXPECTED_PROJECT_DIRS:
         if name != absent:
             (theurian_dir / name).mkdir(parents=True)
 
@@ -165,7 +186,7 @@ def test_every_required_directory_is_one_the_layout_is_not_complete_without(
 def test_the_whole_layout_is_what_satisfies_the_step(tmp_path: Path) -> None:
     """The complement, or the parametrised test passes by always reporting MISSING."""
     root = tmp_path / "repo"
-    for name in _REQUIRED_PROJECT_DIRS:
+    for name in _EXPECTED_PROJECT_DIRS:
         (root / ".theurian" / name).mkdir(parents=True)
 
     step = probe_project_layout(_context(tmp_path, project_root=root))
@@ -177,7 +198,7 @@ def test_a_file_is_not_a_directory_for_the_purpose_of_the_layout(tmp_path: Path)
     """`is_dir`, not `exists`: `ingest` walks these, and a file cannot be walked."""
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
-    for name in _REQUIRED_PROJECT_DIRS:
+    for name in _EXPECTED_PROJECT_DIRS:
         (root / ".theurian" / name).touch()
 
     step = probe_project_layout(_context(tmp_path, project_root=root))
