@@ -106,6 +106,10 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-core.yml"
+#: The workflow that runs this file on a pull request. `release-core.yml` runs
+#: it too, in `quality`, which is why a tag push cannot publish past a failure
+#: here -- both are asserted below.
+CORE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "core.yml"
 API_MODEL = pathlib.Path(__file__).parent / "github_api_model.py"
 
 #: Real `bash` and real `jq`: the filters under test are the workflow's own
@@ -154,8 +158,22 @@ LOCAL_VERSION_WHEEL = "theurian-0.2.0+local-py3-none-any.whl"
 # -- locating the steps -----------------------------------------------------
 
 
+def _yaml(path: pathlib.Path) -> dict[Any, Any]:
+    return cast(dict[Any, Any], yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def _triggers(path: pathlib.Path) -> dict[str, Any]:
+    """A workflow's `on:` block.
+
+    YAML 1.1 reads a bare `on:` key as the boolean true, which is how PyYAML
+    hands it back. Written once here so that `document[True]` does not appear at
+    a call site, where it reads like a mistake.
+    """
+    return cast(dict[str, Any], _yaml(path)[True])
+
+
 def _workflow() -> dict[str, Any]:
-    return cast(dict[str, Any], yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")))
+    return cast(dict[str, Any], _yaml(WORKFLOW))
 
 
 def _job(name: str) -> dict[str, Any]:
@@ -1133,6 +1151,41 @@ def test_the_draft_exists_before_the_upload_and_is_published_after_it() -> None:
     """
     assert "draft-release" in _job("publish-pypi")["needs"]
     assert "publish-pypi" in _job("publish-release")["needs"]
+
+
+def test_a_change_to_the_workflow_under_test_runs_this_file() -> None:
+    """A test that does not run when its subject changes is not coverage.
+
+    The subject here is a file, not a module, so nothing about editing it makes
+    pytest run. `core.yml` filters on paths, and it listed `tests/**` — which
+    covers editing the tests — but nothing that covers editing the thing they
+    test. Both events matter: `pull_request` is where a change is reviewed, and
+    `push` is what keeps main's badge honest about it.
+    """
+    triggers = _triggers(CORE_WORKFLOW)
+
+    for event in ("push", "pull_request"):
+        assert ".github/workflows/release-core.yml" in triggers[event]["paths"], event
+        assert "tests/**" in triggers[event]["paths"], event
+
+
+def test_a_tag_push_cannot_reach_the_publication_jobs_without_running_this_file() -> None:
+    """The release workflow runs its own tests, and that is load-bearing.
+
+    `core.yml`'s filters cover a change to the workflow or to these tests. They
+    do not cover a tag pushed at a commit where either is already broken — a
+    hotfix branch, a revert, a tag placed on an older commit. `quality` runs the
+    whole suite, and the publication jobs sit behind it through `build`, so a
+    red harness stops the release before `contents: write` is ever held.
+
+    The chain is asserted rather than the step alone: `quality` running these
+    tests means nothing if `draft-release` no longer waits on it.
+    """
+    quality_runs = [step.get("run") for step in _job("quality")["steps"] if "run" in step]
+
+    assert "uv run pytest -q" in quality_runs
+    assert _job("build")["needs"] == "quality"
+    assert _job("draft-release")["needs"] == "build"
 
 
 def test_no_publication_job_runs_outside_a_tag_push() -> None:
