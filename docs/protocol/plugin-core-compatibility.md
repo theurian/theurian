@@ -114,12 +114,14 @@ SemVer right is not the same as getting *this* right, so there is no level of
 care at which reimplementing it becomes safe.
 
 The practical consequence for a declaration: a plugin developed against Core
-`0.1.0` should declare `minimum: 0.1.0-dev.0` while Core is unreleased. That is
-the earliest `0.1.0` Core can report, so every pre-release of `0.1.0` —
-`0.1.0.dev1`, `0.1.0a1`, `0.1.0b1`, `0.1.0rc1` — sorts above it and resolves
-`compatible`. Pinning the minimum at `0.1.0` instead rejects all of them, and
-the reason is the ordering rather than the spelling: `0.1.0rc1` carries no
-development segment and is still below `0.1.0`.
+`0.1.0` should declare `minimum: 0.1.0-dev.0`. That is the earliest `0.1.0` Core
+can report, so every pre-release of `0.1.0` — `0.1.0.dev1`, `0.1.0a1`,
+`0.1.0b1`, `0.1.0rc1` — sorts above it and resolves `compatible`. It is also
+the SemVer form of `0.1.0.dev0`, Core's first release, so the floor sits
+exactly at the released Core rather than below anything installable. Pinning
+the minimum at `0.1.0` instead rejects all of them, and the reason is the
+ordering rather than the spelling: `0.1.0rc1` carries no development segment
+and is still below `0.1.0`.
 
 ## Resolution
 

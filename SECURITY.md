@@ -45,20 +45,31 @@ embargo with no deadline ends when somebody remembers.
 
 What decides our handling is whether the artifact holding the defect has been
 released. Theurian ships two on independent release trains
-([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md)), and **they
-are not in the same state**:
+([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md)), and **both
+are now released**:
 
 | Artifact | State | What settles it |
 | :-- | :-- | :-- |
 | Claude Code plugin | **Released**, at `0.1.0` | the sha the `theurian` entry pins in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json`, and the `version` in `plugin.json` at that sha |
-| Theurian Core | **Pre-release**, until the first `core-v*` tag is pushed | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'` |
+| Theurian Core | **Released**, at `0.1.0.dev0` | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'`, and the versions on [PyPI](https://pypi.org/project/theurian/) |
 
 Core tags are `core-v*` and plugin tags are `plugin-v*` (release process:
 [Core](docs/contributing/release.md#4-tag),
 [plugin](docs/contributing/release.md#4-tag-and-publish)) — pushed to that URL
 rather than created, because a tag in a local clone or a fork distributes
-nothing. No output from that command means no such tag; it exits 0 either way, so
-a network failure reads the same as an answer.
+nothing. **Read the exit code, not just the output.** `git ls-remote` exits 0
+when it reached the remote, "whether it found any matching refs", and exits 128
+with `fatal:` on stderr when it did not — so empty output at exit 0 means the
+remote holds no matching tag, and a network failure does not look like that. Now
+that `core-v0.1.0.dev0` exists, an empty result at exit 0 means the untag step in
+[`release.md`'s yanking procedure](docs/contributing/release.md#yanking) was
+performed.
+
+**A development release is still a release here.** What flips the default to
+private is that installs exist which a reader cannot fix by updating a checkout,
+and `0.1.0.dev0` is on PyPI, built from a tag that does not move when `main`
+does. The version's maturity decides which fixes it receives, under *Supported
+versions* below; it does not decide which branch a vulnerability takes.
 
 **A defect is routed by whose users it exposes, not by which tree it sits in**,
 and where the two differ the users decide: a control living in Core's test tree
@@ -93,16 +104,19 @@ artifact's changelog ([Core](packages/theurian-core/CHANGELOG.md),
 
 Whoever found it: a private advisory before the fix is public, a release that
 carries the fix, and the advisory published with it. Which releases are supported
-is the table below. There is no bar on this side, and the asymmetry is
-deliberate: once a release exists there are installs that a reader cannot fix by
-updating a checkout, so the default flips to private.
+is the table below. **Nothing extra has to be established to route a
+vulnerability privately here.** That direction is deliberate: the pre-release
+branch made public handling the thing that had to be argued for, and this side
+makes private handling the default, because once a release exists there are
+installs that a reader cannot fix by updating a checkout.
 
 **This applies to vulnerabilities, not to every defect.** A released artifact's
 ordinary bugs — a wrong message, a flaky test, a missing option — are public
 issues like any other. What makes a defect a vulnerability is that it fails one
-of the two conditions below; those conditions decide the *pre-release* branch on
-their own, and on this side they decide only whether the private route applies at
-all.
+of the two conditions below; those conditions decided Core's *pre-release* branch
+on their own, and on this side they decide only whether the private route applies
+at all. **A defect that clears both is a public issue on this side too** — the
+conditions outlived the branch they used to decide.
 
 The fix is written in the temporary private fork a
 [security advisory](https://github.com/theurian/theurian/security/advisories/new)
@@ -132,9 +146,22 @@ push channel. The trigger is our act, not their upgrade; the reason private is
 the default here is that a release leaves installs a reader cannot fix by
 updating a checkout.
 
-An advisory published here carries no package ecosystem, so it reaches people who
-read this repository and no dependency scanner. It is a public record, not a
-notification.
+**What an advisory reaches differs by train**, and Core's move to PyPI is what
+separated them.
+
+- **Core** is a PyPI package, so an advisory from this repository can name an
+  affected product — ecosystem `pip`, package `theurian`, and a version range —
+  and one GitHub accepts into the
+  [Advisory Database](https://github.com/advisories) reaches Dependabot.
+  Declaring it is a choice made when the advisory is written, not a property of
+  the form, and an advisory left without an affected product reaches only people
+  who read this repository. **Core's advisories name the affected range**; the
+  yank procedure's advisory step
+  ([`release.md`](docs/contributing/release.md#yanking)) is where that happens.
+- **The plugin** has no ecosystem to declare. It is distributed by a sha pin in a
+  marketplace repository, which no dependency scanner reads, so an advisory about
+  the plugin **is a public record, not a notification** — and publishing one
+  moves nobody off the cached copy they already have.
 
 A gap in the process around a release — a train with no CI, a marketplace
 repository without required review, an unverified download in a workflow — has no
@@ -150,12 +177,21 @@ what its advisory step refers back to. Its "yank from PyPI" and "untag" steps ar
 Core's alone: the plugin has neither, and untagging cancels nothing that a sha
 pin distributes.
 
-### A vulnerability in Core while it is pre-release
+### The two conditions, and the pre-release branch that closed at the tag
 
-No released version of Core exists for a GitHub advisory to name. That settles
-only that an advisory is not the mechanism; it does not make public handling
-automatic. A defect is fixed on a public branch — and, where it is not fixed at
-once, tracked as a public issue or described in the
+> **Core's pre-release branch closed when `core-v0.1.0.dev0` was pushed.** A
+> vulnerability found from that tag onward takes the branch above, on both
+> trains.
+>
+> **The two conditions did not close with it.** The branch above decides what
+> counts as a vulnerability by them, so they are stated below in the present
+> tense because they still decide. What retired is the default they used to
+> set — public handling — not the conditions themselves.
+
+While Core had no released version for a GitHub advisory to name, that settled
+only that an advisory was not the mechanism; it did not make public handling
+automatic. A defect took a public branch — and, where it was not fixed at once, a
+public issue or a description in the
 [threat model](docs/security/threat-model.md), this project's most detailed
 public security channel — only when **both** of these hold:
 
@@ -231,18 +267,20 @@ protects nobody, and the description is what lets a user judge their own
 exposure.
 
 Anything else — and anything where the answer is unclear — takes the same private
-fork, and is described in public once the fix is on `theurian/theurian@main`,
-which is what an install from source gets.
+fork. While Core was pre-release, its public description followed the fix
+reaching `theurian/theurian@main`, which is what an install from source gets; now
+that Core is released, the delivery point is the one the branch above names.
 
-None of this rests on nobody running the code. Theurian installs from source
-before any tag, and the threat model reasons about what a user has on that basis.
+None of this ever rested on nobody running the code. Theurian installed from
+source before the first tag, and the threat model reasons about what a user has
+on that basis.
 
 ### The decision this records
 
 [#51](https://github.com/theurian/theurian/pull/51) fixed a `theurian doctor
 --report` that could publish a bearer token it had read out of a client
 configuration, while this file said no credential value entered that payload. No
-advisory was filed, because Core has no released version an advisory could name.
+advisory was filed, because Core had no released version an advisory could name.
 That was a decision, and this section exists so that it reads as one.
 
 **It would clear neither condition above** — and its own pull request sat public
@@ -283,13 +321,27 @@ Pre-1.0, only an artifact's latest MINOR release receives security fixes. Once
 | :-- | :-- | :-- |
 | Claude Code plugin | 0.1.x | ✅ |
 | Claude Code plugin | < 0.1 | ❌ |
-| Theurian Core | none released | — |
+| Theurian Core | 0.1.x | ✅ |
+| Theurian Core | < 0.1 | ❌ |
 
-Core has no supported release until its first `core-v*` tag is pushed. Its
-changelog opens a `0.1.0.dev0` section ahead of that tag, because the release
+**The rows name a MINOR series, not a version, because a fix never arrives as the
+version that carried the defect.** PyPI does not re-accept a filename it already
+holds, so a Core fix ships as a new release inside `0.1.x` — naming `0.1.0.dev0`
+in the supported column would name a version to which no fix can ever arrive, and
+would go false at the next release, leaving the only installable Core outside
+both rows. `0.1.0.dev0` is the release currently occupying `0.1.x`.
+
+**A development release is supported on the same terms as any other**, and the
+alternative is not a conservative default: routing turns on whether an artifact
+has been released, so an unsupported row would leave the only Core anyone can
+install in neither branch above.
+
+Core's changelog opened that section ahead of the tag, because the release
 workflow requires the section to exist before it will build — **an open changelog
-section is not a release**, and `theurian version --json` reporting `0.1.0.dev0`
-is reporting a checkout. The tag and the published artifact are what settle it.
+section is not a release**, and until the tag, `theurian version --json`
+reporting `0.1.0.dev0` was reporting a checkout. This file said the tag and the
+published artifact were what would settle it. Both have now happened: the tag is
+`core-v0.1.0.dev0` and the artifact is on PyPI.
 
 ## Theurian's security model
 
