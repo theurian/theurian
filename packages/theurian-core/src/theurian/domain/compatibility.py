@@ -19,6 +19,39 @@ from typing import Final, Self, override
 from theurian.domain.errors import DomainError
 from theurian.domain.extras import DAEMON_INSTALLERS
 
+#: What a user with an out-of-date Core runs. **Theurian does not upgrade
+#: itself**, so these are the installer's commands and not a ``theurian``
+#: subcommand -- the module docstring's "never upgrades anything to resolve one"
+#: applies to Theurian's own artifact too
+#: (https://github.com/theurian/theurian/issues/42).
+#:
+#: This remedy used to read "Upgrade Core with ``theurian upgrade``", and
+#: ``upgrade`` has never been a registered command: ``theurian upgrade`` exits
+#: with ``No such command 'upgrade'``. It is the remedy ``session-start.sh``
+#: prints on every session that finds an incompatible Core, so it was advice that
+#: could not be followed on the one surface reaching users unprompted.
+#:
+#: **Neither form names the ``daemon`` extra, and that is measured rather than an
+#: oversight.** Both installers record the spec they were given and re-resolve
+#: *it*, so an install that carried the extra keeps it. Against uv 0.7.2,
+#: ``uv tool upgrade`` moved a ``black[d]`` install from 24.1.0 to 24.10.0 with
+#: the extra's dependency and its second entry point intact and its
+#: ``uv-receipt.toml`` still recording ``extras = ["d"]``. Against pipx 1.16.6,
+#: ``pipx upgrade`` reported ``upgrading black from spec 'black[d]'`` -- it drops
+#: the version constraint and keeps the extra. Naming the extra here would
+#: instead assert that upgrading repairs a bare install, which it does not: an
+#: install with no extra re-resolves to no extra, and that user's answer is
+#: :data:`~theurian.domain.extras.DAEMON_INSTALLERS`, not this.
+#:
+#: The asymmetry with installing is real, and is why these are separate
+#: constants: a plain ``pipx install`` over an existing installation is a no-op
+#: that exits 0 (see :data:`~theurian.domain.extras.DAEMON_EXTRA_REMEDY`), while
+#: a plain ``pipx upgrade`` does the thing it says.
+CORE_UPGRADERS: Final = (
+    "uv tool upgrade theurian",
+    "pipx upgrade theurian",
+)
+
 #: Semantic version with an optional pre-release and build metadata.
 _SEMVER_PATTERN: Final = re.compile(
     r"^(?P<major>0|[1-9]\d*)"
@@ -405,6 +438,17 @@ def resolve_compatibility(
     it. One constant is what keeps the answer here identical to the one
     ``core-present`` gives; two literals is how they drifted apart the first
     time.
+
+    **``CORE_TOO_OLD`` delegates the upgrade rather than offering one**, from
+    :data:`CORE_UPGRADERS`. It used to name ``theurian upgrade``, which is not a
+    registered command and never has been, so the one outcome here with a
+    production path printed a remedy that could not be run (#42). Delegating is
+    the answer the module docstring already gives, and the one ``CORE_MISSING``
+    gives a branch above: the installer put the artifact there and the installer
+    replaces it. The alternative -- a real ``theurian upgrade`` -- would make
+    Theurian the thing that obtains its own artifact, and with it T-16's
+    install-time verification, which is a larger commitment than a remedy string
+    and is deliberately not taken here.
     """
     if core_version is None:
         return CompatibilityVerdict(
@@ -428,7 +472,8 @@ def resolve_compatibility(
                 f"(>= {declaration.core_minimum})."
             ),
             remedy=(
-                f"Upgrade Core with `theurian upgrade`, or run /theurian:upgrade. "
+                f"Upgrade Core with `{CORE_UPGRADERS[0]}` or "
+                f"`{CORE_UPGRADERS[1]}`, then start a new session. "
                 f"Required: >= {declaration.core_minimum}, "
                 f"< {declaration.core_maximum_exclusive}."
             ),

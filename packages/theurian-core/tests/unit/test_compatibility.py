@@ -436,6 +436,30 @@ def test_old_core_advises_upgrading_core() -> None:
     assert "0.4.0" in verdict.remedy
 
 
+def test_old_core_remedy_names_the_installer_not_a_theurian_subcommand() -> None:
+    """The remedy has to be runnable, and ``theurian upgrade`` is not (#42).
+
+    ``upgrade`` has never been registered in ``cli/main.py``; the old remedy read
+    "Upgrade Core with ``theurian upgrade``, or run /theurian:upgrade" and both
+    halves failed. This is the outcome in this enum with a real production path
+    -- ``session-start.sh`` prints the verdict on every session that finds an
+    incompatible Core -- so it was the remedy most likely to be read and least
+    able to be followed.
+
+    Spelled out rather than read from :data:`CORE_UPGRADERS`, for the reason
+    ``test_missing_core_is_reported_as_install_then_setup`` gives: a test that
+    imports the constant the production code formats is green for whatever the
+    constant happens to say, including a subcommand that does not exist. The
+    absence assertion is the point of the test, not the presence one.
+    """
+    verdict = resolve_compatibility(DECLARATION, Version.parse("0.3.9"), "theurian/v1")
+    assert verdict.outcome is CompatibilityOutcome.CORE_TOO_OLD
+    assert "uv tool upgrade theurian" in verdict.remedy
+    assert "pipx upgrade theurian" in verdict.remedy
+    assert "theurian upgrade" not in verdict.remedy
+    assert "/theurian:upgrade" not in verdict.remedy
+
+
 def test_new_core_advises_updating_the_plugin_not_core() -> None:
     """Downgrading Core to satisfy a plugin would break every other client."""
     verdict = resolve_compatibility(DECLARATION, Version.parse("0.6.0"), "theurian/v1")
