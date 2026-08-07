@@ -48,6 +48,11 @@ from theurian.domain.errors import (
     RevisionConflictError,
     TheurianError,
 )
+from theurian.domain.extras import (
+    DAEMON_EXTRA,
+    DAEMON_EXTRA_REMEDY,
+    provided_by_daemon_extra,
+)
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ports import SourceParser
@@ -888,6 +893,37 @@ daemon_app = typer.Typer(help="Manage the local Theurian daemon.", no_args_is_he
 # them at module scope takes `theurian --version` from 170 ms to 600 ms, which
 # alone exceeds the SessionStart p95 budget of 300 ms (NFR-2) -- and the hook
 # runs on every session while never touching these commands.
+#
+# The laziness has a second consequence nobody chose: on an install without the
+# `daemon` extra the import fails at *call* time, so the failure arrives as a
+# traceback from inside a command rather than at startup. `_require_daemon_extra`
+# below is what turns that back into an answer.
+
+
+def _require_daemon_extra(exc: ModuleNotFoundError, *, as_json: bool) -> None:
+    """Report a missing ``daemon`` extra, or re-raise something else (#78).
+
+    ``uv tool install theurian`` -- the command every install surface names --
+    leaves ``uvicorn`` out, so the very next step of the documented flow ended in
+    ``ModuleNotFoundError: No module named 'uvicorn'``: a package the reader
+    never asked for, with no command to fix it. The packaging split itself is
+    sound and stays (ADR-0014).
+
+    **Re-raising is the load-bearing half.** A bare ``except ModuleNotFoundError``
+    would answer a broken Theurian -- a renamed module, a truncated wheel -- with
+    "install the daemon extra", sending the user to reinstall the very package
+    that contains the broken file. So the exception's own ``name`` decides, and
+    anything Theurian's own is left to propagate.
+    """
+    if not provided_by_daemon_extra(exc.name):
+        raise exc
+    _fail(
+        f"`theurian daemon` needs Theurian's `{DAEMON_EXTRA}` extra, which is not "
+        f"installed: {exc}.",
+        remedy=DAEMON_EXTRA_REMEDY,
+        as_json=as_json,
+        code=1,
+    )
 
 
 @daemon_app.command("start")
@@ -904,7 +940,11 @@ def daemon_start(
     per user per machine is the guarantee, and a second starter confirming the
     first is healthy has done its job (ADR-0002).
     """
-    from theurian.daemon.runner import serve  # noqa: PLC0415 - see the note above
+    try:
+        from theurian.daemon.runner import serve  # noqa: PLC0415 - see the note above
+    except ModuleNotFoundError as exc:
+        _require_daemon_extra(exc, as_json=as_json)
+        return
 
     if not foreground:
         _start_detached(port=port, as_json=as_json)
@@ -1032,8 +1072,7 @@ def daemon_status(
     import asyncio  # noqa: PLC0415 - see above
 
     from theurian.cli.setup_commands import _executable  # noqa: PLC0415
-    from theurian.daemon.instance import probe_health  # noqa: PLC0415
-    from theurian.daemon.runner import LOCK_FILENAME  # noqa: PLC0415
+    from theurian.daemon.instance import LOCK_FILENAME, probe_health  # noqa: PLC0415
     from theurian.domain.ports.daemon_manager import ServiceState  # noqa: PLC0415
     from theurian.infrastructure.secrets.file_store import (  # noqa: PLC0415
         default_data_dir,
