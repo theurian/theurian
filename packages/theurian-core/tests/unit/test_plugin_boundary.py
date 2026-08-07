@@ -658,10 +658,45 @@ def test_session_start_hook_performs_no_heavy_or_mutating_work() -> None:
     assert not found, f"SessionStart performs forbidden work: {found}"
 
 
-def test_session_start_hook_cannot_block_a_session() -> None:
-    """A degraded Theurian must never stop a session from starting."""
-    script = (PLUGIN / "scripts" / "session-start.sh").read_text(encoding="utf-8")
-    assert script.rstrip().endswith("exit 0")
+def test_nothing_the_session_start_hook_sources_enables_errexit() -> None:
+    """errexit anywhere in the sourced chain makes the hook's final ``exit 0`` unreachable.
+
+    This replaces an assertion that read ``script.rstrip().endswith("exit 0")``
+    and was named for the property below. It checked the last *line* of the
+    file, so it stayed green through the entire life of plugin 0.1.0 while
+    ``lib.sh`` re-enabled errexit in the caller's shell and the unguarded
+    ``verdict="$(theurian::compat_check ...)"`` assignment killed the hook on
+    every non-zero verdict -- exit 3 to Claude Code, no warning, no session. A
+    mutation putting ``return 1`` in ``main`` also survived it, along with all
+    1593 other tests.
+
+    The behaviour itself is now held by
+    ``tests/integration/test_session_start_hook.py``, which runs the hook. This
+    one stays because it is cheap and it covers the *class*: a file added to the
+    sourced chain tomorrow, or a ``set -e`` restored by someone who reads it as
+    ordinary shell hygiene, breaks every degraded path at once and the message
+    here says why. ``set -uo pipefail`` is deliberately not flagged -- ``-u``
+    and ``pipefail`` do not turn a handled non-zero result into a dead shell.
+    """
+    hook = PLUGIN / "scripts" / "session-start.sh"
+    script = hook.read_text(encoding="utf-8")
+    sourced = set(re.findall(r"(?m)^\s*(?:\.|source)\s+.*?([A-Za-z0-9_.-]+\.sh)", script))
+
+    assert sourced == {"lib.sh"}, (
+        f"the hook's sourced set changed to {sorted(sourced)}; this scan was written "
+        "against lib.sh alone and would otherwise pass by looking at nothing"
+    )
+
+    errexit = re.compile(r"(?m)^\s*set\s+(?:-[a-zA-Z]*e[a-zA-Z]*\b|-o\s+errexit\b)")
+    offenders = [
+        name
+        for name in sorted({hook.name, *sourced})
+        if errexit.search((hook.parent / name).read_text(encoding="utf-8"))
+    ]
+    assert not offenders, (
+        f"{offenders} enable errexit, so any unguarded command in the hook aborts "
+        "the shell before `exit 0` and Claude Code refuses to start the session"
+    )
 
 
 def test_only_session_start_is_hooked() -> None:

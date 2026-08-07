@@ -7,7 +7,15 @@
 #
 # Nothing here may import or execute Python from the Theurian package.
 
-set -euo pipefail
+# No `errexit`. This file is *sourced*, so every option set here is imposed on
+# the caller -- and the only caller is a SessionStart hook that turns it off on
+# purpose one line before sourcing us, because it must exit 0 whatever Core
+# says. Under errexit its `verdict="$(theurian::compat_check ...)"` is a bare
+# assignment: any non-zero verdict aborts the shell there, leaving both the
+# warning branch and the final `exit 0` unreachable, and a user whose Core is
+# incompatible gets a blocked session with no message. Failure travels through
+# return status here; nothing below depends on the shell exiting for it.
+set -uo pipefail
 
 THEURIAN_DEFAULT_HOST="127.0.0.1"
 THEURIAN_DEFAULT_PORT="7419"
