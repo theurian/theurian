@@ -33,8 +33,11 @@ out by requiring that Core remain fully functional standalone.
 1. Every commit carries `Signed-off-by: Name <email>` (`git commit -s`).
 2. The DCO text (version 1.1, verbatim) lives at `docs/contributing/dco.md` and is
    referenced from `CONTRIBUTING.md`.
-3. A CI job verifies the sign-off on every commit in a pull request. It is a
-   required check.
+3. A CI job verifies the sign-off on every commit in a pull request. **It is
+   intended to be a required check and is not one yet** — see the Compliance
+   section and [#67](https://github.com/theurian/theurian/issues/67). Point 3 is
+   what the DCO is worth: an unenforced sign-off records intent and proves
+   nothing about the commits that actually landed.
 4. Contributors retain copyright in their contributions. There is no copyright
    assignment.
 5. `NOTICE` attributes the work collectively to "Theurian Contributors" rather
