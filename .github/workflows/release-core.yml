@@ -308,7 +308,14 @@ jobs:
           set -euo pipefail
           # `uv build` leaves a .gitignore in dist/; it is not a release artifact.
           rm -f dist/.gitignore
-          cd dist && sha256sum * | tee SHA256SUMS
+          # Not `sha256sum * | tee SHA256SUMS`. Each side of a pipeline is its
+          # own subshell, so the glob is expanded concurrently with `tee`
+          # creating the file, and the file can list itself — measured once in
+          # 23,900 iterations. Expanding into a variable finishes the glob
+          # before SHA256SUMS exists.
+          cd dist
+          sums="$(sha256sum *)"
+          printf '%s\n' "$sums" | tee SHA256SUMS
           # Covers the wheel, the sdist, and the SBOM. Publishing this file is
           # the half of T-16 that ships; nothing verifies it at install time.
           # `probe_artifact_integrity` returns not-applicable unconditionally, so
@@ -398,29 +405,59 @@ jobs:
       # This guard matches on the tag alone, NOT on `.draft`. An earlier version
       # counted only drafts, and that let the workflow walk into exactly the
       # state it exists to prevent: publish the draft by hand, press "Re-run all
-      # jobs", and the guard sees no draft, so the upload proceeds and the
-      # publish step then fails with HTTP 422 — the REST API refusing a second
-      # *published* release on one tag. That 422 is a real backstop, and it
-      # fires after the irreversible step. Matching every release moves it
-      # before.
+      # jobs", the guard sees no draft, and the upload proceeds.
+      #
+      # There is no API backstop in front of the upload. `POST /releases` with
+      # `draft: true` succeeds even when the tag already carries a *published*
+      # release — measured, HTTP 201. The 422 that refuses a second published
+      # release on one tag comes from `publish-release`'s PATCH, which is after
+      # the irreversible step. **This guard is the only thing standing in front
+      # of the upload**, which is why it matches every release and not just
+      # drafts.
       #
       # This is an assertion, not a recovery branch. It only ever fails.
       - name: Refuse to draft when this tag already has a release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           # One line per release on this tag, draft or not. `--paginate`
           # concatenates per-page output, so counting lines is correct where
           # summing lengths is not.
+          #
+          # `published_at` is reported because `.draft` alone cannot tell a
+          # draft that was never published from a *published release reverted to
+          # a draft by deleting and re-pushing the tag*. Those two look
+          # identical and want opposite handling: the second one's version is
+          # already on PyPI, and deleting it is how a run ends with an
+          # installable wheel and no release.
           existing="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
-                      --jq '.[] | select(.tag_name == env.TAG) | "\(.id) (draft=\(.draft))"')"
+                      --jq '.[] | select(.tag_name == env.TAG)
+                            | "  id=\(.id) draft=\(.draft) published_at=\(.published_at) assets=\([.assets[].name]|length)"')"
           if [ -n "$existing" ]; then
-            # Delete by id. `gh release delete <tag>` resolves through the same
-            # racing lookup and has been measured to delete the *published*
-            # release while leaving the draft — the exact inverse of intent.
-            echo "::error::${TAG} already has a release: $(echo $existing). Publishing would pick one of them, and not necessarily this run's. If it is a draft nothing was published; delete it by id and re-run ALL jobs (a re-run of only the failed ones keeps the deleted id): gh api -X DELETE repos/${GITHUB_REPOSITORY}/releases/<id>"
+            echo "${TAG} already has a release:"
+            printf '%s\n' "$existing"
+            echo ""
+            echo "Do not delete anything until you know whether ${VERSION} is already on PyPI:"
+            echo "  https://pypi.org/project/theurian/${VERSION}/"
+            echo ""
+            echo "ON PyPI  -> do NOT delete. That release is the record for a version users can"
+            echo "            already install. Publish it as it stands:"
+            echo "              gh api -X PATCH repos/${GITHUB_REPOSITORY}/releases/<id> \\"
+            echo "                -F draft=false -f make_latest=legacy"
+            echo "            A published release reverted to a draft keeps its body and assets,"
+            echo "            and that command restores it exactly."
+            echo ""
+            echo "NOT on PyPI -> delete by id, then re-run ALL jobs. Re-running only the failed"
+            echo "            jobs keeps the deleted id and fails at the last step, after the"
+            echo "            upload has gone through:"
+            echo "              gh api -X DELETE repos/${GITHUB_REPOSITORY}/releases/<id>"
+            # Delete by id. `gh release delete <tag>` resolves through a racing
+            # lookup and has been measured to delete the *published* release
+            # while leaving the draft — the exact inverse of intent.
+            echo "::error::${TAG} already has a release; see this step's log before deleting anything."
             exit 1
           fi
           echo "No release exists for ${TAG}."
@@ -479,8 +516,15 @@ jobs:
           # `publish-pypi` waits on it, so nothing reaches PyPI.
           for asset in artifacts/dist/*; do
             name="$(basename "$asset")"
+            # Percent-encode the query value. `gh release upload` did this; a
+            # raw `?name=` does not, and `+` in a PEP 440 local version
+            # (`0.2.0+local`) arrives as a space and is stored as `.`, silently
+            # renaming the asset. The have/want check below then fails every
+            # time, so without this the documented "delete and re-run" recovery
+            # never terminates.
+            encoded="$(jq -rn --arg n "$name" '$n | @uri')"
             code="$(curl -sS -o /tmp/upload-body.json -w '%{http_code}' \
-                      -X POST "${upload_url}?name=${name}" \
+                      -X POST "${upload_url}?name=${encoded}" \
                       -H "Authorization: Bearer ${GH_TOKEN}" \
                       -H "Content-Type: application/octet-stream" \
                       -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -606,6 +650,11 @@ jobs:
             echo "::error::Refusing to publish release ${RELEASE_ID}: ${verdict}."
             exit 1
           fi
+          # `make_latest` defaults to true on this endpoint, which would point
+          # "Latest" at whatever published most recently. Publishing a 0.2.1
+          # hotfix after 0.3.0 was measured moving `releases/latest` backwards,
+          # and release.md's Hotfixes procedure is exactly that path. `legacy`
+          # lets GitHub decide by version instead.
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
-            -F draft=false --silent
+            -F draft=false -f make_latest=legacy --silent
           echo "Theurian Core ${VERSION}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
