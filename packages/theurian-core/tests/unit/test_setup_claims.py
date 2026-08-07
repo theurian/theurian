@@ -79,12 +79,24 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: README's own next command does not survive, because it omits the ``daemon``
 #: extra the quick start goes on to use.
 #:
-#: **#78 landed, so the exclusion is over and the README is in the tuple.** The
-#: paragraph that stood here said the reason the README was out is the reason the
-#: other four were wrong, and asked to be deleted at exactly this moment; it has
-#: been. :data:`INSTALLERS` now carries ``[daemon]``, the README names both
-#: literals, and it is held to the same rules as every other surface rather than
-#: to a comment promising it would be one day.
+#: **#78 landed and the README still does not join, for a third reason nobody
+#: predicted.** The paragraph that stood here said the exclusion would expire
+#: when the surfaces and :data:`INSTALLERS` moved to a spelling carrying the
+#: extra, and asked to be deleted at that moment; it has been, because that
+#: moment is this commit. Adding ``README.md`` to the tuple was then *tried*, and
+#: it fails: the README recommends
+#: ``uv tool install --python 3.13 'theurian[daemon]'``, and the flag between the
+#: tool and the package spec means the pinned literal does not appear
+#: contiguously. The flag is not decoration -- it is what stops uv resolving
+#: against a macOS ``python3`` that is 3.9 -- so the README is right and the
+#: match is what cannot express it.
+#:
+#: Loosening the match to skip flags was rejected here rather than deferred.
+#: Verbatim is the whole of what this check is: a rule that accepts arbitrary
+#: text between ``uv tool install`` and the package would accept
+#: ``uv tool install --from somewhere-else 'theurian[daemon]'``, which is the
+#: supply-chain sentence T-16 exists over. The exclusion is therefore not a
+#: promise any more; it is a property of the one surface that must pass a flag.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
