@@ -104,9 +104,11 @@ artifact's changelog ([Core](packages/theurian-core/CHANGELOG.md),
 
 Whoever found it: a private advisory before the fix is public, a release that
 carries the fix, and the advisory published with it. Which releases are supported
-is the table below. There is no bar on this side, and the asymmetry is
-deliberate: once a release exists there are installs that a reader cannot fix by
-updating a checkout, so the default flips to private.
+is the table below. **Nothing extra has to be established to route a
+vulnerability privately here.** That direction is deliberate: the pre-release
+branch made public handling the thing that had to be argued for, and this side
+makes private handling the default, because once a release exists there are
+installs that a reader cannot fix by updating a checkout.
 
 **This applies to vulnerabilities, not to every defect.** A released artifact's
 ordinary bugs — a wrong message, a flaky test, a missing option — are public
