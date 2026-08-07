@@ -66,13 +66,19 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: numbers in T-16 of ``docs/security/threat-model.md``.
 #:
 #: ``README.md`` was the third of those and is corrected, but it stays **out** of
-#: this tuple rather than joining it:
+#: this tuple rather than joining it. The reason changed when ``theurian``
+#: ``0.1.0.dev0`` was published: it used to be that the README installed Core from
+#: the checkout, because the distribution did not exist on PyPI and the literal
+#: :data:`INSTALLERS` pin would have failed on the one surface whose instruction
+#: ran. The README now installs from PyPI like every surface here, so that reason
+#: is gone -- and the exclusion outlives it, because
 #: :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
-#: requires the literal ``uv tool install theurian``, and the README installs Core
-#: from the checkout because that distribution does not exist on PyPI yet. Adding
-#: it here would fail on the one surface whose instruction currently runs. T-16
-#: records the measurement and who owns moving the four surfaces above off an
-#: unresolvable installer.
+#: requires *both* literals verbatim. The README carries
+#: ``uv tool install theurian`` in prose but recommends
+#: ``uv tool install --python 3.13 'theurian[all]'``, and it names no bare
+#: ``pipx install theurian`` at all: a plain install omits the ``daemon`` extra,
+#: which the quick start goes on to use. Joining the tuple would mean publishing
+#: an installer the README's own next command does not survive.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
