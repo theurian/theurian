@@ -1108,27 +1108,54 @@ Core.** That is the same fact as the paragraph above, met from the other end.
 Theurian publishes PEP 740 attestations; whether an installer checks them is that
 installer's behaviour, and Theurian neither checks nor reports them.
 
-**Two strings in that step would go false at the first `core-v*` tag, and one of
-them would cancel the only mitigation a user has.** `probe_artifact_integrity`
-reported `summary="No signed release manifest exists yet; nothing to verify
-against."` and `detail="Artifact verification arrives with the first tagged
-release (OSS-7, T-16)."` Neither is false as this is written, because **no
-`core-v*` tag has been cut and no release exists**. Both turn the moment one is:
-`release-core.yml` builds `SHA256SUMS` over every artifact and a reproducible
-CycloneDX SBOM, and its release job attaches them to the release it cuts (steps
-4 and 6 of [`release.md`](../contributing/release.md)). From that point the
-`detail` is an overdue promise, and the `summary` — the worse of the two — tells
-every user there is nothing to check against a record that exists and that they
-could check by hand, which is the entire mitigation until the control lands.
+**Two strings in that step would have gone false at the first `core-v*` tag, and
+one of them would have cancelled the only mitigation a user has.**
+`probe_artifact_integrity` reported `summary="No signed release manifest exists
+yet; nothing to verify against."` and `detail="Artifact verification arrives with
+the first tagged release (OSS-7, T-16)."` Both were true when they were written.
+**`core-v0.1.0.dev0` was pushed on 2026-08-07, and both would be false now**: the
+release carries `SHA256SUMS` and a reproducible CycloneDX SBOM as assets, so the
+`detail` would be an overdue promise and the `summary` — the worse of the two —
+would tell every user there is nothing to check against a record sitting on the
+page they downloaded from, which is the entire mitigation until the control
+lands.
 
-> **What has actually been measured, and what has not.** Release dry run
-> `31094621296` against `main` finished `success` with *Build the CycloneDX SBOM*
-> and *Publish checksums* both green. That run **skipped `Cut the GitHub
-> release`**, because skipping publication is what `dry_run` means — so it
-> establishes that the two files are produced, not that they reach a release
-> page. The claim above rests on the workflow's release job, which no run has
-> exercised. It is also in flight:
-> [#59](https://github.com/theurian/theurian/pull/59) changes that job.
+**They were retired before the tag, so no published artifact carries them.** That
+is the half of [#39](https://github.com/theurian/theurian/issues/39)'s release
+gate that was met — *correct the strings or land the control before the first tag
+is pushed* — and it is checkable on the wheel rather than on the repository:
+
+```console
+$ unzip -q theurian-0.1.0.dev0-py3-none-any.whl -d x && cd x
+$ grep -rq "No signed release manifest exists yet" . ; echo "exit $?"
+exit 1
+$ grep -h "summary=" theurian/application/setup_steps.py | grep -i verify
+        summary="Theurian does not verify the artifact it is running from.",
+```
+
+`3280bc9` ([#60](https://github.com/theurian/theurian/pull/60)) retired both and
+is an ancestor of the tagged commit `f665ecf`. **The guard arrived in that same
+commit and so could not have forced it.** `3280bc9` also added
+`tests/unit/test_artifact_integrity_claim.py`, whose
+`test_the_step_cannot_assert_a_retired_claim` holds both wordings, and the
+`quality` job runs `uv run pytest -q` — so from that commit on, a release
+re-introducing either string fails. Before it there was no such test, because the
+test and the fix are the same change: had #60 landed a day later, the release
+would have carried the strings and passed every check in the workflow. What met
+this gate was the ordering of two commits; what holds it from here is a test.
+
+> **What has now been measured.** This blockquote recorded that no run had
+> exercised the release job: dry run `31094621296` produced *Build the CycloneDX
+> SBOM* and *Publish checksums* but **skipped `Cut the GitHub release`**, because
+> skipping publication is what `dry_run` means. Run
+> [`31166532134`](https://github.com/theurian/theurian/actions/runs/31166532134)
+> is not a dry run. `Draft the GitHub release` and `Publish the GitHub release`
+> both finished `success`, and `SHA256SUMS`, the SBOM, the wheel and the sdist
+> are on the release page. [#59](https://github.com/theurian/theurian/pull/59),
+> recorded here as in flight, landed as `c2a5406` and is an ancestor of the
+> tagged commit — so the run that published used the reordered job, and the
+> ordering claim at the top of this entry describes what ran rather than what was
+> intended.
 
 **The executing surface is corrected here**, which is half of what
 [#39](https://github.com/theurian/theurian/issues/39) recorded as a condition on
