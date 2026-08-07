@@ -448,7 +448,29 @@ claude plugin validate ./plugins/claude-code --strict
 ### 2. Version and compatibility
 
 Update `version` in `.claude-plugin/plugin.json` **and** `pluginVersion` in
-`compatibility.yaml`. They must agree — a test asserts it.
+`compatibility.yaml`. They must agree —
+`test_the_version_claude_code_caches_is_the_version_the_plugin_declares` in
+[`test_plugin_boundary.py`](../../packages/theurian-core/tests/unit/test_plugin_boundary.py)
+asserts it.
+
+Write `pluginVersion` as a plain unquoted scalar on one line. The SessionStart
+hook does not parse YAML — `lib.sh` reads the line with `sed` — so a quoted
+value is correct YAML that ships the quotes to `theurian compat check`, which
+then answers `invalid-declaration`.
+`test_the_shipped_hook_reads_the_same_version_the_yaml_parser_does` runs the
+real `lib.sh` and holds this.
+
+Both tests run in `plugin.yml`'s `manifest` job, which triggers when a pull
+request or a push to `main` touches `plugins/**`, `schemas/protocol/**`, or
+`plugin.yml` itself. Both files above are under `plugins/`, so bumping either
+runs the check. They are also ordinary unit tests, so `core.yml`'s test matrix
+runs them whenever it runs at all — the check is not confined to plugin-only
+pull requests. What runs neither job is a change touching neither tree: a
+docs-only pull request does not run this check.
+
+It is also not a release gate. Nothing triggers on `plugin-v*` (§4), so a tag
+cut from a commit that never went through a pull request is unchecked — which is
+why the item stays on the checklist below.
 
 Review the range against the Core you actually tested with:
 

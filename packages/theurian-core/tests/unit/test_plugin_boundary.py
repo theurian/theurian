@@ -13,7 +13,10 @@ import math
 import pathlib
 import re
 import secrets
+import shutil
+import subprocess
 from collections import Counter
+from typing import Final
 
 import pytest
 import yaml
@@ -22,6 +25,7 @@ from jsonschema import Draft202012Validator
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 PLUGIN = REPO_ROOT / "plugins" / "claude-code"
 SCHEMAS = REPO_ROOT / "schemas"
+LIB_SH = PLUGIN / "scripts" / "lib.sh"
 
 #: §9 of the brief. Each is a file under the plugin's ``commands/``.
 REQUIRED_COMMANDS = (
@@ -312,6 +316,173 @@ def test_plugin_and_core_versions_are_independent() -> None:
 
     manifest = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["version"] != __version__
+
+
+def test_the_version_claude_code_caches_is_the_version_the_plugin_declares() -> None:
+    """One artifact, two files that name its version, and nothing joined them.
+
+    ``plugin.json``'s ``version`` is the only field that decides *delivery*:
+    Claude Code caches a plugin by it, ``/plugin update`` compares it, and
+    ``SECURITY.md`` makes bumping it the act that ships a plugin fix to users.
+    ``compatibility.yaml``'s ``pluginVersion`` is the only field that decides
+    what the plugin *says it is*: ``theurian compat check`` reports it, the
+    SessionStart hook reads it through ``lib.sh``, and ``shared.yml`` passes it
+    to ``--plugin-version``.
+
+    A maintainer who bumps only the first delivers a new plugin that identifies
+    itself as the old one everywhere a user, a compatibility verdict, or a
+    security advisory would look. ``docs/contributing/release.md`` told them a
+    test caught that. Until this one, none did.
+
+    Compared as written text, not as parsed versions: the cache key is the
+    literal string, so ``0.2.0`` and ``0.2.0+build.1`` are two different
+    deliveries even though SemVer §10 excludes build metadata from precedence.
+    That the declared value is well-formed SemVer at all is
+    :func:`test_compatibility_declaration_matches_its_schema`'s question.
+    """
+    manifest = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    declaration = yaml.safe_load((PLUGIN / "compatibility.yaml").read_text(encoding="utf-8"))
+
+    cached_version = manifest["version"]
+    declared_version = declaration["pluginVersion"]
+
+    assert cached_version == declared_version, (
+        f".claude-plugin/plugin.json declares version {cached_version!r} but "
+        f"compatibility.yaml declares pluginVersion {declared_version!r}. Claude Code "
+        f"would cache the plugin as {cached_version!r} while `theurian compat check` "
+        f"and the SessionStart hook report {declared_version!r}. Bump both."
+    )
+
+
+def _shipped_reader(key: str) -> str:
+    """What ``lib.sh``'s ``theurian::compat_value`` extracts, by running it.
+
+    The shipped reader is a ``sed`` expression, not a YAML parser -- a
+    deliberate trade recorded in ``lib.sh`` itself, because the SessionStart
+    hook must finish in milliseconds. Re-implementing that expression in Python
+    would test the re-implementation, so the real file is sourced and the real
+    function called.
+
+    ``lib.sh`` is sourced by path as ``$1`` rather than interpolated into the
+    script text, and ``theurian::plugin_root`` then derives the plugin root from
+    ``BASH_SOURCE`` exactly as it does under Claude Code.
+    """
+    bash = shutil.which("bash")
+    assert bash is not None, "bash is required to run the plugin's own reader"
+
+    completed = subprocess.run(  # noqa: S603 - argv is repository-owned, never user input
+        [bash, "-c", '. "$1"; theurian::compat_value "$2"', "bash", str(LIB_SH), key],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
+def test_the_shipped_hook_reads_the_same_version_the_yaml_parser_does() -> None:
+    """Three programs read ``pluginVersion``, and only two of them parse YAML.
+
+    :func:`test_the_version_claude_code_caches_is_the_version_the_plugin_declares`
+    proves the declared *value* matches ``plugin.json``. It cannot prove the
+    SessionStart hook obtains that value, because the hook does not parse YAML:
+    ``lib.sh`` reads the line with ``sed``. Everywhere the two readers disagree,
+    the value this repository validates is not the value that ships. Measured
+    against the real file, with only the quoting changed:
+
+    ===================  ==============  ==============
+    ``pluginVersion:``   ``yaml``        ``lib.sh``
+    ===================  ==============  ==============
+    ``0.1.0``            ``0.1.0``       ``0.1.0``
+    ``"0.1.0"``          ``0.1.0``       ``"0.1.0"``
+    ``'0.1.0'``          ``0.1.0``       ``'0.1.0'``
+    ``>-`` then indent   ``0.1.0``       ``>-``
+    the key twice        the last        the first
+    ===================  ==============  ==============
+
+    None of those is perverse: the schema types the field as a string, so
+    quoting it is correct YAML, and nothing in the repository normalises quotes.
+    End to end, ``pluginVersion: "0.1.0"`` makes the hook pass
+    ``--plugin-version '"0.1.0"'`` and Core answer ``invalid-declaration``.
+
+    Pinned against the YAML parse rather than against ``plugin.json`` so that
+    each failure names one cause: a bumped-alone version fails the test above,
+    a re-quoted value fails this one. Composed, the two make all three readers
+    agree -- ``shared.yml``'s ``yq`` follows YAML semantics, as PyYAML does.
+
+    ``lib.sh``'s own comment justifies the narrow reader by saying the file is
+    "validated in CI against ``compatibility.schema.json``". That validation
+    runs on the *parsed* document, so it is blind to every row above. This test
+    is what makes the justification true.
+    """
+    declaration = yaml.safe_load((PLUGIN / "compatibility.yaml").read_text(encoding="utf-8"))
+
+    extracted = _shipped_reader("pluginVersion")
+
+    assert extracted == declaration["pluginVersion"], (
+        f"lib.sh's sed reader extracts {extracted!r} from compatibility.yaml while the "
+        f"YAML parse yields {declaration['pluginVersion']!r}. The SessionStart hook would "
+        f"pass {extracted!r} to `theurian compat check`. Write the value as a plain "
+        f"unquoted scalar on one line."
+    )
+
+
+#: Every flag in the plugin README's ``compat check`` example, mapped to the
+#: value in ``compatibility.yaml`` it restates. The README prints this repository's
+#: real declaration rather than an invented one, so it is a fourth copy of the
+#: version -- and unlike the other three it has no reader that would notice it
+#: going stale.
+_README_FLAG_SOURCES: Final = {
+    "--plugin-version": ("pluginVersion",),
+    "--core-minimum": ("coreCompatibility", "minimum"),
+    "--core-maximum-exclusive": ("coreCompatibility", "maximumExclusive"),
+    "--protocol-version": ("protocolVersion",),
+}
+
+
+def test_the_plugin_readme_prints_the_declaration_it_actually_ships() -> None:
+    """The README's ``compat check`` example is live values, not an illustration.
+
+    ``plugins/claude-code/README.md`` documents compatibility by printing the
+    exact command for *this* plugin -- ``--plugin-version 0.1.0
+    --core-minimum 0.1.0-dev.0 ...`` -- which is what ``compatibility.yaml``
+    declares today. Bump the declaration and the README keeps telling users to
+    run the old one, and a user pasting it gets a verdict about a plugin
+    version they do not have.
+
+    Two things make this worth a test rather than a checklist line. It is the
+    same class as the failure this file's other version tests exist for -- a
+    version restated somewhere with nothing joining the copies -- and it is the
+    only member of that class that no program reads, so nothing else can catch
+    it. The release checklist did not, either.
+
+    Deliberately scoped to the plugin's own README. The example versions in
+    ``docs/protocol/plugin-core-compatibility.md`` and
+    ``docs/contributing/release.md`` are illustrations using a future ``0.2.x``
+    on purpose, and pinning those would force every doc to be rewritten on a
+    release for no gain.
+    """
+    declaration = yaml.safe_load((PLUGIN / "compatibility.yaml").read_text(encoding="utf-8"))
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+
+    printed = {
+        flag: match.group(1)
+        for flag in _README_FLAG_SOURCES
+        if (match := re.search(rf"{re.escape(flag)}[ \t]+(\S+)", readme))
+    }
+    declared = {flag: _dig(declaration, path) for flag, path in _README_FLAG_SOURCES.items()}
+
+    assert printed == declared, (
+        f"plugins/claude-code/README.md's `compat check` example does not match "
+        f"compatibility.yaml. README prints {printed}, the plugin declares {declared}. "
+        f"A missing flag means the example was reworded and this test no longer reads it."
+    )
+
+
+def _dig(document: object, path: tuple[str, ...]) -> object:
+    for key in path:
+        assert isinstance(document, dict)
+        document = document[key]
+    return document
 
 
 # -- FR-L4: the SessionStart hook stays cheap ------------------------------
