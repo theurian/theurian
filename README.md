@@ -159,13 +159,28 @@ is not built yet. It is Milestone 8; `system.capabilities` reports
 
 ## Quick start
 
-Theurian is pre-release; the command below builds and installs Core from a
-checkout of this repository.
+Core is on PyPI as [`theurian`](https://pypi.org/project/theurian/). The only
+published version is `0.1.0.dev0`.
 
 ```sh
-git clone https://github.com/theurian/theurian && cd theurian
-uv tool install './packages/theurian-core[all]'   # puts `theurian` on your PATH
+uv tool install --python 3.13 'theurian[all]'   # puts `theurian` on your PATH
+# or: pipx install --python 3.13 'theurian[all]'
 ```
+
+**Both additions earn their place.** `[all]` pulls in the MCP daemon; without
+it you get the CLI and the migration engine, and `theurian daemon start` fails
+with `ModuleNotFoundError: No module named 'uvicorn'` — which `theurian setup`
+does not catch, because it only checks that a `theurian` binary exists.
+`--python 3.13` is needed because `uv tool install 'theurian[all]'` resolves
+against whatever `python3` comes first on your `PATH`, and on macOS that is
+still 3.9. The error does name the Python version, but older uv prints a
+`pre-releases weren't enabled` hint under it that is not the cause — chasing it
+with `--prerelease=allow` changes nothing. Plain `uv tool install theurian`
+needs neither flag, because uv fetches a 3.13 for it, but it gives you a Core
+with no daemon.
+
+Building from a checkout instead is the contributor path, and it is
+[docs/contributing/development.md](docs/contributing/development.md).
 
 `uv sync` builds the development environment but leaves `theurian` off `PATH`,
 and the service unit invokes it by absolute path — launchd and systemd start
