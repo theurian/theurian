@@ -2,6 +2,13 @@ name: Core
 
 # Runs only when Core, the shared schemas, or the toolchain change (§29).
 # Plugin-only pull requests should not pay for a Core matrix.
+#
+# `release-core.yml` is in the list because `tests/release/` extracts that
+# file's step bodies and runs them: the tests are the only automated check the
+# publication path has, and they execute exactly once per tag push otherwise --
+# in production, on a release nobody can un-publish. Without this line an edit
+# to the release workflow alone would change the subject without running its
+# tests, which is the same as having none.
 on:
   push:
     branches: [main]
@@ -13,6 +20,7 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/core.yml"
+      - ".github/workflows/release-core.yml"
   pull_request:
     paths:
       - "packages/theurian-core/**"
@@ -22,6 +30,7 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/core.yml"
+      - ".github/workflows/release-core.yml"
 
 permissions:
   contents: read
