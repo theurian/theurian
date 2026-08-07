@@ -654,9 +654,11 @@ one, and the one class it did catch still is:
    []
    ```
 
-   The ruleset half of the sentence this entry used to carry still holds. The
-   environment half stopped holding on the day the environment was created, and
-   the entry went on asserting it — see the correction below.
+   Re-measured after `core-v0.1.0.dev0`: byte-identical, rulesets still `[]`.
+   The ruleset half of the sentence this entry used to carry still holds, and the
+   release did not change it. The environment half stopped holding on the day the
+   environment was created, and the entry went on asserting it — see the
+   correction below.
 
 **A required reviewer on the `pypi` environment is the one control a tag pusher
 cannot edit out of the workflow.** The environment name is half of the PyPI
@@ -672,13 +674,37 @@ So every job that can mint a token PyPI accepts declares `environment: pypi`, an
 every job that declares it waits for a `core-maintainers` approval before its
 first step runs. `publish-pypi` is that job.
 
-**None of this has been observed firing.** No `core-v*` tag has been pushed, and
-`gh api 'repos/theurian/theurian/deployments?environment=pypi'` returns an empty
-list, so the gate has never been asked to hold. What is written here is GitHub's
-and PyPI's documented behaviour applied to this repository's measured
-configuration, not a run anyone has watched. The first tag is what tests it.
+**It has now been observed firing.** This paragraph said the first tag was what
+would test it. `core-v0.1.0.dev0` was pushed on 2026-08-07 at `f665ecf` and ran
+[`31166532134`](https://github.com/theurian/theurian/actions/runs/31166532134),
+which finished `success`:
 
-**What the gate binds depends on who pushed the tag, and today that is nobody.**
+```console
+$ gh api repos/theurian/theurian/actions/runs/31166532134/jobs \
+    --jq '.jobs[] | "\(.started_at)  \(.conclusion)  \(.name)"'
+2026-08-07T09:35:30Z  success  Format, lint, types, tests
+2026-08-07T09:37:52Z  success  Build, verify, and sign off the artifacts
+2026-08-07T09:38:18Z  success  Draft the GitHub release
+2026-08-07T09:50:58Z  success  Publish to PyPI
+2026-08-07T09:51:22Z  success  Publish the GitHub release
+
+$ gh api repos/theurian/theurian/deployments/5792255782/statuses \
+    --jq '.[] | "\(.created_at)  \(.state)"'
+2026-08-07T09:51:14Z  success
+2026-08-07T09:50:59Z  in_progress
+2026-08-07T09:50:58Z  queued
+2026-08-07T09:38:31Z  waiting
+```
+
+Every other job in the run took seconds. `publish-pypi` sat in `waiting` from
+`09:38:31` to `09:50:58` — **12 minutes 27 seconds** — while the three jobs
+before it had already finished, and it is the only job in the workflow that
+declares the environment. So the gate stopped the one job that reaches PyPI, and
+held it until somebody approved. That is the mechanism above, measured rather
+than derived from documentation.
+
+**What the gate binds depends on who pushed the tag, and the first real push
+took the row that binds least.**
 
 | The tag is pushed by | The approval does |
 | :-- | :-- |
@@ -686,7 +712,28 @@ configuration, not a run anyone has watched. The first tag is what tests it.
 | a `core-maintainers` member | nothing — `prevent_self_review` is unset, so the pusher approves their own run |
 | a repository admin | nothing — `can_admins_bypass` is true, so the deployment can be forced |
 
-**All three rows are the same account.** Measured 2026-08-06:
+**The first release took the second row, and the row's prediction is what
+happened.** The run's actor is the account that pushed the tag, and it is the
+account that approved the deployment:
+
+```console
+$ gh api repos/theurian/theurian/actions/runs/31166532134 \
+    --jq '"event=\(.event) actor=\(.actor.login) head_branch=\(.head_branch)"'
+event=push actor=utchy head_branch=core-v0.1.0.dev0
+
+$ gh api repos/theurian/theurian/actions/runs/31166532134/approvals \
+    --jq '.[] | "\(.state) by \(.user.login) on \(.environments[].name)"'
+approved by utchy on pypi
+```
+
+`state` is `approved`, not a bypass, so `prevent_self_review` being unset is what
+allowed it rather than `can_admins_bypass`. The twelve minutes were a person
+deciding, not a second person consenting. **A gate that a tag pusher clears by
+approving themselves records the release; it does not authorize it** — which is
+the row as written, now with a run behind it instead of a configuration reading.
+
+**All three rows are the same account.** Measured 2026-08-06 and unchanged when
+re-measured after the release:
 
 ```console
 $ gh api repos/theurian/theurian/collaborators --jq '.[] | "\(.login) \(.role_name)"'
@@ -722,12 +769,26 @@ reaching either job means they chose the commit this workflow is read from, so
 they could give themselves `contents: write` directly. The bound on them is the
 tag push, not the token.
 
-**And the argument rests on one fact this repository cannot observe.** PyPI
+**The one fact this repository could not observe is now published.** PyPI
 documents the environment field as optional, so the credential binds the
 environment only if the trusted publisher was registered with
-`Environment name: pypi`. Nothing here can check that; the publisher is still
-pending, because the project name is unclaimed as of the same date, measured
-under the residual below.
+`Environment name: pypi`. While the publisher was pending, nothing outside PyPI's
+own settings page could confirm that. The upload published it — PyPI's integrity
+endpoint names the publisher that authenticated each file, environment included:
+
+```console
+$ curl -sS https://pypi.org/integrity/theurian/0.1.0.dev0/theurian-0.1.0.dev0-py3-none-any.whl/provenance \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["attestation_bundles"][0]["publisher"]))'
+{"environment": "pypi", "kind": "GitHub", "repository": "theurian/theurian", "workflow": "release-core.yml"}
+```
+
+The sdist returns the same record. The field is filled in, so a job that omits
+`environment: pypi` mints a token whose claims do not match the publisher, and
+the argument above stands on a record any reader can fetch rather than on a
+setting only a PyPI maintainer can see. **This is what the anonymous reader can
+check; it is not a second control.** It reports the publisher that authenticated
+an upload that already happened, so it confirms the configuration was right for
+that release rather than constraining the next one.
 
 **So the residual is narrowed, not closed.** This entry named its closure as a
 tag ruleset *or* a required reviewer on the `pypi` environment. One branch of
@@ -735,9 +796,9 @@ that disjunction is now satisfied — and it is the branch that does not act on 
 actor the residual names. The reviewer stops an account that has write access and
 is not a `core-maintainers` member; the residual is *someone who can push a
 `core-v*` tag*, and every such account today is in that team, is the admin who
-can bypass the rule, and is the account the approval would be requested from. The
-ruleset branch, which is the one that would act on the push itself, is still
-empty.
+can bypass the rule, and is the account the approval was requested from and
+granted by in the release above. The ruleset branch, which is the one that would
+act on the push itself, is still empty.
 
 The honest reading of the signature step is therefore what it was: **release
 hygiene that binds the signer** — every published `core-v*` tag carries a
