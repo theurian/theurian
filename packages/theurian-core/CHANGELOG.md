@@ -12,28 +12,61 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-### Changed
+Nothing yet.
+
+## [0.1.0.dev0] - 2026-08-07
+
+A development release, published to claim the `theurian` name on PyPI. Until
+this, the name was unregistered while `theurian setup` and the plugin's
+SessionStart hook both told a user whose machine has no Core to run
+`uv tool install theurian` — a command that could not work, and that would have
+installed somebody else's package had the name been taken first.
+
+Everything below happened before Theurian had released anything at all:
+Milestones 0 through 5, then the two groups that follow, which landed after
+Milestone 5 and before the tag. The breaking changes named in it broke nothing
+that had shipped, and the `#### Known limitations` sections are where this says
+what it does not do.
+
+**The first two groups reached this section after the release.** They were
+written under `[Unreleased]`, and the move that
+[`release.md` §2](../../docs/contributing/release.md) asks for was not made
+before `core-v0.1.0.dev0` was pushed — so the published sdist carries a changelog
+filing its own contents as unreleased, and the release body generated from this
+section does not mention them. The release workflow's changelog guard did not
+catch it: it checks that a section for the version exists and is not empty, not
+that `[Unreleased]` is.
+
+**The wheel carries no changelog**, so this reached the sdist and the release
+page rather than an install: `[tool.hatch.build.targets.sdist]` lists
+`CHANGELOG.md` and the wheel target ships `src/theurian` only. `uv tool install`
+and `pip install` take the wheel, which means the reader most exposed to the
+error is the one reading the release notes to decide whether to upgrade.
+
+### Changed after Milestone 5
 
 - `theurian setup` and `theurian doctor` now explain the `artifact-integrity`
   step's `not-applicable` as a property of Theurian rather than of the world.
   The old wording denied that any record existed to check against, and promised
-  verification at the first tagged release. Both hold only until a `core-v*` tag
-  is cut — none has been, so neither is false as this is written — and from the
-  moment one is, the first of them would tell every user not to
-  bother checking a file published on that very release page, which is the only
-  mitigation available while the control is unimplemented. The step still reports
-  `not-applicable` and still verifies nothing; it now says that Theurian does not
-  verify the artifact it is running from, which holds on both sides of a tag.
-  Checking a download against the checksums published with it remains a manual
-  step ([#39](https://github.com/theurian/theurian/issues/39), T-16).
+  verification at the first tagged release. Both held only until a `core-v*` tag
+  was cut, and `core-v0.1.0.dev0` cut it: from that moment the first of them
+  would have told every user not to bother checking a file published on that
+  very release page, which is the only mitigation available while the control is
+  unimplemented. The step still reports `not-applicable` and still verifies
+  nothing; it now says that Theurian does not verify the artifact it is running
+  from, which holds on both sides of a tag. Checking a download against the
+  checksums published with it remains a manual step
+  ([#39](https://github.com/theurian/theurian/issues/39), T-16).
 
-  *The superseded sentences are deliberately not reproduced here.* This section
-  is moved under the version at release time and published verbatim as the GitHub
-  release body, a short distance above a line stating that every artifact below
-  is covered by `SHA256SUMS` — which is the defect this entry records, and a
-  changelog is no place to reintroduce it.
+  *The superseded sentences are deliberately not reproduced here.* A version's
+  section is published verbatim as the GitHub release body, a short distance
+  above a line stating that every artifact below is covered by `SHA256SUMS` —
+  which is the defect this entry records, and a changelog is no place to
+  reintroduce it. That did not happen for this entry, because it was still under
+  `[Unreleased]` when the tag was pushed; the published release body for
+  `core-v0.1.0.dev0` does not contain it.
 
-### Fixed
+### Fixed after Milestone 5
 
 - **A `minimum` did not bound anything, and neither did a `maximumExclusive`.**
   `theurian compat check` translates Core's PEP 440 version into SemVer before
@@ -83,18 +116,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   rather than being told Core was missing, a client would have been told it had
   shipped.
 
-## [0.1.0.dev0] - 2026-08-06
-
-A development release, published to claim the `theurian` name on PyPI. Until
-this, the name was unregistered while `theurian setup` and the plugin's
-SessionStart hook both told a user whose machine has no Core to run
-`uv tool install theurian` — a command that could not work, and that would have
-installed somebody else's package had the name been taken first.
-
-Everything below happened before Theurian had released anything at all:
-Milestones 0 through 5. The breaking changes named in it broke nothing that had
-shipped, and the `#### Known limitations` sections are where this says what it
-does not do.
+---
 
 ### Milestone 5 — hybrid retrieval
 
