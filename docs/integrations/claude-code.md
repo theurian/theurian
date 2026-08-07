@@ -153,7 +153,7 @@ All twelve are thin adapters over the CLI. None contains Theurian logic.
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
 | `/theurian:propose` | `theurian propose --json` |
-| `/theurian:upgrade` | `theurian upgrade --json` |
+| `/theurian:upgrade` | `theurian version --json`, `theurian compat check --json` |
 | `/theurian:uninstall` | `theurian uninstall [--dry-run] --json` |
 
 Setup logic exists once, in `SetupService`. `/theurian:setup` and `theurian

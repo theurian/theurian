@@ -144,7 +144,7 @@ a tax you pay all day for a benefit you notice once.
 | `/theurian:migrate` | Validate and apply knowledge migrations. |
 | `/theurian:ingest` | Ingest documents, specs, and review history. |
 | `/theurian:propose` | Draft a reviewable knowledge change. |
-| `/theurian:upgrade` | Upgrade Core, compatibility-checked. |
+| `/theurian:upgrade` | Report whether Core needs upgrading, and print the command. Never upgrades. |
 | `/theurian:uninstall` | Remove Theurian, scope by scope. |
 
 ## AI cannot approve knowledge
