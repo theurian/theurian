@@ -170,6 +170,14 @@ def probe_core(context: SetupContext) -> SetupStep:
     installation reachable only through a shell alias or a virtualenv on
     ``PATH`` produces a service that cannot start.
 
+    **Absolute is checked here rather than assumed of the caller.** ``exists()``
+    alone resolves a bare name against the current working directory, so
+    ``theurian`` reported ``satisfied`` with the summary "Core is installed at
+    theurian" -- a path no service manager can act on, from the one step whose
+    job is to say the flow can proceed. ``_executable()`` resolves before it
+    returns, so no shipped caller reached that; the requirement the docstring
+    already stated is now the requirement the code tests (#49).
+
     And the ``daemon`` extra has to be present. That arm exists because the path
     check alone reported ``satisfied`` for ``uv tool install theurian`` -- the
     command every install surface names -- whose very next ``theurian daemon
@@ -194,7 +202,8 @@ def probe_core(context: SetupContext) -> SetupStep:
     named executable on every ``doctor`` run -- buys a subprocess to cover the
     case of a user who already has two Cores.
     """
-    if not (context.executable and Path(context.executable).exists()):
+    executable = Path(context.executable) if context.executable else None
+    if executable is None or not (executable.is_absolute() and executable.exists()):
         return SetupStep(
             step_id=StepId.CORE_PRESENT,
             status=StepStatus.CONFLICTING,
