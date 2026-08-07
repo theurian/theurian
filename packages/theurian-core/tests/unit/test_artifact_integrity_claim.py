@@ -28,13 +28,33 @@ true, and reading it as one is how the next author gets caught: the rules are
 regexes over English, and no regex decides whether a sentence about a supply
 chain is accurate.
 
-**Where the strength actually is.** Not in the regexes.
-:func:`_returned_call` **constrains what the probe is allowed to be** -- one
-unconditional return of one ``SetupStep`` whose every argument is a literal or an
-enum member -- so the set of strings it can publish is decidable, and the rules
-run over all of it. That replaced a scan of the function's own literals, which
-was not sound: moving the retired strings into a module-level helper and calling
-it from a reached arm passed all ten tests while the real CLI printed them.
+**Where the strength actually is.** Not in the regexes. Three links, each one
+measured by breaking it:
+
+1. :func:`_returned_call` **constrains what the probe is allowed to be** -- one
+   unconditional return of one directly constructed ``SetupStep`` -- so the set
+   of strings it can publish is decidable, and the rules run over all of it. That
+   replaced a scan of the function's own literals, which was not sound: moving
+   the retired strings into a module-level helper and calling it from a reached
+   arm passed all ten tests this module then had, while the real CLI printed them
+   on all three surfaces.
+2. That shape admits an ``Attribute``, which is how ``StepId.ARTIFACT_INTEGRITY``
+   is written -- and an ``Attribute`` is not necessarily an enum member.
+   ``summary=_Legacy.SUMMARY`` on a module-level class satisfies the shape and
+   publishes a string nothing here can read. What refuses it is
+   :func:`test_the_published_strings_are_the_ones_the_rules_read`, which requires
+   the summary and the detail the probe *returns* to be among the constants the
+   rules read.
+3. All of that describes ``probe_artifact_integrity``, which is worth nothing if
+   the report runs a different function.
+   :func:`test_the_registered_probe_is_the_function_this_module_pins` holds the
+   ``STEPS`` entry to it. Without that test, replacing the registration with a
+   lambda returning both retired strings left every rule here green and came back
+   ``1 failed, 1603 passed, 1 xfailed`` -- one test in the whole suite, namely
+   :func:`test_the_release_document_quotes_what_setup_actually_publishes`, which
+   catches it only because it is the one rule that runs the step through
+   :class:`SetupService`.
+
 :func:`_published` and the two ``release.md`` tests are exact comparisons rather
 than judgement.
 
@@ -63,6 +83,14 @@ narrowing has bought a leak somewhere else:
 
 - :data:`_SCHEDULE` refuses ``will`` unconditionally, so "comparing the download
   against the checksums by hand will tell you whether it matches" is rejected.
+  **Kept, and this is the measurement that decided it.** Requiring ``will`` to
+  reach a verb of arrival within its clause -- ``arrive``, ``land``, ``ship``,
+  ``come``, ``be <participle>`` -- admits that sentence, and admits "Verification
+  will happen at the first tag" and "Verification will follow the first tagged
+  release" with it: the defect this rule exists for, in words no other rule here
+  catches. The cost is genuinely stylistic, which is the other half of the
+  decision -- "Checking a download against the checksums published with it is a
+  manual step" states the same fact and passes, and is what the step ships.
 - :data:`_SCHEDULE` used to refuse any two-part version number, which forbade
   "CycloneDX 1.6" and "Theurian 1.0 targets macOS"; a version now has to follow a
   scheduling preposition. "lands in 0.2.0" is still caught.
@@ -84,8 +112,8 @@ from fakes.setup import FakeMcpConfig, FakeService
 
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
-from theurian.application.setup_steps import probe_artifact_integrity
-from theurian.domain.setup import StepStatus
+from theurian.application.setup_steps import STEPS, probe_artifact_integrity
+from theurian.domain.setup import StepId, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 
@@ -170,18 +198,25 @@ def _returned_call() -> ast.Call:
         if Path(_.executable).exists():
             return _legacy_artifact_step()
 
-    -- passed all ten tests, including the one written to prevent exactly that,
-    while the real CLI emitted both retired strings on all three surfaces. Eight
-    further shapes hide a string as well: a module constant, a ``dict`` lookup, a
-    file read, an f-string placeholder, ``+`` / ``.format`` / ``%`` / ``.join``,
-    a default or keyword-only argument value, a decorator argument. A
-    ``functools.wraps`` decorator hides one completely, because
-    :func:`inspect.getsource` unwraps to the inner function.
+    -- passed all ten tests this module then had, including the one written to
+    prevent exactly that, while the real CLI emitted both retired strings on all
+    three surfaces. Eight further shapes hide a string as well: a module
+    constant, a ``dict`` lookup, a file read, an f-string placeholder, ``+`` /
+    ``.format`` / ``%`` / ``.join``, a default or keyword-only argument value, a
+    decorator argument. A ``functools.wraps`` decorator hides one completely,
+    because :func:`inspect.getsource` unwraps to the inner function.
 
     So this stops reading content. It refuses any probe that is not one
-    unconditional return of one ``SetupStep`` whose every argument is a literal
-    or an enum member -- which makes the set of publishable strings decidable,
-    and every rule below sound over it.
+    unconditional return of one directly constructed ``SetupStep`` whose every
+    argument is a ``Constant`` or an ``Attribute``.
+
+    **That is the shape, not the whole argument.** ``Attribute`` is here so that
+    ``StepId.ARTIFACT_INTEGRITY`` can be written, and it admits
+    ``summary=_Legacy.SUMMARY`` just as readily -- a string this function reports
+    as decidable and :func:`_published_literals` cannot see. The rules below are
+    sound over the published strings only together with
+    :func:`test_the_published_strings_are_the_ones_the_rules_read`, which fails
+    when a returned string is not among the constants they read.
 
     A probe that legitimately needs a branch fails here. That is the point: a
     branch is a decision, and whoever closes #39 should have to make it in the
@@ -324,13 +359,33 @@ def _json_objects(document: str) -> list[tuple[str, dict[str, object]]]:
 
 
 def test_the_probe_keeps_a_shape_whose_published_strings_are_decidable() -> None:
-    """The closure argument for this module, as an assertion.
+    """The first of the module docstring's three links, as an assertion.
 
-    Read :func:`_returned_call` for why a content scan cannot be that argument.
+    Read :func:`_returned_call` for why a content scan cannot be that argument,
+    and why this one is not the whole of it either.
     """
     arguments = {keyword.arg for keyword in _returned_call().keywords}
 
     assert {"step_id", "status", "summary", "detail"} <= arguments
+
+
+def test_the_registered_probe_is_the_function_this_module_pins() -> None:
+    """Every rule here reads one function. This is what makes it *the* one.
+
+    Replacing the ``STEPS`` entry with a lambda returning both retired strings
+    left the whole module green except for
+    :func:`test_the_release_document_quotes_what_setup_actually_publishes` --
+    measured, not argued. The rules read ``probe_artifact_integrity`` and the
+    report had stopped calling it, so a document comparison in another file was
+    the entire binding between what is pinned and what a user sees.
+    """
+    registered = [step for step in STEPS if step.step_id is StepId.ARTIFACT_INTEGRITY]
+
+    assert len(registered) == 1, f"STEPS declares {len(registered)} artifact-integrity steps"
+    assert registered[0].probe is probe_artifact_integrity, (
+        "the artifact-integrity step runs a probe other than the one this module pins, so "
+        "every rule here describes a function no user reaches"
+    )
 
 
 # -- What #39 rewrites ------------------------------------------------------
@@ -338,8 +393,8 @@ def test_the_probe_keeps_a_shape_whose_published_strings_are_decidable() -> None
 # Both tests below become false when verification exists, and that is deliberate:
 # a status and a premise are decisions, and closing #39 should have to state them
 # rather than inherit them. Everything in the next section is written to survive
-# that change -- so #39 rewrites two tests and inherits seven, and the shape pin
-# above is what makes it notice.
+# that change -- so #39 rewrites two of the twelve tests here and inherits ten,
+# and the two shape pins above are what make it notice.
 
 
 def test_the_step_reports_not_applicable_while_nothing_is_verified(
