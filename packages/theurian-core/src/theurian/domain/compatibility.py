@@ -34,7 +34,12 @@ _PEP440_PATTERN: Final = re.compile(
     r"\.(?P<minor>0|[1-9]\d*)"
     r"(?:\.(?P<patch>0|[1-9]\d*))?"
     r"(?:[._-]?(?P<pre_label>a|b|c|rc|alpha|beta|pre|preview)[._-]?(?P<pre_number>\d+)?)?"
-    r"(?:[._-]?dev[._-]?(?P<dev_number>\d+)?)?$",
+    # ``dev`` is captured rather than matched literally because the segment's
+    # presence and its number are separate facts. PEP 440 makes the number
+    # optional and defaults it to 0, so a parser that keys off the number alone
+    # drops ``0.2.0.dev`` whole and reads a development build as the finished
+    # release it precedes.
+    r"(?:[._-]?(?P<dev_label>dev)[._-]?(?P<dev_number>\d+)?)?$",
     re.IGNORECASE,
 )
 
@@ -80,6 +85,72 @@ CURRENT_PROTOCOL_VERSION: Final = "theurian/v1"
 #: missing fields to the agreement oracle.
 _PROTOCOL_PATTERN: Final = re.compile(r"^theurian/v[1-9]\d*$")
 
+#: SemVer §9's pre-release identifier alphabet, matching what ``_SEMVER_PATTERN``
+#: accepts. :func:`_release_train_order` introduces two markers outside it, and
+#: their being unspellable is what makes that rewrite injective.
+_PRERELEASE_IDENTIFIER: Final = re.compile(r"^[0-9A-Za-z-]+$")
+
+#: The pre-release phases of a Python release train, in PEP 440's order. ``dev``
+#: is handled separately: it names a phase of its own when it leads, and a
+#: development build of the phase beside it when it follows one.
+_TRAIN_PHASES: Final = frozenset({"alpha", "beta", "rc"})
+
+#: Stands in for a leading ``dev``. ``!`` is 0x21, below ``-``, the digits and
+#: every letter, so SemVer's own ASCII comparison then places a development
+#: release under every pre-release phase, which is where PEP 440 puts it.
+_DEV_PHASE_MARKER: Final = "!dev"
+
+#: Fills the slot a development segment would occupy on a pre-release that has
+#: none. ``~`` is 0x7E, above every letter, so ``alpha.1`` outranks
+#: ``alpha.1.dev.9`` -- the direction PEP 440 wants and SemVer §11.4.4, which
+#: ranks the longer identifier list higher, gives the wrong way round.
+_NO_DEV_MARKER: Final = "~final"
+
+
+def _release_train_order(prerelease: tuple[str, ...]) -> tuple[str, ...]:
+    """Rewrite a pre-release list so that SemVer §11.4 reproduces PEP 440.
+
+    Core's version names a point on a Python release train; a plugin's
+    ``minimum`` and ``maximumExclusive`` name two more, in SemVer spelling. They
+    are compared against each other, so they have to be read on the same train
+    -- and PEP 440's order is not SemVer's. Two rules disagree:
+
+    * PEP 440 puts ``.devN`` below every pre-release phase. SemVer §11.4.2
+      compares the words as ASCII, which puts ``dev`` between ``beta`` and
+      ``rc``.
+    * PEP 440 puts ``aN.devM`` below ``aN``. SemVer §11.4.4 ranks the longer
+      identifier list higher, which puts ``alpha.N.dev.M`` above ``alpha.N``.
+
+    Together they punched a hole in the middle of a floor: ``minimum:
+    0.1.0-dev.0`` accepted ``0.1.0.dev1``, refused every alpha and beta, then
+    accepted ``0.1.0rc1`` again. A minimum whose accepted set is not
+    upward-closed is not a minimum.
+
+    Rewriting rather than special-casing the comparison is what keeps the order
+    total. Consulting the train ranks only when both sides are train forms and
+    falling back to ASCII otherwise is the obvious implementation and it is
+    cyclic: ``cat`` sits between ``alpha`` and ``dev`` in ASCII, so ``dev`` <
+    ``alpha`` < ``cat`` < ``dev``. Here every list is rewritten first and
+    compared once, by one rule.
+
+    The rewrite is injective over every value :meth:`Version.parse` and
+    :meth:`Version.parse_python` can produce, so ``<`` stays consistent with
+    ``==``: both markers it introduces are outside SemVer's identifier alphabet,
+    and ``__post_init__`` refuses a version that spells one.
+
+    A list that is not a release-train form is returned unchanged, so SemVer's
+    order is what holds between two of those. Between a train form and one of
+    those the answer is defined but arbitrary -- PEP 440 has no such version,
+    and nothing on either side of this comparison can produce one.
+    """
+    match prerelease:
+        case ("dev", *rest):
+            return (_DEV_PHASE_MARKER, *rest)
+        case (phase, number) if phase in _TRAIN_PHASES and number.isdigit():
+            return (phase, number, _NO_DEV_MARKER)
+        case _:
+            return prerelease
+
 
 @total_ordering
 @dataclass(frozen=True, slots=True)
@@ -89,6 +160,13 @@ class Version:
     Ordering follows SemVer §11, including the rule that a pre-release sorts
     *before* its own release. Getting that backwards would let a plugin accept
     ``0.5.0-rc1`` under a ``maximumExclusive`` of ``0.5.0``.
+
+    The one deliberate departure is the pre-release *phase*, which follows
+    Core's release train instead of ASCII -- ``dev`` < ``alpha`` < ``beta`` <
+    ``rc``, and a development build below the pre-release it precedes. Both
+    sides of every comparison here name a point on that train, so ordering them
+    by the alphabet is what would be wrong. :func:`_release_train_order` carries
+    the argument.
     """
 
     major: int
@@ -96,6 +174,15 @@ class Version:
     patch: int
     prerelease: tuple[str, ...] = ()
     build: str | None = None
+
+    def __post_init__(self) -> None:
+        for identifier in self.prerelease:
+            if not _PRERELEASE_IDENTIFIER.match(identifier):
+                raise DomainError(
+                    f"Not a SemVer pre-release identifier: {identifier!r}. "
+                    "Identifiers are ASCII alphanumerics and hyphens; build a version "
+                    "with Version.parse('0.1.0-dev.0') rather than by hand."
+                )
 
     @classmethod
     def parse(cls, value: str) -> Self:
@@ -120,9 +207,18 @@ class Version:
         translation, ``0.1.0.dev0`` would fail to parse and every development
         build would look like "Core not installed".
 
-        The mapping preserves ordering in both ecosystems: a PEP 440 pre-release
-        or development release becomes a SemVer pre-release, so it sorts *before*
-        the corresponding final release under both rule sets.
+        The mapping is strictly monotone: for any two PEP 440 versions, the
+        translated pair sorts the same way the originals do. Everything the
+        compatibility range promises rests on that, because a minimum's accepted
+        set is upward-closed only if the translation preserves order.
+
+        It is monotone by :func:`_release_train_order`, not by the spelling. The
+        SemVer strings this returns are the readable ones -- ``0.1.0-dev.0``,
+        ``0.2.0-alpha.3.dev.1`` -- and reading *them* under a literal SemVer
+        §11.4 puts every development release above every alpha and beta of its
+        own release, and every ``aN.devM`` above ``aN``. Over the release train
+        ``tests/unit/test_compatibility.py`` enumerates -- 40 versions of one
+        release, so 780 ordered pairs -- that is 99 pairs the wrong way round.
         """
         text = value.strip()
         match = _PEP440_PATTERN.match(text)
@@ -134,7 +230,7 @@ class Version:
         if match.group("pre_label"):
             label = _PEP440_PRE_LABELS[match.group("pre_label").lower()]
             prerelease.extend((label, match.group("pre_number") or "0"))
-        if match.group("dev_number") is not None:
+        if match.group("dev_label"):
             prerelease.extend(("dev", match.group("dev_number") or "0"))
 
         return cls(
@@ -182,7 +278,12 @@ class Version:
             return False
         if not other.prerelease:
             return True
-        return _compare_prerelease(self.prerelease, other.prerelease) < 0
+        return (
+            _compare_prerelease(
+                _release_train_order(self.prerelease), _release_train_order(other.prerelease)
+            )
+            < 0
+        )
 
     @override
     def __str__(self) -> str:
@@ -195,7 +296,13 @@ class Version:
 
 
 def _compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
-    """Compare pre-release identifier lists per SemVer §11.4."""
+    """Compare pre-release identifier lists per SemVer §11.4.
+
+    This is §11.4 and nothing else. What makes :class:`Version` order by Core's
+    release train instead is that its only caller hands both lists through
+    :func:`_release_train_order` first, so these are rewritten identifiers
+    rather than the ones a declaration wrote.
+    """
     for left_id, right_id in zip(left, right, strict=False):
         if left_id == right_id:
             continue
