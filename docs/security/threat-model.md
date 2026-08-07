@@ -924,14 +924,22 @@ second reaches furthest and is why this is a release gate rather than a tidy-up:
 `release-core.yml` extracts that section verbatim into `release-notes.md` and
 `gh release create --notes-file` publishes it as the GitHub release body, then
 appends a line stating that every artifact below is covered by `SHA256SUMS`. The
-denial therefore sits **above** the assertion it contradicts, about 191 lines
-above it — measured on the assembled body, where the section runs 1326 lines and
-the claim is at line 1140. Distant, and on the same page. Both surfaces are
-[#56](https://github.com/theurian/theurian/pull/56)'s, **open at the time of
-writing**; until it merges, `main` still carries the old claim on both. Nothing
-in this repository holds either of them to the step's own words — no test reads
-`README.md`, `packages/theurian-core/CHANGELOG.md` or this file — and that is the
-gap #39 inherits.
+denial therefore sat **above** the assertion it contradicts, about 191 lines
+above it — measured on the body assembled from the changelog before
+[#56](https://github.com/theurian/theurian/pull/56), where the section ran 1326
+lines and the claim was at line 1140. Distant, and on the same page.
+
+**Both of those surfaces were corrected by #56, merged on 2026-08-06**, which
+replaced the changelog's premise with "setup never obtains Core, so it holds no
+artifact to hash" and the README row with one that states the published records
+exist and that nothing in Theurian checks them. An earlier revision of this entry
+called #56 open, which it was when that revision was written and is not now. The
+mechanism it exercised is unchanged: `release-core.yml` still publishes that
+section verbatim, so a future edit to it reaches the release page the same way.
+Nothing in this repository holds any of the three to the step's own words — no
+test reads `README.md`, `packages/theurian-core/CHANGELOG.md` or this file, and
+`test_setup_claims.py` reads the *plugin's* README, not the root one — and that
+is the gap #39 inherits.
 
 **Recorded as unmet, not accepted** — unlike T-17a, no argument is offered that
 this is tolerable. The requirement stands: OSS-11 requires the checksums and
