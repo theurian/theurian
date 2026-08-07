@@ -55,8 +55,10 @@ happened, in order:
    goes green, not at the end (see *Commits and local safety*):
    `uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest -q`
 2. **Run it for real.** A scratch script or a real CLI invocation against a
-   temporary `HOME` and `THEURIAN_DATA_DIR`. Every milestone so far has found a
-   defect at this step that no test caught. Reading is not verification.
+   temporary `HOME` and `THEURIAN_DATA_DIR` — which contains the writes and not
+   the service registration, so `setup` runs here only with `--dry-run` (see
+   *Running the CLI on a development machine*). Every milestone so far has found
+   a defect at this step that no test caught. Reading is not verification.
 3. **Three reviews in parallel** — see below. Loop until green.
 4. **Documentation follows** — CHANGELOG (breaking changes named as such), README
    status and roadmap, new ADRs, and every ADR compliance section the milestone
@@ -397,25 +399,93 @@ its language is the point.
   to six were handed `git diff main...HEAD`, which showed 7,792 lines of a larger
   change — four production modules and three schemas were untracked, and so
   invisible to it. An uncommitted tree has no boundary a reviewer can check.
-- Never run a real `theurian setup`, `daemon start` (detached), or anything that
-  writes to `~/.claude.json` or `~/Library/LaunchAgents` on the user's machine.
-  Redirect `HOME` and `THEURIAN_DATA_DIR`.
+- Never run a real `theurian setup`, `theurian uninstall`, or a detached
+  `daemon start` on the user's machine — those are what write `~/.claude.json`
+  and register the OS service. `--dry-run` is the form that is safe here, and
+  redirecting `HOME` is not what makes it safe: see *Running the CLI on a
+  development machine*, which is two rules and not one.
 
-### Running the CLI without writing into this repository
+### Running the CLI on a development machine
 
-`theurian init` writes `.theurian/` and appends to `.gitignore` **in the current
-working directory**, so a verification script that gets its `cd` wrong
-initialises Theurian into Theurian's own checkout. Three times, each time to
-someone who had read the warning above — so the rule is not "be careful":
+Two different things escape a careless invocation, and only one of them is a
+path. **Redirection contains writes. Nothing contains registration with the
+login session's service manager.** Every rule below sits on one side of that
+line, and a script that gets the first side right still gets the second side
+wrong.
 
-- **Never depend on `cd` for isolation.** Invoke the CLI by absolute path to the
-  virtualenv binary and pass the target directory explicitly. A `cd` that runs
-  in the wrong order, or a subshell that does not inherit it, is the failure.
-- **Set `HOME` and `THEURIAN_DATA_DIR` to temporary directories in the same
-  command** that runs the CLI, not in an earlier one.
-- **Check `git status --short` here afterwards.** The damage undoes trivially
-  (`git checkout -- .gitignore && rm -rf .theurian`) and is invisible if nobody
-  looks.
+#### Writes: redirect them, and never lean on an earlier `cd`
 
-Say in the report that a script ran the real CLI, and what it was pointed at. An
-unreported near-miss is the one that becomes a habit.
+`theurian init` writes `.theurian/` and appends to `.gitignore` **in the
+process's working directory**, and it takes no argument that says where —
+`init_command` resolves the project from `Path.cwd()`. So a verification script
+that gets its `cd` wrong initialises Theurian into Theurian's own checkout.
+Three times, each time to someone who had read the warning above — so the rule
+is not "be careful":
+
+- **Never depend on an earlier `cd`.** Invoke the CLI by absolute path to the
+  virtualenv binary and set the working directory *in the same command*:
+  `bash -c 'cd "$DIR" && exec "$BIN" init'`, or `cwd=` on a subprocess call.
+  There is no directory argument to pass instead, which is why the earlier `cd`
+  keeps looking like the answer.
+- **Set `HOME`, `THEURIAN_DATA_DIR`, `UV_TOOL_DIR` and `UV_CACHE_DIR` to
+  temporary directories in the same command** that runs the CLI, not in an
+  earlier one.
+- **Check `git status --short` here afterwards.** The damage is invisible if
+  nobody looks. Undo it by deleting the block between `# >>> theurian >>>` and
+  `# <<< theurian <<<` in `.gitignore`, then `rm -rf .theurian` — **not** with
+  `git checkout -- .gitignore`, which discards every uncommitted change in that
+  file. A `git checkout --` did exactly that to an uncommitted fix this
+  milestone.
+- **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout
+  with `shutil.copytree` for this reason. Cleaning up a mutation inside the tree
+  you are editing is what puts a `git checkout --` next to live work.
+- **A daemon is gone when the port is free, not when a `kill` returned.** A
+  `kill` handed a subshell's pid returns 0 and leaves the daemon running, and
+  the survivor answers the *next* run's health probe — that is how a
+  `daemon-running` step read `satisfied` in a measurement that needed `missing`.
+  Check with `lsof -nP -iTCP:7419 -sTCP:LISTEN`; no output means free.
+
+#### Registration: `--dry-run` is the only form to run here
+
+`launchctl bootstrap` takes a *domain* and a *path*, and only the path comes
+from `HOME`. `LaunchAgentManager` writes the plist to
+`$HOME/Library/LaunchAgents/dev.theurian.daemon.plist` — redirected — and then
+bootstraps it into `gui/<uid>`, where the uid is `os.getuid()` and no
+environment variable reaches it. A real `setup` under a redirected `HOME`
+therefore registers a service **in the real login session**, pointing at a plist
+in a scratch directory. That happened: the scratch tree had no `uvicorn`, so the
+service crash-looped in the developer's own launchd until it was booted out by
+hand.
+
+`SystemdUserManager` splits the same way for a different reason. The unit goes
+to `$HOME/.config/systemd/user/theurian.service`, while `systemctl --user`
+addresses the session's own user manager, reached through `XDG_RUNTIME_DIR`
+rather than `HOME`. Not measured — there is no Linux machine here — but no
+environment variable redirects that manager either.
+
+- **On a development machine, run `theurian setup --dry-run` and nothing else.**
+  `SetupService.run` returns `PLAN_BUILT` before it reaches `_apply`, and every
+  probe on the way is a read: a `--dry-run` against a fresh sandbox created no
+  files at all — not even `THEURIAN_DATA_DIR` — and registered nothing. A real
+  `setup` needs a disposable machine or a container.
+- **`theurian uninstall` is not the read-only twin.** It applies by default, and
+  it deregisters from the real login session for the same reason `setup`
+  registers there. Pass `--dry-run`.
+- **The check is not a directory listing.** After a real `setup` under a
+  redirected `HOME`, `~/Library/LaunchAgents` looks clean, because the plist is
+  in the scratch tree. Ask the service manager instead:
+
+  ```sh
+  launchctl list | grep theurian                       # macOS: silent is clean
+  launchctl bootout gui/$(id -u)/dev.theurian.daemon   # macOS: the cleanup
+  systemctl --user is-active theurian.service          # Linux: the same question
+  systemctl --user disable --now theurian.service      # Linux: the cleanup
+  ```
+
+  Both cleanups are the commands `LaunchAgentManager.uninstall` and
+  `SystemdUserManager.uninstall` issue themselves. Type the launchd one whole:
+  `launchctl bootout gui/$(id -u)` with no label boots out the login session.
+
+Say in the report that a script ran the real CLI, what it was pointed at, and
+whether it registered anything. An unreported near-miss is the one that becomes
+a habit.
