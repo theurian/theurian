@@ -80,6 +80,17 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: which the quick start goes on to use. Joining the tuple would mean publishing
 #: an installer the README's own next command does not survive.
 #:
+#: **That last argument is not special to the README, and this exclusion expires
+#: when the general case lands.** The four surfaces above are *required* to name
+#: the bare installer, and ``probe_core``'s detail publishes it too -- so all five
+#: send a user with no Core to a command that succeeds and leaves them unable to
+#: start the daemon ``/theurian:setup`` then configures. The reason the README is
+#: out is the reason the other five are wrong; it is only visible here because the
+#: README was free to say something else. That is
+#: https://github.com/theurian/theurian/issues/78. When it lands, the surfaces and
+#: :data:`INSTALLERS` move to a spelling that carries the extra, and the README
+#: can join this tuple -- delete this paragraph then, not the one above it.
+#:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
 #: ``CORE_MISSING`` message and remedy are the plainest instance of the pair --

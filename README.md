@@ -159,25 +159,34 @@ is not built yet. It is Milestone 8; `system.capabilities` reports
 
 ## Quick start
 
-Core is on PyPI as [`theurian`](https://pypi.org/project/theurian/). The only
-published version is `0.1.0.dev0`.
+Core is on PyPI as [`theurian`](https://pypi.org/project/theurian/), and every
+version published so far is a pre-release. That page is what says which ones
+exist; this file does not track it.
 
 ```sh
 uv tool install --python 3.13 'theurian[all]'   # puts `theurian` on your PATH
 # or: pipx install --python 3.13 'theurian[all]'
 ```
 
-**Both additions earn their place.** `[all]` pulls in the MCP daemon; without
-it you get the CLI and the migration engine, and `theurian daemon start` fails
-with `ModuleNotFoundError: No module named 'uvicorn'` — which `theurian setup`
-does not catch, because it only checks that a `theurian` binary exists.
-`--python 3.13` is needed because `uv tool install 'theurian[all]'` resolves
-against whatever `python3` comes first on your `PATH`, and on macOS that is
-still 3.9. The error does name the Python version, but older uv prints a
-`pre-releases weren't enabled` hint under it that is not the cause — chasing it
-with `--prerelease=allow` changes nothing. Plain `uv tool install theurian`
-needs neither flag, because uv fetches a 3.13 for it, but it gives you a Core
-with no daemon.
+**Nothing checks what that just downloaded, including Theurian.** Each release
+carries a `SHA256SUMS`, and comparing your download against
+[the one on its release](https://github.com/theurian/theurian/releases) is a
+manual step you have to choose to take. It is also narrower than it looks — the
+posture table below says what it catches and what it does not (T-16,
+[#39](https://github.com/theurian/theurian/issues/39)).
+
+**Both additions earn their place.** `[all]` is what carries the MCP daemon:
+`uvicorn` lives in the `daemon` extra, so a plain install gives you the CLI and
+the migration engine, and `theurian daemon start` exits 1 on
+`ModuleNotFoundError: No module named 'uvicorn'`. `theurian setup` does notice
+something — it reports `daemon-running: missing` and a `degraded` report — but it
+does not name the missing extra, and it exits 0
+([#78](https://github.com/theurian/theurian/issues/78)). `--python 3.13` makes
+the interpreter explicit: Core requires 3.13, and `uv tool install
+'theurian[all]'` was observed failing on a machine whose default `python3` is
+3.9, under a `pre-releases weren't enabled` hint that is not the cause. Passing
+the version is the way past it. `--prerelease=allow` is not, and it would widen
+what uv accepts across every dependency rather than fixing this.
 
 Building from a checkout instead is the contributor path, and it is
 [docs/contributing/development.md](docs/contributing/development.md).
