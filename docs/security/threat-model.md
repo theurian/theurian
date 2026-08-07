@@ -900,9 +900,22 @@ a text comparison against the JSON block in
 > f-string placeholder, string concatenation, a default argument value and a
 > decorator argument. The test now refuses any probe that is not one
 > unconditional return of one directly constructed `SetupStep` whose every
-> argument is a literal or an enum member, which makes the publishable set
-> decidable. A reader of a function body is not a closure argument; a constraint
-> on what the function may be is.
+> argument is a `Constant` or an `Attribute`. A reader of a function body is not
+> a closure argument; a constraint on what the function may be is.
+>
+> **The shape is one of three links, and stating it alone was the same mistake a
+> size smaller.** `Attribute` is in that list so `StepId.ARTIFACT_INTEGRITY` can
+> be written, and it admits `summary=_Legacy.SUMMARY` on a module-level class
+> just as readily — decidable by that rule and invisible to it. What refuses that
+> is a second test requiring the strings the probe *returns* to be among the
+> constants the rules read. And all of it describes one function, which is worth
+> nothing if the step table runs another: replacing the registration with a
+> lambda returning both retired strings left every rule green and came back
+> `1 failed, 1603 passed, 1 xfailed` — one test in the whole suite, the byte
+> comparison against `release.md`, and it catches it only because it is the one
+> rule that runs the step through `SetupService`. A third test now holds the
+> `STEPS` entry to the pinned function. Each link was measured by breaking it, in
+> the isolated trees of `tools/mutate.py`.
 
 **The claim is on three surfaces, not one, and only the executing one is
 corrected here.** The other two are `README.md`'s honesty table and the
