@@ -31,11 +31,17 @@ what it does not do.
 **The first two groups reached this section after the release.** They were
 written under `[Unreleased]`, and the move that
 [`release.md` §2](../../docs/contributing/release.md) asks for was not made
-before `core-v0.1.0.dev0` was pushed — so the published wheel and sdist carry a
-changelog filing their own contents as unreleased, and the release body
-generated from this section does not mention them. The release workflow's
-changelog guard did not catch it: it checks that a section for the version
-exists and is not empty, not that `[Unreleased]` is.
+before `core-v0.1.0.dev0` was pushed — so the published sdist carries a changelog
+filing its own contents as unreleased, and the release body generated from this
+section does not mention them. The release workflow's changelog guard did not
+catch it: it checks that a section for the version exists and is not empty, not
+that `[Unreleased]` is.
+
+**The wheel carries no changelog**, so this reached the sdist and the release
+page rather than an install: `[tool.hatch.build.targets.sdist]` lists
+`CHANGELOG.md` and the wheel target ships `src/theurian` only. `uv tool install`
+and `pip install` take the wheel, which means the reader most exposed to the
+error is the one reading the release notes to decide whether to upgrade.
 
 ### Changed after Milestone 5
 
