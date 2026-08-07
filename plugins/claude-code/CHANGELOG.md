@@ -38,6 +38,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   It now names the installer first.
 - The plugin README's install sequence began at the marketplace and ended at
   `/theurian:setup`, never mentioning Core. Core is now the first step.
+- **The installer the plugin named produced a Core whose daemon cannot start.**
+  All three surfaces — the `SessionStart` hook's Core-absent warning, the README's
+  install block, and `/theurian:setup`'s prerequisite — said
+  `uv tool install theurian`, which resolves, installs, and leaves out `uvicorn`;
+  `/theurian:setup` then had nothing to configure
+  ([#78](https://github.com/theurian/theurian/issues/78)). They now name
+  `uv tool install 'theurian[daemon]'` and `pipx install 'theurian[daemon]'`, in
+  the same words Core's own `core-missing` remedy and `core-present` step use.
+  The quotes are part of the command: unquoted, `theurian[daemon]` is a glob
+  under zsh and fails with `no matches found`.
 - Step 6 no longer tells the agent that a step reporting `missing` with an
   `action` is one setup skips. All seven steps setup performs report exactly
   that before they run, so an agent following the old rule would have asked the

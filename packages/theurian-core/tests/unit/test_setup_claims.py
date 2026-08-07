@@ -73,23 +73,18 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: ran. The README now installs from PyPI like every surface here, so that reason
 #: is gone -- and the exclusion outlives it, because
 #: :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
-#: requires *both* literals verbatim. The README carries
-#: ``uv tool install theurian`` in prose but recommends
-#: ``uv tool install --python 3.13 'theurian[all]'``, and it names no bare
-#: ``pipx install theurian`` at all: a plain install omits the ``daemon`` extra,
-#: which the quick start goes on to use. Joining the tuple would mean publishing
-#: an installer the README's own next command does not survive.
+#: requires *both* literals verbatim, and until
+#: https://github.com/theurian/theurian/issues/78 those literals were the bare
+#: ``uv tool install theurian`` and ``pipx install theurian`` -- an installer the
+#: README's own next command does not survive, because it omits the ``daemon``
+#: extra the quick start goes on to use.
 #:
-#: **That last argument is not special to the README, and this exclusion expires
-#: when the general case lands.** The four surfaces above are *required* to name
-#: the bare installer, and ``probe_core``'s detail publishes it too -- so all five
-#: send a user with no Core to a command that succeeds and leaves them unable to
-#: start the daemon ``/theurian:setup`` then configures. The reason the README is
-#: out is the reason the other five are wrong; it is only visible here because the
-#: README was free to say something else. That is
-#: https://github.com/theurian/theurian/issues/78. When it lands, the surfaces and
-#: :data:`INSTALLERS` move to a spelling that carries the extra, and the README
-#: can join this tuple -- delete this paragraph then, not the one above it.
+#: **#78 landed, so the exclusion is over and the README is in the tuple.** The
+#: paragraph that stood here said the reason the README was out is the reason the
+#: other four were wrong, and asked to be deleted at exactly this moment; it has
+#: been. :data:`INSTALLERS` now carries ``[daemon]``, the README names both
+#: literals, and it is held to the same rules as every other surface rather than
+#: to a comment promising it would be one day.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
@@ -307,10 +302,17 @@ def _paragraphs(text: str) -> list[str]:
 def _install_claims_naming_no_installer(text: str) -> list[str]:
     """Every "X installs Theurian" that neither denies it nor says who does.
 
-    "Install Core with `uv tool install theurian`" is the sentence these
-    surfaces are supposed to contain, so a claim whose own words name an
+    "Install Core with `uv tool install 'theurian[daemon]'`" is the sentence
+    these surfaces are supposed to contain, so a claim whose own words name an
     installer is exactly right. What is left over is a claim that leaves the
     reader believing something else puts Core on the machine.
+
+    The masking in :func:`_paragraphs` is what makes "names an installer" mean
+    *the current* installer: :data:`_INSTALL_COMMANDS` no longer contains the
+    bare command, so a surface that reintroduces it is a claim naming no
+    installer and fails here. Measured -- two drafts of #78's own prose in
+    ``setup.md`` were rejected by exactly that, one of them for quoting the very
+    command the change existed to replace.
     """
     return [
         match.group(0)

@@ -12,7 +12,49 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`uv tool install theurian` installed a Theurian whose daemon could not
+  start.** `uvicorn` and the MCP SDK live in the `daemon` extra, so the next step
+  of the documented flow ended in
+  `ModuleNotFoundError: No module named 'uvicorn'` and a rendered traceback
+  ([#78](https://github.com/theurian/theurian/issues/78)). The packaging split is
+  kept — a CI image running only `theurian migrate` should not carry a web server
+  (ADR-0014) — and the three faces of the defect are fixed instead:
+
+  - `theurian daemon start` reports which extra is missing and the command that
+    installs it, on the `--json` channel as well. The guard reads
+    `ModuleNotFoundError.name` and re-raises anything else, so a broken Theurian
+    is never answered with "reinstall the package that holds the broken file".
+  - `theurian daemon status` no longer needs the extra at all. It imported the
+    lock file's *name* from the module that starts the web server, so a bare
+    install printed a traceback into every Claude Code session — that command is
+    what the `SessionStart` hook runs. `LOCK_FILENAME` now lives in
+    `theurian/daemon/instance.py`, beside the lock it names.
+  - `core-present` reported `satisfied` for an install that cannot run a daemon,
+    and setup went on to write an env file, an OS service unit and an MCP
+    connection entry, ending `degraded` with a registered service that fails on
+    every start. The step now reports `conflicting`, which aborts the run before
+    anything is created.
+
+- **Every surface that tells a user how to install Core now names the extra**:
+  `uv tool install 'theurian[daemon]'` / `pipx install 'theurian[daemon]'`. That
+  includes the two that execute — the `core-missing` compatibility remedy and the
+  `core-present` step detail — which read one constant,
+  `theurian.domain.extras.DAEMON_INSTALLERS`, so the two answers cannot drift.
+  The quoting is required, not stylistic: unquoted, the bracket is a glob under
+  zsh.
+
+  `[daemon]` rather than `[all]`, measured: `sqlite_vec` and `opentelemetry` are
+  imported nowhere in `src/`, so `[all]` differs by 12 distributions and by no
+  behaviour.
+
+  **Four surfaces are not moved here**, because they belong to pull requests open
+  at the time of writing: `README.md` (#77), `docs/security/threat-model.md`
+  (#72), `docs/contributing/release.md` and `.github/workflows/release-core.yml`
+  (#71). The threat model's "17 files … all of them move together" is therefore
+  true of a population this change has split in two, and re-deriving that count
+  belongs to whichever of those lands last.
 
 ## [0.1.0.dev0] - 2026-08-07
 
