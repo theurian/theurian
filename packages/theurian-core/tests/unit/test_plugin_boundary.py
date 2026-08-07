@@ -283,6 +283,65 @@ def test_declared_protocol_matches_core() -> None:
     assert declaration["protocolVersion"] == __protocol_version__
 
 
+def test_upgrade_command_names_the_same_flags_as_lib_sh() -> None:
+    """`/theurian:upgrade` documents a call `lib.sh` already implements.
+
+    The document spells out `theurian compat check` rather than calling
+    `theurian::compat_check`, because a slash command is read by an agent that
+    is not running the hook's shell. That makes it a second copy of one call,
+    and the copy shipped with one of four values wrong: it read
+    ``protocolVersion`` from under ``coreCompatibility``, where the schema puts
+    ``additionalProperties: false`` and only ``minimum`` and
+    ``maximumExclusive`` live. Omitted, the flag makes the CLI exit 2.
+
+    Pinning the flag *names* is what catches that class -- the placeholder text
+    is prose and will keep being reworded, but the moment the two lists disagree
+    one of them is calling an interface that does not exist.
+    """
+    flag = re.compile(r"^\s*(--[a-z-]+)", re.MULTILINE)
+
+    lib_sh = LIB_SH.read_text(encoding="utf-8")
+    body = lib_sh.split("theurian::compat_check()", 1)[1].split("\n}", 1)[0]
+    from_lib = set(flag.findall(body))
+
+    document = (PLUGIN / "commands" / "upgrade.md").read_text(encoding="utf-8")
+    block = document.split("theurian compat check", 1)[1].split("```", 1)[0]
+    from_doc = set(flag.findall(block))
+
+    assert from_lib == {
+        "--plugin-version",
+        "--core-minimum",
+        "--core-maximum-exclusive",
+        "--protocol-version",
+        "--json",
+    }, f"lib.sh's compat_check flags changed: {sorted(from_lib)}"
+    assert from_doc == from_lib, (
+        "/theurian:upgrade and lib.sh disagree about `theurian compat check`: "
+        f"document has {sorted(from_doc - from_lib)}, lib.sh has {sorted(from_lib - from_doc)}"
+    )
+
+
+def test_upgrade_command_reads_protocol_version_from_the_top_level() -> None:
+    """The placeholder has to name the key the schema actually declares.
+
+    ``protocolVersion`` is top-level in `compatibility.yaml`;
+    ``coreCompatibility`` is ``additionalProperties: false`` with two members.
+    A document telling an agent to read ``coreCompatibility.protocolVersion``
+    sends it to a key that cannot exist, and the CLI answers with exit 2.
+    """
+    schema = json.loads(
+        (SCHEMAS / "protocol" / "compatibility.schema.json").read_text(encoding="utf-8")
+    )
+    core = schema["properties"]["coreCompatibility"]
+    assert core["additionalProperties"] is False
+    assert "protocolVersion" not in core["properties"]
+    assert "protocolVersion" in schema["properties"]
+
+    document = (PLUGIN / "commands" / "upgrade.md").read_text(encoding="utf-8")
+    assert "<coreCompatibility.protocolVersion>" not in document
+    assert "--protocol-version <protocolVersion>" in document
+
+
 def test_installed_core_is_inside_the_declared_range() -> None:
     """The plugin in this repository must work with the Core beside it."""
     from theurian import __version__

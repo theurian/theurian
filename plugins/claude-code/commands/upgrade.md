@@ -1,6 +1,6 @@
 ---
 description: Report whether Core needs upgrading, and print the command that does it.
-allowed-tools: Bash(theurian:*)
+allowed-tools: Bash(theurian:*), Read
 ---
 
 # /theurian:upgrade
@@ -9,9 +9,13 @@ Report whether the installed Core is one this plugin supports, and print the
 command that upgrades it.
 
 **This command does not upgrade anything.** Core is installed by `uv` or `pipx`
-and is replaced the same way; Theurian does not obtain its own artifacts. The
-`allowed-tools` line above is the structural half of that — this command can run
-`theurian` and nothing else, so it cannot invoke an installer even by mistake.
+and is replaced the same way; Theurian does not obtain its own artifacts.
+
+The control that enforces that is the **"Never run the upgrade"** rule below,
+not the front-matter. `allowed-tools` is a permission *grant*: it auto-approves
+`theurian` invocations and `Read` so this command does not prompt for them, and
+it removes nothing — only `disallowed-tools` does that. Reading it as a sandbox
+is how a document ends up trusting a boundary that is not there.
 
 ## What to do
 
@@ -21,43 +25,57 @@ and is replaced the same way; Theurian does not obtain its own artifacts. The
    theurian version --json
    ```
 
-2. Ask Core whether that version satisfies this plugin, passing the four values
-   from the plugin's `compatibility.yaml`:
+2. Read the plugin's `compatibility.yaml` and ask Core whether that version
+   satisfies this plugin. **`pluginVersion` and `protocolVersion` are top-level;
+   only `minimum` and `maximumExclusive` sit under `coreCompatibility`** — the
+   schema declares `coreCompatibility` with `additionalProperties: false`, so
+   reading `protocolVersion` from inside it yields nothing and the call fails
+   with `Missing option` or a `must look like 'theurian/vN'` error.
 
    ```sh
    theurian compat check \
      --plugin-version <pluginVersion> \
      --core-minimum <coreCompatibility.minimum> \
      --core-maximum-exclusive <coreCompatibility.maximumExclusive> \
-     --protocol-version <coreCompatibility.protocolVersion> \
+     --protocol-version <protocolVersion> \
      --json
    ```
 
    Exit 0 is compatible, 3 incompatible, 2 malformed input. Core performs the
    comparison so that no client reimplements SemVer ordering or the PEP 440
-   translation (§34).
+   translation (§34). These are the same four flags `theurian::compat_check` in
+   `scripts/lib.sh` sends, and they are pinned to it by
+   `test_upgrade_command_names_the_same_flags_as_lib_sh`.
 
-3. Report `outcome` and `message`, then print the verdict's `remedy` verbatim
-   and stop. For `core-too-old` the remedy already names both installers:
+3. Report `outcome` and `message`, then print the verdict's `remedy` **verbatim**
+   and stop. For `core-too-old` the remedy already names both installers, and it
+   is text to show the user rather than a command to run:
 
-   ```sh
-   uv tool upgrade theurian     # or: pipx upgrade theurian
-   ```
+   > Upgrade Core with `uv tool upgrade theurian` or `pipx upgrade theurian`,
+   > then start a new session.
 
-4. If the user runs it, the new version is picked up by the next session — the
-   compatibility check runs at `SessionStart`. Re-running this command inside
-   the current session reports the Core that was already resolved.
+4. Do not run it, and do not offer to. If the user runs it themselves, two
+   different things happen at two different times:
+
+   - **The binary changes immediately.** Both installers replace what a stable
+     shim path points at, so the next `theurian version --json` — in this shell,
+     in this session — reports the new version.
+   - **This session's compatibility verdict does not.** It was resolved at
+     `SessionStart` and is not re-evaluated. Re-running this command re-reads the
+     version but the session's own decision about compatibility stands until a
+     new session starts.
 
 ## Rules
 
 - **Never run the upgrade.** Show the command and let the user run it. This is
-  the same rule `/theurian:doctor` follows and the same one the `SessionStart`
-  hook follows: every remedy Theurian prints is a suggestion.
+  the same rule `/theurian:doctor` follows, and the `SessionStart` hook is bound
+  by it too: §30 forbids upgrading anything automatically. Every remedy Theurian
+  prints is a suggestion.
 - **Do not add or drop an extra when repeating the remedy.** Both installers
   record the spec they were given and re-resolve it, so an install that carried
   `theurian[daemon]` keeps it across an upgrade. Naming the extra here would
-  imply that upgrading repairs a bare install, and it does not — a bare install
-  re-resolves to a bare install. That user needs
+  imply that upgrading repairs a bare install, and it does not — measured, a bare
+  install re-resolves to a bare install. That user needs
   `uv tool install 'theurian[daemon]'` instead, which is what `/theurian:setup`
   and the `SessionStart` hook already tell them.
 - If the outcome is `core-too-new`, the answer is to update the plugin, not to
