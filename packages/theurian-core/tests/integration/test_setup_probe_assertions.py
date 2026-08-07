@@ -102,10 +102,16 @@ def test_a_relative_executable_is_not_core_being_present(tmp_path: Path) -> None
     it returns. That is what makes this the gap a future caller turns into a
     defect rather than one a user can reach today, and why the check now states
     it instead of relying on its only current caller to.
+
+    **The file has to be runnable, or this test passes for the wrong reason.**
+    It used ``touch()``, and once the check grew ``X_OK`` the 0644 mode was
+    doing the rejecting while the name's relativity was never consulted --
+    measured, as ``core-drops-is-absolute`` SURVIVING at 1731 passed. Making
+    the fixture executable leaves ``is_absolute`` as the only thing that can
+    reject it.
     """
     monkeypatched_cwd = tmp_path / "cwd"
-    monkeypatched_cwd.mkdir()
-    (monkeypatched_cwd / "theurian").touch()
+    _runnable(monkeypatched_cwd / "theurian")
 
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(monkeypatched_cwd)
