@@ -52,6 +52,6 @@ macOS and Linux runners". Both occurrences of `e2e` in `.github/workflows/`
 *exclude* the marker (`-m "not e2e"`, in `core.yml`'s `test` and `offline`
 jobs); the dedicated job has never existed. So the 25 tests in the two files
 here run only when someone runs them by hand — including the SEC-7 path- and
-symlink-containment cases, and the tests ADR-0002, ADR-0004, ADR-0011 and
-ADR-0013 each cite by name to discharge a compliance item. Tracked as
+symlink-containment cases, and the tests ADR-0002, ADR-0004, ADR-0011, ADR-0013
+and ADR-0016 each cite by name to discharge a compliance item. Tracked as
 [#65](https://github.com/theurian/theurian/issues/65).

@@ -32,18 +32,15 @@ uv run mypy
 uv run pytest --cov
 ```
 
-One thing CI checks that is easy to forget locally:
+Two things CI checks that are easy to forget locally, and they are separate
+checks:
 
-- Every dependency is pinned with `==` and `uv.lock` is committed. Failing this
-  fails the `pinning` job in `security.yml`, not the release workflow, so it is
-  worth seeing before the tag.
+- **Every dependency is pinned with `==`** — `security.yml`'s `pinning` job,
+  which reads the two `pyproject.toml` files and the workflows.
+- **`uv.lock` is committed and current** — held by `uv sync --frozen`, in nine
+  places across five workflows. The `pinning` job never reads `uv.lock`.
 
-Two items stood here that CI does not check and nothing else does either: "the
-empty-database rebuild produces the golden canonical state" and
-"`CURRENT_PROTOCOL_VERSION` matches what the CHANGELOG claims". Neither is
-runnable — there is no rebuild command and no CHANGELOG-to-constant comparison —
-so under a heading promising CI coverage they were the opposite of a check. The
-rebuild is [#64](https://github.com/theurian/theurian/issues/64).
+Both fail outside the release workflow, so they are worth seeing before the tag.
 
 ### 2. Version and changelog
 
@@ -267,11 +264,19 @@ Maintain this in the repository README as releases accumulate:
 
 **Core.** Items marked *(CI)* fail the release workflow rather than relying on
 anyone remembering them; they are listed so it is clear what is already covered,
-not so they are checked twice.
+not so they are checked twice. Items marked *(no check)* are the opposite: real
+properties with nothing that verifies them, listed so their absence is visible at
+the moment someone is deciding whether to tag.
 
 - [ ] *(CI)* Format, lint, mypy, tests green
 - [ ] Coverage reviewed
 - [ ] Every dependency pinned; `uv.lock` committed
+- [ ] *(no check)* The canonical state rebuilds from an empty database —
+      [#64](https://github.com/theurian/theurian/issues/64). There is no command
+      to run; this is a judgement about whether the release changed migration
+      handling.
+- [ ] *(no check)* `CURRENT_PROTOCOL_VERSION` agrees with what the CHANGELOG
+      says about the protocol — [#74](https://github.com/theurian/theurian/issues/74)
 - [ ] *(CI)* `pyproject.toml`, `__version__`, and the tag all agree
 - [ ] *(CI)* CHANGELOG has a non-empty section for the version
 - [ ] CHANGELOG written for an upgrade decision, not just present

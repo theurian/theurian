@@ -137,8 +137,10 @@ Two properties fall out, and both are the intended behaviour:
   — a *content* edit produces a new state hash with no error, so the two cases
   stay distinguishable.
 
-Note that four of the six above are e2e tests, and no CI job runs the e2e suite
-([#65](https://github.com/theurian/theurian/issues/65)).
+Five bullets, seven tests. Three of the seven are e2e, and no CI job runs the
+e2e suite ([#65](https://github.com/theurian/theurian/issues/65)) — including
+the one that pins this ADR's own regression,
+`test_editing_an_applied_migration_is_fatal`.
 
 Still owed, with the milestone that will satisfy it:
 

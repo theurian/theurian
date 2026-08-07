@@ -88,9 +88,18 @@ through a migration — not rescued from a git-ignored directory.
 ## Compliance
 
 - Root `.gitignore` and the `.gitignore` block written by `theurian init` cover
-  every derived path.
+  every derived path **today**, asserted by
   `tests/unit/test_project_and_traceability.py::test_gitignore_block_covers_every_derived_location`
   and `tests/e2e/test_migration_workflow.py::test_gitignore_covers_every_derived_path`.
+
+  "Every" is the reader's inference, not the test's: it asserts seven string
+  literals rather than deriving them from `DERIVED_SUBDIRECTORIES`, which is the
+  tuple `is_derived_path` actually branches on. Measured — adding a fifth entry
+  to `DERIVED_SUBDIRECTORIES` and not to `GITIGNORE_ENTRIES` leaves both tests
+  green, so a future derived directory would be committed with nothing
+  complaining. Correct now, unenforced against change; the fix is one line in the
+  unit test and is left to whichever milestone adds the fifth directory, because
+  writing it now is the kind of change this PR is not making.
 
 Still owed, with the milestone that will satisfy it:
 
