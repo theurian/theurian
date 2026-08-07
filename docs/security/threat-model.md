@@ -1045,9 +1045,17 @@ anything" now denies installing Theurian and states the order it depends on: Cor
 has to be on the machine before `/theurian:setup`, which checks for the binary
 and stops if it is absent. **Nothing holds either sentence.** `README.md` is deliberately
 outside `CORE_ARRIVAL_SURFACES`, because
-`test_every_surface_that_says_how_core_arrives_names_the_installer` requires the
-literal `uv tool install theurian`, which is the one installer the README must
-*not* name — see the next paragraph for why.
+`test_every_surface_that_says_how_core_arrives_names_the_installer` requires both
+`INSTALLERS` literals *contiguously*, and the README's command is
+`uv tool install --python 3.13 'theurian[daemon]'` — the flag sits between the
+tool and the package spec. The flag is load-bearing: without it uv resolves
+against whatever `python3` comes first, which on macOS is 3.9. Adding the file to
+the tuple was tried in
+[#82](https://github.com/theurian/theurian/pull/82) and reverted; loosening the
+match to skip flags was rejected there, because a rule that accepts arbitrary
+text between `uv tool install` and the package would also accept
+`uv tool install --from somewhere-else 'theurian[daemon]'` — the substitution
+this very entry exists over.
 
 **The installer every corrected surface names does not resolve, and the name is
 unclaimed.** Measured 2026-08-06: `https://pypi.org/pypi/theurian/json` and
@@ -1060,33 +1068,56 @@ registers the name first decides what that instruction installs tomorrow, which
 is this entry's own actor arriving through the sentence that was written to send
 users somewhere safe.
 
-The population is **17 files** containing `uv tool install theurian` or `pipx
-install theurian` — that string is the key, so a rephrasing is outside the count.
-Two of them execute: `application/setup_steps.py` (`probe_core`'s detail) and
-`domain/compatibility.py` (`CORE_MISSING`'s remedy). Four are the corrected
-surfaces above. Three are tests that pin the literal, `INSTALLERS` in
-`test_setup_claims.py` among them, so the string cannot be changed in one place
-alone. The rest are `packaging/macos/README.md`, `docs/contributing/release.md`,
-`docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md`,
-`cli/setup_commands.py`'s docstring, `release-core.yml`, `plugins/claude-code/CHANGELOG.md`,
-`packages/theurian-core/CHANGELOG.md`, and this file.
+**The population was one key and is now two, because the literal moved.**
+[#78](https://github.com/theurian/theurian/issues/78) found that
+`uv tool install theurian` resolves and installs a Theurian whose daemon cannot
+start — `uvicorn` is in the `daemon` extra — so every surface naming it was true
+in the sense this key measures and false in the sense a reader uses it. The
+instructing surfaces moved to `theurian[daemon]` in
+[#82](https://github.com/theurian/theurian/pull/82). Both counts below are
+`git grep -l` at that merge, and both are stated because "all of them move
+together" is not checkable without them:
 
-> **The count was 16 and is 17.** The seventeenth is
-> `packages/theurian-core/CHANGELOG.md`, which acquired the literal when
+| Key | Count | What is in it |
+| :-- | --: | :-- |
+| `uv tool install theurian` / `pipx install theurian` | 15 | the surfaces **not** moved, plus the prose that quotes the broken command as the defect |
+| `theurian[daemon]` | 16 | every surface that instructs an install |
+
+The 15 partition into three groups, and the partition is stated because the
+number alone no longer says anything — a file can hold the bare literal for
+opposite reasons:
+
+| Group | Count | Files |
+| :-- | --: | :-- |
+| **Still instructs it.** Release tooling, not user-facing install advice | 2 | `.github/workflows/release-core.yml`, `docs/contributing/release.md` |
+| **Records it as history or as test data**, which is correct | 3 | both CHANGELOGs, `test_plugin_boundary.py` (regex fixture) |
+| **Names it as the defect** — prose describing what went wrong | 10 | this file, `docs/adr/0014-…`, `domain/extras.py`, `domain/compatibility.py`, `application/setup_steps.py`, `cli/commands.py`, `test_bare_install.py`, `test_compatibility.py`, `test_daemon_extra.py`, `test_setup_claims.py` |
+
+Only the first group is a defect, and only two files are in it.
+
+> **The count was 16, then 17, and is now 15 against a key that no longer
+> describes the product.** The 17 was measured at `eb17a2e` after
 > [#54](https://github.com/theurian/theurian/pull/54) opened the `[0.1.0.dev0]`
-> section — measured with the paragraph's own key at both commits: 16 at
-> `30ada4d`, 17 at `eb17a2e`. A number that carries a deferral argument goes
-> stale the moment anything else in the repository moves, which is the cost of
-> stating one; it is stated anyway, because "all of them move together" is not
-> checkable without it.
+> section. What the drop records is not files disappearing but a key going stale:
+> a number that carries a deferral argument goes stale the moment anything in the
+> repository moves, and this one went stale because the argument was discharged.
 
-This is the mirror of the two `probe_artifact_integrity` strings below: those
-would be false *from* the first tag, these are false *until* it. That pair has
-been corrected — see the paragraph that records it — and this one has not.
-`README.md` avoids it only because it installs from the checkout. **Not fixed
-here** — all 17 move together, and which way they move is a release decision:
-claim the PyPI name now, or document the source install everywhere until the
-first tag. Tracked with the rest of the release gate in
+Two of the moved surfaces execute: `application/setup_steps.py` (`probe_core`'s
+detail) and `domain/compatibility.py` (`CORE_MISSING`'s remedy). Both now read
+`theurian.domain.extras.DAEMON_INSTALLERS` rather than spelling the command, so
+the answer a compatibility check gives and the answer a setup report gives cannot
+disagree. `INSTALLERS` in `test_setup_claims.py` is deliberately **not** that
+constant: an extracted pin is green for whatever the constant says.
+
+**Still open — the two files in the first group.** `release-core.yml` writes
+`uv tool install theurian==${VERSION}` into every GitHub release body, and
+`docs/contributing/release.md` names the bare command in its verification step.
+Both were left alone in #82 because they belong to an open pull request
+([#71](https://github.com/theurian/theurian/pull/71)) and resolving across one
+blind is how a population stops being checkable. A reader who follows either now
+gets a Core whose daemon does not start — but gets told so, by name and with the
+command, instead of a traceback. That is a smaller harm than the one this entry
+opened with and it is not zero. Tracked with the rest of the release gate in
 [#39](https://github.com/theurian/theurian/issues/39).
 
 One surface is adjacent and is deliberately **not** counted among the nine:

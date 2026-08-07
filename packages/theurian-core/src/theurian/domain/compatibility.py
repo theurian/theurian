@@ -17,6 +17,7 @@ from functools import total_ordering
 from typing import Final, Self, override
 
 from theurian.domain.errors import DomainError
+from theurian.domain.extras import DAEMON_INSTALLERS
 
 #: Semantic version with an optional pre-release and build metadata.
 _SEMVER_PATTERN: Final = re.compile(
@@ -394,15 +395,25 @@ def resolve_compatibility(
     Core; it runs from an installed Core. Sending this user straight to
     ``/theurian:setup`` is advice they cannot follow -- it shells out to the
     ``theurian`` binary whose absence is the thing being reported.
+
+    **The installers carry the ``daemon`` extra, and are read from
+    :data:`~theurian.domain.extras.DAEMON_INSTALLERS` rather than spelled here.**
+    This remedy used to name ``uv tool install theurian``, which resolves and
+    installs a Theurian whose ``theurian daemon start`` fails with
+    ``ModuleNotFoundError: No module named 'uvicorn'`` (#78) -- so a user who
+    followed it reached the next outcome in this enum with nothing left to fix
+    it. One constant is what keeps the answer here identical to the one
+    ``core-present`` gives; two literals is how they drifted apart the first
+    time.
     """
     if core_version is None:
         return CompatibilityVerdict(
             outcome=CompatibilityOutcome.CORE_MISSING,
             message="Theurian Core is not installed or is not on PATH.",
             remedy=(
-                "Install Theurian with `uv tool install theurian` or "
-                "`pipx install theurian`, then run /theurian:setup to configure "
-                "this machine."
+                f"Install Theurian with `{DAEMON_INSTALLERS[0]}` or "
+                f"`{DAEMON_INSTALLERS[1]}`, then run /theurian:setup to configure "
+                f"this machine."
             ),
             plugin_version=declaration.plugin_version,
             core_version=None,

@@ -18,8 +18,12 @@ command here shells out to the `theurian` binary, so it goes on the machine
 first:
 
 ```sh
-uv tool install theurian    # or: pipx install theurian
+uv tool install 'theurian[daemon]'    # or: pipx install 'theurian[daemon]'
 ```
+
+The `[daemon]` extra is what `/theurian:setup` goes on to configure. Without
+it you get the CLI and the migration engine, and `theurian daemon start` fails
+with `No module named 'uvicorn'`.
 
 Then, in Claude Code:
 

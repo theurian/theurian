@@ -144,8 +144,9 @@ def setup_command(
     Setup cannot tell you Core is missing, because setup is Core: it runs from
     the installation it would have to create, and a shell with no `theurian` on
     its PATH never reaches this text at all. Core arrives through
-    `uv tool install theurian` or `pipx install theurian`, and no step here
-    installs anything.
+    `uv tool install 'theurian[daemon]'` or `pipx install 'theurian[daemon]'`, and
+    no step here installs anything. The extra is not decoration: without it
+    `theurian daemon start` has no server to run, and `core-present` refuses.
 
     The other 11 steps only report what they found: platform, core-present,
     artifact-integrity, single-instance, project-registered, project-layout,

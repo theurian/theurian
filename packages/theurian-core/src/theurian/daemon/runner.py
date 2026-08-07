@@ -19,6 +19,7 @@ from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.instance import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    LOCK_FILENAME,
     InstanceCheck,
     InstanceLock,
     StartDecision,
@@ -32,9 +33,6 @@ from theurian.infrastructure.secrets.file_store import (
 )
 from theurian.mcp.tools import register
 from theurian.security.tokens import generate_token
-
-#: Name of the lock file inside the data directory.
-LOCK_FILENAME: Final = "daemon.lock"
 
 #: Uvicorn log level. Access logs are off: every request carries an
 #: Authorization header, and an access log is the easiest place for one to leak

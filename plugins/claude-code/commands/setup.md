@@ -10,15 +10,18 @@ OS service or writes the MCP connection entry. Everything else in this plugin
 reads.
 
 It does **not** install Theurian Core. Core is a prerequisite, installed with
-`uv tool install theurian` or `pipx install theurian` — `theurian setup` runs
-from that installation, so it cannot be what creates it.
+`uv tool install 'theurian[daemon]'` or `pipx install 'theurian[daemon]'` —
+`theurian setup` runs from that installation, so it cannot be what creates it.
+The `[daemon]` extra is the part setup configures. A Core that lacks it has no
+`uvicorn`, and setup stops at `core-present` rather than registering a service
+that cannot start.
 
 ## What to do
 
 1. Confirm Core is installed. If this prints nothing, stop and tell the user to
-   run `uv tool install theurian` (or `pipx install theurian`) first. Steps 2
-   and 5 shell out to this binary and are the only things here that do any
-   work; without it they fail with `command not found`.
+   run `uv tool install 'theurian[daemon]'` (or `pipx install 'theurian[daemon]'`)
+   first. Steps 2 and 5 shell out to this binary and are the only things here
+   that do any work; without it they fail with `command not found`.
 
    ```sh
    command -v theurian

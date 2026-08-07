@@ -24,6 +24,7 @@ from the probe.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import platform
 import sys
@@ -45,6 +46,12 @@ from theurian.application.setup_withholding import (
     unreadable_registry_summary,
     withheld_difference,
     withheld_registry_detail,
+)
+from theurian.domain.extras import (
+    DAEMON_EXTRA,
+    DAEMON_EXTRA_REMEDY,
+    DAEMON_INSTALLERS,
+    DAEMON_MODULES,
 )
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.domain.setup import SetupStep, StepId, StepStatus
@@ -130,29 +137,92 @@ def probe_platform(_: SetupContext) -> SetupStep:
 # -- 2. Core present --------------------------------------------------------
 
 
-def probe_core(context: SetupContext) -> SetupStep:
-    """Whether the running ``theurian`` can be named by an absolute path.
+def _missing_daemon_modules() -> tuple[str, ...]:
+    """Which of the ``daemon`` extra's modules this interpreter cannot import.
 
-    The service unit invokes it by absolute path, because launchd and systemd
-    start with a PATH that is not the user's -- so an installation reachable only
-    through a shell alias or a virtualenv on ``PATH`` produces a service that
-    cannot start.
+    ``find_spec`` rather than ``import``, because importing ``uvicorn`` and the
+    MCP SDK costs around 430 ms and this runs inside ``setup`` and ``doctor``.
+
+    A raise counts as missing alongside the documented ``None``. ``find_spec``
+    returns ``None`` for a module that was never installed -- the case a bare
+    install produces -- and raises for a package whose parent is absent or whose
+    ``sys.modules`` entry has no ``__spec__``. Both mean the same thing to the
+    caller, and letting the second escape would abort setup with an import
+    traceback in place of the sentence written for it.
     """
-    if context.executable and Path(context.executable).exists():
+    missing: list[str] = []
+    for name in DAEMON_MODULES:
+        try:
+            found = importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append(name)
+    return tuple(missing)
+
+
+def probe_core(context: SetupContext) -> SetupStep:
+    """Whether Core is installed *and* can do what the rest of the plan needs.
+
+    Two things, because the step's name is read as one. The executable has to be
+    nameable by an absolute path -- the service unit invokes it that way, since
+    launchd and systemd start with a PATH that is not the user's, so an
+    installation reachable only through a shell alias or a virtualenv on
+    ``PATH`` produces a service that cannot start.
+
+    And the ``daemon`` extra has to be present. That arm exists because the path
+    check alone reported ``satisfied`` for ``uv tool install theurian`` -- the
+    command every install surface names -- whose very next ``theurian daemon
+    start`` failed with ``ModuleNotFoundError: No module named 'uvicorn'``
+    (#78). A step that asserts presence by finding a file was making a claim
+    about the flow that follows it, and every remaining step in that flow either
+    serves the daemon or connects a client to it.
+
+    ``CONFLICTING`` rather than ``MISSING``, which makes this one of the two
+    conflicts consent cannot buy past: setup stops and writes nothing. Measured
+    on the other branch -- a bare install ran through to ``DEGRADED`` and left an
+    env file, a service unit and an MCP entry behind, so the machine ended with a
+    registered service that fails on every start. "Leaves nothing worth
+    installing around it" is what that set is for.
+
+    **The extra is checked in this interpreter; the path is checked on disk.**
+    They are the same installation whenever ``_executable()`` resolved
+    ``theurian`` to the process running setup, which is every ordinary
+    invocation, and not when a *different* ``theurian`` comes first on ``PATH``.
+    Recorded rather than closed: nothing here can import from another
+    installation's site-packages, and the alternative -- shelling out to the
+    named executable on every ``doctor`` run -- buys a subprocess to cover the
+    case of a user who already has two Cores.
+    """
+    if not (context.executable and Path(context.executable).exists()):
         return SetupStep(
             step_id=StepId.CORE_PRESENT,
-            status=StepStatus.SATISFIED,
-            summary=f"Core is installed at {context.executable}.",
+            status=StepStatus.CONFLICTING,
+            summary="Could not determine an absolute path to the theurian executable.",
+            detail=(
+                f"The daemon service must invoke Theurian by absolute path, because a "
+                f"service manager starts with a PATH that is not your shell's. Install "
+                f"Theurian with `{DAEMON_INSTALLERS[0]}` or `{DAEMON_INSTALLERS[1]}`."
+            ),
         )
+
+    missing = _missing_daemon_modules()
+    if missing:
+        return SetupStep(
+            step_id=StepId.CORE_PRESENT,
+            status=StepStatus.CONFLICTING,
+            summary=f"Core is installed, but without its `{DAEMON_EXTRA}` extra.",
+            detail=(
+                f"Everything setup does from here serves the daemon or connects a client "
+                f"to it, and {', '.join(missing)} cannot be imported. "
+                f"{DAEMON_EXTRA_REMEDY} Then run `theurian setup` again."
+            ),
+        )
+
     return SetupStep(
         step_id=StepId.CORE_PRESENT,
-        status=StepStatus.CONFLICTING,
-        summary="Could not determine an absolute path to the theurian executable.",
-        detail=(
-            "The daemon service must invoke Theurian by absolute path, because a "
-            "service manager starts with a PATH that is not your shell's. Install "
-            "Theurian with `uv tool install theurian` or `pipx install theurian`."
-        ),
+        status=StepStatus.SATISFIED,
+        summary=f"Core is installed at {context.executable}.",
     )
 
 

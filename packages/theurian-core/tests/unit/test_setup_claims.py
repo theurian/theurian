@@ -73,23 +73,30 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: ran. The README now installs from PyPI like every surface here, so that reason
 #: is gone -- and the exclusion outlives it, because
 #: :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
-#: requires *both* literals verbatim. The README carries
-#: ``uv tool install theurian`` in prose but recommends
-#: ``uv tool install --python 3.13 'theurian[all]'``, and it names no bare
-#: ``pipx install theurian`` at all: a plain install omits the ``daemon`` extra,
-#: which the quick start goes on to use. Joining the tuple would mean publishing
-#: an installer the README's own next command does not survive.
+#: requires *both* literals verbatim, and until
+#: https://github.com/theurian/theurian/issues/78 those literals were the bare
+#: ``uv tool install theurian`` and ``pipx install theurian`` -- an installer the
+#: README's own next command does not survive, because it omits the ``daemon``
+#: extra the quick start goes on to use.
 #:
-#: **That last argument is not special to the README, and this exclusion expires
-#: when the general case lands.** The four surfaces above are *required* to name
-#: the bare installer, and ``probe_core``'s detail publishes it too -- so all five
-#: send a user with no Core to a command that succeeds and leaves them unable to
-#: start the daemon ``/theurian:setup`` then configures. The reason the README is
-#: out is the reason the other five are wrong; it is only visible here because the
-#: README was free to say something else. That is
-#: https://github.com/theurian/theurian/issues/78. When it lands, the surfaces and
-#: :data:`INSTALLERS` move to a spelling that carries the extra, and the README
-#: can join this tuple -- delete this paragraph then, not the one above it.
+#: **#78 landed and the README still does not join, for a third reason nobody
+#: predicted.** The paragraph that stood here said the exclusion would expire
+#: when the surfaces and :data:`INSTALLERS` moved to a spelling carrying the
+#: extra, and asked to be deleted at that moment; it has been, because that
+#: moment is this commit. Adding ``README.md`` to the tuple was then *tried*, and
+#: it fails: the README recommends
+#: ``uv tool install --python 3.13 'theurian[daemon]'``, and the flag between the
+#: tool and the package spec means the pinned literal does not appear
+#: contiguously. The flag is not decoration -- it is what stops uv resolving
+#: against a macOS ``python3`` that is 3.9 -- so the README is right and the
+#: match is what cannot express it.
+#:
+#: Loosening the match to skip flags was rejected here rather than deferred.
+#: Verbatim is the whole of what this check is: a rule that accepts arbitrary
+#: text between ``uv tool install`` and the package would accept
+#: ``uv tool install --from somewhere-else 'theurian[daemon]'``, which is the
+#: supply-chain sentence T-16 exists over. The exclusion is therefore not a
+#: promise any more; it is a property of the one surface that must pass a flag.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
@@ -112,7 +119,24 @@ SESSION_START_HOOK: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[2]
 #: ``theurian setup``, and
 #: :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports` holds
 #: this tuple to the step's own words.
-INSTALLERS: Final = ("uv tool install theurian", "pipx install theurian")
+#:
+#: **The ``[daemon]`` extra is part of the literal, and that is the correction
+#: #78 made.** Without it, ``uv tool install theurian`` resolves, installs, and
+#: leaves a Theurian whose ``daemon start`` fails on ``uvicorn`` -- so every
+#: surface below was true in the only sense this tuple could measure (the
+#: command runs) and false in the sense a reader uses it (the install works).
+#:
+#: **Still two literals rather than an import of
+#: :data:`~theurian.domain.extras.DAEMON_INSTALLERS`**, which production now
+#: has. Extracting it would make this module green for whatever that constant
+#: says, including ``brew install theurian`` -- the exact drift the docstring of
+#: :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports`
+#: describes, arriving one indirection further away. What makes the check mean
+#: anything is that the two are written independently and asserted equal.
+INSTALLERS: Final = (
+    "uv tool install 'theurian[daemon]'",
+    "pipx install 'theurian[daemon]'",
+)
 
 #: Commands that legitimately contain "install theurian": the two Core
 #: installers, and Claude Code's own plugin installer. Masked out before the
@@ -290,10 +314,17 @@ def _paragraphs(text: str) -> list[str]:
 def _install_claims_naming_no_installer(text: str) -> list[str]:
     """Every "X installs Theurian" that neither denies it nor says who does.
 
-    "Install Core with `uv tool install theurian`" is the sentence these
-    surfaces are supposed to contain, so a claim whose own words name an
+    "Install Core with `uv tool install 'theurian[daemon]'`" is the sentence
+    these surfaces are supposed to contain, so a claim whose own words name an
     installer is exactly right. What is left over is a claim that leaves the
     reader believing something else puts Core on the machine.
+
+    The masking in :func:`_paragraphs` is what makes "names an installer" mean
+    *the current* installer: :data:`_INSTALL_COMMANDS` no longer contains the
+    bare command, so a surface that reintroduces it is a claim naming no
+    installer and fails here. Measured -- two drafts of #78's own prose in
+    ``setup.md`` were rejected by exactly that, one of them for quoting the very
+    command the change existed to replace.
     """
     return [
         match.group(0)

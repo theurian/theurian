@@ -79,7 +79,22 @@ Several dependencies are also young:
   install. Mitigated by Dependabot, and by the fact that this is a local daemon
   with no untrusted network exposure.
 - Pinning can conflict with another package in a shared environment. Mitigated by
-  recommending `uv tool install theurian` or `pipx`, which isolate it.
+  recommending `uv tool install 'theurian[daemon]'` or `pipx`, which isolate it.
+- **Decision 10's split makes the bare install a Theurian whose daemon cannot
+  start**, and that cost went unrecorded here until it reached users.
+  `uv tool install theurian` resolves, installs, and then fails at the next step
+  of the documented flow with `ModuleNotFoundError: No module named 'uvicorn'`
+  ([#78](https://github.com/theurian/theurian/issues/78)). The split is kept — a
+  CI image that only runs `theurian migrate` should not carry a web server — so
+  the cost is paid where it belongs: every surface that instructs an install
+  names `theurian[daemon]`, and `core-present` now refuses an install without it
+  instead of reporting `satisfied` and going on to register a service that
+  cannot start. The extras a surface must *not* name are `vector` and
+  `telemetry`: measured, `sqlite_vec` and `opentelemetry` are imported nowhere
+  in `src/`, and two `uv tool install` runs into separate tool directories
+  differ by **12 distributions** — `certifi`, `charset_normalizer`,
+  `googleapis_common_protos`, five `opentelemetry_*`, `protobuf`, `requests`,
+  `sqlite_vec`, `urllib3` — and no behaviour.
 
 ### Neutral
 

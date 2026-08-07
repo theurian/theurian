@@ -41,8 +41,8 @@ main() {
     #
     # Printed, never run. `theurian::warn` writes its argument to stderr and
     # nothing else, which is the whole of this hook's remit under §8.
-    theurian::warn "Core is not installed. Install it with 'uv tool install theurian'" \
-      "or 'pipx install theurian', then run /theurian:setup to configure this machine."
+    theurian::warn "Core is not installed. Install it with: uv tool install 'theurian[daemon]'" \
+      "or: pipx install 'theurian[daemon]', then run /theurian:setup to configure this machine."
     return 0
   fi
 

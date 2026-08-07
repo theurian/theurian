@@ -164,8 +164,8 @@ version published so far is a pre-release. That page is what says which ones
 exist; this file does not track it.
 
 ```sh
-uv tool install --python 3.13 'theurian[all]'   # puts `theurian` on your PATH
-# or: pipx install --python 3.13 'theurian[all]'
+uv tool install --python 3.13 'theurian[daemon]'   # puts `theurian` on your PATH
+# or: pipx install --python 3.13 'theurian[daemon]'
 ```
 
 **Nothing checks what that just downloaded, including Theurian.** Each release
@@ -175,18 +175,26 @@ manual step you have to choose to take. It is also narrower than it looks — th
 posture table below says what it catches and what it does not (T-16,
 [#39](https://github.com/theurian/theurian/issues/39)).
 
-**Both additions earn their place.** `[all]` is what carries the MCP daemon:
-`uvicorn` lives in the `daemon` extra, so a plain install gives you the CLI and
-the migration engine, and `theurian daemon start` exits 1 on
-`ModuleNotFoundError: No module named 'uvicorn'`. `theurian setup` does notice
-something — it reports `daemon-running: missing` and a `degraded` report — but it
-does not name the missing extra, and it exits 0
-([#78](https://github.com/theurian/theurian/issues/78)). `--python 3.13` makes
-the interpreter explicit: Core requires 3.13, and `uv tool install
-'theurian[all]'` was observed failing on a machine whose default `python3` is
-3.9, under a `pre-releases weren't enabled` hint that is not the cause. Passing
-the version is the way past it. `--prerelease=allow` is not, and it would widen
-what uv accepts across every dependency rather than fixing this.
+**Both additions earn their place.** `[daemon]` is what carries the MCP daemon:
+`uvicorn` and the MCP SDK live in that extra, so a plain install gives you the
+CLI and the migration engine and nothing that can serve
+([ADR-0014](docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md) explains
+why the split is deliberate). `[all]` also works and is what a contributor
+checkout installs; measured, it adds 12 distributions — `sqlite_vec`, the
+OpenTelemetry stack and their dependencies — that no module under `src/` imports,
+so it buys nothing here yet. `--python 3.13` makes the interpreter explicit: Core
+requires 3.13, and `uv tool install 'theurian[all]'` was observed failing on a
+machine whose default `python3` is 3.9, under a `pre-releases weren't enabled`
+hint that is not the cause. Passing the version is the way past it.
+`--prerelease=allow` is not, and it would widen what uv accepts across every
+dependency rather than fixing this.
+
+**If you install without the extra, Theurian says so.** `theurian daemon start`
+exits 1 naming `daemon` and the command that adds it, and `theurian setup` stops
+at `core-present` with `state: aborted` rather than registering a service that
+cannot start ([#78](https://github.com/theurian/theurian/issues/78)). Before
+that, the install reached a traceback and setup reported `core-present:
+satisfied`.
 
 Building from a checkout instead is the contributor path, and it is
 [docs/contributing/development.md](docs/contributing/development.md).

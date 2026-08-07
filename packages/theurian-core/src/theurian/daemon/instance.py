@@ -48,6 +48,18 @@ PROBE_TIMEOUT_SECONDS: Final = 2.0
 DEFAULT_HOST: Final = "127.0.0.1"
 DEFAULT_PORT: Final = 7419
 
+#: Name of the lock file inside the data directory.
+#:
+#: Here rather than in ``runner.py``, beside the :class:`InstanceLock` that
+#: creates it. The move is not tidiness: ``daemon status`` publishes this path as
+#: ``lockFile`` and imported the constant from the runner, so reporting "no
+#: daemon is running" pulled in ``uvicorn`` and ``mcp`` and died with
+#: ``ModuleNotFoundError`` on any install without the ``daemon`` extra -- on the
+#: one command the SessionStart hook runs on every session (#78). This module has
+#: no third-party import at all, which is the property that keeps that fixed, and
+#: ``tests/integration/test_bare_install.py`` holds it.
+LOCK_FILENAME: Final = "daemon.lock"
+
 
 class StartDecision(StrEnum):
     """What a would-be starter should do."""
