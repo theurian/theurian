@@ -113,4 +113,13 @@ over the file's bytes rather than over a YAML-escaped copy of them.
 - Unit tests cover ULID validation, checksum mismatch, topological sort, cycle
   detection, `expectedRevision` conflict, idempotent re-application, and path
   escape via both `..` and symlink.
-- The `empty-db-rebuild` CI job enforces FR-K4.
+
+Still owed, with the milestone that will satisfy it:
+
+- **Nothing enforces FR-K4.** This section said "the `empty-db-rebuild` CI job
+  enforces FR-K4". That job does not exist, and no test rebuilds the canonical
+  state from an empty database.
+  [#64](https://github.com/theurian/theurian/issues/64) (Milestone 6). The unit
+  tests above cover the engine's behaviour on each operation; what is missing is
+  the whole-set property FR-K4 states — that the Git-tracked migrations are
+  sufficient to reconstruct everything.

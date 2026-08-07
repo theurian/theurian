@@ -86,4 +86,24 @@ produce the same state hash" is not assertable.
 - `tests/unit/test_layering.py` walks the AST import graph and asserts
   `domain/` imports neither `application/` nor `infrastructure/`.
 - mypy strict mode verifies every adapter satisfies its Protocol.
-- A test asserts every port has a corresponding fake.
+- `tests/unit/test_ports.py` pins the port set itself: `test_port_set_is_closed`
+  compares `ALL_PORTS` against a committed list so adding a port is an
+  architecture decision rather than a refactor, and
+  `test_port_is_a_protocol`, `test_port_is_runtime_checkable`,
+  `test_port_has_no_implementation`, `test_port_declares_at_least_one_member`
+  and `test_port_methods_are_annotated` run over every one of them.
+
+Still owed, with the milestone that will satisfy it:
+
+- **No test asserts every port has a fake, and most do not have one.** This
+  section claimed one did. `tests/fakes/` defines five doubles —
+  `FrozenClock`, `SeededIdGenerator`, `InMemoryWriter`, `FakeService`,
+  `FakeMcpConfig` — naming three of the fourteen ports
+  `test_port_set_is_closed` pins (`Clock`, `IdGenerator`, `DaemonManager`). The claim
+  is also the wrong shape for this design: a port with one adapter and no
+  in-memory double is not a gap, and demanding a fake per port would produce
+  fakes nobody uses. What ADR-0003 actually wants is that *application code is
+  testable without infrastructure*, and neither a test nor this section states
+  that in a checkable form. Deferred rather than filed: it needs a decision
+  about what the property is before it can have a test, and Milestone 6 adds
+  ports (RAPTOR summarisation) that will force the question.

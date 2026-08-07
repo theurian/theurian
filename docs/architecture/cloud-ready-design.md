@@ -110,8 +110,17 @@ flowchart TB
 | A local-only shortcut that a hosted build cannot honour | Creates two divergent codebases |
 | Tenant checks added later | Authorization retrofitted after the call sites exist is always incomplete |
 
-A CI job greps `domain/` and `application/` for vendor names. It is a crude
-check, and it catches the exact drift that would make this document a lie.
+`tests/unit/test_layering.py::test_no_vendor_names_in_domain_or_application`
+greps `domain/` and `application/` for seven vendor names. It is a crude check,
+and it catches the exact drift that would make this document a lie. It is a test
+rather than the CI job this paragraph used to claim — the same substance,
+findable in a different place.
+
+Note what the last row of the table is not covered by. Tenant checks are exactly
+the drift this document warns about, and FR-R1's tenant axis is unimplemented
+with no column to hold it
+([#63](https://github.com/theurian/theurian/issues/63)). The vendor grep does
+not reach that; nothing does.
 
 ## Migration path
 

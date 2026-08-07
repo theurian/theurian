@@ -64,6 +64,17 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 | FR-R7 | Pin a `snapshotId` so results are reproducible for the lifetime of a task. |
 | FR-R8 | Search across several registered Projects in one call when the caller is authorized for all of them. |
 
+**FR-R1 is one of five axes as of Milestone 5.** `SqliteIndexStore._scope`
+builds the WHERE clause every retriever uses, and it filters on Project and on
+status — a check FR-R1 does not name. Tenant and ACL have no column; the
+`chunks` table carries `sensitivity`, `trust_level` and `namespace` and no query
+reads them; the only validity-window filter,
+`SqliteCanonicalStore.list_items(current_at=…)`, has no caller in `src/`.
+Routing does not change today, because the four unenforced axes hold no content
+yet, which is why this is a deferral and not a defect. Milestone 6's scope
+filtering is where it comes due:
+[#63](https://github.com/theurian/theurian/issues/63).
+
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One
 `knowledge.search` response is answered from exactly one canonical state, and,
@@ -302,8 +313,16 @@ under [T-16](../security/threat-model.md).
 ### 6.3 Idempotence contract
 
 Running setup twice must produce a second report where every step is
-`Satisfied` and the changed-files list is empty. This is asserted directly in
-`tests/e2e/test_setup_idempotence.py`.
+`Satisfied` and the changed-files list is empty.
+
+This said the contract "is asserted directly in
+`tests/e2e/test_setup_idempotence.py`". That file has never existed. What holds
+part of it is `tests/integration/test_setup_service.py`, against fake service and
+MCP-config adapters — `test_a_second_run_never_regenerates_the_token` and
+`test_a_step_setup_does_not_perform_is_never_reported_as_changed`. The end-to-end
+statement, against a real LaunchAgent in a disposable profile, is owed with the
+rest of the E2E suite: [#65](https://github.com/theurian/theurian/issues/65),
+and see `tests/e2e/README.md` for which acceptance criteria have no test at all.
 
 ### 6.4 Rollback
 

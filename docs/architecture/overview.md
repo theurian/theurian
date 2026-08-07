@@ -146,7 +146,7 @@ developer switches branches mid-run.
 
 ```mermaid
 flowchart TB
-    Q["Query + context + token budget"] --> F["1. Pre-filter: project, tenant, ACL,<br/>sensitivity, validity window"]
+    Q["Query + context + token budget"] --> F["1. Pre-filter: project, status<br/>(FR-R1's other axes: M6)"]
     F --> L["2. FTS5 lexical"]
     F --> V["3. Vector"]
     F --> R["4. RAPTOR summary nodes"]
@@ -164,6 +164,15 @@ flowchart TB
 Filtering happens **before** ranking. Filtering afterwards returns fewer results
 than requested and leaks the existence of hidden content through result-count
 differences.
+
+Box 1 named all five of FR-R1's axes until this pass. `SqliteIndexStore._scope`
+emits two — project, and status when the caller has not opted into unapproved
+rows. Tenant and ACL groups exist as domain values (`Scope`, `TenantId`,
+`AclGroup`, pinned by `tests/unit/test_scope_isolation.py`) and default to the
+single-tenant case; the index carries `sensitivity`, `trust_level` and
+`namespace` as columns no query reads. Steps 3, 4 and 6 are likewise Milestone 6
+— dense retrieval is built but off by default, and RAPTOR is not built at all.
+The pre-filter gap is [#63](https://github.com/theurian/theurian/issues/63).
 
 Every result carries `itemId`, `revisionId`, `snapshotId`, `indexBuildId`,
 `sourceAnchors`, `raptorPath`, `trustLevel`, `freshness`, and the safety triple
