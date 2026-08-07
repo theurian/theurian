@@ -57,16 +57,19 @@ Core tags are `core-v*` and plugin tags are `plugin-v*` (release process:
 [Core](docs/contributing/release.md#4-tag),
 [plugin](docs/contributing/release.md#4-tag-and-publish)) — pushed to that URL
 rather than created, because a tag in a local clone or a fork distributes
-nothing. No output from that command means no such tag; it exits 0 either way, so
-a network failure reads the same as an answer — and now that `core-v0.1.0.dev0`
-exists, an empty result is that failure rather than an answer.
+nothing. **Read the exit code, not just the output.** `git ls-remote` exits 0
+when it reached the remote, "whether it found any matching refs", and exits 128
+with `fatal:` on stderr when it did not — so empty output at exit 0 means the
+remote holds no matching tag, and a network failure does not look like that. Now
+that `core-v0.1.0.dev0` exists, an empty result at exit 0 means the untag step in
+[`release.md`'s yanking procedure](docs/contributing/release.md#yanking) was
+performed.
 
 **A development release is still a release here.** What flips the default to
 private is that installs exist which a reader cannot fix by updating a checkout,
 and `0.1.0.dev0` is on PyPI, built from a tag that does not move when `main`
-does. The
-version's maturity decides which fixes it receives, under *Supported versions*
-below; it does not decide which branch a vulnerability takes.
+does. The version's maturity decides which fixes it receives, under *Supported
+versions* below; it does not decide which branch a vulnerability takes.
 
 **A defect is routed by whose users it exposes, not by which tree it sits in**,
 and where the two differ the users decide: a control living in Core's test tree
@@ -141,9 +144,22 @@ push channel. The trigger is our act, not their upgrade; the reason private is
 the default here is that a release leaves installs a reader cannot fix by
 updating a checkout.
 
-An advisory published here carries no package ecosystem, so it reaches people who
-read this repository and no dependency scanner. It is a public record, not a
-notification.
+**What an advisory reaches differs by train**, and Core's move to PyPI is what
+separated them.
+
+- **Core** is a PyPI package, so an advisory from this repository can name an
+  affected product — ecosystem `pip`, package `theurian`, and a version range —
+  and one GitHub accepts into the
+  [Advisory Database](https://github.com/advisories) reaches Dependabot.
+  Declaring it is a choice made when the advisory is written, not a property of
+  the form, and an advisory left without an affected product reaches only people
+  who read this repository. **Core's advisories name the affected range**; the
+  yank procedure's advisory step
+  ([`release.md`](docs/contributing/release.md#yanking)) is where that happens.
+- **The plugin** has no ecosystem to declare. It is distributed by a sha pin in a
+  marketplace repository, which no dependency scanner reads, so an advisory about
+  the plugin **is a public record, not a notification** — and publishing one
+  moves nobody off the cached copy they already have.
 
 A gap in the process around a release — a train with no CI, a marketplace
 repository without required review, an unverified download in a workflow — has no
@@ -303,13 +319,20 @@ Pre-1.0, only an artifact's latest MINOR release receives security fixes. Once
 | :-- | :-- | :-- |
 | Claude Code plugin | 0.1.x | ✅ |
 | Claude Code plugin | < 0.1 | ❌ |
-| Theurian Core | 0.1.0.dev0 | ✅ |
+| Theurian Core | 0.1.x | ✅ |
+| Theurian Core | < 0.1 | ❌ |
 
-`0.1.0.dev0` is Core's first release and its latest MINOR, so it is the version
-that receives fixes. **A development release is supported on the same terms as
-any other**, and the alternative is not a conservative default: routing turns on
-whether an artifact has been released, so an unsupported row would leave the only
-Core anyone can install in neither branch above.
+**The rows name a MINOR series, not a version, because a fix never arrives as the
+version that carried the defect.** PyPI does not re-accept a filename it already
+holds, so a Core fix ships as a new release inside `0.1.x` — naming `0.1.0.dev0`
+in the supported column would name a version to which no fix can ever arrive, and
+would go false at the next release, leaving the only installable Core outside
+both rows. `0.1.0.dev0` is the release currently occupying `0.1.x`.
+
+**A development release is supported on the same terms as any other**, and the
+alternative is not a conservative default: routing turns on whether an artifact
+has been released, so an unsupported row would leave the only Core anyone can
+install in neither branch above.
 
 Core's changelog opened that section ahead of the tag, because the release
 workflow requires the section to exist before it will build — **an open changelog
