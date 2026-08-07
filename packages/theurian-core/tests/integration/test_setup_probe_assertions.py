@@ -123,12 +123,22 @@ def test_a_relative_executable_is_not_core_being_present(tmp_path: Path) -> None
 
 
 def _runnable(path: Path) -> Path:
-    """A file a service manager could actually exec.
+    """An absolute path to a regular file with the executable bit set.
 
-    ``touch()`` leaves 0644. Six fixtures across five files built their fake
-    Core that way and every one of them expected ``satisfied`` -- which is the
-    measurement that says nothing was testing this predicate, rather than a
-    detail of how they were written.
+    Not "a file a service manager could exec", which is what this said and is a
+    claim ``chmod`` cannot support -- see :func:`_is_runnable_absolute_path` for
+    the five shapes that satisfy every predicate here and still fail to exec.
+
+    ``touch()`` leaves 0644. **Four fixtures in four files** built their fake
+    Core that way and every one expected ``satisfied``, which is the measurement
+    saying nothing was testing this predicate rather than a detail of how they
+    were written. The key, because the number is worth nothing without it --
+    ``git grep -n "executable" origin/main -- '*.py' | grep "touch()"``:
+    ``test_bare_install.py:238``, ``test_setup_report_withholding.py:96``,
+    ``test_setup_service.py:48``, ``test_setup_claims.py:272``.
+
+    An earlier version of this docstring said "six fixtures across five files".
+    Both numbers were inferred rather than searched, and both were wrong.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")

@@ -41,7 +41,14 @@ from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS, Step
 from theurian.cli.setup_commands import _redacted
-from theurian.domain.setup import DifferingFields, SetupError, SetupStep, StepId, StepStatus
+from theurian.domain.setup import (
+    DifferingFields,
+    SetupError,
+    SetupState,
+    SetupStep,
+    StepId,
+    StepStatus,
+)
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.infrastructure.services.launchagent import LABEL, LaunchAgentManager
@@ -93,8 +100,13 @@ def _context(tmp_path: Path, *, for_publication: bool = True, **overrides: Any) 
     data_dir.mkdir(parents=True, exist_ok=True)
     executable = tmp_path / "bin" / "theurian"
     executable.parent.mkdir(parents=True, exist_ok=True)
-    # 0755, not `touch()`: `probe_core` requires a path a service manager could
-    # exec, and a 0644 file aborts the run before any report is withheld (#49).
+    # 0755, not `touch()`. `probe_core` requires the executable bit since #49,
+    # and without it `core-present` conflicts, which is one of the two verdicts
+    # `_blocking_conflicts` reads -- so every payload below would be a report of
+    # an ABORTED run rather than of the plan this module is about. Measured: all
+    # eighteen steps are still published either way and the withholding still
+    # happens, so nothing here goes red; what changes is the object under test.
+    # `test_the_payloads_here_describe_a_plan_and_not_an_aborted_run` pins it.
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
 
@@ -129,6 +141,30 @@ def _on_the_terminal(context: SetupContext, steps: Sequence[Step] = STEPS) -> st
 def _detail(payload: str, step_id: StepId) -> str:
     step = next(s for s in json.loads(payload)["steps"] if s["id"] == step_id.value)
     return str(step["detail"])
+
+
+def test_the_payloads_here_describe_a_plan_and_not_an_aborted_run(tmp_path: Path) -> None:
+    """The fixture's mode, pinned -- because nothing else in this module needs it.
+
+    Every seed below is asserted absent from the published payload, and an
+    ABORTED run publishes all eighteen steps too, so each of them stays green
+    against a `core-present` that conflicts. Reverting `_context` to `touch()`
+    was measured as a SURVIVING mutation at 1731 passed for exactly that reason:
+    the module would go on testing withholding, but on a report of a run that
+    stopped at step two rather than of the plan its docstring describes.
+
+    That is the difference this asserts. It is not a claim that withholding
+    breaks when the run aborts -- measured, it does not.
+    """
+    report = SetupService(_context(tmp_path), STEPS).run(SetupRequest(dry_run=True))
+
+    assert report.state is SetupState.PLAN_BUILT, (
+        "the fixture's executable must satisfy `core-present`, or every payload "
+        "in this module describes an aborted run"
+    )
+    core = report.step(StepId.CORE_PRESENT)
+    assert core is not None
+    assert core.status is StepStatus.SATISFIED
 
 
 # -- The MCP entry: a literal credential in someone else's config file --------

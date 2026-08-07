@@ -162,11 +162,31 @@ def _missing_daemon_modules() -> tuple[str, ...]:
 
 
 def _is_runnable_absolute_path(candidate: Path) -> bool:
-    """Whether a service manager could exec ``candidate`` as it is written.
+    """Whether ``candidate`` is an absolute path to a regular file marked executable.
+
+    Exactly those three things, and **not** "a service manager could exec this".
+    That stronger claim was written here and is false: five shapes satisfy all
+    three predicates and still fail to exec, measured on macOS --
+
+    ===================================================  =======================
+    shape                                                ``execve`` answers
+    ===================================================  =======================
+    0755 script whose shebang names a removed binary     ENOENT
+    0755 console script whose shebang is a dangling link ENOENT
+    0755 text with no shebang                            ENOEXEC
+    0755 zero-byte file                                  ENOEXEC
+    0755 Linux ELF on macOS                              ENOEXEC
+    ===================================================  =======================
+
+    All five are file *format* and shebang, which no ``stat`` can see. Nothing
+    short of running the thing separates them, and running it would still be a
+    check-to-use race, so the predicate is stated at the width it actually has.
 
     Deliberately not ``exists()``: that is true of a directory, and it resolves
     a relative name against whatever directory setup happened to run in, while
     the string is written verbatim into a launchd plist or a systemd unit.
+    ``is_file`` also rejects FIFOs, dangling symlinks, symlink loops and
+    directories, which is what it earns its place for.
     """
     return candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK)
 
@@ -180,13 +200,18 @@ def probe_core(context: SetupContext) -> SetupStep:
     installation reachable only through a shell alias or a virtualenv on
     ``PATH`` produces a service that cannot start.
 
-    **The predicate is "a service manager could exec this", and it is checked
-    here rather than assumed of the caller.** Three shapes reported ``satisfied``
-    while failing it, all measured: a bare name, which ``exists()`` resolves
-    against the current working directory; a *directory*, which ``exists()`` is
-    also true of; and a regular file without the executable bit. The last two
-    survived the first fix for #49, which is why the check now names all three
-    predicates instead of the one the summary happened to mention.
+    **Three shapes reported ``satisfied`` that no service manager could start**,
+    all measured: a bare name, which ``exists()`` resolves against the current
+    working directory; a *directory*, which ``exists()`` is also true of; and a
+    regular file without the executable bit. The last two survived the first fix
+    for #49, which is why the check names three predicates rather than the one
+    the summary happened to mention.
+
+    What that check establishes is narrower than "Core will start", and
+    :func:`_is_runnable_absolute_path` records the five shapes that pass it and
+    still fail to exec. This step does not close that gap and does not claim to;
+    a Core in any of those states could not have run the ``setup`` command that
+    is asking.
 
     ``is_file`` **and** ``os.access(X_OK)``, because neither alone is enough and
     each admits precisely what the other rejects: ``X_OK`` is true of a
