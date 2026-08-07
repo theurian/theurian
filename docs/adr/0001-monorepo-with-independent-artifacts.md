@@ -81,11 +81,22 @@ the first commit.
 Still owed, with the milestone that will satisfy it:
 
 - **CODEOWNERS requests review; it does not require it.** This section said it
-  "requires distinct reviewer groups per tree". `main`'s branch protection has
+  "requires distinct reviewer groups per tree". `main` has
   `require_code_owner_reviews: false` and `required_approving_review_count: 0`,
   so the file routes review requests and nothing blocks a merge that ignores
-  them. The dual ownership on `/schemas/` exists so the shared contract cannot
-  be changed unilaterally by either side, and that is the claim that does not
-  hold today: [#67](https://github.com/theurian/theurian/issues/67). It belongs
-  with the second maintainer — requiring code-owner review with one maintainer
-  blocks every pull request.
+  them. The dual ownership on `/schemas/` and `/tests/contract/` exists so the
+  shared contract cannot be changed unilaterally by either side, and that is the
+  half that does not hold today.
+
+  **This is a recorded decision, not an unnoticed setting.**
+  `.claude/agents/theurian-ci.md` states it: one maintainer plus `enforce_admins`
+  plus a required review makes merging impossible, so the review count is 0 by
+  design. The item is therefore owed to the second maintainer rather than to a
+  milestone — it is the arrival of a second person, not a change to the code,
+  that makes requiring code-owner review possible.
+
+  Not to be confused with [#67](https://github.com/theurian/theurian/issues/67),
+  which is the neighbouring gap and a genuine one: `main` requires **no status
+  checks at all**, and nothing anywhere records that as intentional. The
+  deadlock argument does not extend to it, because a required status check needs
+  no second human.
