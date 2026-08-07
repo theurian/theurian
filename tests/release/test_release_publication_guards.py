@@ -2,11 +2,19 @@
 
 Why this file exists
 --------------------
-`release-core.yml`'s publication path has no other automated check. Its steps
-execute exactly once per tag push — in production, on a release nobody can
-un-publish — and the `workflow_dispatch` rehearsal skips all three publication
-jobs, so `download-artifact`, the drafting step and the publishing step have
-never run in this repository at all.
+`release-core.yml`'s publication path has no other automated check: no test
+anywhere else reads a workflow file, and the repository runs no actionlint,
+zizmor or yamllint. Its steps execute once per tag push — in production, on a
+release nobody can un-publish — and the `workflow_dispatch` rehearsal skips all
+three publication jobs, so a green rehearsal is evidence about the build and
+nothing downstream of it.
+
+They have now run exactly once, for real. `theurian 0.1.0.dev0` is on PyPI and
+`Theurian Core 0.1.0.dev0` is the GitHub release, so this file is no longer
+written ahead of a path nobody has taken — it is written ahead of the *second*
+time, which is the release where a re-run, a hand-published draft or a hotfix
+can put a second release on one tag. The first release had a clean tag and could
+not have shown the defect these steps guard against.
 
 The defect they were rewritten to fix is not a wrong JSON field. It is that **a
 tag does not name one release**: `gh release create --draft` accepts a tag that
@@ -42,8 +50,8 @@ jq filters, `set -euo pipefail` and the control flow are the shipped text.
 
 They are located **structurally, not by step name**: the drafting job's first
 `run:` step is the guard, and the step carrying `id: draft` is the one the job's
-`outputs` reads. Names are prose and have already been edited once on #59; these
-keys are load-bearing and cannot drift silently. The names are asserted
+`outputs` reads. Names are prose and were edited during #59's review rounds;
+these keys are load-bearing and cannot drift silently. The names are asserted
 separately, so a rename is reported rather than fatal.
 
 Each step's environment is built from **its own `env:` block in the YAML**.
@@ -63,6 +71,14 @@ Not covered
 * `gh`, `curl` and the REST API themselves. The model encodes rules read out of
   `cli/cli` and measurements taken during #59's review; nothing here
   re-establishes them, and a test that leans on one says so.
+* What `releases/latest` ends up pointing at. `make_latest=legacy` is pinned as
+  a *request*, in `test_publication_asks_github_to_choose_latest_by_version`,
+  because the consequence is computed by GitHub from a rule this file does not
+  implement. That test is the one shape assertion here, and it says why.
+* `build`'s own steps. Only the three that publish are extracted; the
+  `sha256sum` glob, the SBOM and the wheel install-back run in a job that a
+  `workflow_dispatch` rehearsal does exercise, so they are not the blind spot
+  this file exists for.
 * Rehearsal run `31113740502` was green and verified none of this: the three
   publication jobs are `if: github.event_name == 'push'`, so a
   `workflow_dispatch` skips every step under test.
@@ -73,6 +89,7 @@ ADR-0001 (the `core-v*` tag namespace). Argued in docs/contributing/release.md �
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -113,6 +130,13 @@ REPOSITORY = "theurian/theurian"
 TAG = "core-v0.1.0.dev0"
 VERSION = "0.1.0.dev0"
 
+#: A `published_at` for releases a *fixture* puts in the repository. A literal,
+#: never the clock: the drafting guard prints this field, so a test that reads
+#: the printout must not depend on the second it ran in. The model has its own
+#: constant for releases it creates; nothing needs the two to be equal, only
+#: that both are fixed and non-null.
+PUBLISHED_AT = "2026-08-06T12:38:09Z"
+
 #: What `build` uploads. `SHA256SUMS` is the one `publish-release` checks for.
 ARTIFACTS = (
     "SHA256SUMS",
@@ -120,6 +144,11 @@ ARTIFACTS = (
     f"theurian-{VERSION}.tar.gz",
     f"theurian-{VERSION}.cdx.json",
 )
+
+#: A PEP 440 local version, which is what makes `+` reach the upload URL. The
+#: workflow percent-encodes the `?name=` value; without that the `+` arrives as
+#: a space and the asset is stored under a different name than it was sent as.
+LOCAL_VERSION_WHEEL = "theurian-0.2.0+local-py3-none-any.whl"
 
 
 # -- locating the steps -----------------------------------------------------
@@ -199,11 +228,20 @@ def _release(
     tag: str = TAG,
     draft: bool = True,
     assets: Sequence[str] = ARTIFACTS,
+    published_at: str | None = None,
 ) -> dict[str, Any]:
+    """One release already in the repository when a step runs.
+
+    ``published_at`` defaults to ``None`` for a draft and to the model's fixed
+    timestamp for a public release, which is what GitHub reports. Passing it
+    explicitly builds the third state: a *draft that used to be public*, reached
+    by deleting and re-pushing the tag.
+    """
     return {
         "id": release_id,
         "tag_name": tag,
         "draft": draft,
+        "published_at": published_at if draft else (published_at or PUBLISHED_AT),
         "assets": [{"name": name} for name in assets],
     }
 
@@ -221,6 +259,7 @@ class Repository:
                 "tags": [TAG],
                 "list_lag": 0,
                 "calls": [],
+                "patches": [],
             }
         )
 
@@ -253,14 +292,32 @@ class Repository:
         return tuple(tuple(call) for call in self.state["calls"])
 
     @property
+    def patches(self) -> tuple[Mapping[str, Any], ...]:
+        """Every `PATCH /releases/{id}` body the API received, allowed or not."""
+        return tuple(self.state.get("patches", []))
+
+    @property
+    def drafts_by_id(self) -> Mapping[int, bool]:
+        """`{id: is_a_draft}`, for asserting that a run moved only its own."""
+        return {int(release["id"]): bool(release["draft"]) for release in self.releases}
+
+    @property
     def writes(self) -> tuple[tuple[str, ...], ...]:
-        """Every call that could change a release. A refusal must issue none."""
+        """Every call that could change a release. A refusal must issue none.
+
+        The ledger records the tool as argv[0] -- `("gh", "release", "edit", …)`,
+        not `("release", "edit", …)`. An earlier version of this predicate
+        compared `call[:2]` against `("release", "edit")`, which no recorded call
+        can equal, so the two subcommands that mutate without an explicit `-X`
+        were invisible to it and `assert repository.writes == ()` could not fail
+        for them. That is the shape of defect this whole file exists to catch,
+        arriving in the harness rather than in the workflow.
+        """
         mutating = ("-X", "--method")
         return tuple(
             call
             for call in self.calls
-            if call[:2] == ("release", "create")
-            or call[:2] == ("release", "edit")
+            if call[1:3] in {("release", "create"), ("release", "edit"), ("release", "delete")}
             or any(
                 flag in mutating and call[index + 1] != "GET"
                 for index, flag in enumerate(call[:-1])
@@ -269,6 +326,15 @@ class Repository:
 
     def by_id(self, release_id: str) -> dict[str, Any] | None:
         return next((r for r in self.releases if str(r["id"]) == release_id), None)
+
+    def record(self, *argv: str) -> None:
+        """Append to the ledger as the model would, without running anything.
+
+        Only :func:`test_the_write_ledger_counts_the_command_the_refusals_forbid`
+        uses this. It exists because `writes` is the assertion that separates
+        "refused" from "did it, then complained", and it was blind once.
+        """
+        self._write({**self.state, "calls": [*self.state["calls"], list(argv)]})
 
     def lag_the_list(self, calls: int) -> None:
         """Hide the newest release from that many `GET /releases` calls."""
@@ -399,16 +465,22 @@ class JobRun:
         return self.guard.log + ("" if self.create is None else self.create.log)
 
 
-@pytest.fixture
-def workdir() -> Iterator[pathlib.Path]:
-    """`draft-release` runs with the downloaded artifacts in the working copy."""
+@contextlib.contextmanager
+def _artifacts(names: Sequence[str]) -> Iterator[pathlib.Path]:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         dist = root / "artifacts" / "dist"
         dist.mkdir(parents=True)
         (root / "artifacts" / "release-notes.md").write_text("### Added\n\n- A thing.\n")
-        for name in ARTIFACTS:
+        for name in names:
             (dist / name).write_text(f"contents of {name}\n", encoding="utf-8")
+        yield root
+
+
+@pytest.fixture
+def workdir() -> Iterator[pathlib.Path]:
+    """`draft-release` runs with the downloaded artifacts in the working copy."""
+    with _artifacts(ARTIFACTS) as root:
         yield root
 
 
@@ -456,19 +528,39 @@ def test_a_run_that_succeeds_publishes_its_own_release_however_the_tag_race_land
 
     The rival is given a lower id than this run's release, because the race was
     measured resolving to the *oldest* draft.
+
+    Restoring `gh release edit "$GITHUB_REF_NAME" --draft=false` turns three of
+    these four cases RED. `[published-graphql]` stays green, and that is a
+    property of the case rather than a hole: the lookup lands on this run's
+    draft, the tag already carries a published release, and the REST API answers
+    422 to *either* spelling. Both the shipped command and the mutation fail
+    there, identically, so nothing separates them — which is why the fixture
+    varies the rival and the race instead of picking one.
+
+    The sentence has two halves and both are asserted, because either alone is
+    weak. "Publishes its own" is vacuous on a run that failed — a workflow that
+    always exited 1 would satisfy it in all four cases. "Never another" is
+    vacuous on a run that published nothing. Together they say: whatever the
+    step's exit code, the only release whose visibility changed is this run's,
+    and it changed only if the step claimed success.
     """
     repository = _repository(workdir)
     drafted = _draft_release(repository)
     assert drafted.succeeded, drafted.log
-
     repository.add(_release(990, draft=rival_is_a_draft, assets=["SHA256SUMS"]))
+    before = repository.drafts_by_id
+
     published = _publish_release(repository, drafted.release_id, tag_race=tag_race)
 
-    mine = repository.by_id(drafted.release_id)
-    assert mine is not None
-    assert not published.succeeded or mine["draft"] is False, (
-        f"the run reported success but release {drafted.release_id} is still a "
-        f"draft; public on this tag: {[r['id'] for r in repository.published]}"
+    mine = int(drafted.release_id)
+    after = repository.drafts_by_id
+    assert not published.succeeded or after[mine] is False, (
+        f"the run reported success but release {mine} is still a draft; "
+        f"public on this tag: {[r['id'] for r in repository.published]}"
+    )
+    moved = {rid for rid, draft in after.items() if before[rid] != draft}
+    assert moved <= {mine}, (
+        f"the run changed the visibility of {sorted(moved - {mine})}, which it did not create"
     )
 
 
@@ -503,6 +595,37 @@ def test_the_release_this_run_creates_carries_every_artifact(workdir: pathlib.Pa
     mine = repository.by_id(drafted.release_id)
     assert mine is not None
     assert sorted(asset["name"] for asset in mine["assets"]) == sorted(ARTIFACTS)
+
+
+def test_an_artifact_whose_name_contains_a_plus_is_attached_under_that_name() -> None:
+    """A PEP 440 local version puts `+` in a filename, and `+` is a space in a
+    query string.
+
+    The upload is a raw `curl` to `${upload_url}?name=${...}`; `gh release
+    upload`, which used to do this, percent-encoded the value and the raw URL
+    does not. Unencoded, `theurian-0.2.0+local-...whl` is received as
+    `theurian-0.2.0 local-...whl`, so the asset is attached under a name nobody
+    asked for and the read-back against `ls artifacts/dist` disagrees.
+
+    That is worse than a plain failure. The step's own remedy is "delete this
+    draft by id and re-run ALL jobs", and a re-run renames it again — the
+    documented recovery never terminates. So this asserts the attached name, not
+    merely that the job succeeded.
+
+    `release.md` §7's hotfix procedure and any local build are how a `+` gets
+    here; `0.1.0.dev0` has none, which is why the shipped release could not have
+    shown this.
+    """
+    artifacts = ("SHA256SUMS", LOCAL_VERSION_WHEEL)
+    with _artifacts(artifacts) as root:
+        repository = _repository(root)
+
+        drafted = _draft_release(repository)
+
+        assert drafted.succeeded, drafted.log
+        mine = repository.by_id(drafted.release_id)
+        assert mine is not None
+        assert sorted(asset["name"] for asset in mine["assets"]) == sorted(artifacts)
 
 
 def test_the_emitted_id_survives_a_releases_list_that_never_catches_up(
@@ -597,6 +720,37 @@ def test_the_refusal_says_which_releases_are_drafts_and_to_re_run_all_jobs(
     assert "ALL jobs" in guard.log
 
 
+def test_the_refusal_separates_a_draft_that_was_once_public_from_one_that_never_was(
+    workdir: pathlib.Path,
+) -> None:
+    """`draft=true` is the same for both, and they want opposite handling.
+
+    Deleting and re-pushing a tag silently reverts its published release to a
+    draft — measured during #59's review. That draft's version is already on
+    PyPI, so deleting it is exactly how a run ends with an installable wheel and
+    no release; a draft that was never public can be deleted freely. Nothing
+    else in the refusal separates them, so `published_at` has to be printed,
+    and a maintainer reading only `draft=true` would take the destructive branch.
+
+    Both states are listed in one run, so the assertion is that the *printout*
+    tells them apart rather than that some timestamp appears somewhere.
+    """
+    repository = _repository(
+        workdir,
+        _release(4321, draft=True),
+        _release(4322, draft=True, published_at=PUBLISHED_AT),
+    )
+
+    guard = _run_step(GUARD, repository)
+
+    reported = {
+        int(line.split("id=")[1].split()[0]): line.split("published_at=")[1].split()[0]
+        for line in guard.log.splitlines()
+        if "id=" in line and "published_at=" in line
+    }
+    assert reported == {4321: "null", 4322: PUBLISHED_AT}
+
+
 def test_a_draft_on_another_tag_does_not_block_this_one(workdir: pathlib.Path) -> None:
     """An unrelated draft — a release being prepared by hand — must not block
     this tag."""
@@ -650,6 +804,69 @@ def test_a_concurrent_draft_never_becomes_this_runs_release_id(
 
     emitted = create.outputs.get("release_id", "")
     assert emitted != "990", "the step bound this run to a release it did not create"
+
+
+# -- what the drafting job may claim about a place it cannot see ------------
+
+
+def _refused_by_a_pre_existing_release(workdir: pathlib.Path) -> str:
+    repository = _repository(workdir, _release(4321, draft=True))
+    return _draft_release(repository).log
+
+
+def _refused_by_an_incomplete_draft(workdir: pathlib.Path) -> str:
+    repository = _repository(workdir)
+    return _draft_release(repository, uploads={"UPLOAD_SILENTLY_DROPS": "SHA256SUMS"}).log
+
+
+@pytest.mark.parametrize(
+    "refuse",
+    [_refused_by_a_pre_existing_release, _refused_by_an_incomplete_draft],
+    ids=["the tag already has a release", "the draft is missing an artifact"],
+)
+def test_a_refusal_that_advises_deleting_a_release_says_where_to_check_pypi(
+    workdir: pathlib.Path, refuse: Any
+) -> None:
+    """`draft-release` cannot see PyPI, and both of its refusals tell a
+    maintainer to delete a release.
+
+    The two facts together are the hazard. "This run uploaded nothing" is true
+    and useless: the draft on the tag may be the record for a version a
+    *previous* run already put on PyPI, and deleting it is precisely how a
+    release ends as an installable wheel whose checksums exist nowhere — the one
+    state T-16's ordering exists to prevent. Six messages that asserted
+    publication state this job cannot observe were rewritten during #59's third
+    round for exactly this reason.
+
+    So a refusal that names a destructive command must also name the one place
+    that settles whether it is safe. Asserting the URL rather than the prose is
+    deliberate: the URL is the executable half, and wording is not.
+    """
+    log = refuse(workdir)
+
+    assert "DELETE" in log or "delete" in log, "this path was expected to advise a deletion"
+    assert f"https://pypi.org/project/theurian/{VERSION}/" in log
+
+
+def test_no_step_in_the_drafting_job_states_flatly_that_nothing_was_published() -> None:
+    """A tripwire for one retired sentence, and emphatically not a check that the
+    surviving messages are correctly scoped.
+
+    Two messages read "Nothing was published" before #59's third round. Neither
+    step can know that: `publish-pypi` runs between this job's two invocations
+    across a re-run, and nothing in `draft-release` queries PyPI. Both now scope
+    the claim to *this run* and hand the rest to a human.
+
+    The rule is a substring over English, so it decides nothing about a
+    replacement wording — "the upload never happened" would pass it. What it
+    buys is that the exact phrasing that was wrong cannot come back unnoticed,
+    which is worth having and is all it is.
+    """
+    offenders = [
+        step.name for step in (GUARD, CREATE) if "nothing was published" in step.script.lower()
+    ]
+
+    assert offenders == []
 
 
 # -- what a partly-failed drafting job leaves behind ------------------------
@@ -729,6 +946,34 @@ def test_publication_makes_public_the_release_whose_id_it_was_given(
 
     assert published.succeeded, published.log
     assert [r["id"] for r in repository.published] == [int(drafted.release_id)]
+
+
+def test_publication_asks_github_to_choose_latest_by_version(workdir: pathlib.Path) -> None:
+    """The one request-shape assertion in this file, and it says why it is one.
+
+    `make_latest` defaults to `true` on this endpoint, which points the
+    repository's "Latest" badge at whatever published most recently. Publishing a
+    0.2.1 hotfix after 0.3.0 was measured moving `releases/latest` *backwards*,
+    and release.md's Hotfixes procedure is exactly that path — a user following
+    the Latest link would be handed the older release as the current one.
+    `legacy` hands the choice to GitHub, which decides by version.
+
+    There is no outcome here to assert. What `releases/latest` resolves to is
+    computed by GitHub from a rule this model does not implement and could not
+    establish from the repository, so the parameter is observable only in what
+    the API was asked for. Reading it from the PATCH body the model parsed —
+    rather than from argv — is what keeps this from also pinning the spelling:
+    `-f`, `-F`, `--raw-field` and `--input` all arrive here the same way.
+    """
+    repository = _repository(workdir)
+    drafted = _draft_release(repository)
+
+    published = _publish_release(repository, drafted.release_id)
+
+    assert published.succeeded, published.log
+    assert [dict(patch) for patch in repository.patches] == [
+        {"id": int(drafted.release_id), "draft": "false", "make_latest": "legacy"}
+    ]
 
 
 def test_nothing_is_published_when_no_id_arrived_from_the_drafting_job(
@@ -820,13 +1065,44 @@ def test_nothing_is_published_when_the_draft_has_been_deleted(
     assert repository.releases == ()
 
 
+# -- keeping this file's own assertions able to fail ------------------------
+
+
+def test_the_write_ledger_counts_the_command_the_refusals_forbid(
+    workdir: pathlib.Path,
+) -> None:
+    """`repository.writes == ()` is what separates "refused" from "did it, then
+    complained", and an exit code cannot tell those apart.
+
+    It was blind. The ledger records the tool as argv[0] — `("gh", "release",
+    "edit", …)` — and the predicate compared `call[:2]` against `("release",
+    "edit")`, which no recorded call can equal. Every `gh release` subcommand
+    was therefore invisible to it, including `release edit <tag> --draft=false`:
+    the exact command the workflow was rewritten to stop using, and the one a
+    refusal must be shown not to have issued. Only calls carrying an explicit
+    `-X` were counted, so the assertion passed for the case it was written for.
+
+    A GET must stay uncounted, or the predicate is trivially true instead of
+    trivially false and nothing improves.
+    """
+    repository = _repository(workdir)
+    repository.record("gh", "api", "repos/o/r/releases", "--paginate", "--jq", ".")
+    repository.record("gh", "release", "edit", TAG, "--draft=false")
+    repository.record("gh", "api", "-X", "PATCH", "repos/o/r/releases/1", "-F", "draft=false")
+
+    assert repository.writes == (
+        ("gh", "release", "edit", TAG, "--draft=false"),
+        ("gh", "api", "-X", "PATCH", "repos/o/r/releases/1", "-F", "draft=false"),
+    )
+
+
 # -- the wiring between the jobs, which no step body can see ----------------
 
 
 def test_the_steps_this_file_extracts_are_the_ones_it_names(workdir: pathlib.Path) -> None:
     """The steps are located structurally, so a rename cannot silently point
-    these tests at different text. It also must not go unnoticed: this is the
-    line to update, deliberately, when #59 renames one.
+    these tests at different text. It also must not go unnoticed: these are the
+    lines to update, deliberately, when a step is renamed.
     """
     assert workdir.exists()
 

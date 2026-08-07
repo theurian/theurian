@@ -36,6 +36,20 @@ What is modelled, and where each rule comes from
     the guard now matches every release is that this one fires only after the
     PyPI upload.
 
+    Every PATCH body is also appended to ``patches``, allowed or refused. That
+    is where ``make_latest`` is readable, and it is the *only* place: what
+    ``releases/latest`` points at is GitHub's decision, computed from a rule
+    this model does not implement and could not establish. A test that reads
+    ``patches`` is asserting what the API was asked for, not what it did, and
+    says so.
+
+``published_at``
+    ``null`` until a release goes public, then :data:`PUBLISHED_AT`. The
+    drafting guard prints it, because ``.draft`` alone cannot separate a draft
+    that was never public from a published release *reverted* to a draft by
+    deleting and re-pushing the tag -- and the second one's version is already
+    on PyPI, so the two want opposite handling.
+
 ``gh release edit <tag>``
     Not used by the workflow any more, and kept because restoring it is the
     mutation that proves these tests can fail. ``FetchRelease``
@@ -167,19 +181,42 @@ def _git_ref(state: dict[str, Any], parts: list[str], jq_filter: str | None) -> 
     return _emit({"ref": f"refs/tags/{tag}"}, jq_filter)
 
 
+#: What `published_at` becomes when a release goes public. A fixed string, not
+#: the clock: the guard prints this field, so a test that reads the printout
+#: would otherwise depend on the second it ran in.
+PUBLISHED_AT = "2026-08-06T12:38:09Z"
+
+
 def _create(state: dict[str, Any], body: dict[str, Any], jq_filter: str | None) -> int:
     release_id = state["next_id"]
+    draft = bool(body.get("draft", False))
     created = {
         "id": release_id,
         "tag_name": body.get("tag_name", ""),
         "name": body.get("name", ""),
         "body": body.get("body", ""),
-        "draft": bool(body.get("draft", False)),
+        "draft": draft,
+        # `null` on a draft that has never been public, a timestamp once it has.
+        # The guard prints this because `.draft` alone cannot separate a draft
+        # that was never published from a published release reverted to a draft
+        # by deleting and re-pushing the tag -- and those two want opposite
+        # handling, because the second one's version is already on PyPI.
+        "published_at": None if draft else PUBLISHED_AT,
         "assets": [],
         "upload_url": f"https://uploads.invalid/releases/{release_id}/assets{{?name,label}}",
     }
     _save({**state, "next_id": release_id + 1, "releases": [*state["releases"], created]})
     return _emit(created, jq_filter)
+
+
+def _tag_already_has_another_published_release(
+    state: dict[str, Any], release: dict[str, Any]
+) -> bool:
+    """The condition behind the 422, wherever the PATCH is spelled from."""
+    return any(
+        r["id"] != release["id"] and r["tag_name"] == release["tag_name"] and not r["draft"]
+        for r in state["releases"]
+    )
 
 
 def _one_release(
@@ -200,13 +237,24 @@ def _one_release(
 
     draft = body.get("draft")
     going_public = draft in {False, "false"} and found["draft"]
-    rival = any(
-        r["id"] != release_id and r["tag_name"] == found["tag_name"] and not r["draft"]
-        for r in state["releases"]
-    )
+    rival = _tag_already_has_another_published_release(state, found)
+    # Recorded whether or not the call is allowed to proceed, and keyed by the
+    # release it named. `make_latest` has no consequence this model can compute
+    # -- GitHub decides what `releases/latest` points at -- so the only place it
+    # is observable is in what the API was asked for.
+    state = {**state, "patches": [*state.get("patches", []), {"id": release_id, **body}]}
     if going_public and rival:
+        _save(state)
         return _fail("Validation Failed (HTTP 422): a release for this tag already exists")
-    updated = found if draft is None else {**found, "draft": draft in {True, "true"}}
+    updated = (
+        found
+        if draft is None
+        else {
+            **found,
+            "draft": draft in {True, "true"},
+            "published_at": PUBLISHED_AT if going_public else found.get("published_at"),
+        }
+    )
     _save(_replace(state, updated))
     return _emit(updated, jq_filter)
 
@@ -237,7 +285,13 @@ def _api(argv: list[str]) -> int:
 
 
 def _release_edit(argv: list[str]) -> int:
-    """FetchRelease resolves a *tag*, and a tag does not name one release."""
+    """FetchRelease resolves a *tag*, and a tag does not name one release.
+
+    The write is the same ``PATCH /releases/{id}`` the workflow issues directly
+    -- ``pkg/cmd/release/edit`` resolves the tag and then patches by id -- so it
+    meets the same 422. Only the lookup differs, which is the whole point: this
+    command chooses the object, and the workflow is given it.
+    """
     tag = argv[0]
     publishing = "--draft=false" in argv
     state = _load()
@@ -252,8 +306,10 @@ def _release_edit(argv: list[str]) -> int:
         target = drafts[0] if drafts else (published[0] if published else None)
     if target is None:
         return _fail("release not found")
-    if publishing:
-        _save(_replace(state, {**target, "draft": False}))
+    if publishing and target["draft"]:
+        if _tag_already_has_another_published_release(state, target):
+            return _fail("Validation Failed (HTTP 422): a release for this tag already exists")
+        _save(_replace(state, {**target, "draft": False, "published_at": PUBLISHED_AT}))
     sys.stdout.write(f"https://github.invalid/releases/tag/{tag}\n")
     return 0
 
