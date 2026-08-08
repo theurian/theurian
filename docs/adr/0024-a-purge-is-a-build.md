@@ -308,29 +308,39 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
   reclaiming necessary, and point 7 is what makes reclaiming safe for a request
   already in flight.
 
-  Measured on a 400-document index, searches during a publish that reaps:
+  Measured on a 400-document index, searches during a publish that reaps. The
+  procedure columns are part of the result, not bookkeeping — every disagreement
+  between two runs of this experiment has come from one of them:
 
-  | Configuration | ok | errors |
-  | :-- | --: | --: |
-  | neither — a connection per call, no retention (ships today) | 40 | 2,627 |
-  | point 7 only — handle scoped to the **request** | 331 | 86,496 |
-  | point 7 only — handle scoped to the **process** | 3,420 | 0 |
-  | point 6 only — a connection per call, retention | 180 | 0 |
-  | both | 1,163 | 0 |
+  | Configuration | Handle scope | Calls / request | Loop | ok | errors |
+  | :-- | :-- | --: | --: | --: | --: |
+  | neither — no retention (ships today) | per call | 3 | 1.5 s | 40 | 2,627 |
+  | point 7 only | **request** | 3 | 1.5 s | 331 | 86,496 |
+  | point 7 only, independently | **request** | not recorded | not recorded | 244 | 3,400 |
+  | point 7 only | **process** | 3 | 1.5 s | 3,420 | 0 |
+  | point 6 only | per call | 3 | 1.5 s | 180 | 0 |
+  | both | request | 3 | 1.5 s | 1,163 | 0 |
+
+  Rows two and three are the same configuration measured twice by different
+  people, and they disagree by more than an order of magnitude in the error
+  column. **The sign is what this decision relies on, and it is the same in both;
+  the magnitudes are properties of the harnesses.** Both are recorded so that
+  neither gets re-derived later and read as a refutation of the other — which is
+  the whole hazard, since a reader who reproduces one number and finds the other
+  in the history has no way to tell a disagreement from a defect.
 
   The first row and point 6's "1,889 errors against 163 successful searches" are
-  the same failure counted under different request shapes — one index call per
-  iteration there, three per request here — so the absolute numbers differ and
-  the ratio does not. Neither is a throughput measurement; what each row asserts
-  is whether the error column is zero.
+  the same failure under the same treatment: one index call per iteration there,
+  three per request here. What each row asserts is whether the error column is
+  zero, never throughput.
 
-  and the window point 7 is actually for, one request of four index calls with
-  the reap landing after the first: **1 of 4 answered** with a connection per
-  call, leaving an empty database recreated at the reaped path, against **4 of 4**
-  with one held connection and no file recreated.
+  **The window point 7 is actually for** is a narrower experiment: one request of
+  four index calls with the reap landing after the first. **1 of 4 answered**
+  with a connection per call, leaving an empty database recreated at the reaped
+  path, against **4 of 4** with one held connection and no file recreated.
 
-  **The two "point 7 only" rows are the same design measured two ways, and only
-  the first is point 7.** This decision says a search holds one connection *for
+  **The request-scoped and process-scoped rows are the same design measured two
+  ways, and only the request-scoped one is point 7.** This decision says a search holds one connection *for
   the duration of a request*, so every request beginning after the reap must open
   the file again and every one of them fails — 86,496 times above. A handle
   scoped to the **process** never reopens anything, so no iteration after the
