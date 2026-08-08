@@ -68,10 +68,11 @@ stopped by different code:
 
 The first version of this file built only the second, and it looked identical
 from the outside. It is not: deleting the canonical gate outright
-(``cleared = tuple(ranked)``) left all ten tests here green while turning 38
-parametrisations of ``test_a_withheld_document_changes_nothing_a_caller_can_see``
-red. :func:`_assert_the_pair_bites` now reads the index file directly and asserts
-which of the two is doing the work, per example.
+(``cleared = tuple(ranked)``) left all ten tests here green while turning **all
+twenty** parametrisations of
+``test_a_withheld_document_changes_nothing_a_caller_can_see`` red.
+:func:`_assert_the_pair_bites` now reads the index file directly and asserts
+which of the two mechanisms is doing the work, per example.
 
 Across that, three ways for the two corpora to differ:
 
@@ -860,8 +861,10 @@ def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
     not hypothetical: this file's first version made every withheld document a
     ``draft``, whose chunks the retrievers' own ``WHERE`` refuses, so the
     canonical gate was never asked about them -- and deleting that gate outright
-    (``cleared = tuple(ranked)``) left all ten tests here green while turning 38
-    parametrisations of ``test_mcp_tools.py`` red.
+    (``cleared = tuple(ranked)``) left all ten tests here green while turning all
+    twenty parametrisations of
+    ``test_mcp_tools.py::test_a_withheld_document_changes_nothing_a_caller_can_see``
+    red.
 
     - the answer is empty, so two empty answers are being compared;
     - the payloads are equal, so the two projects are the same project;
