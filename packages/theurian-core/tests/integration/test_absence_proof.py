@@ -15,11 +15,16 @@ covers the shapes someone thought to write -- and three of Milestone 5's
 residuals were found only because a reviewer happened to pick a corpus that
 exhibited them.
 
-This module generates the pair instead. The corpus, the withheld set, the query
-and the caller's parameters are all drawn by ``hypothesis``, the two projects are
-built through the real application layer, and the **whole response dict** is
+This module generates the pair instead. The corpus, the withheld set, the way
+each is withheld and the query are drawn by ``hypothesis``; the two projects are
+built through the real application layer; and the **whole response dict** is
 compared. It replaces "did a reviewer think of this field" with "did N generated
 pairs separate the responses".
+
+Two inputs are deliberately **not** generated, because both are exact boundaries
+that sampling buries: the corpus size (:func:`_visible_documents`) and the
+caller's own parameters (:data:`ARGUMENT_SETS`). Both are measured decisions,
+recorded where they are made.
 
 What is compared, and what is held equal
 ----------------------------------------
@@ -40,23 +45,45 @@ withheld content; what makes that acceptable is that it cannot move with the
 and not this file's. Stated here because a value held constant looks exactly like
 a value that was checked.
 
-The three shapes generated, and why each exists
-------------------------------------------------
+Two ways of being withheld, and which code each one exercises
+-------------------------------------------------------------
 Every generated pair differs **only** in content the caller may not read: one to
-three ``draft`` items, indexed (the index is built with ``include_unapproved``)
-and withheld at query time (the search is not). The visible halves are byte
+three documents the search does not return. The visible halves are byte
 identical, which :func:`test_the_two_projects_differ_only_in_the_withheld_bodies`
 asserts rather than assumes.
 
+*How* they are withheld is generated, and it is not a detail. The two states are
+stopped by different code:
+
+:data:`RETIRED_AFTER_BUILD`
+    approved when the index was written, ``deprecated`` afterwards. Its chunks
+    carry ``status = 'approved'``, every retriever's ``WHERE`` returns them, and
+    :class:`~theurian.application.visibility.CanonicalVisibility` is the only
+    thing between the row and the caller. **This is the shape Milestone 5's five
+    faces lived in.**
+:data:`DRAFT_IN_AN_UNAPPROVED_INDEX`
+    a ``draft`` in an index built with ``--include-unapproved``, searched without
+    it. Its chunks carry ``status = 'draft'``, so the retrievers' own ``WHERE``
+    refuses them and the canonical gate is never asked about them.
+
+The first version of this file built only the second, and it looked identical
+from the outside. It is not: deleting the canonical gate outright
+(``cleared = tuple(ranked)``) left all ten tests here green while turning 38
+parametrisations of ``test_a_withheld_document_changes_nothing_a_caller_can_see``
+red. :func:`_assert_the_pair_bites` now reads the index file directly and asserts
+which of the two is doing the work, per example.
+
+Across that, three ways for the two corpora to differ:
+
 ``shared filler``
-    the withheld draft matches the query in *both* projects and differs only in
-    its payload. A gate that publishes a withheld row is caught here, because the
-    payload differs.
+    the withheld document matches the query in *both* projects and differs only
+    in its payload. A gate that publishes a withheld row is caught here, because
+    the payload differs.
 ``shared filler, and the query names the secret``
     as above, plus the query carries the probe's payload -- the extraction shape
     Milestone 5 measured at 257, then 203, then 442 calls per credential.
 ``payload-only filler``
-    the withheld draft matches the query in the probe **only**, so the probe's
+    the withheld document matches the query in the probe **only**, so the probe's
     retrievers see one more withheld row than the control's. This is the shape
     that catches a candidate slot, a count or a token total spent on a row that
     never becomes a result -- four of the five faces in the table in
@@ -76,19 +103,37 @@ pins the breakage, with a corpus this module's own generator found. Read
 :mod:`theurian.application.retrieval_service` for the mechanism, T-17a in the
 threat model for the acceptance, and issue #15 for the fix.
 
-Two further things this file does not reach, so nobody has to rediscover them:
+Three further things this file does not reach, so nobody has to rediscover them:
 
-- **Durations.** Every published *value* is compared; how long the call took is
-  not. See ``FIRST_PASS_DEPTH`` in
-  :mod:`theurian.application.retrieval_service`, which records that residual and
-  why it follows from the loop's definition. The falsifiable part of it is a pass
-  count, and ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``
-  (``tests/unit/test_retrieval_depth.py``) already holds it deterministically.
+- **Durations, and this is a decision rather than an omission.** Issue #29 asks
+  for a statistical latency test -- ``dudect``-style, or a Welch t-test over
+  samples classed by withheld count -- so that a regression in the timing family
+  fails a run instead of sitting in prose. It is not built here, and the reason
+  is that the quantity underneath it is already pinned *exactly*. What varies
+  with the withheld count is the number of SQL round-trips, and that is asserted
+  from both sides of its threshold by
+  ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``, its
+  geometric step by ``test_each_pass_reaches_twice_as_far_as_the_one_before``
+  (both ``tests/unit/test_retrieval_depth.py``), and the corpus scan count by
+  ``test_one_search_scans_the_corpus_once_however_many_rows_were_withheld``
+  (``tests/integration/test_scan_cache.py``). A t-test over wall clock would be a
+  noisier measurement of the same variable, on a machine that also runs the rest
+  of the suite -- and it would fail intermittently, which is the failure mode
+  this repository can least afford in a security assertion. If the pass count is
+  right, the latency follows; if it is wrong, a deterministic test says so and
+  names the constant. What no test here covers is the *constant factor* -- what
+  one pass costs on a large corpus -- and those numbers live in
+  ``FIRST_PASS_DEPTH``'s docstring, measured by hand and not re-measured.
 - **``rejected`` items.** :func:`~theurian.domain.enums.may_surface` refuses them
   under every flag, so :class:`~theurian.application.index_builder.IndexBuilder`
   never writes one and there is no withheld row for a pair to differ by.
   :func:`test_a_rejected_item_is_never_written_into_the_index` asserts that
   premise, because the whole argument rests on it.
+- **Japanese, and every script without word boundaries.** The alphabet split this
+  file's disjointness rests on is Latin, and ``unicode61`` cannot segment CJK --
+  which makes the trigram retriever's fifty slots the entire candidate list and a
+  materially different machine. ``test_mcp_tools.py``'s ``three_indexes``
+  parametrises over both writing systems and is where that case lives.
 
 Why the corpora are built without the CLI
 -----------------------------------------
@@ -1171,6 +1216,42 @@ _T17A_WITHHELD: Final = (
 )
 
 
+def _t17a_projects(tmp_path: Path) -> tuple[ProjectRegistry, ProjectRegistry]:
+    """The recorded corpus, built twice: with the withheld draft and without it.
+
+    One builder for the pin and its guard, so the guard cannot end up describing a
+    corpus the pin no longer uses.
+    """
+    created_at = datetime.now(UTC) - AGE_OFFSET
+    visible = (
+        _Document(
+            "architecture.visible-00",
+            _ulid("VS", 0),
+            "beacon ledger",
+            _T17A_LONG_VISIBLE,
+            KnowledgeStatus.APPROVED,
+        ),
+        _Document(
+            "architecture.visible-01",
+            _ulid("VS", 1),
+            "handle",
+            _T17A_SHORT_VISIBLE,
+            KnowledgeStatus.APPROVED,
+        ),
+    )
+    withheld = _Document(
+        "architecture.withheld-00",
+        _ulid("WH", 0),
+        "domain domain",
+        _T17A_WITHHELD,
+        KnowledgeStatus.DRAFT,
+    )
+    return (
+        _build_project(tmp_path / "holds-it", (*visible, withheld), created_at),
+        _build_project(tmp_path / "never-did", visible, created_at),
+    )
+
+
 def test_a_withheld_draft_still_changes_which_document_a_caller_is_handed(
     tmp_path: Path,
 ) -> None:
@@ -1182,12 +1263,22 @@ def test_a_withheld_draft_still_changes_which_document_a_caller_is_handed(
     each -- different id, different title, different excerpt, different
     provenance -- and reports a different ``usedTokens``.
 
-    The gate is not at fault and nothing withheld is published: both answers hold
-    one approved document and no draft. What moved is BM25's length
-    normalisation, ``k1 * (1 - b + b * D / avgdl)``, whose ``avgdl`` is taken over
-    every row in the index including the ones the query never returns. There is
-    nothing for a :class:`~theurian.application.visibility.Visibility` to
-    intercept, because the arithmetic happens inside SQLite.
+    Nothing withheld is published and no gate is at fault: both answers hold one
+    approved document and no draft. What moved is BM25's length normalisation,
+    ``k1 * (1 - b + b * D / avgdl)``, whose ``avgdl`` is taken over every row in
+    the ``chunks_fts`` table. There is nothing for a
+    :class:`~theurian.application.visibility.Visibility` to intercept, because the
+    arithmetic happens inside SQLite.
+
+    **A draft, which makes the statement stronger than a retired document would.**
+    A draft's chunks carry ``status = 'draft'``, so the retrievers' own ``WHERE``
+    refuses them and this query's result set never contains that row at all -- yet
+    the ranking of the rows it *does* contain still moves. FTS5's collection
+    statistics are a property of the virtual table, not of the rows a statement
+    selects, so filtering in the outer query does not exclude a row from them.
+    :func:`test_the_t17a_corpus_still_has_something_to_withhold` asserts that the
+    retriever really does refuse it, because that is the whole of what makes this
+    the sharper form.
 
     **What this adds to the two tests that already pin T-17a.**
     ``test_a_withheld_document_can_still_reorder_the_visible_ones`` and
@@ -1196,123 +1287,85 @@ def test_a_withheld_draft_still_changes_which_document_a_caller_is_handed(
     through ``ResultGate`` directly. The first of them says in prose that the
     difference is "reachable through `knowledge.search` with no parameters" and
     nothing measured it. This does: the whole published response, through
-    ``server.call_tool``, on a query of one ordinary word. It also shows the
-    reach is not confined to *order* -- with ``limit=1`` there is no order to
-    permute, and the caller is simply handed a different document.
+    ``server.call_tool``, on a query of one ordinary word. It also shows the reach
+    is not confined to *order* -- at ``limit=1`` there is no order to permute, and
+    the caller is simply handed a different document, with a different excerpt and
+    different provenance.
 
     Like its two siblings, this goes red when Milestone 6 closes the stale window
     (ADR-0022, issue #15), and it is meant to: whoever makes it stop reproducing
     is the person who should be rewriting the T-17a acceptance in the threat
     model in the same change.
     """
-    created_at = datetime.now(UTC) - AGE_OFFSET
-    visible = (
-        _Document(
-            "architecture.visible-00",
-            _ulid("VS", 0),
-            "beacon ledger",
-            _T17A_LONG_VISIBLE,
-            KnowledgeStatus.APPROVED,
-        ),
-        _Document(
-            "architecture.visible-01",
-            _ulid("VS", 1),
-            "handle",
-            _T17A_SHORT_VISIBLE,
-            KnowledgeStatus.APPROVED,
-        ),
-    )
-    withheld = _Document(
-        "architecture.withheld-00",
-        _ulid("WH", 0),
-        "domain domain",
-        _T17A_WITHHELD,
-        KnowledgeStatus.DRAFT,
-    )
-    holds_it = _build_project(tmp_path / "holds-it", (*visible, withheld), created_at)
-    never_did = _build_project(tmp_path / "never-did", visible, created_at)
+    holds_it, never_did = _t17a_projects(tmp_path)
 
-    from_probe = _call(
-        never_did, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=1
-    )
-    from_control = _call(
+    from_the_one_that_holds_it = _call(
         holds_it, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=1
     )
-
-    assert from_probe["count"] == from_control["count"] == 1, "one result each, or this is not it"
-    assert {result["status"] for result in from_probe["results"]} == {"approved"}, (
-        "the gate must still be withholding the draft from both"
+    from_the_one_that_never_did = _call(
+        never_did, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=1
     )
-    assert {result["status"] for result in from_control["results"]} == {"approved"}
-    assert from_probe["results"][0]["itemId"] != from_control["results"][0]["itemId"], (
+
+    assert from_the_one_that_holds_it["count"] == 1, "one result each, or this is not it"
+    assert from_the_one_that_never_did["count"] == 1
+    assert {r["status"] for r in from_the_one_that_holds_it["results"]} == {"approved"}, (
+        "nothing withheld may be published, or this is a gate defect and not T-17a"
+    )
+    assert {r["status"] for r in from_the_one_that_never_did["results"]} == {"approved"}
+    assert (
+        from_the_one_that_holds_it["results"][0]["itemId"]
+        != from_the_one_that_never_did["results"][0]["itemId"]
+    ), (
         "a withheld draft the caller cannot read decides which approved document "
         "they are handed; if this no longer reproduces, T-17a's acceptance in the "
         "threat model is out of date and should be deleted rather than this test"
     )
-    assert from_probe["retrieval"]["usedTokens"] != from_control["retrieval"]["usedTokens"], (
-        "and the published cost moves with it"
-    )
+    assert (
+        from_the_one_that_holds_it["retrieval"]["usedTokens"]
+        != from_the_one_that_never_did["retrieval"]["usedTokens"]
+    ), "and the published cost moves with it"
 
 
 def test_the_t17a_corpus_still_has_something_to_withhold(tmp_path: Path) -> None:
     """Guards the test above, whose whole meaning is in its corpus.
 
-    "The two answers name different documents" is satisfiable by a corpus that
-    has stopped withholding anything at all -- a builder that indexed the draft
-    and a gate that published it would produce two different answers too, and
-    that is a defect rather than this channel. So the preconditions are asserted:
-    the draft is in the probe's index, is reachable by the query, and is in
-    neither answer.
+    "The two answers name different documents" is satisfiable by a corpus that has
+    stopped withholding anything at all -- a builder that indexed the draft and a
+    gate that published it would produce two different answers too, and that is a
+    defect rather than this channel.
+
+    The third assertion is the one that makes the claim above the *sharper* form:
+    the retriever, asked exactly as the search asks it, does not return the
+    withheld row. So its chunks are outside the result set of every statement this
+    query runs, and the ranking of the rows inside that set still moves. Without
+    it the reader is left to assume FTS5's statistics ignore the outer ``WHERE``,
+    which is true and is exactly the sort of assumption this repository has been
+    wrong about.
     """
-    created_at = datetime.now(UTC) - AGE_OFFSET
-    visible = (
-        _Document(
-            "architecture.visible-00",
-            _ulid("VS", 0),
-            "beacon ledger",
-            _T17A_LONG_VISIBLE,
-            KnowledgeStatus.APPROVED,
-        ),
-        _Document(
-            "architecture.visible-01",
-            _ulid("VS", 1),
-            "handle",
-            _T17A_SHORT_VISIBLE,
-            KnowledgeStatus.APPROVED,
-        ),
-    )
-    withheld = _Document(
-        "architecture.withheld-00",
-        _ulid("WH", 0),
-        "domain domain",
-        _T17A_WITHHELD,
-        KnowledgeStatus.DRAFT,
-    )
-    registry = _build_project(tmp_path / "holds-it", (*visible, withheld), created_at)
-
+    withheld_id = "architecture.withheld-00"
+    registry, _ = _t17a_projects(tmp_path)
     index = SqliteIndexStore(ProjectPaths.of(tmp_path / "holds-it").index_for(INDEX_BUILD_ID))
-    indexed = index.search_lexical(
-        "backend", project_id=PROJECT_ID, limit=50, include_unapproved=True
-    )
-    default = _call(registry, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=10)
-    with_flag = _call(
-        registry,
-        "knowledge.search",
-        projectId=PROJECT_ID,
-        query="backend",
-        limit=10,
-        includeUnapproved=True,
-    )
 
-    assert withheld.item_id in {row.item_id for row in indexed}, (
-        "the draft's chunks must be in the index, or there is no withheld row"
+    with_the_flag = index.search_lexical(
+        "backend", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
     )
-    assert withheld.item_id in {result["itemId"] for result in with_flag["results"]}, (
-        "and this query must reach it when the flag permits it"
+    as_the_search_asks = index.search_lexical(
+        "backend", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=False
     )
-    assert withheld.item_id not in {result["itemId"] for result in default["results"]}, (
-        "while the default answer withholds it, which is what makes the flip a "
-        "statistics channel rather than a gate failure"
+    answer = _call(registry, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=10)
+
+    assert withheld_id in {row.item_id for row in with_the_flag}, (
+        "the draft's chunks must be in the index file, or there is no withheld row"
+    )
+    assert withheld_id not in {row.item_id for row in as_the_search_asks}, (
+        "and the retriever must refuse them on the search's own flags, so the "
+        "reordering is a collection statistic and not a returned row"
+    )
+    assert withheld_id not in {result["itemId"] for result in answer["results"]}, (
+        "nor may the answer carry it"
+    )
+    assert len(as_the_search_asks) > 1, (
+        "at least two visible rows must match, or there is no order to move"
     )
 
 
