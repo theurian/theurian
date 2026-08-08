@@ -368,6 +368,13 @@ the decision is cheaper to get wrong on paper — and the section says so rather
 than listing tests that do not exist.** Each item names what must go RED when the
 decision is violated.
 
+**Tracked as [#103](https://github.com/theurian/theurian/issues/103), as one
+issue rather than eight.** They are not independent debts that could land
+separately; they are the acceptance criteria of a single change — the step-3
+purge and blue/green publish — and filing them apart would assert that a purge
+could ship having satisfied some and not others. The one genuinely separable
+item, ADR-0018's single-writer interface for the index, is named as such there.
+
 Owed by the change that implements this ADR:
 
 - **The equality, as one query against two corpora.** An index built from a
