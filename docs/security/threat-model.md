@@ -1121,8 +1121,23 @@ class look closed the first time.
 **`README.md`'s two places were corrected in
 [#34](https://github.com/theurian/theurian/pull/34).** "`theurian setup` installs
 the whole thing idempotently" is gone, and the quick start it sat above now opens
-with `uv tool install './packages/theurian-core[all]'` — so the file names an
-installer where it had none. "`/theurian:setup` is the only command that installs
+with an installer command — so the file names an installer where it had none. The
+command is spelled out further down, where the flag inside it carries an
+argument; it is not repeated here.
+
+> **This sentence quoted a command that has never existed in this repository.**
+> It said the quick start "now opens with
+> `uv tool install './packages/theurian-core[all]'`". `README.md:167` is
+> `uv tool install --python 3.13 'theurian[daemon]'`, and
+> `rg -Un --hidden -g '!.git' -g '!uv.lock' 'packages/theurian-core\[all\]'`
+> matched the false sentence and nothing else — not the README, not a test, not a
+> workflow. So one paragraph held two copies of the same file's quick start, and
+> the copy an argument rests on stayed right while the decorative one went wrong.
+> A copy nothing reasons from is the one that goes stale, because nothing
+> re-derives it. The decorative copy is deleted rather than corrected, so the only
+> occurrence of that string in the tree is now the quotation on this line.
+
+"`/theurian:setup` is the only command that installs
 anything" now denies installing Theurian and states the order it depends on: Core
 has to be on the machine before `/theurian:setup`, which checks for the binary
 and stops if it is absent. **Nothing holds either sentence.** `README.md` is deliberately
@@ -1139,16 +1154,115 @@ text between `uv tool install` and the package would also accept
 `uv tool install --from somewhere-else 'theurian[daemon]'` — the substitution
 this very entry exists over.
 
-**The installer every corrected surface names does not resolve, and the name is
-unclaimed.** Measured 2026-08-06: `https://pypi.org/pypi/theurian/json` and
-`https://pypi.org/simple/theurian/` both return **404**, as does `theurian-core`.
-The distribution name in `packages/theurian-core/pyproject.toml` is `theurian`
-and `release-core.yml` publishes to `https://pypi.org/project/theurian/`, so the
-name is registrable by anyone until the first release claims it. A user who
-follows the shipped instruction today gets a resolution failure; whoever
-registers the name first decides what that instruction installs tomorrow, which
-is this entry's own actor arriving through the sentence that was written to send
-users somewhere safe.
+**The name is claimed, by this project, and the risk it carried moved rather than
+closed.** Measured 2026-08-08:
+
+| URL | Status |
+| :-- | --: |
+| `https://pypi.org/simple/theurian/` | **200** |
+| `https://pypi.org/pypi/theurian/json` | **200** |
+| `https://pypi.org/simple/theurian-core/` | **404** |
+
+`theurian 0.1.0.dev0` was uploaded at `2026-08-07T09:51:10Z` by this repository's
+own `release-core.yml` over Trusted Publishing, so the distribution name in
+`packages/theurian-core/pyproject.toml` resolves to an artifact this repository
+produced, and no unregistered name stands between a user and it.
+
+> **What this paragraph said, and why it is replaced rather than corrected.** It
+> read: "The installer every corrected surface names does not resolve, and the
+> name is unclaimed … whoever registers the name first decides what that
+> instruction installs tomorrow." Every clause of that was true on 2026-08-06 and
+> the whole argument rested on one premise — an unregistered name, reachable by
+> anyone — which the first upload removed. There is no sentence in it that
+> becomes true by editing a status code, because the actor it describes no longer
+> has a way in. What follows is a different entry: what is left once the name is
+> held.
+
+**The shipped instruction resolves**, measured with `HOME`, `UV_CACHE_DIR`,
+`UV_TOOL_DIR` and `UV_TOOL_BIN_DIR` redirected to a temporary tree, against
+uv 0.7.2:
+
+```console
+$ uv tool install --python 3.13 'theurian[daemon]'
+Resolved 39 packages in 21ms
+Installed 39 packages in 42ms
+ + …                        # 38 dependency lines, elided
+ + theurian==0.1.0.dev0
+Installed 1 executable: theurian
+$ echo $?
+0
+```
+
+No pre-release flag is passed and none is needed. uv's default is
+`--prerelease if-necessary`, which "prefers stable versions over pre-releases,
+falling back to pre-releases only if every stable candidate that satisfies the
+active constraints is rejected"
+([uv, pip compatibility](https://docs.astral.sh/uv/pip/compatibility/)); with no
+stable `theurian` published, the only candidate is the one it takes. **That is a
+property of what has been published, not of the command** — the first
+non-pre-release upload is what makes this instruction stop reaching a
+pre-release, and nothing in the README says so.
+
+**What is left is the consuming side, and it is this entry's own residual: the
+records that bind the name to this repository exist, and nothing a user runs
+reads them.** PyPI holds a PEP 740 attestation for both distributions, whose
+publisher record is quoted earlier in this entry. Its subject digest is the
+digest PyPI serves for the file, so the attestation covers the bytes an installer
+fetches rather than some other build of the same version:
+
+```console
+$ curl -sS https://pypi.org/integrity/theurian/0.1.0.dev0/theurian-0.1.0.dev0-py3-none-any.whl/provenance \
+  | python3 -c 'import base64, json, sys; b = json.load(sys.stdin)["attestation_bundles"][0]; s = json.loads(base64.b64decode(b["attestations"][0]["envelope"]["statement"])); print(s["subject"][0]["digest"]["sha256"])'
+34b4729fc0edaed77f4d55059a4a1a9a94741dca6e2fdf8a412678d320d530d7
+$ curl -sS https://pypi.org/pypi/theurian/0.1.0.dev0/json \
+  | python3 -c 'import json, sys; print(next(f["digests"]["sha256"] for f in json.load(sys.stdin)["urls"] if f["filename"].endswith(".whl")))'
+34b4729fc0edaed77f4d55059a4a1a9a94741dca6e2fdf8a412678d320d530d7
+```
+
+**Nothing in Theurian reads that, and no shipped instruction tells a user to.**
+`rg -Uli --hidden -g '!.git' -g '!uv.lock' 'attestation|pep.?740|sigstore'`
+matches four files — `.github/workflows/release-core.yml`,
+`docs/contributing/release.md`, this file and
+`packages/theurian-core/tests/unit/test_artifact_integrity_claim.py`. None of
+them is code a user runs, and none of them is the README. So the upload changed
+which of T-16's two halves is unmet, not how many: the artifact side now
+publishes a strong record, and the consuming side still reads nothing.
+
+**The near-miss names are unclaimed, and one of them is reachable from
+Theurian's own text.** Measured 2026-08-08, every one returning **404** on
+`https://pypi.org/simple/<name>/`: `theurian-core`, `theurian-cli`,
+`theurian-daemon`, `theurian-mcp`, `theurain`, `theurain-core`, `theurien`,
+`theurion`, `theurgian`, `theurianai`, `python-theurian`. Nothing in this
+repository names any of them as a package to install —
+`rg -Un --hidden -g '!.git' -g '!uv.lock' '(install|add|require)[^\n]{0,40}theurian-core'`
+matched exactly one line in the whole tree, the false quotation corrected in the
+paragraph above. It now matches two, both in this file and neither an
+instruction: the amendment that records the defect, and this sentence printing
+the key.
+
+What separates `theurian-core` from the rest of the list is that it is a real
+string a reader meets rather than a slip of the fingers. The package directory is
+`packages/theurian-core`, and 33 files in this tree contain the literal —
+including `README.md`, `CONTRIBUTING.md` and `SECURITY.md`. A reader who infers a
+distribution name from a directory name types the one name on this list that
+Theurian put in front of them.
+
+**Whether to hold it defensively is a decision, and it is recorded here unmade.**
+
+| Option | Cost | What it buys |
+| :-- | :-- | :-- |
+| Register nothing | none | nothing. Any of the eleven names above can be taken by anyone, at any time |
+| Register `theurian-core` only | one more PyPI project to hold, and a decision about whether it gets its own trusted publisher or is uploaded once by hand — the second reintroduces a credential this release train deliberately does not have | the only near-miss this repository's own layout suggests to a reader |
+| Register the whole list | eleven projects, each with the same question | names nothing in this repository suggests; the list is a sample of an unbounded set, and a twelfth typo is as reachable as these eleven |
+
+**Recommendation: the middle row.** The first is defensible only while nobody
+reads `packages/theurian-core`, and 33 files put it in front of them; the third
+defends against keyboard distance, which has no boundary and so no point at which
+it is done. The middle one has a stated boundary — *names this repository itself
+displays* — which is checkable by the search above rather than by judgement. It
+is not taken here because it commits the project to holding a second PyPI name
+and to answering the credential question, and neither belongs in a threat-model
+paragraph.
 
 **The population was one key and is now two, because the literal moved.**
 [#78](https://github.com/theurian/theurian/issues/78) found that
@@ -1194,9 +1308,14 @@ constant: an extracted pin is green for whatever the constant says.
 **Still open — the two files in the first group.** `release-core.yml` writes
 `uv tool install theurian==${VERSION}` into every GitHub release body, and
 `docs/contributing/release.md` names the bare command in its verification step.
-Both were left alone in #82 because they belong to an open pull request
-([#71](https://github.com/theurian/theurian/pull/71)) and resolving across one
-blind is how a population stops being checkable. A reader who follows either now
+Both were left alone in #82 because they belonged to a pull request that was open
+at the time ([#71](https://github.com/theurian/theurian/pull/71)) and resolving
+across one blind is how a population stops being checkable. **#71 merged as
+`021d077` on 2026-08-07, so the reason for the deferral is discharged and the
+deferral is not**: both files still carry the bare literal, measured at
+`release-core.yml:480` and `release.md:329`. A reason outlives the claim it
+justifies, because the behaviour it excused did not change when the reason
+stopped holding, and nobody re-reads a justification. A reader who follows either now
 gets a Core whose daemon does not start — but gets told so, by name and with the
 command, instead of a traceback. That is a smaller harm than the one this entry
 opened with and it is not zero. Tracked with the rest of the release gate in
