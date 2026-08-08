@@ -162,6 +162,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import ProjectPaths, ProjectRegistry
+from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
@@ -1121,6 +1122,69 @@ def test_a_withheld_item_is_refused_by_the_same_words_that_refuse_an_absent_one(
 # ---------------------------------------------------------------------------
 # Guards on the generator itself
 # ---------------------------------------------------------------------------
+
+
+def test_the_defaults_argument_set_really_sends_no_parameters(tmp_path: Path) -> None:
+    """That ``ARGUMENT_SETS``' first entry is not quietly a fifth generated draw.
+
+    It was. :func:`_search` seeded its dict from the generated ``_Case`` and let
+    the caller override, so ``{}`` overrode nothing and ``defaults`` ran twelve
+    generated parameter triples instead of the tool's own -- across the 24 calls
+    it issued, ``(10, 2000, False)`` appeared zero times. Nothing said so: the
+    comment above :data:`ARGUMENT_SETS` claimed the opposite, and every one of
+    those twelve examples passed.
+
+    Asserted behaviourally rather than by inspecting what :func:`_search` builds,
+    because the defect is not that a dict has extra keys -- it is that a named
+    argument set does not test what its name says. The ``_Case`` here carries the
+    *furthest* possible parameters from the defaults, so an implementation that
+    re-injects them lands on the ``generous`` answer instead and the first
+    assertion fails.
+
+    The second assertion is what stops the first holding vacuously: on a corpus
+    where the defaults and ``generous`` produce the same answer, "no arguments
+    equals the documented defaults" is true of any implementation, including the
+    broken one.
+    """
+    created_at = datetime.now(UTC) - AGE_OFFSET
+    documents = tuple(
+        _Document(
+            item_id=f"architecture.visible-{index:02d}",
+            revision_id=_ulid("VS", index),
+            title="handle",
+            body=f"cache manifold beacon domain machine combine median nominal {index}.",
+            status=KnowledgeStatus.APPROVED,
+        )
+        for index in range(20)
+    )
+    registry = _build_project(tmp_path / "one", documents, created_at)
+    # Deliberately the opposite of the tool's defaults on all three axes.
+    case = _Case(
+        visible=documents,
+        withheld_filler=(),
+        withheld_titles=(),
+        payloads=(),
+        withheld_by=RETIRED_AFTER_BUILD,
+        query="manifold",
+        limit=MAX_RESULTS,
+        max_tokens=MAX_BUDGET_TOKENS,
+        use_dense=True,
+    )
+
+    nothing_stated = _search(registry, case)
+    # 10 is `knowledge_search`'s own `limit` default; there is no constant for it
+    # to import, so a change to that signature fails here and names this line.
+    spelled_out = _search(registry, case, limit=10, maxTokens=DEFAULT_BUDGET_TOKENS, useDense=False)
+    generous = _search(registry, case, **dict(ARGUMENT_SETS[2][0]))
+
+    assert nothing_stated == spelled_out, (
+        "an empty argument set must reach the tool as no parameters at all, or "
+        "`defaults` is testing whatever the generator drew"
+    )
+    assert nothing_stated != generous, (
+        "and this corpus must be one the parameters actually move, or the "
+        "assertion above holds for any implementation"
+    )
 
 
 def test_the_two_alphabets_cannot_produce_a_shared_token_or_trigram() -> None:
