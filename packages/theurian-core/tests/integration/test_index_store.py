@@ -1390,3 +1390,44 @@ def test_the_scan_and_the_lookup_both_answer_exhausted_when_they_hold_everything
 
     assert page.rows, "the fixture must match, or exhaustion is trivially true"
     assert page.exhausted is True
+
+
+@pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
+@pytest.mark.parametrize("limit", [0, -1, -2, -8, -9])
+def test_a_limit_below_one_is_refused_rather_than_sliced(
+    six_matching_chunks: SqliteIndexStore, retriever: str, limit: int
+) -> None:
+    """A negative `limit` made `ranked[:limit]` a from-the-end slice.
+
+    Measured before the guard, on this six-row corpus's eight-row sibling:
+    `limit=-2` returned six rows with `exhausted=False` — more rows than `limit`
+    on a port that calls it a true ceiling, and a claim that more was coming.
+    `0` and `-1` raised `RankingError` instead, whose message says to fix the
+    adapter when the adapter is right and the caller's argument is wrong.
+
+    Both are refused at the entry now, before any query runs. Unreachable through
+    the documented API — `_visible_ranking` starts at `FIRST_PASS_DEPTH` and only
+    doubles — so this pins a contract rather than guarding a live path.
+    """
+    with pytest.raises(ValueError, match="limit must be at least 1"):
+        getattr(six_matching_chunks, retriever)(
+            "authentication", project_id="demo", limit=limit, include_unapproved=False
+        )
+
+
+@pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
+def test_a_limit_of_exactly_one_is_allowed(
+    six_matching_chunks: SqliteIndexStore, retriever: str
+) -> None:
+    """The boundary on the permitted side, so the guard cannot creep upward.
+
+    One is a legitimate ask — `knowledge.get` resolves a single passage — and a
+    guard written as `limit < 2`, or moved to `limit <= 1` by someone tidying,
+    would refuse it while every test above still passed.
+    """
+    page = getattr(six_matching_chunks, retriever)(
+        "authentication", project_id="demo", limit=1, include_unapproved=False
+    )
+
+    assert len(page.rows) == 1
+    assert page.exhausted is False

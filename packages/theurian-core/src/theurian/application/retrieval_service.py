@@ -510,6 +510,27 @@ class RetrievalService:
         a silent truncation here is the exact failure — a visible ranking shorter
         than a conforming adapter would have given, with nothing naming why —
         that this whole change exists to make impossible.
+
+        **It raises past `hybrid_answer`'s fallback vocabulary, and that is a
+        decision rather than an oversight.** `mcp.search.hybrid_answer` catches
+        `IndexBuildError` alone, so a `RetrievalError` from here reaches the
+        agent as a tool error rather than as a `fallbackReason`. Mapping it to
+        one was considered and rejected on two grounds:
+
+        - every existing reason names a property of the *index file* and carries
+          a remedy a person can run — `theurian index build`, delete the pointer.
+          This fires on a defective **adapter**, which is Theurian's own code, and
+          no command a user runs repairs it. `index-unreadable` would send them to
+          rebuild a healthy index, for ever.
+        - a fallback answers from the substring scan instead, which is a different
+          and possibly shorter ranking. That is the silent truncation this guard
+          exists to prevent, wearing a reason code.
+
+        A loud failure for a bug that cannot exist in a conforming adapter is
+        what gets it found in review rather than in production. Since
+        `_require_a_positive_limit` landed, `SqliteIndexStore` cannot construct a
+        short non-exhausted page at all, so the shipped configuration has no path
+        here; the day a second adapter exists, this should fail hard.
         """
         depth = FIRST_PASS_DEPTH
         served = -1

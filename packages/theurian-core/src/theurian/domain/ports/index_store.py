@@ -93,7 +93,11 @@ class IndexStore(Protocol):
         query returns nothing rather than raising: a search box that punishes
         punctuation is a broken search box.
 
-        **``limit`` is a true ceiling**: never more rows than ``limit``.
+        **``limit`` is a true ceiling**: never more rows than ``limit``, and it
+        must be at least 1. Zero or negative is refused rather than interpreted
+        -- there is no sensible reading of "the best -2 rows", and an
+        implementation that slices with it produces a page that is neither
+        bounded by ``limit`` nor honest about ``exhausted``.
 
         Returning fewer than ``limit`` no longer implies exhaustion and must not
         be read as implying it — ``exhausted`` says so, and an implementation
@@ -117,8 +121,9 @@ class IndexStore(Protocol):
         The retriever that makes scripts without word boundaries searchable.
 
         **``limit`` is a floor, not a ceiling**, and that asymmetry with
-        :meth:`search_lexical` is deliberate. An adapter must return at least the
-        best ``limit`` rows it has — but it may return more, and should whenever
+        :meth:`search_lexical` is deliberate. It must still be at least 1, for
+        the reason given there. An adapter must return at least the best
+        ``limit`` rows it has — but it may return more, and should whenever
         bounding the answer would not bound the work. A short CJK query falls
         below the trigram floor and is answered by a scan that must score every
         matching row before it can name the best of them; truncating that to

@@ -648,6 +648,7 @@ class SqliteIndexStore:
         A `LIMIT` on an FTS5 query bounds the rows returned and not the index
         walked, so the extra row costs a row and not a pass.
         """
+        _require_a_positive_limit(limit)
         expression = to_match_expression(query)
         if not expression:
             return RetrieverPage(rows=(), exhausted=True)
@@ -724,6 +725,7 @@ class SqliteIndexStore:
         resolves its own exhaustion the same way, by asking for one row more than
         it will return.
         """
+        _require_a_positive_limit(limit)
         expression = to_trigram_expression(query)
         if not expression:
             # Not "nothing matched". The trigram floor is a property of the
@@ -1069,6 +1071,33 @@ def _ranked(
     )
 
 
+def _require_a_positive_limit(limit: int) -> None:
+    """Refuse a `limit` below 1, at the entry rather than in the slice.
+
+    `_page` cuts with `ranked[:limit]`, and a negative `limit` makes that a
+    from-the-end slice: measured on an 8-row match set before this guard existed,
+    `limit=-2` returned **6 rows** with `exhausted=False` -- more rows than
+    `limit`, which the port calls a true ceiling, and a claim that more was
+    coming. `limit=0` and `limit=-1` instead reached `RetrieverPage`'s invariant
+    and raised `RankingError`, whose message tells the reader to fix the adapter
+    when the adapter is right and the argument is wrong.
+
+    Unreachable through the documented API -- `_visible_ranking` starts at
+    `FIRST_PASS_DEPTH` and only doubles -- so this refuses a caller bug rather
+    than a user's input, and `ValueError` is the shape for that here
+    (`index_scan.scan_statement`, `ports.source_parser`). It is deliberately not
+    a `TheurianError`: those carry a remedy a person can run, and no `theurian`
+    command produces this.
+    """
+    if limit < 1:
+        msg = (
+            f"limit must be at least 1, got {limit}. IndexStore treats it as a row "
+            f"count from the top of a best-first ranking, so there is no reading of "
+            f"zero or fewer."
+        )
+        raise ValueError(msg)
+
+
 def _page(ranked: tuple[Ranked, ...], limit: int) -> RetrieverPage:
     """A page from a ``LIMIT ? + 1`` fetch: the extra row answers, it never ships.
 
@@ -1077,6 +1106,12 @@ def _page(ranked: tuple[Ranked, ...], limit: int) -> RetrieverPage:
     dropping it again is what keeps ``limit`` a true ceiling on the port. Written
     once rather than at each call site, because the two halves -- probe by one,
     cut by one -- have to move together or the ceiling leaks a row.
+
+    Sound only for ``limit >= 1``, which `_require_a_positive_limit` establishes
+    at each entry. Given that, `ranked[:limit]` is a genuine prefix and an empty
+    page is always exhausted, so this function cannot construct the state
+    `RetrieverPage` refuses -- and that refusal is left for the defective
+    *adapter* its message actually describes.
     """
     return RetrieverPage(rows=ranked[:limit], exhausted=len(ranked) <= limit)
 
