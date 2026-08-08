@@ -7,7 +7,7 @@
 # states which Core it can talk to, and it is the only thing that has to change
 # when Core ships a compatible release.
 
-pluginVersion: 0.1.0
+pluginVersion: 0.1.1
 
 coreCompatibility:
   # Pre-release-tolerant on purpose: Core reports PEP 440 versions such as

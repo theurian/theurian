@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/schema",
   "name": "theurian",
   "displayName": "Theurian",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Invoke your engineering knowledge. Traceable specifications, decisions, and review knowledge for AI agents.",
   "author": {
     "name": "Theurian Contributors",
