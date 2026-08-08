@@ -33,6 +33,7 @@ from theurian.domain.chunking import IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
+from theurian.infrastructure.sqlite.index_purge import purge_into
 from theurian.infrastructure.sqlite.index_query import (
     MAX_QUERY_CHARS,
     MAX_QUERY_TERMS,
@@ -474,6 +475,30 @@ class SqliteIndexStore:
             )
             connection.commit()
         return len(chunks)
+
+    def derive_purged(
+        self,
+        target: Path,
+        *,
+        revision_ids: Sequence[str],
+        index_build_id: str,
+        state_hash: str,
+    ) -> int:
+        """Write this build minus `revision_ids` to `target` (ADR-0024).
+
+        The one write on this store that does not write to `self._path`, and the
+        asymmetry is the decision: a published build is immutable, so the purge
+        reads here and writes there. `index_purge` owns the SQL for the same
+        reason `index_scan` owns the scan's — this file is already the largest in
+        the package, and a purge is a distinct concern from a query.
+        """
+        return purge_into(
+            self._path,
+            target,
+            revision_ids=revision_ids,
+            index_build_id=index_build_id,
+            state_hash=state_hash,
+        )
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         """Store one vector per chunk.

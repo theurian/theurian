@@ -17,6 +17,19 @@ Keeping the index in its own file buys three things:
 The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
+
+**Version 3 adds `chunks.derived` and `chunk_derivation` for a feature that does
+not exist yet.** ADR-0024 decision 8: withdrawal is transitive over derived
+content, because a purge can delete a chunk and cannot delete a sentence out of a
+summary built from it. RAPTOR (ADR-0008) is what will write those rows; the
+columns and the purge's traversal land first, so that the day a summary node
+exists it inherits a purge that already carries it rather than one designed a
+second time under pressure.
+
+Bumping the version means every index built under 2 reports
+`index-schema-mismatch` and falls back to the substring scan until
+`theurian index build` runs. That is ADR-0022 point 3 working as designed — an
+index schema change costs an index rebuild and nothing else — not a regression.
 """
 
 from __future__ import annotations
@@ -25,7 +38,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 2
+INDEX_SCHEMA_VERSION: Final = 3
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -70,11 +83,38 @@ CREATE TABLE chunks (
     status       TEXT    NOT NULL,
     sensitivity  TEXT    NOT NULL,
     trust_level  TEXT    NOT NULL,
-    namespace    TEXT    NOT NULL DEFAULT ''
+    namespace    TEXT    NOT NULL DEFAULT '',
+    -- Whether this row's text was *derived* from other rows rather than read
+    -- from a revision. Nothing writes 1 yet -- RAPTOR (ADR-0008) is the first
+    -- thing that will -- and the column exists ahead of it because withdrawal
+    -- has to be transitive from the first build that has anything to be
+    -- transitive over (ADR-0024 decision 8). A summary is not withdrawn by
+    -- deleting the chunk it summarises: the sentence is still in the summary.
+    derived      INTEGER NOT NULL DEFAULT 0 CHECK (derived IN (0, 1))
 );
 
 CREATE INDEX chunks_by_project ON chunks (project_id, status);
 CREATE INDEX chunks_by_revision ON chunks (revision_id);
+
+-- Provenance of derived rows -------------------------------------------------
+-- One edge per (derived node, chunk it was built from). The purge walks this
+-- transitively: a node built from a withdrawn chunk holds that chunk's content
+-- and must go with it, and so must a node built from *that* node (ADR-0024
+-- decision 8).
+--
+-- `ON DELETE CASCADE` on `source_chunk_id` removes the *edge* when a source
+-- goes, which is not the same as removing the node -- that is why the purge
+-- deletes through a recursive query rather than trusting the cascade. The
+-- cascade is here so an edge can never outlive the row it points at, which is
+-- what makes "a derived node with no surviving edges" a state worth testing for
+-- rather than an artifact of bookkeeping.
+CREATE TABLE chunk_derivation (
+    node_chunk_id   TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    source_chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    PRIMARY KEY (node_chunk_id, source_chunk_id)
+);
+
+CREATE INDEX chunk_derivation_by_source ON chunk_derivation (source_chunk_id);
 
 -- Lexical index --------------------------------------------------------------
 -- `content=` makes this an external-content table: FTS5 stores only the index

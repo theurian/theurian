@@ -265,7 +265,51 @@ error is the one reading the release notes to decide whether to upgrade.
 
 ### Milestone 6 — the index lifecycle
 
+#### Added
+
+- **A purge produces a new index build** (`IndexStore.derive_purged`, ADR-0024).
+  On withdrawal, the published build is copied with
+  `sqlite3.Connection.backup`, the withdrawn revisions are deleted from the
+  copy, `index_metadata` is restamped for the new build, the result is verified,
+  and only then is it fit to publish. The published file is never written to, so
+  a search reading it is unaffected.
+
+  Measured on a real 400-document index with embeddings: 2,732 chunks to 1,229,
+  1,503 rows removed in 847 ms, and the purged build answers **identically** to
+  an index that never held the withdrawn documents — chunk ids and BM25 scores to
+  ten decimals, on both the word index and the trigram index — while a stale
+  control differs on every query.
+
+  `shutil.copyfile` and `VACUUM INTO` are both rejected, and ADR-0024 records
+  why: the first drops the `-wal` sidecar, and the second rests on rowid
+  stability SQLite documents as *not* guaranteed for tables without an INTEGER
+  PRIMARY KEY, which `chunks` is — while both FTS5 tables are external-content
+  keyed on `chunks.rowid`.
+
+- **Withdrawal is transitive over derived content.** A row built from a withdrawn
+  chunk holds that chunk's content: a purge can delete a passage, and cannot
+  delete a sentence out of a summary of it. `chunk_derivation` records the
+  provenance and the purge walks it transitively, so a summary, a summary of that
+  summary, and a node with mixed provenance all go with the withdrawal. A derived
+  row whose provenance cannot be resolved is deleted rather than kept.
+
 #### Changed — BREAKING
+
+- **`INDEX_SCHEMA_VERSION` 2 → 3**, adding `chunks.derived` and
+  `chunk_derivation`. **Every existing index reports `index-schema-mismatch` and
+  falls back to the substring scan until `theurian index build` runs.** That is
+  the designed response to an index schema change and not a regression: the index
+  is derived and disposable, and ADR-0022 point 3 exists so that a schema change
+  costs an index rebuild and nothing else — no canonical `SCHEMA_VERSION` bump,
+  no state hash change, no canonical database invalidated. `theurian index
+  status` reports the mismatch and names the command.
+
+  The two new columns are for RAPTOR (ADR-0008), which does not exist yet. They
+  land ahead of it because withdrawal has to be transitive from the first build
+  that has anything to be transitive over — designing the purge after summary
+  nodes ship means designing it twice, the second time under pressure from a
+  feature already in use.
+
 
 - **`IndexStore`'s three search methods return `RetrieverPage`, not
   `tuple[Ranked, ...]`** ([#16](https://github.com/theurian/theurian/issues/16)).
