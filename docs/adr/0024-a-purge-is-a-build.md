@@ -170,16 +170,28 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
 
    `copyfile` is disqualified: the `-wal` sidecar is a separate file, so a copy
    taken while a writer holds committed-but-uncheckpointed content is a database
-   missing that content, silently. `VACUUM INTO` is correct today and rests on
-   something SQLite declines to promise — the documentation says VACUUM "may
-   change the ROWIDs of entries in any tables that do not have an explicit
-   INTEGER PRIMARY KEY", `chunks.chunk_id` is a TEXT primary key, and
-   `chunks_fts` and `chunks_trigram` are `content='chunks', content_rowid='rowid'`,
-   so a renumbering would silently repoint every posting in both indexes. It was
-   observed stable on 3.47.1, including on a gapped table; a design that depends
-   on an observed behaviour SQLite declines to guarantee is one release away from
-   a corruption that raises nothing. `backup` copies pages, so rowid stability is
-   not a behaviour it could get wrong, and it is the faster of the two.
+   missing that content, silently.
+
+   **The row above understates it, because the corpus it was measured on already
+   had its schema checkpointed.** When the uncheckpointed pages carry the schema
+   rather than only rows, the copy has no table at all:
+
+   ```
+   committed rows in source: 100      wal present: True (8272 bytes)
+   copyfile -> OperationalError: no such table: t
+   backup   -> 100
+   ```
+
+   `VACUUM INTO` is correct today and rests on something SQLite declines to
+   promise — the documentation says VACUUM "may change the ROWIDs of entries in
+   any tables that do not have an explicit INTEGER PRIMARY KEY",
+   `chunks.chunk_id` is a TEXT primary key, and `chunks_fts` and `chunks_trigram`
+   are `content='chunks', content_rowid='rowid'`, so a renumbering would silently
+   repoint every posting in both indexes. It was observed stable on 3.47.1,
+   including on a gapped table. **A design resting on observed-but-unpromised
+   behaviour becomes a silent corruption at the next release.** `backup` copies
+   pages, so rowid stability is not a behaviour it could get wrong, and it is the
+   faster of the two.
 
 4. **A purge goes through the same single-writer interface as a build, and there
    is exactly one such interface.** This is ADR-0018 point 1 applied to the index
@@ -293,7 +305,7 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
 | Tombstone the withdrawn rows and filter at query time | What leaks is FTS5's collection statistics, and those count rows a tombstone leaves in place. The measured equality holds only where the row is deleted. |
 | Purge on read | A write on the retrieval path, to a derived artifact, from a code path that must not take a write lock. It also makes the cost of a search a function of how much was withdrawn, which is the timing channel T-17 records. |
 | Re-derive the whole index from canonical state for every purge | 51× to 65× the cost, measured, across a 12× corpus range — and it re-embeds, which against a real embedding provider is a network cost per purge rather than a CPU one. |
-| `shutil.copyfile` as the copy primitive | Drops the `-wal` sidecar. Measured: the copy held 1,055 rows while the writer that had committed saw 955. |
+| `shutil.copyfile` as the copy primitive | Drops the `-wal` sidecar. Measured: the copy held 1,055 rows while the writer that had committed saw 955 — and where the uncheckpointed pages carry the schema, `no such table`. |
 | `VACUUM INTO` as the copy primitive | Correct today and 15% slower, but rests on rowid stability that SQLite documents as *not* guaranteed for tables without an INTEGER PRIMARY KEY, which `chunks` is. Both FTS5 tables are external-content keyed on `chunks.rowid`. Kept as `gc`'s compaction step, where rebuilding the b-trees is the point. |
 | Keep reaping eagerly at publish time | 1,889 errors against 163 successful searches in 1.5 seconds, measured against the current `_reclaim`. |
 | Recompute collection statistics per request instead of purging | Corrects one channel at the cost of the whole corpus per query, and leaves the withdrawn text in a file that is git-ignored, unsigned and readable (SEC-7). The index holding rows the canonical store has withdrawn is the defect; the statistics are one of its faces. |
