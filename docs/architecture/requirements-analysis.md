@@ -730,7 +730,7 @@ daemon, MCP tools, ingestion, retrieval, RAPTOR, GitHub. Those are Milestones 1�
 
 | ID | Risk | Mitigation |
 | :-- | :-- | :-- |
-| O-1 | "Theurian" collides with an existing trademark or PyPI/npm name | Check PyPI, npm, and trademark registries before the first public release; the name is a config value, not hardcoded in 400 places. |
+| O-1 | "Theurian" collides with an existing trademark or PyPI/npm name | Check PyPI, npm, and trademark registries before the first public release; the name is a config value, not hardcoded in 400 places. **The deadline has passed: `theurian 0.1.0.dev0` was uploaded 2026-08-07.** PyPI is settled — the name is held by this project's own release workflow (`https://pypi.org/simple/theurian/` → 200, measured 2026-08-08). npm is free and unheld (`https://registry.npmjs.org/theurian` → 404). No trademark check is recorded anywhere in this repository, so that third is neither done nor owned. Near-miss PyPI names are covered under T-16 in the [threat model](../security/threat-model.md). |
 | O-2 | Users commit a SQLite file or a secret into `.theurian/` | Ship `.gitignore` entries at init; add a pre-commit hook example; `doctor` warns when a derived artifact is tracked. |
 | O-3 | An issue reporter pastes proprietary knowledge into a public issue | Issue templates warn explicitly; no knowledge body ever enters a `doctor` payload; `theurian doctor --report` substitutes the paths Theurian wrote and withholds the configuration values it only read. Plain `doctor --json` redacts nothing and is not for sharing. |
 | O-4 | A dependency's license is incompatible with Apache-2.0 | License scan in CI with an allowlist; a copyleft dependency fails the build. |
