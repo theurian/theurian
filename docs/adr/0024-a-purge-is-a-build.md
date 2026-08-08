@@ -301,10 +301,49 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
 
 - ADR-0022 points 5 and 6 hold for every writer, not only for builds. "The
   rebuild happens in a file nobody is reading" becomes true of the purge as well.
-- NFR-4 is dischargeable: points 6 and 7 together are what "zero read downtime"
-  requires, and neither alone is enough. Retention without a held handle leaves
-  the window ADR-0022's amendment measured; a held handle without retention is
-  the 1,889 errors above.
+- **NFR-4 is dischargeable, and points 6 and 7 are not two guards on one window
+  — they close different ones, and point 7's exists only because point 6 creates
+  it.** Point 6 closes publication: with the old build retained, a search running
+  across a publish sees no error at all. Retaining builds is what then makes
+  reclaiming necessary, and point 7 is what makes reclaiming safe for a request
+  already in flight.
+
+  Measured on a 400-document index, searches during a publish that reaps:
+
+  | Configuration | ok | errors |
+  | :-- | --: | --: |
+  | neither — a connection per call, no retention (ships today) | 40 | 2,627 |
+  | point 7 only — handle scoped to the **request** | 331 | 86,496 |
+  | point 7 only — handle scoped to the **process** | 3,420 | 0 |
+  | point 6 only — a connection per call, retention | 180 | 0 |
+  | both | 1,163 | 0 |
+
+  The first row and point 6's "1,889 errors against 163 successful searches" are
+  the same failure counted under different request shapes — one index call per
+  iteration there, three per request here — so the absolute numbers differ and
+  the ratio does not. Neither is a throughput measurement; what each row asserts
+  is whether the error column is zero.
+
+  and the window point 7 is actually for, one request of four index calls with
+  the reap landing after the first: **1 of 4 answered** with a connection per
+  call, leaving an empty database recreated at the reaped path, against **4 of 4**
+  with one held connection and no file recreated.
+
+  **The two "point 7 only" rows are the same design measured two ways, and only
+  the first is point 7.** This decision says a search holds one connection *for
+  the duration of a request*, so every request beginning after the reap must open
+  the file again and every one of them fails — 86,496 times above. A handle
+  scoped to the **process** never reopens anything, so no iteration after the
+  unlink ever asks the filesystem for the file; it measures "does a descriptor
+  survive an unlink", which is true and is not this question. Both rows are kept
+  because the second is what a re-measurement naturally produces: this ADR's own
+  drafting hit it, read 0 errors, and briefly concluded that point 7 alone closed
+  the publish window. It does not.
+
+  The earlier claim here — "retention without a held handle leaves the window
+  ADR-0022's amendment measured" — was false in the other direction. That window
+  is created by reaping *at publish*, which point 6 abolishes; retention alone
+  measures 0 errors.
 - T-17a's root fix is a `DELETE` and a swap, not a recomputation of collection
   statistics per request, and not a rebuild. The measured equality is exact.
 - ADR-0018's index writer gets an interface rather than a convention, which is
