@@ -43,6 +43,12 @@ from theurian.domain.extras import DAEMON_INSTALLERS
 #: install with no extra re-resolves to no extra, and that user's answer is
 #: :data:`~theurian.domain.extras.DAEMON_INSTALLERS`, not this.
 #:
+#: That last sentence is measured too, and separately -- the decision rests on it,
+#: and the two measurements above establish only that an extra is *preserved*,
+#: which is a different claim. ``black==24.1.0`` installed with no extra records
+#: no ``extras`` in its receipt, and after ``uv tool upgrade`` to 24.10.0 the
+#: extra's dependency is still absent. Upgrading repairs nothing for that user.
+#:
 #: The asymmetry with installing is real, and is why these are separate
 #: constants: a plain ``pipx install`` over an existing installation is a no-op
 #: that exits 0 (see :data:`~theurian.domain.extras.DAEMON_EXTRA_REMEDY`), while
