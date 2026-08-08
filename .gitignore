@@ -9,6 +9,11 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+# hypothesis writes a Unicode table and a constants cache here, whatever
+# `settings(database=None)` says about the example database. It ships its own
+# `.gitignore` inside the directory; this line is so a reader of *this* file
+# knows what the directory is.
+.hypothesis/
 .coverage
 .coverage.*
 coverage.xml
