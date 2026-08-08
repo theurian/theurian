@@ -283,6 +283,134 @@ def test_declared_protocol_matches_core() -> None:
     assert declaration["protocolVersion"] == __protocol_version__
 
 
+def test_upgrade_command_names_the_same_flags_as_lib_sh() -> None:
+    """`/theurian:upgrade` documents a call `lib.sh` already implements.
+
+    The document spells out `theurian compat check` rather than calling
+    `theurian::compat_check`, because a slash command is read by an agent that
+    is not running the hook's shell. That makes it a second copy of one call,
+    and the copy shipped with one of four values wrong: it read
+    ``protocolVersion`` from under ``coreCompatibility``, where the schema puts
+    ``additionalProperties: false`` and only ``minimum`` and
+    ``maximumExclusive`` live. Omitted, the flag makes the CLI exit 2.
+
+    Pinning the flag *names* is what catches that class -- the placeholder text
+    is prose and will keep being reworded, but the moment the two lists disagree
+    one of them is calling an interface that does not exist.
+    """
+    flag = re.compile(r"^\s*(--[a-z-]+)", re.MULTILINE)
+
+    lib_sh = LIB_SH.read_text(encoding="utf-8")
+    body = lib_sh.split("theurian::compat_check()", 1)[1].split("\n}", 1)[0]
+    from_lib = set(flag.findall(body))
+
+    document = (PLUGIN / "commands" / "upgrade.md").read_text(encoding="utf-8")
+    block = document.split("theurian compat check", 1)[1].split("```", 1)[0]
+    from_doc = set(flag.findall(block))
+
+    assert from_lib == {
+        "--plugin-version",
+        "--core-minimum",
+        "--core-maximum-exclusive",
+        "--protocol-version",
+        "--json",
+    }, f"lib.sh's compat_check flags changed: {sorted(from_lib)}"
+    assert from_doc == from_lib, (
+        "/theurian:upgrade and lib.sh disagree about `theurian compat check`: "
+        f"document has {sorted(from_doc - from_lib)}, lib.sh has {sorted(from_lib - from_doc)}"
+    )
+
+
+def test_upgrade_command_placeholders_name_keys_the_schema_declares() -> None:
+    """Every placeholder has to resolve against `compatibility.yaml`.
+
+    The first version of this pinned only ``--protocol-version``, which was the
+    field that shipped wrong. That left the other three free: moving the same
+    defect to ``<coreCompatibility.pluginVersion>``, inventing
+    ``<coreCompatibility.floor>``, or swapping ``minimum`` and
+    ``maximumExclusive`` all survived the suite. Pinning one member of a class
+    and calling the class closed is the mistake this whole change is about.
+
+    Checked against the schema rather than a literal list, so that a key moving
+    between the top level and ``coreCompatibility`` fails here rather than in a
+    user's session. The flag-to-key mapping itself is spelled out, because that
+    is the semantic part -- ``--core-minimum`` must read ``minimum`` and not
+    ``maximumExclusive``, and both are legal keys.
+    """
+    schema = json.loads(
+        (SCHEMAS / "protocol" / "compatibility.schema.json").read_text(encoding="utf-8")
+    )
+    core = schema["properties"]["coreCompatibility"]
+    assert core["additionalProperties"] is False
+    assert "protocolVersion" not in core["properties"]
+
+    expected = {
+        "--plugin-version": "pluginVersion",
+        "--core-minimum": "coreCompatibility.minimum",
+        "--core-maximum-exclusive": "coreCompatibility.maximumExclusive",
+        "--protocol-version": "protocolVersion",
+    }
+
+    document = (PLUGIN / "commands" / "upgrade.md").read_text(encoding="utf-8")
+    block = document.split("theurian compat check", 1)[1].split("```", 1)[0]
+    found = dict(re.findall(r"(--[a-z-]+) <([A-Za-z.]+)>", block))
+
+    assert found == expected, f"placeholder drift: {found}"
+
+    for flag, key in expected.items():
+        head, _, leaf = key.rpartition(".")
+        holder = core if head == "coreCompatibility" else schema
+        assert leaf in holder["properties"], (
+            f"{flag} reads `{key}`, which the schema does not declare. "
+            f"An agent following this document gets nothing and the CLI exits 2."
+        )
+
+
+def test_upgrade_command_never_names_an_unregistered_theurian_subcommand() -> None:
+    """#42 can come back through the document with the code still correct.
+
+    Step 3 has the agent print the remedy verbatim *and* quotes it, so the
+    plugin surface carries its own copy of the string
+    ``domain/compatibility.py`` was fixed to stop emitting. Reverting that quote
+    to "Upgrade Core with ``theurian upgrade``" survived the whole suite, which
+    means the fix was pinned on the Core side only.
+
+    ``theurian upgrade`` and ``/theurian:upgrade`` are matched as *invocations*:
+    the heading ``# /theurian:upgrade`` names the command and is legitimate, so
+    the check is for the backticked or command-position forms.
+    """
+    document = (PLUGIN / "commands" / "upgrade.md").read_text(encoding="utf-8")
+
+    assert "theurian upgrade" not in document, (
+        "`/theurian:upgrade`'s document names `theurian upgrade`, which is not a "
+        "registered command (#42). The remedy delegates to `uv tool upgrade` / "
+        "`pipx upgrade`; a copy of the old string here reaches users even though "
+        "`CORE_UPGRADERS` is correct."
+    )
+    assert "run /theurian:upgrade" not in document
+
+
+def test_upgrade_command_grants_read_because_it_reads_the_declaration() -> None:
+    """The document's step 2 opens `compatibility.yaml`; the grant must match.
+
+    ``allowed-tools`` is a permission grant, so a missing ``Read`` does not stop
+    the command -- it makes the user approve a prompt the other file-reading
+    commands do not raise. Dropping ``, Read`` survived the suite, and round one
+    had graded the sentence about this front-matter HIGH, so the grant is pinned
+    to the behaviour the document describes rather than left to review.
+    """
+    text = (PLUGIN / "commands" / "upgrade.md").read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(text.split("---", 2)[1])
+    granted = {entry.strip() for entry in frontmatter["allowed-tools"].split(",")}
+
+    assert "compatibility.yaml" in text
+    assert "Read" in granted, (
+        "`/theurian:upgrade` tells the agent to read `compatibility.yaml` but "
+        "does not grant `Read`, unlike every other command that reads a file."
+    )
+    assert "Bash(theurian:*)" in granted
+
+
 def test_installed_core_is_inside_the_declared_range() -> None:
     """The plugin in this repository must work with the Core beside it."""
     from theurian import __version__

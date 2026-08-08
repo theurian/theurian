@@ -56,6 +56,62 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   true of a population this change has split in two, and re-deriving that count
   belongs to whichever of those lands last.
 
+- **The `core-too-old` remedy named a subcommand that does not exist.** It read
+  "Upgrade Core with `theurian upgrade`, or run /theurian:upgrade"; `upgrade` has
+  never been registered in `cli/main.py`, so `theurian upgrade` exits 2 with
+  `No such command` and `/theurian:upgrade` failed the same way
+  ([#42](https://github.com/theurian/theurian/issues/42)). It now reads
+  `uv tool upgrade theurian` / `pipx upgrade theurian`, from a single
+  `CORE_UPGRADERS` constant.
+
+  `CORE_MISSING` is the only outcome `cli.main.compat_check` cannot produce,
+  because it always passes a parsed version. `core-too-old`, `core-too-new` and
+  `protocol-mismatch` all reach production and all exit 3, so this is a remedy a
+  user can really be handed. The plugin's `SessionStart` hook prints the whole
+  verdict to stderr on every session that hits it, so the remedy that could not
+  be followed was the one most likely to be read.
+
+  **That last sentence is true only from
+  [#90](https://github.com/theurian/theurian/pull/90), which this change is
+  rebased onto.** `lib.sh` opened `set -euo pipefail` and `session-start.sh`
+  sources it, so a bare assignment whose command exits 3 aborted the hook before
+  it printed anything. Measured against both revisions: `set -euo pipefail` gives
+  exit 3 and no output at all, `set -uo pipefail` gives the warning, the verdict
+  and exit 0. Read on the branch alone the claim looks unsupported, which is why
+  the dependency is named here.
+
+  It is not reachable in the shipped configuration, and that is a property of
+  the current version rather than of the code: Core `0.1.0.dev0` renders as
+  `0.1.0-dev.0` and the plugin's declared floor is `0.1.0-dev.0`, so
+  `core < floor` is false. The first Core release that moves either number makes
+  it reachable.
+
+  **Delegation is the decision, not an omission.** A real `theurian upgrade`
+  would make Theurian the thing that fetches its own wheel, and with it T-16's
+  install-time verification; that is a larger commitment than a remedy string and
+  is deliberately not taken. The remedy names no extra because both installers
+  re-resolve the spec they recorded, so an install carrying `[daemon]` keeps it
+  across an upgrade and a bare one stays bare. Measured against the real
+  distribution, which settles it without any upgrade:
+  `uv tool install 'theurian==0.1.0.dev0'` records no extras and has no `mcp`,
+  `uvicorn`, `watchfiles` or `starlette`; `'theurian[daemon]==0.1.0.dev0'`
+  records `extras = ["daemon"]` and has all four. Naming the extra would imply
+  that upgrading repairs a bare install; it does not, and that user needs
+  `uv tool install 'theurian[daemon]'`.
+
+  The upgrade path was measured with `black`, because `theurian` has one release
+  and cannot be upgraded. **uv installs the newest version its spec allows**, so
+  `uv tool install 'black[d]==24.1.0'` followed by `uv tool upgrade black`
+  reports `Nothing to upgrade`; dropping the `==` pin from `uv-receipt.toml` is
+  what stands in for time passing. An earlier version of this entry omitted that
+  step, which made the procedure it recorded a no-op — the observation was real,
+  the published recipe was not. With the step: both receipts go
+  `24.1.0 -> 26.5.1`, `aiohttp` absent throughout for `black` and present
+  throughout for `black[d]`, each receipt keeping what it recorded. pipx 1.16.6
+  drops the pin itself (`upgrading black from spec 'black[d]'`) and ran with
+  `--backend pip`, its default backend requiring uv>=0.9.17 against this
+  machine's 0.7.2.
+
 ## [0.1.0.dev0] - 2026-08-07
 
 A development release, published to claim the `theurian` name on PyPI. Until

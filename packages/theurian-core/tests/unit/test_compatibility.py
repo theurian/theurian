@@ -8,6 +8,7 @@ from typing import Final
 import pytest
 
 from theurian.domain.compatibility import (
+    CORE_UPGRADERS,
     CompatibilityDeclaration,
     CompatibilityOutcome,
     Version,
@@ -434,6 +435,47 @@ def test_old_core_advises_upgrading_core() -> None:
     assert verdict.outcome is CompatibilityOutcome.CORE_TOO_OLD
     assert "upgrade" in verdict.remedy.lower()
     assert "0.4.0" in verdict.remedy
+
+
+def test_old_core_remedy_names_the_installer_not_a_theurian_subcommand() -> None:
+    """The remedy has to be runnable, and ``theurian upgrade`` is not (#42).
+
+    ``upgrade`` has never been registered in ``cli/main.py``; the old remedy read
+    "Upgrade Core with ``theurian upgrade``, or run /theurian:upgrade" and both
+    halves failed. ``CORE_MISSING`` is the only outcome ``cli.main.compat_check``
+    cannot produce, because it always passes a parsed version; ``core-too-old``,
+    ``core-too-new`` and ``protocol-mismatch`` all reach production and all exit
+    3, so this remedy is one a user can really be handed.
+    ``session-start.sh`` prints the verdict on every session that finds an
+    incompatible Core.
+
+    The literals are spelled out rather than read from :data:`CORE_UPGRADERS`,
+    for the reason ``test_missing_core_is_reported_as_install_then_setup``
+    gives: a test that imports the constant the production code formats is green
+    for whatever the constant happens to say.
+
+    **The presence and absence assertions together still do not carry this
+    test.** Measured: dropping the two presence assertions and setting
+    :data:`CORE_UPGRADERS` to ``("brew upgrade theurian", ...)`` leaves the
+    absence assertions green, because ``theurian upgrade`` is not a substring of
+    ``brew upgrade theurian``. Absence only catches old-and-new shipped
+    together. The invariant that actually holds -- and that survives a third
+    installer being added -- is that no element of the constant is a ``theurian``
+    subcommand, so that is asserted over the constant itself.
+    """
+    verdict = resolve_compatibility(DECLARATION, Version.parse("0.3.9"), "theurian/v1")
+    assert verdict.outcome is CompatibilityOutcome.CORE_TOO_OLD
+    assert "uv tool upgrade theurian" in verdict.remedy
+    assert "pipx upgrade theurian" in verdict.remedy
+    assert "theurian upgrade" not in verdict.remedy
+    assert "/theurian:upgrade" not in verdict.remedy
+
+    for command in CORE_UPGRADERS:
+        assert not command.startswith("theurian "), (
+            f"{command!r} delegates to a `theurian` subcommand. The remedy exists "
+            f"because Theurian does not upgrade itself; an entry here that starts "
+            f"with `theurian ` is #42 arriving again under a new verb."
+        )
 
 
 def test_new_core_advises_updating_the_plugin_not_core() -> None:

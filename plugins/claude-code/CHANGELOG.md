@@ -52,6 +52,36 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `action` is one setup skips. All seven steps setup performs report exactly
   that before they run, so an agent following the old rule would have asked the
   user to go and "Create ~/.theurian with mode 0700" themselves.
+- **`/theurian:upgrade` ran a command that does not exist.** It called
+  `theurian upgrade --check --json` and then `theurian upgrade --json`; `upgrade`
+  has never been a registered Core subcommand and both exit 2 with `No such
+  command` ([#42](https://github.com/theurian/theurian/issues/42)). The command
+  now reports the compatibility verdict from `theurian version` and
+  `theurian compat check`, then prints `uv tool upgrade theurian` /
+  `pipx upgrade theurian` for the user to run. It never upgrades anything —
+  Theurian does not obtain its own artifacts.
+
+  **What enforces that is the document's "Never run the upgrade" rule, not the
+  front-matter.** An earlier draft of this entry said `allowed-tools:
+  Bash(theurian:*)` meant the command "cannot invoke an installer even by
+  mistake". That is false: `allowed-tools` is a permission *grant* that
+  auto-approves matching invocations, and only `disallowed-tools` removes
+  anything — as `tests/unit/test_plugin_boundary.py` has recorded since
+  `Bash(command:*)` was found pre-approving arbitrary execution. The document
+  also read `compatibility.yaml` while granting no `Read`, which is the same
+  mistake seen from the other side, so `Read` is now granted like every other
+  command that reads a file.
+
+  The command's `theurian compat check` invocation named
+  `coreCompatibility.protocolVersion`; `protocolVersion` is top-level and
+  `coreCompatibility` is `additionalProperties: false`, so an agent following it
+  would have hit exit 2. Two tests now pin the document against `lib.sh`'s
+  `theurian::compat_check` — the flag names, and the placeholder key.
+
+  The command is kept rather than removed: `REQUIRED_COMMANDS` in
+  `tests/unit/test_plugin_boundary.py` pins `upgrade` as one of the twelve §9
+  commands, and both this README's command table and
+  `docs/integrations/claude-code.md` list it. What changed is what it does.
 
 ### Security
 
