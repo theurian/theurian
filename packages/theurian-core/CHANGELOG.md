@@ -141,6 +141,57 @@ page rather than an install: `[tool.hatch.build.targets.sdist]` lists
 and `pip install` take the wheel, which means the reader most exposed to the
 error is the one reading the release notes to decide whether to upgrade.
 
+### Milestone 6 — the index lifecycle
+
+#### Changed — BREAKING
+
+- **`IndexStore`'s three search methods return `RetrieverPage`, not
+  `tuple[Ranked, ...]`** ([#16](https://github.com/theurian/theurian/issues/16)).
+  The page carries the rows and an `exhausted` flag, which the depth loop reads
+  instead of inferring exhaustion from a row count. No MCP schema impact:
+  `src/theurian/mcp/` never calls a `search_*` method, so the outward breaking
+  cost is zero — the break is to the port, its one adapter, and the suite's four
+  fakes.
+
+  One expression used to read three different `limit` semantics off one number —
+  a ceiling in `search_lexical`, a floor in `search_substring`, absent in
+  `search_dense` — and the port's docstrings stood in for a type. An adapter that
+  capped its output above `limit` without that cap being exhaustive satisfied
+  every word of them and cost the caller rows it never learned it lost.
+  `exhausted` may be `True` only when the implementation has verified there is
+  nothing further; the SQLite adapter fetches `limit + 1` and reports whether the
+  extra row arrived, then drops it, so `limit` stays a true ceiling.
+
+- **`SqliteIndexStore._scan_cache` is deleted**, as its own docstring
+  instructed. It was a security mitigation rather than an optimisation: it made
+  the second call to the scan below the trigram floor cost no second pass over
+  the corpus, where the second call itself was a step function of how many rows
+  the canonical store had withheld. There is no second call now — that branch has
+  read and scored everything by the time it returns, so it reports itself
+  exhausted on its first. Measured against a real 400-document index with a
+  two-character CJK query: one port call at 0, 49, 50, 51 and 99 withheld rows,
+  where 51 and 99 cost two before.
+
+  The cache also required a fresh `SqliteIndexStore` per search, because a
+  pooled one would have leaked one caller's withheld-row count into another
+  caller's latency. That requirement went with it, replaced by something
+  smaller and checkable: the store holds no per-instance state at all.
+
+- **`tests/integration/test_scan_cache.py` becomes `test_scan_exhaustion.py`.**
+  Its cross-request test was deleted rather than moved — with no cache, two
+  requests cost two scans whatever happens, so it would have sat in the suite
+  green and guarding nothing.
+
+#### Known limitations
+
+- **The timing residual on the truncating retrievers is unchanged, and #16 does
+  not close it.** A first pass in which too many rows were withheld still has to
+  fetch deeper to keep fifty visible rows, which follows from the definition of
+  the depth loop rather than from any defect in it: measured, `search_lexical`
+  and the trigram lookup still make two calls at 51 withheld rows and one at 50.
+  Only an index that no longer holds withdrawn rows removes it
+  ([#15](https://github.com/theurian/theurian/issues/15)).
+
 ### Changed after Milestone 5
 
 - `theurian setup` and `theurian doctor` now explain the `artifact-integrity`

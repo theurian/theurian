@@ -1884,6 +1884,23 @@ round-six correction below records is a different member with a different size.
 > | calls to `IndexStore.search_substring` | **yes**, at one exact coincidence |
 > | passes over the corpus inside SQLite | **no** — `SqliteIndexStore._scan_cache` memoises the answer |
 >
+> > **Amended in Milestone 6, when [#16](https://github.com/theurian/theurian/issues/16)
+> > landed. The first row is now *no* on the scan branch, and the second row's
+> > mechanism no longer exists.** `IndexStore` states its own exhaustion, so the
+> > scan below the trigram floor — which has read and scored everything by the
+> > time it returns — reports itself finished on its first call and is never
+> > asked again. Measured against a real 400-document index with a
+> > two-character CJK query at 0, 49, 50, 51 and 99 withheld rows: one port call
+> > at every count, where 51 and 99 cost two before. `_scan_cache` was deleted
+> > in the same change, so the second row holds for a different reason: there is
+> > no repeated fetch left for a memo to make cheap.
+> >
+> > **This does not close the residual below.** The coincidence named here was
+> > the *non-truncating* shape. The truncating retrievers — `search_lexical` and
+> > the trigram lookup — still deepen when too many rows were withheld, which
+> > the "an exhaustion signal removed it" row already said and which the same
+> > measurement confirms: two calls at 51 withheld, one at 50, unchanged.
+>
 > The `!=` exit test ends the loop whenever a retriever hands back a row count
 > that is not the one asked for, which a non-truncating retriever almost always
 > does. It cannot when the whole ranking totals *exactly* `FIRST_PASS_DEPTH`,
@@ -1906,7 +1923,7 @@ round-six correction below records is a different member with a different size.
 > | :-- | :-- |
 > | the pass count did not track the withheld count | it does. A truncating retriever over 6,000 matches costs 1 pass for 0–50 withheld, 2 for 51–150, 3 for 151–199 — a staircase, not a single edge |
 > | an exhaustion signal removed it | it removes only the non-truncating shape. A retriever holding 6,000 matches and asked for 100 is genuinely *not* exhausted at 51 withheld, and must still be re-asked to secure fifty visible rows. [#16](https://github.com/theurian/theurian/issues/16) states this about itself |
-> | a cache removed it | a cache changes what a repeated fetch *costs*, never whether it happens. The call counts above are measured with `_scan_cache` in place |
+> | a cache removed it | a cache changes what a repeated fetch *costs*, never whether it happens. The call counts above were measured with `_scan_cache` in place; the cache has since been deleted with #16 and they are unchanged, which is the row's own point made twice |
 > | the pass count were the only quantity that moved | it is not. Hold the pass count at one — a retriever that hands back its whole ranking — and vary the withheld count: canonical reads equal `\|ranking\|`, so 10 visible rows cost 10 reads at nothing withheld and 210 at 200 withheld. Linear, with no threshold at all |
 > | the purge did not remove it | with nothing withheld `cleared == ranked`, so either `len(ranked) != depth` or `len(cleared) == FIRST_PASS_DEPTH >= CANDIDATE_DEPTH`; both exit — exactly one pass, for both retriever shapes at sixteen corpus sizes from 1 to 6,000, with no counterexample. And `\|ranking\|` is then the visible rows alone, so the canonical-read term in the row above goes with it |
 >
@@ -2139,46 +2156,62 @@ a different absolute value. Every figure here is in-process; none went over the
 loopback hop a real client adds (TB-1), so all of them are floors on the effort
 extraction takes and not ceilings.
 
-**`SqliteIndexStore._scan_cache` is a mitigation with an expiry date, not an
-optimisation, and calling it the wrong thing is how it survives past its
-purpose.** It memoises `_scan_below_the_trigram_floor` on the three arguments
-that determine its answer, so the second call in the coincidence above costs no
+**`SqliteIndexStore._scan_cache` was a mitigation with an expiry date, not an
+optimisation, and calling it the wrong thing is how it would have survived past
+its purpose.** It memoised `_scan_below_the_trigram_floor` on the three arguments
+that determine its answer, so the second call in the coincidence above cost no
 further pass over the corpus: two calls through one store measured at 14.00 ms
 against 14.04 ms for a single call, where two independent scans cost 29.17 ms.
-As an *optimisation* it would buy nothing at all — `hybrid_answer` builds one
+As an *optimisation* it bought nothing at all — `hybrid_answer` builds one
 `SqliteIndexStore` per request (`mcp/search.py`), so absent the duplicate call
-there is no reuse window in the product for it to be an optimisation of.
+there was no reuse window in the product for it to be an optimisation of.
 
-Its real fix is the explicit exhaustion signal in
-[#16](https://github.com/theurian/theurian/issues/16): a scan branch that states
-its own exhaustion is never asked a second time, after which this field, its
-docstring, the branch that reads it, and the two tests in
-`tests/integration/test_scan_cache.py` are deleted rather than carried forward.
-It does not close the residual above — see the closure argument — and it is not
-scoped as though it does.
+**It reached its expiry date in Milestone 6 and was deleted.**
+[#16](https://github.com/theurian/theurian/issues/16) gave `IndexStore` an
+explicit exhaustion signal, so the scan branch is never asked a second time and
+the field, its docstring, the branch that read it and both tests went with it.
+Two things replace it, and only the first is what the issue promised:
+
+- the duplicate call is gone rather than made cheap, so *one search, one pass
+  over the corpus, whatever was withheld* is structural — a consequence of the
+  scan branch returning everything and saying so;
+- **"one store per search" no longer has this as its reason.**
+  `SqliteIndexStore.__init__` assigns one field, so there is no per-instance
+  state for one caller's query to leave behind for another's. That is a weaker
+  and more checkable claim than the rule it replaces, and
+  `test_the_store_holds_no_state_between_searches` reads it off the instance.
+  It is not a licence to pool; it is the removal of one reason not to.
+
+**It does not close the residual above**, and was never scoped as though it did —
+see the closure argument, and the amendment to the two-count table.
 
 Two properties the tests discovered belong here rather than only in a test
-docstring:
+docstring. Both are about the cache and are kept as the record of why it was
+scoped the way it was; neither describes code that still exists.
 
-- **"One store per search" is load-bearing for correctness, not only for
-  timing.** The cache key is `(query, project_id, include_unapproved)` and does
-  not carry the index path. That is safe only because a store's life is one
+- **"One store per search" was load-bearing for correctness, not only for
+  timing.** The cache key was `(query, project_id, include_unapproved)` and did
+  not carry the index path. That was safe only because a store's life is one
   request and an instance already *is* one file. Widen the scope and the key
-  stops identifying an answer: a store that outlived its request can answer with
-  rows from an index it never read — a different build of the same project, or
-  the same project under another `THEURIAN_DATA_DIR`. The timing reason is the
-  one this entry is about; the wrong-rows reason would survive even if the timing
-  channel did not.
-- **The dangerous mutation is the one the suite does not catch.** Promoting
-  `_scan_cache` to a class attribute fails thirteen unrelated tests — but it
-  fails them by returning one test's rows for another test's query, which reads
+  stops identifying an answer: a store that outlived its request could answer
+  with rows from an index it never read — a different build of the same project,
+  or the same project under another `THEURIAN_DATA_DIR`. The timing reason is the
+  one this entry is about; the wrong-rows reason would have survived even if the
+  timing channel did not. **Both went with the cache**, and what is left in its
+  place is the absence of any per-instance state at all.
+- **The dangerous mutation was the one the suite did not catch.** Promoting
+  `_scan_cache` to a class attribute failed thirteen unrelated tests — but it
+  failed them by returning one test's rows for another test's query, which reads
   as test pollution, and the natural repair is to put the index path in the
   *key* rather than the cache back in the *instance*. With that repair the suite
-  returns to exactly the baseline it was measured against, and only
+  returned to exactly the baseline it was measured against, and only
   `test_one_callers_withheld_rows_never_make_another_callers_search_cheaper`
-  stays red — while a store now outlives every request the daemon serves. That
+  stayed red — while a store now outlived every request the daemon serves. That
   is the shape of every T-17 face: the obvious fix closes the instance in front
-  of it and leaves the sibling.
+  of it and leaves the sibling. **Kept here because deleting the cache did not
+  delete the lesson**: the field is gone, so this exact mutation is no longer
+  available, and the shape it illustrates is what the next mitigation will be
+  read against.
 
 **`FIRST_PASS_DEPTH` is now pinned, and what is pinned is narrower than the
 mitigation.** It was unguarded when this entry was first written: reverting it to
@@ -2202,26 +2235,26 @@ Reverting the constant now fails three of those four cases and nothing else in
 the suite.
 
 **And what the second call costs is pinned separately from whether it happens**,
-because those are different quantities and only one of them a cache can reach.
-`tests/integration/test_scan_cache.py` counts statements executed *by SQLite*,
-read off a trace callback, rather than calls to `search_substring` — the port
-count is one or two with the cache present or absent, so a test built on a
-counting fake would pass with the mitigation deleted while looking like a guard:
+because those are different quantities and only one of them a cache could reach.
+`tests/integration/test_scan_exhaustion.py` counts statements executed *by
+SQLite*, read off a trace callback, as well as calls to `search_substring` — the
+port count was one or two with the cache present or absent, so a test built on a
+counting fake alone would have passed with the mitigation deleted while looking
+like a guard.
 
-- `test_one_search_scans_the_corpus_once_however_many_rows_were_withheld` —
-  delete `SqliteIndexStore._scan_cache` and one request costs two passes over the
-  corpus, and a search that crossed the edge takes roughly twice as long as one
-  that did not.
-- `test_one_callers_withheld_rows_never_make_another_callers_search_cheaper` —
-  share the cache across stores and two requests cost one pass, so one caller's
-  withheld rows make a stranger's search cheaper. The mitigation becoming the
-  channel one level up.
+`test_one_search_reads_the_scan_once_however_many_rows_were_withheld` now holds
+both counts at one, parametrised over four withheld counts straddling the old
+50/51 edge. They fail in different directions and neither implies the other: a
+regression in the exhaustion signal moves the call count, and a memo
+reintroduced to paper over such a regression would hold the statement count
+still while the call count moved — the configuration this file replaced.
 
-Both go with the cache when
-[#16](https://github.com/theurian/theurian/issues/16) lands, and the second will
-not announce itself: two requests still cost two scans with no cache at all, so
-it would sit in the suite green and guarding nothing — the exact shape this
-entry has already been caught by three times.
+`test_one_callers_withheld_rows_never_make_another_callers_search_cheaper` went
+with the cache rather than moving, and it did not announce itself: two requests
+still cost two scans with no cache at all, so it would have sat in the suite
+green and guarding nothing — the exact shape this entry has already been caught
+by three times. `test_the_store_holds_no_state_between_searches` replaces it with
+the smaller structural claim above.
 
 **Read that as a claim about passes, not about duration. Wall time is measured
 nowhere in CI.** A stopwatch assertion is flaky and ends up muted, so what is
