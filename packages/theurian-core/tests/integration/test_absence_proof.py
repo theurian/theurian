@@ -156,7 +156,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
@@ -956,19 +956,60 @@ def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
 # The generated equalities
 # ---------------------------------------------------------------------------
 
-#: Shared by every generated test here.
+#: A fixed draw sequence, and why one is not enough on its own.
+#:
+#: ``derandomize=True`` reproduces a failure across runs, and that is where its
+#: guarantee stops: the seed it derives comes from ``function_digest``, which
+#: hashes ``inspect.getsource`` of the test. **A prose-only docstring edit
+#: therefore re-rolls every example.** Measured on the
+#: ``below-the-depth-defaults`` cell, by inserting one sentence into the test's
+#: docstring and nothing else:
+#:
+#: ===================  =====================================================
+#: before               ``cache PPPPPP`` / ``median backend QPSSVUQVRVPWXTRV``
+#: after one prose line ``cache PPPPPP`` / ``handle QPYVVXQSSXVQTR``
+#: ===================  =====================================================
+#:
+#: One of three queries survived. That is the same hazard the exact pin on
+#: ``hypothesis`` in ``pyproject.toml`` exists for -- a generator whose
+#: distribution shifts changes which shapes were checked, and nothing says so --
+#: arriving through a channel the pin does not cover. This branch edited
+#: docstrings in three separate commits.
+#:
+#: So the seed is stated rather than derived. :data:`EXAMPLE_SEED` freezes the
+#: sequence against source edits; ``derandomize`` stays because it is what makes
+#: the *absence* of an explicit seed on any future test here still reproducible.
+#: Checked by repeating the measurement above with the seed in place: the same
+#: inserted sentence now leaves all three queries unchanged.
 #:
 #: ``deadline=None`` because one example builds two SQLite databases and two
-#: index files; ``derandomize=True`` because a suite that fails on a different
-#: example each run cannot be bisected; ``database=None`` because the default
-#: example database writes ``.hypothesis/`` into whatever directory pytest was
-#: launched from, which for this repository is the repository.
+#: index files. ``database=None`` because the default example database writes
+#: ``.hypothesis/`` into whatever directory pytest was launched from, which for
+#: this repository is the repository.
+#:
+#: **No ``suppress_health_check``**, deliberately. It carried ``data_too_large``
+#: and ``too_slow``, and neither is needed -- measured, the file is green
+#: without them. Suppressing ``data_too_large`` is precisely permission for
+#: examples to be discarded without anything saying so, which is the failure
+#: mode a property test in this repository can least afford. It was not
+#: theoretical: under the suppressed, unseeded configuration
+#: ``--hypothesis-show-statistics`` reported one of the payload search's
+#: nineteen attempts as ``invalid`` and silently re-drawn.
+#:
+#: What the budget buys, read off ``--hypothesis-show-statistics`` rather than
+#: counted by hand: 6 examples in each of the equality's eight cells, 18 for the
+#: payload search, 15 for ``knowledge.get`` and 10 for the generator guard --
+#: **91 examples, every one of the twelve entries stopping on ``max_examples``
+#: with 0 failing and 0 invalid**, and the whole file in about 10 s.
 _GENERATED = settings(
     deadline=None,
     derandomize=True,
     database=None,
-    suppress_health_check=[HealthCheck.data_too_large, HealthCheck.too_slow],
 )
+
+#: Fixed so a docstring edit cannot silently change what was checked -- see
+#: :data:`_GENERATED`. Any constant would do; this one is the issue number.
+EXAMPLE_SEED: Final = 29
 
 
 #: The caller's own parameters, enumerated rather than generated.
@@ -1011,6 +1052,7 @@ ARGUMENT_SETS: Final[tuple[tuple[dict[str, Any], str], ...]] = (
 @pytest.mark.parametrize(
     "sizes", (BELOW_THE_DEPTH, ACROSS_THE_DEPTH), ids=("below-the-depth", "across-the-depth")
 )
+@seed(EXAMPLE_SEED)
 @settings(_GENERATED, max_examples=6)
 @given(data=st.data())
 def test_no_published_value_varies_with_a_withheld_document(
@@ -1059,6 +1101,7 @@ def test_no_published_value_varies_with_a_withheld_document(
     )
 
 
+@seed(EXAMPLE_SEED)
 @settings(_GENERATED, max_examples=18)
 @given(case=_cases())
 def test_no_withheld_payload_appears_anywhere_a_caller_reads(
@@ -1092,6 +1135,7 @@ def test_no_withheld_payload_appears_anywhere_a_caller_reads(
         assert withheld.item_id not in published, "so did its id"
 
 
+@seed(EXAMPLE_SEED)
 @settings(_GENERATED, max_examples=15)
 @given(case=_cases())
 def test_a_withheld_item_is_refused_by_the_same_words_that_refuse_an_absent_one(
@@ -1275,6 +1319,7 @@ def test_a_rejected_item_is_never_written_into_the_index(tmp_path: Path) -> None
     ), "and the tool must not report it either"
 
 
+@seed(EXAMPLE_SEED)
 @settings(_GENERATED, max_examples=10)
 @given(case=_cases())
 def test_the_two_projects_differ_only_in_the_withheld_bodies(case: _Case) -> None:
