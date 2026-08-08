@@ -36,14 +36,15 @@ So the enumeration below is derived from ``STEPS``, and the commands the docstri
 names are derived from what those steps actually offer.
 
 **A docstring is not a screen.** Every ``--help`` check here read
-``setup_command.__doc__``, and Typer parses that text as Rich markup before
-printing it, so the two are different strings. The installer literal was the one
-place it mattered: ``'theurian[daemon]'`` in the source, ``'theurian'`` on the
-terminal, and this module green throughout. Only the assertion that turned on it
-reads the render -- see :func:`_rendered_help` -- because the ones about prose
-are about prose. What keeps *those* honest is
-``tests/unit/test_cli_help_rendering.py``, which fails on any help string in the
-CLI tree that Rich would alter at all.
+``setup_command.__doc__``, and Typer's default parses that text as Rich markup
+before printing it, so the two were different strings. The installer literal was
+the one place it mattered: ``'theurian[daemon]'`` in the source, ``'theurian'``
+on the terminal, and this module green throughout. Only the assertion that
+turned on it reads the render -- see :func:`_rendered_help` -- because the ones
+about prose are about prose. What keeps *those* honest is that ``cli/main.py``
+now passes ``rich_markup_mode=None``, pinned by
+``tests/unit/test_cli_help_rendering.py``, which renders every ``--help`` in the
+tree and fails on any string that does not arrive intact.
 """
 
 from __future__ import annotations
@@ -301,10 +302,11 @@ def _collapsed(text: str) -> str:
 def _rendered_help() -> str:
     """``theurian setup --help`` as a terminal receives it, collapsed.
 
-    Not ``setup_command.__doc__``. Typer parses that docstring as Rich markup
-    before printing it, so the two texts are not the same string: the docstring
-    now escapes the ``daemon`` extra as ``theurian\\[daemon]`` because the
-    unescaped form was being eaten between here and the screen.
+    Not ``setup_command.__doc__``. The two agree again only because
+    ``cli/main.py`` turns Rich markup off; under Typer's default the docstring
+    said ``'theurian[daemon]'`` and the terminal said ``'theurian'``. Reading
+    the render keeps this assertion true of the thing it names rather than true
+    of the file that feeds it.
 
     ``COLUMNS`` is pinned because the runner otherwise reports 80 columns, and a
     literal spanning spaces is only contiguous after collapsing if the wrap fell
@@ -419,12 +421,16 @@ def test_the_cli_docstring_denies_installing_core_and_names_the_installer() -> N
     review and the release branch, with the extra missing from every screen it
     describes.
 
-    ``tests/unit/test_cli_help_rendering.py`` asserts the same literals against
-    the same render, from a tuple written out there rather than imported. That
-    is not redundant: :data:`INSTALLERS` is pinned to ``probe_core``'s own words
-    by :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports`, so
-    this loop holds *the help and the probe agree*, and the other holds *both of
-    them still say what a human wrote down*.
+    ``tests/integration/test_cli_help_without_rich.py`` asserts the same two
+    literals against the same command's help, and it is not a duplicate of this
+    loop: it renders under ``TYPER_USE_RICH=0``, which formats through a
+    different code path in Typer and cannot be reached from this interpreter.
+    An earlier version of this paragraph justified the pair by claiming
+    :data:`INSTALLERS` is derived from ``probe_core`` while the other tuple is
+    independent. It is the other way round -- see :data:`INSTALLERS`, which is
+    itself the independently written literal, asserted *equal* to the step's
+    words rather than taken from them. The two tuples differ by mode, and by
+    case: this one is compared after :func:`_collapsed` lowercases.
     """
     doc = setup_command.__doc__ or ""
 
