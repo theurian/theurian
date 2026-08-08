@@ -71,6 +71,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   verdict to stderr on every session that hits it, so the remedy that could not
   be followed was the one most likely to be read.
 
+  **That last sentence is true only from
+  [#90](https://github.com/theurian/theurian/pull/90), which this change is
+  rebased onto.** `lib.sh` opened `set -euo pipefail` and `session-start.sh`
+  sources it, so a bare assignment whose command exits 3 aborted the hook before
+  it printed anything. Measured against both revisions: `set -euo pipefail` gives
+  exit 3 and no output at all, `set -uo pipefail` gives the warning, the verdict
+  and exit 0. Read on the branch alone the claim looks unsupported, which is why
+  the dependency is named here.
+
   It is not reachable in the shipped configuration, and that is a property of
   the current version rather than of the code: Core `0.1.0.dev0` renders as
   `0.1.0-dev.0` and the plugin's declared floor is `0.1.0-dev.0`, so

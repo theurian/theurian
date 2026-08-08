@@ -999,8 +999,20 @@ $ echo $?
 3
 ```
 
-3 is `THEURIAN_EXIT_INCOMPATIBLE` in the plugin's `lib.sh`. The remedy nobody
-could follow was the one most likely to be read.
+3 is `THEURIAN_EXIT_INCOMPATIBLE` in the plugin's `lib.sh`, and it is the branch
+that prints the verdict. The remedy nobody could follow was the one most likely
+to be read.
+
+**That printing is true only from [#90](https://github.com/theurian/theurian/pull/90).**
+Before it, `lib.sh` opened `set -euo pipefail` and `session-start.sh` sources it,
+so `errexit` propagated into the hook: `verdict="$(theurian::compat_check)"` is a
+bare assignment, and a right-hand side exiting 3 aborted the shell there. The
+warning, the `printf` of the verdict and the final `exit 0` were all unreachable.
+Measured against both revisions with the real `lib.sh` — `set -euo pipefail`
+gives exit 3 and no output at all; `set -uo pipefail` gives the warning, the
+verdict and exit 0. So for as long as that bug shipped, this entry's "reaches
+users on the surface this entry already singles out" was true of the remedy's
+*reachability* and false of anyone actually seeing it.
 
 `core-too-old` is not the only outcome with a production path — `core-too-new`
 and `protocol-mismatch` both resolve through the same call and both exit 3,
