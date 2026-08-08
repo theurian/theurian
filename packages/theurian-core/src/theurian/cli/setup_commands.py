@@ -1,4 +1,4 @@
-"""``theurian setup``, ``doctor``, and ``uninstall`` (FR-L1, FR-L5).
+r"""``theurian setup``, ``doctor``, and ``uninstall`` (FR-L1, FR-L5).
 
 A composition root. This is where the abstract steps meet concrete adapters:
 the file-backed secret store, the LaunchAgent or systemd manager, Claude Code's
@@ -9,9 +9,19 @@ There is one implementation of setup, because two would drift and the one that
 drifted would be the one the user ran.
 
 Typer prints a command's docstring and every ``typer.Option(help=...)`` string
-in this module verbatim, so both stay plain prose with single backticks. A
-``:func:`` role or a ``literal`` reaches the user as its own markup -- which is
-how the reST first drafted here was caught.
+in this module, so both stay plain prose with single backticks. A ``:func:``
+role or a ``literal`` reaches the user as its own markup -- which is how the
+reST first drafted here was caught.
+
+It is not printed *verbatim*: Typer parses each of those strings as Rich markup
+first, so a square bracket opening on a lowercase letter is read as a style tag
+and deleted. ``'theurian[daemon]'`` reached the screen as ``'theurian'``, one
+sentence above the line explaining that the extra is what makes
+``theurian daemon start`` work -- so the correction that added the extra (#82)
+landed in the file and never in the output. Escape the bracket as ``\[`` --
+which is why the docstring below is a raw string -- and keep it that way:
+``tests/unit/test_cli_help_rendering.py`` renders every ``--help`` in the tree
+and fails on any string Rich would alter.
 """
 
 from __future__ import annotations
@@ -132,7 +142,7 @@ def setup_command(
     port: PortOption = DEFAULT_PORT,
     as_json: JsonFlag = False,
 ) -> None:
-    """Configure this machine to run Theurian, and connect Claude Code to it.
+    r"""Configure this machine to run Theurian, and connect Claude Code to it.
 
     Creates the data directory or tightens an existing one to 0700, mints and
     stores the local access token, writes the env file that references it,
@@ -144,8 +154,8 @@ def setup_command(
     Setup cannot tell you Core is missing, because setup is Core: it runs from
     the installation it would have to create, and a shell with no `theurian` on
     its PATH never reaches this text at all. Core arrives through
-    `uv tool install 'theurian[daemon]'` or `pipx install 'theurian[daemon]'`, and
-    no step here installs anything. The extra is not decoration: without it
+    `uv tool install 'theurian\[daemon]'` or `pipx install 'theurian\[daemon]'`,
+    and no step here installs anything. The extra is not decoration: without it
     `theurian daemon start` has no server to run, and `core-present` refuses.
 
     The other 11 steps only report what they found: platform, core-present,

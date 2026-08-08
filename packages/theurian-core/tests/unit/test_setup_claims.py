@@ -34,6 +34,16 @@ a two-item list of the eleven steps that only report -- false the same way, and
 for the same reason: prose about a step's behaviour, written without running it.
 So the enumeration below is derived from ``STEPS``, and the commands the docstring
 names are derived from what those steps actually offer.
+
+**A docstring is not a screen.** Every ``--help`` check here read
+``setup_command.__doc__``, and Typer parses that text as Rich markup before
+printing it, so the two are different strings. The installer literal was the one
+place it mattered: ``'theurian[daemon]'`` in the source, ``'theurian'`` on the
+terminal, and this module green throughout. Only the assertion that turned on it
+reads the render -- see :func:`_rendered_help` -- because the ones about prose
+are about prose. What keeps *those* honest is
+``tests/unit/test_cli_help_rendering.py``, which fails on any help string in the
+CLI tree that Rich would alter at all.
 """
 
 from __future__ import annotations
@@ -44,11 +54,13 @@ from typing import Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from typer.testing import CliRunner
 
 from theurian.application import setup_steps
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS
+from theurian.cli.main import app
 from theurian.cli.setup_commands import setup_command
 from theurian.domain.setup import SetupReport, SetupState, StepId, StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
@@ -286,6 +298,25 @@ def _collapsed(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def _rendered_help() -> str:
+    """``theurian setup --help`` as a terminal receives it, collapsed.
+
+    Not ``setup_command.__doc__``. Typer parses that docstring as Rich markup
+    before printing it, so the two texts are not the same string: the docstring
+    now escapes the ``daemon`` extra as ``theurian\\[daemon]`` because the
+    unescaped form was being eaten between here and the screen.
+
+    ``COLUMNS`` is pinned because the runner otherwise reports 80 columns, and a
+    literal spanning spaces is only contiguous after collapsing if the wrap fell
+    on one of them.
+    """
+    result = CliRunner().invoke(
+        app, ["setup", "--help"], env={"COLUMNS": "200"}, catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    return _collapsed(result.output)
+
+
 def _paragraphs(text: str) -> list[str]:
     """The document's paragraphs, soft wraps joined and block boundaries kept.
 
@@ -376,12 +407,32 @@ def test_the_installers_pinned_here_are_the_ones_the_step_reports(
 
 
 def test_the_cli_docstring_denies_installing_core_and_names_the_installer() -> None:
+    """Two claims, read from the two places they are true of.
+
+    The denial is a property of the prose, so it is read from the docstring.
+    Naming the installer is a property of what a user sees, so it is read from
+    the render -- and those disagreed: the docstring carried
+    ``'theurian[daemon]'`` while ``--help`` printed ``'theurian'``, because
+    Typer parses the docstring as Rich markup and a bracket opening on a
+    lowercase letter is a style tag. Reading the source, this loop went green
+    on the commit that introduced the discrepancy and stayed green through the
+    review and the release branch, with the extra missing from every screen it
+    describes.
+
+    ``tests/unit/test_cli_help_rendering.py`` asserts the same literals against
+    the same render, from a tuple written out there rather than imported. That
+    is not redundant: :data:`INSTALLERS` is pinned to ``probe_core``'s own words
+    by :func:`test_the_installers_pinned_here_are_the_ones_the_step_reports`, so
+    this loop holds *the help and the probe agree*, and the other holds *both of
+    them still say what a human wrote down*.
+    """
     doc = setup_command.__doc__ or ""
 
     assert not _install_claims_naming_no_installer(doc)
     assert "setup cannot tell you core is missing, because setup is core" in _collapsed(doc)
+    rendered = _rendered_help()
     for installer in INSTALLERS:
-        assert installer in _collapsed(doc), f"`theurian setup --help` does not name {installer}"
+        assert installer in rendered, f"`theurian setup --help` does not print {installer}"
 
 
 def test_the_cli_docstring_enumerates_every_step_that_only_reports() -> None:
