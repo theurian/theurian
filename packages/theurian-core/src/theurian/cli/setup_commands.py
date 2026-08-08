@@ -12,6 +12,16 @@ Typer prints a command's docstring and every ``typer.Option(help=...)`` string
 in this module verbatim, so both stay plain prose with single backticks. A
 ``:func:`` role or a ``literal`` reaches the user as its own markup -- which is
 how the reST first drafted here was caught.
+
+**Verbatim is a property this module does not own.** It holds because
+``cli/main.py`` builds the app with ``rich_markup_mode=None``; with Typer's
+default, ``'theurian[daemon]'`` in the sentence below printed as
+``'theurian'``, one line above the sentence explaining that the extra is what
+makes ``theurian daemon start`` work. Escaping it was tried and reverted --
+``TYPER_USE_RICH=0`` formats through Click, where the escape reaches the user
+as a backslash and the command it prints is not an installable requirement.
+``tests/unit/test_cli_help_rendering.py`` renders every ``--help`` in the tree
+under both settings and fails on any string that does not arrive intact.
 """
 
 from __future__ import annotations
@@ -144,8 +154,8 @@ def setup_command(
     Setup cannot tell you Core is missing, because setup is Core: it runs from
     the installation it would have to create, and a shell with no `theurian` on
     its PATH never reaches this text at all. Core arrives through
-    `uv tool install 'theurian[daemon]'` or `pipx install 'theurian[daemon]'`, and
-    no step here installs anything. The extra is not decoration: without it
+    `uv tool install 'theurian[daemon]'` or `pipx install 'theurian[daemon]'`,
+    and no step here installs anything. The extra is not decoration: without it
     `theurian daemon start` has no server to run, and `core-present` refuses.
 
     The other 11 steps only report what they found: platform, core-present,

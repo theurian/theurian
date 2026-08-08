@@ -34,6 +34,21 @@ app = typer.Typer(
     help="Git-native engineering knowledge for AI agents.",
     no_args_is_help=True,
     add_completion=False,
+    # Help text is printed, not interpreted. Typer's default parses every help
+    # string as Rich markup, which deletes `[` followed by a lowercase letter,
+    # `#` or `@` -- `uv tool install 'theurian[daemon]'` printed as
+    # `uv tool install 'theurian'` -- and raises `MarkupError` on `[/usr/bin]`,
+    # taking `--help` from wrong to absent. Escaping the bracket does not fix
+    # it: `TYPER_USE_RICH=0` is a documented configuration that formats through
+    # Click instead, where an escape reaches the user as a literal backslash
+    # and `uv tool install 'theurian\[daemon]'` is not an installable
+    # requirement. There is no one docstring that is right in both modes while
+    # markup is on. `None` takes the same Click path in both
+    # (`typer/core.py:982`, `:1215`), so the source text is the printed text
+    # everywhere; it propagates to every group and command added below.
+    # Nothing here ever wanted markup -- `rich` is not a dependency of this
+    # package and no module under `src/` imports it.
+    rich_markup_mode=None,
 )
 
 compat_app = typer.Typer(help="Inspect Core/plugin compatibility.", no_args_is_help=True)
