@@ -104,8 +104,39 @@ pins the breakage, with a corpus this module's own generator found. Read
 :mod:`theurian.application.retrieval_service` for the mechanism, T-17a in the
 threat model for the acceptance, and issue #15 for the fix.
 
-Three further things this file does not reach, so nobody has to rediscover them:
+**Three of the five published tools, and the other two are not oversights.** The
+population is ``@server.tool(name=...)`` in :mod:`theurian.mcp.tools` -- five --
+and the pairs here compare ``knowledge.search`` and ``knowledge.get``:
 
+``knowledge.status``
+    **the equality does not hold for it, by design.** Two projects differing by
+    one withheld item return the same ``itemCount`` and ``itemsByStatus`` and
+    different ``stateHash`` and ``appliedMigrations``. The tool's own comment
+    carries the argument and the measurement, and the acceptance is filed as
+    issue #19. Comparing it here would fail for a reason that is recorded, and
+    the honest response to that failure -- relaxing the comparison -- is what
+    would then be wrong.
+``project.list``, ``system.capabilities``
+    not project-scoped. Neither reads knowledge, so no corpus difference can
+    reach either, and a pair over them would be two identical answers compared.
+
+Named rather than left out, because "this file compares the response" reads as
+"the response", and a reader counting tools should not have to.
+
+Four further things this file does not reach, so nobody has to rediscover them:
+
+- **The unranked fallback path.** Every pair here answers from an index, so
+  :func:`theurian.mcp.search.substring_answer` -- a second, whole answer path
+  with its own gate (:func:`~theurian.domain.enums.may_surface`, applied in
+  ``_scan``) -- is never compared. Reaching it from a pair means either breaking
+  the index, or passing ``includeUnapproved`` against an index built without
+  drafts. The second is the tidy one and it is deliberately not done: for the
+  draft shape that flag makes the withheld documents *visible*, so the two
+  corpora would differ in a document the caller may read and the equality would
+  fail honestly. Making it safe means coupling a parametrised argument to a
+  generated corpus property, which is how an example silently stops testing what
+  its id says -- the defect this file has already had once. Left for a pair
+  built specifically for the fallback.
 - **Durations, and this is a decision rather than an omission.** Issue #29 asks
   for a statistical latency test -- ``dudect``-style, or a Welch t-test over
   samples classed by withheld count -- so that a regression in the timing family
@@ -144,6 +175,32 @@ example, so it goes through the application layer instead -- a real SQLite
 canonical store, a real index build, a real embedder, and the real MCP tool
 dispatch. What is skipped is the migration engine and the CLI, neither of which
 takes part in answering a query.
+
+Why this is one file and not two
+--------------------------------
+It is past the 800-line guideline, and the obvious seam is real: the T-17a block
+at the end is three hand-written tests that share only :func:`_build_project` and
+:class:`_Document` with everything above. It is not split, for one reason.
+
+**The T-17a block is the exception to the property the rest of the file
+asserts**, and the pair only means anything read together: above, "no published
+value varies with a withheld document"; below, "except that it does, here is the
+corpus, here is the issue that closes it, and this test goes red when it does".
+Splitting puts the acceptance in a file that a reader of the guarantee never
+opens -- and Milestone 5's account of T-17a is precisely that of an acceptance
+drifting away from the measurement behind it, carried for two rounds in the
+orchestrator's own words before anyone re-measured it.
+
+The secondary cost is that the split needs a shared helper module in a test tree
+with no package structure (no ``__init__.py``, ``--import-mode=importlib``),
+which is a new import mechanism introduced for one file.
+
+Sizes here for calibration rather than as an excuse: ``test_mcp_tools.py`` is
+3,757 lines, ``test_retrieval_service.py`` 2,002 and
+``test_canonical_store_corruption.py`` 1,829, so this is not the outlier the raw
+number suggests. The guideline still bites the day a *fourth* concern lands
+here; the two natural next ones -- a fallback-path pair and a Japanese corpus --
+should each be their own file rather than a fourth section of this one.
 """
 
 from __future__ import annotations
