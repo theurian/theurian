@@ -104,7 +104,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
@@ -181,7 +181,15 @@ PROJECT_ID: Final = "absence-pair"
 #: `BD`, not `BU`: Crockford base32 has no U, and `tests/unit/test_test_fixtures.py`
 #: is what catches the readable spelling.
 INDEX_BUILD_ID: Final = "01K1BDAAAA01234567890ABCDE"
-STATE_HASH: Final = StateHash(ContentHash("a" * 64))
+
+#: Two canonical states, because the interesting withholding happens *between*
+#: them: the index is built against :data:`STATE_AT_BUILD` and the pointer then
+#: names :data:`STATE_NOW`, so a search reports ``stale: true`` -- which is the
+#: true description of a project whose knowledge moved after its last build, and
+#: the only window in which :class:`~theurian.application.visibility.
+#: CanonicalVisibility` has anything to do.
+STATE_AT_BUILD: Final = StateHash(ContentHash("a" * 64))
+STATE_NOW: Final = StateHash(ContentHash("b" * 64))
 MIGRATION_ID: Final = MigrationId("01K1MGAAAA01234567890ABCDE")
 
 #: How far the run instant sits from a day boundary of ``created_at``.
@@ -215,38 +223,85 @@ class _Document:
     status: KnowledgeStatus
 
 
+#: Withheld at query time because the *canonical store* retired it after the
+#: index was built. Its chunks carry ``status = 'approved'``, so every retriever's
+#: SQL admits them and
+#: :class:`~theurian.application.visibility.CanonicalVisibility` is the only thing
+#: between the row and the caller. This is the shape Milestone 5's five faces
+#: lived in.
+RETIRED_AFTER_BUILD: Final = "retired-after-build"
+
+#: Withheld at query time because the row is a ``draft`` and the caller did not
+#: ask for drafts. Its chunks carry ``status = 'draft'``, so the retrievers' own
+#: ``WHERE`` refuses them and the canonical gate is never consulted about them.
+#:
+#: A weaker shape, kept because it is a real product state -- an index built with
+#: ``--include-unapproved`` and a search that did not ask -- and because a
+#: separation here would be a defect in a different gate.
+DRAFT_IN_AN_UNAPPROVED_INDEX: Final = "draft-in-an-unapproved-index"
+
+WITHHOLDING_MECHANISMS: Final = (RETIRED_AFTER_BUILD, DRAFT_IN_AN_UNAPPROVED_INDEX)
+
+
 @dataclass(frozen=True, slots=True)
 class _Case:
     """One generated pair, before either project exists.
 
     Everything here is shared by the two projects except :attr:`payloads`, whose
     first element goes to the probe and second to the control. That is the whole
-    of the difference between them, and it lives in ``draft`` items neither
-    caller may read.
+    of the difference between them, and it lives in items neither caller may read.
     """
 
     visible: tuple[_Document, ...]
-    #: Body of each withheld draft, minus its payload. Identical in both
+    #: Body of each withheld document, minus its payload. Identical in both
     #: projects, so every collection statistic it contributes is identical too.
     withheld_filler: tuple[str, ...]
     withheld_titles: tuple[str, ...]
-    #: ``(probe, control)`` per withheld draft: equal length, one character
+    #: ``(probe, control)`` per withheld document: equal length, one character
     #: apart, drawn from the alphabet no visible row can produce.
     payloads: tuple[tuple[str, str], ...]
+    #: One of :data:`WITHHOLDING_MECHANISMS`. Generated rather than fixed because
+    #: the two are stopped by different code, and a suite that only ever built one
+    #: of them would report the other as covered.
+    withheld_by: str
     query: str
     limit: int
     max_tokens: int
     use_dense: bool
 
+    @property
+    def build_status(self) -> KnowledgeStatus:
+        """What the withheld documents are when the index is written.
+
+        ``approved`` for the retired shape: it has to be in the index as a row a
+        retriever will return, or the canonical gate never sees it and the pair
+        proves nothing about the gate. That mistake was made in this file's first
+        version -- every withheld document was a ``draft``, so the retrievers'
+        own ``WHERE`` removed it and deleting the canonical gate outright left
+        all ten tests here green.
+        """
+        return (
+            KnowledgeStatus.APPROVED
+            if self.withheld_by == RETIRED_AFTER_BUILD
+            else KnowledgeStatus.DRAFT
+        )
+
+    @property
+    def retired(self) -> tuple[str, ...]:
+        """Which items are moved to ``deprecated`` after the index is written."""
+        if self.withheld_by != RETIRED_AFTER_BUILD:
+            return ()
+        return tuple(document.item_id for document in self.withheld(secret=True))
+
     def withheld(self, *, secret: bool) -> tuple[_Document, ...]:
-        """The withheld drafts as one side of the pair writes them."""
+        """The withheld documents as one side of the pair writes them."""
         return tuple(
             _Document(
                 item_id=f"architecture.withheld-{index:02d}",
                 revision_id=_ulid("WH", index),
                 title=self.withheld_titles[index],
                 body=f"{filler} {pair[0] if secret else pair[1]}",
-                status=KnowledgeStatus.DRAFT,
+                status=self.build_status,
             )
             for index, (filler, pair) in enumerate(
                 zip(self.withheld_filler, self.payloads, strict=True)
@@ -314,31 +369,51 @@ def _payload_pair() -> st.SearchStrategy[tuple[str, str]]:
     )
 
 
-def _visible_documents() -> st.SearchStrategy[tuple[_Document, ...]]:
-    """An approved corpus, sized across the candidate-depth boundary.
+def _visible_documents(sizes: tuple[int, ...]) -> st.SearchStrategy[tuple[_Document, ...]]:
+    """An approved corpus of one of ``sizes`` documents.
 
-    Up to sixty documents because :data:`CANDIDATE_DEPTH` is fifty. A pair whose
-    corpora both fit inside one retriever's depth cannot tell a depth loop that
-    counts visible rows from one that counts raw ones -- which is the fourth face
-    in :mod:`theurian.application.retrieval_service`'s table and the one that
-    recovered a credential at the default budget.
+    A *ladder* rather than ``st.lists(min_size=2, max_size=60)``, because the
+    interesting sizes are rare under the natural distribution and the boundary
+    they straddle is exact. :data:`~theurian.application.retrieval_service.
+    CANDIDATE_DEPTH` is fifty: a pair whose corpora both fit inside one
+    retriever's depth cannot tell a depth loop that counts *visible* rows from
+    one that counts raw ones -- the fourth face in
+    :mod:`theurian.application.retrieval_service`'s table, and the one that
+    recovered a credential at the default token budget.
+
+    Measured: with the size drawn as an ordinary list length, twenty-five
+    examples produced nothing above the boundary and the mutation replacing the
+    depth loop with a single fifty-row fetch survived every test in this file.
     """
     document = st.tuples(st.lists(_WORD, min_size=1, max_size=3).map(" ".join), _prose())
-    return st.lists(document, min_size=2, max_size=60).map(
-        lambda pairs: tuple(
-            _Document(
-                item_id=f"architecture.visible-{index:02d}",
-                revision_id=_ulid("VS", index),
-                title=title,
-                body=body,
-                status=KnowledgeStatus.APPROVED,
+    return (
+        st.sampled_from(sizes)
+        .flatmap(lambda size: st.lists(document, min_size=size, max_size=size))
+        .map(
+            lambda pairs: tuple(
+                _Document(
+                    item_id=f"architecture.visible-{index:02d}",
+                    revision_id=_ulid("VS", index),
+                    title=title,
+                    body=body,
+                    status=KnowledgeStatus.APPROVED,
+                )
+                for index, (title, body) in enumerate(pairs)
             )
-            for index, (title, body) in enumerate(pairs)
         )
     )
 
 
-def _cases() -> st.SearchStrategy[_Case]:
+#: Corpora smaller than one retriever's candidate depth.
+BELOW_THE_DEPTH: Final = (2, 5, 12)
+
+#: Corpora at and past it. ``CANDIDATE_DEPTH`` is 50 and a document of this size
+#: is one chunk, so 62 documents matching a common term is 62 candidate rows for
+#: fifty slots -- which is what makes a displaced row observable at all.
+ACROSS_THE_DEPTH: Final = (49, 51, 62)
+
+
+def _cases(sizes: tuple[int, ...] = BELOW_THE_DEPTH + ACROSS_THE_DEPTH) -> st.SearchStrategy[_Case]:
     """One generated pair, in one of the three shapes the module docstring names.
 
     Built in one ``flatmap`` because two of the guarantees are relational and
@@ -364,12 +439,13 @@ def _cases() -> st.SearchStrategy[_Case]:
             payloads=st.lists(_payload_pair(), min_size=3, max_size=3),
             shares_vocabulary=st.booleans(),
             names_the_secret=st.booleans(),
+            withheld_by=st.sampled_from(WITHHOLDING_MECHANISMS),
             limit=st.sampled_from((1, 3, 10, MAX_RESULTS)),
             max_tokens=st.sampled_from((2_000, 8_000, MAX_BUDGET_TOKENS)),
             use_dense=st.booleans(),
         )
 
-    return _visible_documents().flatmap(with_query)
+    return _visible_documents(sizes).flatmap(with_query)
 
 
 def _payload_prose() -> st.SearchStrategy[str]:
@@ -410,6 +486,7 @@ def _assemble(  # noqa: PLR0913 - one parameter per generated knob
     payloads: list[tuple[str, str]],
     shares_vocabulary: bool,
     names_the_secret: bool,
+    withheld_by: str,
     limit: int,
     max_tokens: int,
     use_dense: bool,
@@ -436,6 +513,7 @@ def _assemble(  # noqa: PLR0913 - one parameter per generated knob
         withheld_filler=filler,
         withheld_titles=tuple(titles[: len(fillers)]),
         payloads=tuple(chosen),
+        withheld_by=withheld_by,
         query=" ".join(query_terms),
         limit=limit,
         max_tokens=max_tokens,
@@ -489,21 +567,81 @@ def _item(document: _Document, created_at: datetime) -> KnowledgeItem:
     )
 
 
-def _build_project(
-    root: Path, documents: tuple[_Document, ...], created_at: datetime
-) -> ProjectRegistry:
-    """One project: a canonical store, an index that holds its drafts, a registry.
+def _write_active_state(paths: ProjectPaths, state: StateHash, updated_at: datetime) -> None:
+    """Publish which canonical state this project is serving.
 
-    ``include_unapproved`` on the *build* and not on the search is what makes a
-    withheld row exist at all: the draft's chunks are in the index file, and
-    :class:`~theurian.application.visibility.CanonicalVisibility` withholds them
-    from every query that does not ask for drafts.
+    Written by hand rather than through
+    :func:`~theurian.application.project_service.write_active_state` because the
+    filename must stay :data:`STATE_NOW`'s throughout: this builder writes one
+    database and moves the pointer's *hash* across it, where ``migrate apply``
+    would write a second file. What a search reads off the pointer -- the hash it
+    reports as ``snapshotId``, and the one it compares the index's against -- is
+    identical either way.
+    """
+    paths.active_pointer.write_text(
+        json.dumps(
+            ActiveState(
+                state_hash=state,
+                database_filename=STATE_NOW.database_filename,
+                migration_count=1,
+                updated_at=updated_at.isoformat(),
+            ).to_json()
+        ),
+        encoding="utf-8",
+    )
+
+
+def _retire(item: KnowledgeItem) -> KnowledgeItem:
+    """The same item, ``deprecated``.
+
+    ``deprecated`` rather than ``draft`` because
+    :func:`~theurian.domain.enums.may_surface` refuses it under *every* flag, so
+    a caller cannot reach the row by passing ``includeUnapproved`` -- which is
+    what makes it withheld rather than merely off by default.
+    """
+    return replace(item, status=KnowledgeStatus.DEPRECATED)
+
+
+def _retire_in_the_store(
+    database: Path, paths: ProjectPaths, items: tuple[KnowledgeItem, ...]
+) -> None:
+    """The canonical write the index never saw."""
+    with write_transaction(database, paths.write_lock) as connection:
+        writer = SqliteWriter(connection)
+        for item in items:
+            writer.put_item(item)
+
+
+def _build_project(
+    root: Path,
+    documents: tuple[_Document, ...],
+    created_at: datetime,
+    retired: tuple[str, ...] = (),
+) -> ProjectRegistry:
+    """One project, built the way the withholding it is meant to exercise needs.
+
+    Two canonical writes with an index build between them, because *when* the
+    index was written relative to the canonical state is the whole of what
+    decides which gate stops a row:
+
+    1. every document is written at its build-time status and the index is built,
+       so a document named in ``retired`` is in the index as ``approved`` and
+       every retriever's ``WHERE`` will return it;
+    2. the documents in ``retired`` are moved to ``deprecated``, and the active
+       pointer moves to :data:`STATE_NOW` while the index keeps
+       :data:`STATE_AT_BUILD` -- which is what makes ``stale`` true and what
+       leaves :class:`~theurian.application.visibility.CanonicalVisibility` as
+       the only thing between that row and the caller.
+
+    With ``retired`` empty this builds the other shape: the index holds drafts
+    because it was built with ``include_unapproved``, and a search that does not
+    ask for drafts never gets them past the retrievers' own SQL.
     """
     paths = ProjectPaths.of(root)
     paths.state.mkdir(parents=True, exist_ok=True)
     paths.runtime.mkdir(parents=True, exist_ok=True)
-    database = paths.database_for(STATE_HASH)
-    create_database(database, state_hash=str(STATE_HASH), engine_version=1)
+    database = paths.database_for(STATE_NOW)
+    create_database(database, state_hash=str(STATE_NOW), engine_version=1)
 
     with write_transaction(database, paths.write_lock) as connection:
         writer = SqliteWriter(connection)
@@ -521,17 +659,13 @@ def _build_project(
             writer.append_revision(_revision(document, created_at))
             writer.put_item(_item(document, created_at))
 
-    paths.active_pointer.write_text(
-        json.dumps(
-            ActiveState(
-                state_hash=STATE_HASH,
-                database_filename=STATE_HASH.database_filename,
-                migration_count=1,
-                updated_at=created_at.isoformat(),
-            ).to_json()
-        ),
-        encoding="utf-8",
-    )
+    # The state this build sees. With nothing to retire it is already the final
+    # state, so a search reports `stale: false`; with a retirement to come it is
+    # the earlier one, and the pointer moves past it below. Getting this wrong is
+    # not cosmetic -- `stale` decides `retrieval.note`, the note is priced into
+    # the envelope, and the envelope decides how many results fit a budget.
+    built_from = STATE_AT_BUILD if retired else STATE_NOW
+    _write_active_state(paths, built_from, created_at)
     IndexBuilder(
         store_factory=SqliteCanonicalStore,
         index_factory=SqliteIndexStore,
@@ -541,7 +675,7 @@ def _build_project(
             database=database,
             index_path=paths.index_for(INDEX_BUILD_ID),
             project_id=PROJECT_ID,
-            state_hash=str(STATE_HASH),
+            state_hash=str(built_from),
             index_build_id=INDEX_BUILD_ID,
             include_unapproved=True,
         )
@@ -550,13 +684,24 @@ def _build_project(
         json.dumps(
             {
                 "indexBuildId": INDEX_BUILD_ID,
-                "stateHash": str(STATE_HASH),
+                "stateHash": str(built_from),
                 "projectId": PROJECT_ID,
                 "indexesUnapproved": True,
             }
         ),
         encoding="utf-8",
     )
+
+    if retired:
+        # The retirement the index never saw. `put_item` upserts, so this leaves
+        # the revision -- and every chunk built from it -- exactly where it was.
+        by_id = {document.item_id: document for document in documents}
+        _retire_in_the_store(
+            database,
+            paths,
+            tuple(_retire(_item(by_id[item_id], created_at)) for item_id in retired),
+        )
+        _write_active_state(paths, STATE_NOW, created_at)
 
     registry = ProjectRegistry(path=root / "registry" / "projects.json")
     registry.path.parent.mkdir(parents=True, exist_ok=True)
@@ -582,14 +727,20 @@ class _Pair:
 
     probe: ProjectRegistry
     control: ProjectRegistry
+    #: The probe's project root, so a guard can read its index file directly.
+    probe_root: Path
     case: _Case
 
 
 def _pair(base: Path, case: _Case) -> _Pair:
     created_at = datetime.now(UTC) - AGE_OFFSET
+    probe_root = base / "probe"
     return _Pair(
-        probe=_build_project(base / "probe", case.documents(secret=True), created_at),
-        control=_build_project(base / "control", case.documents(secret=False), created_at),
+        probe=_build_project(probe_root, case.documents(secret=True), created_at, case.retired),
+        control=_build_project(
+            base / "control", case.documents(secret=False), created_at, case.retired
+        ),
+        probe_root=probe_root,
         case=case,
     )
 
@@ -626,41 +777,84 @@ def _failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
     return str(raised.value)
 
 
+def _offered_by_the_index(root: Path, case: _Case, *, include_unapproved: bool) -> set[str]:
+    """Which item ids this query's retrievers hand up out of the index file.
+
+    Read straight off :class:`~theurian.infrastructure.sqlite.index_store.
+    SqliteIndexStore`, below every gate, because that is the only place the
+    precondition can be established: a response that omits a withheld document
+    proves nothing if no retriever ever offered it.
+
+    Both scored retrievers are asked. The trigram one is not decoration here --
+    it is the only one that can match a payload with no word boundary in it, and
+    it is the one Milestone 5's extraction attack ran through.
+    """
+    index = SqliteIndexStore(ProjectPaths.of(root).index_for(INDEX_BUILD_ID))
+    rows = [
+        *index.search_lexical(
+            case.query,
+            project_id=PROJECT_ID,
+            limit=MAX_RESULTS,
+            include_unapproved=include_unapproved,
+        ),
+        *index.search_substring(
+            case.query,
+            project_id=PROJECT_ID,
+            limit=MAX_RESULTS,
+            include_unapproved=include_unapproved,
+        ),
+    ]
+    return {row.item_id for row in rows}
+
+
 def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
     """Refuse to pass on an example that proved nothing.
 
-    Three ways a generated pair can be green while testing nothing, and each has
-    already happened to a hand-written version of this comparison:
+    Four ways a generated pair can be green while testing nothing. The third is
+    not hypothetical: this file's first version made every withheld document a
+    ``draft``, whose chunks the retrievers' own ``WHERE`` refuses, so the
+    canonical gate was never asked about them -- and deleting that gate outright
+    (``cleared = tuple(ranked)``) left all ten tests here green while turning 38
+    parametrisations of ``test_mcp_tools.py`` red.
 
     - the answer is empty, so two empty answers are being compared;
-    - the withheld draft is not reachable by this query at any depth, so there
-      was nothing for the gate to withhold;
-    - the payloads are equal, so the two projects are the same project.
+    - the payloads are equal, so the two projects are the same project;
+    - **no retriever offers the withheld row**, so nothing downstream had a
+      chance to leak it;
+    - the withheld row is in the answer, which is a leak rather than a bad pair.
 
     Asserted rather than filtered. ``hypothesis`` will happily generate a corpus
     of one empty document forever, and an example dropped by ``assume`` leaves no
     trace in the run.
     """
     case = pair.case
+    root = pair.probe_root
+    withheld_ids = {document.item_id for document in case.withheld(secret=True)}
+
     assert probe["count"] > 0, "two empty answers prove nothing about withholding"
     assert all(secret != decoy for secret, decoy in case.payloads), (
         "the two projects must actually differ"
     )
 
-    reachable = _search(
-        pair.probe,
-        case,
-        includeUnapproved=True,
-        limit=MAX_RESULTS,
-        maxTokens=MAX_BUDGET_TOKENS,
-    )
-    withheld_ids = {document.item_id for document in case.withheld(secret=True)}
-    assert withheld_ids & {result["itemId"] for result in reachable["results"]}, (
-        "this query must be able to reach a withheld draft when the flag permits "
-        "it, or the comparison below is between two answers nothing was hidden from"
-    )
+    offered = _offered_by_the_index(root, case, include_unapproved=False)
+    if case.withheld_by == RETIRED_AFTER_BUILD:
+        assert withheld_ids & offered, (
+            "a retired document's chunks are still stamped `approved` in the "
+            "index, so a retriever must offer them on the caller's own flags -- "
+            "if it does not, the canonical gate is never consulted and this pair "
+            "says nothing about it"
+        )
+    else:
+        assert not withheld_ids & offered, (
+            "a draft's chunks are stamped `draft`, so the retrievers' own WHERE "
+            "must refuse them before any gate is asked"
+        )
+        assert withheld_ids & _offered_by_the_index(root, case, include_unapproved=True), (
+            "while the index must still hold them, or this pair differs in nothing"
+        )
+
     assert not withheld_ids & {result["itemId"] for result in probe["results"]}, (
-        "and it must not reach one when the flag does not"
+        "and no withheld document may be in the answer"
     )
 
 
@@ -683,34 +877,72 @@ _GENERATED = settings(
 )
 
 
-@settings(_GENERATED, max_examples=25)
-@given(case=_cases())
+#: The caller's own parameters, enumerated rather than generated.
+#:
+#: They are a small, known, load-bearing set, and sampling them buries the cases
+#: that matter: whether a displaced candidate is *observable* needs ``limit`` at
+#: the published maximum **and** a budget that lets fifty results through, and
+#: three independent draws land on that pair about one example in twelve.
+#: Measured -- with all three sampled, the mutation replacing the depth loop with
+#: a single fifty-row fetch survived twenty-five generated examples twice over.
+#: The same five sets ``test_mcp_tools.py`` enumerates, minus its ``one-below``.
+ARGUMENT_SETS: Final[tuple[tuple[dict[str, Any], str], ...]] = (
+    ({}, "defaults"),
+    ({"limit": MAX_RESULTS}, "at-the-depth"),
+    ({"limit": MAX_RESULTS, "maxTokens": MAX_BUDGET_TOKENS}, "generous"),
+    (
+        {"limit": MAX_RESULTS, "maxTokens": MAX_BUDGET_TOKENS, "useDense": True},
+        "dense",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "arguments", [pair[0] for pair in ARGUMENT_SETS], ids=[pair[1] for pair in ARGUMENT_SETS]
+)
+@pytest.mark.parametrize(
+    "sizes", (BELOW_THE_DEPTH, ACROSS_THE_DEPTH), ids=("below-the-depth", "across-the-depth")
+)
+@settings(_GENERATED, max_examples=6)
+@given(data=st.data())
 def test_no_published_value_varies_with_a_withheld_document(
-    tmp_path_factory: pytest.TempPathFactory, case: _Case
+    tmp_path_factory: pytest.TempPathFactory,
+    sizes: tuple[int, ...],
+    arguments: dict[str, Any],
+    data: st.DataObject,
 ) -> None:
     """SEC-13, T-15, FR-R4, FR-R5. The property, over generated pairs.
 
-    One query against two corpora that differ only in ``draft`` bodies the caller
-    may not read, and the **entire response** must be equal -- ``count``, every
-    field of every hit including which chunk was excerpted, and every key of the
+    One query against two corpora that differ only in bodies the caller may not
+    read, and the **entire response** must be equal -- ``count``, every field of
+    every hit including which chunk was excerpted, and every key of the
     ``retrieval`` block.
 
     Nothing is masked, so nothing has to be argued for: the three values a
     two-project comparison would normally exclude are held equal as inputs, and
     the module docstring says what that costs.
 
+    **Corpus size is enumerated, not generated**, for the reason
+    :func:`_visible_documents` records: the candidate depth is an exact boundary
+    and a corpus below it cannot show a displaced row at all. So is the caller's
+    parameter set -- see :data:`ARGUMENT_SETS`. What is generated is everything
+    a person would otherwise have had to think of: what the documents say, what
+    the withheld ones say, which of them the query reaches, and how the two
+    corpora differ.
+
     This is the mechanised form of
     ``test_a_withheld_document_changes_nothing_a_caller_can_see``
     (``test_mcp_tools.py``), which asserts the same thing against three fixed
-    corpora. The fixed one is not redundant: it runs the real CLI, covers a
-    Japanese corpus this generator does not produce, and covers the *stale index*
-    shape -- a document approved at build time and retired afterwards -- which
-    this file deliberately avoids (see the module docstring on T-17a).
+    corpora. The fixed one is not redundant: it runs the real CLI and covers a
+    Japanese corpus, where ``unicode61`` cannot segment the text and the trigram
+    retriever's fifty slots are the whole candidate list -- a materially
+    different machine that this generator does not build.
     """
+    case = data.draw(_cases(sizes))
     pair = _pair(tmp_path_factory.mktemp("absence"), case)
 
-    probe = _search(pair.probe, case)
-    control = _search(pair.control, case)
+    probe = _search(pair.probe, case, **arguments)
+    control = _search(pair.control, case, **arguments)
 
     _assert_the_pair_bites(pair, probe)
     assert probe == control, (
@@ -719,7 +951,7 @@ def test_no_published_value_varies_with_a_withheld_document(
     )
 
 
-@settings(_GENERATED, max_examples=25)
+@settings(_GENERATED, max_examples=18)
 @given(case=_cases())
 def test_no_withheld_payload_appears_anywhere_a_caller_reads(
     tmp_path_factory: pytest.TempPathFactory, case: _Case
@@ -766,34 +998,31 @@ def test_a_withheld_item_is_refused_by_the_same_words_that_refuse_an_absent_one(
     one message.
 
     Generated because "one message" is a claim about *every* id, and a
-    hand-written case checks it for the one id someone wrote down. Three arms
-    rather than two: the withheld id in the probe, the same id in the control,
-    and an id that exists in neither. All three must be the same sentence, so the
-    refusal cannot be used to confirm that an item exists.
+    hand-written case checks it for the one id someone wrote down. Four arms
+    rather than two: the withheld id in the probe, the same id in the control, an
+    id that exists in neither, and -- as the guard on the guard -- a *visible* id,
+    which must come back rather than be refused. Without the last one, three
+    identical refusals would be satisfied by a project that holds nothing.
     """
     pair = _pair(tmp_path_factory.mktemp("absence"), case)
     withheld_id = case.withheld(secret=True)[0].item_id
+    visible_id = case.visible[0].item_id
 
     from_probe = _failing(pair.probe, "knowledge.get", projectId=PROJECT_ID, itemId=withheld_id)
     from_control = _failing(pair.control, "knowledge.get", projectId=PROJECT_ID, itemId=withheld_id)
     absent = _failing(pair.probe, "knowledge.get", projectId=PROJECT_ID, itemId=NO_SUCH_ITEM)
+    present = _call(pair.probe, "knowledge.get", projectId=PROJECT_ID, itemId=visible_id)
 
     assert from_probe == from_control, "the two corpora must refuse identically"
     assert from_probe == absent.replace(NO_SUCH_ITEM, withheld_id), (
         "and a withheld id must be refused in the words an absent id is refused in"
     )
-    assert (
-        _call(
-            pair.probe,
-            "knowledge.get",
-            projectId=PROJECT_ID,
-            itemId=withheld_id,
-            **{"includeUnapproved": True},
-        )["itemId"]
-        == withheld_id
-    ), (
-        "the guard on this guard: the id must be fetchable when the flag permits "
-        "it, or the three refusals above agree because nothing is there"
+    assert present["itemId"] == visible_id, (
+        "the guard on this guard: an id the caller may read must come back, or "
+        "the three refusals above agree because this project holds nothing"
+    )
+    assert case.secrets[0] not in json.dumps(present), (
+        "and the item that does come back must not carry a withheld payload"
     )
 
 
@@ -903,7 +1132,11 @@ def test_the_two_projects_differ_only_in_the_withheld_bodies(case: _Case) -> Non
     assert [d.body for d in probe[visible_count:]] != [d.body for d in control[visible_count:]], (
         "while differing in what they say"
     )
-    assert all(d.status is KnowledgeStatus.DRAFT for d in probe[visible_count:])
+    assert all(d.status is case.build_status for d in probe[visible_count:])
+    assert (case.retired != ()) is (case.withheld_by == RETIRED_AFTER_BUILD), (
+        "the retired shape must retire something and the draft shape must not, or "
+        "one of the two mechanisms is being built as the other"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1094,28 +1327,43 @@ def test_the_state_the_pair_builder_declares_is_the_state_a_search_reports(
     by accident", and the day it stopped being accidental every generated test
     would fail for a reason that is not a leak.
 
-    Asserted against a single project, because the claim is about the builder and
-    not about a pair.
+    Both shapes, because they publish different staleness and a builder that
+    produced one when asked for the other would be invisible otherwise: the
+    retired shape leaves the index behind the store and must report ``stale:
+    true``, and the draft shape changes nothing after the build and must report
+    ``stale: false``.
     """
     created_at = datetime.now(UTC) - AGE_OFFSET
-    document = _Document(
+    visible = _Document(
         "architecture.visible-00",
         _ulid("VS", 0),
         "handle",
-        "cache ledger kernel beacon.",
+        "cache manifold headline beacon.",
+        KnowledgeStatus.APPROVED,
+    )
+    retired = _Document(
+        "architecture.withheld-00",
+        _ulid("WH", 0),
+        "beacon",
+        "cache manifold machine.",
         KnowledgeStatus.APPROVED,
     )
 
-    registry = _build_project(tmp_path / "one", (document,), created_at)
-    answer = _call(registry, "knowledge.search", projectId=PROJECT_ID, query="ledger")
+    behind = _build_project(tmp_path / "behind", (visible, retired), created_at, (retired.item_id,))
+    level = _build_project(tmp_path / "level", (visible,), created_at)
+    from_behind = _call(behind, "knowledge.search", projectId=PROJECT_ID, query="manifold")
+    from_level = _call(level, "knowledge.search", projectId=PROJECT_ID, query="manifold")
 
-    assert answer["retrieval"]["snapshotId"] == str(STATE_HASH)
-    assert answer["retrieval"]["indexBuildId"] == INDEX_BUILD_ID
-    assert answer["retrieval"]["indexed"] is True, "the ranked path, not the fallback"
-    assert answer["retrieval"]["stale"] is False, (
-        "a stale index is the T-17a shape, and these pairs must not be in it"
+    assert from_behind["retrieval"]["snapshotId"] == str(STATE_NOW), (
+        "the state a search reports must be the one the pointer names, not the "
+        "one the index was built from"
     )
-    assert answer["projectId"] == PROJECT_ID
+    assert from_level["retrieval"]["snapshotId"] == str(STATE_NOW)
+    assert from_behind["retrieval"]["indexBuildId"] == INDEX_BUILD_ID
+    assert from_behind["retrieval"]["indexed"] is True, "the ranked path, not the fallback"
+    assert from_behind["retrieval"]["stale"] is True, "the retired shape leaves the index behind"
+    assert from_level["retrieval"]["stale"] is False, "and the draft shape does not"
+    assert from_behind["projectId"] == PROJECT_ID
 
 
 def test_the_pair_builder_writes_a_canonical_store_the_gate_actually_reads(
@@ -1124,42 +1372,49 @@ def test_the_pair_builder_writes_a_canonical_store_the_gate_actually_reads(
     """The last way the generated tests could be green while testing nothing.
 
     Every equality above depends on the canonical store being the authority the
-    gate consults. A builder that wrote items with the wrong project id, or left
-    ``current_revision_id`` unset, would produce two projects that answer nothing
-    for every query -- and ``count > 0`` would catch that, while a builder that
-    wrote the *draft* as approved would not: the answers would still be equal,
-    because both projects would publish it.
+    gate consults, and on the retirement really landing in it. A builder whose
+    second write silently did nothing would leave the withheld document
+    ``approved`` in the store as well as in the index -- both projects would then
+    publish it, the responses would still be equal, and every test above would
+    stay green while measuring nothing at all.
 
-    So the statuses are read back out of the store rather than trusted from the
-    generator.
+    So the status is read back out of the store, and the *index* is read back
+    too: the retirement must not have touched it, or the row the gate is supposed
+    to stop would never have been offered.
     """
     created_at = datetime.now(UTC) - AGE_OFFSET
     approved = _Document(
         "architecture.visible-00",
         _ulid("VS", 0),
         "handle",
-        "cache ledger kernel.",
+        "cache manifold headline.",
         KnowledgeStatus.APPROVED,
     )
-    draft = _Document(
+    retired = _Document(
         "architecture.withheld-00",
         _ulid("WH", 0),
         "beacon",
-        "cache ledger machine.",
-        KnowledgeStatus.DRAFT,
+        "cache manifold machine.",
+        KnowledgeStatus.APPROVED,
     )
 
-    _build_project(tmp_path / "one", (approved, draft), created_at)
+    _build_project(tmp_path / "one", (approved, retired), created_at, (retired.item_id,))
 
     paths = ProjectPaths.of(tmp_path / "one")
-    with SqliteCanonicalStore(paths.database_for(STATE_HASH)) as store:
+    with SqliteCanonicalStore(paths.database_for(STATE_NOW)) as store:
         items = store.list_items(RequestContext(project_id=ProjectId(PROJECT_ID)))
     by_id = {item.item_id.value: item for item in items}
+    offered = SqliteIndexStore(paths.index_for(INDEX_BUILD_ID)).search_lexical(
+        "manifold", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=False
+    )
 
     assert by_id[approved.item_id].status is KnowledgeStatus.APPROVED
-    assert by_id[draft.item_id].status is KnowledgeStatus.DRAFT, (
-        "the withheld half must really be unapproved in the store the gate asks"
+    assert by_id[retired.item_id].status is KnowledgeStatus.DEPRECATED, (
+        "the second write must really have retired it in the store the gate asks"
     )
-    assert by_id[draft.item_id].current_revision_id is not None, (
+    assert by_id[retired.item_id].current_revision_id is not None, (
         "an item with no current revision is withheld for the wrong reason"
+    )
+    assert retired.item_id in {row.item_id for row in offered}, (
+        "and the index must still offer it on the caller's own flags, or nothing reaches the gate"
     )
