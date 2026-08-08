@@ -703,7 +703,22 @@ def _build_project(
     With ``retired`` empty this builds the other shape: the index holds drafts
     because it was built with ``include_unapproved``, and a search that does not
     ask for drafts never gets them past the retrievers' own SQL.
+
+    **``include_unapproved`` follows the shape rather than being on always.** It
+    was on always, which cost two things at once. ``indexesUnapproved`` is a
+    published field on every response this file compares, and it never once
+    carried the value the shipped ``theurian index build`` produces -- an
+    equality that has only ever seen one value of a field is not an equality
+    anyone has checked. And an index that holds no drafts is the precondition for
+    :data:`~theurian.mcp.search.UNAPPROVED_NOT_INDEXED`, so the whole fallback
+    vocabulary was unreachable from every pair built here.
+
+    The retired shape needs nothing unapproved in the index: its withheld
+    documents are ``approved`` when the build runs. So it builds at the default
+    and the draft shape does not, and the two now differ in that published field
+    as well.
     """
+    indexes_unapproved = not retired
     paths = ProjectPaths.of(root)
     paths.state.mkdir(parents=True, exist_ok=True)
     paths.runtime.mkdir(parents=True, exist_ok=True)
@@ -744,7 +759,7 @@ def _build_project(
             project_id=PROJECT_ID,
             state_hash=str(built_from),
             index_build_id=INDEX_BUILD_ID,
-            include_unapproved=True,
+            include_unapproved=indexes_unapproved,
         )
     )
     paths.active_index_pointer.write_text(
@@ -753,7 +768,7 @@ def _build_project(
                 "indexBuildId": INDEX_BUILD_ID,
                 "stateHash": str(built_from),
                 "projectId": PROJECT_ID,
-                "indexesUnapproved": True,
+                "indexesUnapproved": indexes_unapproved,
             }
         ),
         encoding="utf-8",
@@ -1491,11 +1506,14 @@ def test_the_state_the_pair_builder_declares_is_the_state_a_search_reports(
     by accident", and the day it stopped being accidental every generated test
     would fail for a reason that is not a leak.
 
-    Both shapes, because they publish different staleness and a builder that
-    produced one when asked for the other would be invisible otherwise: the
-    retired shape leaves the index behind the store and must report ``stale:
-    true``, and the draft shape changes nothing after the build and must report
-    ``stale: false``.
+    Both shapes, because they publish different values and a builder that
+    produced one when asked for the other would be invisible otherwise:
+
+    - ``stale`` -- the retired shape leaves the index behind the store, the draft
+      shape changes nothing after the build;
+    - ``indexesUnapproved`` -- the retired shape builds at the shipped default
+      and the draft shape does not, which is the only reason the ``false`` value
+      of that published field appears in any response this file compares.
     """
     created_at = datetime.now(UTC) - AGE_OFFSET
     visible = _Document(
@@ -1527,6 +1545,14 @@ def test_the_state_the_pair_builder_declares_is_the_state_a_search_reports(
     assert from_behind["retrieval"]["indexed"] is True, "the ranked path, not the fallback"
     assert from_behind["retrieval"]["stale"] is True, "the retired shape leaves the index behind"
     assert from_level["retrieval"]["stale"] is False, "and the draft shape does not"
+    assert from_behind["retrieval"]["indexesUnapproved"] is False, (
+        "the retired shape must build at the shipped default, or no compared "
+        "response ever carries that value of this published field"
+    )
+    assert from_level["retrieval"]["indexesUnapproved"] is True, (
+        "and the draft shape must build with the flag, or its drafts are not in "
+        "the index and there is nothing withheld"
+    )
     assert from_behind["projectId"] == PROJECT_ID
 
 
