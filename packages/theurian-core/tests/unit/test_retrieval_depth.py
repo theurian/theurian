@@ -596,6 +596,14 @@ class _NeverFinished:
         return {}
 
 
+#: Passes before the liveness guard fires. Two, and the reason it cannot be one:
+#: `served` starts at -1 so the first pass always makes "progress", and the
+#: comparison needs a predecessor. Asserted exactly rather than as a bound --
+#: `<= 3` was what stood here, and it would have passed a loop that deepened one
+#: further time before noticing, which is one more doubling of `depth`.
+GUARD_FIRES_AFTER = 2
+
+
 def test_a_retriever_that_never_reports_exhaustion_is_refused_not_looped() -> None:
     """The failure mode the explicit signal introduced, and its bound.
 
@@ -616,10 +624,12 @@ def test_a_retriever_that_never_reports_exhaustion_is_refused_not_looped() -> No
             SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld()
         )
 
-    assert index.calls <= 3, (
-        f"the guard must fire on the pass that first fails to make progress; the retriever "
-        f"was called {index.calls} times, so the loop is deepening further than it needs to "
-        f"before noticing"
+    assert index.calls == GUARD_FIRES_AFTER, (
+        f"the guard must fire on the pass that first fails to make progress, which is the "
+        f"second: the first has no predecessor to compare against, so `served` starts at -1 "
+        f"and any row count beats it. The retriever was called {index.calls} times. More "
+        f"means the loop deepened again before noticing, and each extra pass is a further "
+        f"doubling of `depth` -- the cost this guard exists to bound."
     )
 
 

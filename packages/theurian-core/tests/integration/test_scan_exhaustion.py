@@ -15,12 +15,12 @@ them — so it answers with its entire ranking every time, and the ambiguous cas
 was reached exactly when that ranking totalled :data:`FIRST_PASS_DEPTH` rows and
 fewer than :data:`CANDIDATE_DEPTH` of them survived the canonical store:
 
-======================= ============== ==============
+======================= ================== ===============
 Rows the store withheld Port calls, before Port calls, now
-======================= ============== ==============
-0 to 50                 1              1
-51 to 99                2              1
-======================= ============== ==============
+======================= ================== ===============
+0 to 50                 1                  1
+51 to 99                2                  1
+======================= ================== ===============
 
 A step function of the withheld count with its edge at 51 of 100, flattened.
 The cache could not flatten it — it made the second call cheap, it did not

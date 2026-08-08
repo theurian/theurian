@@ -70,6 +70,29 @@ corpus and the constants differ by two orders of magnitude. **Rewriting the whol
 file to remove a few rows costs about a sixtieth of "an ordinary build".** The
 premise the in-place option rested on is false.
 
+**"A few rows" is load-bearing in that sentence, and the ratio is a property of
+it.** Every figure above withdraws eight documents. A purge costs a whole-file
+copy plus a delete proportional to the rows removed, while a re-derive is
+proportional to the corpus, so the ratio falls as the withdrawn fraction rises.
+Measured on 800 documents, a 24.5 MB index, against a 4,735 ms re-derive:
+
+| Withdrawn | Purge | Ratio |
+| :-- | --: | --: |
+| 8 (1%) | 67 ms | 70.6× |
+| 80 (10%) | 152 ms | 31.1× |
+| 200 (25%) | 506 ms | 9.3× |
+| 400 (50%) | 931 ms | 5.1× |
+| 720 (90%) | 1,408 ms | 3.4× |
+| 800 (100%) | 1,513 ms | 3.1× |
+
+It never inverts — a purge is cheaper than a re-derive at every fraction,
+including withdrawing the entire corpus — so the decision does not turn on this.
+What turns on it is the *shape of the argument*: "a sixtieth" describes the case
+this design is for, which is a purge triggered per withdrawal (decision 5) and
+therefore removing few documents at a time. A caller who retired a quarter of a
+knowledge base in one operation would see 9×, not 60×, and would still be right
+to purge.
+
 ### What an in-place purge costs
 
 The saving an in-place purge buys over a copy is the copy: 175 ms on a 48.5 MB
@@ -157,6 +180,15 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    The FTS5 delete triggers carry the removal into both the word and the trigram
    index; `embeddings` cascades, because `PRAGMA foreign_keys = ON` is in
    `CONNECTION_PRAGMAS` and is applied to index connections too.
+
+   **The copy inherits the parent's identity, and the purge must overwrite it.**
+   `Connection.backup` copies pages, so `index_metadata.index_build_id` in the
+   new file still names the build it was copied from, and `built_at` still
+   records when *that* was made. Nothing in `src/` reads either back today —
+   `mcp/search.py` publishes `indexBuildId` from the pointer — so this is latent
+   rather than broken, which is exactly why it is written into the decision: the
+   first thing to read it would find a file whose own record of itself disagrees
+   with the pointer that names it, and would find it a long way from here.
 
 3. **The copy is `sqlite3.Connection.backup`, not `shutil.copyfile` and not
    `VACUUM INTO`.** Measured on a 49.2 MB index with rowid gaps — the state every
@@ -284,11 +316,22 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
   ADR-0017 already took for state databases — "disk usage grows until `index gc`
   runs. Deliberately explicit" — and the reason is the same: automatic deletion
   of a file a reader may hold is what point 6 measured.
+- **Builds accumulate at one whole file per publish, and that is the real disk
+  cost of point 6 — not the +1.5% below.** Measured on 800 documents, a 24.5 MB
+  index: ten publishes with nothing reaped leave **ten files and 246.0 MB**,
+  of which `gc` reclaims 221.4 MB. The two numbers answer different questions,
+  and quoting only the second understates the first by an order of magnitude:
+  +1.5% is how much *one* file grows across a chain of purges, while this is how
+  many files exist at once. A project that purges on every withdrawal reaches
+  this within a working session, so `theurian index gc` is not an occasional
+  tidy-up — it is what makes point 6 affordable, and a user who never runs it
+  pays a build's worth of disk per withdrawal.
 - A purge does not compact. `backup` copies free pages, so a chain of purges
   grows the file slowly: measured at 13.23 MB → 13.43 MB over 20 successive
-  single-document purges, +1.5%. `gc` compacts, and a full `index build` resets
-  it. Recorded rather than optimised, because 1.5% over 20 rounds is not a cost
-  worth a second mechanism.
+  single-document purges, +1.5%, and 24.5 MB → 25.0 MB on the corpus above.
+  `gc` compacts, and a full `index build` resets it. Recorded rather than
+  optimised, because 1.5% over 20 rounds is not a cost worth a second
+  mechanism — unlike the accumulation above, which needs one.
 - Point 7's guarantee is POSIX. On Windows an unlink of a file with an open
   handle fails, so `gc` must treat a failed unlink as "reclaim it next time"
   rather than as an error. That is a safer failure than the POSIX one and it
@@ -352,6 +395,19 @@ Owed by the change that implements this ADR:
   the purge's traversal are what carry point 8, and a test that inserts a
   synthetic derived node is what stops the traversal from being written and never
   run.
+- **A purged build holds no orphaned row of any kind.** `embeddings` is removed
+  by `ON DELETE CASCADE`, which SQLite enforces **per connection**, not per
+  database: `PRAGMA foreign_keys` defaults to *off*, and a purge that opens its
+  own connection without `CONNECTION_PRAGMAS` deletes the chunk and leaves the
+  vector. The failure is silent and one-directional — the dense retriever joins
+  `embeddings` to `chunks`, so an orphaned vector returns nothing rather than
+  returning a withdrawn row — which is why it needs a test rather than a review:
+  count `embeddings` after a purge and assert it fell by the same number as
+  `chunks`. The same test covers the FTS5 tables, whose removal rides on triggers
+  and needs no pragma.
+- **A purged build's `index_metadata` names itself.** Per decision 2: assert
+  `index_build_id` in the new file equals the id the pointer publishes, not the
+  parent's.
 
 Owed to ADR-0018, and satisfied by point 4 rather than by this ADR's own tests:
 its "the derived index has no single-writer contract at all" is discharged for
