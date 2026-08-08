@@ -1000,8 +1000,18 @@ $ echo $?
 ```
 
 3 is `THEURIAN_EXIT_INCOMPATIBLE` in the plugin's `lib.sh`, and it is the branch
-that prints the verdict. The remedy nobody could follow was the one most likely
-to be read.
+that prints the verdict.
+
+**But nothing forces that today, and this entry said otherwise.** The paragraph
+above describes what `CORE_TOO_OLD` does when it fires; in the shipped
+configuration it does not fire at all. Core `0.1.0.dev0` renders `0.1.0-dev.0`,
+the plugin's declared floor is `0.1.0-dev.0`, so `core < floor` is False and no
+released pair reaches this remedy. It becomes reachable the moment
+`coreCompatibility.minimum` is raised. "Reached users" and "the one most likely
+to be read" are therefore true of the *shape* of the defect and false of any
+user today — which downgrades it from shipped-and-wrong to correct-but-
+unreachable, and is why the reachable member of the class is `theurian propose`
+rather than this one ([#89](https://github.com/theurian/theurian/issues/89)).
 
 **That printing is true only from [#90](https://github.com/theurian/theurian/pull/90).**
 Before it, `lib.sh` opened `set -euo pipefail` and `session-start.sh` sources it,
@@ -1039,13 +1049,26 @@ single outcome `compat_check` *cannot* produce.
 > resolved by installing anything.
 >
 > The remedy deliberately names no extra. Both installers record the spec they
-> were given and re-resolve *it*, so an install carrying `[daemon]` keeps it —
-> measured against uv 0.7.2 (`black[d]` 24.1.0 → 24.10.0, `uv-receipt.toml`
-> still recording `extras = ["d"]`) and pipx 1.16.6 (`upgrading black from spec
-> 'black[d]'`). Naming the extra would assert that upgrading repairs a bare
-> install, which it does not; that user's answer is `DAEMON_INSTALLERS`. Note
-> this is the opposite of the *install* asymmetry recorded above, where a plain
+> were given and re-resolve *it*, so an install carrying `[daemon]` keeps it and
+> a bare one stays bare. Measured against the real distribution, where no upgrade
+> is needed to settle it: `uv tool install 'theurian==0.1.0.dev0'` records no
+> extras and has no `mcp`, `uvicorn`, `watchfiles` or `starlette`;
+> `'theurian[daemon]==0.1.0.dev0'` records `extras = ["daemon"]` and has all
+> four. Naming the extra would assert that upgrading repairs a bare install,
+> which it does not; that user's answer is `DAEMON_INSTALLERS`. Note this is the
+> opposite of the *install* asymmetry recorded above, where a plain
 > `pipx install` over an existing installation is a no-op and needs `--force`.
+>
+> The upgrade path was measured separately with `black`, since `theurian` has one
+> release and cannot be upgraded. **uv installs the newest version its spec
+> allows**, so `uv tool install 'black[d]==24.1.0'` then `uv tool upgrade black`
+> reports `Nothing to upgrade` — dropping the `==` pin from `uv-receipt.toml` is
+> what stands in for time passing, and the first version of this note omitted
+> that step and so recorded a procedure that proves nothing. With it: both
+> receipts go `24.1.0 -> 26.5.1`, `aiohttp` absent throughout for `black` and
+> present throughout for `black[d]`. pipx 1.16.6 drops the pin itself
+> (`upgrading black from spec 'black[d]'`) and needed `--backend pip`, its
+> default backend requiring uv>=0.9.17 against the 0.7.2 on this machine.
 
 The *obtaining* verb has not been searched at all.
 

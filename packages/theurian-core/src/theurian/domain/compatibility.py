@@ -33,21 +33,46 @@ from theurian.domain.extras import DAEMON_INSTALLERS
 #:
 #: **Neither form names the ``daemon`` extra, and that is measured rather than an
 #: oversight.** Both installers record the spec they were given and re-resolve
-#: *it*, so an install that carried the extra keeps it. Against uv 0.7.2,
-#: ``uv tool upgrade`` moved a ``black[d]`` install from 24.1.0 to 24.10.0 with
-#: the extra's dependency and its second entry point intact and its
-#: ``uv-receipt.toml`` still recording ``extras = ["d"]``. Against pipx 1.16.6,
-#: ``pipx upgrade`` reported ``upgrading black from spec 'black[d]'`` -- it drops
-#: the version constraint and keeps the extra. Naming the extra here would
-#: instead assert that upgrading repairs a bare install, which it does not: an
-#: install with no extra re-resolves to no extra, and that user's answer is
-#: :data:`~theurian.domain.extras.DAEMON_INSTALLERS`, not this.
+#: *it*, so an install that carried the extra keeps it and an install that did
+#: not still does not. Measured against the real distribution, which needs no
+#: upgrade to settle it -- what the spec records is what the environment gets::
 #:
-#: That last sentence is measured too, and separately -- the decision rests on it,
-#: and the two measurements above establish only that an extra is *preserved*,
-#: which is a different claim. ``black==24.1.0`` installed with no extra records
-#: no ``extras`` in its receipt, and after ``uv tool upgrade`` to 24.10.0 the
-#: extra's dependency is still absent. Upgrading repairs nothing for that user.
+#:     $ uv tool install --python 3.13 'theurian==0.1.0.dev0'
+#:     requirements = [{ name = "theurian", specifier = "==0.1.0.dev0" }]
+#:     mcp, uvicorn, watchfiles, starlette: all absent
+#:
+#:     $ uv tool install --python 3.13 'theurian[daemon]==0.1.0.dev0'
+#:     requirements = [{ name = "theurian", extras = ["daemon"], … }]
+#:     mcp, uvicorn, watchfiles, starlette: all present
+#:
+#: Naming the extra here would instead assert that upgrading repairs a bare
+#: install, and it does not: a bare install re-resolves to a bare install. That
+#: user's answer is :data:`~theurian.domain.extras.DAEMON_INSTALLERS`, not this.
+#:
+#: The upgrade path itself was measured with ``black``, because ``theurian`` has
+#: only one release and so cannot be upgraded at all. **uv installs the newest
+#: version its spec allows, so a freshly pinned install has nothing to upgrade
+#: to** -- ``uv tool install 'black[d]==24.1.0'`` followed by ``uv tool upgrade
+#: black`` reports ``Nothing to upgrade``. Dropping the ``==`` pin from uv's own
+#: ``uv-receipt.toml`` is what stands in for time passing, and that step is
+#: stated because without it the procedure below is a no-op that proves nothing:
+#:
+#: ============ ====================================== ====================
+#: receipt      ``uv tool upgrade black``               ``aiohttp``
+#: ============ ====================================== ====================
+#: ``black``    ``Updated black v24.1.0 -> v26.5.1``    absent, before/after
+#: ``black[d]`` ``Updated black v24.1.0 -> v26.5.1``    present, before/after
+#: ============ ====================================== ====================
+#:
+#: pipx 1.16.6 needs no such step -- it drops the version constraint itself and
+#: reports ``upgrading black from spec 'black[d]'``, keeping the extra, while the
+#: bare install's spec becomes plain ``black`` and stays without ``aiohttp``. Its
+#: default backend requires uv>=0.9.17 and refuses against 0.7.2, so these ran
+#: with ``--backend pip``.
+#:
+#: ``blackd`` is deliberately not cited as evidence: ``black`` ships that entry
+#: point whether or not the ``d`` extra is requested, so its presence
+#: discriminates nothing.
 #:
 #: The asymmetry with installing is real, and is why these are separate
 #: constants: a plain ``pipx install`` over an existing installation is a no-op

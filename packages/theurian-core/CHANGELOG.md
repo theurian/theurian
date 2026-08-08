@@ -91,11 +91,26 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   install-time verification; that is a larger commitment than a remedy string and
   is deliberately not taken. The remedy names no extra because both installers
   re-resolve the spec they recorded, so an install carrying `[daemon]` keeps it
-  across an upgrade — measured against uv 0.7.2 and pipx 1.16.6. Naming it would
-  imply that upgrading repairs a bare install, and the converse was measured too:
-  a bare install upgraded with `uv tool upgrade` re-resolves to a bare install,
-  with the extra's dependency absent before and after. That user needs
-  `uv tool install 'theurian[daemon]'`, not an upgrade.
+  across an upgrade and a bare one stays bare. Measured against the real
+  distribution, which settles it without any upgrade:
+  `uv tool install 'theurian==0.1.0.dev0'` records no extras and has no `mcp`,
+  `uvicorn`, `watchfiles` or `starlette`; `'theurian[daemon]==0.1.0.dev0'`
+  records `extras = ["daemon"]` and has all four. Naming the extra would imply
+  that upgrading repairs a bare install; it does not, and that user needs
+  `uv tool install 'theurian[daemon]'`.
+
+  The upgrade path was measured with `black`, because `theurian` has one release
+  and cannot be upgraded. **uv installs the newest version its spec allows**, so
+  `uv tool install 'black[d]==24.1.0'` followed by `uv tool upgrade black`
+  reports `Nothing to upgrade`; dropping the `==` pin from `uv-receipt.toml` is
+  what stands in for time passing. An earlier version of this entry omitted that
+  step, which made the procedure it recorded a no-op — the observation was real,
+  the published recipe was not. With the step: both receipts go
+  `24.1.0 -> 26.5.1`, `aiohttp` absent throughout for `black` and present
+  throughout for `black[d]`, each receipt keeping what it recorded. pipx 1.16.6
+  drops the pin itself (`upgrading black from spec 'black[d]'`) and ran with
+  `--backend pip`, its default backend requiring uv>=0.9.17 against this
+  machine's 0.7.2.
 
 ## [0.1.0.dev0] - 2026-08-07
 
