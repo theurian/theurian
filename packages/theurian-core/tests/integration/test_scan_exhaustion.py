@@ -253,21 +253,27 @@ def _statements_reaching_sqlite() -> Iterator[list[str]]:
     running, so what accumulates is *executions* — the quantity a cache removes —
     rather than calls to a Python method, which it does not.
 
-    Installed by replacing the module's ``_connect``, because that is the single
-    place every read in this adapter opens a connection; the PRAGMAs it runs
-    before yielding are deliberately outside the trace.
+    Installed by replacing the module's ``_open_read``, because that is the
+    single place every *read* in this adapter opens a connection; the PRAGMAs it
+    runs before returning are deliberately outside the trace.
+
+    **It used to patch ``_connect``, and that stopped being complete.** When
+    reads moved to a session-scoped read-only connection (ADR-0024 point 7),
+    ``_connect`` became the write path alone and this trace saw nothing. The four
+    tests below went red rather than silently measuring zero, which is what the
+    precondition in this docstring was written for -- it is a property of this
+    module, not of SQLite, and it has now changed once.
     """
     executed: list[str] = []
-    real_connect = index_store_module._connect
+    real_open_read = index_store_module._open_read
 
-    @contextmanager
-    def _traced(path: Path) -> Iterator[sqlite3.Connection]:
-        with real_connect(path) as connection:
-            connection.set_trace_callback(executed.append)
-            yield connection
+    def _traced(path: Path) -> sqlite3.Connection:
+        connection = real_open_read(path)
+        connection.set_trace_callback(executed.append)
+        return connection
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(index_store_module, "_connect", _traced)
+        patch.setattr(index_store_module, "_open_read", _traced)
         yield executed
 
 
@@ -341,9 +347,15 @@ def test_the_store_holds_no_state_between_searches(tmp_path: Path) -> None:
     """
     store = SqliteIndexStore(tmp_path / "theurian-index-01.sqlite")
 
-    assert vars(store) == {"_path": store.path}, (
-        f"`SqliteIndexStore` must carry no state across searches; it holds "
-        f"{sorted(vars(store))}. Anything else is per-request state on an object the "
-        f"composition root may one day pool, which is how one caller's answer becomes "
-        f"another caller's latency (SEC-13, T-17)."
+    assert vars(store) == {"_path": store.path, "_reader": None}, (
+        f"`SqliteIndexStore` must carry no answer across searches; it holds "
+        f"{sorted(vars(store))}. Anything beyond a path and a connection is per-request "
+        f"state on an object the composition root may one day pool, which is how one "
+        f"caller's answer becomes another caller's latency (SEC-13, T-17)."
+    )
+    assert store._reader is None, (
+        "a store at rest must hold no open connection. `session()` opens one for the "
+        "duration of a request and closes it on the way out; a connection that outlived "
+        "the request would be a file handle held per store rather than per search, and "
+        "`gc` could not tell which builds are still being read."
     )

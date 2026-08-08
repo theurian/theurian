@@ -228,11 +228,14 @@ def fts5_available() -> bool:
 
 @contextmanager
 def _connect(path: Path) -> Iterator[sqlite3.Connection]:
-    """A configured connection that is always closed.
+    """A configured *writable* connection that is always closed.
 
     ``sqlite3.connect`` as a context manager commits or rolls back but does not
     close, which leaks a handle per call -- caught in Milestone 1 and worth not
     repeating.
+
+    Used by the build paths only. Reads go through :func:`_open_read`, which
+    refuses to create the file it was asked to open.
     """
     connection = sqlite3.connect(path)
     try:
@@ -242,6 +245,30 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
         yield connection
     finally:
         connection.close()
+
+
+def _open_read(path: Path) -> sqlite3.Connection:
+    """A read-only connection that will not conjure the file it cannot find.
+
+    **`mode=ro` is the whole point, and it closes a defect rather than tightening
+    a permission** (ADR-0024 decision 7). ``sqlite3.connect`` on a path that does
+    not exist *creates an empty database there*, so a pointer that outlived its
+    file -- which `theurian index gc` makes an ordinary state -- turned the "no
+    index, fall back to the substring scan" branch into a raw ``no such table:
+    chunks_fts`` at the agent, and left a file behind that made every later
+    attempt fail identically. Measured: the default connect recreates the path;
+    `mode=ro` raises ``unable to open database file`` and creates nothing.
+
+    All four ``CONNECTION_PRAGMAS`` are accepted on a read-only connection --
+    ``journal_mode`` reports the file's existing mode rather than setting it --
+    so the read and write paths stay configured the same way, and a write through
+    this connection is refused by SQLite rather than by convention.
+    """
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    for pragma in CONNECTION_PRAGMAS:
+        connection.execute(pragma)
+    return connection
 
 
 #: What *interpreting this file* can raise, other than through `sqlite3` itself.
@@ -378,10 +405,31 @@ def _reading(path: Path) -> Iterator[sqlite3.Connection]:
     **Reads only, and the asymmetry is deliberate.** A write that fails is a
     build failing, and a build reports its own failure; telling someone their
     index cannot be *read* while they are writing it names the wrong remedy.
+
+    Opens and closes its own connection, which is what a caller outside a request
+    wants. A caller *inside* one uses :meth:`SqliteIndexStore._read`, which
+    applies the identical mapping to a connection held for the request's
+    duration -- see :func:`_mapping_read_failures`, which is the mapping both
+    share so that neither can drift.
+    """
+    with _mapping_read_failures():
+        connection = _open_read(path)
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+
+@contextmanager
+def _mapping_read_failures() -> Iterator[None]:
+    """Everything a read of this file can fail with, mapped to one type.
+
+    Separated from the connection's lifetime so that a held connection gets the
+    same treatment as a per-call one. It was inseparable while `_reading` both
+    opened and mapped, and point 7 of ADR-0024 needs a read that does not open.
     """
     try:
-        with _connect(path) as connection:
-            yield connection
+        yield
     except sqlite3.Error as exc:
         if _is_query_expression_error(exc):
             raise _QueryExpressionError(str(exc)) from exc
@@ -411,14 +459,75 @@ class SqliteIndexStore:
         # carries the account: what now holds the property the memo held, and
         # what became of the fresh-instance-per-search rule it imposed.
         #
-        # **No per-instance state at all** is the shape to keep. It is what makes
-        # "one caller's query leaves nothing behind for another's" checkable by
-        # reading this method rather than by trusting a paragraph.
+        # A path, and a connection only while a `session()` is open. `_reader`
+        # is `None` at rest, which is what keeps "one caller's query leaves
+        # nothing behind for another's" checkable by reading this method: a cache
+        # would leak a withheld-row count into the next caller's latency, and a
+        # connection cannot, because it carries no result.
         self._path = path
+        self._reader: sqlite3.Connection | None = None
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @contextmanager
+    def session(self) -> Iterator[SqliteIndexStore]:
+        """Hold one read connection for the duration of a request (ADR-0024 point 7).
+
+        **Opt-in, and scoped to a request rather than to this object's
+        lifetime.** Every read outside a session opens and closes its own
+        connection, which is what a one-shot caller like ``theurian index
+        status`` wants and what every construction site in the suite already
+        does. Inside a session the reads share one connection, which is what a
+        *search* needs -- and the difference is not an optimisation.
+
+        `RetrievalService.search` reads this port several times: two retrievers
+        through the depth loop, then `chunk_texts`. Each gap between those reads
+        used to be a window in which `theurian index gc` could unlink the file,
+        and `sqlite3.connect` on the deleted path then created an empty database
+        there, so the fallback never ran and the agent got `no such table:
+        chunks_fts`.
+
+        Measured, one request of four index calls with the unlink landing after
+        the first: **1 of 4 answered** with a connection per call, leaving a file
+        recreated at the reaped path, against **4 of 4** inside a session,
+        recreating nothing. On POSIX an open descriptor keeps the inode readable
+        after the name is gone -- in all three WAL configurations, sidecars kept
+        or unlinked -- so the request finishes against the build it started on.
+
+        A session is not a transaction and holds no snapshot: reads inside one
+        still see another connection's commits. What it holds is the *file*.
+        """
+        if self._reader is not None:  # pragma: no cover - nesting is not a use here
+            yield self
+            return
+        with _mapping_read_failures():
+            self._reader = _open_read(self._path)
+        try:
+            yield self
+        finally:
+            self._reader.close()
+            self._reader = None
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """A read, through the session's connection when there is one.
+
+        The error mapping is `_mapping_read_failures`, shared with `_reading` so
+        that a held connection and a per-call one cannot answer differently for
+        the same broken file. Opening happens inside it, because opening
+        interprets the file exactly as a query does.
+        """
+        with _mapping_read_failures():
+            if self._reader is not None:
+                yield self._reader
+                return
+            connection = _open_read(self._path)
+            try:
+                yield connection
+            finally:
+                connection.close()
 
     # -- Building ---------------------------------------------------------
 
@@ -536,7 +645,7 @@ class SqliteIndexStore:
     # -- Reading ----------------------------------------------------------
 
     def metadata(self) -> dict[str, object]:
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             row = connection.execute("SELECT * FROM index_metadata WHERE id = 1").fetchone()
             # Converted inside the block, like every other read here. `dict()`
             # over a `sqlite3.Row` cannot fail today; the rule is uniform so that
@@ -565,7 +674,7 @@ class SqliteIndexStore:
         a value instead of propagating it.
         """
         try:
-            with _reading(self._path) as connection:
+            with self._read() as connection:
                 row = connection.execute(
                     "SELECT index_schema_version FROM index_metadata WHERE id = 1"
                 ).fetchone()
@@ -592,7 +701,7 @@ class SqliteIndexStore:
         return self.schema_version() == INDEX_SCHEMA_VERSION
 
     def chunk_count(self) -> int:
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             return int(connection.execute("SELECT count(*) FROM chunks").fetchone()[0])
 
     def chunk_texts(self, chunk_ids: Sequence[str], *, project_id: str) -> dict[str, str]:
@@ -615,7 +724,7 @@ class SqliteIndexStore:
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(
                 "SELECT chunk_id, text FROM chunks "  # noqa: S608 - placeholders only
                 f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
@@ -644,7 +753,7 @@ class SqliteIndexStore:
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(
                 "SELECT * FROM chunks "  # noqa: S608 - placeholders only
                 f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
@@ -709,7 +818,7 @@ class SqliteIndexStore:
         # filed for Milestone 6 as
         # https://github.com/theurian/theurian/issues/21.
         try:
-            with _reading(self._path) as connection:
+            with self._read() as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit + 1)).fetchall()
                 return _page(_ranked(rows, _bm25), limit)
         except _QueryExpressionError:
@@ -772,7 +881,7 @@ class SqliteIndexStore:
             "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
         )
         try:
-            with _reading(self._path) as connection:
+            with self._read() as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit + 1)).fetchall()
                 return _page(_ranked(rows, _bm25), limit)
         except _QueryExpressionError:
@@ -898,7 +1007,7 @@ class SqliteIndexStore:
         # parameters, so no caller text is ever parsed as an expression and every
         # complaint SQLite can make here is about the file -- `chunks` absent, a
         # truncated copy, something that is not an index at all.
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(sql, arguments).fetchall()
             return RetrieverPage(rows=_ranked(rows, _scan_score), exhausted=True)
 
@@ -989,7 +1098,7 @@ class SqliteIndexStore:
         # interpretation of this file's bytes exactly as `execute` is, and it ran
         # outside the connection's lifetime while the guard that answers for such
         # bytes ended with the connection -- see `_UNREADABLE_VALUES`.
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
             return RetrieverPage(rows=_dense_ranking(rows, query_vector), exhausted=True)
 
