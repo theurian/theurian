@@ -418,17 +418,18 @@ def _visible_documents(sizes: tuple[int, ...]) -> st.SearchStrategy[tuple[_Docum
     """An approved corpus of one of ``sizes`` documents.
 
     A *ladder* rather than ``st.lists(min_size=2, max_size=60)``, because the
-    interesting sizes are rare under the natural distribution and the boundary
-    they straddle is exact. :data:`~theurian.application.retrieval_service.
-    CANDIDATE_DEPTH` is fifty: a pair whose corpora both fit inside one
-    retriever's depth cannot tell a depth loop that counts *visible* rows from
-    one that counts raw ones -- the fourth face in
+    boundary it straddles is exact. :data:`~theurian.application.
+    retrieval_service.CANDIDATE_DEPTH` is fifty: a pair whose corpora both fit
+    inside one retriever's depth cannot tell a depth loop that counts *visible*
+    rows from one that counts raw ones -- the fourth face in
     :mod:`theurian.application.retrieval_service`'s table, and the one that
     recovered a credential at the default token budget.
 
-    Measured: with the size drawn as an ordinary list length, twenty-five
-    examples produced nothing above the boundary and the mutation replacing the
-    depth loop with a single fifty-row fetch survived every test in this file.
+    Measured, not reasoned about: with the size drawn as an ordinary list length,
+    the mutation replacing the depth loop with a single fifty-row fetch survived
+    twenty-five generated examples of every test in this file. What that says is
+    that twenty-five draws did not land on the case; it is not a claim about the
+    distribution, which was not measured.
     """
     document = st.tuples(st.lists(_WORD, min_size=1, max_size=3).map(" ".join), _prose())
     return (
@@ -924,13 +925,20 @@ _GENERATED = settings(
 
 #: The caller's own parameters, enumerated rather than generated.
 #:
-#: They are a small, known, load-bearing set, and sampling them buries the cases
-#: that matter: whether a displaced candidate is *observable* needs ``limit`` at
+#: They are a small, known, load-bearing set, and sampling them buries the case
+#: that matters: whether a displaced candidate is *observable* needs ``limit`` at
 #: the published maximum **and** a budget that lets fifty results through, and
-#: three independent draws land on that pair about one example in twelve.
-#: Measured -- with all three sampled, the mutation replacing the depth loop with
-#: a single fifty-row fetch survived twenty-five generated examples twice over.
-#: The same five sets ``test_mcp_tools.py`` enumerates, minus its ``one-below``.
+#: two independent draws from the sets this file used land on that pair about one
+#: example in twelve.
+#:
+#: Measured. The mutation replacing the depth loop with a single fifty-row fetch
+#: survived twenty-five generated examples with these sampled -- twice, once with
+#: the corpus size drawn as a list length and once with :func:`_visible_documents`
+#: already laddered. With both enumerated it dies, in ``across-the-depth`` /
+#: ``generous``, on the equality itself.
+#:
+#: The same sets ``test_mcp_tools.py`` enumerates, minus its ``one-below``, which
+#: it keeps for a leak this file's corpora cannot produce.
 ARGUMENT_SETS: Final[tuple[tuple[dict[str, Any], str], ...]] = (
     ({}, "defaults"),
     ({"limit": MAX_RESULTS}, "at-the-depth"),
