@@ -178,6 +178,7 @@ from theurian.domain.ranking import (
     SUBSTRING,
     Fused,
     Ranked,
+    RetrieverPage,
     diversify,
     estimate_tokens,
     reciprocal_rank_fusion,
@@ -230,23 +231,24 @@ CANDIDATE_DEPTH: Final = 50
 #: plain two-character noun and 14.0 ms (+2%) for the worst legal query. It was
 #: +64 ms and +503 ms while the sub-trigram scan sat inside this loop.
 #:
-#: **Two counts, not one, on that branch.** How many times
-#: ``search_substring`` is *called* is still 1 or 2 and still moves with what
-#: was withheld: the exit test cannot tell a complete ranking from a truncated
-#: one when the whole ranking totals exactly this constant, so 50 withheld rows
-#: cost one call and 51 cost two. How many times the corpus is *scanned* in
-#: SQLite is 1 whatever is withheld, because
-#: :attr:`~theurian.infrastructure.sqlite.index_store.SqliteIndexStore._scan_cache`
-#: memoises the answer — a mitigation for exactly that gap, deleted when
-#: ``IndexStore`` states its own exhaustion (issue #16). Collapsing the two into
-#: "answers in one pass whatever is withheld" is what this comment used to do,
-#: and it read as a closed channel rather than a held-shut one.
-#: One test per count, because one cannot hold both:
+#: **Two counts, not one, on that branch — and neither moves any more.** How
+#: many times ``search_substring`` is *called* used to be 1 or 2 and to move
+#: with what was withheld: the exit test could not tell a complete ranking from
+#: a truncated one when the whole ranking totalled exactly this constant, so 50
+#: withheld rows cost one call and 51 cost two. It is 1 now, because that branch
+#: reports itself exhausted (issue #16). How many times the corpus is *scanned*
+#: in SQLite was already 1 whatever was withheld, held there by a memo that has
+#: gone with the second call it existed to answer. Collapsing the two into
+#: "answers in one pass whatever is withheld" is what this comment used to do
+#: while only the second was true, and it read as a closed channel rather than a
+#: held-shut one. Both are now closed, and both are asserted, because a
+#: regression in either would restore exactly one of them:
 #: ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``
 #: (``tests/unit/test_retrieval_depth.py``) fails at *both* edges when this
 #: constant stops being twice :data:`CANDIDATE_DEPTH`;
-#: ``test_one_search_scans_the_corpus_once_however_many_rows_were_withheld``
-#: (``tests/integration/test_scan_cache.py``) fails when the memo goes.
+#: ``test_one_search_reads_the_scan_once_however_many_rows_were_withheld``
+#: (``tests/integration/test_scan_exhaustion.py``) holds the call count and the
+#: statement count together, over four withheld counts straddling the old edge.
 #:
 #: **A `LIMIT` on an FTS5 query bounds the rows returned and not the index
 #: walked**, which cuts both ways and is worth stating once rather than as two
@@ -390,12 +392,12 @@ class RetrievalService:
         :class:`ResultGate` admits.
         """
         # search_lexical is a true ceiling (IndexStore.search_lexical): an
-        # implementation must not return more rows than `depth`, so
-        # `_visible_ranking`'s "more than asked" branch is dead for it in a
-        # conforming adapter. Nothing checks conformance -- the port says so of
-        # itself -- and no test holds the shipped adapter to it, so it is
-        # measured: 400 matching chunks, limits 1/50/100/399/400/401 returning
-        # 1/50/100/399/400/400 rows.
+        # implementation must not return more rows than `depth`. Measured on the
+        # shipped adapter: 400 matching chunks, limits 1/50/100/399/400/401
+        # returning 1/50/100/399/400/400 rows. `_visible_ranking` no longer reads
+        # anything into that count either way -- the page says whether more
+        # exists -- so a ceiling violation would cost the caller rows without
+        # also mis-terminating the loop.
         lexical = self._visible_ranking(
             lambda depth: self._index.search_lexical(
                 request.query,
@@ -406,12 +408,11 @@ class RetrievalService:
             visible,
         )
         # search_substring is a floor, not a ceiling (IndexStore.search_substring):
-        # it may return more than `depth`, and when it does that has to be its
-        # entire ranking, not merely more than was asked -- the one promise
-        # `_visible_ranking` cannot check and this port states as a requirement.
-        # How that answer is *read* is pinned at both call sites by
-        # `test_a_retriever_that_ignores_its_limit_is_read_once_however_much_is_withheld`
-        # in `tests/unit/test_retrieval_depth.py`.
+        # it may return more than `depth`, because the scan below the trigram
+        # floor has no `LIMIT` to bound. It reports itself exhausted on that
+        # branch, so the excess is no longer something this loop has to interpret
+        # -- which is what removed the second call, and with it the memo that
+        # made the second call cheap.
         substring = self._visible_ranking(
             lambda depth: self._index.search_substring(
                 request.query,
@@ -437,73 +438,47 @@ class RetrievalService:
 
     @staticmethod
     def _visible_ranking(
-        fetch: Callable[[int], tuple[Ranked, ...]], visible: Visibility
+        fetch: Callable[[int], RetrieverPage], visible: Visibility
     ) -> tuple[Ranked, ...]:
         """One retriever's best :data:`CANDIDATE_DEPTH` rows this caller may see.
 
         Asks for :data:`FIRST_PASS_DEPTH`; if too few of what came back survived
         the canonical store for fifty to remain, asks deeper, until fifty do or
-        the retriever has nothing more. A short ranking is therefore short because
-        the corpus is, never because something the caller may not read got there
-        first.
+        the retriever says it has nothing more. A short ranking is therefore
+        short because the corpus is, never because something the caller may not
+        read got there first.
 
-        **The exit test is ``!=`` and not ``<``, because a pass is not always
-        cheap.** A retriever gives three answers and only one is ambiguous: fewer
-        rows than asked for is a `LIMIT` saying "that is all there is"; *more*
-        rows than asked for is a retriever that never truncated, so it has already
-        handed over everything and asking again buys another full scan and no new
-        rows; exactly ``depth`` might be either, so deepen. Both terminating
-        answers are states rather than an attempt count wearing a loop, so the
-        bound is ``log2(matches / 50)`` passes on a retriever that truncates and
-        **one** on a retriever that does not.
+        **The retriever says so; this loop no longer guesses.** Until
+        :class:`~theurian.domain.ranking.RetrieverPage` existed, exhaustion was
+        reconstructed from ``len(ranked) != depth`` — one expression reading
+        three different ``limit`` semantics off one number, and a promise no
+        implementation was held to. What that cost is recorded in
+        ``SqliteIndexStore._scan_below_the_trigram_floor``: a complete ranking
+        totalling exactly ``FIRST_PASS_DEPTH`` rows was indistinguishable from a
+        truncated one, so the scan branch was asked twice whenever more than
+        fifty of its hundred rows were withheld — a step function of the withheld
+        count, with a memo standing in front of it so that the second call cost
+        no second pass. The signal removes the second call; the memo went with
+        it.
 
-        ``<`` alone was written for the trigram lookup, where six passes cost
-        43 ms against 6 ms for one — a whole extra lookup each time, but a cheap
-        one, so the multiplier did not show. It also drove
-        ``SqliteIndexStore._scan_below_the_trigram_floor``, which every
-        two-character CJK query reaches and where the same multiplier is applied
-        to half a second (that method prices it): six passes, 3.06 s against
-        0.51 s, on 6,000 chunks with a third of the corpus retired since the
-        build. That branch now hands back its whole ranking, so ``!=`` exits on
-        the first pass for every corpus that does not total exactly ``depth``
-        rows — 0.64 s, or 0.65 s with the entire corpus retired, against 3.06 s
-        for the six passes it used to cost.
-
-        **That is the corpus read once, not the port called once, and the
-        difference is the whole of what is left of T-17 here.** A ranking of
-        exactly :data:`FIRST_PASS_DEPTH` rows is indistinguishable from a
-        truncated one, so this loop asks again — at 50 withheld rows once, at 51
-        twice. What holds that second call to no further pass over the corpus is
-        ``SqliteIndexStore._scan_cache``, a memoisation for this one gap, and not
-        the exit test. The residual is the *duration* face of T-17a: securing
-        :data:`CANDIDATE_DEPTH` visible rows from a retriever that is not
-        exhausted needs another fetch, which follows from the definition of this
-        loop rather than from a defect in it, and goes away only when the index
-        stops holding withdrawn rows (issue #15). T-17 in the threat model
-        carries the argument and what would falsify it.
-
-        A healthy index pays 0.07 s for that: the whole ranking crosses into
-        Python and
+        A healthy index pays 0.07 s for the pass it does make: the whole ranking
+        crosses into Python and
         :meth:`~theurian.application.visibility.CanonicalVisibility.cleared` asks
         about every row of it, at 15 us per distinct document.
 
-        **That read count is ``len(ranked)``, so it carries the withheld count on
-        every branch where the retriever does not fill the ask — and this
-        docstring used to claim the opposite.** What it said was that walking the
-        whole ranking is deliberate, "because stopping at fifty cleared rows
-        would make the *canonical* read count move with the withheld count".
-        Measured, that is a property of a branch stated as a property of the
-        design. Where ``fetch`` truncates and the match set fills the ask,
-        ``len(ranked)`` is ``depth`` whatever was withheld, so the read count
-        moves only when the pass count does — a fifty-row staircase, against the
-        one-row observable a short-circuit would give; that is the lookup and the
-        word index, and there the claim holds. On ``search_substring``'s scan
-        branch, which carries no ``LIMIT`` at all
-        (:func:`~theurian.infrastructure.sqlite.index_scan.scan_statement`), it is
-        backwards: ``ranked`` is the entire match set, both arrangements carry the
-        withheld count one row at a time, and the whole-ranking walk is never the
-        smaller of the two — 3,000 visible rows with 1,000 withheld below the
-        fiftieth cost 4,000 canonical reads against 50, in one pass either way.
+        **That read count is ``len(page.rows)``, so it carries the withheld count
+        on every branch where the retriever does not fill the ask.** Where
+        ``fetch`` truncates and the match set fills the ask, it is ``depth``
+        whatever was withheld, so the read count moves only when the pass count
+        does — a fifty-row staircase, against the one-row observable a
+        short-circuit would give; that is the lookup and the word index. On
+        ``search_substring``'s scan branch, which carries no ``LIMIT`` at all
+        (:func:`~theurian.infrastructure.sqlite.index_scan.scan_statement`), it
+        is backwards: ``page.rows`` is the entire match set, both arrangements
+        carry the withheld count one row at a time, and the whole-ranking walk is
+        never the smaller of the two — 3,000 visible rows with 1,000 withheld
+        below the fiftieth cost 4,000 canonical reads against 50, in one pass
+        either way.
 
         Totality is still what ships: two of the three retrievers truncate, the
         short-circuit is strictly the finer observable on those, and on the third
@@ -519,44 +494,59 @@ class RetrievalService:
         The alternative to the loop entirely, asking the canonical store up front
         which revisions are surfaceable, cost 32 ms on every query including
         healthy ones, 26 ms of it a canonical scan growing with the *corpus*
-        rather than with how stale the index is: every project charged for a delta
-        most do not have.
+        rather than with how stale the index is: every project charged for a
+        delta most do not have.
 
-        **The "more than asked" branch trusts a promise this function cannot
-        see and does not check.**
-        :class:`~theurian.domain.ports.index_store.IndexStore` requires
-        ``search_lexical`` to never exceed ``depth`` and ``search_substring``
-        to answer with its *entire* ranking whenever it does — this exit test
-        is what reads those two, different promises as "exhausted". It cannot
-        verify either: ``fetch`` is a plain callable, the same shape
-        whichever retriever is behind it, so telling "the whole ranking" from
-        "a fixed batch larger than what I asked for, with more still unseen"
-        would mean tagging each call site with a claim about the retriever it
-        wraps, not merely reading what the callable returns.
+        **The progress check is a liveness guard, not a second exit test.**
+        :func:`_deeper` doubles without a ceiling, so a retriever that never
+        reports itself exhausted loops forever — a failure the old count-based
+        test could not produce and this one can, because it believes what it is
+        told. A pass that returns no more rows than the pass before it has
+        nothing further by any honest reading: every method on
+        :class:`~theurian.domain.ports.index_store.IndexStore` ranks best-first
+        and counts ``limit`` from the top, so a conforming adapter that had more
+        would have returned more at twice the depth. It therefore cannot fire for
+        a conforming adapter, and it refuses rather than returning short, because
+        a silent truncation here is the exact failure — a visible ranking shorter
+        than a conforming adapter would have given, with nothing naming why —
+        that this whole change exists to make impossible.
 
-        That tag was considered here and left out, not overlooked. Adding it
-        would turn this loop from retriever-agnostic into retriever-aware — a
-        change to what it promises, not a decoration on top of what it
-        already does — and
-        ``tests/unit/test_retrieval_depth.py``'s
-        ``test_a_retriever_that_ignores_its_limit_is_read_once_however_much_is_withheld``
-        already exercises *both* call sites in :meth:`search` with a retriever
-        that overshoots ``depth``, a shape only ``search_substring``'s
-        contract permits in production. Tagging the call sites would make that
-        test's lexical half describe a state a conforming adapter cannot
-        reach, which is a change for the suite that owns it to make, not one
-        to fold in beside a docstring. So a ``search_lexical`` that both
-        truncates and overshoots — the future retriever this loop cannot yet
-        rule out — still exits here believing it is exhausted, silently, at
-        whatever depth it happened to ask; that is the residual this
-        paragraph records rather than closes.
+        **It raises past `hybrid_answer`'s fallback vocabulary, and that is a
+        decision rather than an oversight.** `mcp.search.hybrid_answer` catches
+        `IndexBuildError` alone, so a `RetrievalError` from here reaches the
+        agent as a tool error rather than as a `fallbackReason`. Mapping it to
+        one was considered and rejected on two grounds:
+
+        - every existing reason names a property of the *index file* and carries
+          a remedy a person can run — `theurian index build`, delete the pointer.
+          This fires on a defective **adapter**, which is Theurian's own code, and
+          no command a user runs repairs it. `index-unreadable` would send them to
+          rebuild a healthy index, for ever.
+        - a fallback answers from the substring scan instead, which is a different
+          and possibly shorter ranking. That is the silent truncation this guard
+          exists to prevent, wearing a reason code.
+
+        A loud failure for a bug that cannot exist in a conforming adapter is
+        what gets it found in review rather than in production. Since
+        `_require_a_positive_limit` landed, `SqliteIndexStore` cannot construct a
+        short non-exhausted page at all, so the shipped configuration has no path
+        here; the day a second adapter exists, this should fail hard.
         """
         depth = FIRST_PASS_DEPTH
+        served = -1
         while True:
-            ranked = fetch(depth)
-            cleared = visible.cleared(ranked)
-            if len(cleared) >= CANDIDATE_DEPTH or len(ranked) != depth:
+            page = fetch(depth)
+            cleared = visible.cleared(page.rows)
+            if len(cleared) >= CANDIDATE_DEPTH or page.exhausted:
                 return cleared[:CANDIDATE_DEPTH]
+            if len(page.rows) <= served:
+                raise RetrievalError(
+                    f"A retriever returned {len(page.rows)} rows at depth {depth} after "
+                    f"{served} at depth {depth // 2}, while reporting itself not "
+                    f"exhausted. Asking deeper cannot make progress. Fix the adapter to "
+                    f"report `exhausted=True` once it has returned everything it has."
+                )
+            served = len(page.rows)
             depth = _deeper(depth)
 
     def embedding_model(self, *, use_dense: bool) -> str:
@@ -611,12 +601,16 @@ class RetrievalService:
             return ()
 
         vector = asyncio.run(embedder.embed((request.query,)))[0]
-        ranked = self._index.search_dense(
+        page = self._index.search_dense(
             vector,
             project_id=request.project_id,
             include_unapproved=request.include_unapproved,
         )
-        return visible.cleared(ranked)[:CANDIDATE_DEPTH]
+        # `page.exhausted` is not read here, and that is not an oversight: this
+        # retriever returns the whole ranking, so there is no depth to go back
+        # for. The field is still true of it, which is why the port carries it
+        # rather than exempting this method.
+        return visible.cleared(page.rows)[:CANDIDATE_DEPTH]
 
 
 @dataclass(frozen=True, slots=True)

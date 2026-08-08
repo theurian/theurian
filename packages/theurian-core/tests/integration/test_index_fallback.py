@@ -1472,7 +1472,7 @@ def test_a_dense_search_over_an_index_with_no_vectors_returns_nothing(
     is gone" and "the table is empty" must not share an answer, or `--no-embeddings`
     would look like corruption.
     """
-    assert store.search_dense([1.0, 0.0], project_id="demo") == ()
+    assert store.search_dense([1.0, 0.0], project_id="demo").rows == ()
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -1486,8 +1486,8 @@ def test_a_query_that_matches_nothing_returns_nothing_and_does_not_raise(
     """
     search = getattr(store, retriever)
 
-    assert search("kubernetes", project_id="demo") == ()
-    assert search("token", project_id="demo"), "and a matching one still matches"
+    assert search("kubernetes", project_id="demo").rows == ()
+    assert search("token", project_id="demo").rows, "and a matching one still matches"
 
 
 @pytest.mark.parametrize(

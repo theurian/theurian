@@ -12,6 +12,15 @@ because it cannot be exercised offline (OSS-15). Fakes land in ``tests/fakes/``
 alongside the first real adapter in Milestone 1; until then
 ``tests/unit/test_ports.py`` checks the properties that are checkable today --
 that the set is closed, and that each entry is a genuine Protocol.
+
+**The fake rule above is an intention, not an enforced one, and the gap is
+wide.** No test asserts it, and by ``rg <PortName> packages/theurian-core/tests/
+fakes/`` only three of the fifteen ports below are named there at all: ``Clock``
+(``FrozenClock``), ``IdGenerator`` (``SeededIdGenerator``) and ``DaemonManager``
+(``FakeService``). The other twelve are exercised by stand-ins that live beside
+the tests that need them. Said plainly here because the sentence above reads as a
+guarantee, and a reader who takes it for one concludes that any port they find in
+this list can be swapped out offline.
 """
 
 from theurian.domain.ports.authorization import AuthorizationProvider
@@ -23,6 +32,7 @@ from theurian.domain.ports.daemon_manager import (
 )
 from theurian.domain.ports.determinism import Clock, IdGenerator
 from theurian.domain.ports.embedding import EmbeddingProvider
+from theurian.domain.ports.index_store import IndexStore
 from theurian.domain.ports.object_store import ObjectStore
 from theurian.domain.ports.reranking import RerankingProvider, ScoredCandidate
 from theurian.domain.ports.review_provider import ReviewProvider
@@ -40,6 +50,7 @@ ALL_PORTS: tuple[type, ...] = (
     DaemonManager,
     EmbeddingProvider,
     IdGenerator,
+    IndexStore,
     ObjectStore,
     RerankingProvider,
     ReviewProvider,
@@ -58,6 +69,7 @@ __all__ = [
     "DaemonManager",
     "EmbeddingProvider",
     "IdGenerator",
+    "IndexStore",
     "NormalizedDocument",
     "ObjectStore",
     "RerankingProvider",

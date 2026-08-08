@@ -32,7 +32,7 @@ from typing import Final, final
 from theurian.domain.chunking import IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
-from theurian.domain.ranking import Ranked, estimate_tokens
+from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
 from theurian.infrastructure.sqlite.index_query import (
     MAX_QUERY_CHARS,
     MAX_QUERY_TERMS,
@@ -400,81 +400,20 @@ class SqliteIndexStore:
     """Writes and reads one index build."""
 
     def __init__(self, path: Path) -> None:
+        # A path and nothing else. `_scan_cache` stood here until `IndexStore`
+        # gained an explicit exhaustion signal (#16): a memoisation of
+        # `_scan_below_the_trigram_floor` that its own docstring called "a
+        # mitigation for one named defect, not an optimisation -- delete it when
+        # the defect is fixed at its cause". The defect was `_visible_ranking`
+        # inferring exhaustion from a row count, and the second call the memo
+        # existed to answer no longer happens. `_scan_below_the_trigram_floor`
+        # carries the account: what now holds the property the memo held, and
+        # what became of the fresh-instance-per-search rule it imposed.
+        #
+        # **No per-instance state at all** is the shape to keep. It is what makes
+        # "one caller's query leaves nothing behind for another's" checkable by
+        # reading this method rather than by trusting a paragraph.
         self._path = path
-        #: A mitigation for one named defect, not a general-purpose cache --
-        #: read the whole of this before reaching for it anywhere else.
-        #: Memoises :meth:`_scan_below_the_trigram_floor`, keyed by the three
-        #: arguments that determine its answer.
-        #:
-        #: **The defect.** :meth:`~theurian.application.retrieval_service.
-        #: RetrievalService._visible_ranking` decides whether a retriever has
-        #: more to give by comparing how many rows came back against how many
-        #: it asked for -- it has no other signal. That comparison is wrong
-        #: exactly when the scan branch's *entire* ranking happens to total
-        #: precisely ``FIRST_PASS_DEPTH`` rows: the loop cannot tell "this is
-        #: everything" from "this was truncated", so it asks again. Driving
-        #: ``_visible_ranking`` directly, holding the match count at
-        #: ``FIRST_PASS_DEPTH`` and varying only how many of those rows a
-        #: canonical read session withholds: one call to this method for
-        #: every withheld count from 0 to 50, two calls for every withheld
-        #: count from 51 to 99 -- a step function of the withheld count, sharp
-        #: at the edge, not a coincidence that fades with scale.
-        #: ``tests/unit/test_retrieval_depth.py``'s
-        #: ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``
-        #: asserts both sides of that edge.
-        #:
-        #: **Why that step function matters here and not everywhere else a
-        #: retriever re-asks.** A second call whose *cost* tracks how much was
-        #: withheld is the timing channel T-17's residual section is about.
-        #: Without this cache, the second call is a second full scan --
-        #: measured at 29.17ms for two independent scans against 14.04ms for
-        #: one, on a 6,000-row corpus shaped to sit on this exact edge -- so
-        #: crossing from 50 withheld to 51 both doubles the work and tells an
-        #: observer which side of 50 they are on. With it, the second call
-        #: answers from memory: two calls through one cached instance cost
-        #: 14.00ms, indistinguishable from the 14.04ms a single call costs.
-        #:
-        #: **What is left, measured rather than waved at.** The second call
-        #: still drives a second, memoised-therefore-database-free pass of
-        #: `CanonicalVisibility.cleared` over the same ranking -- the cache
-        #: does not reach that far. Measured on the same corpus, N=300 per
-        #: side, over four repeated runs: a median delta crossing the edge
-        #: between -0.10ms and +0.17ms, against a 1.08-1.57ms run-to-run
-        #: noise floor from identical repeated calls each time -- the delta's
-        #: *sign* is not stable run to run, which is itself the evidence that
-        #: it is noise rather than a directional cost, not merely a small one.
-        #: That is below what a harness resolving to about 1-1.5ms of jitter
-        #: can call a signal; it is not a claim that nothing remains at
-        #: a resolution this harness cannot reach.
-        #:
-        #: **This is a mitigation for that one defect, not an optimisation --
-        #: delete it when the defect is fixed at its cause.** The real fix is
-        #: `_visible_ranking` reading an explicit exhaustion signal from each
-        #: retriever instead of inferring one from a row count; that is a
-        #: breaking change to `IndexStore` and belongs to its own reviewed
-        #: change, not folded into this one. Until it lands, this cache is
-        #: what stands between the coincidence above and a timing channel.
-        #: When it lands, this field, this docstring, and the branch in
-        #: `_scan_below_the_trigram_floor` that reads it should all go: a
-        #: retriever that states its own exhaustion has nothing left for a
-        #: cache to paper over.
-        #:
-        #: **Callers must construct a fresh instance per search -- a
-        #: requirement this mitigation depends on, not an observation about
-        #: today's callers.** `hybrid_answer` builds one `SqliteIndexStore`
-        #: per request (`mcp.search.hybrid_answer`, `mcp/search.py:414`), so
-        #: as things stand there is no window in which this cache could ever
-        #: be asked about two different requests. That is what makes holding
-        #: it for the life of the instance safe rather than merely convenient:
-        #: an index build is a derived, immutable artifact once published
-        #: (ADR-0004), so nothing about a single request's cached answers can
-        #: go stale within that request. Pooling or otherwise sharing one
-        #: `SqliteIndexStore` across requests would break this outright --
-        #: one caller's withheld-row count would leak into another caller's
-        #: latency through this very cache, which is the channel this
-        #: mitigation exists to close, reopened one layer up. Do not reach
-        #: for pooling to make this faster; construct a new store instead.
-        self._scan_cache: dict[tuple[str, str, bool], tuple[Ranked, ...]] = {}
 
     @property
     def path(self) -> Path:
@@ -695,15 +634,24 @@ class SqliteIndexStore:
         project_id: str,
         limit: int = 50,
         include_unapproved: bool = False,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Rank chunks by BM25 (FR-R2).
 
         Filters run in the same statement as the match, so an unapproved or
         out-of-project chunk is never ranked in the first place (FR-R1).
+
+        **``LIMIT ? + 1``, and the extra row is never returned.** ``limit`` is a
+        true ceiling on this port, so exactly ``limit`` rows is the one answer a
+        row count cannot interpret: it is either the whole match set or a
+        truncation. Fetching one row past the ceiling answers that question
+        directly, and the answer is what the caller reads instead of guessing.
+        A `LIMIT` on an FTS5 query bounds the rows returned and not the index
+        walked, so the extra row costs a row and not a pass.
         """
+        _require_a_positive_limit(limit)
         expression = to_match_expression(query)
         if not expression:
-            return ()
+            return RetrieverPage(rows=(), exhausted=True)
 
         clauses, parameters = self._scope(project_id, include_unapproved)
 
@@ -737,16 +685,16 @@ class SqliteIndexStore:
         # https://github.com/theurian/theurian/issues/21.
         try:
             with _reading(self._path) as connection:
-                rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
-                return _ranked(rows, _bm25)
+                rows = connection.execute(sql, (expression, *parameters, limit + 1)).fetchall()
+                return _page(_ranked(rows, _bm25), limit)
         except _QueryExpressionError:
             # Unreachable: sanitising cannot produce a malformed expression any
             # more. Kept as the guard that catches it again if sanitising is ever
             # relaxed -- `_is_query_expression_error` documents why, and names the
             # tests that hold the invariant in its place. Everything else `_reading`
-            # raises is the file's problem and must not be answered with `()`,
-            # which is indistinguishable from "nothing matched".
-            return ()
+            # raises is the file's problem and must not be answered with an empty
+            # page, which is indistinguishable from "nothing matched".
+            return RetrieverPage(rows=(), exhausted=True)
 
     def search_substring(
         self,
@@ -755,7 +703,7 @@ class SqliteIndexStore:
         project_id: str,
         limit: int = 50,
         include_unapproved: bool = False,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Rank by trigram substring match.
 
         The retriever that makes Japanese searchable. `unicode61` turns a
@@ -771,8 +719,13 @@ class SqliteIndexStore:
         falls through to, which is why the port documents it as a floor rather
         than a ceiling. There is no `LIMIT` to bind there:
         :func:`~theurian.infrastructure.sqlite.index_scan.scan_statement` has to
-        score every matching row before it can name the best of them.
+        score every matching row before it can name the best of them, so that
+        branch hands back everything and reports itself exhausted on its first
+        and only call. The lookup below is a ceiling like `search_lexical`'s and
+        resolves its own exhaustion the same way, by asking for one row more than
+        it will return.
         """
+        _require_a_positive_limit(limit)
         expression = to_trigram_expression(query)
         if not expression:
             # Not "nothing matched". The trigram floor is a property of the
@@ -795,8 +748,8 @@ class SqliteIndexStore:
         )
         try:
             with _reading(self._path) as connection:
-                rows = connection.execute(sql, (expression, *parameters, limit)).fetchall()
-                return _ranked(rows, _bm25)
+                rows = connection.execute(sql, (expression, *parameters, limit + 1)).fetchall()
+                return _page(_ranked(rows, _bm25), limit)
         except _QueryExpressionError:
             # Unreachable, and kept for the same reason as in `search_lexical`.
             # What must *not* be caught here is anything else `_reading` raises:
@@ -805,7 +758,7 @@ class SqliteIndexStore:
             # response still claimed to be answering from an index. `unicode61`
             # cannot segment CJK, so this retriever is the *only* one that can
             # answer at all for such a corpus, and its silence was total.
-            return ()
+            return RetrieverPage(rows=(), exhausted=True)
 
     def _scan_below_the_trigram_floor(
         self,
@@ -813,7 +766,7 @@ class SqliteIndexStore:
         *,
         project_id: str,
         include_unapproved: bool,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Answer a query too short to form a trigram, by scanning instead.
 
         **Why the floor exists.** A trigram index stores three-character grams,
@@ -877,34 +830,42 @@ class SqliteIndexStore:
         the measurements and T-6 in `docs/security/threat-model.md` for why the
         more expensive member is still the right one here.
 
-        **Cached per instance (see `self._scan_cache`).** This method already
-        answers the same rows on every call for the same arguments -- there is
-        no `limit` to vary the answer by -- so the second of two calls in one
-        search reads the same rows for nothing rather than for more recall.
-        That second call is real, and it is not independent of what was
-        withheld: `_visible_ranking`'s exit test fires it exactly when the
-        true match count equals `FIRST_PASS_DEPTH` and fewer than
-        `CANDIDATE_DEPTH` of those rows survive the canonical store -- on a
-        100-row match set, more than 50 withheld, so 50 withheld costs one
-        call and 51 costs two. Without this cache that second call is a
-        second full scan, and its cost is exactly the observable T-17's
-        residual section is about. See `self._scan_cache`'s docstring for the
-        measurements, what this cache is a mitigation *for*, and why it goes
-        away once that cause is fixed rather than staying as a general one.
-        """
-        cache_key = (query, project_id, include_unapproved)
-        cached = self._scan_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        **Exhausted on its first and only call, and that is what deleted a
+        cache.** Having read and scored every matching row, this method has by
+        construction nothing further to give, whatever the corpus and whatever
+        the canonical store has since withdrawn. It says so, and
+        `_visible_ranking` stops.
 
+        Until `IndexStore` carried that signal the loop inferred exhaustion from
+        a row count, which is exactly wrong here: the whole ranking totalling
+        precisely `FIRST_PASS_DEPTH` rows is indistinguishable from a truncation,
+        so the loop asked again -- one call for every withheld count from 0 to
+        50, two for every count from 51 to 99, a step function of the withheld
+        count with a sharp edge. A `_scan_cache` field memoised the second call
+        so that it cost no second pass over the corpus (29.17 ms for two
+        independent scans against 14.04 ms for one, on a 6,000-row corpus shaped
+        to sit on that edge), and its own docstring called it a mitigation for
+        one named defect rather than an optimisation, to be deleted when the
+        defect was fixed at its cause. It has been. There is no second call left
+        to make cheap, so the property the cache was holding -- one search, one
+        pass over the corpus, however many rows were withheld -- is now a
+        consequence of this method's contract instead of a memo standing in front
+        of a wrong inference.
+
+        The cache also imposed a rule on callers: *construct a fresh
+        `SqliteIndexStore` per search*, because a pooled one would have leaked
+        one caller's withheld-row count into another caller's latency through the
+        memo. That rule went with it. This store holds no cross-request state at
+        all now -- which is not the same as saying it may be pooled, only that
+        this is no longer the reason it may not be.
+        """
         terms = to_scan_terms(query)
         if not terms:
             # Every term was too short to be worth a pass over the corpus --
             # see `index_query._is_worth_scanning`. Not "nothing matched": the
             # word index answers a single Latin letter as a word, which is the
             # only sense in which it is a query.
-            self._scan_cache[cache_key] = ()
-            return ()
+            return RetrieverPage(rows=(), exhausted=True)
 
         clauses, parameters = self._scope(project_id, include_unapproved)
         sql, arguments = scan_statement(terms, clauses=clauses, scope=parameters)
@@ -914,10 +875,7 @@ class SqliteIndexStore:
         # truncated copy, something that is not an index at all.
         with _reading(self._path) as connection:
             rows = connection.execute(sql, arguments).fetchall()
-            result = _ranked(rows, _scan_score)
-
-        self._scan_cache[cache_key] = result
-        return result
+            return RetrieverPage(rows=_ranked(rows, _scan_score), exhausted=True)
 
     def _scope(self, project_id: str, include_unapproved: bool) -> tuple[list[str], list[object]]:
         """Project and status, shared by every retriever so none can forget it.
@@ -957,7 +915,7 @@ class SqliteIndexStore:
         *,
         project_id: str,
         include_unapproved: bool = False,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Rank chunks by cosine similarity, by exact scan.
 
         Exact rather than approximate: a local knowledge base is thousands of
@@ -973,9 +931,12 @@ class SqliteIndexStore:
         withdrawn -- would otherwise re-run the whole scan to see one row more.
         The peak memory is unchanged either way: `fetchall` already holds every
         vector.
+
+        Always exhausted, and truthfully so: the whole ranking is what comes
+        back, so there is never anything further for the caller to ask for.
         """
         if not query_vector:
-            return ()
+            return RetrieverPage(rows=(), exhausted=True)
 
         clauses, parameters = self._scope(project_id, include_unapproved)
 
@@ -1005,7 +966,7 @@ class SqliteIndexStore:
         # bytes ended with the connection -- see `_UNREADABLE_VALUES`.
         with _reading(self._path) as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
-            return _dense_ranking(rows, query_vector)
+            return RetrieverPage(rows=_dense_ranking(rows, query_vector), exhausted=True)
 
 
 def _dense_ranking(
@@ -1108,6 +1069,51 @@ def _ranked(
         )
         for row in rows
     )
+
+
+def _require_a_positive_limit(limit: int) -> None:
+    """Refuse a `limit` below 1, at the entry rather than in the slice.
+
+    `_page` cuts with `ranked[:limit]`, and a negative `limit` makes that a
+    from-the-end slice: measured on an 8-row match set before this guard existed,
+    `limit=-2` returned **6 rows** with `exhausted=False` -- more rows than
+    `limit`, which the port calls a true ceiling, and a claim that more was
+    coming. `limit=0` and `limit=-1` instead reached `RetrieverPage`'s invariant
+    and raised `RankingError`, whose message tells the reader to fix the adapter
+    when the adapter is right and the argument is wrong.
+
+    Unreachable through the documented API -- `_visible_ranking` starts at
+    `FIRST_PASS_DEPTH` and only doubles -- so this refuses a caller bug rather
+    than a user's input, and `ValueError` is the shape for that here
+    (`index_scan.scan_statement`, `ports.source_parser`). It is deliberately not
+    a `TheurianError`: those carry a remedy a person can run, and no `theurian`
+    command produces this.
+    """
+    if limit < 1:
+        msg = (
+            f"limit must be at least 1, got {limit}. IndexStore treats it as a row "
+            f"count from the top of a best-first ranking, so there is no reading of "
+            f"zero or fewer."
+        )
+        raise ValueError(msg)
+
+
+def _page(ranked: tuple[Ranked, ...], limit: int) -> RetrieverPage:
+    """A page from a ``LIMIT ? + 1`` fetch: the extra row answers, it never ships.
+
+    Both `LIMIT`-bearing retrievers ask for one row past their ceiling. Its
+    presence is the whole of what "is there anything further" means for them, and
+    dropping it again is what keeps ``limit`` a true ceiling on the port. Written
+    once rather than at each call site, because the two halves -- probe by one,
+    cut by one -- have to move together or the ceiling leaks a row.
+
+    Sound only for ``limit >= 1``, which `_require_a_positive_limit` establishes
+    at each entry. Given that, `ranked[:limit]` is a genuine prefix and an empty
+    page is always exhausted, so this function cannot construct the state
+    `RetrieverPage` refuses -- and that refusal is left for the defective
+    *adapter* its message actually describes.
+    """
+    return RetrieverPage(rows=ranked[:limit], exhausted=len(ranked) <= limit)
 
 
 def _bm25(row: sqlite3.Row) -> float:

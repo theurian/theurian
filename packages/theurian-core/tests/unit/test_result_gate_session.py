@@ -339,7 +339,7 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     **Nothing that inspects a response can see this.** Every published value is
     identical across all eight measurements below, so no assertion over a payload
     moves; ``test_retrieval_depth.py`` counts retriever passes and
-    ``test_scan_cache.py`` counts SQLite executions, and a break at
+    ``test_scan_exhaustion.py`` counts SQLite executions, and a break at
     :data:`~theurian.application.retrieval_service.CANDIDATE_DEPTH` moves neither.
     Verified by running one: with that break in place, every unit test and every
     retrieval integration suite — 877 of them — leaves only this test and its
