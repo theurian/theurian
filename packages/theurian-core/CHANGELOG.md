@@ -150,8 +150,12 @@ error is the one reading the release notes to decide whether to upgrade.
   The page carries the rows and an `exhausted` flag, which the depth loop reads
   instead of inferring exhaustion from a row count. No MCP schema impact:
   `src/theurian/mcp/` never calls a `search_*` method, so the outward breaking
-  cost is zero — the break is to the port, its one adapter, and the suite's four
-  fakes.
+  cost is zero — the break is to the port, its one adapter, and the six
+  test-side implementations `rg "def search_lexical" packages/theurian-core`
+  finds: `_ScriptedIndex`, `_CountingIndex`, `_NeverFinished`, `_TwoOpinions`,
+  `_TwoRankings`, and `_CountedStore`, across five files. Four of them answer
+  through the new `fakes.pages` helper; `_CountedStore` delegates to the real
+  store and `_NeverFinished` builds a page the helper deliberately cannot.
 
   One expression used to read three different `limit` semantics off one number —
   a ceiling in `search_lexical`, a floor in `search_substring`, absent in

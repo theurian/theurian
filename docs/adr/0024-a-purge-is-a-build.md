@@ -229,11 +229,19 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    the query raises `no such table: chunks_fts`, and a file exists at that path
    again afterwards.
 
-   Index connections are therefore opened `file:<path>?mode=ro` with `uri=True`.
-   Measured: the default `sqlite3.connect` creates a database at a missing path;
-   `mode=ro` raises `unable to open database file` and creates nothing. That is
-   what turns "the pointer outlived its file" back into the fallback ADR-0022
-   promised, instead of an empty index that reports itself healthy.
+   Index connections are therefore **to be** opened `file:<path>?mode=ro` with
+   `uri=True`. Measured: the default `sqlite3.connect` creates a database at a
+   missing path; `mode=ro` raises `unable to open database file` and creates
+   nothing. That is what turns "the pointer outlived its file" back into the
+   fallback ADR-0022 promised, instead of an empty index that reports itself
+   healthy.
+
+   **Not yet implemented.** `infrastructure/sqlite/index_store.py:236` is still
+   `sqlite3.connect(path)`, and every other decision in this ADR is likewise a
+   decision rather than a description — see Compliance, which says so of the
+   whole section. Called out here as well because this is the one point stated
+   as a property of the code rather than as a rule for it, and a reader who
+   stops at the paragraph above would take it for shipped behaviour.
 
 8. **Withdrawal is transitive over derived content.** A node whose text is
    *derived* from a chunk — a RAPTOR summary (ADR-0008) is the case this project

@@ -507,29 +507,54 @@ Landed in Milestone 5:
   > was "sized from the constant, so retuning moves the test rather than
   > breaking it" — which sounds like care and is the property that let the
   > constant be mutated to 1 with the suite still green.
-- **That one search costs this branch one pass over the corpus, and one call.**
-  `tests/integration/test_scan_exhaustion.py`, which replaced
-  `test_scan_cache.py` when #16 deleted the cache it was named for.
-  `test_one_search_reads_the_scan_once_however_many_rows_were_withheld` holds
-  both counts at one over four withheld counts straddling the old 50/51 edge.
-  Its predecessor held only the statement count, because with the cache in place
-  the call count moved and could not be asserted; the signal fixed the call
-  count, and the statement count is asserted beside it so that a memo
-  reintroduced to paper over a regression would not look like a pass.
+- **That one search costs this branch one pass over the corpus, and only its
+  own.** `tests/integration/test_scan_cache.py`, landed in review round five,
+  after the correction to the `LIMIT` amendment above. Two tests, failing in
+  opposite directions and neither ruling out the other's failure:
+  `test_one_search_scans_the_corpus_once_however_many_rows_were_withheld` —
+  delete `SqliteIndexStore._scan_cache` and one request costs two scans, which is
+  the timing observable T-17's residual is about — and
+  `test_one_callers_withheld_rows_never_make_another_callers_search_cheaper` —
+  share the cache between stores and two requests cost one scan, which is the
+  same observable moved from between two reads to between two callers.
 
-  It counts **statements executed by SQLite**, read off a trace callback, as
-  well as calls to `search_substring`. That distinction is why the file exists:
-  while the cache stood, the port call count was one or two whether the cache
-  was present or absent, so a test built on a counting fake passed with the
-  mitigation deleted and guarded nothing while looking like a guard.
+  They count **statements executed by SQLite**, read off a trace callback, rather
+  than calls to `search_substring`. That distinction is the whole reason the file
+  exists: the port call count is one or two whether the cache is present or
+  absent, so a test built on a counting fake passes with the cache deleted and
+  guards nothing while looking like a guard.
 
-  The predecessor's second test, `test_one_callers_withheld_rows_never_make_
-  another_callers_search_cheaper`, was **deleted rather than carried forward**,
-  as this ADR said it would have to be: two requests cost two scans when there
-  is no cache at all, so it would have gone on passing with nothing left to be
-  about. `test_the_store_holds_no_state_between_searches` replaces it with a
-  claim that can be read off the object — `SqliteIndexStore.__init__` assigns
-  one field, so nothing is left for one caller's query to hand the next.
+  Both are to be **deleted with the cache** when
+  [#16](https://github.com/theurian/theurian/issues/16) gives `IndexStore` an
+  explicit exhaustion signal, not carried forward. The first fails loudly and
+  correctly on that day, because its precondition asserts the retriever was read
+  twice. The second goes on passing — two requests cost two scans when there is
+  no cache at all — so it has to be taken out deliberately rather than waited on
+  to fail.
+
+  > **Amended in Milestone 6.** Everything above is the Milestone 5 record and
+  > is left standing; none of it describes code that still exists.
+  > [#16](https://github.com/theurian/theurian/issues/16) gave `IndexStore` an
+  > explicit exhaustion signal, `SqliteIndexStore._scan_cache` was deleted, and
+  > `tests/integration/test_scan_cache.py` became
+  > `tests/integration/test_scan_exhaustion.py`.
+  >
+  > The prediction above held on both halves. The first test failed loudly, its
+  > precondition asserting a second read that no longer happens; the second,
+  > `test_one_callers_withheld_rows_never_make_another_callers_search_cheaper`,
+  > did not announce itself and was taken out deliberately.
+  >
+  > What replaces them, landed in Milestone 6, not this one:
+  > `test_one_search_reads_the_scan_once_however_many_rows_were_withheld` holds
+  > the port call count *and* the SQLite statement count at one, over four
+  > withheld counts straddling the old 50/51 edge — the call count is assertable
+  > now because the exhaustion signal fixed it, and the statement count is kept
+  > beside it so a memo reintroduced to paper over a regression would not look
+  > like a pass. `test_the_store_holds_no_state_between_searches` replaces the
+  > deleted second test with a claim read off the object rather than off a
+  > stopwatch: `SqliteIndexStore.__init__` assigns one field, so nothing is left
+  > for one caller's query to hand the next.
+
 - **The floor's lower bound, both halves.**
   `test_a_single_letter_does_not_earn_a_pass_over_the_corpus` (parametrised over
   `e`, `a b c`, `7`, `#`) and `test_a_single_character_that_is_a_whole_word_still_scans`.
