@@ -311,9 +311,28 @@ class _Case:
     #: of them would report the other as covered.
     withheld_by: str
     query: str
+    #: The caller's parameters, for the tests that want them *varied* rather than
+    #: enumerated -- see :attr:`arguments`.
     limit: int
     max_tokens: int
     use_dense: bool
+
+    @property
+    def arguments(self) -> dict[str, Any]:
+        """The generated parameter triple, asked for by name.
+
+        Only :func:`test_no_withheld_payload_appears_anywhere_a_caller_reads`
+        uses it. That test asks whether a payload can appear *anywhere*, which is
+        a question worth spreading across parameters rather than pinning to four
+        of them; the equality test asks a question whose observability depends on
+        an exact ``limit`` and an exact budget, and enumerates instead
+        (:data:`ARGUMENT_SETS`).
+
+        A property rather than a default inside :func:`_search`, because a
+        default there is what made ``ARGUMENT_SETS``' ``defaults`` entry a no-op
+        for twenty-four calls without anything saying so.
+        """
+        return {"limit": self.limit, "maxTokens": self.max_tokens, "useDense": self.use_dense}
 
     @property
     def build_status(self) -> KnowledgeStatus:
@@ -807,15 +826,25 @@ def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, A
     return loaded
 
 
-def _search(registry: ProjectRegistry, case: _Case, **overrides: Any) -> dict[str, Any]:
-    arguments: dict[str, Any] = {
-        "projectId": PROJECT_ID,
-        "query": case.query,
-        "limit": case.limit,
-        "maxTokens": case.max_tokens,
-        "useDense": case.use_dense,
-    }
-    return _call(registry, "knowledge.search", **{**arguments, **overrides})
+def _search(registry: ProjectRegistry, case: _Case, **arguments: Any) -> dict[str, Any]:
+    """One search, carrying the project and the query and **nothing else**.
+
+    Every other parameter comes from the caller, so an empty ``arguments`` really
+    does mean *the tool's own defaults*. This function used to seed the dict with
+    ``case.limit``, ``case.max_tokens`` and ``case.use_dense`` and then let the
+    caller override -- which silently emptied :data:`ARGUMENT_SETS`' ``defaults``
+    entry, because ``{}`` overrides nothing. Measured over the 24 calls that
+    entry issued: the tool-default triple ``(10, 2000, False)`` appeared **zero**
+    times, and with ``derandomize`` that is a fixed example set rather than bad
+    luck. ``test_mcp_tools.py``'s ``defaults`` is the shape this now matches, and
+    that module records why it exists: the leak it closes was reachable with no
+    parameters set at all.
+
+    A caller that wants the generated triple asks for it by name --
+    :attr:`_Case.arguments` -- so which of the two is in force is visible at the
+    call site rather than decided here.
+    """
+    return _call(registry, "knowledge.search", projectId=PROJECT_ID, query=case.query, **arguments)
 
 
 def _failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
@@ -942,6 +971,13 @@ _GENERATED = settings(
 #:
 #: The same sets ``test_mcp_tools.py`` enumerates, minus its ``one-below``, which
 #: it keeps for a leak this file's corpora cannot produce.
+#:
+#: ``defaults`` is ``{}`` and has to stay ``{}``: it means *the tool's own
+#: defaults*, not a restatement of them, so it keeps testing whatever
+#: :func:`theurian.mcp.tools.knowledge_search` defaults to rather than what this
+#: file thought it defaulted to when the line was written. That only works while
+#: :func:`_search` adds nothing of its own, which is what
+#: :func:`test_the_defaults_argument_set_really_sends_no_parameters` holds.
 ARGUMENT_SETS: Final[tuple[tuple[dict[str, Any], str], ...]] = (
     ({}, "defaults"),
     ({"limit": MAX_RESULTS}, "at-the-depth"),
@@ -1029,7 +1065,7 @@ def test_no_withheld_payload_appears_anywhere_a_caller_reads(
     """
     pair = _pair(tmp_path_factory.mktemp("absence"), case)
 
-    probe = _search(pair.probe, case)
+    probe = _search(pair.probe, case, **case.arguments)
 
     _assert_the_pair_bites(pair, probe)
     published = json.dumps({key: value for key, value in probe.items() if key != "query"})
