@@ -43,9 +43,11 @@ is how a document ends up trusting a boundary that is not there.
 
    Exit 0 is compatible, 3 incompatible, 2 malformed input. Core performs the
    comparison so that no client reimplements SemVer ordering or the PEP 440
-   translation (§34). These are the same four flags `theurian::compat_check` in
-   `scripts/lib.sh` sends, and they are pinned to it by
-   `test_upgrade_command_names_the_same_flags_as_lib_sh`.
+   translation (§34). These are the same five flags `theurian::compat_check` in
+   `scripts/lib.sh` sends, and both the flags and the four placeholder keys are
+   pinned to it and to the schema by
+   `test_upgrade_command_names_the_same_flags_as_lib_sh` and
+   `test_upgrade_command_placeholders_name_keys_the_schema_declares`.
 
 3. Report `outcome` and `message`, then print the verdict's `remedy` **verbatim**
    and stop. For `core-too-old` the remedy already names both installers, and it
