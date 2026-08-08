@@ -171,7 +171,7 @@ This plugin declares which Core versions it supports in
 there is exactly one implementation of the rules:
 
 ```sh
-theurian compat check --plugin-version 0.1.0 \
+theurian compat check --plugin-version 0.1.1 \
   --core-minimum 0.1.0-dev.0 --core-maximum-exclusive 0.2.0 \
   --protocol-version theurian/v1 --json
 ```

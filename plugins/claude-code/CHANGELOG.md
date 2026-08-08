@@ -38,20 +38,35 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   It now names the installer first.
 - The plugin README's install sequence began at the marketplace and ended at
   `/theurian:setup`, never mentioning Core. Core is now the first step.
-- **The installer the plugin named produced a Core whose daemon cannot start.**
-  All three surfaces — the `SessionStart` hook's Core-absent warning, the README's
-  install block, and `/theurian:setup`'s prerequisite — said
-  `uv tool install theurian`, which resolves, installs, and leaves out `uvicorn`;
-  `/theurian:setup` then had nothing to configure
-  ([#78](https://github.com/theurian/theurian/issues/78)). They now name
-  `uv tool install 'theurian[daemon]'` and `pipx install 'theurian[daemon]'`, in
-  the same words Core's own `core-missing` remedy and `core-present` step use.
-  The quotes are part of the command: unquoted, `theurian[daemon]` is a glob
-  under zsh and fails with `no matches found`.
 - Step 6 no longer tells the agent that a step reporting `missing` with an
   `action` is one setup skips. All seven steps setup performs report exactly
   that before they run, so an agent following the old rule would have asked the
   user to go and "Create ~/.theurian with mode 0700" themselves.
+
+### Security
+
+- `/theurian:setup` narrows `allowed-tools` from `Bash(command:*)` to
+  `Bash(command -v:*)` and drops `Edit`. `command` is a shell builtin that runs
+  its argument, so the prefix pattern pre-approved arbitrary execution; the
+  document's own Rules section already forbade editing configuration files.
+
+## [0.1.1] - 2026-08-09
+
+### Fixed
+
+- **An incompatible Core produced a silent blocked session.** `session-start.sh`
+  sources `lib.sh`, whose `set -euo pipefail` imposed `errexit` on a hook that
+  turns `errexit` off one line earlier on purpose — it must exit 0 no matter what
+  Core reports. The incompatible-Core branch is a bare command substitution,
+  `verdict="$(theurian::compat_check)"`; under `errexit`, its non-zero exit (3,
+  `THEURIAN_EXIT_INCOMPATIBLE`) aborted the shell right there, so the warning,
+  the verdict printed to stderr, and the intended `exit 0` were all unreachable.
+  A session with an incompatible Core exited 3 with empty stdout and empty
+  stderr — a blocked session with nothing telling the user why
+  ([#90](https://github.com/theurian/theurian/pull/90)). `lib.sh` now runs
+  `set -uo pipefail`; failure travels by return status, and the hook again
+  prints the warning and the compatibility verdict to stderr on every session
+  before exiting 0.
 - **`/theurian:upgrade` ran a command that does not exist.** It called
   `theurian upgrade --check --json` and then `theurian upgrade --json`; `upgrade`
   has never been a registered Core subcommand and both exit 2 with `No such
@@ -82,18 +97,35 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tests/unit/test_plugin_boundary.py` pins `upgrade` as one of the twelve §9
   commands, and both this README's command table and
   `docs/integrations/claude-code.md` list it. What changed is what it does.
-
-### Security
-
-- `/theurian:setup` narrows `allowed-tools` from `Bash(command:*)` to
-  `Bash(command -v:*)` and drops `Edit`. `command` is a shell builtin that runs
-  its argument, so the prefix pattern pre-approved arbitrary execution; the
-  document's own Rules section already forbade editing configuration files.
+- **The installer the plugin named produced a Core whose daemon cannot start.**
+  All three surfaces — the `SessionStart` hook's Core-absent warning, the README's
+  install block, and `/theurian:setup`'s prerequisite — said
+  `uv tool install theurian`, which resolves, installs, and leaves out `uvicorn`;
+  `/theurian:setup` then had nothing to configure
+  ([#78](https://github.com/theurian/theurian/issues/78)). They now name
+  `uv tool install 'theurian[daemon]'` and `pipx install 'theurian[daemon]'`, in
+  the same words Core's own `core-missing` remedy and `core-present` step use.
+  The quotes are part of the command: unquoted, `theurian[daemon]` is a glob
+  under zsh and fails with `no matches found`.
+- **`compatibility.yaml`'s declared floor had a hole in it.** `theurian compat
+  check` translates Core's PEP 440 version into SemVer before comparing it
+  against a plugin's declared range, and the translation did not preserve
+  ordering — PEP 440 sorts `.devN` below every pre-release phase, while SemVer's
+  ASCII comparison put `dev` between `beta` and `rc`. Over one release train's
+  780 ordered version pairs, 99 came out backwards. This plugin's own
+  `minimum: 0.1.0-dev.0` accepted `0.1.0.dev1`, refused `0.1.0a1`, `0.1.0a2` and
+  `0.1.0b1`, then accepted `0.1.0rc1` again — versions strictly newer than ones
+  it had just refused
+  ([#70](https://github.com/theurian/theurian/pull/70)). Core now orders both
+  its own version and a declaration's bounds by the release train (`dev` <
+  `alpha` < `beta` < `rc` < final) rather than by SemVer's ASCII comparison.
+  `compatibility.yaml`'s values are unchanged; only what `0.1.0-dev.0` accepts
+  is.
 
 ### Compatibility
 
 | | Version |
 | :-- | :-- |
-| Plugin | 0.1.0 |
+| Plugin | 0.1.1 |
 | Core | >= 0.1.0-dev.0, < 0.2.0 |
 | Protocol | theurian/v1 |
