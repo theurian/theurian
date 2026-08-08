@@ -3476,10 +3476,12 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
     (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
     index = SqliteIndexStore(built)
 
-    words = index.search_lexical(corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH)
+    words = index.search_lexical(
+        corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
+    ).rows
     trigrams = index.search_substring(
         corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
-    )
+    ).rows
 
     assert (len(words), len(trigrams)) == (corpus.word_index_rows, DOCUMENTED_DEPTH), (
         "the crowd must fill the depth it is there to fill, on the retriever that carries it"
@@ -3491,7 +3493,9 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
         "and it must be reachable through the word index too, or `dense` and "
         "`lexical` below prove nothing about it"
     )
-    crowd = index.search_substring(corpus.query, project_id="depth-probe", limit=FIRST_PASS_DEPTH)
+    crowd = index.search_substring(
+        corpus.query, project_id="depth-probe", limit=FIRST_PASS_DEPTH
+    ).rows
 
     assert len(crowd) > CANDIDATE_DEPTH, (
         "the pipeline publishes every row this crowd can offer, so no visible row "

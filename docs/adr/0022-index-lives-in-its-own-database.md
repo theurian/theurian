@@ -175,3 +175,19 @@ Still owed, with the milestone that will satisfy it:
   write to the file searches are reading and needs the writer discipline
   ADR-0018 owes for the index. Recorded here rather than in #15 alone, because
   it is a constraint on the blue/green design and not a detail of the purge.
+
+  > **Answered by [ADR-0024](0024-a-purge-is-a-build.md): a new build and a
+  > pointer swap.** The phrase "at the cost of rewriting the whole file" is the
+  > part that was wrong, and it is the only reason the in-place option looked
+  > attractive. It conflates *re-deriving* a build — read the canonical store,
+  > chunk, embed, write — with *copying* one and deleting rows from the copy,
+  > which re-derives nothing. Measured: 51 ms against 2,614 ms on a 12.3 MB
+  > index, 579 ms against 37,684 ms on a 150.3 MB one — about a sixtieth of "an
+  > ordinary build", flat across a 12× corpus range.
+  >
+  > ADR-0024 also replaces what the Milestone 5 amendment to point 6 withdrew:
+  > publishing stops reaping, reclaiming becomes `theurian index gc`, and a
+  > search holds one connection to its build for the duration of a request. The
+  > two together are what NFR-4 needs, and neither alone is enough — measured at
+  > 1,889 errors against 163 successful searches when the old build is reaped
+  > under a reader.

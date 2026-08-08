@@ -2003,6 +2003,39 @@ round-six correction below records is a different member with a different size.
 > | calls to `IndexStore.search_substring` | **yes**, at one exact coincidence |
 > | passes over the corpus inside SQLite | **no** — `SqliteIndexStore._scan_cache` memoises the answer |
 >
+> > **Amended in Milestone 6, when [#16](https://github.com/theurian/theurian/issues/16)
+> > landed.** Both rows are now *no* for the branch this table is about, and the
+> > second row's mechanism no longer exists. `IndexStore` states its own
+> > exhaustion, so the scan below the trigram floor — which has read and scored
+> > everything by the time it returns — reports itself finished on its first call
+> > and is never asked again. `_scan_cache` was deleted in the same change, so
+> > the second row holds for a different reason: there is no repeated fetch left
+> > for a memo to make cheap. Measured against a real 400-document index with the
+> > two-character query `認証`, at 0, 49, 50, 51 and 99 withheld rows: one port
+> > call at every count, where 51 and 99 cost two before.
+> >
+> > **It does not close the residual below, and this amendment first said the
+> > measurement above confirmed that. It cannot.** `unicode61` cannot split CJK,
+> > so `search_lexical` matches nothing for `認証` and is exhausted on its first
+> > call; two characters fall below the trigram floor, so the trigram lookup is
+> > never reached either. Both retrievers answer once at every withheld count in
+> > that run, which is the absence of evidence rather than evidence. A query that
+> > reaches a truncating retriever is what shows the deepening — same index, same
+> > script, only the query differing:
+> >
+> > ```
+> > '認証'       withheld 50 -> lexical 1 call,  substring 1 call
+> >             withheld 51 -> lexical 1 call,  substring 1 call
+> > 'retention'  withheld 50 -> lexical 1 call,  substring 1 call
+> >             withheld 51 -> lexical 2 calls, substring 2 calls
+> > ```
+> >
+> > The suite holds it at
+> > `tests/unit/test_retrieval_depth.py::test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before`,
+> > parametrised at both edges. So the "an exhaustion signal removed it" row
+> > below stands exactly as written: the signal removes the non-truncating shape
+> > and nothing else.
+>
 > The `!=` exit test ends the loop whenever a retriever hands back a row count
 > that is not the one asked for, which a non-truncating retriever almost always
 > does. It cannot when the whole ranking totals *exactly* `FIRST_PASS_DEPTH`,
@@ -2341,6 +2374,40 @@ Both go with the cache when
 not announce itself: two requests still cost two scans with no cache at all, so
 it would sit in the suite green and guarding nothing — the exact shape this
 entry has already been caught by three times.
+
+> **Amended in Milestone 6. Everything from "`SqliteIndexStore._scan_cache` is a
+> mitigation with an expiry date" to here is the Milestone 5 record and is left
+> standing; none of it describes code that still exists.** The field, its
+> docstring, the branch that read it and both tests were deleted when
+> [#16](https://github.com/theurian/theurian/issues/16) gave `IndexStore` an
+> explicit exhaustion signal. The prediction in the paragraph immediately above
+> held on both halves: the first test failed loudly, and the second did not
+> announce itself and was taken out deliberately.
+>
+> Two things replace the cache, and only the first is what the issue promised:
+>
+> - **the duplicate call is gone rather than made cheap.** "One search, one pass
+>   over the corpus, whatever was withheld" is now a consequence of the scan
+>   branch returning everything and saying so, not of a memo standing in front of
+>   a wrong inference. `tests/integration/test_scan_exhaustion.py` replaces
+>   `test_scan_cache.py` and holds the port call count *and* the SQLite statement
+>   count at one, over four withheld counts straddling the old 50/51 edge. The
+>   call count is assertable now because the signal fixed it; the statement count
+>   is kept beside it so a memo reintroduced to paper over a regression would not
+>   look like a pass.
+> - **"one store per search" no longer has this as its reason.**
+>   `SqliteIndexStore.__init__` assigns one field, so there is no per-instance
+>   state for one caller's query to leave behind for another's, and
+>   `test_the_store_holds_no_state_between_searches` reads that off the instance
+>   rather than off a stopwatch. That is weaker and more checkable than the rule
+>   it replaces. It is not a licence to pool; it is the removal of one reason not
+>   to.
+>
+> **The two properties above are not superseded by that.** The wrong-rows hazard
+> in the cache key, and the observation that the dangerous mutation is the one
+> the suite does not catch, were lessons about scope rather than about this
+> field — the exact mutation is no longer available, and the shape it illustrates
+> is what the next mitigation will be read against.
 
 **Read that as a claim about passes, not about duration. Wall time is measured
 nowhere in CI.** A stopwatch assertion is flaky and ends up muted, so what is

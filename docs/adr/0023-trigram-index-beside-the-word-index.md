@@ -353,6 +353,13 @@ and it is off by default for that reason.
 > this one gap, removed when `IndexStore` states its own exhaustion
 > ([#16](https://github.com/theurian/theurian/issues/16)).
 >
+> > **Amended in Milestone 6: #16 landed, and the second call is gone rather
+> > than made cheap.** This branch reports itself exhausted on its first and
+> > only call, so `search_substring` is called once at 51 withheld rows as well
+> > as at 50 — measured against a real index at 0, 49, 50, 51 and 99 withheld.
+> > `_scan_cache` was deleted in the same change. What the paragraph below says
+> > about the *truncating* retrievers is unaffected and still holds.
+>
 > This does not reopen the `LIMIT` decision above, which stands: dropping it is
 > what took the six-pass worst case from 3.06 s to a single scan. What it
 > corrects is the claim that the branch was thereby taken out of the loop
@@ -524,6 +531,30 @@ Landed in Milestone 5:
   twice. The second goes on passing — two requests cost two scans when there is
   no cache at all — so it has to be taken out deliberately rather than waited on
   to fail.
+
+  > **Amended in Milestone 6.** Everything above is the Milestone 5 record and
+  > is left standing; none of it describes code that still exists.
+  > [#16](https://github.com/theurian/theurian/issues/16) gave `IndexStore` an
+  > explicit exhaustion signal, `SqliteIndexStore._scan_cache` was deleted, and
+  > `tests/integration/test_scan_cache.py` became
+  > `tests/integration/test_scan_exhaustion.py`.
+  >
+  > The prediction above held on both halves. The first test failed loudly, its
+  > precondition asserting a second read that no longer happens; the second,
+  > `test_one_callers_withheld_rows_never_make_another_callers_search_cheaper`,
+  > did not announce itself and was taken out deliberately.
+  >
+  > What replaces them, landed in Milestone 6, not this one:
+  > `test_one_search_reads_the_scan_once_however_many_rows_were_withheld` holds
+  > the port call count *and* the SQLite statement count at one, over four
+  > withheld counts straddling the old 50/51 edge — the call count is assertable
+  > now because the exhaustion signal fixed it, and the statement count is kept
+  > beside it so a memo reintroduced to paper over a regression would not look
+  > like a pass. `test_the_store_holds_no_state_between_searches` replaces the
+  > deleted second test with a claim read off the object rather than off a
+  > stopwatch: `SqliteIndexStore.__init__` assigns one field, so nothing is left
+  > for one caller's query to hand the next.
+
 - **The floor's lower bound, both halves.**
   `test_a_single_letter_does_not_earn_a_pass_over_the_corpus` (parametrised over
   `e`, `a b c`, `7`, `#`) and `test_a_single_character_that_is_a_whole_word_still_scans`.

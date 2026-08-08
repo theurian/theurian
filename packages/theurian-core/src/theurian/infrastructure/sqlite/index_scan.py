@@ -111,29 +111,24 @@ def scan_statement(
     measured six of them, 3.06s against the 0.51s one pass costs, on a corpus a
     third of which had been retired since the build.
 
-    **Handing back everything is also what a second call from
-    `_visible_ranking` cannot see, and that edge is not this statement's to
-    close.** The exit test that caller applies cannot tell "this ranking is
-    exactly `FIRST_PASS_DEPTH` rows because that is the whole corpus" from
-    "...because it was truncated": it asks a second time exactly when the true
-    match count on this branch equals `FIRST_PASS_DEPTH` and fewer than
-    `CANDIDATE_DEPTH` of those rows survive the canonical store — on a
-    100-row match set, more than 50 withheld, so 50 withheld costs one call
-    and 51 costs two.
+    **Handing back everything is now also what the caller is told**, and that
+    edge is closed rather than held shut. `_visible_ranking`'s exit test used to
+    be unable to tell "this ranking is exactly `FIRST_PASS_DEPTH` rows because
+    that is the whole corpus" from "...because it was truncated", so it asked a
+    second time exactly when the true match count on this branch equalled
+    `FIRST_PASS_DEPTH` and fewer than `CANDIDATE_DEPTH` of those rows survived
+    the canonical store — on a 100-row match set, 50 withheld cost one call and
+    51 cost two.
     :meth:`~theurian.infrastructure.sqlite.index_store.SqliteIndexStore._scan_below_the_trigram_floor`
-    caches this statement's result for the id, project and approval-scope it
-    ran with, so that second call answers from memory rather than re-running
-    the scan — measured at 14.00ms for two calls through one cached store
-    against 14.04ms for one, on the 6,000-row corpus that used to cost +64%
-    at this edge. See that method's docstring, and `SqliteIndexStore.
-    __init__`'s, for what the cache is a mitigation *for* and why it is not a
-    general-purpose one. Two tests, one per half:
-    ``test_one_search_scans_the_corpus_once_however_many_rows_were_withheld``
-    (``tests/integration/test_scan_cache.py``) goes red if that memoisation
-    goes, and
+    now returns a page reporting itself exhausted, so there is no second call
+    (issue #16). It used to memoise this statement's result instead, and that
+    memo has gone with the call it answered. Two tests, one per half:
+    ``test_one_search_reads_the_scan_once_however_many_rows_were_withheld``
+    (``tests/integration/test_scan_exhaustion.py``) goes red if the call count
+    or the statement count starts moving with the withheld count, and
     ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``
-    (``tests/unit/test_retrieval_depth.py``) goes red if the edge moves off
-    fifty.
+    (``tests/unit/test_retrieval_depth.py``) goes red if the edge on the
+    truncating retrievers moves off fifty.
 
     **Ordered by how much of the query is in the chunk, because the ordering key
     is the selection key.** The caller keeps the best fifty it may show; this

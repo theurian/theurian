@@ -46,10 +46,15 @@ from itertools import pairwise
 from typing import NamedTuple, final
 
 import pytest
+from fakes import truncating, whole
 
-from theurian.application.retrieval_service import RetrievalService, SearchRequest
+from theurian.application.retrieval_service import (
+    RetrievalError,
+    RetrievalService,
+    SearchRequest,
+)
 from theurian.domain.chunking import IndexableChunk
-from theurian.domain.ranking import Ranked
+from theurian.domain.ranking import Ranked, RetrieverPage
 
 pytestmark = pytest.mark.unit
 
@@ -123,13 +128,19 @@ class _CountingIndex:
     off the same number, and a fake that could only give one of them would be
     measuring itself.
 
-    ``honours_limit=True`` is a `LIMIT` on a lookup — fewer rows come back only
-    when there are fewer to give, so "fewer than asked" is the exhaustion signal.
+    ``honours_limit=True`` is a `LIMIT` on a lookup: it truncates, and it is
+    exhausted only when the ranking did not fill the ask.
     ``honours_limit=False`` is
     ``SqliteIndexStore._scan_below_the_trigram_floor``, which has to score every
     matching row before it can name the best of them and therefore hands back its
-    whole ranking; "more than asked" is that retriever saying it never truncated,
-    and asking it again would buy another full scan and no new rows.
+    whole ranking, exhausted on the first call — asking it again would buy
+    another full scan and no new rows.
+
+    **Both answers used to be inferred from the row count, and that is what
+    issue #16 changed.** The distinction survives the change and is the reason
+    this flag still exists: the two retrievers differ in what they *do* with
+    ``limit``, so a fake that modelled only one of them would be measuring
+    itself. What no longer differs is how each states that it is finished.
     """
 
     def __init__(self, rows: tuple[Ranked, ...], *, honours_limit: bool = True) -> None:
@@ -140,10 +151,10 @@ class _CountingIndex:
     def passes(self, retriever: str) -> int:
         return sum(1 for read in self.reads if read.retriever == retriever)
 
-    def _serve(self, retriever: str, limit: int) -> tuple[Ranked, ...]:
-        served = self._rows[:limit] if self._honours_limit else self._rows
-        self.reads.append(_Read(retriever, asked=limit, returned=len(served)))
-        return served
+    def _serve(self, retriever: str, limit: int) -> RetrieverPage:
+        page = truncating(self._rows, limit) if self._honours_limit else whole(self._rows)
+        self.reads.append(_Read(retriever, asked=limit, returned=len(page.rows)))
+        return page
 
     def search_lexical(
         self,
@@ -152,7 +163,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - the index holds only approved rows here
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         return self._serve(LEXICAL_READS, limit)
 
     def search_substring(
@@ -162,7 +173,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         return self._serve(SUBSTRING_READS, limit)
 
     def search_dense(
@@ -171,12 +182,12 @@ class _CountingIndex:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         # Deliberately not counted, and deliberately not raising. The dense
         # retriever is not depth-doubled -- it scores the whole index whatever it
         # is asked for -- so it has no passes to count. `RetrievalService` is
         # built below without an embedder, so this is never reached.
-        return ()
+        return whole(())
 
     def chunk_texts(
         self,
@@ -499,3 +510,138 @@ def test_a_retriever_that_ignores_its_limit_is_read_once_however_much_is_withhel
     )
     assert index.passes(LEXICAL_READS) == 1
     assert index.passes(SUBSTRING_READS) == 1
+
+
+# -- The obligation the signal creates ---------------------------------------
+#
+# The loop believes what it is told, which is the point of it and also the one
+# thing the row-count inference could not go wrong at: `len(ranked) != depth`
+# terminated whatever an adapter claimed. `exhausted` does not, so the loop
+# carries a liveness guard, and this is what holds it.
+
+
+@final
+class _NeverFinished:
+    """A retriever that always has rows and never admits to running out.
+
+    Not a shape any conforming adapter can take: every `IndexStore` method ranks
+    best-first and counts `limit` from the top, so a retriever that hands back
+    the same rows at twice the depth has nothing further by definition. It is the
+    shape a *defective* adapter takes -- one that computed `exhausted` from a
+    predicate that is never true -- and before the guard it hung the caller.
+
+    `fakes.truncating` deliberately cannot produce it, which is why this
+    constructs `RetrieverPage` directly.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def _serve(self, limit: int) -> RetrieverPage:  # noqa: ARG002 - the ask is ignored
+        self.calls += 1
+        # One row, so the page invariant is satisfied and the *loop* is what has
+        # to catch this rather than the value object.
+        return RetrieverPage(rows=(_row(0, WITHHELD),), exhausted=False)
+
+    def search_lexical(
+        self,
+        query: str,  # noqa: ARG002 - the fake answers, not the query
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+        limit: int,
+        include_unapproved: bool,  # noqa: ARG002 - as above
+    ) -> RetrieverPage:
+        return self._serve(limit)
+
+    def search_substring(
+        self,
+        query: str,  # noqa: ARG002 - as above
+        *,
+        project_id: str,  # noqa: ARG002 - as above
+        limit: int,
+        include_unapproved: bool,  # noqa: ARG002 - as above
+    ) -> RetrieverPage:
+        return self._serve(limit)
+
+    def search_dense(
+        self,
+        query_vector: Sequence[float],  # noqa: ARG002 - unreachable without an embedder
+        *,
+        project_id: str,  # noqa: ARG002 - as above
+        include_unapproved: bool,  # noqa: ARG002 - as above
+    ) -> RetrieverPage:
+        return whole(())
+
+    def chunk_texts(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+    ) -> Mapping[str, str]:
+        return {chunk_id: f"passage of {chunk_id}" for chunk_id in chunk_ids}
+
+    def create(self, *, index_build_id: str, state_hash: str) -> None:
+        raise NotImplementedError
+
+    def add_chunks(self, chunks: Sequence[IndexableChunk]) -> int:
+        raise NotImplementedError
+
+    def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        raise NotImplementedError
+
+    def record_embedding_model(self, *, model_id: str, dimension: int) -> None:
+        raise NotImplementedError
+
+    def metadata(self) -> Mapping[str, object]:
+        return {}
+
+
+#: Passes before the liveness guard fires. Two, and the reason it cannot be one:
+#: `served` starts at -1 so the first pass always makes "progress", and the
+#: comparison needs a predecessor. Asserted exactly rather than as a bound --
+#: `<= 3` was what stood here, and it would have passed a loop that deepened one
+#: further time before noticing, which is one more doubling of `depth`.
+GUARD_FIRES_AFTER = 2
+
+
+def test_a_retriever_that_never_reports_exhaustion_is_refused_not_looped() -> None:
+    """The failure mode the explicit signal introduced, and its bound.
+
+    Without the progress check this test does not fail -- it does not finish.
+    That is the whole reason the check exists: `_deeper` doubles with no ceiling,
+    and an adapter whose `exhausted` is wrong in the safe-looking direction
+    (always `False`) turns one search into an unbounded sequence of them.
+
+    It refuses rather than returning what it has, because a silent truncation
+    here is a visible ranking shorter than a conforming adapter would have given,
+    with nothing in the response naming why -- the exact failure this change
+    exists to make impossible.
+    """
+    index = _NeverFinished()
+
+    with pytest.raises(RetrievalError, match="cannot make progress"):
+        RetrievalService(index).search(
+            SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld()
+        )
+
+    assert index.calls == GUARD_FIRES_AFTER, (
+        f"the guard must fire on the pass that first fails to make progress, which is the "
+        f"second: the first has no predecessor to compare against, so `served` starts at -1 "
+        f"and any row count beats it. The retriever was called {index.calls} times. More "
+        f"means the loop deepened again before noticing, and each extra pass is a further "
+        f"doubling of `depth` -- the cost this guard exists to bound."
+    )
+
+
+def test_the_guard_cannot_fire_for_a_retriever_that_keeps_finding_more() -> None:
+    """The control. A guard that fired on honest deepening would cost recall.
+
+    `_CountingIndex` with a corpus deeper than any pass here means every read
+    fills its ask and the next read returns strictly more, which is what an
+    honest un-exhausted retriever looks like. The search must complete.
+    """
+    index = _search(ABSORBED_WITHHELD_ROWS + 1)
+
+    assert index.passes(LEXICAL_READS) >= 2, (
+        "the fixture must actually deepen, or the guard is untested by this control"
+    )

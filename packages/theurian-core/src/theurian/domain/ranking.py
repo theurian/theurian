@@ -114,6 +114,52 @@ class Ranked:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrieverPage:
+    """One retriever's answer, and whether it has anything further to give.
+
+    **The second field is the whole point.** The depth-doubling loop in
+    :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`
+    asks a retriever again, deeper, whenever too few of what came back survived
+    the visibility gate, and stops when the retriever is out of rows. Before this
+    type existed it had to reconstruct "out of rows" from a row count, and one
+    expression read three different ``limit`` semantics off that one number: a
+    ceiling in ``search_lexical``, a floor in ``search_substring``, and no
+    ``limit`` at all in ``search_dense``. The port's docstrings spent a great deal
+    of prose explaining which rule applied where, and prose is not enforcement —
+    an adapter that capped its output above ``limit`` without that cap being
+    exhaustive satisfied every word of it and cost the caller rows it never
+    learned it lost.
+
+    ``exhausted`` may be ``True`` only when the implementation has **verified**
+    there is nothing further, not when it merely handed back fewer rows than it
+    was asked for. Verifying costs something — the SQLite adapter asks for one row
+    past the limit and reports whether it arrived — and that cost is the price of
+    the loop no longer guessing.
+    """
+
+    rows: tuple[Ranked, ...]
+    #: ``True`` when this is the whole of what the retriever has for this query.
+    exhausted: bool
+
+    def __post_init__(self) -> None:
+        # An empty page that claims more is coming is a non-terminating loop:
+        # `_deeper` doubles without a ceiling, and a retriever that keeps
+        # answering "nothing yet, ask deeper" is never contradicted. It is also
+        # not a state a conforming implementation can reach -- every method on
+        # `IndexStore` ranks best-first and counts `limit` from the top, so no
+        # rows at one depth means no rows at any greater one. Refused here rather
+        # than defended against in the loop, because the loop cannot tell an
+        # honest empty page from this one.
+        if not self.rows and not self.exhausted:
+            raise RankingError(
+                "A retriever returned no rows while reporting itself not exhausted. "
+                "Ranking best-first means no rows at one depth is no rows at any "
+                "greater depth, so this page cannot be honest. Fix the adapter to "
+                "report `exhausted=True` when it has nothing to return."
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class Fused:
     """A candidate after fusion, with the evidence for its position."""
 

@@ -17,6 +17,21 @@ import pytest
 from theurian.domain import ports
 
 #: The closed set. Growing it requires an ADR, so this list is the enforcement.
+#:
+#: ``IndexStore`` was added in Milestone 6, and it is a *registration* rather
+#: than a new abstraction: the port has existed since Milestone 5 under ADR-0003
+#: and ADR-0022, and its contract is now governed by ADR-0024. It had simply
+#: never been listed, so every parametrised test below -- Protocol, runtime
+#: checkable, documented, annotated, no method bodies, not instantiable -- had
+#: never run against it. Measured before adding it: ``IndexStore in ALL_PORTS``
+#: was ``False`` with fourteen entries, while the port carried nine methods and a
+#: breaking change to three of them.
+#:
+#: That is the failure mode this list exists to prevent, arriving from the
+#: opposite direction to the one it was written for. The set being *closed*
+#: stops a port being added without an ADR; it does nothing about a port that
+#: exists, is imported by the application layer, and is absent from the list --
+#: for which every check here is silently vacuous rather than failing.
 EXPECTED_PORTS = frozenset(
     {
         "AuthorizationProvider",
@@ -25,6 +40,7 @@ EXPECTED_PORTS = frozenset(
         "DaemonManager",
         "EmbeddingProvider",
         "IdGenerator",
+        "IndexStore",
         "ObjectStore",
         "RerankingProvider",
         "ReviewProvider",

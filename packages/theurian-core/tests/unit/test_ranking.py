@@ -17,6 +17,7 @@ from theurian.domain.ranking import (
     Ranked,
     RankingError,
     RetrievalMode,
+    RetrieverPage,
     diversify,
     estimate_tokens,
     mode_of,
@@ -302,3 +303,42 @@ def test_no_results_at_all_is_neither_lexical_nor_hybrid() -> None:
     second is what a missing trigram table or a mismatched embedding model
     produces."""
     assert mode_of([]) is RetrievalMode.NONE
+
+
+# -- A retriever's page ------------------------------------------------------
+#
+# `exhausted` is a claim about the retriever, not about the rows, so the type
+# can check exactly one thing: the combination that no honest implementation can
+# produce and that the depth loop cannot survive.
+
+
+def test_a_page_may_be_empty_when_the_retriever_is_finished() -> None:
+    """The ordinary "nothing matched" answer, which must stay constructible."""
+    assert RetrieverPage(rows=(), exhausted=True).rows == ()
+
+
+def test_an_empty_page_that_claims_more_is_coming_is_refused() -> None:
+    """`_deeper` doubles without a ceiling, so this page is a hang.
+
+    It is also unreachable for a conforming adapter: every `IndexStore` method
+    ranks best-first and counts `limit` from the top, so no rows at one depth is
+    no rows at any greater depth. Refused at construction because the loop cannot
+    tell this page from an honest empty one, and because a hang reported from
+    inside a retrieval loop names the wrong thing.
+    """
+    with pytest.raises(RankingError, match="reporting itself not exhausted"):
+        RetrieverPage(rows=(), exhausted=False)
+
+
+def test_a_non_empty_page_may_say_either_thing() -> None:
+    """The type constrains one combination and no others.
+
+    A page with rows that is not exhausted is the normal mid-loop answer, and a
+    page with rows that is exhausted is the normal final one. Neither is
+    something a value object can second-guess: whether more exists is a fact
+    about the index, which only the adapter holds.
+    """
+    rows = (Ranked(chunk_id="c#0", item_id="i", revision_id="r"),)
+
+    assert RetrieverPage(rows=rows, exhausted=False).exhausted is False
+    assert RetrieverPage(rows=rows, exhausted=True).exhausted is True

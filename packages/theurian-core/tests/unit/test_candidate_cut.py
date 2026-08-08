@@ -47,6 +47,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, final
 
 import pytest
+from fakes import truncating, whole
 
 from theurian.application.retrieval_service import (
     CANDIDATE_DEPTH,
@@ -56,7 +57,7 @@ from theurian.application.retrieval_service import (
     SearchRequest,
 )
 from theurian.domain.chunking import IndexableChunk
-from theurian.domain.ranking import Ranked
+from theurian.domain.ranking import Ranked, RetrieverPage
 
 pytestmark = pytest.mark.unit
 
@@ -147,8 +148,8 @@ class _TwoRankings:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - the fixture holds only approved rows
-    ) -> tuple[Ranked, ...]:
-        return self._lexical[:limit]
+    ) -> RetrieverPage:
+        return truncating(self._lexical, limit)
 
     def search_substring(
         self,
@@ -157,8 +158,8 @@ class _TwoRankings:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
-    ) -> tuple[Ranked, ...]:
-        return SUBSTRING_RANKING[:limit]
+    ) -> RetrieverPage:
+        return truncating(SUBSTRING_RANKING, limit)
 
     def search_dense(
         self,
@@ -166,8 +167,8 @@ class _TwoRankings:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
-    ) -> tuple[Ranked, ...]:
-        return ()
+    ) -> RetrieverPage:
+        return whole(())
 
     def chunk_texts(
         self,
@@ -239,8 +240,12 @@ def _published(outcome: SearchOutcome) -> list[dict[str, Any]]:
 
 def _first_pass(withheld: int) -> tuple[Ranked, ...]:
     """What the word index hands back to one pass of the depth loop."""
-    return _TwoRankings(withheld).search_lexical(
-        "gateway", project_id="demo", limit=FIRST_PASS_DEPTH, include_unapproved=False
+    return (
+        _TwoRankings(withheld)
+        .search_lexical(
+            "gateway", project_id="demo", limit=FIRST_PASS_DEPTH, include_unapproved=False
+        )
+        .rows
     )
 
 
