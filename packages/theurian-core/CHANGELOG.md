@@ -12,7 +12,96 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev1] - 2026-08-09
+
+**If you installed `theurian` before today, upgrade.** `0.1.0.dev0` was the only
+published version, and everything below was fixed in the repository without
+reaching anyone who had run the command the shipped surfaces name
+([#83](https://github.com/theurian/theurian/issues/83)). On `0.1.0.dev0`, an
+install without the `daemon` extra gives you `theurian daemon start` raising
+`ModuleNotFoundError` as a rendered traceback; `theurian daemon status` — which
+the Claude Code plugin's `SessionStart` hook runs on **every session** —
+printing a Rich traceback into that session; and a `theurian setup` that runs to
+`DEGRADED` and leaves an env file, an OS service unit and an MCP connection
+entry behind, pointing at a service that fails on every start.
+
+```sh
+uv tool install --python 3.13 --force 'theurian[daemon]==0.1.0.dev1'
+# or: pipx install --python 3.13 --force 'theurian[daemon]==0.1.0.dev1'
+```
+
+The extra is the part that is easy to lose. `uv tool upgrade` and `pipx upgrade`
+both re-resolve the spec they recorded, so an installation that recorded no
+extras stays bare across an upgrade — it will carry these fixes and still not be
+able to serve. What changes is that it now says so, by name and with the command,
+instead of crashing. `--force` is what makes the line above repair an existing
+installation rather than report success and change nothing; measured for pipx
+against 1.16.6, and harmless for uv, which re-resolves in place regardless.
+
+Nothing here changes the wire contract: `protocolVersion` stays `theurian/v1`,
+no MCP tool's request or response shape moves, and no canonical state or index
+needs rebuilding.
+
+**This is a Core release only.** The Claude Code plugin versions and releases
+independently (ADR-0001) and is unchanged at `0.1.0`; fixes to its shell hooks
+that landed alongside these are named below where they bear on a claim, but they
+are not delivered by this wheel.
+
+### Changed
+
+- **`--help` is plain text now: no panels, no colour.** Fixing the entry below
+  meant turning Typer's Rich formatting off at the root app
+  (`rich_markup_mode=None`), and that setting is what draws the rounded boxes
+  around `Options` and styles the option names. Every `theurian … --help` falls
+  back to Click's formatter and prints the docstring as written. Measured on a
+  real terminal, `theurian setup --help` before and after:
+
+  | | ANSI escape sequences | box-drawing characters |
+  | :-- | --: | --: |
+  | before | 134 | 187 |
+  | after | 0 | 0 |
+
+  This is cosmetic and it is the whole cost of the fix. It is named here because
+  it is the change a user notices without being told, and a release page is
+  where they will come looking for the reason.
+
 ### Fixed
+
+- **`theurian setup --help` printed an install command with the `daemon` extra
+  deleted from it** ([#99](https://github.com/theurian/theurian/pull/99)). The
+  docstring says `uv tool install 'theurian[daemon]'`; what reached the terminal
+  was `uv tool install 'theurian'`, one line above the sentence explaining that
+  the extra is what gives `theurian daemon start` a server to run. So the
+  surface that exists to keep a user out of the bare install told them to make
+  one, and contradicted itself in the same paragraph.
+
+  Typer parses help strings as Rich markup, and Rich reads `[daemon]` as a style
+  tag. Measured against `rich` 15.0.0:
+
+  ```
+  'uv tool install 'theurian[daemon]''  ->  "uv tool install 'theurian'"
+  'run it from [/usr/bin]'              ->  MarkupError: closing tag '[/usr/bin]'
+                                            doesn't match any open tag
+  ```
+
+  The second row is the same defect one step worse — a path in square brackets
+  takes `--help` from wrong to absent — and it is why the fix is not a smarter
+  docstring.
+
+  **The fix leaves markup rather than escaping the bracket**, and that
+  distinction is the finding. Escaping to `theurian\[daemon]` was tried and
+  reverted: `TYPER_USE_RICH=0` is a documented setting that formats through
+  Click instead, and there the escape survives to the user as a literal
+  backslash — `uv tool install 'theurian\[daemon]'`, which is not an installable
+  requirement. **No single docstring is correct in both modes while markup is
+  on**, so the escape did not remove the defect, it moved it between modes and
+  broke a path that had been correct. `rich_markup_mode=None` takes the same
+  Click path under both settings, which makes the source text the printed text
+  everywhere.
+
+  This was introduced by the entry below, not inherited: before it, the
+  docstring named the bare command and printed the bare command, wrongly but
+  consistently.
 
 - **`uv tool install theurian` installed a Theurian whose daemon could not
   start.** `uvicorn` and the MCP SDK live in the `daemon` extra, so the next step
@@ -49,12 +138,26 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   imported nowhere in `src/`, so `[all]` differs by 12 distributions and by no
   behaviour.
 
-  **Four surfaces are not moved here**, because they belong to pull requests open
-  at the time of writing: `README.md` (#77), `docs/security/threat-model.md`
-  (#72), `docs/contributing/release.md` and `.github/workflows/release-core.yml`
-  (#71). The threat model's "17 files … all of them move together" is therefore
-  true of a population this change has split in two, and re-deriving that count
-  belongs to whichever of those lands last.
+  **Two surfaces still name the bare command, and this release page is one of
+  them.** The entry as written under `[Unreleased]` named four, deferred to four
+  then-open pull requests, and said re-deriving the count belonged to whichever
+  landed last. All four have landed, so it is re-derived here. `git grep -l` for
+  `uv tool install theurian` / `pipx install theurian` returns 15 files at this
+  tag; `README.md` and `docs/security/threat-model.md` are no longer among the
+  surfaces that *instruct* it, and two are:
+
+  - `.github/workflows/release-core.yml`, which writes
+    `Install: uv tool install theurian==<version>` into every GitHub release
+    body — including this one. **If you arrived from that line, add the extra**:
+    `uv tool install 'theurian[daemon]'`.
+  - `docs/contributing/release.md`, whose post-release verification step
+    installs bare. That one is read by maintainers, not by users.
+
+  Both are release tooling rather than install advice, and both are tracked with
+  the rest of the release gate in
+  [#39](https://github.com/theurian/theurian/issues/39). Naming them on the page
+  that carries the defect is the mitigation available without changing the
+  workflow inside the release it publishes.
 
 - **The `core-too-old` remedy named a subcommand that does not exist.** It read
   "Upgrade Core with `theurian upgrade`, or run /theurian:upgrade"; `upgrade` has
@@ -72,19 +175,36 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   be followed was the one most likely to be read.
 
   **That last sentence is true only from
-  [#90](https://github.com/theurian/theurian/pull/90), which this change is
-  rebased onto.** `lib.sh` opened `set -euo pipefail` and `session-start.sh`
-  sources it, so a bare assignment whose command exits 3 aborted the hook before
-  it printed anything. Measured against both revisions: `set -euo pipefail` gives
-  exit 3 and no output at all, `set -uo pipefail` gives the warning, the verdict
-  and exit 0. Read on the branch alone the claim looks unsupported, which is why
-  the dependency is named here.
+  [#90](https://github.com/theurian/theurian/pull/90), which is a plugin fix and
+  is therefore not in this wheel.** `lib.sh` opened `set -euo pipefail` and
+  `session-start.sh` sources it, so a bare assignment whose command exits 3
+  aborted the hook before it printed anything. Measured against both revisions:
+  `set -euo pipefail` gives exit 3 and no output at all, `set -uo pipefail` gives
+  the warning, the verdict and exit 0. The dependency is named because the
+  remedy corrected here is only ever *seen* on a plugin that carries that fix;
+  it reaches users through a plugin release, not through this one.
 
-  It is not reachable in the shipped configuration, and that is a property of
-  the current version rather than of the code: Core `0.1.0.dev0` renders as
-  `0.1.0-dev.0` and the plugin's declared floor is `0.1.0-dev.0`, so
-  `core < floor` is false. The first Core release that moves either number makes
-  it reachable.
+  **It is not reachable in the shipped configuration, and this release does not
+  make it reachable.** The plugin's declared floor is `0.1.0-dev.0`, which is the
+  lowest `0.1.0` any Core can report, so no released Core is below it:
+  `0.1.0.dev0` renders as `0.1.0-dev.0` and this release renders as
+  `0.1.0-dev.1`. Measured against the declaration the plugin ships:
+
+  ```console
+  $ theurian compat check --plugin-version 0.1.0 --core-minimum 0.1.0-dev.0 \
+      --core-maximum-exclusive 0.2.0 --protocol-version theurian/v1 --json
+  { "outcome": "compatible", "coreVersion": "0.1.0-dev.1", … }
+  $ echo $?
+  0
+  ```
+
+  What makes `core-too-old` reachable is raising `coreCompatibility.minimum` in
+  the plugin's `compatibility.yaml` — a plugin release, not a Core one. The
+  entry as written under `[Unreleased]` said "the first Core release that moves
+  either number makes it reachable"; moving Core's version *up* moves it further
+  above the floor, and cutting this release is what falsified the sentence. The
+  remedy is corrected before anyone can be handed it, which is the order this
+  wants.
 
   **Delegation is the decision, not an omission.** A real `theurian upgrade`
   would make Theurian the thing that fetches its own wheel, and with it T-16's
@@ -99,8 +219,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   that upgrading repairs a bare install; it does not, and that user needs
   `uv tool install 'theurian[daemon]'`.
 
-  The upgrade path was measured with `black`, because `theurian` has one release
-  and cannot be upgraded. **uv installs the newest version its spec allows**, so
+  The upgrade path was measured with `black`, because when this was written
+  `theurian` had exactly one release and so could not be upgraded at all. This
+  release is the second, and it is the first that can be. **uv installs the
+  newest version its spec allows**, so
   `uv tool install 'black[d]==24.1.0'` followed by `uv tool upgrade black`
   reports `Nothing to upgrade`; dropping the `==` pin from `uv-receipt.toml` is
   what stands in for time passing. An earlier version of this entry omitted that
@@ -1528,5 +1650,6 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev0...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev1...main
+[0.1.0.dev1]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev0...core-v0.1.0.dev1
 [0.1.0.dev0]: https://github.com/theurian/theurian/releases/tag/core-v0.1.0.dev0
