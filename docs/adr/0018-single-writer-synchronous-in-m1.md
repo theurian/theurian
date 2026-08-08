@@ -193,5 +193,12 @@ Still owed, with the milestone that will satisfy it:
   through has to be named. Blue/green (ADR-0022) decides whether that write
   produces a new build and swaps, or mutates the published one under a lock;
   this ADR decides that there is exactly one thing allowed to do it.
+
+  > **The blue/green half is decided:
+  > [ADR-0024](0024-a-purge-is-a-build.md) — a new build and a pointer swap, and
+  > nothing writes to a file `active-index.json` names.** Its point 4 is this
+  > ADR's point 1 applied to the index for the first time, and it is what
+  > discharges this bullet when it lands. The `CanonicalStore.transaction()`
+  > half above is untouched by it and still owed.
 - **NFR-4 is not discharged**, per the amendment above. It belongs with the same
   blue/green work.
