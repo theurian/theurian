@@ -31,6 +31,7 @@ from collections.abc import Mapping, Sequence
 from typing import final
 
 import pytest
+from fakes import truncating, whole
 
 from theurian.application.retrieval_service import (
     RetrievalService,
@@ -38,7 +39,7 @@ from theurian.application.retrieval_service import (
     SearchRequest,
 )
 from theurian.domain.chunking import IndexableChunk
-from theurian.domain.ranking import LEXICAL, SUBSTRING, Ranked
+from theurian.domain.ranking import LEXICAL, SUBSTRING, Ranked, RetrieverPage
 
 pytestmark = pytest.mark.unit
 
@@ -104,8 +105,8 @@ class _TwoOpinions:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - the fixture holds only approved rows
-    ) -> tuple[Ranked, ...]:
-        return self._lexical[:limit]
+    ) -> RetrieverPage:
+        return truncating(self._lexical, limit)
 
     def search_substring(
         self,
@@ -114,8 +115,8 @@ class _TwoOpinions:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
-    ) -> tuple[Ranked, ...]:
-        return self._substring[:limit]
+    ) -> RetrieverPage:
+        return truncating(self._substring, limit)
 
     def search_dense(
         self,
@@ -123,8 +124,8 @@ class _TwoOpinions:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
-    ) -> tuple[Ranked, ...]:
-        return ()
+    ) -> RetrieverPage:
+        return whole(())
 
     def chunk_texts(
         self,

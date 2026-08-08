@@ -118,7 +118,7 @@ def test_a_term_finds_the_chunk_that_contains_it(store: SqliteIndexStore) -> Non
         ]
     )
 
-    hits = store.search_lexical("JWT", project_id="demo")
+    hits = store.search_lexical("JWT", project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["c1"]
 
@@ -126,7 +126,7 @@ def test_a_term_finds_the_chunk_that_contains_it(store: SqliteIndexStore) -> Non
 def test_matching_is_case_and_accent_insensitive(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("c1", "The résumé parser rejects malformed input.")])
 
-    assert store.search_lexical("RESUME", project_id="demo")
+    assert store.search_lexical("RESUME", project_id="demo").rows
 
 
 def test_matching_every_term_beats_matching_one_of_them(store: SqliteIndexStore) -> None:
@@ -153,7 +153,7 @@ def test_matching_every_term_beats_matching_one_of_them(store: SqliteIndexStore)
         ]
     )
 
-    hits = store.search_lexical("authentication tokens", project_id="demo")
+    hits = store.search_lexical("authentication tokens", project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["both", "one"], "a chunk sharing no term is not returned"
     assert hits[0].score > hits[1].score, "the full match outranks the partial one"
@@ -167,10 +167,10 @@ def test_fts5_operators_typed_by_a_user_are_treated_as_words(store: SqliteIndexS
     """
     store.add_chunks([_indexable("c1", "auth and token rotation")])
 
-    assert store.search_lexical("auth NOT token", project_id="demo"), (
+    assert store.search_lexical("auth NOT token", project_id="demo").rows, (
         "NOT must be a word, not an operator that excludes the match"
     )
-    assert store.search_lexical('auth OR "token"', project_id="demo")
+    assert store.search_lexical('auth OR "token"', project_id="demo").rows
 
 
 def test_a_natural_language_question_reaches_the_lexical_index(
@@ -184,7 +184,9 @@ def test_a_natural_language_question_reaches_the_lexical_index(
     """
     store.add_chunks([_indexable("c1", "Rotate signing keys for auth tokens every ninety days.")])
 
-    hits = store.search_lexical("How do we rotate signing keys for auth tokens?", project_id="demo")
+    hits = store.search_lexical(
+        "How do we rotate signing keys for auth tokens?", project_id="demo"
+    ).rows
 
     assert [h.chunk_id for h in hits] == ["c1"]
 
@@ -194,7 +196,7 @@ def test_punctuation_never_raises_at_the_user(store: SqliteIndexStore, query: st
     """A search box that punishes punctuation is a broken search box."""
     store.add_chunks([_indexable("c1", "some text")])
 
-    assert store.search_lexical(query, project_id="demo") == ()
+    assert store.search_lexical(query, project_id="demo").rows == ()
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -215,7 +217,7 @@ def test_a_nul_byte_in_a_query_returns_nothing_rather_than_raising(
     """
     store.add_chunks([_indexable("c1", "every call carries a signed token")])
 
-    assert getattr(store, retriever)(query, project_id="demo", limit=10) == ()
+    assert getattr(store, retriever)(query, project_id="demo", limit=10).rows == ()
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -232,7 +234,7 @@ def test_a_lone_surrogate_in_a_query_returns_nothing_rather_than_raising(
     """
     store.add_chunks([_indexable("c1", "every call carries a signed token")])
 
-    assert getattr(store, retriever)(query, project_id="demo", limit=10) == ()
+    assert getattr(store, retriever)(query, project_id="demo", limit=10).rows == ()
 
 
 def test_a_well_formed_term_survives_beside_an_untransportable_one(
@@ -245,7 +247,7 @@ def test_a_well_formed_term_survives_beside_an_untransportable_one(
     """
     store.add_chunks([_indexable("c1", "every call carries a signed token")])
 
-    hits = store.search_lexical("carries token\x00", project_id="demo", limit=10)
+    hits = store.search_lexical("carries token\x00", project_id="demo", limit=10).rows
 
     assert [h.chunk_id for h in hits] == ["c1"]
 
@@ -258,7 +260,7 @@ def test_results_are_ranked_best_first(store: SqliteIndexStore) -> None:
         ]
     )
 
-    hits = store.search_lexical("tokens", project_id="demo")
+    hits = store.search_lexical("tokens", project_id="demo").rows
 
     assert hits[0].chunk_id == "dense"
 
@@ -310,10 +312,10 @@ def test_the_lexical_limit_is_a_ceiling_and_never_pads_past_the_corpus(
     # The precondition the boundary cases rest on. Without it a corpus that
     # matched only three chunks would make "asking for 61 returns 60" pass by
     # being wrong twice.
-    complete = store.search_lexical("rotation", project_id="demo", limit=CEILING_CORPUS)
+    complete = store.search_lexical("rotation", project_id="demo", limit=CEILING_CORPUS).rows
     assert len(complete) == CEILING_CORPUS, "every chunk must match, or the boundaries move"
 
-    hits = store.search_lexical("rotation", project_id="demo", limit=limit)
+    hits = store.search_lexical("rotation", project_id="demo", limit=limit).rows
 
     assert len(hits) == expected
 
@@ -331,7 +333,7 @@ def test_another_project_is_never_ranked(store: SqliteIndexStore) -> None:
         ]
     )
 
-    hits = store.search_lexical("shared secret", project_id="demo")
+    hits = store.search_lexical("shared secret", project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["mine"]
 
@@ -344,8 +346,10 @@ def test_drafts_are_withheld_unless_asked_for(store: SqliteIndexStore) -> None:
         ]
     )
 
-    assert [h.chunk_id for h in store.search_lexical("caching", project_id="demo")] == ["approved"]
-    with_drafts = store.search_lexical("caching", project_id="demo", include_unapproved=True)
+    assert [h.chunk_id for h in store.search_lexical("caching", project_id="demo").rows] == [
+        "approved"
+    ]
+    with_drafts = store.search_lexical("caching", project_id="demo", include_unapproved=True).rows
     assert len(with_drafts) == 2
 
 
@@ -356,7 +360,7 @@ def test_the_nearest_vector_ranks_first(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("near", "a"), _indexable("mid", "b", item="i2")])
     store.add_embeddings([("near", [1.0, 0.0]), ("mid", [0.7, 0.7])])
 
-    hits = store.search_dense([0.9, 0.1], project_id="demo")
+    hits = store.search_dense([0.9, 0.1], project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["near", "mid"]
 
@@ -371,7 +375,7 @@ def test_a_barely_similar_vector_is_not_returned_at_all(store: SqliteIndexStore)
     store.add_chunks([_indexable("near", "a"), _indexable("far", "b", item="i2")])
     store.add_embeddings([("near", [1.0, 0.0]), ("far", [0.0, 1.0])])
 
-    hits = store.search_dense([0.9, 0.1], project_id="demo")
+    hits = store.search_dense([0.9, 0.1], project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["near"], "0.11 cosine is noise, not a match"
 
@@ -380,7 +384,7 @@ def test_a_query_matching_nothing_returns_nothing(store: SqliteIndexStore) -> No
     store.add_chunks([_indexable("c1", "a")])
     store.add_embeddings([("c1", [1.0, 0.0])])
 
-    assert store.search_dense([0.0, 1.0], project_id="demo") == ()
+    assert store.search_dense([0.0, 1.0], project_id="demo").rows == ()
 
 
 def test_dense_search_respects_the_same_filters(store: SqliteIndexStore) -> None:
@@ -389,7 +393,7 @@ def test_dense_search_respects_the_same_filters(store: SqliteIndexStore) -> None
     )
     store.add_embeddings([("mine", [1.0, 0.0]), ("theirs", [1.0, 0.0])])
 
-    hits = store.search_dense([1.0, 0.0], project_id="demo")
+    hits = store.search_dense([1.0, 0.0], project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["mine"]
 
@@ -402,7 +406,7 @@ def test_a_corpus_embedded_by_another_model_is_skipped_not_scored(
     store.add_chunks([_indexable("two-dim", "a"), _indexable("three-dim", "b", item="i2")])
     store.add_embeddings([("two-dim", [1.0, 0.0]), ("three-dim", [1.0, 0.0, 0.0])])
 
-    hits = store.search_dense([1.0, 0.0], project_id="demo")
+    hits = store.search_dense([1.0, 0.0], project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["two-dim"]
 
@@ -446,7 +450,7 @@ def test_a_vector_cell_that_cannot_be_one_is_skipped_rather_than_failing_the_sea
     store.add_embeddings([("healthy", [1.0, 0.0]), ("corrupt", [1.0, 0.0])])
     _corrupt(store.path, "UPDATE embeddings SET vector = ? WHERE chunk_id = 'corrupt'", (cell,))
 
-    hits = store.search_dense([1.0, 0.0], project_id="demo")
+    hits = store.search_dense([1.0, 0.0], project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["healthy"]
 
@@ -458,7 +462,7 @@ def test_an_index_with_no_embeddings_returns_nothing_rather_than_failing(
     reported mode says so; the search does not crash."""
     store.add_chunks([_indexable("c1", "text")])
 
-    assert store.search_dense([1.0, 0.0], project_id="demo") == ()
+    assert store.search_dense([1.0, 0.0], project_id="demo").rows == ()
 
 
 def test_a_zero_query_vector_yields_nothing(store: SqliteIndexStore) -> None:
@@ -466,7 +470,7 @@ def test_a_zero_query_vector_yields_nothing(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("c1", "text")])
     store.add_embeddings([("c1", [1.0, 0.0])])
 
-    assert store.search_dense([0.0, 0.0], project_id="demo") == ()
+    assert store.search_dense([0.0, 0.0], project_id="demo").rows == ()
 
 
 def test_dense_ties_break_deterministically(store: SqliteIndexStore) -> None:
@@ -474,7 +478,10 @@ def test_dense_ties_break_deterministically(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("b", "x", item="i1"), _indexable("a", "x", item="i2")])
     store.add_embeddings([("b", [1.0, 0.0]), ("a", [1.0, 0.0])])
 
-    assert [h.chunk_id for h in store.search_dense([1.0, 0.0], project_id="demo")] == ["a", "b"]
+    assert [h.chunk_id for h in store.search_dense([1.0, 0.0], project_id="demo").rows] == [
+        "a",
+        "b",
+    ]
 
 
 def test_vectors_survive_a_round_trip(store: SqliteIndexStore) -> None:
@@ -483,7 +490,7 @@ def test_vectors_survive_a_round_trip(store: SqliteIndexStore) -> None:
     store.add_chunks([_indexable("c1", "x")])
     store.add_embeddings([("c1", [0.25, -0.5, 0.125])])
 
-    hits = store.search_dense([0.25, -0.5, 0.125], project_id="demo")
+    hits = store.search_dense([0.25, -0.5, 0.125], project_id="demo").rows
 
     assert hits[0].score == pytest.approx(1.0)
 
@@ -641,8 +648,8 @@ def test_japanese_is_searchable_by_substring(store: SqliteIndexStore, query: str
     """
     store.add_chunks([_indexable("ja", JAPANESE, heading="認証ポリシー")])
 
-    assert store.search_lexical(query, project_id="demo") == (), "the word index cannot"
-    assert store.search_substring(query, project_id="demo"), "the trigram index can"
+    assert store.search_lexical(query, project_id="demo").rows == (), "the word index cannot"
+    assert store.search_substring(query, project_id="demo").rows, "the trigram index can"
 
 
 def test_substring_matching_still_discriminates(store: SqliteIndexStore) -> None:
@@ -650,8 +657,8 @@ def test_substring_matching_still_discriminates(store: SqliteIndexStore) -> None
     for another."""
     store.add_chunks([_indexable("ja", JAPANESE, heading="認証ポリシー")])
 
-    assert store.search_substring("kubernetes", project_id="demo") == ()
-    assert store.search_substring("課金モデル", project_id="demo") == ()
+    assert store.search_substring("kubernetes", project_id="demo").rows == ()
+    assert store.search_substring("課金モデル", project_id="demo").rows == ()
 
 
 def test_the_substring_index_is_scoped_to_one_project(store: SqliteIndexStore) -> None:
@@ -670,8 +677,8 @@ def test_the_substring_index_is_scoped_to_one_project(store: SqliteIndexStore) -
         ]
     )
 
-    mine = store.search_substring("トークン", project_id="demo")
-    theirs = store.search_substring("トークン", project_id="other")
+    mine = store.search_substring("トークン", project_id="demo").rows
+    theirs = store.search_substring("トークン", project_id="other").rows
 
     assert [h.chunk_id for h in mine] == ["mine"]
     assert [h.chunk_id for h in theirs] == ["theirs"]
@@ -690,8 +697,8 @@ def test_the_substring_index_withholds_drafts_too(store: SqliteIndexStore) -> No
         ]
     )
 
-    withheld = store.search_substring("トークン", project_id="demo")
-    asked_for = store.search_substring("トークン", project_id="demo", include_unapproved=True)
+    withheld = store.search_substring("トークン", project_id="demo").rows
+    asked_for = store.search_substring("トークン", project_id="demo", include_unapproved=True).rows
 
     assert [h.chunk_id for h in withheld] == ["approved"]
     assert len(asked_for) == 2
@@ -713,7 +720,7 @@ def test_the_substring_index_ors_its_terms_like_the_word_index(store: SqliteInde
         ]
     )
 
-    hits = store.search_substring("トークン ローテーション", project_id="demo")
+    hits = store.search_substring("トークン ローテーション", project_id="demo").rows
 
     assert sorted(h.chunk_id for h in hits) == ["both", "one"], "OR, as the word index does"
 
@@ -745,8 +752,8 @@ def test_a_term_too_short_to_form_a_trigram_is_still_searchable(
     """
     store.add_chunks([_indexable("ja", SHORT_TERMS)])
 
-    assert store.search_lexical(query, project_id="demo") == (), "the word index cannot"
-    assert store.search_substring(query, project_id="demo"), "the scan below the floor can"
+    assert store.search_lexical(query, project_id="demo").rows == (), "the word index cannot"
+    assert store.search_substring(query, project_id="demo").rows, "the scan below the floor can"
 
 
 def test_the_scan_below_the_floor_still_discriminates(store: SqliteIndexStore) -> None:
@@ -755,8 +762,8 @@ def test_the_scan_below_the_floor_still_discriminates(store: SqliteIndexStore) -
     `LIKE` pattern is keeping it honest."""
     store.add_chunks([_indexable("ja", SHORT_TERMS)])
 
-    assert store.search_substring("課金", project_id="demo") == ()
-    assert store.search_substring("鍵", project_id="demo"), "and a term that is there is found"
+    assert store.search_substring("課金", project_id="demo").rows == ()
+    assert store.search_substring("鍵", project_id="demo").rows, "and a term that is there is found"
 
 
 def test_the_scan_below_the_floor_keeps_the_project_filter(store: SqliteIndexStore) -> None:
@@ -774,8 +781,10 @@ def test_the_scan_below_the_floor_keeps_the_project_filter(store: SqliteIndexSto
         ]
     )
 
-    assert [h.chunk_id for h in store.search_substring("認証", project_id="demo")] == ["mine"]
-    assert [h.chunk_id for h in store.search_substring("認証", project_id="other")] == ["theirs"]
+    assert [h.chunk_id for h in store.search_substring("認証", project_id="demo").rows] == ["mine"]
+    assert [h.chunk_id for h in store.search_substring("認証", project_id="other").rows] == [
+        "theirs"
+    ]
 
 
 def test_the_scan_below_the_floor_withholds_drafts_too(store: SqliteIndexStore) -> None:
@@ -789,8 +798,8 @@ def test_the_scan_below_the_floor_withholds_drafts_too(store: SqliteIndexStore) 
         ]
     )
 
-    withheld = store.search_substring("認証", project_id="demo")
-    asked_for = store.search_substring("認証", project_id="demo", include_unapproved=True)
+    withheld = store.search_substring("認証", project_id="demo").rows
+    asked_for = store.search_substring("認証", project_id="demo", include_unapproved=True).rows
 
     assert [h.chunk_id for h in withheld] == ["approved"]
     assert len(asked_for) == 2
@@ -815,7 +824,7 @@ def test_a_like_wildcard_typed_by_a_user_is_a_character_not_a_pattern(
     """
     store.add_chunks([_indexable("plain", "the gateway verifies every signed token")])
 
-    assert store.search_substring(query, project_id="demo") == ()
+    assert store.search_substring(query, project_id="demo").rows == ()
 
 
 def test_an_escaped_wildcard_still_finds_a_literal_one(store: SqliteIndexStore) -> None:
@@ -829,7 +838,7 @@ def test_an_escaped_wildcard_still_finds_a_literal_one(store: SqliteIndexStore) 
     """
     store.add_chunks([_indexable("literal", "budget utilisation reached 100% last quarter")])
 
-    hits = store.search_substring("0%", project_id="demo")
+    hits = store.search_substring("0%", project_id="demo").rows
 
     assert [h.chunk_id for h in hits] == ["literal"]
     assert hits[0].score > 0, "found by the pattern, ordered by the term it came from"
@@ -853,7 +862,7 @@ def test_the_scan_orders_case_insensitively_because_it_matches_that_way(
         ]
     )
 
-    assert [h.chunk_id for h in store.search_substring("ab", project_id="demo")] == [
+    assert [h.chunk_id for h in store.search_substring("ab", project_id="demo").rows] == [
         "b-shouting",
         "a-quiet",
     ]
@@ -876,10 +885,10 @@ def test_the_scan_below_the_floor_reads_every_column_the_trigram_index_does(
     """
     store.add_chunks([_indexable("head", "この文書は署名の話をする。", heading="認証ポリシー")])
 
-    assert [h.chunk_id for h in store.search_substring("認証", project_id="demo")] == ["head"], (
-        "the scan reads the heading"
-    )
-    assert store.search_substring("認証ポリシー", project_id="demo"), "and so does the lookup"
+    assert [h.chunk_id for h in store.search_substring("認証", project_id="demo").rows] == [
+        "head"
+    ], "the scan reads the heading"
+    assert store.search_substring("認証ポリシー", project_id="demo").rows, "and so does the lookup"
 
 
 def test_the_scan_below_the_floor_selects_by_relevance_not_by_creation_order(
@@ -908,11 +917,11 @@ def test_the_scan_below_the_floor_selects_by_relevance_not_by_creation_order(
         ]
     )
 
-    hits = store.search_substring("認証", project_id="demo", limit=50)
+    hits = store.search_substring("認証", project_id="demo", limit=50).rows
 
     assert len(hits) == 120, "the scan branch ranks everything it matched; `limit` is a floor"
     assert hits[0].chunk_id == "c119", "the densest chunk leads, though it is the newest"
-    shallow = store.search_substring("認証", project_id="demo", limit=1)
+    shallow = store.search_substring("認証", project_id="demo", limit=1).rows
     assert shallow[0].chunk_id == "c119", "and it leads at every limit, which is what was broken"
 
 
@@ -931,8 +940,10 @@ def test_the_scan_below_the_floor_breaks_ties_the_way_the_lookup_does(
         [_indexable(f"c{n:02d}", "認証の規則。署名付きトークンを運ぶ。") for n in range(10)]
     )
 
-    scanned = [h.chunk_id for h in store.search_substring("認証", project_id="demo", limit=4)]
-    looked_up = [h.chunk_id for h in store.search_substring("トークン", project_id="demo", limit=4)]
+    scanned = [h.chunk_id for h in store.search_substring("認証", project_id="demo", limit=4).rows]
+    looked_up = [
+        h.chunk_id for h in store.search_substring("トークン", project_id="demo", limit=4).rows
+    ]
 
     # Compared as prefixes, because the two branches disagree about `limit` and
     # only about `limit`: the lookup truncates to four, the scan hands back its
@@ -972,7 +983,7 @@ def test_a_realistic_keyword_query_is_searched_in_full(store: SqliteIndexStore) 
         ]
     )
 
-    hits = store.search_substring(" ".join(REALISTIC_NOUNS), project_id="demo")
+    hits = store.search_substring(" ".join(REALISTIC_NOUNS), project_id="demo").rows
 
     found = {h.chunk_id: h.score for h in hits}
     for n, noun in enumerate(REALISTIC_NOUNS):
@@ -1003,7 +1014,7 @@ def test_the_scan_spends_a_bounded_number_of_terms(store: SqliteIndexStore) -> N
         [_indexable(f"c{n:02d}", term, item=f"architecture.i{n}") for n, term in enumerate(terms)]
     )
 
-    hits = store.search_substring(" ".join(terms), project_id="demo")
+    hits = store.search_substring(" ".join(terms), project_id="demo").rows
 
     assert {h.chunk_id for h in hits} == {f"c{n:02d}" for n in range(SCAN_TERMS)}, (
         "every term up to the bound selects, and the one past it is not spent at all"
@@ -1046,7 +1057,7 @@ def test_every_term_the_scan_matches_on_also_ranks(store: SqliteIndexStore) -> N
         + [_indexable(f"n{n:02d}", terms[0] * 2, item=f"architecture.n{n}") for n in range(60)]
     )
 
-    hits = store.search_substring(" ".join(terms), project_id="demo", limit=10)
+    hits = store.search_substring(" ".join(terms), project_id="demo", limit=10).rows
 
     assert hits[0].chunk_id == "saturated", "the last admitted term carries full weight"
 
@@ -1066,7 +1077,7 @@ def test_a_single_letter_does_not_earn_a_pass_over_the_corpus(
     """
     store.add_chunks([_indexable("plain", "the gateway verifies every signed token # 7")])
 
-    assert store.search_substring(query, project_id="demo") == ()
+    assert store.search_substring(query, project_id="demo").rows == ()
 
 
 def test_a_single_character_that_is_a_whole_word_still_scans(store: SqliteIndexStore) -> None:
@@ -1080,8 +1091,8 @@ def test_a_single_character_that_is_a_whole_word_still_scans(store: SqliteIndexS
     """
     store.add_chunks([_indexable("ja", SHORT_TERMS)])
 
-    assert store.search_lexical("鍵", project_id="demo") == (), "the word index cannot"
-    assert [h.chunk_id for h in store.search_substring("鍵", project_id="demo")] == ["ja"]
+    assert store.search_lexical("鍵", project_id="demo").rows == (), "the word index cannot"
+    assert [h.chunk_id for h in store.search_substring("鍵", project_id="demo").rows] == ["ja"]
 
 
 def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStore) -> None:
@@ -1097,8 +1108,8 @@ def test_a_query_of_only_common_words_still_matches_today(store: SqliteIndexStor
     """
     store.add_chunks([_indexable("only", "The gateway verifies the token.")])
 
-    assert store.search_lexical("the", project_id="demo"), "known gap, not a feature"
-    assert store.search_lexical("gateway token", project_id="demo")
+    assert store.search_lexical("the", project_id="demo").rows, "known gap, not a feature"
+    assert store.search_lexical("gateway token", project_id="demo").rows
 
 
 # -- One corpus, two builds (FR-R7) -------------------------------------------
@@ -1222,7 +1233,7 @@ def test_two_builds_of_one_corpus_answer_a_tie_identically(
     )
 
     hits = [
-        getattr(built, retriever)(query, project_id="demo", limit=TIE_LIMIT)
+        getattr(built, retriever)(query, project_id="demo", limit=TIE_LIMIT).rows
         for built in (first, second)
     ]
 
@@ -1262,8 +1273,8 @@ def test_a_query_is_truncated_at_the_character_bound(store: SqliteIndexStore) ->
     store.add_chunks([_indexable("c1", "the gateway rejects an unsigned request")])
     padding = "x" * MAX_QUERY_CHARS
 
-    assert store.search_lexical(f"{padding} gateway", project_id="demo") == (), "past the cut"
-    assert store.search_lexical(f"gateway {padding}", project_id="demo"), "before the cut"
+    assert store.search_lexical(f"{padding} gateway", project_id="demo").rows == (), "past the cut"
+    assert store.search_lexical(f"gateway {padding}", project_id="demo").rows, "before the cut"
 
 
 def test_only_the_first_terms_by_length_are_spent(store: SqliteIndexStore) -> None:
@@ -1277,9 +1288,105 @@ def test_only_the_first_terms_by_length_are_spent(store: SqliteIndexStore) -> No
     store.add_chunks([_indexable("c1", "gateway")])
     fillers = " ".join(f"filler{index:04d}long" for index in range(MAX_QUERY_TERMS))
 
-    assert store.search_lexical(f"gateway {fillers}", project_id="demo") == (), (
+    assert store.search_lexical(f"gateway {fillers}", project_id="demo").rows == (), (
         "the short, real term loses its slot to longer fillers"
     )
-    assert store.search_lexical(f"gateway {fillers[:20]}", project_id="demo"), (
+    assert store.search_lexical(f"gateway {fillers[:20]}", project_id="demo").rows, (
         "well inside the bound, the same term is spent"
     )
+
+
+# -- Exhaustion (issue #16) --------------------------------------------------
+#
+# `limit` is a ceiling on both `LIMIT`-bearing retrievers, so exactly `limit`
+# rows is the one answer a row count cannot interpret. The adapter resolves it by
+# fetching `limit + 1` and reporting whether the extra row arrived. Both halves
+# are asserted: the report, and that the extra row never ships.
+
+EXHAUSTION_CORPUS = 6
+
+
+@pytest.fixture
+def six_matching_chunks(store: SqliteIndexStore) -> SqliteIndexStore:
+    store.add_chunks(
+        [
+            _indexable(f"c{number}", f"authentication token rotation, paragraph {number}")
+            for number in range(EXHAUSTION_CORPUS)
+        ]
+    )
+    return store
+
+
+@pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
+@pytest.mark.parametrize(
+    ("limit", "expected_rows", "expected_exhausted"),
+    [
+        (1, 1, False),
+        (EXHAUSTION_CORPUS - 1, EXHAUSTION_CORPUS - 1, False),
+        # The boundary. Exactly as many rows as there are: a count says nothing,
+        # and the probe row's absence is what makes this `True`.
+        (EXHAUSTION_CORPUS, EXHAUSTION_CORPUS, True),
+        (EXHAUSTION_CORPUS + 1, EXHAUSTION_CORPUS, True),
+        (100, EXHAUSTION_CORPUS, True),
+    ],
+)
+def test_a_limit_bearing_retriever_states_exhaustion_at_the_boundary(
+    six_matching_chunks: SqliteIndexStore,
+    retriever: str,
+    limit: int,
+    expected_rows: int,
+    expected_exhausted: bool,
+) -> None:
+    """The row count is ambiguous at ``limit``; the page is not.
+
+    ``limit == EXHAUSTION_CORPUS`` is the case the whole change is about. Six
+    rows come back for an ask of six whether or not a seventh exists, so an
+    adapter that reported exhaustion from ``len(rows) < limit`` would answer
+    ``False`` here and send the caller back for a pass that finds nothing — and
+    one that reported it from ``len(rows) <= limit`` would answer ``True`` at
+    ``limit == 1`` and cost the caller five rows it never learns it lost.
+    """
+    page = getattr(six_matching_chunks, retriever)(
+        "authentication", project_id="demo", limit=limit, include_unapproved=False
+    )
+
+    assert len(page.rows) == expected_rows
+    assert page.exhausted is expected_exhausted
+
+
+@pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
+def test_the_probe_row_is_never_returned(
+    six_matching_chunks: SqliteIndexStore, retriever: str
+) -> None:
+    """``limit`` stays a true ceiling despite the fetch asking for one more.
+
+    The probe and the cut have to move together. Fetching ``limit + 1`` and
+    forgetting to slice hands the caller a row past the ceiling on every query
+    that has one — silently, since a row too many looks like a longer ranking
+    rather than like a bug.
+    """
+    page = getattr(six_matching_chunks, retriever)(
+        "authentication", project_id="demo", limit=2, include_unapproved=False
+    )
+
+    assert len(page.rows) == 2, "the probe row must be dropped, not returned"
+    assert page.exhausted is False
+
+
+@pytest.mark.parametrize("query", ["認証", "認証は署名付きトークンで行う"])
+def test_the_scan_and_the_lookup_both_answer_exhausted_when_they_hold_everything(
+    store: SqliteIndexStore, query: str
+) -> None:
+    """One query below the trigram floor and one above it, same claim.
+
+    The two are answered by different branches -- the scan, which has no `LIMIT`
+    and is exhausted by construction, and the trigram lookup, which is exhausted
+    because the probe row did not arrive. A test that exercised only the second
+    would leave the branch that used to be read twice unmeasured.
+    """
+    store.add_chunks([_indexable("ja", "認証は署名付きトークンで行う。")])
+
+    page = store.search_substring(query, project_id="demo", limit=50, include_unapproved=False)
+
+    assert page.rows, "the fixture must match, or exhaustion is trivially true"
+    assert page.exhausted is True

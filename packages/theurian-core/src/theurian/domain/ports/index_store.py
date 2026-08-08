@@ -25,30 +25,29 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.chunking import IndexableChunk
-from theurian.domain.ranking import Ranked
+from theurian.domain.ranking import RetrieverPage
 
 
 @runtime_checkable
 class IndexStore(Protocol):
     """Writes and reads one index build.
 
-    Two of the four search methods below are not read directly by a caller.
-    They are read through a depth-doubling loop —
+    **Every search method states its own exhaustion.** Each returns a
+    :class:`~theurian.domain.ranking.RetrieverPage`, whose ``exhausted`` field
+    means *there is nothing further for this query* — and may be ``True`` only
+    when the implementation has verified it, never when it merely returned fewer
+    rows than it was asked for.
+
+    That field replaces a paragraph of prose. The depth-doubling loop that reads
+    these methods —
     :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`
-    — that asks a retriever again, deeper, whenever too few of what came back
-    survived the canonical store, until enough visible rows exist or the
-    retriever has nothing further to give. This port carries no separate
-    signal for "nothing further"; the loop has to read it off what a method
-    returns. So each method states, for itself, what a short answer and a long
-    one each mean — and they do not all mean the same thing.
-    :meth:`search_lexical` never returns more than ``limit``, so more would be
-    meaningless; :meth:`search_substring` may return more, and when it does
-    that is the whole of what it has, not merely more than was asked; and
-    :meth:`search_dense` takes no ``limit`` at all, because bounding its
-    output would not bound the scan it already has to run. A docstring that
-    stated one rule for all three would be read as enforcement it is not —
-    see each method for what actually holds, and for what an implementation
-    that got it wrong would break.
+    — used to reconstruct exhaustion from a row count, and ``limit`` does not
+    mean the same thing to all three: a ceiling in :meth:`search_lexical`, a
+    floor in :meth:`search_substring`, absent in :meth:`search_dense`. One
+    expression read three rules off one number, and no rule was enforceable,
+    because a count is what an adapter produces rather than what it promises.
+    ``limit`` still differs per method and each says how below; what no longer
+    differs is how the caller learns there is nothing further.
     """
 
     def create(self, *, index_build_id: str, state_hash: str) -> None:
@@ -87,26 +86,21 @@ class IndexStore(Protocol):
         project_id: str,
         limit: int,
         include_unapproved: bool,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Rank by term match, best first.
 
         Filtering happens with the match, before ranking (FR-R1). A malformed
         query returns nothing rather than raising: a search box that punishes
         punctuation is a broken search box.
 
-        **``limit`` is a true ceiling.** An implementation must never return
-        more rows than ``limit``, and returning fewer means nothing else in
-        this index matches this query at all — not "nothing else in this
-        batch", the whole of it. That second half is what
-        :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`
-        reads as "this retriever is exhausted" and stops asking deeper. An
-        implementation that both truncates *and* returns more than ``limit`` —
-        a fixed cap that ignores the argument, say — makes that read wrong
-        silently: the loop has no way to tell "the whole ranking" from "more
-        than I asked for, but still not all of it" except by trusting this
-        contract, so a violation here costs the caller rows it never sees and
-        never learns it lost. Contrast :meth:`search_substring`, where the
-        opposite holds by design.
+        **``limit`` is a true ceiling**: never more rows than ``limit``.
+
+        Returning fewer than ``limit`` no longer implies exhaustion and must not
+        be read as implying it — ``exhausted`` says so, and an implementation
+        that returns exactly ``limit`` rows has to establish for itself whether a
+        further row exists. Asking the storage engine for ``limit + 1`` and
+        reporting whether the extra row arrived is what the SQLite adapter does;
+        anything that answers the same question will do.
         """
         ...
 
@@ -117,7 +111,7 @@ class IndexStore(Protocol):
         project_id: str,
         limit: int,
         include_unapproved: bool,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Rank by substring match, best first.
 
         The retriever that makes scripts without word boundaries searchable.
@@ -128,29 +122,15 @@ class IndexStore(Protocol):
         bounding the answer would not bound the work. A short CJK query falls
         below the trigram floor and is answered by a scan that must score every
         matching row before it can name the best of them; truncating that to
-        ``limit`` would hide from the caller that the ranking was already
-        complete, and the caller's response is to ask again, deeper, for another
-        full scan.
+        ``limit`` would mean saying ``exhausted=False`` about a ranking that is
+        already complete, and the caller's response to that is another full scan
+        for no new rows.
 
-        The caller therefore reads the three answers as: fewer rows than asked
-        for, or *more* rows than asked for, both mean the retriever has nothing
-        further; exactly ``limit`` is the only ambiguous case
-        (:meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`).
-
-        **That reading is a requirement on every implementation, not a
-        description of this one.** "More rows than asked for" has to mean the
-        *entire* ranking came back — not merely more than ``limit``, all of it
-        — because the loop above has no independent way to tell "the whole
-        ranking" from "a fixed batch larger than what I asked for, with more
-        still unseen". An implementation that caps its output above ``limit``
-        without that cap being exhaustive satisfies this docstring's letter and
-        breaks its promise: the loop would read the excess as proof of
-        exhaustion at whatever depth it happened to ask, and hand back a
-        visible ranking shorter than the one a conforming adapter would have
-        given for the same query, with nothing in the response naming what
-        happened. Nothing on this port, and nothing in the loop that reads it,
-        checks that an implementation keeps this promise — it is a contract,
-        not an enforced one.
+        So the branch that cannot bound its work returns everything it found and
+        reports ``exhausted=True`` on its first and only call, whatever the
+        corpus and whatever the canonical store has since withdrawn. That is a
+        structural property now rather than a memoised one: there is no second
+        call left to make cheap.
         """
         ...
 
@@ -160,7 +140,7 @@ class IndexStore(Protocol):
         *,
         project_id: str,
         include_unapproved: bool,
-    ) -> tuple[Ranked, ...]:
+    ) -> RetrieverPage:
         """Rank by vector similarity, best first. The **whole** ranking.
 
         Returns nothing when there are no embeddings, which degrades the search
@@ -175,11 +155,10 @@ class IndexStore(Protocol):
         and pay for the whole corpus again, which is exactly what the caller
         that has to fetch past withheld rows would do.
 
-        The one method of the four not read through the depth-doubling loop at
-        all: without a ``limit`` there is no "asked for" to compare a count
-        against, so the ceiling/floor distinction the other two carry does not
-        apply here, and the caller clears and cuts this ranking in a single
-        pass instead
+        ``exhausted`` is therefore always ``True`` here, and it is a fact rather
+        than a formality: this method returns the whole ranking, so there is
+        never anything further. The caller clears and cuts it in a single pass
+        instead of going through the depth loop at all
         (:meth:`~theurian.application.retrieval_service.RetrievalService._dense`).
         """
         ...

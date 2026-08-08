@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, final
 
 import pytest
+from fakes import truncating, whole
 from typer.testing import CliRunner
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
@@ -35,7 +36,7 @@ from theurian.application.visibility import Visibility
 from theurian.cli.main import app
 from theurian.domain.chunking import IndexableChunk
 from theurian.domain.ports.embedding import EmbeddingProvider
-from theurian.domain.ranking import DENSE, Ranked, RetrievalMode, mode_of
+from theurian.domain.ranking import DENSE, Ranked, RetrievalMode, RetrieverPage, mode_of
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -966,8 +967,10 @@ operations:
         )
     )
 
-    hits = SqliteIndexStore(index_path).search_lexical(
-        "caching", project_id="demo", limit=50, include_unapproved=True
+    hits = (
+        SqliteIndexStore(index_path)
+        .search_lexical("caching", project_id="demo", limit=50, include_unapproved=True)
+        .rows
     )
 
     assert hits == (), "retired knowledge is not written to the index at all"
@@ -1130,8 +1133,10 @@ def test_the_canonical_store_is_the_state_the_pointer_names(
         ).fetchone()
     assert recorded == ("deprecated",), "the resolved state is the one that records the retirement"
 
-    hits = SqliteIndexStore(_build(project, embedder=None)).search_lexical(
-        "caching", project_id="demo", limit=50, include_unapproved=True
+    hits = (
+        SqliteIndexStore(_build(project, embedder=None))
+        .search_lexical("caching", project_id="demo", limit=50, include_unapproved=True)
+        .rows
     )
     assert hits == (), "and so the retired item is never written to the index"
 
@@ -1316,9 +1321,11 @@ class _ScriptedIndex:
 
     # Every argument below is named by the `IndexStore` protocol and ignored --
     # hence the `noqa`s -- because the script, not the query, decides the answer.
-    # `limit` is the exception and is honoured: the depth-doubling loop reads
-    # exhaustion off how many rows come back against how many it asked for, so a
-    # fake that ignored it would never terminate.
+    # `limit` is the exception and is honoured, through `fakes.truncating`: these
+    # two stand in for the `LIMIT`-bearing retrievers, so they are exhausted
+    # exactly when the script did not fill the ask. Reporting exhaustion any
+    # other way ends the depth loop for a reason the real store would not, and
+    # the tests below would go green measuring that instead.
     def search_lexical(
         self,
         query: str,  # noqa: ARG002
@@ -1326,8 +1333,8 @@ class _ScriptedIndex:
         project_id: str,  # noqa: ARG002
         limit: int,
         include_unapproved: bool,  # noqa: ARG002
-    ) -> tuple[Ranked, ...]:
-        return self._lexical[:limit]
+    ) -> RetrieverPage:
+        return truncating(self._lexical, limit)
 
     def search_substring(
         self,
@@ -1336,8 +1343,8 @@ class _ScriptedIndex:
         project_id: str,  # noqa: ARG002
         limit: int,
         include_unapproved: bool,  # noqa: ARG002
-    ) -> tuple[Ranked, ...]:
-        return self._substring[:limit]
+    ) -> RetrieverPage:
+        return truncating(self._substring, limit)
 
     def search_dense(
         self,
@@ -1345,8 +1352,8 @@ class _ScriptedIndex:
         *,
         project_id: str,  # noqa: ARG002
         include_unapproved: bool,  # noqa: ARG002
-    ) -> tuple[Ranked, ...]:
-        return ()
+    ) -> RetrieverPage:
+        return whole(())
 
     def chunk_texts(
         self,
@@ -1760,9 +1767,9 @@ def _matching_chunks(index_path: Path, term: str) -> int:
     difference in the published order could be the `idf` channel at all.
     """
     return len(
-        SqliteIndexStore(index_path).search_lexical(
-            term, project_id="demo", limit=200, include_unapproved=False
-        )
+        SqliteIndexStore(index_path)
+        .search_lexical(term, project_id="demo", limit=200, include_unapproved=False)
+        .rows
     )
 
 
@@ -1853,11 +1860,15 @@ def test_the_bm25_probe_corpus_can_still_flip(bm25_probe: _BM25Probe) -> None:
     """
     stale = _published_order(bm25_probe, bm25_probe.stale)
     fresh = _published_order(bm25_probe, bm25_probe.fresh)
-    withheld_chunks = SqliteIndexStore(bm25_probe.stale).search_lexical(
-        PROBE_QUERY, project_id="demo", limit=50, include_unapproved=False
+    withheld_chunks = (
+        SqliteIndexStore(bm25_probe.stale)
+        .search_lexical(PROBE_QUERY, project_id="demo", limit=50, include_unapproved=False)
+        .rows
     )
-    fresh_chunks = SqliteIndexStore(bm25_probe.fresh).search_lexical(
-        PROBE_QUERY, project_id="demo", limit=50, include_unapproved=False
+    fresh_chunks = (
+        SqliteIndexStore(bm25_probe.fresh)
+        .search_lexical(PROBE_QUERY, project_id="demo", limit=50, include_unapproved=False)
+        .rows
     )
 
     assert sorted(stale) == sorted(fresh), "the answers must differ in order and nothing else"

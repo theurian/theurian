@@ -7,6 +7,7 @@ Protocol and a conformance test asserts it.
 
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
+from fakes.pages import truncating, whole
 from fakes.setup import FakeMcpConfig, FakeService
 from fakes.store import InMemoryWriter
 
@@ -16,4 +17,6 @@ __all__ = [
     "FrozenClock",
     "InMemoryWriter",
     "SeededIdGenerator",
+    "truncating",
+    "whole",
 ]
