@@ -50,7 +50,7 @@ are now released**:
 
 | Artifact | State | What settles it |
 | :-- | :-- | :-- |
-| Claude Code plugin | **Released**, at `0.1.0` | the sha the `theurian` entry pins in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json`, and the `version` in `plugin.json` at that sha |
+| Claude Code plugin | **Released**, at `0.1.1` | the sha the `theurian` entry pins in [theurian-plugins](https://github.com/theurian/theurian-plugins)' `marketplace.json`, and the `version` in `plugin.json` at that sha |
 | Theurian Core | **Released**, at `0.1.0.dev0` | `git ls-remote --tags https://github.com/theurian/theurian 'refs/tags/core-v*'`, and the versions on [PyPI](https://pypi.org/project/theurian/) |
 
 Core tags are `core-v*` and plugin tags are `plugin-v*` (release process:
