@@ -1362,6 +1362,25 @@ def _a_corpus_the_parameters_move(tmp_path: Path) -> tuple[ProjectRegistry, _Cas
 
     The triple is the opposite of the tool's defaults on all three axes, so
     either failure shows up as the answer landing on the wrong side.
+
+    **Their coverage is asymmetric, and it is worth knowing which way round.**
+    Measured on the verdict path, then attributed with fail-fast off:
+
+    ============================================ ================ ==============
+    mutation                                     mirror guard     defaults guard
+    ============================================ ================ ==============
+    ``_search`` re-injects ``case.arguments``     RED              RED
+    ``_Case.arguments`` returns ``{}``            RED              green
+    ============================================ ================ ==============
+
+    So the mirror guard catches both and the other catches one -- they do *not*
+    cover each other, and a note saying they did would be wrong in the direction
+    that matters. Neither is redundant: they pin different properties, and the
+    ``defaults`` guard is what fails with the message naming ``ARGUMENT_SETS``
+    when the H-1 defect returns. The mirror guard's failure under that mutation
+    is a side effect -- re-injection stops ``tool_defaults`` being the tool's
+    defaults -- and a side effect is not a reason to delete the test that says
+    what actually broke.
     """
     created_at = datetime.now(UTC) - AGE_OFFSET
     documents = tuple(
