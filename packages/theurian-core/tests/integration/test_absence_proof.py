@@ -1240,6 +1240,80 @@ def test_a_withheld_item_is_refused_by_the_same_words_that_refuse_an_absent_one(
 # ---------------------------------------------------------------------------
 
 
+def _a_corpus_the_parameters_move(tmp_path: Path) -> tuple[ProjectRegistry, _Case]:
+    """Twenty matching documents, and a ``_Case`` whose triple is not the defaults.
+
+    Shared by the two guards below, which are mirror images: one asks whether an
+    *empty* parameter set reaches the tool empty, the other whether a *stated*
+    one reaches it at all. Both need the same precondition -- a corpus on which
+    the parameters change the answer -- and each asserts it rather than assuming
+    the other did.
+
+    The triple is the opposite of the tool's defaults on all three axes, so
+    either failure shows up as the answer landing on the wrong side.
+    """
+    created_at = datetime.now(UTC) - AGE_OFFSET
+    documents = tuple(
+        _Document(
+            item_id=f"architecture.visible-{index:02d}",
+            revision_id=_ulid("VS", index),
+            title="handle",
+            body=f"cache manifold beacon domain machine combine median nominal {index}.",
+            status=KnowledgeStatus.APPROVED,
+        )
+        for index in range(20)
+    )
+    registry = _build_project(tmp_path / "one", documents, created_at)
+    case = _Case(
+        visible=documents,
+        withheld_filler=(),
+        withheld_titles=(),
+        payloads=(),
+        withheld_by=RETIRED_AFTER_BUILD,
+        query="manifold",
+        limit=MAX_RESULTS,
+        max_tokens=MAX_BUDGET_TOKENS,
+        use_dense=True,
+    )
+    return registry, case
+
+
+def test_the_parameters_a_case_carries_reach_the_tool(tmp_path: Path) -> None:
+    """The mirror of the guard below, and it was missing until a mutation said so.
+
+    :attr:`_Case.arguments` is the *other* parameter source in this file: the one
+    test that wants the generated triple rather than an enumerated set asks for
+    it by name. Nothing held it. Measured on the verdict path --
+    ``_Case.arguments`` replaced by ``return {}`` came back **SURVIVED** against
+    the whole suite, so eighteen examples of
+    :func:`test_no_withheld_payload_appears_anywhere_a_caller_reads` would have
+    silently collapsed onto the tool defaults with every test still green.
+
+    That is exactly the defect ``defaults`` had, arriving from the opposite
+    direction: there a set that should have been empty was full, here a set that
+    should be full can be emptied. One guard cannot cover both -- the guard below
+    passes unchanged when ``arguments`` returns ``{}``, because it never calls it.
+
+    The second assertion is the anti-vacuity one, and it is not the same fact as
+    the first: a corpus where the parameters change nothing would satisfy "the
+    triple reaches the tool" with any implementation at all.
+    """
+    registry, case = _a_corpus_the_parameters_move(tmp_path)
+
+    as_the_case_asks = _search(registry, case, **case.arguments)
+    tool_defaults = _search(registry, case)
+
+    assert case.arguments == {
+        "limit": case.limit,
+        "maxTokens": case.max_tokens,
+        "useDense": case.use_dense,
+    }, "the triple must be the case's own, not a fixed one"
+    assert as_the_case_asks != tool_defaults, (
+        "a case's parameters must reach the tool, or the sweep that uses them "
+        "runs eighteen examples at the defaults and nothing says so"
+    )
+
+
 def test_the_defaults_argument_set_really_sends_no_parameters(tmp_path: Path) -> None:
     """That ``ARGUMENT_SETS``' first entry is not quietly a fifth generated draw.
 
@@ -1262,30 +1336,7 @@ def test_the_defaults_argument_set_really_sends_no_parameters(tmp_path: Path) ->
     equals the documented defaults" is true of any implementation, including the
     broken one.
     """
-    created_at = datetime.now(UTC) - AGE_OFFSET
-    documents = tuple(
-        _Document(
-            item_id=f"architecture.visible-{index:02d}",
-            revision_id=_ulid("VS", index),
-            title="handle",
-            body=f"cache manifold beacon domain machine combine median nominal {index}.",
-            status=KnowledgeStatus.APPROVED,
-        )
-        for index in range(20)
-    )
-    registry = _build_project(tmp_path / "one", documents, created_at)
-    # Deliberately the opposite of the tool's defaults on all three axes.
-    case = _Case(
-        visible=documents,
-        withheld_filler=(),
-        withheld_titles=(),
-        payloads=(),
-        withheld_by=RETIRED_AFTER_BUILD,
-        query="manifold",
-        limit=MAX_RESULTS,
-        max_tokens=MAX_BUDGET_TOKENS,
-        use_dense=True,
-    )
+    registry, case = _a_corpus_the_parameters_move(tmp_path)
 
     nothing_stated = _search(registry, case)
     # 10 is `knowledge_search`'s own `limit` default; there is no constant for it
