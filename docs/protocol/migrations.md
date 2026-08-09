@@ -123,6 +123,28 @@ Theurian exists to prevent.
 Re-applying an applied migration is a no-op. This is a property of the engine,
 not something each migration author has to implement.
 
+### Tenant and ACL scope (issue #63)
+
+`upsertRevision`'s `metadata` carries `tenantId` (default `local`) and
+`aclGroup` (default `default`). The schema keeps both fields and their types —
+they describe the shape a hosted, multi-tenant deployment needs (ADR-0003) —
+but no `AuthorizationProvider` is implemented anywhere in Theurian Core yet.
+Accepting a document that names another tenant or ACL group would let the
+field read as an enforced boundary when nothing checks it.
+
+**Both `migrate validate` and `migrate apply` refuse a revision naming a
+`tenantId` other than `local` or an `aclGroup` other than `default`.** The
+refusal runs on the same function in both commands, so a document is refused
+by both or by neither — never accepted by one and rejected by the other. A
+later milestone lifts the refusal once a hosted deployment ships a real
+principal to check these fields against.
+
+```yaml
+metadata:
+  tenantId: local   # any other value is refused, in this build
+  aclGroup: default  # any other value is refused, in this build
+```
+
 ### Path safety
 
 `contentFile` is resolved relative to the migration file and must stay inside the
@@ -149,7 +171,9 @@ Git-tracked inputs would not be caught here.
 ```mermaid
 flowchart TD
     A["Discover .theurian/migrations/*.yaml"] --> B["Validate against the JSON Schema"]
-    B --> C["Verify each file's checksum"]
+    B --> S{"Any tenantId != local<br/>or aclGroup != default?"}
+    S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No AuthorizationProvider exists yet (issue #63)."]
+    S -->|no| C["Verify each file's checksum"]
     C --> D{"Applied id with a<br/>different checksum?"}
     D -->|yes| E["FATAL: an applied migration was edited.<br/>Do not repair. Do not delete state."]
     D -->|no| F["Topologically sort by dependsOn"]
@@ -169,6 +193,7 @@ flowchart TD
 
     style E fill:#8a2f2f,color:#fff
     style H fill:#8a2f2f,color:#fff
+    style T fill:#8a2f2f,color:#fff
     style L fill:#8a6f2f,color:#fff
     style R fill:#1f6f4a,color:#fff
 ```
@@ -201,9 +226,12 @@ scanning a directory listing and may be changed freely.
 | `MigrationCycleError` | `dependsOn` loops | Break the cycle; the reported path shows where. |
 | `MigrationDependencyMissingError` | A dependency is not in the reachable set | Usually a rebase dropped a migration. Check the branch. |
 | `PathEscapeError` | `contentFile` points outside the root | Fix the path. If it looks intentional, treat it as a security finding. |
+| `UnenforceableScopeError` | A revision named a `tenantId` other than `local` or an `aclGroup` other than `default` | Use the default. Nothing enforces another value yet (issue #63). |
 
 ## Related
 
+- [ADR-0003 — ports and adapters](../adr/0003-ports-and-adapters.md), for why `tenantId` and `aclGroup` exist in the schema at all
 - [ADR-0005 — YAML knowledge migrations](../adr/0005-yaml-knowledge-migrations.md)
 - [ADR-0006 — immutable revisions and optimistic concurrency](../adr/0006-immutable-revisions-and-optimistic-concurrency.md)
 - [ADR-0007 — state-hash-partitioned databases](../adr/0007-state-hash-partitioned-databases.md)
+- [issue #63](https://github.com/theurian/theurian/issues/63) — the tenant/ACL refusal this page documents
