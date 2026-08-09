@@ -21,6 +21,7 @@ from theurian.application.ingestion_service import (
 )
 from theurian.application.migration_engine import (
     MigrationEngine,
+    refuse_unenforceable_scope,
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (
@@ -47,6 +48,7 @@ from theurian.domain.errors import (
     MigrationError,
     RevisionConflictError,
     TheurianError,
+    UnenforceableScopeError,
 )
 from theurian.domain.extras import (
     DAEMON_EXTRA,
@@ -122,6 +124,16 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
 STATE_REBUILD_REMEDY: Final = (
     "Delete `.theurian/state/` and run `theurian migrate apply` to rebuild it from the "
     "Git-tracked migrations. Nothing authored is lost."
+)
+
+#: Cure for `UnenforceableScopeError` (issue #63). Named once and shared by
+#: `migrate validate` and `migrate apply`, which is what keeps the fix they
+#: point at the same for both -- the remedy field is a contract callers read
+#: without parsing `error`.
+UNENFORCEABLE_SCOPE_REMEDY: Final = (
+    "Set tenantId to 'local' and aclGroup to 'default' in the revision's metadata. "
+    "A later milestone lifts this refusal once a hosted deployment has a real "
+    "AuthorizationProvider to enforce other values against (issue #63)."
 )
 
 
@@ -790,8 +802,20 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     Loading has already happened by the time this runs, so reaching here means
     the set parses, validates, resolves its content files inside the project
     root, and has a valid application order.
+
+    Also calls :func:`refuse_unenforceable_scope` directly, on the same
+    `MigrationSet` `migrate apply` would see -- `MigrationEngine.apply` calls
+    the identical function internally. A document that names a tenant or ACL
+    group nothing can yet enforce (issue #63) is refused by both commands or
+    neither; validate cannot pass a document apply will reject (issue #36).
     """
     context, _ = _require_project(as_json)
+
+    try:
+        refuse_unenforceable_scope(context.loaded.migration_set)
+    except UnenforceableScopeError as exc:
+        _fail(str(exc), remedy=UNENFORCEABLE_SCOPE_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
 
     _emit(
         {
@@ -857,6 +881,12 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
+        return
+    except UnenforceableScopeError as exc:
+        # Caught ahead of the generic `MigrationError` clause below, since it
+        # is one -- and a more specific remedy than "fix the migration set" is
+        # available here.
+        _fail(str(exc), remedy=UNENFORCEABLE_SCOPE_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
         return
     except (MigrationCycleError, MigrationError) as exc:
         _fail(
