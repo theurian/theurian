@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -436,6 +437,63 @@ def test_migration_history_records_order_and_checksums(database: Path, lock: Pat
         history = store.applied_migrations(PROJECT)
 
     assert history == ((MIGRATION, first_checksum), (second, second_checksum))
+
+
+# -- Validity window (#63 phase 2) ------------------------------------------
+
+
+def test_the_validity_filter_is_reachable_from_a_caller(database: Path, lock: Path) -> None:
+    """FR-R1's validity axis, pinned at the store rather than through the MCP
+    surface, so a regression on the caller side cannot make this test look
+    green for the wrong reason.
+
+    ``list_items(current_at=…)`` implements the half-open window below and had
+    no caller in `src/` at all (issue #63): every one of the five call sites
+    passed ``context`` alone, so this filter was written and dead.
+    ``theurian.mcp.search._scan`` is the first caller, reached through
+    `knowledge.search`'s optional ``asOf`` parameter -- this test replaces
+    "written and dead" with "written and called" for the store method itself,
+    independent of that caller's own tests
+    (``test_a_search_pinned_to_a_moment_returns_only_knowledge_valid_then``,
+    ``tests/integration/test_mcp_tools.py``).
+
+    Placed in this file rather than ``tests/integration/test_index_store.py``:
+    ``list_items`` is a method of ``SqliteCanonicalStore``, exercised nowhere
+    near ``SqliteIndexStore`` -- the retrieval index that file's fixtures and
+    imports are entirely about, and which carries no validity column at all
+    (``infrastructure/sqlite/index_schema.py``). This axis is filtered at the
+    canonical store, not the index, on both `knowledge.search` answer paths.
+    """
+    always = replace(
+        _item(), item_id=ItemId("architecture.always"), validity=ValidityPeriod(valid_from=NOW)
+    )
+    later = replace(
+        _item(),
+        item_id=ItemId("architecture.later"),
+        validity=ValidityPeriod(valid_from=NOW + timedelta(days=365)),
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.put_item(always)
+        writer.put_item(later)
+
+    with SqliteCanonicalStore(database) as store:
+        context = RequestContext(project_id=PROJECT)
+        unfiltered = store.list_items(context)
+        pinned_before = store.list_items(context, current_at=NOW)
+        pinned_after = store.list_items(context, current_at=NOW + timedelta(days=400))
+
+    assert {i.item_id.value for i in unfiltered} == {"architecture.always", "architecture.later"}, (
+        "no `current_at` filters on nothing, as every other caller relies on"
+    )
+    assert {i.item_id.value for i in pinned_before} == {"architecture.always"}, (
+        "the item not yet valid at `NOW` must be excluded"
+    )
+    assert {i.item_id.value for i in pinned_after} == {
+        "architecture.always",
+        "architecture.later",
+    }, "and included once its own `valid_from` has passed"
 
 
 # -- Session lifetime ------------------------------------------------------

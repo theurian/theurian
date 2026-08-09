@@ -160,6 +160,7 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, final
 
@@ -731,6 +732,15 @@ class ResultRequest:
     #: against a fresh index, none of it counted: a caller asking for 2,000 was
     #: sent 2,030 while being told the answer cost 1,860 (FR-R4).
     reserved_tokens: int = 0
+    #: The caller's ``asOf``, or ``None`` for no validity-window pin (FR-R1,
+    #: #63 phase 2). Threaded through rather than read here because the moment
+    #: has to reach :class:`~theurian.application.visibility.CanonicalVisibility`
+    #: *before* a row is ranked, for the same reason ``include_unapproved`` does
+    #: -- a post-filter would let a row outside its window occupy a candidate
+    #: slot. ``None`` is not "everything is visible"; it is "apply no
+    #: *additional* temporal restriction", the distinction that class's own
+    #: docstring draws for its ``moment`` parameter.
+    moment: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.limit < 1:
@@ -777,7 +787,10 @@ class ResultGate:
         context = RequestContext(project_id=ProjectId(request.project_id))
         with self._store_factory(request.database) as store:
             visible = CanonicalVisibility(
-                store, context, include_unapproved=request.include_unapproved
+                store,
+                context,
+                include_unapproved=request.include_unapproved,
+                moment=request.moment,
             )
             outcome = source(visible)
             surfaced = self._surfaced(store, context, visible, outcome, limit=request.limit)

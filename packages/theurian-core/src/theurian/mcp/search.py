@@ -394,6 +394,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     include_unapproved: bool,
     budget_tokens: int,
     use_dense: bool,
+    as_of: datetime | None,
 ) -> dict[str, Any] | Fallback:
     """Answer from the retrieval index, or say why it could not.
 
@@ -401,6 +402,15 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     makes ``snapshotId`` true. It is the pointer that chose ``database``, so the
     hash reported names the state the results actually came from even if
     ``migrate apply`` replaces the pointer mid-request.
+
+    ``as_of`` is the parsed form of `knowledge.search`'s optional ``asOf``
+    (FR-R1, #63 phase 2). It reaches two places for two different reasons: the
+    gate below, where ``None`` means "no additional validity-window filter" and
+    a moment means one candidate at a time is checked against
+    ``item.validity`` before it can be ranked; and :func:`_shaper`, where it is
+    the moment every returned hit's ``freshness`` is computed against --
+    ``datetime.now(UTC)`` when the caller pinned nothing, exactly as before this
+    parameter existed.
     """
     published = _published_index(
         paths, project_id=project_id, include_unapproved=include_unapproved
@@ -496,7 +506,8 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                 snapshot_id=current_state_hash,
             )
             resolved = ResultGate(
-                store_factory=SqliteCanonicalStore, shape=_shaper(datetime.now(UTC))
+                store_factory=SqliteCanonicalStore,
+                shape=_shaper(as_of if as_of is not None else datetime.now(UTC)),
             ).admit(
                 ResultRequest(
                     database=database,
@@ -505,6 +516,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                     limit=limit,
                     budget_tokens=budget_tokens,
                     reserved_tokens=_envelope_tokens(project_id, query, provisional),
+                    moment=as_of,
                 ),
                 candidates,
             )
@@ -711,6 +723,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     include_unapproved: bool,
     budget_tokens: int,
     fallback: Fallback,
+    as_of: datetime | None,
 ) -> dict[str, Any]:
     """Answer by scanning the canonical store, when no index can.
 
@@ -725,6 +738,11 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     thing it used them for — re-reading `active.json` — is exactly the read that
     could disagree with the one that chose ``database`` (SEC-13/T-15 — see
     `_Retrieval.snapshot_id`).
+
+    ``as_of`` is FR-R1's validity axis (#63 phase 2), on the path this project's
+    requirements register named as the one with no caller for it:
+    ``SqliteCanonicalStore.list_items(current_at=…)``. :func:`_scan` is that
+    caller now.
     """
     provisional = _Retrieval(
         # "substring" here names the unranked canonical scan, not the trigram
@@ -752,6 +770,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
             needle=query.strip().lower(),
             limit=limit,
             include_unapproved=include_unapproved,
+            as_of=as_of,
         ),
         budget_tokens=budget_tokens,
         reserved_tokens=_envelope_tokens(project_id, query, provisional),
@@ -769,25 +788,33 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     )
 
 
-def _scan(
+def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `database`
     database: Path,
     *,
     project_id: str,
     needle: str,
     limit: int,
     include_unapproved: bool,
+    as_of: datetime | None,
 ) -> list[dict[str, Any]]:
     """Every current revision whose title or body contains ``needle``.
 
     Stops at ``limit`` so an unranked scan cannot walk a whole corpus to build
     an answer the budget will discard anyway.
+
+    ``as_of=None`` passes ``current_at=None`` straight through to
+    ``list_items``, which is a no-op filter -- this scan's behaviour when the
+    caller pins nothing is unchanged from before ``asOf`` existed. A moment
+    gives ``list_items(current_at=…)`` its first caller in `src/` (#63 phase
+    2): the half-open window it already implements
+    (``infrastructure/sqlite/store.py``) was written and never read.
     """
-    now = datetime.now(UTC)
+    now = as_of if as_of is not None else datetime.now(UTC)
     context = RequestContext(project_id=ProjectId(project_id))
     matches: list[dict[str, Any]] = []
 
     with SqliteCanonicalStore(database) as store:
-        for item in store.list_items(context):
+        for item in store.list_items(context, current_at=as_of):
             if not may_surface(item.status, include_unapproved=include_unapproved):
                 continue
             if item.current_revision_id is None:

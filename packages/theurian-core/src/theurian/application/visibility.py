@@ -23,6 +23,7 @@ request is that two rows in one answer cannot be judged against two states.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol, final, runtime_checkable
 
 from theurian.domain.context import RequestContext
@@ -83,10 +84,24 @@ class CanonicalVisibility:
         context: RequestContext,
         *,
         include_unapproved: bool,
+        moment: datetime | None = None,
     ) -> None:
+        """``moment`` is the caller's ``asOf``, or ``None`` for no pin (#63).
+
+        Defaulted, unlike ``include_unapproved``, because ``None`` here means
+        "apply no *additional* temporal restriction" rather than "everything is
+        visible" -- status and current-revision identity are still checked
+        unconditionally below, whatever ``moment`` is. It is the FR-R1 axis
+        `knowledge.search`'s optional ``asOf`` parameter exists to fill, and it
+        stays a refinement rather than a default filter for the reason recorded
+        on that parameter: a permanent filter would make `isWithinValidity`
+        constant-``true`` on a fresh index and inherit a stale-index residual
+        shaped like T-17a's, for a different cause, with no way to turn it off.
+        """
         self._store = store
         self._context = context
         self._include_unapproved = include_unapproved
+        self._moment = moment
         self._items: dict[str, KnowledgeItem | None] = {}
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
@@ -209,6 +224,14 @@ class CanonicalVisibility:
         # an item retired after the build came back labelled `deprecated` — or
         # `rejected`, which is where the secret that caused the rejection lives.
         if not may_surface(item.status, include_unapproved=self._include_unapproved):
+            return False
+        # The validity-window axis of FR-R1 (#63 phase 2), applied inside the
+        # ranking for the same reason status is: a post-filter would let a row
+        # occupy a candidate slot before anyone asked whether it belongs there.
+        # Skipped whatever `include_unapproved` says, unlike nothing else here --
+        # `asOf` is a moment, not a scope, and a caller who asked for drafts as
+        # well is still asking about one instant in time.
+        if self._moment is not None and not item.validity.contains(self._moment):
             return False
         # Likewise for *which revision* is current. Replacing a revision is how a
         # secret gets removed from approved knowledge, so serving the pinned one

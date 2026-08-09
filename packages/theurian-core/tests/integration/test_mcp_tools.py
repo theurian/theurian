@@ -3885,3 +3885,385 @@ async def test_a_gc_unlink_in_the_acquisition_window_degrades_rather_than_raisin
     assert retrieval["fallbackReason"] == "index-unreadable"
     assert result["count"] >= 1, "the substring scan still answers from the canonical store"
     assert not build.exists(), "a read recreated the reaped build; `mode=ro` must prevent it"
+
+
+# -- `asOf`: a refinement, not a default filter (FR-R1, #63 phase 2) ---------
+#
+# Three items sharing one query term, distinguished only by their validity
+# window: one open-ended since 2020, one expired at the end of 2021, one not
+# valid until 2031. A moment pinned to mid-2020 must include the first two and
+# exclude the third -- and, for the second, `freshness.isWithinValidity` must
+# read `true` at that pinned moment even though the same field on the very
+# same revision reads `false` against real time, which is what proves the
+# field is computed against `asOf` and not against `datetime.now()`.
+
+AS_OF_QUERY = "governance decision"
+
+AS_OF_ALWAYS_MIGRATION_ID = "01K1QAAAAA01234567890ABCDE"
+AS_OF_ALWAYS_REVISION_ID = "01K1QAAREV01234567890ABCDE"
+AS_OF_LATER_MIGRATION_ID = "01K1RAAAAA01234567890ABCDE"
+AS_OF_LATER_REVISION_ID = "01K1RAAREV01234567890ABCDE"
+AS_OF_EXPIRED_MIGRATION_ID = "01K1SAAAAA01234567890ABCDE"
+AS_OF_EXPIRED_REVISION_ID = "01K1SAAREV01234567890ABCDE"
+
+AS_OF_ALWAYS_BODY = "# Governance always current\n\nA governance decision with no expiry.\n"
+AS_OF_LATER_BODY = "# Governance starting later\n\nA governance decision that starts later.\n"
+AS_OF_EXPIRED_BODY = "# Governance already expired\n\nA governance decision retired long ago.\n"
+
+AS_OF_ALWAYS_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {AS_OF_ALWAYS_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.governance-always
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.governance-always
+    revisionId: {AS_OF_ALWAYS_REVISION_ID}
+    contentFile: ../knowledge/architecture/governance-always.md
+    metadata:
+      title: Governance always current
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://as-of-demo/governance-always.md
+"""
+
+AS_OF_LATER_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {AS_OF_LATER_MIGRATION_ID}
+createdAt: 2026-08-02T10:05:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.governance-later
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.governance-later
+    revisionId: {AS_OF_LATER_REVISION_ID}
+    contentFile: ../knowledge/architecture/governance-later.md
+    metadata:
+      title: Governance starting later
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2031-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://as-of-demo/governance-later.md
+"""
+
+AS_OF_EXPIRED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {AS_OF_EXPIRED_MIGRATION_ID}
+createdAt: 2026-08-02T10:10:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.governance-expired
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.governance-expired
+    revisionId: {AS_OF_EXPIRED_REVISION_ID}
+    contentFile: ../knowledge/architecture/governance-expired.md
+    metadata:
+      title: Governance already expired
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      validTo: 2021-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://as-of-demo/governance-expired.md
+"""
+
+#: Strictly between `governance-always`/`governance-expired`'s `validFrom` and
+#: `validTo`/`governance-later`'s `validFrom`. RFC 3339, offset required, the
+#: same format `asOf` publishes.
+AS_OF_PINNED_MOMENT = "2020-06-01T00:00:00+09:00"
+
+
+@pytest.fixture
+def as_of_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
+    """A registered project holding the three items described above."""
+    root = tmp_path / "as-of-demo"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    data_dir = tmp_path / "as-of-datadir"
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.chdir(root)
+
+    _run("init")
+    knowledge = root / ".theurian/knowledge/architecture"
+    (knowledge / "governance-always.md").write_text(AS_OF_ALWAYS_BODY)
+    (knowledge / "governance-later.md").write_text(AS_OF_LATER_BODY)
+    (knowledge / "governance-expired.md").write_text(AS_OF_EXPIRED_BODY)
+    (root / f".theurian/migrations/{AS_OF_ALWAYS_MIGRATION_ID}-always.yaml").write_text(
+        AS_OF_ALWAYS_MIGRATION
+    )
+    (root / f".theurian/migrations/{AS_OF_LATER_MIGRATION_ID}-later.yaml").write_text(
+        AS_OF_LATER_MIGRATION
+    )
+    (root / f".theurian/migrations/{AS_OF_EXPIRED_MIGRATION_ID}-expired.yaml").write_text(
+        AS_OF_EXPIRED_MIGRATION
+    )
+    _run("project", "register")
+    _run("migrate", "apply")
+
+    yield ProjectRegistry.default(data_dir)
+
+
+@pytest.fixture
+def as_of_indexed(as_of_registry: ProjectRegistry) -> ProjectRegistry:
+    """`as_of_registry`, plus a built retrieval index -- the ranked answer path."""
+    root = Path(as_of_registry.load()["as-of-demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return as_of_registry
+
+
+@pytest.fixture(params=["as_of_indexed", "as_of_registry"], ids=["ranked", "fallback"])
+def as_of_either_answer_path(request: pytest.FixtureRequest) -> ProjectRegistry:
+    """`as_of_registry`, ranked and unranked.
+
+    The unranked scan is a named blind spot of the whole absence-proof suite in
+    this module -- `test_a_withheld_document_changes_nothing_a_caller_can_see`
+    only ever ranks -- so `asOf` has to be reached by name on both paths rather
+    than trusted to generalise from one of them.
+    """
+    chosen: ProjectRegistry = request.getfixturevalue(request.param)
+    return chosen
+
+
+@pytest.mark.asyncio
+async def test_a_search_pinned_to_a_moment_returns_only_knowledge_valid_then(
+    as_of_either_answer_path: ProjectRegistry,
+) -> None:
+    """FR-R1, #63 phase 2. `asOf` pins the *validity window*, not the query:
+    all three items match `AS_OF_QUERY`, so what changes between the two calls
+    below is which items are inside their declared window at the pinned
+    moment, on both the ranked path (`CanonicalVisibility`) and the unranked
+    fallback (`SqliteCanonicalStore.list_items(current_at=…)`).
+
+    Also the test for the parameter's second published effect: a hit's
+    `freshness.isWithinValidity` must be computed against the pinned moment.
+    `governance-expired` is chosen for that assertion specifically because its
+    real-time answer and its pinned-moment answer disagree -- proving the field
+    moved with `asOf` rather than merely happening to agree with it.
+    """
+    unpinned = await _call(
+        as_of_either_answer_path, "knowledge.search", projectId="as-of-demo", query=AS_OF_QUERY
+    )
+    pinned = await _call(
+        as_of_either_answer_path,
+        "knowledge.search",
+        projectId="as-of-demo",
+        query=AS_OF_QUERY,
+        asOf=AS_OF_PINNED_MOMENT,
+    )
+
+    assert {r["itemId"] for r in unpinned["results"]} == {
+        "architecture.governance-always",
+        "architecture.governance-later",
+        "architecture.governance-expired",
+    }, "without `asOf` nothing is filtered by validity, exactly as before this parameter existed"
+    unpinned_expired = next(
+        r for r in unpinned["results"] if r["itemId"] == "architecture.governance-expired"
+    )
+    assert unpinned_expired["freshness"]["isWithinValidity"] is False, (
+        "expired against real time -- the precondition that makes the pinned "
+        "assertion below mean something"
+    )
+
+    assert {r["itemId"] for r in pinned["results"]} == {
+        "architecture.governance-always",
+        "architecture.governance-expired",
+    }, "the item not yet valid at the pinned moment must be excluded"
+    pinned_expired = next(
+        r for r in pinned["results"] if r["itemId"] == "architecture.governance-expired"
+    )
+    assert pinned_expired["freshness"]["isWithinValidity"] is True, (
+        "computed against the pinned moment, not against real time"
+    )
+
+
+@pytest.mark.asyncio
+async def test_everything_as_of_excludes_is_returned_by_the_same_query_without_it(
+    as_of_either_answer_path: ProjectRegistry,
+) -> None:
+    """The recorded closure argument for `asOf`, as a test rather than as prose.
+
+    `asOf` is not a withholding: everything it excludes is returned to the
+    same caller by the same query with the parameter omitted, so no observable
+    here can carry a bit the caller could not obtain directly, and the
+    disclosure-family checklist SEC-13/T-15 opens for a document a caller may
+    not read does not apply. Filtering by default was rejected for the
+    corresponding reason a *permanent* filter would reopen it: it would make
+    `freshness.isWithinValidity` constant-`true` on a fresh index and give the
+    ranked path a stale-index statistics residual with no way to turn off, the
+    shape T-17a already carries for a different cause
+    (`theurian.application.retrieval_service`).
+
+    Checked two ways, not one: the excluded item is still present, whole, in
+    the identical `knowledge.search` call with `asOf` omitted, *and*
+    independently confirmed through `knowledge.get` -- a different tool,
+    reached by id rather than by query -- so this is not merely "a shorter
+    excerpt survives", it is "the item was never inaccessible".
+    """
+    unpinned = await _call(
+        as_of_either_answer_path, "knowledge.search", projectId="as-of-demo", query=AS_OF_QUERY
+    )
+    pinned = await _call(
+        as_of_either_answer_path,
+        "knowledge.search",
+        projectId="as-of-demo",
+        query=AS_OF_QUERY,
+        asOf=AS_OF_PINNED_MOMENT,
+    )
+
+    unpinned_by_id = {r["itemId"]: r for r in unpinned["results"]}
+    pinned_ids = {r["itemId"] for r in pinned["results"]}
+    excluded = set(unpinned_by_id) - pinned_ids
+
+    assert excluded == {"architecture.governance-later"}, "the pin must exclude something real"
+    assert pinned_ids <= set(unpinned_by_id), (
+        "`asOf` only narrows the unpinned answer; it must not surface an item "
+        "the identical call without it would not"
+    )
+
+    excluded_hit = unpinned_by_id["architecture.governance-later"]
+    assert excluded_hit["title"] == "Governance starting later"
+    assert excluded_hit["sourceAnchors"], "a whole, ordinary result, not a redacted one"
+
+    fetched = await _call(
+        as_of_either_answer_path,
+        "knowledge.get",
+        projectId="as-of-demo",
+        itemId="architecture.governance-later",
+    )
+    assert fetched["body"] == AS_OF_LATER_BODY, (
+        "reachable through a second, independent tool too -- `asOf` narrows one "
+        "query, it does not narrow what this caller may read"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("not-a-timestamp", "RFC 3339"),
+        ("2026-08-01T00:00:00", "UTC offset"),
+        ("2026-13-40T00:00:00Z", "RFC 3339"),
+        ("2026-08-01T00:00:00Z" + "0" * 200, "characters long"),
+    ],
+    ids=["garbage", "no-offset", "invalid-calendar-date", "absurdly-long"],
+)
+async def test_an_unparseable_as_of_is_a_clean_tool_error(
+    as_of_registry: ProjectRegistry, raw: str, expected: str
+) -> None:
+    """Validated the way the surface validates everything else: a boundary
+    check in `_parse_as_of` that raises `ToolError` with a remedy, before the
+    value can reach `ValidityPeriod.contains` -- which refuses a naive moment
+    with a bare `DomainError` carrying no remedy at all, raised from inside a
+    canonical read session rather than from the tool surface. Mirrors
+    `test_an_empty_query_is_refused` and
+    `test_a_malformed_item_id_names_the_tool_that_finds_a_real_one`: a clean
+    `ToolError`, never a traceback, and never an unbounded echo of the input.
+    """
+    message = await _call_failing(
+        as_of_registry, "knowledge.search", projectId="as-of-demo", query=AS_OF_QUERY, asOf=raw
+    )
+
+    assert "asOf" in message
+    assert expected in message
+    assert len(message) < 500, f"the message must not grow with its input ({len(message)} chars)"
+
+
+@pytest.mark.asyncio
+async def test_a_gc_unlink_in_the_acquisition_window_degrades_rather_than_raising(
+    indexed: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-1's fix, which no other test holds (ADR-0024 point 7).
+
+    There are two windows a `theurian index gc` unlink can land in, and they
+    need different code and different tests:
+
+    - *between two reads inside the session* -- the held descriptor survives it,
+      pinned by `test_a_gc_unlink_between_a_requests_reads_does_not_tear_it`;
+    - *before the session is acquired* -- between `_searchable_file`'s
+      `is_searchable()` returning True and `hybrid_answer` opening the session.
+      Acquiring the session opens the file, which is now gone, so acquisition
+      itself raises `IndexUnreadableError`.
+
+    The fix is that the `with index.session()` sits **inside** the `try`, so an
+    acquisition failure is caught by `except IndexBuildError` and the request
+    degrades to the substring scan. Move the `with` outside the `try` and that
+    error escapes to the agent as a tool error -- and no test noticed, which is
+    what this closes.
+
+    The unlink is placed in the window deterministically: `is_searchable()` is
+    the last thing that touches the file before acquisition, so this wraps it to
+    unlink the build after it returns True.
+    """
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(indexed.load()["demo"]["rootPath"])
+    build = next((root / ".theurian/state").glob("theurian-index-*.sqlite"))
+
+    real_is_searchable = SqliteIndexStore.is_searchable
+    fired = False
+
+    def unlink_in_the_acquisition_window(self: SqliteIndexStore) -> bool:
+        nonlocal fired
+        usable = real_is_searchable(self)
+        if usable and not fired:
+            build.unlink()
+            fired = True
+        return usable
+
+    monkeypatch.setattr(SqliteIndexStore, "is_searchable", unlink_in_the_acquisition_window)
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="token")
+
+    assert fired, (
+        "the hook never fired, so the unlink did not land in the acquisition window -- "
+        "`_searchable_file` no longer gates on `is_searchable()` before the session opens"
+    )
+    retrieval = result["retrieval"]
+    assert retrieval["indexed"] is False, (
+        "a `gc` unlink between the searchability check and session acquisition must degrade "
+        "to the substring scan, not raise: with `with index.session()` outside the `try`, the "
+        "acquisition `IndexUnreadableError` reaches the agent as a tool error"
+    )
+    assert retrieval["mode"] == "substring"
+    assert retrieval["fallbackReason"] == "index-unreadable"
+    assert result["count"] >= 1, "the substring scan still answers from the canonical store"
+    assert not build.exists(), "a read recreated the reaped build; `mode=ro` must prevent it"

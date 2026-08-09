@@ -68,12 +68,22 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 builds the WHERE clause every retriever uses, and it filters on Project and on
 status — a check FR-R1 does not name. Tenant and ACL have no column; the
 `chunks` table carries `sensitivity`, `trust_level` and `namespace` and no query
-reads them; the only validity-window filter,
-`SqliteCanonicalStore.list_items(current_at=…)`, has no caller in `src/`.
-Routing does not change today, because the four unenforced axes hold no content
-yet, which is why this is a deferral and not a defect. Milestone 6's scope
-filtering is where it comes due:
-[#63](https://github.com/theurian/theurian/issues/63).
+reads them. Routing does not change today for those, because the axes hold no
+content yet, which is why this remains a deferral and not a defect.
+
+The validity-window axis is no longer wholly unenforced, and it is
+deliberately not unconditional either
+([#63](https://github.com/theurian/theurian/issues/63) phase 2).
+`knowledge.search` takes an optional `asOf` timestamp; passing one gives
+`SqliteCanonicalStore.list_items(current_at=…)` its first caller on the
+unranked fallback path, and applies the equivalent per-candidate check inside
+`CanonicalVisibility` on the ranked one. Omitting `asOf` filters on nothing
+more than before this parameter existed — a default validity filter was
+rejected, because it would make `freshness.isWithinValidity` constant-`true`
+on every published result and give the ranked path a stale-index statistics
+residual with no way to turn off, rather than only while an index build is
+behind. Tenant, ACL and sensitivity remain wholly unenforced; that part of
+Milestone 6's scope filtering is still open.
 
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One

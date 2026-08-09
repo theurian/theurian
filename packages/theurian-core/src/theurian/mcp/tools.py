@@ -73,6 +73,52 @@ class ToolError(TheurianError):
     """A tool could not answer. Carries a remedy, never a stack trace."""
 
 
+#: Cap on `asOf` before it can be echoed into an error message. An RFC 3339
+#: timestamp used in practice is a few dozen characters; the bound exists so a
+#: caller sending something else is told its length rather than handed the
+#: amplifier `MAX_QUERY_CHARS` and `ItemId` already close for `query` and
+#: `itemId` -- see `test_an_over_long_item_id_is_not_echoed_back`.
+MAX_AS_OF_CHARS: Final = 100
+
+
+def _parse_as_of(raw: str) -> datetime:
+    """Parse `asOf` into a timezone-aware moment, or refuse cleanly (#63).
+
+    A boundary check, not a domain one. `ValidityPeriod.contains` already
+    refuses a naive moment, but as a bare `DomainError` with no remedy, raised
+    from inside a canonical read session rather than at the tool surface.
+    Parsing here means a malformed `asOf` never reaches that code at all: the
+    caller gets a message naming the fix instead of an internal domain rule
+    surfacing through the SDK's generic `Error executing tool …: {e}` --
+    exactly the drop `_with_remedy` exists to stop for `ProjectError`.
+    """
+    if len(raw) > MAX_AS_OF_CHARS:
+        msg = (
+            f"`asOf` is {len(raw)} characters long, which is longer than any real "
+            f"timestamp. Pass an RFC 3339 timestamp with an explicit UTC offset, "
+            f"e.g. '2026-08-01T00:00:00Z', or omit `asOf` to search without a "
+            f"validity cutoff."
+        )
+        raise ToolError(msg)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        msg = (
+            f"`asOf` is not an RFC 3339 timestamp ({exc}). Pass one with an "
+            f"explicit UTC offset, e.g. '2026-08-01T00:00:00Z', or omit `asOf` to "
+            f"search without a validity cutoff."
+        )
+        raise ToolError(msg) from exc
+    if parsed.tzinfo is None:
+        msg = (
+            "`asOf` has no UTC offset, so it is ambiguous across a DST boundary. "
+            "Pass an offset-aware timestamp, e.g. '2026-08-01T00:00:00Z' rather "
+            "than '2026-08-01T00:00:00'."
+        )
+        raise ToolError(msg)
+    return parsed
+
+
 def _relation_is_visible(
     store: CanonicalReadSession,
     context: RequestContext,
@@ -314,6 +360,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         includeUnapproved: bool = False,  # noqa: N803
         maxTokens: int = DEFAULT_BUDGET_TOKENS,  # noqa: N803
         useDense: bool = False,  # noqa: N803
+        asOf: str | None = None,  # noqa: N803
     ) -> dict[str, Any]:
         """Search knowledge.
 
@@ -329,6 +376,29 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         ``includeUnapproved`` defaults to false. An unreviewed draft returned by
         default would be indistinguishable from a team decision, which is the
         failure this whole system exists to prevent.
+
+        ``asOf`` pins the search to a moment (RFC 3339, an explicit UTC offset
+        required) and is a *refinement*, never a default filter (FR-R1, #63
+        phase 2). Omit it and nothing changes from before this parameter
+        existed: every approved (or, with ``includeUnapproved``, every
+        surfaceable) item is a candidate whatever its declared validity window,
+        exactly as `knowledge.status` and every prior release of this tool
+        already behaved. Pass it and an item outside its ``validFrom``/``validTo``
+        window *at that moment* is excluded, and every returned hit's
+        ``freshness.isWithinValidity`` is computed against that same moment
+        rather than against real time.
+
+        A permanent default filter was considered and rejected: it would make
+        ``isWithinValidity`` constant-``true`` on a healthy index -- a published
+        field that can never be false is not a field -- and it would give the
+        ranked path a stale-index statistics residual with no way to turn it
+        off, the shape T-17a already carries for a different cause (see
+        `theurian.application.retrieval_service`). ``asOf`` is not a
+        withholding either way: everything one call excludes is returned to the
+        same caller by the identical query with ``asOf`` omitted, so no
+        observable here can carry a bit the caller could not already obtain
+        directly, and the disclosure-family checklist SEC-13 opens for a
+        *withheld* document does not apply to it.
         """
         paths, database, active = _resolve(projectId)
 
@@ -359,6 +429,9 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # "as much as you have", and answering that with an exception naming an
         # internal parameter helps nobody.
         capped_budget = max(1, min(maxTokens, MAX_BUDGET_TOKENS))
+        # Parsed at the boundary rather than downstream, so a malformed `asOf`
+        # never reaches `ValidityPeriod.contains` -- see `_parse_as_of`.
+        as_of = None if asOf is None else _parse_as_of(asOf)
 
         answer = hybrid_answer(
             paths,
@@ -370,6 +443,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             include_unapproved=includeUnapproved,
             budget_tokens=capped_budget,
             use_dense=useDense,
+            as_of=as_of,
         )
         if not isinstance(answer, Fallback):
             return answer
@@ -383,6 +457,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             include_unapproved=includeUnapproved,
             budget_tokens=capped_budget,
             fallback=answer,
+            as_of=as_of,
         )
 
     @server.tool(
@@ -401,6 +476,19 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         approved item, takes the `targetItemId` off its `rejects` relation, and
         fetches the rejected body in one more call. No flag, no guessing — and a
         rejected revision is where the secret that caused the rejection lives.
+
+        **Deliberately no `asOf` (#63 phase 2).** `knowledge.search` gained one
+        because a search names no particular item -- excluding a candidate from
+        one ranking changes nothing about whether that item exists or can be
+        fetched by id. This tool is the opposite shape: the caller already names
+        one item, and "not present" for an item the caller named directly would
+        be a worse answer than the one already published --
+        `freshness.isWithinValidity: false` on the current revision, computed
+        against real time exactly as it is today. Refusing to resolve an id the
+        caller already holds, on the grounds that it is not current *at some
+        other moment*, manufactures a SEC-13-shaped ambiguity between "withheld"
+        and "outside its window" that this tool does not otherwise have any
+        reason to create.
         """
         _, database, _ = _resolve(projectId)
         context = RequestContext(project_id=ProjectId(projectId))
