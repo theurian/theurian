@@ -7,6 +7,15 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    # Property-based generation for the non-interference proof
+    # (`tests/integration/test_absence_proof.py`, issue #29). Exact-pinned like
+    # everything else (ADR-0014): a generator whose distribution shifts under a
+    # floating range changes which shapes a 2-safety property was actually
+    # checked against, and nothing in the suite would say so.
+    #
+    # A development dependency only. It is absent from the published wheel's
+    # `dependencies` and from every extra, so nothing a user installs gains it.
+    "hypothesis==6.165.2",
     "mypy==2.3.0",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
