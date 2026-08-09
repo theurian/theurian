@@ -91,6 +91,38 @@ class MigrationDependencyMissingError(MigrationError):
         super().__init__(f"Migration {migration_id} depends on unknown migration {missing}")
 
 
+class UnenforceableScopeError(MigrationError):
+    """A revision names a tenant or ACL group nothing yet enforces (issue #63).
+
+    ``tenantId`` and ``aclGroup`` are kept by the migration schema because they
+    describe the hosted deployment's shape (ADR-0003), but no
+    ``AuthorizationProvider`` (``domain/ports/authorization.py``) is implemented
+    anywhere in this tree. Accepting a value other than the enforced default
+    would let the field read as a security boundary while nothing checks it --
+    so it is refused at write time instead of silently accepted.
+    """
+
+    def __init__(
+        self,
+        migration_id: MigrationId,
+        revision_id: RevisionId,
+        field_name: str,
+        value: str,
+        default: str,
+    ) -> None:
+        self.migration_id = migration_id
+        self.revision_id = revision_id
+        self.field_name = field_name
+        self.value = value
+        self.default = default
+        super().__init__(
+            f"{migration_id}: revision {revision_id} names {field_name} {value!r}, but "
+            f"Theurian has no AuthorizationProvider implemented to enforce it (issue #63). "
+            f"Use {default!r} for now. A later milestone lifts this refusal once a hosted "
+            f"deployment has a real principal to enforce it against."
+        )
+
+
 class SecurityError(TheurianError):
     """An operation was refused for a security reason."""
 

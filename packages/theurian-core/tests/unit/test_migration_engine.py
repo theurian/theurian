@@ -14,6 +14,7 @@ from fakes import FrozenClock, InMemoryWriter
 
 from theurian.application.migration_engine import (
     MigrationEngine,
+    refuse_unenforceable_scope,
     verify_no_applied_migration_changed,
 )
 from theurian.domain.enums import (
@@ -29,6 +30,7 @@ from theurian.domain.errors import (
     MigrationDependencyMissingError,
     MigrationError,
     RevisionConflictError,
+    UnenforceableScopeError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import SourceAnchor
@@ -95,7 +97,11 @@ MIG_2 = "01K1BBBBBB01234567890ABCDE"
 
 
 def _create_and_upsert(
-    migration_id: str, revision_id: RevisionId, body: str, **kw: object
+    migration_id: str,
+    revision_id: RevisionId,
+    body: str,
+    metadata: RevisionMetadataSpec | None = None,
+    **kw: object,
 ) -> Migration:
     return _migration(
         migration_id,
@@ -109,7 +115,7 @@ def _create_and_upsert(
             item_id=ITEM,
             revision_id=revision_id,
             content_file_path="../knowledge/a.md",
-            metadata=_metadata(),
+            metadata=metadata or _metadata(),
             content_sha256=ContentHash.of_text(body),
             **kw,  # type: ignore[arg-type]
         ),
@@ -509,3 +515,80 @@ def test_plan_is_empty_once_everything_is_applied() -> None:
     plan = _engine(BODY_V1).plan(writer, PROJECT, migrations)
     assert plan.is_empty
     assert len(plan.already_applied) == 1
+
+
+# -- Issue #63: scope fields nothing can yet enforce are refused -----------
+#
+# `RevisionMetadataSpec.tenant_id` and `.acl_group` are kept by the schema
+# because they describe the hosted deployment's shape (ADR-0003), but no
+# `AuthorizationProvider` is implemented anywhere in this tree. A revision
+# naming a non-default value would read as a security boundary while nothing
+# checks it, so it is refused at write time instead.
+
+
+def test_a_revision_naming_a_tenant_other_than_local_is_refused() -> None:
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="acme-corp")),)
+    )
+
+    with pytest.raises(UnenforceableScopeError, match="issue #63"):
+        engine.apply(writer, PROJECT, migrations)
+
+    assert writer.revisions == {}, "a refused migration must write nothing"
+
+
+def test_a_revision_naming_an_acl_group_other_than_default_is_refused() -> None:
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(acl_group="engineering")),)
+    )
+
+    with pytest.raises(UnenforceableScopeError, match="issue #63"):
+        engine.apply(writer, PROJECT, migrations)
+
+    assert writer.revisions == {}, "a refused migration must write nothing"
+
+
+def test_the_default_tenant_and_acl_group_still_apply_cleanly() -> None:
+    """Negative control: the refusal targets non-default values, not scope
+    as a whole. Without this, the two tests above could pass because
+    everything got refused."""
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(
+                MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="local", acl_group="default")
+            ),
+        )
+    )
+
+    report = engine.apply(writer, PROJECT, migrations)
+
+    assert report.changed
+    item = writer.get_item(PROJECT, ITEM)
+    assert item is not None
+    assert item.current_revision_id == REV_1
+
+
+def test_validate_and_apply_agree_on_an_unenforceable_tenant() -> None:
+    """Issue #36's class: a statically decidable property must not be checked
+    only at apply time. `refuse_unenforceable_scope` is what `migrate
+    validate` calls directly, on the loaded `MigrationSet`, with no store and
+    no engine. `MigrationEngine.apply` calls the very same function
+    internally. A document must be refused by both, with the same message, or
+    neither."""
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="acme-corp")),)
+    )
+
+    with pytest.raises(UnenforceableScopeError) as validate_exc:
+        refuse_unenforceable_scope(migrations)
+
+    with pytest.raises(UnenforceableScopeError) as apply_exc:
+        _engine(BODY_V1).apply(InMemoryWriter(), PROJECT, migrations)
+
+    assert str(validate_exc.value) == str(apply_exc.value)

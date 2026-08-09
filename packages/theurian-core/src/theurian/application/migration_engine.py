@@ -18,13 +18,14 @@ import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Final, Protocol
 
 from theurian.domain.enums import KnowledgeStatus, RelationType
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
     RevisionConflictError,
+    UnenforceableScopeError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, SpecId
 from theurian.domain.knowledge import (
@@ -142,6 +143,60 @@ def verify_no_applied_migration_changed(
             )
 
 
+#: The only tenant and ACL group a document may name until a real
+#: `AuthorizationProvider` exists (issue #63). Read off `TenantId`/`AclGroup`'s
+#: own defaults rather than duplicated as literals, so the enforced value and
+#: the domain type's documented default cannot drift apart.
+_ENFORCED_TENANT_ID: Final = TenantId().value
+_ENFORCED_ACL_GROUP: Final = AclGroup().value
+
+
+def refuse_unenforceable_scope(migration_set: MigrationSet) -> None:
+    """Refuse a revision naming a tenant or ACL group nothing can enforce yet.
+
+    No `AuthorizationProvider` (`domain/ports/authorization.py`) is implemented
+    anywhere in this tree, so a revision naming a tenant other than `local` or
+    an ACL group other than `default` would read as a security boundary while
+    nothing checks it. Refused at write time (issue #63) rather than accepted
+    silently.
+
+    Called on the *whole* `migration_set`, not merely what is still pending --
+    :meth:`MigrationEngine.apply` calls this before planning, and `migrate
+    validate` calls it directly on the same `LoadedMigrations.migration_set`
+    with no store and no engine involved. Checking the same input the same way
+    from both is what keeps them in agreement (issue #36: a statically
+    decidable property must not be visible to one command and not the other).
+
+    Raises:
+        UnenforceableScopeError: On the first revision naming an unenforced
+            tenant or ACL group, in migration and operation order.
+    """
+    for migration in migration_set:
+        for operation in migration.operations:
+            if isinstance(operation, UpsertRevision):
+                _refuse_operation_scope(migration.migration_id, operation)
+
+
+def _refuse_operation_scope(migration_id: MigrationId, operation: UpsertRevision) -> None:
+    metadata = operation.metadata
+    if metadata.tenant_id != _ENFORCED_TENANT_ID:
+        raise UnenforceableScopeError(
+            migration_id,
+            operation.revision_id,
+            "tenantId",
+            metadata.tenant_id,
+            _ENFORCED_TENANT_ID,
+        )
+    if metadata.acl_group != _ENFORCED_ACL_GROUP:
+        raise UnenforceableScopeError(
+            migration_id,
+            operation.revision_id,
+            "aclGroup",
+            metadata.acl_group,
+            _ENFORCED_ACL_GROUP,
+        )
+
+
 class MigrationEngine:
     """Applies migrations to a canonical store.
 
@@ -197,7 +252,14 @@ class MigrationEngine:
         the same set twice produces an empty report rather than an error
         (FR-K8): idempotence is a property of the engine, not something each
         migration author has to implement.
+
+        Raises:
+            UnenforceableScopeError: If any revision, applied or already
+                applied, names a tenant or ACL group nothing can yet enforce
+                (issue #63). Checked before planning, over the whole set, so
+                it never depends on what has already been written.
         """
+        refuse_unenforceable_scope(migration_set)
         plan = self.plan(writer, project_id, migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
@@ -488,5 +550,6 @@ __all__ = [
     "MigrationEngine",
     "MigrationPlan",
     "MigrationWriter",
+    "refuse_unenforceable_scope",
     "verify_no_applied_migration_changed",
 ]
