@@ -562,6 +562,15 @@ BELOW_THE_DEPTH: Final = (2, 5, 12)
 #: fifty slots -- which is what makes a displaced row observable at all.
 ACROSS_THE_DEPTH: Final = (49, 51, 62)
 
+#: How deep :func:`_offered_by_the_index` asks, so its page is complete.
+#:
+#: Far past anything this file can build -- 62 visible documents plus 3 withheld,
+#: each short enough for a single chunk -- because it answers "does any retriever
+#: hand this row up", which a cut list cannot. Deliberately unrelated to
+#: ``MAX_RESULTS``: that is the caller's bound, and borrowing it here is what made
+#: the completeness assertion fire on every ``across-the-depth`` cell.
+_EXHAUSTIVE_DEPTH: Final = 500
+
 
 def _cases(sizes: tuple[int, ...] = BELOW_THE_DEPTH + ACROSS_THE_DEPTH) -> st.SearchStrategy[_Case]:
     """One generated pair, in one of the three shapes the module docstring names.
@@ -972,23 +981,46 @@ def _offered_by_the_index(root: Path, case: _Case, *, include_unapproved: bool) 
     Both scored retrievers are asked. The trigram one is not decoration here --
     it is the only one that can match a payload with no word boundary in it, and
     it is the one Milestone 5's extraction attack ran through.
+
+    **Both pages must be exhausted, and that is a real assertion rather than
+    bookkeeping.** Every caller of this function uses its result to argue an
+    *absence* -- a draft's chunks are refused, a withheld id is not offered -- and
+    an absence read off a truncated page says nothing: the row could be one
+    position below the cut. Before :class:`~theurian.domain.ranking.RetrieverPage`
+    that could only be inferred from a row count, which is exactly the inference
+    that type exists to remove.
+
+    **Asked at :data:`_EXHAUSTIVE_DEPTH` rather than at the depth a search uses**,
+    and the difference matters: the question here is *does any retriever hand
+    this row up at all*, not *what does the caller see*. Asking at
+    ``MAX_RESULTS`` answered a different question and got it wrong -- the
+    ``across-the-depth`` corpora hold more matching chunks than fifty, so the
+    page came back truncated and the assertion below fired on four cells the
+    moment it was written. That is the assertion working: the old code inferred
+    completeness from a row count and would have gone on reading "not offered"
+    off a cut list.
     """
     index = SqliteIndexStore(ProjectPaths.of(root).index_for(INDEX_BUILD_ID))
-    rows = [
-        *index.search_lexical(
+    pages = (
+        index.search_lexical(
             case.query,
             project_id=PROJECT_ID,
-            limit=MAX_RESULTS,
+            limit=_EXHAUSTIVE_DEPTH,
             include_unapproved=include_unapproved,
         ),
-        *index.search_substring(
+        index.search_substring(
             case.query,
             project_id=PROJECT_ID,
-            limit=MAX_RESULTS,
+            limit=_EXHAUSTIVE_DEPTH,
             include_unapproved=include_unapproved,
         ),
-    ]
-    return {row.item_id for row in rows}
+    )
+    assert all(page.exhausted for page in pages), (
+        f"a truncated page cannot support an absence: every caller of this reads "
+        f"'not offered' off the result, and a row below the cut is also not "
+        f"offered. This corpus has outgrown _EXHAUSTIVE_DEPTH={_EXHAUSTIVE_DEPTH}"
+    )
+    return {row.item_id for page in pages for row in page.rows}
 
 
 def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
@@ -1490,8 +1522,11 @@ def test_a_rejected_item_is_never_written_into_the_index(tmp_path: Path) -> None
     registry = _build_project(tmp_path / "one", (visible, rejected), created_at)
 
     index = SqliteIndexStore(ProjectPaths.of(tmp_path / "one").index_for(INDEX_BUILD_ID))
-    rows = index.search_lexical("ledger", project_id=PROJECT_ID, limit=50, include_unapproved=True)
-    assert {row.item_id for row in rows} == {visible.item_id}, (
+    page = index.search_lexical(
+        "ledger", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+    )
+    assert page.exhausted, "or the rejected item is merely below the cut"
+    assert {row.item_id for row in page.rows} == {visible.item_id}, (
         "a rejected item must not be in the index under any flag"
     )
     assert (
@@ -1712,17 +1747,21 @@ def test_the_t17a_corpus_still_has_something_to_withhold(tmp_path: Path) -> None
     )
     answer = _call(registry, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=10)
 
-    assert withheld_id in {row.item_id for row in with_the_flag}, (
+    assert as_the_search_asks.exhausted, (
+        "the refusal below has to be the WHERE and not the cut, and since "
+        "`RetrieverPage` this is answerable rather than inferable"
+    )
+    assert withheld_id in {row.item_id for row in with_the_flag.rows}, (
         "the draft's chunks must be in the index file, or there is no withheld row"
     )
-    assert withheld_id not in {row.item_id for row in as_the_search_asks}, (
+    assert withheld_id not in {row.item_id for row in as_the_search_asks.rows}, (
         "and the retriever must refuse them on the search's own flags, so the "
         "reordering is a collection statistic and not a returned row"
     )
     assert withheld_id not in {result["itemId"] for result in answer["results"]}, (
         "nor may the answer carry it"
     )
-    assert len(as_the_search_asks) > 1, (
+    assert len(as_the_search_asks.rows) > 1, (
         "at least two visible rows must match, or there is no order to move"
     )
 
@@ -1837,6 +1876,6 @@ def test_the_pair_builder_writes_a_canonical_store_the_gate_actually_reads(
     assert by_id[retired.item_id].current_revision_id is not None, (
         "an item with no current revision is withheld for the wrong reason"
     )
-    assert retired.item_id in {row.item_id for row in offered}, (
+    assert retired.item_id in {row.item_id for row in offered.rows}, (
         "and the index must still offer it on the caller's own flags, or nothing reaches the gate"
     )
