@@ -98,8 +98,11 @@ jobs:
     # #104: observed p95 ~4.5 min over 30 runs, which alone would suggest
     # ~18 min (4x). Set higher instead: the three steps below already carry
     # a combined step-level budget of 25 min (10 + 10 + 5), added for the
-    # network-sandbox invariant this job proves. A job-level timeout tighter
-    # than the steps it wraps would fire before those steps ever could.
+    # network-sandbox invariant this job proves, + checkout/setup overhead
+    # (measured max 0.12 min). A job-level timeout tighter than the steps it
+    # wraps would fire before those steps ever could -- and a future step
+    # added to this job cannot be sized as if 25 + its own minutes were the
+    # whole budget; the overhead is real and already spoken for.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7

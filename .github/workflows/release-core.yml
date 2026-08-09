@@ -571,9 +571,9 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # `timeout-minutes` bounds a job's own running time, starting once it
-    # begins executing on a runner. GitHub caps how long a job may sit
-    # *waiting* on an environment's required reviewers separately (30 days
-    # by default), so this does not shorten the approval window below.
+    # begins executing on a runner -- it does not shorten the approval wait
+    # below. (A run pending deployment approval is cancelled by GitHub after
+    # 30 days; that limit is the platform's, not this workflow's.)
     timeout-minutes: 10
     # This environment carries `core-maintainers` as a required reviewer, so the
     # run stops here and waits for a human. It stops *after* the draft exists,
