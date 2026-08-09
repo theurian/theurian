@@ -25,6 +25,15 @@ A batch, across four isolated trees, writing results as they land::
 where ``mutations.json`` is a list of ``{"label", "file", "old", "new"}``
 objects and ``file`` is repository-relative.
 
+A mutation may carry several edits that land together, as ``{"label", "edits":
+[{"file", "old", "new"}, ...]}``. Use it when the hypothesis needs more than one
+change to be *stated at all* -- "does this guard still catch the defect once the
+walker is weakened" is only asked by weakening the walker and reintroducing the
+defect in the same tree, and split across two labels each is killed by the
+other's absence and the question goes unanswered. Every edit is anchored,
+digested and restored exactly like a single one, and a composite that fails
+halfway unwinds what it landed rather than leaving a tree the next job borrows.
+
 A prepared tree, which applies the mutation and then runs *nothing*, so you can::
 
     tree=$(uv run python tools/mutate.py --prepare-tree \\
@@ -37,9 +46,11 @@ A prepared tree, which applies the mutation and then runs *nothing*, so you can:
 line to stderr, so ``$(...)`` captures the path and nothing else.
 
 Exit status is ``0`` when every mutation was killed, ``1`` when at least one
-survived, and ``2`` when the run itself cannot be trusted -- an anchor that did
-not match, a restore that did not restore, a control run that was not green, or
-a mutation that reached the real checkout.
+survived or the suite hung under it (a hung suite cannot go RED for that
+mutation, so it is reported as ``HUNG`` rather than folded into either
+verdict), and ``2`` when the run itself cannot be trusted -- an anchor that did
+not match, a restore that did not restore, an unreadable summary line, a
+control run that was not green, or a mutation that reached the real checkout.
 
 Which mode do you want
 ----------------------
@@ -187,7 +198,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import hashlib
 import json
 import os
 import queue
@@ -200,6 +210,18 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Final
+
+from mutate_checkout import _porcelain_entries, _report_checkout
+from mutate_edits import (
+    Applied,
+    HarnessError,
+    Mutation,
+    _apply,
+    _changed_targets,
+    _digest_targets,
+    _restore_all,
+)
+from mutate_spec import _mutations_from
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 
@@ -245,38 +267,30 @@ _PYTEST_ARGS: Final = (
 _CONTROL_LABEL: Final = "__control__"
 _DEFAULT_TIMEOUT_SECONDS: Final = 1800
 
-# Stands in for a digest when a mutation target does not exist in the real
-# checkout, so "created during the run" reads as a change rather than as equal.
-_ABSENT: Final = "<absent>"
-
-# A note listing every unrelated edit in a busy checkout would bury its own
-# point. The count is always printed, so a truncated list is still honest.
-_MAX_LISTED: Final = 20
-
 # Dropped into a prepared tree. Dot-prefixed to stay clear of anything in the
 # suite that walks the repository root.
 _RUNNER_NAME: Final = ".mutate-run"
 
-# `git status --porcelain` v1: two status letters, a space, then the path.
-_PORCELAIN_PREFIX: Final = 3
 
+class SuiteHungError(HarnessError):
+    """The suite did not finish. A *result*, not a broken run.
 
-class HarnessError(RuntimeError):
-    """The run cannot be trusted -- as distinct from a mutation surviving."""
+    Distinguished from every other `HarnessError` because the two need opposite
+    readings. An anchor that did not match means the harness learned nothing; a
+    suite that never terminated under a mutation means the suite cannot go RED
+    for that mutation, which is the same class of finding as SURVIVED and is
+    strictly worse in CI -- a hung job reports a timeout with no test name on it.
 
+    Milestone 6 met this on the first mutation it tried against
+    `_visible_ranking`'s progress guard: both the guard's removal and an
+    off-by-one in it hang, and the batch reported "ERROR (the run proves
+    nothing)" with the digests dropped, so nothing in the output said the
+    mutation had even applied.
+    """
 
-@dataclass(frozen=True)
-class Mutation:
-    """One exact-string replacement in one repository-relative source file."""
-
-    label: str
-    path: str | None
-    old: str
-    new: str
-
-    @property
-    def is_control(self) -> bool:
-        return self.path is None
+    def __init__(self, seconds: int, tree: Path) -> None:
+        super().__init__(f"the suite did not finish within {seconds}s in {tree}")
+        self.seconds = seconds
 
 
 @dataclass(frozen=True)
@@ -300,45 +314,6 @@ class Options:
     keep_trees: bool
     json_path: Path | None
     work_dir: Path | None
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _repository_relative(raw: str, label: str) -> str:
-    """Normalise an anchor path, or refuse one that could escape the copy.
-
-    ``Path(tree) / "/etc/passwd"`` is ``/etc/passwd`` and ``tree / "../x"``
-    climbs out of it, so either form turns a mutation into a write against the
-    machine. Refusing both here is what lets the integrity check watch only the
-    mutation set: a path that cannot leave the copy cannot touch a file the
-    check is not looking at.
-    """
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        try:
-            candidate = candidate.resolve().relative_to(REPO_ROOT)
-        except ValueError:
-            raise HarnessError(f"{label}: {raw} is outside {REPO_ROOT}") from None
-    if ".." in candidate.parts:
-        raise HarnessError(f"{label}: {raw} climbs out of the repository")
-    if not candidate.parts:
-        raise HarnessError(f"{label}: an empty path cannot be mutated")
-    return str(candidate)
-
-
-def _clear_pycache(tree: Path) -> None:
-    """Remove every stale bytecode cache outside the virtualenv.
-
-    Paired with ``PYTHONDONTWRITEBYTECODE=1``. See the module docstring: a
-    same-length constant mutation written inside one second is otherwise served
-    from a ``.pyc`` and never actually tested.
-    """
-    for cache in tree.rglob("__pycache__"):
-        if ".venv" in cache.parts:
-            continue
-        shutil.rmtree(cache, ignore_errors=True)
 
 
 def _uv() -> str:
@@ -404,62 +379,7 @@ def _run_suite(tree: Path, options: Options, cache_dir: Path) -> subprocess.Comp
             timeout=options.timeout,
         )
     except subprocess.TimeoutExpired as expired:
-        raise HarnessError(f"the suite exceeded {options.timeout}s in {tree}") from expired
-
-
-@dataclass(frozen=True)
-class Applied:
-    """A landed mutation, and everything needed to prove it was undone."""
-
-    target: Path
-    original: str
-    before: str
-    mutated: str
-
-
-def _apply(tree: Path, mutation: Mutation) -> Applied:
-    """Write the mutation, or raise. A mutation that does not land is an error.
-
-    Anchors must match exactly once. A missing anchor produces a run that tests
-    nothing while reporting SURVIVED, and an anchor matching twice produces a
-    change nobody aimed. Both have happened in this project.
-    """
-    if mutation.path is None:
-        raise HarnessError(f"{mutation.label}: a control carries no file to mutate")
-    target = tree / mutation.path
-    if not target.is_file():
-        raise HarnessError(f"{mutation.label}: no such file {mutation.path}")
-    original = target.read_text(encoding="utf-8")
-    occurrences = original.count(mutation.old)
-    if occurrences != 1:
-        raise HarnessError(
-            f"{mutation.label}: anchor matched {occurrences} times in {mutation.path} "
-            f"(exactly one required): {mutation.old[:80]!r}"
-        )
-    before = _sha256(target)
-    target.write_text(original.replace(mutation.old, mutation.new, 1), encoding="utf-8")
-    _clear_pycache(tree)
-    mutated = _sha256(target)
-    if mutated == before:
-        raise HarnessError(f"{mutation.label}: the file is unchanged after writing the mutation")
-    if mutation.new not in target.read_text(encoding="utf-8"):
-        raise HarnessError(f"{mutation.label}: the replacement is absent from the file on disk")
-    return Applied(target=target, original=original, before=before, mutated=mutated)
-
-
-def _restore(applied: Applied, tree: Path) -> str:
-    """Put the file back and prove it, byte for byte.
-
-    The caveat in the module docstring applies: this compares against the hash
-    this process took, so it cannot see a concurrent writer. The isolated tree
-    is what removes that hazard.
-    """
-    applied.target.write_text(applied.original, encoding="utf-8")
-    _clear_pycache(tree)
-    after = _sha256(applied.target)
-    if after != applied.before:
-        raise HarnessError(f"restore failed for {applied.target}: {applied.before} != {after}")
-    return after
+        raise SuiteHungError(options.timeout, tree) from expired
 
 
 def _summarise(stdout: str) -> tuple[str, tuple[str, ...]]:
@@ -469,11 +389,44 @@ def _summarise(stdout: str) -> tuple[str, tuple[str, ...]]:
     return summary, failures
 
 
+# pytest's own final line always names what it counted. Anything else on that
+# line -- a progress marker like `......[100%]`, a partial write -- means the
+# run was cut off before it could report, and the exit code alone cannot be
+# trusted to mean what it usually means.
+_SUMMARY_MARKERS: Final = ("passed", "failed", "error")
+
+
+def _recognised_summary(summary: str) -> bool:
+    """Is this pytest's own summary line, or noise from a truncated run?
+
+    Issue #50: mutation ``C7`` came back KILLED under ``--workers 4`` with a
+    summary of ``......[100%]`` and no ``FAILED`` line anywhere in the output --
+    a run truncated under parallelism, not a suite that went red. A rerun alone
+    reported SURVIVED. Trusting the exit code without checking that the summary
+    line is one pytest itself would print reports a caught mutation that
+    nothing actually caught, which is the exact failure this harness exists to
+    prevent. This is not a parser for every summary pytest can print; it only
+    needs to reject the case that reached this project.
+    """
+    lowered = summary.lower()
+    return any(marker in lowered for marker in _SUMMARY_MARKERS)
+
+
 def _run_one(tree: Path, mutation: Mutation, options: Options, cache_dir: Path) -> Outcome:
     started = time.monotonic()
     if mutation.is_control:
         completed = _run_suite(tree, options, cache_dir)
         summary, failures = _summarise(completed.stdout)
+        if not _recognised_summary(summary):
+            return Outcome(
+                label=mutation.label,
+                verdict="ERROR",
+                suite_green=None,
+                seconds=time.monotonic() - started,
+                summary=summary,
+                failures=failures,
+                detail=completed.stdout[-4000:],
+            )
         green = completed.returncode == 0
         return Outcome(
             label=mutation.label,
@@ -485,12 +438,33 @@ def _run_one(tree: Path, mutation: Mutation, options: Options, cache_dir: Path) 
             detail="" if green else completed.stdout[-4000:],
         )
 
-    applied = _apply(tree, mutation)
+    landed = _apply(tree, mutation)
     try:
         completed = _run_suite(tree, options, cache_dir)
+    except SuiteHungError as hung:
+        # Reported with the digests, because "did it apply" is the first
+        # question asked of any non-KILLED verdict and a hang is no exception.
+        return Outcome(
+            label=mutation.label,
+            verdict="HUNG",
+            suite_green=None,
+            seconds=time.monotonic() - started,
+            summary=str(hung),
+            digests=_restore_all(landed, tree),
+        )
     finally:
-        restored = _restore(applied, tree)
+        digests = _restore_all(landed, tree)
     summary, failures = _summarise(completed.stdout)
+    if not _recognised_summary(summary):
+        return Outcome(
+            label=mutation.label,
+            verdict="ERROR",
+            suite_green=None,
+            seconds=time.monotonic() - started,
+            summary=summary,
+            failures=failures,
+            digests=digests,
+        )
     green = completed.returncode == 0
     return Outcome(
         label=mutation.label,
@@ -499,116 +473,8 @@ def _run_one(tree: Path, mutation: Mutation, options: Options, cache_dir: Path) 
         seconds=time.monotonic() - started,
         summary=summary,
         failures=failures,
-        digests={"before": applied.before, "mutated": applied.mutated, "restored": restored},
+        digests=digests,
     )
-
-
-def _load_spec(path: Path) -> tuple[Mutation, ...]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        raise HarnessError(f"{path}: a spec is a JSON list of mutation objects")
-    mutations: list[Mutation] = []
-    for index, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise HarnessError(f"{path}: entry {index} is not an object")
-        try:
-            label = str(entry["label"])
-            mutations.append(
-                Mutation(
-                    label=label,
-                    path=_repository_relative(str(entry["file"]), label),
-                    old=str(entry["old"]),
-                    new=str(entry["new"]),
-                )
-            )
-        except KeyError as missing:
-            raise HarnessError(f"{path}: entry {index} is missing {missing}") from missing
-    if not mutations:
-        raise HarnessError(f"{path}: no mutations")
-    return tuple(mutations)
-
-
-def _digest_targets(mutations: tuple[Mutation, ...]) -> dict[str, str]:
-    """Digest every path this run intends to mutate, as it exists *here*.
-
-    "Here" is the real checkout, never a copy. These are the only files whose
-    movement makes a verdict false, and therefore the only ones the exit code
-    is allowed to answer for.
-    """
-    digests: dict[str, str] = {}
-    for mutation in mutations:
-        if mutation.path is None:
-            continue
-        target = REPO_ROOT / mutation.path
-        digests[mutation.path] = _sha256(target) if target.is_file() else _ABSENT
-    return digests
-
-
-def _changed_targets(before: dict[str, str], after: dict[str, str]) -> tuple[str, ...]:
-    return tuple(
-        f"{path}  {before[path][:12]} -> {after.get(path, _ABSENT)[:12]}"
-        for path in sorted(before)
-        if before[path] != after.get(path, _ABSENT)
-    )
-
-
-def _porcelain_entries() -> dict[str, tuple[str, str]]:
-    """``git status --porcelain`` as ``path -> (two-letter status, digest)``.
-
-    The digest is what makes the note honest in the case it exists for. In a
-    checkout several agents share, the interesting files are already dirty when
-    a run starts, so a status letter alone never moves when one of them is
-    edited again. Only the paths git already reports are hashed, which is a
-    handful.
-
-    Informational only. Rename entries key on the whole ``old -> new`` phrase
-    and untracked directories are not files; both fall back to the sentinel,
-    which is fine for something that is printed and never gates an exit code.
-    """
-    completed = subprocess.run(
-        ["git", "status", "--porcelain"],  # noqa: S607 - resolved via PATH
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    entries: dict[str, tuple[str, str]] = {}
-    for line in completed.stdout.splitlines():
-        if len(line) <= _PORCELAIN_PREFIX:
-            continue
-        path = line[_PORCELAIN_PREFIX:].strip()
-        target = REPO_ROOT / path
-        entries[path] = (line[:2], _sha256(target) if target.is_file() else _ABSENT)
-    return entries
-
-
-def _out_of_scope(
-    before: dict[str, tuple[str, str]],
-    after: dict[str, tuple[str, str]],
-    in_scope: frozenset[str],
-) -> tuple[str, ...]:
-    """Name everything that moved in the checkout that this run did not aim at.
-
-    Concurrent agents make this the ordinary case, not the alarming one, so it
-    is reported rather than judged -- but reported by name. "Other files
-    changed" with no list is a line people learn to skip.
-    """
-    changes: list[str] = []
-    for path in sorted(set(before) | set(after)):
-        if path in in_scope:
-            continue
-        was, now = before.get(path), after.get(path)
-        if was == now:
-            continue
-        if was is None and now is not None:
-            changes.append(f"{now[0]} {path}  (appeared while this run was working)")
-        elif now is None and was is not None:
-            changes.append(f"{was[0]} {path}  (no longer reported by git status)")
-        elif was is not None and now is not None and was[0] != now[0]:
-            changes.append(f"{was[0]} -> {now[0]} {path}")
-        elif now is not None:
-            changes.append(f"{now[0]} {path}  (edited again while this run was working)")
-    return tuple(changes)
 
 
 def _report(outcome: Outcome) -> None:
@@ -621,6 +487,7 @@ def _report(outcome: Outcome) -> None:
     suffix = {
         "SURVIVED": " (suite GREEN -- nothing holds this)",
         "KILLED": " (suite RED)",
+        "HUNG": " (suite NEVER FINISHED -- it cannot go RED for this)",
         "control-green": " (baseline GREEN)",
         "control-red": " (baseline RED -- every KILLED below is meaningless)",
         "ERROR": " (the run proves nothing)",
@@ -706,20 +573,6 @@ def _persist(outcomes: list[Outcome], options: Options) -> None:
     options.json_path.write_text(payload + "\n", encoding="utf-8")
 
 
-def _mutations_from(args: argparse.Namespace) -> tuple[Mutation, ...]:
-    if args.spec:
-        return _load_spec(Path(args.spec))
-    if not args.file:
-        raise HarnessError("give either --spec or --file with --old/--new")
-    old = Path(args.old_file).read_text(encoding="utf-8") if args.old_file else args.old
-    new = Path(args.new_file).read_text(encoding="utf-8") if args.new_file else args.new
-    if old is None or new is None:
-        raise HarnessError("--file needs --old/--new or --old-file/--new-file")
-    label = str(args.label or Path(args.file).name)
-    relative = _repository_relative(str(args.file), label)
-    return (Mutation(label=label, path=relative, old=str(old), new=str(new)),)
-
-
 def _note(line: str = "") -> None:
     """Prepared-tree commentary goes to stderr; only the path goes to stdout."""
     print(line, file=sys.stderr, flush=True)
@@ -771,26 +624,27 @@ def _single_mutation(args: argparse.Namespace) -> Mutation | None:
     return mutations[0]
 
 
-def _apply_to_prepared(tree: Path, mutation: Mutation | None) -> Applied | None:
+def _apply_to_prepared(tree: Path, mutation: Mutation | None) -> tuple[Applied, ...] | None:
     """Apply the mutation and prove it did not land in the real checkout."""
     if mutation is None:
         return None
     before = _digest_targets((mutation,))
-    applied = _apply(tree, mutation)
+    landed = _apply(tree, mutation)
     strayed = _changed_targets(before, _digest_targets((mutation,)))
     if strayed:
         raise HarnessError(f"the mutation wrote to {REPO_ROOT}, not to the copy: {strayed[0]}")
-    return applied
+    return landed
 
 
 def _describe_prepared(
-    tree: Path, root: Path, mutation: Mutation | None, land: Applied | None
+    tree: Path, root: Path, mutation: Mutation | None, land: tuple[Applied, ...] | None
 ) -> None:
     _note("prepared tree ready -- nothing has been run in it")
     _note(f"  path       {tree}")
-    if mutation is not None and land is not None:
+    if mutation is not None and land:
         _note(f"  mutation   {mutation.label}")
-        _note(f"  applied    {mutation.path}  {land.before[:12]} -> {land.mutated[:12]}")
+        for edit, applied in zip(mutation.edits, land, strict=True):
+            _note(f"  applied    {edit.path}  {applied.before[:12]} -> {applied.mutated[:12]}")
     else:
         _note("  mutation   none -- this is an unmutated baseline copy")
     _note("run any selection inside it, as many times as you like:")
@@ -862,56 +716,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _report_summary(outcomes: list[Outcome], elapsed: float, workers: int) -> None:
     survivors = [item for item in outcomes if item.verdict == "SURVIVED"]
+    hung = [item for item in outcomes if item.verdict == "HUNG"]
     print(
         f"\n{len(outcomes)} run(s) in {elapsed:.1f}s across {workers} worker(s): "
         f"{len(survivors)} SURVIVED, "
+        f"{len(hung)} HUNG, "
         f"{len([i for i in outcomes if i.verdict == 'KILLED'])} KILLED, "
         f"{len([i for i in outcomes if i.verdict == 'ERROR'])} ERROR"
     )
     for survivor in survivors:
         print(f"  SURVIVED  {survivor.label}")
-
-
-def _report_listing(header: str, lines: tuple[str, ...], *, to_stderr: bool = False) -> None:
-    where = sys.stderr if to_stderr else sys.stdout
-    print(header, file=where)
-    for line in lines[:_MAX_LISTED]:
-        print(f"    {line}", file=where)
-    if len(lines) > _MAX_LISTED:
-        print(f"    ... and {len(lines) - _MAX_LISTED} more", file=where)
-
-
-def _report_checkout(
-    mutations: tuple[Mutation, ...],
-    before_targets: dict[str, str],
-    before_status: dict[str, tuple[str, str]],
-) -> bool:
-    """Report what moved in the real checkout. True iff a verdict is at stake.
-
-    Two questions, deliberately separated. *Did this run write here?* is the
-    only one the exit code answers. *Did anything else move?* is ordinary in a
-    checkout several agents share, so it is named and moved on from.
-    """
-    in_scope = frozenset(item.path for item in mutations if item.path is not None)
-    strayed = _out_of_scope(before_status, _porcelain_entries(), in_scope)
-    if strayed:
-        _report_listing(
-            f"\nnote: {len(strayed)} path(s) outside this run's mutation set changed in "
-            f"{REPO_ROOT} while it ran.\n      No verdict above depends on them -- every "
-            "mutation was applied inside an isolated copy.",
-            strayed,
-        )
-    touched = _changed_targets(before_targets, _digest_targets(mutations))
-    if touched:
-        _report_listing(
-            "\nerror: this run's own mutation targets changed in the real checkout at "
-            f"{REPO_ROOT}.\n       Either a mutation escaped its copy, or the source moved "
-            "under trees copied at\n       different moments. Either way no verdict above "
-            "is trustworthy:",
-            touched,
-            to_stderr=True,
-        )
-    return bool(touched)
+    for item in hung:
+        print(f"  HUNG      {item.label}  -- the suite cannot report this as a failure")
 
 
 def _verdict_mode(args: argparse.Namespace, options: Options) -> int:
@@ -937,7 +753,7 @@ def _verdict_mode(args: argparse.Namespace, options: Options) -> int:
         return 2
     if any(item.verdict == "ERROR" for item in outcomes):
         return 2
-    return 1 if any(item.verdict == "SURVIVED" for item in outcomes) else 0
+    return 1 if any(item.verdict in {"SURVIVED", "HUNG"} for item in outcomes) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
