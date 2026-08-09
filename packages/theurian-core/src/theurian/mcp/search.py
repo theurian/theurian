@@ -417,7 +417,21 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     current_state_hash = str(state.state_hash)
     stale = published.state_hash != current_state_hash
 
-    service = RetrievalService(SqliteIndexStore(published.path), HashingEmbedding())
+    # One store per request, and one *connection* per request inside it.
+    #
+    # The fresh-instance rule used to exist for `SqliteIndexStore._scan_cache`,
+    # which would otherwise have leaked one caller's withheld-row count into
+    # another caller's latency. That cache is gone (#16) and its reason with it;
+    # `session()` below is what replaces the *reason* rather than only the rule.
+    # It holds one read connection for the whole request, so the several index
+    # reads a search makes cannot straddle a `theurian index gc` that unlinks the
+    # build between them (ADR-0024 decision 7). Measured, one request of four
+    # index reads with the unlink after the first: 1 of 4 answered with a
+    # connection per call, 4 of 4 inside a session -- and the per-call path left
+    # an empty database recreated at the reaped path, which is what made the
+    # failure permanent rather than transient.
+    index = SqliteIndexStore(published.path)
+    service = RetrievalService(index, HashingEmbedding())
     search = SearchRequest(
         query=query,
         project_id=project_id,
@@ -455,51 +469,56 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
         """
         return service.search(search, visible)
 
-    try:
-        # Built before the results exist, because `limit` and the budget are
-        # charged against it and the caller pays for it whether or not anything
-        # matched. `mode` and the two token counts are filled in below; nothing
-        # else here depends on what was found — `embeddingModel` included, which
-        # is why it is asked of the service rather than read off an outcome.
-        provisional = _index_report(
-            published,
-            embedding_model=service.embedding_model(use_dense=use_dense),
-            stale=stale,
-            snapshot_id=current_state_hash,
-        )
-        resolved = ResultGate(
-            store_factory=SqliteCanonicalStore, shape=_shaper(datetime.now(UTC))
-        ).admit(
-            ResultRequest(
-                database=database,
-                project_id=project_id,
-                include_unapproved=include_unapproved,
-                limit=limit,
-                budget_tokens=budget_tokens,
-                reserved_tokens=_envelope_tokens(project_id, query, provisional),
-            ),
-            candidates,
-        )
-    except IndexBuildError:
-        # The file passed the version check and then could not answer: a
-        # truncated copy, a dropped table, a metadata row that outlived the
-        # tables it describes. The version gate above is the check that should
-        # catch this; this is what makes "never answer from a broken index"
-        # true even when it does not. It covers the retrieval inside `admit`
-        # too, which is where the index is now read.
-        return _UNREADABLE
+    # The session spans every read of the index this request makes -- the
+    # provisional report's `embedding_model`, the retrieval inside `admit`, and
+    # `chunk_texts` -- because the window `theurian index gc` can land in is
+    # between any two of them, not only between the two retrievers.
+    with index.session():
+        try:
+            # Built before the results exist, because `limit` and the budget are
+            # charged against it and the caller pays for it whether or not anything
+            # matched. `mode` and the two token counts are filled in below; nothing
+            # else here depends on what was found — `embeddingModel` included, which
+            # is why it is asked of the service rather than read off an outcome.
+            provisional = _index_report(
+                published,
+                embedding_model=service.embedding_model(use_dense=use_dense),
+                stale=stale,
+                snapshot_id=current_state_hash,
+            )
+            resolved = ResultGate(
+                store_factory=SqliteCanonicalStore, shape=_shaper(datetime.now(UTC))
+            ).admit(
+                ResultRequest(
+                    database=database,
+                    project_id=project_id,
+                    include_unapproved=include_unapproved,
+                    limit=limit,
+                    budget_tokens=budget_tokens,
+                    reserved_tokens=_envelope_tokens(project_id, query, provisional),
+                ),
+                candidates,
+            )
+        except IndexBuildError:
+            # The file passed the version check and then could not answer: a
+            # truncated copy, a dropped table, a metadata row that outlived the
+            # tables it describes. The version gate above is the check that should
+            # catch this; this is what makes "never answer from a broken index"
+            # true even when it does not. It covers the retrieval inside `admit`
+            # too, which is where the index is now read.
+            return _UNREADABLE
 
-    return _response(
-        project_id=project_id,
-        query=query,
-        resolved=resolved,
-        retrieval=replace(
-            provisional,
-            mode=mode_of(_retrievers_behind(resolved.results)).value,
-            used_tokens=resolved.used_tokens,
-            dropped_for_budget=resolved.dropped,
-        ),
-    )
+        return _response(
+            project_id=project_id,
+            query=query,
+            resolved=resolved,
+            retrieval=replace(
+                provisional,
+                mode=mode_of(_retrievers_behind(resolved.results)).value,
+                used_tokens=resolved.used_tokens,
+                dropped_for_budget=resolved.dropped,
+            ),
+        )
 
 
 def _shaper(now: datetime) -> ResultShaper:
