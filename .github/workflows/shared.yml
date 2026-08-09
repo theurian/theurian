@@ -17,6 +17,7 @@ jobs:
   changes:
     name: Detect what changed
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       core: ${{ steps.filter.outputs.core }}
       plugin: ${{ steps.filter.outputs.plugin }}
@@ -78,6 +79,7 @@ jobs:
   schemas:
     name: Schemas are valid
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: changes
     if: needs.changes.outputs.schemas == 'true' || needs.changes.outputs.core == 'true'
     steps:
@@ -92,6 +94,7 @@ jobs:
   compatibility:
     name: Cross-artifact compatibility
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: changes
     # A schema change touches the shared contract, so both consumers are
     # re-checked even if only one tree changed.
@@ -125,6 +128,7 @@ jobs:
     name: Conventional Commits and DCO
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -160,6 +164,7 @@ jobs:
   docs:
     name: Documentation links
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     steps:

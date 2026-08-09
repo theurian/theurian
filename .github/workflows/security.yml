@@ -19,6 +19,7 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       security-events: write
       actions: read
@@ -35,6 +36,7 @@ jobs:
     name: Dependency review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -50,6 +52,7 @@ jobs:
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,6 +78,7 @@ jobs:
   sbom:
     name: SBOM
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -102,6 +106,7 @@ jobs:
   licenses:
     name: Dependency licences
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -136,6 +141,7 @@ jobs:
   pinning:
     name: Dependencies are pinned exactly
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       # ADR-0014: an unpinned dependency means an installed daemon can break

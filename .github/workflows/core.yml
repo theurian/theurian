@@ -46,6 +46,7 @@ jobs:
   quality:
     name: Format, lint, types
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -62,6 +63,12 @@ jobs:
   test:
     name: Tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    # #104: observed p95 ~7.3 min on ubuntu-latest / ~5.9 min on macos-latest
+    # over 28 runs (worst observed 7.48 min); this is roughly 4x that tail,
+    # not the repository floor. This is the job the liveness guard in
+    # `RetrievalService._visible_ranking` protects (docs/work-logs and #16):
+    # a regression that removes the guard hangs this job, not fails it.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -88,6 +95,12 @@ jobs:
   offline:
     name: Full suite with no network
     runs-on: ubuntu-latest
+    # #104: observed p95 ~4.5 min over 30 runs, which alone would suggest
+    # ~18 min (4x). Set higher instead: the three steps below already carry
+    # a combined step-level budget of 25 min (10 + 10 + 5), added for the
+    # network-sandbox invariant this job proves. A job-level timeout tighter
+    # than the steps it wraps would fire before those steps ever could.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -139,6 +152,7 @@ jobs:
   build:
     name: Build and verify the package
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

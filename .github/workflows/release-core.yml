@@ -85,6 +85,7 @@ jobs:
   quality:
     name: Format, lint, types, tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -101,6 +102,7 @@ jobs:
     name: Build, verify, and sign off the artifacts
     needs: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
@@ -364,6 +366,7 @@ jobs:
     needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     outputs:
@@ -567,6 +570,11 @@ jobs:
     needs: [build, draft-release]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # `timeout-minutes` bounds a job's own running time, starting once it
+    # begins executing on a runner. GitHub caps how long a job may sit
+    # *waiting* on an environment's required reviewers separately (30 days
+    # by default), so this does not shorten the approval window below.
+    timeout-minutes: 10
     # This environment carries `core-maintainers` as a required reviewer, so the
     # run stops here and waits for a human. It stops *after* the draft exists,
     # which is the point of the ordering: the maintainer approving an upload can
@@ -628,6 +636,7 @@ jobs:
     needs: [build, draft-release, publish-pypi]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

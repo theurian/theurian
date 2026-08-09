@@ -25,6 +25,7 @@ jobs:
   boundary:
     name: Core/plugin boundary
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -74,6 +75,7 @@ jobs:
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
@@ -89,6 +91,7 @@ jobs:
   manifest:
     name: Manifest and commands
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -109,6 +112,7 @@ jobs:
     name: claude plugin validate
     runs-on: ubuntu-latest
     continue-on-error: true # informational until the CLI is pinned in CI
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Validate with the Claude Code CLI
