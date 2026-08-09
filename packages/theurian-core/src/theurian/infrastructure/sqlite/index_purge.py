@@ -33,6 +33,7 @@ connection, so it sees the WAL.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
@@ -121,15 +122,30 @@ def purge_into(
         raise IndexPurgeError(msg)
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Written under a name `theurian index gc` does not reap, then renamed.
+    #
+    # **This is what makes a file under the published name complete by
+    # construction**, rather than complete by an argument about id ordering.
+    # `gc` reaps builds the pointer does not name, and a purge's output is not
+    # yet pointed at, so the two race. The previous answer was ULID ordering --
+    # an unpublished build's id sorts above the published one, so `gc` skips it
+    # -- which holds within a process, where `SeededIdGenerator` serialises on a
+    # lock, and degrades to millisecond resolution across processes. `os.replace`
+    # is atomic on POSIX, so this needs no such argument: the completed name
+    # appears only once the bytes behind it are final.
+    building = Path(f"{target}.building")
+    building.unlink(missing_ok=True)
     try:
-        _copy(source, target)
-        removed = _delete(target, revision_ids)
-        _restamp(target, index_build_id=index_build_id, state_hash=state_hash)
-        _verify(target, revision_ids)
+        _copy(source, building)
+        removed = _delete(building, revision_ids)
+        _restamp(building, index_build_id=index_build_id, state_hash=state_hash)
+        _verify(building, revision_ids)
+        os.replace(building, target)  # noqa: PTH105 - os.replace is the atomic primitive
     except BaseException:
-        target.unlink(missing_ok=True)
-        for suffix in ("-wal", "-shm"):
-            Path(str(target) + suffix).unlink(missing_ok=True)
+        for path in (building, target):
+            path.unlink(missing_ok=True)
+            for suffix in ("-wal", "-shm"):
+                Path(str(path) + suffix).unlink(missing_ok=True)
         raise
     return removed
 
