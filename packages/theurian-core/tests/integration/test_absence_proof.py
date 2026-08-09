@@ -109,13 +109,38 @@ population is ``@server.tool(name=...)`` in :mod:`theurian.mcp.tools` -- five --
 and the pairs here compare ``knowledge.search`` and ``knowledge.get``:
 
 ``knowledge.status``
-    **the equality does not hold for it, by design.** Two projects differing by
-    one withheld item return the same ``itemCount`` and ``itemsByStatus`` and
-    different ``stateHash`` and ``appliedMigrations``. The tool's own comment
-    carries the argument and the measurement, and the acceptance is filed as
-    issue #19. Comparing it here would fail for a reason that is recorded, and
-    the honest response to that failure -- relaxing the comparison -- is what
-    would then be wrong.
+    **excluded because a comparison here would grade this file's builder, not
+    the product.** Measured against the pairs this module actually builds, which
+    is the only way to get it right -- an earlier version of this paragraph
+    reasoned from ``tools.py``'s comment instead and had all four fields
+    backwards:
+
+    ==================== ===================== ==================
+    field                retired (deprecated)  draft
+    ==================== ===================== ==================
+    ``itemCount``        equal, 1 vs 1         **moves, 3 vs 2**
+    ``itemsByStatus``    equal                 **moves**
+    ``stateHash``        equal                 equal
+    ``appliedMigrations`` equal, 0 vs 0        equal, 0 vs 0
+    ==================== ===================== ==================
+
+    Two separate reasons, and neither is the one ``tools.py`` records.
+
+    The counts move for a ``draft`` because ``draft`` is in
+    :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` and this tool counts
+    exactly that set. **That is not a leak**: a draft is off by default, not
+    withheld from every caller -- ``includeUnapproved`` returns it, which is
+    precisely why :func:`_retire` uses ``deprecated`` instead when the point is
+    to be unreachable. ``tools.py``'s own sentence says "one **rejected** item",
+    and ``rejected`` is not surfaceable; generalising it to "one withheld item"
+    is what made it false here.
+
+    ``stateHash`` and ``appliedMigrations`` -- the two the tool records as
+    genuinely moving, and the reason issue #19 is open -- cannot move in this
+    file at all: :func:`_build_project` *declares* the state hash and never runs
+    the migration engine, so both are constants of the builder. A pair over this
+    tool would therefore pass while saying nothing about the residual it exists
+    to have.
 ``project.list``, ``system.capabilities``
     not project-scoped. Neither reads knowledge, so no corpus difference can
     reach either, and a pair over them would be two identical answers compared.
@@ -473,7 +498,8 @@ def _payload_pair() -> st.SearchStrategy[tuple[str, str]]:
 
     Never equal, and not by filtering: the replacement is a non-zero rotation
     within the alphabet, so a difference exists by construction and no example is
-    ever discarded for failing to have one.
+    ever discarded *for failing to have one*. Discards from other causes are
+    hypothesis's business and are not zero -- see :data:`_GENERATED`.
     """
 
     def apart(parts: tuple[str, int, int]) -> tuple[str, str]:
@@ -620,8 +646,17 @@ def _assemble(  # noqa: PLR0913 - one parameter per generated knob
     ``names_the_secret`` is forced true when the filler shares no vocabulary,
     because otherwise the withheld draft matches the query in neither project and
     the pair exercises nothing. That is the fourth combination of two booleans,
-    and it is removed here rather than filtered away, so no example is ever
-    silently discarded.
+    and it is removed here rather than filtered away.
+
+    **That is a claim about this function, not about the run**, and it used to be
+    written as the wider one -- "so no example is ever silently discarded".
+    Hypothesis discards examples for reasons no strategy here controls: an
+    overrun is dropped and re-drawn, and the health check that would report it
+    only fires above a threshold these generators sit far below. Measured over
+    seven seeds, two of them lost examples that way (see :data:`_GENERATED`).
+    What holds here is narrower and still worth having: **no example is
+    discarded for a condition this module could have arranged instead**, which
+    is the class of loss a reader can do something about.
     """
     chosen = payloads[: len(fillers)]
     shared_terms = " ".join(terms)
@@ -1039,25 +1074,69 @@ def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
 #: Checked by repeating the measurement above with the seed in place: the same
 #: inserted sentence now leaves all three queries unchanged.
 #:
+#: **What the seed costs, because it is not free.** Hypothesis's pytest plugin
+#: normally mixes ``item.nodeid`` into the derived seed, so parametrised cells
+#: draw *different* sequences; an explicit ``@seed`` short-circuits that, and all
+#: eight cells of the equality now draw the same corpora. So the example count
+#: and the corpus count are different numbers, and only the second one says how
+#: much was explored. Measured, by digesting every generated ``_Case`` -- the key
+#: is ``sha256`` over each document's ``(item_id, title, body, status)`` plus the
+#: query and the withholding mechanism:
+#:
+#: ==================================  ========  =========
+#: entry                               examples  corpora
+#: ==================================  ========  =========
+#: the equality, all 8 cells together        48         12
+#: the payload sweep                         18         16
+#: ``knowledge.get``                         15         15
+#: the generator guard                       10         10
+#: **the file**                              **91**     **27**
+#: ==================================  ========  =========
+#:
+#: **Detection went up, not down**, which is why the trade was taken. Counted on
+#: the mutation that replaces the depth loop with a single fifty-row fetch, with
+#: shrinking suppressed so every cell reports: **3 of the 8 cells red with the
+#: seed, 1 of 8 without.** Twelve corpora seen by four argument sets each beat
+#: forty-two seen once, because what makes a displaced candidate observable is
+#: the *parameters*, not the corpus.
+#:
 #: ``deadline=None`` because one example builds two SQLite databases and two
 #: index files. ``database=None`` because the default example database writes
 #: ``.hypothesis/`` into whatever directory pytest was launched from, which for
 #: this repository is the repository.
 #:
-#: **No ``suppress_health_check``**, deliberately. It carried ``data_too_large``
-#: and ``too_slow``, and neither is needed -- measured, the file is green
-#: without them. Suppressing ``data_too_large`` is precisely permission for
-#: examples to be discarded without anything saying so, which is the failure
-#: mode a property test in this repository can least afford. It was not
-#: theoretical: under the suppressed, unseeded configuration
-#: ``--hypothesis-show-statistics`` reported one of the payload search's
-#: nineteen attempts as ``invalid`` and silently re-drawn.
+#: **No ``suppress_health_check``, and what removing it did and did not buy.**
+#: It carried ``data_too_large`` and ``too_slow``; measured, the file is green
+#: without either. What the removal did *not* do is stop examples being
+#: discarded silently, and this comment previously implied it had. The health
+#: check fires only above a threshold -- twenty overruns before ten valid
+#: examples -- and these generators sit far below it, so an overrun is still
+#: dropped and re-drawn with nothing said. Measured across seven seeds: 3, 7
+#: produced 1 and 3 silent ``invalid`` cases respectively; 29, 11, 17, 23 and 41
+#: produced none, all seven green. **Zero invalid is a property of seed 29, not
+#: of the configuration.** What the removal bought is narrower and still worth
+#: having: a permission that was doing nothing is gone, so if these generators
+#: ever do start overrunning in bulk the run fails instead of quietly shrinking
+#: its own coverage.
 #:
 #: What the budget buys, read off ``--hypothesis-show-statistics`` rather than
 #: counted by hand: 6 examples in each of the equality's eight cells, 18 for the
-#: payload search, 15 for ``knowledge.get`` and 10 for the generator guard --
-#: **91 examples, every one of the twelve entries stopping on ``max_examples``
-#: with 0 failing and 0 invalid**, and the whole file in about 10 s.
+#: payload sweep, 15 for ``knowledge.get`` and 10 for the generator guard --
+#: **91 examples over eleven entries, every entry stopping on ``max_examples``
+#: with 0 failing and 0 invalid**, and the whole file green in about 10 s.
+#:
+#: **A red run is far slower, and that is shrinking rather than a hang.** The
+#: first person to see this file fail should know before they reach for the
+#: interrupt. Measured on ``across-the-depth-generous`` under the depth-loop
+#: mutation: **251 s to report, against 4 s with shrinking suppressed** and 5 s
+#: for the same cell green -- roughly sixty times, because every shrink attempt
+#: re-pays two canonical stores and two index builds. Several cells failing at
+#: once multiply it, and CI has no job timeout (issue #104).
+#:
+#: Shrinking is kept anyway, and that is a decision rather than an oversight: a
+#: minimised corpus is exactly what this file is for. The T-17a corpus recorded
+#: at the end of this module is a shrunk counterexample, and it was reducible by
+#: hand only *because* hypothesis had already cut it down.
 _GENERATED = settings(
     deadline=None,
     derandomize=True,
