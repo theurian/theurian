@@ -28,6 +28,7 @@ from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
+from urllib.parse import quote
 
 from theurian.domain.chunking import IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
@@ -247,6 +248,23 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
+def _read_only_uri(path: Path) -> str:
+    """``file:`` URI for a path, with the path escaped rather than interpolated.
+
+    **A filename is not a URI, and the difference is the access mode.** SQLite
+    parses everything after ``?`` as query parameters, so a path that happens to
+    contain one is read as a mode the caller did not ask for -- measured on
+    SQLite 3.47.1, a path ending ``?mode=rwc`` turns ``?mode=ro`` into
+    ``no such access mode: rwc?mode=ro``, and on other builds it wins outright
+    and opens read-write. Either way the guarantee this module states about
+    ``mode=ro`` stops holding for a filename the operator chose.
+
+    `quote` with no safe characters, because every one of `?`, `#` and `%` is
+    legal in a POSIX filename and each changes how the URI parses.
+    """
+    return f"file:{quote(str(path), safe='/')}?mode=ro"
+
+
 def _open_read(path: Path) -> sqlite3.Connection:
     """A read-only connection that will not conjure the file it cannot find.
 
@@ -264,7 +282,7 @@ def _open_read(path: Path) -> sqlite3.Connection:
     so the read and write paths stay configured the same way, and a write through
     this connection is refused by SQLite rather than by convention.
     """
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(_read_only_uri(path), uri=True)
     connection.row_factory = sqlite3.Row
     for pragma in CONNECTION_PRAGMAS:
         connection.execute(pragma)

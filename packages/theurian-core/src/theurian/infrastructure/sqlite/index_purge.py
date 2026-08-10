@@ -40,6 +40,7 @@ from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS
 
 #: Rows reachable from a withdrawn chunk through :data:`chunk_derivation`,
@@ -53,6 +54,10 @@ _DOOMED = """
 WITH RECURSIVE doomed(chunk_id) AS (
     SELECT chunk_id FROM chunks WHERE revision_id IN (%s)
     UNION
+    SELECT chunk_id FROM chunks
+     WHERE derived = 1
+       AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)
+    UNION
     SELECT chunk_derivation.node_chunk_id
       FROM chunk_derivation
       JOIN doomed ON chunk_derivation.source_chunk_id = doomed.chunk_id
@@ -60,10 +65,22 @@ WITH RECURSIVE doomed(chunk_id) AS (
 SELECT chunk_id FROM doomed
 """
 
-#: A derived row whose provenance cannot be resolved. Not reachable from any
-#: withdrawn chunk -- it has no edges at all -- so the traversal above cannot see
-#: it, and it is deleted rather than kept: a node that cannot say what it was
-#: built from cannot be shown to hold nothing withdrawn (ADR-0024 decision 8).
+#: A derived row whose provenance cannot be resolved: `derived = 1` with no edge
+#: naming what it was built from. Deleted rather than kept, because a node that
+#: cannot say where it came from cannot be shown to hold nothing withdrawn
+#: (ADR-0024 decision 8).
+#:
+#: **It is a *seed* of the traversal above, not a separate sweep, and that
+#: distinction was a defect.** Deleting the two sets independently leaves the
+#: children: a node whose only source is an unprovenanced node is reachable from
+#: nothing withdrawn, so the recursive walk never saw it, and the second sweep
+#: only removed its parent. Measured -- a summary of an unprovenanced summary
+#: survived a purge with its text intact and retrievable. Seeding both into one
+#: recursive query takes the traversal to its fixed point instead.
+#:
+#: Kept as a constant because `_verify` reads it as a post-condition: after the
+#: purge this count must be zero, which is the check that fails if the seed above
+#: is ever removed from `_DOOMED`.
 _UNPROVENANCED = """
 SELECT chunk_id FROM chunks
  WHERE derived = 1
@@ -71,8 +88,14 @@ SELECT chunk_id FROM chunks
 """
 
 
-class IndexPurgeError(Exception):
-    """A purge could not produce a build fit to publish."""
+class IndexPurgeError(TheurianError):
+    """A purge could not produce a build fit to publish. Carries a remedy.
+
+    A `TheurianError` and not a bare `Exception`, because that is the type every
+    CLI handler catches -- `(TheurianError, sqlite3.Error, OSError)` -- and the
+    difference between the two is a rendered remedy against a Rich traceback with
+    the operator's absolute paths in it.
+    """
 
 
 @contextmanager
@@ -118,7 +141,14 @@ def purge_into(
     touch it.
     """
     if target.exists():
-        msg = f"{target} already exists. A purge writes a new build, never into an existing one."
+        # The name only. This message reaches a user through the index CLI, and
+        # the absolute path names the operator's home directory and project
+        # layout for a condition that is about the build id, not the location.
+        msg = (
+            f"{target.name} already exists. A purge writes a new build, never into an "
+            f"existing one. Run `theurian index build` to produce a fresh build, or "
+            f"`theurian index gc` if it is a superseded build that was never reclaimed."
+        )
         raise IndexPurgeError(msg)
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +164,17 @@ def purge_into(
     # is atomic on POSIX, so this needs no such argument: the completed name
     # appears only once the bytes behind it are final.
     building = Path(f"{target}.building")
-    building.unlink(missing_ok=True)
+    if building.exists():
+        # Not ours to delete: a `.building` file is either another writer's work
+        # in progress or the leftovers of one that crashed, and this function
+        # cannot tell them apart. Removing it would be the same class of mistake
+        # as writing into an existing build.
+        msg = (
+            f"{building.name} already exists, so another build or purge may be writing it. "
+            f"Retry in a moment; if nothing else is running, `theurian index gc` reports "
+            f"what is stranded."
+        )
+        raise IndexPurgeError(msg)
     try:
         _copy(source, building)
         removed = _delete(building, revision_ids)
@@ -151,19 +191,43 @@ def purge_into(
 
 
 def _copy(source: Path, target: Path) -> None:
-    with closing(sqlite3.connect(source)) as reader, closing(sqlite3.connect(target)) as writer:
-        reader.backup(writer)
+    """Page-copy the source build into a fresh file.
+
+    **The source is opened `mode=ro`, and that is not tidiness.** A bare
+    `sqlite3.connect` on a path that does not exist *creates an empty database
+    there* -- which for the source means conjuring a 0-byte file at the published
+    index path, and then failing with a raw `no such table: chunks`. Measured
+    before this guard: the exception escaped as `OperationalError`, a 0-byte file
+    was left at the published path, and the next search misdiagnosed it as a
+    schema mismatch rather than a missing file, because a file that exists cannot
+    take the missing-file branch. That is the same defect ADR-0024 decision 7
+    closed on the read path, arriving on the write path.
+    """
+    try:
+        with (
+            closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as reader,
+            closing(sqlite3.connect(target)) as writer,
+        ):
+            reader.backup(writer)
+    except sqlite3.Error as exc:
+        msg = (
+            f"The index build being purged could not be read ({type(exc).__name__}). Nothing "
+            f"was published, so retrieval still uses the current index. Run `theurian index "
+            f"build` to rebuild it; the index is derived, so nothing authored is lost."
+        )
+        raise IndexPurgeError(msg) from exc
 
 
 def _delete(target: Path, revision_ids: Sequence[str]) -> int:
     """Remove the withdrawn revisions and everything derived from them."""
     with _writing(target) as connection, connection:
-        doomed: set[str] = set()
-        if revision_ids:
-            placeholders = ", ".join("?" for _ in revision_ids)
-            rows = connection.execute(_DOOMED % placeholders, tuple(revision_ids)).fetchall()
-            doomed.update(str(row["chunk_id"]) for row in rows)
-        doomed.update(str(row["chunk_id"]) for row in connection.execute(_UNPROVENANCED))
+        # `NULL` when nothing was withdrawn: `IN ()` is a syntax error, and
+        # `revision_id IN (NULL)` is never true, so the query still runs and still
+        # reaches its other seed. A purge with an empty withdrawal list is not a
+        # no-op -- it still removes derived rows whose provenance is unresolvable.
+        placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
+        rows = connection.execute(_DOOMED % placeholders, tuple(revision_ids)).fetchall()
+        doomed = {str(row["chunk_id"]) for row in rows}
 
         if not doomed:
             return 0
@@ -198,8 +262,14 @@ def _verify(target: Path, revision_ids: Sequence[str]) -> None:
 
     The post-condition rather than the operation: `_delete` could be correct and
     this would still be worth running, because what publishes a build is a
-    pointer swap and there is no later stage that looks. Cheap — one indexed
-    count against `chunks_by_revision`.
+    pointer swap and there is no later stage that looks.
+
+    **Three counts, each for a different way the delete can be incomplete**, and
+    the third is the one a review found missing: rows of the withdrawn revisions,
+    embeddings whose chunk is gone, and derived rows with no provenance. All
+    three must be zero. The first is an indexed count against
+    `chunks_by_revision`; the other two are small scans over tables the purge has
+    just shrunk.
     """
     with _writing(target) as connection:
         remaining = 0
@@ -218,18 +288,38 @@ def _verify(target: Path, revision_ids: Sequence[str]) -> None:
             "SELECT count(*) AS orphans FROM embeddings "
             "WHERE chunk_id NOT IN (SELECT chunk_id FROM chunks)"
         ).fetchone()
+        # The third check, and the one that fails if `_UNPROVENANCED` is ever
+        # removed as a seed of `_DOOMED`. Deleting the two sets independently
+        # left the *children* of an unprovenanced node behind, text intact and
+        # retrievable, so this counts what should now be a fixed point.
+        unprovenanced = connection.execute(
+            f"SELECT count(*) AS unprovenanced FROM ({_UNPROVENANCED})"  # noqa: S608 - module-owned literal
+        ).fetchone()
 
     if remaining:
         msg = (
             f"The purged build still holds {remaining} chunk(s) of the revisions it was "
-            f"asked to remove. Nothing was published; the partial build has been deleted."
+            f"asked to remove. Nothing was published, so retrieval still uses the current "
+            f"index and the partial build has been deleted. Run `theurian index build` to "
+            f"produce a build from canonical state instead."
         )
         raise IndexPurgeError(msg)
     if int(orphans["orphans"]):
         msg = (
             f"The purged build holds {orphans['orphans']} embedding(s) whose chunk is gone. "
             f"`PRAGMA foreign_keys` was off for the delete, so `ON DELETE CASCADE` did not run. "
-            f"Nothing was published; the partial build has been deleted."
+            f"Nothing was published, so retrieval still uses the current index and the partial "
+            f"build has been deleted. Run `theurian index build`; this is a defect in Theurian "
+            f"rather than in your project, so please report it."
+        )
+        raise IndexPurgeError(msg)
+    if int(unprovenanced["unprovenanced"]):
+        msg = (
+            f"The purged build holds {unprovenanced['unprovenanced']} derived row(s) with no "
+            f"provenance, which cannot be shown to hold nothing withdrawn. Nothing was "
+            f"published, so retrieval still uses the current index and the partial build has "
+            f"been deleted. Run `theurian index build`; this is a defect in Theurian rather "
+            f"than in your project, so please report it."
         )
         raise IndexPurgeError(msg)
 

@@ -24,13 +24,17 @@ exercising `avgdl`.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite import index_purge
 from theurian.infrastructure.sqlite.index_purge import IndexPurgeError, _verify
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
@@ -597,3 +601,157 @@ def test_the_purge_runs_its_post_condition_and_leaves_nothing_behind_when_it_fai
     )
     for suffix in ("-wal", "-shm"):
         assert not Path(str(purged_path) + suffix).exists(), f"a {suffix} sidecar survived"
+
+
+def test_a_node_derived_only_from_an_unprovenanced_node_goes_with_it(
+    tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
+) -> None:
+    """The fixed point, and the case two independent sweeps left standing.
+
+    An unprovenanced node is deleted because it cannot say what it was built
+    from. A node built *from* it inherits exactly that problem -- and it is
+    reachable from nothing withdrawn, so the recursive walk never saw it. With
+    the two sets deleted independently the parent went and the child stayed,
+    text intact and retrievable.
+
+    Seeding both into one recursive query takes the traversal to its fixed point
+    instead, which is what makes this a property of the query rather than of the
+    order two statements happen to run in.
+    """
+    stale, _, withdrawn = corpora
+    _add_derived(stale, "orphan#0", [])
+    _add_derived(stale, "child-of-orphan#0", ["orphan#0"])
+    _add_derived(stale, "grandchild#0", ["child-of-orphan#0"])
+    purged_path = tmp_path / "theurian-index-purged.sqlite"
+
+    stale.derive_purged(
+        purged_path, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
+    )
+
+    surviving = _surviving(purged_path)
+    assert not {"orphan#0", "child-of-orphan#0", "grandchild#0"} & surviving, (
+        f"the whole chain below an unprovenanced node must go; these survived: "
+        f"{sorted({'orphan#0', 'child-of-orphan#0', 'grandchild#0'} & surviving)}"
+    )
+
+
+def test_a_purge_whose_source_is_missing_names_a_remedy_and_creates_nothing(tmp_path: Path) -> None:
+    """`mode=ro` on the *source*, which is the write path's version of decision 7.
+
+    A bare `sqlite3.connect` on a missing source creates an empty database at
+    that path. For a source that is the *published* index, this conjured a
+    0-byte file where a real build belonged, raised a raw `OperationalError`,
+    and made every later search misdiagnose the project as a schema mismatch --
+    because a file that exists cannot take the missing-file branch.
+    """
+    missing = tmp_path / "theurian-index-gone.sqlite"
+    store = SqliteIndexStore(missing)
+
+    with pytest.raises(IndexPurgeError, match="could not be read"):
+        store.derive_purged(
+            tmp_path / "theurian-index-new.sqlite",
+            revision_ids=["r0"],
+            index_build_id="01K1NEW",
+            state_hash="s",
+        )
+
+    assert not missing.exists(), "the purge conjured the source it could not find"
+    assert not (tmp_path / "theurian-index-new.sqlite").exists()
+
+
+def test_a_purge_refuses_to_write_over_another_writers_building_file(
+    tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
+) -> None:
+    """A `.building` file is either live work or crash leftovers, and this cannot tell.
+
+    Deleting it unconditionally is the same class of mistake as writing into an
+    existing build: it destroys another writer's work to make room for this one.
+    """
+    stale, _, withdrawn = corpora
+    target = tmp_path / "theurian-index-purged.sqlite"
+    occupied = Path(f"{target}.building")
+    occupied.write_bytes(b"another writer's work in progress")
+
+    with pytest.raises(IndexPurgeError, match="already exists"):
+        stale.derive_purged(
+            target, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
+        )
+
+    assert occupied.read_bytes() == b"another writer's work in progress"
+
+
+def test_purge_errors_are_theurian_errors_with_remedies(
+    tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
+) -> None:
+    """Every CLI handler catches `(TheurianError, sqlite3.Error, OSError)`.
+
+    An `IndexPurgeError` outside that hierarchy reaches a user as a Rich
+    traceback with their absolute paths in it, rather than as the
+    `{error, remedy}` shape every command promises (CP-2). The refusal message
+    also carries a filename rather than a path, because the condition is about
+    a build id and the path names the operator's home directory.
+    """
+    stale, _, withdrawn = corpora
+    occupied = tmp_path / "theurian-index-occupied.sqlite"
+    occupied.touch()
+
+    with pytest.raises(IndexPurgeError) as caught:
+        stale.derive_purged(
+            occupied, revision_ids=withdrawn, index_build_id="01K1P", state_hash="s"
+        )
+
+    assert isinstance(caught.value, TheurianError)
+    assert "theurian index" in str(caught.value), "every message names the command that fixes it"
+    assert str(tmp_path) not in str(caught.value), "an absolute path reached a user-facing message"
+
+
+def test_a_purge_does_not_touch_a_source_whose_wal_is_hot(
+    tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
+) -> None:
+    """The second face of opening the source read-write, and the one a fixture hides.
+
+    `test_a_purge_leaves_the_published_build_untouched` hands over a source whose
+    WAL has been checkpointed on last close, so a read-write open changes nothing
+    and the assertion passes for the wrong reason. A *hot* WAL -- an indexer
+    killed between commit and checkpoint -- is different: opening read-write runs
+    WAL recovery, which rewrites the main database and removes the sidecar. That
+    is a write to the published build, performed by the operation whose whole
+    premise is that it never writes to it.
+
+    The child process exits with `os._exit` precisely so no atexit handler
+    checkpoints on the way out.
+    """
+    stale, _, withdrawn = corpora
+    script = (
+        "import sqlite3, os, sys\n"
+        "c = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+        "c.execute('PRAGMA journal_mode = WAL')\n"
+        "c.execute('PRAGMA wal_autocheckpoint = 0')\n"
+        "c.execute('BEGIN IMMEDIATE')\n"
+        'c.execute("INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal,'
+        " heading, text, token_estimate, status, sensitivity, trust_level) VALUES"
+        " ('hot#0','demo','architecture.hot','hot',0,'','committed but not checkpointed',"
+        "10,'approved','internal','reviewed')\")\n"
+        "c.execute('COMMIT')\n"
+        "os._exit(0)\n"
+    )
+    subprocess.run([sys.executable, "-c", script, str(stale.path)], check=True)  # noqa: S603
+    wal = Path(f"{stale.path}-wal")
+    assert wal.exists() and wal.stat().st_size > 0, (
+        "the fixture must leave a hot WAL, or a read-write open changes nothing and this "
+        "test passes for the same wrong reason as its neighbour"
+    )
+    before = hashlib.sha256(stale.path.read_bytes()).hexdigest()
+
+    stale.derive_purged(
+        tmp_path / "theurian-index-purged.sqlite",
+        revision_ids=withdrawn,
+        index_build_id="01K1PURGED",
+        state_hash="state-abc",
+    )
+
+    assert hashlib.sha256(stale.path.read_bytes()).hexdigest() == before, (
+        "the purge ran WAL recovery on the published build: opening the source read-write "
+        "rewrote the file the whole design says is immutable"
+    )
+    assert wal.exists(), "the purge checkpointed and removed the published build's -wal sidecar"
