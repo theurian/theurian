@@ -207,7 +207,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+import traceback
+from dataclasses import asdict
 from pathlib import Path
 from typing import Final
 
@@ -219,8 +220,8 @@ from mutate_edits import (
     _apply,
     _changed_targets,
     _digest_targets,
-    _restore_all,
 )
+from mutate_run import Options, Outcome, _child_env, _run_one, _uv
 from mutate_spec import _mutations_from
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
@@ -243,105 +244,12 @@ _COPY_IGNORE: Final = shutil.ignore_patterns(
     "node_modules",
 )
 
-_PYTEST_ARGS: Final = (
-    # Deterministic collection order, so a fail-fast stop is comparable across
-    # mutations, and no cache written into the throwaway tree.
-    "-p",
-    "no:randomly",
-    "-p",
-    "no:cacheprovider",
-    # These come *after* the plugin flags on purpose, and the order is load
-    # bearing. A run started here lives for minutes inside a checkout where
-    # other work is also running `pytest -q`, and the usual way to stop that
-    # work is `pkill -f "pytest -q"` -- which matches on the whole argv, so
-    # leading with `-q` volunteers this harness for everyone else's cleanup.
-    # Killed mid-run it reports `control-red` or a false SURVIVED, and neither
-    # says "someone shot me". The prepared-tree runner has always ordered them
-    # this way; the verdict path had not, which is why only the verdict path
-    # kept dying.
-    "-q",
-    "--no-header",
-    "--tb=no",
-)
-
 _CONTROL_LABEL: Final = "__control__"
 _DEFAULT_TIMEOUT_SECONDS: Final = 1800
 
 # Dropped into a prepared tree. Dot-prefixed to stay clear of anything in the
 # suite that walks the repository root.
 _RUNNER_NAME: Final = ".mutate-run"
-
-
-class SuiteHungError(HarnessError):
-    """The suite did not finish. A *result*, not a broken run.
-
-    Distinguished from every other `HarnessError` because the two need opposite
-    readings. An anchor that did not match means the harness learned nothing; a
-    suite that never terminated under a mutation means the suite cannot go RED
-    for that mutation, which is the same class of finding as SURVIVED and is
-    strictly worse in CI -- a hung job reports a timeout with no test name on it.
-
-    Milestone 6 met this on the first mutation it tried against
-    `_visible_ranking`'s progress guard: both the guard's removal and an
-    off-by-one in it hang, and the batch reported "ERROR (the run proves
-    nothing)" with the digests dropped, so nothing in the output said the
-    mutation had even applied.
-    """
-
-    def __init__(self, seconds: int, tree: Path) -> None:
-        super().__init__(f"the suite did not finish within {seconds}s in {tree}")
-        self.seconds = seconds
-
-
-@dataclass(frozen=True)
-class Outcome:
-    label: str
-    verdict: str
-    suite_green: bool | None
-    seconds: float
-    summary: str
-    failures: tuple[str, ...] = ()
-    detail: str = ""
-    digests: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class Options:
-    workers: int
-    fail_fast: bool
-    control: bool
-    timeout: int
-    keep_trees: bool
-    json_path: Path | None
-    work_dir: Path | None
-
-
-def _uv() -> str:
-    found = shutil.which("uv")
-    if found is None:
-        raise HarnessError("uv is not on PATH; the harness runs the suite through `uv run`")
-    return found
-
-
-def _child_env(tree: Path, cache_dir: Path) -> dict[str, str]:
-    """Environment for a suite run: isolated HOME, no inherited virtualenv."""
-    env = dict(os.environ)
-    for leaked in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
-        env.pop(leaked, None)
-    home = tree / ".mutate-home"
-    data = tree / ".mutate-data"
-    home.mkdir(exist_ok=True)
-    data.mkdir(exist_ok=True)
-    env.update(
-        {
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "HOME": str(home),
-            "THEURIAN_DATA_DIR": str(data),
-            # Resolved before HOME moved, so the child still hits the warm cache.
-            "UV_CACHE_DIR": str(cache_dir),
-        }
-    )
-    return env
 
 
 def _build_tree(destination: Path, cache_dir: Path) -> Path:
@@ -362,119 +270,6 @@ def _build_tree(destination: Path, cache_dir: Path) -> Path:
     if not marker.exists():
         raise HarnessError(f"no virtualenv materialised in {destination}")
     return destination
-
-
-def _run_suite(tree: Path, options: Options, cache_dir: Path) -> subprocess.CompletedProcess[str]:
-    argv = [_uv(), "run", "--frozen", "--no-sync", "pytest", *_PYTEST_ARGS]
-    if options.fail_fast:
-        argv.append("-x")
-    try:
-        return subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
-            argv,
-            cwd=tree,
-            env=_child_env(tree, cache_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=options.timeout,
-        )
-    except subprocess.TimeoutExpired as expired:
-        raise SuiteHungError(options.timeout, tree) from expired
-
-
-def _summarise(stdout: str) -> tuple[str, tuple[str, ...]]:
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    summary = lines[-1] if lines else "(no output)"
-    failures = tuple(line for line in lines if line.startswith(("FAILED", "ERROR")))[:20]
-    return summary, failures
-
-
-# pytest's own final line always names what it counted. Anything else on that
-# line -- a progress marker like `......[100%]`, a partial write -- means the
-# run was cut off before it could report, and the exit code alone cannot be
-# trusted to mean what it usually means.
-_SUMMARY_MARKERS: Final = ("passed", "failed", "error")
-
-
-def _recognised_summary(summary: str) -> bool:
-    """Is this pytest's own summary line, or noise from a truncated run?
-
-    Issue #50: mutation ``C7`` came back KILLED under ``--workers 4`` with a
-    summary of ``......[100%]`` and no ``FAILED`` line anywhere in the output --
-    a run truncated under parallelism, not a suite that went red. A rerun alone
-    reported SURVIVED. Trusting the exit code without checking that the summary
-    line is one pytest itself would print reports a caught mutation that
-    nothing actually caught, which is the exact failure this harness exists to
-    prevent. This is not a parser for every summary pytest can print; it only
-    needs to reject the case that reached this project.
-    """
-    lowered = summary.lower()
-    return any(marker in lowered for marker in _SUMMARY_MARKERS)
-
-
-def _run_one(tree: Path, mutation: Mutation, options: Options, cache_dir: Path) -> Outcome:
-    started = time.monotonic()
-    if mutation.is_control:
-        completed = _run_suite(tree, options, cache_dir)
-        summary, failures = _summarise(completed.stdout)
-        if not _recognised_summary(summary):
-            return Outcome(
-                label=mutation.label,
-                verdict="ERROR",
-                suite_green=None,
-                seconds=time.monotonic() - started,
-                summary=summary,
-                failures=failures,
-                detail=completed.stdout[-4000:],
-            )
-        green = completed.returncode == 0
-        return Outcome(
-            label=mutation.label,
-            verdict="control-green" if green else "control-red",
-            suite_green=green,
-            seconds=time.monotonic() - started,
-            summary=summary,
-            failures=failures,
-            detail="" if green else completed.stdout[-4000:],
-        )
-
-    landed = _apply(tree, mutation)
-    try:
-        completed = _run_suite(tree, options, cache_dir)
-    except SuiteHungError as hung:
-        # Reported with the digests, because "did it apply" is the first
-        # question asked of any non-KILLED verdict and a hang is no exception.
-        return Outcome(
-            label=mutation.label,
-            verdict="HUNG",
-            suite_green=None,
-            seconds=time.monotonic() - started,
-            summary=str(hung),
-            digests=_restore_all(landed, tree),
-        )
-    finally:
-        digests = _restore_all(landed, tree)
-    summary, failures = _summarise(completed.stdout)
-    if not _recognised_summary(summary):
-        return Outcome(
-            label=mutation.label,
-            verdict="ERROR",
-            suite_green=None,
-            seconds=time.monotonic() - started,
-            summary=summary,
-            failures=failures,
-            digests=digests,
-        )
-    green = completed.returncode == 0
-    return Outcome(
-        label=mutation.label,
-        verdict="SURVIVED" if green else "KILLED",
-        suite_green=green,
-        seconds=time.monotonic() - started,
-        summary=summary,
-        failures=failures,
-        digests=digests,
-    )
 
 
 def _report(outcome: Outcome) -> None:
@@ -773,6 +568,14 @@ def main(argv: list[str] | None = None) -> int:
         return _verdict_mode(args, options)
     except HarnessError as error:
         print(f"error: {error}", file=sys.stderr)
+        return 2
+    except Exception:
+        # Last resort: anything that reaches here is a bug in the harness, not
+        # a verdict. Uncaught, Python's default exit code for this is 1 --
+        # indistinguishable from the documented "at least one survived",
+        # which is the exact false signal this tool exists to prevent.
+        traceback.print_exc(file=sys.stderr)
+        print("error: the harness raised an exception it did not anticipate", file=sys.stderr)
         return 2
 
 

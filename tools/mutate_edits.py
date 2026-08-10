@@ -9,6 +9,7 @@ what it needs from this module and stays the orchestration layer.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
 from dataclasses import dataclass
@@ -128,7 +129,12 @@ def _apply_edit(tree: Path, label: str, edit: Edit) -> Applied:
     target = tree / edit.path
     if not target.is_file():
         raise HarnessError(f"{label}: no such file {edit.path}")
-    original = target.read_text(encoding="utf-8")
+    try:
+        original = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError as decode_error:
+        raise HarnessError(
+            f"{label}: {edit.path} is not UTF-8 text, so it cannot carry an anchor"
+        ) from decode_error
     occurrences = original.count(edit.old)
     if occurrences != 1:
         raise HarnessError(
@@ -152,6 +158,15 @@ def _apply(tree: Path, mutation: Mutation) -> tuple[Applied, ...]:
     A composite that fails halfway would otherwise leave a partially mutated
     tree for the next job that borrows it, and the next job's verdict would be
     about a source nobody described.
+
+    The rollback catches ``BaseException``, not just ``HarnessError``: a spec
+    entry can reach a non-UTF-8 file or a malformed edit, and whatever the
+    exception type, the edits that already landed must not survive it. Each
+    restore is individually guarded so that one failing restore neither masks
+    the original cause nor stops the remaining edits from being unwound --
+    otherwise a restore failure would both hide *why* this run cannot be
+    trusted and leave every edit after the failure mutated for the next job
+    that borrows this tree.
     """
     if mutation.path is None:
         raise HarnessError(f"{mutation.label}: a control carries no file to mutate")
@@ -159,9 +174,13 @@ def _apply(tree: Path, mutation: Mutation) -> tuple[Applied, ...]:
     try:
         for edit in mutation.edits:
             landed.append(_apply_edit(tree, mutation.label, edit))
-    except HarnessError:
+    except BaseException:
         for done in reversed(landed):
-            _restore(done, tree)
+            # Best-effort: a failing restore here must neither mask the
+            # original cause (re-raised below, unconditionally) nor stop the
+            # remaining edits from being attempted.
+            with contextlib.suppress(BaseException):
+                _restore(done, tree)
         raise
     return tuple(landed)
 
@@ -186,14 +205,22 @@ def _restore_all(landed: tuple[Applied, ...], tree: Path) -> dict[str, str]:
 
     Reversed, because two edits to one file would otherwise restore the earlier
     snapshot last and silently keep the later edit.
+
+    Keyed by the path relative to ``tree`` plus its apply-order index, not by
+    basename: a composite mutation can carry two edits to the *same* file, or
+    two files that share a basename in different directories, and a
+    basename-only key collides on either -- silently reporting one edit's
+    digest as the other's, or dropping one file's trail from the reported
+    digests entirely. "Did it apply" is the first question asked of any
+    non-KILLED verdict, so this is the one place that answer cannot be wrong.
     """
     digests: dict[str, str] = {}
-    for applied in reversed(landed):
+    for index, applied in reversed(list(enumerate(landed))):
         restored = _restore(applied, tree)
-        name = str(applied.target.name)
-        digests[f"{name}:before"] = applied.before
-        digests[f"{name}:mutated"] = applied.mutated
-        digests[f"{name}:restored"] = restored
+        key = f"{applied.target.relative_to(tree)}#{index}"
+        digests[f"{key}:before"] = applied.before
+        digests[f"{key}:mutated"] = applied.mutated
+        digests[f"{key}:restored"] = restored
     return digests
 
 

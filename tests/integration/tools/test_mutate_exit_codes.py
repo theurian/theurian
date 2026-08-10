@@ -18,6 +18,7 @@ from collections.abc import Sequence
 import mutate
 import pytest
 from mutate_edits import Mutation
+from mutate_run import Options, Outcome
 
 pytestmark = pytest.mark.integration
 
@@ -36,8 +37,8 @@ def _args() -> argparse.Namespace:
     )
 
 
-def _options() -> mutate.Options:
-    return mutate.Options(
+def _options() -> Options:
+    return Options(
         workers=1,
         fail_fast=True,
         control=False,
@@ -48,8 +49,8 @@ def _options() -> mutate.Options:
     )
 
 
-def _fake_execute(outcomes: Sequence[mutate.Outcome]) -> object:
-    def _execute(mutations: tuple[Mutation, ...], options: mutate.Options) -> list[mutate.Outcome]:
+def _fake_execute(outcomes: Sequence[Outcome]) -> object:
+    def _execute(mutations: tuple[Mutation, ...], options: Options) -> list[Outcome]:
         del mutations, options
         return list(outcomes)
 
@@ -65,7 +66,7 @@ def test_a_hung_mutation_alone_exits_one_not_zero(
     this fall through to the ``else 0`` branch -- reporting success for a
     mutation the suite never actually got to judge.
     """
-    outcome = mutate.Outcome(
+    outcome = Outcome(
         label="hangs", verdict="HUNG", suite_green=None, seconds=1.0, summary="did not finish"
     )
     monkeypatch.setattr(mutate, "_execute", _fake_execute([outcome]))
@@ -77,7 +78,7 @@ def test_a_hung_mutation_alone_exits_one_not_zero(
 
 def test_a_killed_only_batch_still_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression guard: the ordinary all-KILLED batch must still exit 0."""
-    outcome = mutate.Outcome(
+    outcome = Outcome(
         label="caught", verdict="KILLED", suite_green=False, seconds=1.0, summary="1 failed"
     )
     monkeypatch.setattr(mutate, "_execute", _fake_execute([outcome]))
@@ -89,7 +90,7 @@ def test_a_killed_only_batch_still_exits_zero(monkeypatch: pytest.MonkeyPatch) -
 
 def test_a_survived_mutation_still_exits_one(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression guard: ordinary SURVIVED must keep exiting 1 alongside HUNG."""
-    outcome = mutate.Outcome(
+    outcome = Outcome(
         label="uncaught", verdict="SURVIVED", suite_green=True, seconds=1.0, summary="5 passed"
     )
     monkeypatch.setattr(mutate, "_execute", _fake_execute([outcome]))

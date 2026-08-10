@@ -29,8 +29,16 @@ def _load_spec(path: Path) -> tuple[Mutation, ...]:
             raw_edits = entry.get("edits")
             if raw_edits is None:
                 raw_edits = [{"file": entry["file"], "old": entry["old"], "new": entry["new"]}]
+            elif any(key in entry for key in ("file", "old", "new")):
+                raise HarnessError(
+                    f"{path}: {label}: `edits` and `file`/`old`/`new` are mutually exclusive; "
+                    "the latter would be silently ignored"
+                )
             if not isinstance(raw_edits, list) or not raw_edits:
                 raise HarnessError(f"{path}: {label}: `edits` is a non-empty list of edit objects")
+            for item in raw_edits:
+                if not isinstance(item, dict):
+                    raise HarnessError(f"{path}: {label}: every entry in `edits` must be an object")
             parsed = tuple(
                 Edit(
                     path=_repository_relative(str(item["file"]), label),

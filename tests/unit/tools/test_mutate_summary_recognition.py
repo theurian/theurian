@@ -10,8 +10,8 @@ principle, a false SURVIVED). These tests pin the boundary the check draws.
 
 from __future__ import annotations
 
-import mutate
 import pytest
+from mutate_run import _recognised_summary
 
 pytestmark = pytest.mark.unit
 
@@ -28,14 +28,14 @@ pytestmark = pytest.mark.unit
 )
 def test_a_genuine_pytest_summary_line_is_recognised(summary: str) -> None:
     """pytest's own final line always names what it counted."""
-    assert mutate._recognised_summary(summary) is True
+    assert _recognised_summary(summary) is True
 
 
 def test_the_exact_truncated_line_from_issue_50_is_not_recognised() -> None:
     """The literal reproduction: a progress marker, not pytest's own summary."""
-    assert mutate._recognised_summary("......[100%]") is False
+    assert _recognised_summary("......[100%]") is False
 
 
 def test_no_output_at_all_is_not_recognised() -> None:
     """``_summarise`` reports this literal string when stdout is empty."""
-    assert mutate._recognised_summary("(no output)") is False
+    assert _recognised_summary("(no output)") is False

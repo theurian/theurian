@@ -18,9 +18,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import mutate
 import pytest
 from mutate_edits import Mutation
+from mutate_run import Options, SuiteHungError, _run_one, _run_suite
 
 pytestmark = pytest.mark.integration
 
@@ -38,8 +38,8 @@ def hanging_uv_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
 
-def _options(tmp_path: Path, *, timeout: int) -> mutate.Options:
-    return mutate.Options(
+def _options(tmp_path: Path, *, timeout: int) -> Options:
+    return Options(
         workers=1,
         fail_fast=True,
         control=False,
@@ -60,8 +60,8 @@ def test_run_suite_converts_a_real_timeout_into_suitehungerror(
     would never trigger and every hang would silently fall back to a bare
     ERROR with no digests, which is the exact defect issue #68 reports.
     """
-    with pytest.raises(mutate.SuiteHungError):
-        mutate._run_suite(tmp_path, _options(tmp_path, timeout=1), tmp_path / "uvcache")
+    with pytest.raises(SuiteHungError):
+        _run_suite(tmp_path, _options(tmp_path, timeout=1), tmp_path / "uvcache")
 
 
 def test_run_one_reports_hung_with_digests_and_restores_the_file(
@@ -78,9 +78,7 @@ def test_run_one_reports_hung_with_digests_and_restores_the_file(
     target.write_text(original, encoding="utf-8")
     mutation = Mutation(label="hangs", path="target.py", old="VALUE = 1", new="VALUE = 2")
 
-    outcome = mutate._run_one(
-        tmp_path, mutation, _options(tmp_path, timeout=1), tmp_path / "uvcache"
-    )
+    outcome = _run_one(tmp_path, mutation, _options(tmp_path, timeout=1), tmp_path / "uvcache")
 
     assert outcome.verdict == "HUNG"
     assert outcome.digests, "a HUNG outcome must still carry apply/restore digests"

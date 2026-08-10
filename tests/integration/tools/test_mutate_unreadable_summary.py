@@ -22,6 +22,7 @@ from pathlib import Path
 import mutate
 import pytest
 from mutate_edits import Mutation
+from mutate_run import Options, _run_one
 
 pytestmark = pytest.mark.integration
 
@@ -35,8 +36,8 @@ def _install_fake_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: st
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
 
-def _options(*, control: bool = False) -> mutate.Options:
-    return mutate.Options(
+def _options(*, control: bool = False) -> Options:
+    return Options(
         workers=1,
         fail_fast=True,
         control=control,
@@ -61,7 +62,7 @@ def test_a_truncated_run_is_reported_error_not_killed(
     target.write_text("VALUE = 1\n", encoding="utf-8")
     mutation = Mutation(label="truncated", path="target.py", old="VALUE = 1", new="VALUE = 2")
 
-    outcome = mutate._run_one(tmp_path, mutation, _options(), tmp_path / "uvcache")
+    outcome = _run_one(tmp_path, mutation, _options(), tmp_path / "uvcache")
 
     assert outcome.verdict == "ERROR"
     assert outcome.digests, "digests must survive an unreadable-summary ERROR, not just a hang"
@@ -82,7 +83,7 @@ def test_a_genuine_failure_is_still_reported_killed(
     target.write_text("VALUE = 1\n", encoding="utf-8")
     mutation = Mutation(label="real-failure", path="target.py", old="VALUE = 1", new="VALUE = 2")
 
-    outcome = mutate._run_one(tmp_path, mutation, _options(), tmp_path / "uvcache")
+    outcome = _run_one(tmp_path, mutation, _options(), tmp_path / "uvcache")
 
     assert outcome.verdict == "KILLED"
 
@@ -96,7 +97,7 @@ def test_a_genuine_pass_is_still_reported_survived(
     target.write_text("VALUE = 1\n", encoding="utf-8")
     mutation = Mutation(label="real-pass", path="target.py", old="VALUE = 1", new="VALUE = 2")
 
-    outcome = mutate._run_one(tmp_path, mutation, _options(), tmp_path / "uvcache")
+    outcome = _run_one(tmp_path, mutation, _options(), tmp_path / "uvcache")
 
     assert outcome.verdict == "SURVIVED"
 
@@ -113,7 +114,7 @@ def test_a_truncated_control_run_is_reported_error_not_control_red(
     _install_fake_uv(tmp_path, monkeypatch, "#!/bin/sh\nprintf '......[100%%]\\n'\nexit 1\n")
     control = Mutation(label=mutate._CONTROL_LABEL, path=None, old="", new="")
 
-    outcome = mutate._run_one(tmp_path, control, _options(control=True), tmp_path / "uvcache")
+    outcome = _run_one(tmp_path, control, _options(control=True), tmp_path / "uvcache")
 
     assert outcome.verdict == "ERROR"
 
@@ -127,6 +128,6 @@ def test_a_genuine_control_red_is_still_reported_control_red(
     )
     control = Mutation(label=mutate._CONTROL_LABEL, path=None, old="", new="")
 
-    outcome = mutate._run_one(tmp_path, control, _options(control=True), tmp_path / "uvcache")
+    outcome = _run_one(tmp_path, control, _options(control=True), tmp_path / "uvcache")
 
     assert outcome.verdict == "control-red"
