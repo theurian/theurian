@@ -15,6 +15,7 @@ from fakes import FrozenClock, InMemoryWriter
 from theurian.application.migration_engine import (
     MigrationEngine,
     refuse_unenforceable_scope,
+    unenforceable_scope_violations,
     verify_no_applied_migration_changed,
 )
 from theurian.domain.enums import (
@@ -575,12 +576,20 @@ def test_the_default_tenant_and_acl_group_still_apply_cleanly() -> None:
 
 
 def test_validate_and_apply_agree_on_an_unenforceable_tenant() -> None:
-    """Issue #36's class: a statically decidable property must not be checked
-    only at apply time. `refuse_unenforceable_scope` is what `migrate
-    validate` calls directly, on the loaded `MigrationSet`, with no store and
-    no engine. `MigrationEngine.apply` calls the very same function
-    internally. A document must be refused by both, with the same message, or
-    neither."""
+    """A smoke check that both call sites reach the same function, not a
+    substitute for pinning the CLI wiring.
+
+    This cannot fail on its own: `MigrationEngine.apply`'s first statement is
+    the very call to `refuse_unenforceable_scope` this test also makes
+    directly, on the same `MigrationSet`, and the function is deterministic.
+    Deleting `migrate validate`'s call to it in `cli/commands.py`, or its
+    dedicated `except` clause in `migrate apply`, leaves this test green,
+    because neither line of `commands.py` ever runs here (issue #63's
+    MEDIUM-2). The test that actually exercises that wiring, and goes RED
+    under both deletions, is
+    `test_validate_and_apply_refuse_an_unenforceable_tenant_identically` in
+    `tests/integration/test_cli_commands.py`.
+    """
     migrations = MigrationSet.ordered(
         (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="acme-corp")),)
     )
@@ -592,3 +601,175 @@ def test_validate_and_apply_agree_on_an_unenforceable_tenant() -> None:
         _engine(BODY_V1).apply(InMemoryWriter(), PROJECT, migrations)
 
     assert str(validate_exc.value) == str(apply_exc.value)
+
+
+def test_a_violation_in_the_second_migration_of_a_set_is_still_caught() -> None:
+    """The loop must cover every migration, not stop after the first."""
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1, BODY_V2)
+    clean = _create_and_upsert(MIG_1, REV_1, BODY_V1)
+    violating = _migration(
+        MIG_2,
+        UpsertRevision(
+            item_id=ITEM,
+            revision_id=REV_2,
+            content_file_path="../knowledge/a.md",
+            metadata=_metadata(tenant_id="acme-corp"),
+            expected_revision=REV_1,
+            content_sha256=ContentHash.of_text(BODY_V2),
+        ),
+    )
+    migrations = MigrationSet.ordered((clean, violating))
+    assert migrations.ids == (MigrationId(MIG_1), MigrationId(MIG_2)), "fixture must be ordered"
+
+    with pytest.raises(UnenforceableScopeError):
+        engine.apply(writer, PROJECT, migrations)
+
+
+def test_an_already_applied_revision_with_a_foreign_tenant_is_still_refused() -> None:
+    """Whole-set checking is a recorded decision, not merely "checks pending":
+    a migration already applied under an earlier build, before this refusal
+    existed, must still be caught on the next run -- against a `writer` that
+    already recorded it, with nothing left pending -- or the false boundary
+    persists silently forever in exactly the stores issue #63 was filed
+    against (this is HIGH-1's upgrade scenario, reproduced at the engine
+    level: `record_migration` stands in for an apply an older, unrefusing
+    build already performed).
+    """
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="acme-corp")),)
+    )
+    writer.record_migration(
+        PROJECT, MigrationId(MIG_1), migrations.migrations[0].checksum.value, NOW
+    )
+
+    plan = _engine(BODY_V1).plan(writer, PROJECT, migrations)
+    assert plan.is_empty, "fixture must have nothing pending -- the violation is in applied only"
+
+    with pytest.raises(UnenforceableScopeError):
+        _engine(BODY_V1).apply(writer, PROJECT, migrations)
+
+
+def test_a_tampered_checksum_against_the_current_database_outranks_scope() -> None:
+    """Checksum tamper-evidence (FR-K5) takes priority over the scope refusal
+    at every layer this engine can see, matching `_verify_history`'s
+    precedence at the CLI layer against the *previously* active database
+    (issue #63's HIGH-3). A reader who sees `MigrationChecksumMismatchError`
+    should never have to wonder whether a hidden scope problem is the real
+    reason their edit went unreported."""
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="acme-corp")),)
+    )
+    # A checksum recorded for this migration id that does not match the file
+    # loaded now -- both conditions hold at once: a tampered checksum *and* a
+    # foreign tenant.
+    writer.record_migration(PROJECT, MigrationId(MIG_1), "0" * 64, NOW)
+
+    with pytest.raises(MigrationChecksumMismatchError):
+        _engine(BODY_V1).apply(writer, PROJECT, migrations)
+
+
+@pytest.mark.parametrize(
+    "tenant_id", ["Local", "LOCAL", "loc", "locally", "local ", " local", "acme-corp"]
+)
+def test_only_the_exact_default_tenant_is_accepted(tenant_id: str) -> None:
+    """Pins exact string comparison: no case-folding, no prefix or substring
+    match, no trimming. Every one of these is refused exactly as
+    `'acme-corp'` is."""
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id=tenant_id)),)
+    )
+    with pytest.raises(UnenforceableScopeError):
+        _engine(BODY_V1).apply(writer, PROJECT, migrations)
+
+
+@pytest.mark.parametrize(
+    "acl_group", ["Default", "DEFAULT", "def", "defaults", "default ", " default", "engineering"]
+)
+def test_only_the_exact_default_acl_group_is_accepted(acl_group: str) -> None:
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(acl_group=acl_group)),)
+    )
+    with pytest.raises(UnenforceableScopeError):
+        _engine(BODY_V1).apply(writer, PROJECT, migrations)
+
+
+def test_the_error_names_the_field_and_the_offending_value() -> None:
+    """A message that only says "scope refused" sends the reader back into
+    the migration file to find out which field. Both must be named."""
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (_create_and_upsert(MIG_1, REV_1, BODY_V1, metadata=_metadata(tenant_id="acme-corp")),)
+    )
+
+    with pytest.raises(UnenforceableScopeError) as exc:
+        _engine(BODY_V1).apply(writer, PROJECT, migrations)
+
+    assert "tenantId" in str(exc.value)
+    assert "acme-corp" in str(exc.value)
+
+
+def test_both_violating_fields_are_named_in_one_error() -> None:
+    """A revision naming both a foreign tenant and a foreign ACL group is one
+    problem statement, not two errors discovered one `migrate validate` at a
+    time -- the first `apply` should already say both."""
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(
+                MIG_1,
+                REV_1,
+                BODY_V1,
+                metadata=_metadata(tenant_id="acme-corp", acl_group="engineering"),
+            ),
+        )
+    )
+
+    with pytest.raises(UnenforceableScopeError) as exc:
+        _engine(BODY_V1).apply(writer, PROJECT, migrations)
+
+    message = str(exc.value)
+    assert "tenantId" in message
+    assert "acme-corp" in message
+    assert "aclGroup" in message
+    assert "engineering" in message
+    assert len(exc.value.violations) == 2
+
+
+def test_unenforceable_scope_error_is_a_migration_error() -> None:
+    """CLI error handling and any future caller that catches the broader
+    `MigrationError` family must still see this one -- it is not a new,
+    disconnected error type."""
+    assert issubclass(UnenforceableScopeError, MigrationError)
+
+
+# -- Issue #63's third consumer: `migrate status` never raises -------------
+
+
+def test_status_reports_every_refused_migration_without_raising() -> None:
+    clean = _create_and_upsert(MIG_1, REV_1, BODY_V1)
+    violating = _migration(
+        MIG_2,
+        UpsertRevision(
+            item_id=ITEM,
+            revision_id=REV_2,
+            content_file_path="../knowledge/a.md",
+            metadata=_metadata(tenant_id="acme-corp"),
+            expected_revision=REV_1,
+            content_sha256=ContentHash.of_text(BODY_V2),
+        ),
+    )
+    migrations = MigrationSet.ordered((clean, violating))
+
+    refused = unenforceable_scope_violations(migrations)
+
+    assert refused == (MigrationId(MIG_2),)
+
+
+def test_status_reports_no_refused_ids_when_the_set_is_clean() -> None:
+    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    assert unenforceable_scope_violations(migrations) == ()

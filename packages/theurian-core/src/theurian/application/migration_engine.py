@@ -25,6 +25,7 @@ from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
     RevisionConflictError,
+    ScopeViolation,
     UnenforceableScopeError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, SpecId
@@ -161,11 +162,17 @@ def refuse_unenforceable_scope(migration_set: MigrationSet) -> None:
     silently.
 
     Called on the *whole* `migration_set`, not merely what is still pending --
-    :meth:`MigrationEngine.apply` calls this before planning, and `migrate
-    validate` calls it directly on the same `LoadedMigrations.migration_set`
-    with no store and no engine involved. Checking the same input the same way
-    from both is what keeps them in agreement (issue #36: a statically
-    decidable property must not be visible to one command and not the other).
+    :meth:`MigrationEngine.apply` calls this after planning (a checksum tamper
+    against the current database is reported first; see `apply`'s own
+    docstring), and `migrate validate` calls it directly on the same
+    `LoadedMigrations.migration_set` with no store and no engine involved.
+    Checking the same input the same way is what keeps `migrate validate` and
+    `migrate apply` in agreement for this one statically decidable rule (issue
+    #36's class: a property visible to one and not the other).
+
+    `migrate status`, the third and non-gating consumer of a migration set,
+    does not call this -- see `unenforceable_scope_violations`, which reports
+    every violation instead of stopping at the first, and never raises.
 
     Raises:
         UnenforceableScopeError: On the first revision naming an unenforced
@@ -177,24 +184,51 @@ def refuse_unenforceable_scope(migration_set: MigrationSet) -> None:
                 _refuse_operation_scope(migration.migration_id, operation)
 
 
+def unenforceable_scope_violations(migration_set: MigrationSet) -> tuple[MigrationId, ...]:
+    """Every migration id `refuse_unenforceable_scope` would refuse, without raising.
+
+    `migrate status` reports observation, not a gate (issue #63's MEDIUM-3): a
+    migration set containing an unenforceable tenant or ACL group is still a
+    reachable set worth reporting on (`stateBuilt`, `pending`, `applied` all
+    keep their meaning), so `status` must not raise the way `validate`/`apply`
+    do. It still needs to say *which* migrations carry the problem -- the
+    property this module exists to surface must not become invisible on the
+    one consumer that keeps going.
+
+    Returns ids in migration order, once each, even when a single migration
+    carries more than one violating revision.
+    """
+    refused: list[MigrationId] = []
+    for migration in migration_set:
+        if any(
+            _scope_violations(operation)
+            for operation in migration.operations
+            if isinstance(operation, UpsertRevision)
+        ):
+            refused.append(migration.migration_id)
+    return tuple(refused)
+
+
 def _refuse_operation_scope(migration_id: MigrationId, operation: UpsertRevision) -> None:
+    violations = _scope_violations(operation)
+    if violations:
+        raise UnenforceableScopeError(migration_id, operation.revision_id, violations)
+
+
+def _scope_violations(operation: UpsertRevision) -> tuple[ScopeViolation, ...]:
+    """Every unenforced scope field on one ``upsertRevision``, without raising.
+
+    Both fields are collected rather than stopping at the first: a revision
+    naming a foreign tenant *and* a foreign ACL group is one problem a reader
+    fixes once, not two errors discovered one `migrate validate` at a time.
+    """
     metadata = operation.metadata
+    violations: list[ScopeViolation] = []
     if metadata.tenant_id != _ENFORCED_TENANT_ID:
-        raise UnenforceableScopeError(
-            migration_id,
-            operation.revision_id,
-            "tenantId",
-            metadata.tenant_id,
-            _ENFORCED_TENANT_ID,
-        )
+        violations.append(ScopeViolation("tenantId", metadata.tenant_id, _ENFORCED_TENANT_ID))
     if metadata.acl_group != _ENFORCED_ACL_GROUP:
-        raise UnenforceableScopeError(
-            migration_id,
-            operation.revision_id,
-            "aclGroup",
-            metadata.acl_group,
-            _ENFORCED_ACL_GROUP,
-        )
+        violations.append(ScopeViolation("aclGroup", metadata.acl_group, _ENFORCED_ACL_GROUP))
+    return tuple(violations)
 
 
 class MigrationEngine:
@@ -254,13 +288,21 @@ class MigrationEngine:
         migration author has to implement.
 
         Raises:
-            UnenforceableScopeError: If any revision, applied or already
-                applied, names a tenant or ACL group nothing can yet enforce
-                (issue #63). Checked before planning, over the whole set, so
-                it never depends on what has already been written.
+            MigrationChecksumMismatchError: Checked first, via `plan`. A
+                tampered checksum against the current database takes priority
+                over the scope refusal below, matching `_verify_history`'s
+                precedence at the CLI layer against the *previously* active
+                database (issue #63's HIGH-3) -- a reader who sees this error
+                should never have to wonder whether a hidden scope problem is
+                the real reason an edit went unreported.
+            UnenforceableScopeError: If any revision -- already applied or
+                still pending -- names a tenant or ACL group nothing can yet
+                enforce (issue #63). Checked over the whole set, after
+                planning but before any write, so it never depends on what
+                has already been written.
         """
-        refuse_unenforceable_scope(migration_set)
         plan = self.plan(writer, project_id, migration_set)
+        refuse_unenforceable_scope(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
         for migration in plan.pending:
@@ -551,5 +593,6 @@ __all__ = [
     "MigrationPlan",
     "MigrationWriter",
     "refuse_unenforceable_scope",
+    "unenforceable_scope_violations",
     "verify_no_applied_migration_changed",
 ]
