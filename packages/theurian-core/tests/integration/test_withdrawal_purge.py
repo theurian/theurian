@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from theurian.application.migration_engine import WithdrawalCandidate
 from theurian.application.project_service import (
     ProjectPaths,
     read_active_index_pointer,
@@ -33,6 +34,7 @@ from theurian.application.withdrawal_purge import (
     publish_purge_for_withdrawal,
 )
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.enums import KnowledgeStatus
 from theurian.infrastructure.determinism import UlidGenerator
 from theurian.infrastructure.sqlite.index_purge import IndexPurgeError
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
@@ -40,6 +42,24 @@ from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 pytestmark = pytest.mark.integration
 
 PROJECT = "demo"
+
+
+def _deprecated_candidates(revision_ids: Sequence[str]) -> list[WithdrawalCandidate]:
+    """One deprecated single-revision item per id -- non-surfaceable at any flavor.
+
+    Lets a test name exactly the revisions it wants purged: a deprecated item's
+    revisions are withheld whether or not the index holds drafts, so the flavor
+    does not enter and the purge set is precisely ``revision_ids``.
+    """
+    return [
+        WithdrawalCandidate(
+            status=KnowledgeStatus.DEPRECATED,
+            current_revision_id=revision_id,
+            revision_ids=(revision_id,),
+        )
+        for revision_id in revision_ids
+    ]
+
 
 #: A withheld document ten times the corpus mean, so its removal moves `avgdl`
 #: measurably -- the length-normalisation channel T-17a rests on (ADR-0024).
@@ -146,7 +166,7 @@ def test_a_purge_publishes_a_build_that_answers_as_if_the_rows_were_never_indexe
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=withdrawn,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -176,7 +196,7 @@ def test_the_pointer_swaps_to_the_new_build_and_the_old_file_stays(tmp_path: Pat
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=withdrawn,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -199,7 +219,7 @@ def test_an_empty_withdrawal_publishes_nothing(tmp_path: Path) -> None:
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=[],
+        withdrawal_candidates=[],
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -219,7 +239,7 @@ def test_no_published_index_is_a_state_not_a_failure(tmp_path: Path) -> None:
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=["gone-000"],
+        withdrawal_candidates=_deprecated_candidates(["gone-000"]),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -247,7 +267,7 @@ def test_a_pointer_naming_a_missing_or_unreadable_build_is_unusable(tmp_path: Pa
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=["gone-000"],
+        withdrawal_candidates=_deprecated_candidates(["gone-000"]),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -273,7 +293,7 @@ def test_a_build_holding_none_of_the_withdrawn_revisions_is_left_alone(tmp_path:
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=["gone-000", "gone-001"],
+        withdrawal_candidates=_deprecated_candidates(["gone-000", "gone-001"]),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -308,7 +328,7 @@ def test_the_purge_preserves_the_published_project_id_not_the_callers(tmp_path: 
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=withdrawn,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
@@ -350,7 +370,7 @@ def test_a_purge_that_raises_leaves_the_old_build_serving(tmp_path: Path) -> Non
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=withdrawn,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
         ids=UlidGenerator(),
         index_factory=factory,
     )
@@ -389,7 +409,7 @@ def test_a_non_sqlite_adapter_failure_also_fails_closed(tmp_path: Path) -> None:
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=withdrawn,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
         ids=UlidGenerator(),
         index_factory=lambda _path: _NonSqliteFailure(),
     )
@@ -422,10 +442,108 @@ def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> Non
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        withdrawn_revision_ids=withdrawn,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
     )
 
     assert outcome == WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
     assert read_active_index_pointer(paths).payload is not None, "the pointer is left as it was"
+
+
+class _Spy:
+    """Records whether `derive_purged` was reached, to catch a copy that should
+    not have happened."""
+
+    def __init__(self, *, holds: bool, removed: int) -> None:
+        self._holds = holds
+        self._removed = removed
+        self.derive_called = False
+
+    def is_searchable(self) -> bool:
+        return True
+
+    def holds_any_revision(self, _revision_ids: Sequence[str]) -> bool:
+        return self._holds
+
+    def derive_purged(self, *_args: object, **_kwargs: object) -> int:
+        self.derive_called = True
+        return self._removed
+
+
+def test_the_pre_check_stops_a_no_op_before_any_copy(tmp_path: Path) -> None:
+    """The churn guard (HIGH-2 cost), tested by a spy rather than by a file count.
+
+    A build holding none of what would be purged must not be copied at all --
+    `derive_purged` is the whole-file copy, and skipping the copy is the point. A
+    file count cannot tell "did not copy" from "copied then discarded"; the spy
+    can: its `derive_purged` records if it is reached, and here it must not be.
+    """
+    paths = _paths(tmp_path)
+    _publish_source(paths, include_withdrawn=True)
+    spy = _Spy(holds=False, removed=0)
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(["gone-000"]),
+        ids=UlidGenerator(),
+        index_factory=lambda _path: spy,
+    )
+
+    assert outcome == WithdrawalPurge(published=False, reason=NOTHING_TO_PURGE)
+    assert spy.derive_called is False, "the whole-file copy must be skipped when nothing would go"
+
+
+def test_a_copy_that_removes_nothing_is_discarded_and_publishes_nothing(tmp_path: Path) -> None:
+    """The `removed == 0` backstop: the copy ran but deleted nothing.
+
+    A race the pre-check could not see (the rows left between the check and the
+    delete). The copy is complete but identical to the published build, so the
+    pointer must not swap to it and the orphan must be dropped -- `derive_purged`
+    was reached (the spy records it), yet nothing is published.
+    """
+    paths = _paths(tmp_path)
+    _publish_source(paths, include_withdrawn=True)
+    spy = _Spy(holds=True, removed=0)
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(["gone-000"]),
+        ids=UlidGenerator(),
+        index_factory=lambda _path: spy,
+    )
+
+    assert outcome == WithdrawalPurge(published=False, reason=NOTHING_TO_PURGE)
+    assert spy.derive_called is True, "this path is the one reached after the copy"
+    assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
+
+
+def test_a_pointer_write_failure_after_a_good_copy_discards_the_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LOW: the swap fails after `derive_purged` wrote a complete build.
+
+    `derive_purged` cleans its own partial output, but a *complete* copy is left
+    when the pointer write fails after it -- an orphan `theurian index gc` will not
+    reap (its id sorts above the published one). The failure path discards it,
+    symmetric with the `removed == 0` path, and the old build stays published.
+    """
+    paths = _paths(tmp_path)
+    withdrawn = _publish_source(paths, include_withdrawn=True)
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("the pointer could not be written at /home/op/secret/active.json")
+
+    monkeypatch.setattr("theurian.application.withdrawal_purge.write_active_index_pointer", _boom)
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome.failed is True
+    assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
+    builds = sorted(paths.state.glob("theurian-index-*.sqlite"))
+    assert builds == [paths.index_for(BUILD_ID)], "the unpublished purged copy must be discarded"

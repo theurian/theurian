@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from theurian.application.migration_engine import WithdrawalCandidate, revisions_to_purge
 from theurian.application.project_service import (
     ProjectPaths,
     read_active_index_pointer,
@@ -131,29 +132,36 @@ class WithdrawalPurge:
 def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign no-op state
     paths: ProjectPaths,
     *,
-    withdrawn_revision_ids: Sequence[str],
+    withdrawal_candidates: Sequence[WithdrawalCandidate],
     ids: IdGenerator,
     index_factory: Callable[[Path], PurgeableIndex],
 ) -> WithdrawalPurge:
-    """Publish a copy of the current index with ``withdrawn_revision_ids`` removed.
+    """Publish a copy of the current index with the withdrawn revisions removed.
 
-    Does nothing, cheaply, when there is nothing to do: an empty withdrawal, no
-    published build, or a published build that holds none of the withdrawn
-    revisions. That last case is the common one -- ``migrate apply`` replays the
-    whole set whenever the state hash shifts (ADR-0016), so a project with any
-    past withdrawal would otherwise copy its whole index on every apply -- and it
-    is caught by ``holds_any_revision`` before any file is copied, so a no-op
-    apply pays a bounded read rather than a whole-file copy.
+    Which revisions those are depends on the published index's **own build
+    flavor** -- whether it was built with ``--include-unapproved`` -- which only
+    the pointer records, so it is resolved here rather than in the engine
+    (`revisions_to_purge`): a doc made ``draft`` in place is withheld from a
+    default index but legitimately held by an ``--include-unapproved`` one.
 
-    All-or-nothing. `purge_into` unlinks its partial output on any failure, and
-    this function publishes the pointer only after ``derive_purged`` returns a
-    non-zero count, so a purge that raises -- or that would republish an identical
-    build -- leaves the previously published build serving. A failure is reported
+    Does nothing, cheaply, when there is nothing to do: no withdrawal touched an
+    item, nothing that survives the flavor reduction, no published build, or a
+    published build that holds none of what would be purged. That last case is the
+    common one -- ``migrate apply`` replays the whole set whenever the state hash
+    shifts (ADR-0016), so a project with any past withdrawal would otherwise copy
+    its whole index on every apply -- and it is caught by ``holds_any_revision``
+    before any file is copied, so a no-op apply pays a bounded read rather than a
+    whole-file copy.
+
+    All-or-nothing. `purge_into` unlinks its partial output on any failure, this
+    function publishes the pointer only after ``derive_purged`` returns a non-zero
+    count, and it discards the completed copy if the pointer write itself fails --
+    so a purge that raises, or that would republish an identical build, leaves the
+    previously published build serving and no orphan behind. A failure is reported
     through ``failed`` (with a remedy) so the operator can rebuild rather than
     discovering the still-withheld rows in a leak.
     """
-    deduped = tuple(dict.fromkeys(withdrawn_revision_ids))
-    if not deduped:
+    if not withdrawal_candidates:
         return WithdrawalPurge(published=False, reason=NO_WITHDRAWAL)
 
     published = read_active_index_pointer(paths).payload
@@ -166,11 +174,22 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
     build_id = str(published.get("indexBuildId", ""))
     # Everything below is read off the pointer being purged, never the caller --
     # see the module docstring on why the state hash and the project id are
-    # preserved rather than restamped.
+    # preserved rather than restamped. `indexesUnapproved` is the flavor the
+    # withdrawn set is computed against, not just metadata to carry forward.
     source_state_hash = str(published.get("stateHash", ""))
     source_project_id = str(published.get("projectId", ""))
     indexes_unapproved = bool(published.get("indexesUnapproved", False))
 
+    deduped = tuple(
+        revisions_to_purge(withdrawal_candidates, indexes_unapproved=indexes_unapproved)
+    )
+    if not deduped:
+        # The apply touched items, but none of their revisions is withheld from
+        # *this* build's flavor -- e.g. a draft that an --include-unapproved index
+        # legitimately holds. Nothing to purge.
+        return WithdrawalPurge(published=False, reason=NO_WITHDRAWAL)
+
+    orphan: Path | None = None
     try:
         source = paths.index_for(build_id)
         if not source.is_file():
@@ -185,13 +204,12 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             # only fail on the missing tables; a rebuild is the standing remedy.
             return WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
         if not current.holds_any_revision(deduped):
-            # The published build holds none of the withdrawn revisions: already
-            # purged, or built after the withdrawal. Copying it to delete nothing
-            # and republishing an identical build is pure churn. For the shipped
-            # product this is exactly `derive_purged` would return 0, because the
-            # only chunks are current-revision chunks; when derived content lands
-            # (ADR-0024 decision 8) this pre-check must widen with the transitive
-            # purge, and the `removed == 0` guard below stays as the backstop.
+            # The published build holds nothing `derive_purged` would remove:
+            # neither a chunk of the withdrawn revisions nor an unprovenanced
+            # derived row (`holds_any_revision` checks both seeds of `_DOOMED`).
+            # Copying it to delete nothing and republishing an identical build is
+            # pure churn -- the common replay case for a project with any past
+            # withdrawal -- so skip before any file is copied.
             return WithdrawalPurge(published=False, reason=NOTHING_TO_PURGE)
 
         # No new index-write lock is taken. Safety against a concurrent producer
@@ -212,12 +230,16 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             state_hash=source_state_hash,
         )
         if removed == 0:
-            # A race, or bookkeeping the pre-check could not see: nothing left the
-            # copy, so publishing it is churn. Drop the orphan rather than swap
-            # the pointer to a build identical to the one it names.
+            # A race the widened pre-check could not see (the rows left between the
+            # check and the delete): nothing left the copy, so publishing it is
+            # churn. Drop the orphan rather than swap the pointer to a build
+            # identical to the one it names.
             _discard(target)
             return WithdrawalPurge(published=False, reason=NOTHING_TO_PURGE)
 
+        # The copy is complete and would be orphaned if the swap now fails, so
+        # track it until the pointer names it.
+        orphan = target
         write_active_index_pointer(
             paths,
             index_build_id=new_id,
@@ -225,6 +247,7 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             project_id=source_project_id,
             indexes_unapproved=indexes_unapproved,
         )
+        orphan = None
     except Exception as exc:  # fail closed: any adapter's failure leaves the old build serving
         # The withdrawal is already committed to canonical state; only the index
         # follow-up failed. Report it rather than raising, so the command that
@@ -235,6 +258,12 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
         # repairs, but the message carries the operator's absolute paths, which
         # `index_purge` is careful to keep out of a reply and this must not put
         # back (the remedy is the actionable half).
+        if orphan is not None:
+            # `derive_purged` cleans its own partial output; this is the *complete*
+            # copy left when the pointer write failed after it. Symmetric with the
+            # `removed == 0` path, so a failed swap never strands a build `gc` will
+            # not reap (its id sorts above the published one).
+            _discard(orphan)
         return WithdrawalPurge(
             published=False,
             reason=f"purge-failed: {type(exc).__name__}",

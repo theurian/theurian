@@ -97,14 +97,20 @@ The blind spot, named
 ---------------------
 **Presence is not tested here.** These pairs vary a withheld document's *content*
 and whether it *matches*; they never vary whether it is in the index at all.
-Issue #15's trigger closed presence for the two faces that are *withdrawals* -- a
-retirement and a supersede purge the row from the published build the moment they
+Issue #15's trigger closed presence for every *withdrawal* -- a retirement, a
+supersede, a reject, and an in-place status change that makes a revision
+non-surfaceable **at the published index's own build flavor** (a doc dropped to
+``draft`` in a default index is withheld *there* even though ``may_surface``
+passes a draft under ``--include-unapproved``). All are purged the moment they
 commit (ADR-0024 decision 5), proved in
-:func:`test_a_deprecation_purges_the_published_index_without_a_separate_build`. It
-did not close the remaining face, which is not a withdrawal:
+:func:`test_a_withdrawal_purges_the_published_index_without_a_separate_build`. The
+one residual it leaves is not a withdrawal at all:
 :func:`test_a_withheld_draft_still_changes_which_document_a_caller_is_handed` pins
-a `draft` under ``--include-unapproved``, an operator-config residual the shipped
-default (``include_unapproved=False``) leaves off rather than withholds. Read
+a `draft` an operator *chose* to index with ``--include-unapproved`` and which
+that build legitimately holds -- surfaceable at its flavor, returned to a caller
+who passes the flag, so off by default rather than withheld
+(:func:`test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay`
+holds that the purge does not over-reach and delete it). Read
 *Where the equality is conditional* in
 :mod:`theurian.application.retrieval_service` for the mechanism and T-17a in the
 threat model for the residual that remains.
@@ -1718,17 +1724,21 @@ def test_a_withheld_draft_still_changes_which_document_a_caller_is_handed(
     the caller is simply handed a different document, with a different excerpt and
     different provenance.
 
-    **This face is *not* closed by issue #15's trigger, and keeping it says why.**
-    The withdrawal purge (ADR-0024 decision 5) fires on a retirement or a
-    supersede; a `draft` under `--include-unapproved` is neither. It is an
-    operator-config residual: the shipped `theurian index build` defaults to
-    `include_unapproved=False`, so a draft is *off by default* rather than withheld
-    from every caller, and an index that holds drafts is a deliberate
-    configuration. So this stays green after Milestone 6, where the retirement and
-    supersede faces close (`test_a_deprecation_purges_the_published_index_without_a_
-    separate_build`). Built by hand rather than through `migrate apply`, so no
-    purge reaches it; it pins the narrowed residual the threat model still records
-    for the draft configuration.
+    **This exact shape is *not* closed by issue #15's trigger, and the distinction
+    is the r3 flavor fix.** The draft here is one an operator *chose* to index with
+    ``--include-unapproved``; ``may_surface`` passes it under that flag, so the
+    purge's flavor-aware reduction (`revisions_to_purge`, built with this index's
+    own ``indexesUnapproved=True``) judges it surfaceable *there* and keeps it --
+    which is correct, because a caller who passes the flag is handed it, so it is
+    off by default rather than withheld
+    (`test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay`
+    holds the purge does not over-reach). What the trigger *does* close is the
+    other draft shape -- a doc dropped to ``draft`` **in a default index**, where
+    it is non-surfaceable at that build's flavor and is purged
+    (`test_a_withdrawal_purges_the_published_index_without_a_separate_build`'s
+    ``inplace-draft`` face). This test is built by hand at flavor ``True``, so it
+    pins the narrowed residual the threat model still records for the
+    ``--include-unapproved`` configuration.
     """
     holds_it, never_did = _t17a_projects(tmp_path)
 
@@ -2069,12 +2079,15 @@ operations:
           sourceUri: git://demo/secret-redacted.md
 """
 
-#: Reject in place -- the third verb (ADR-0024 decision 5). An ``upsertRevision``
-#: that reuses the item's *current* revision id and its body, changing only
-#: ``status`` to `rejected`: the revision id never moves, so an op-log withdrawal
-#: set misses it, while the item becomes non-surfaceable and its indexed chunks
-#: must go. The same content file keeps ``append_revision`` a no-op (FR-K8).
-_SHIPPED_REJECT_MIGRATION: Final = """apiVersion: theurian.dev/v1
+#: Reject/draft in place -- the third verb and its flavor face (ADR-0024 decision
+#: 5). An ``upsertRevision`` that reuses the item's *current* revision id and its
+#: body, changing only ``status``: the revision id never moves, so an op-log
+#: withdrawal set misses it, while the item's surfaceability changes. The same
+#: content file keeps ``append_revision`` a no-op (FR-K8). ``reject`` is withheld
+#: at every flavor; ``draft`` is withheld from a **default** index only -- which
+#: these projects build -- and its chunks moving visible-row rankings there is the
+#: security face a uniform ``include_unapproved=True`` reduction leaves open.
+_SHIPPED_INPLACE_MIGRATION: Final = """apiVersion: theurian.dev/v1
 id: 01K1WDEPAA01234567890ABCDE
 createdAt: 2026-08-03T11:00:00+09:00
 author: engineer@example.com
@@ -2088,7 +2101,7 @@ operations:
       contentType: text/markdown
       kind: architecture
       namespace: backend
-      status: rejected
+      status: {status}
       owner: platform-team
       trustLevel: reviewed
       sourceAnchors:
@@ -2172,7 +2185,8 @@ def _shipped_cli(
 _SHIPPED_WITHDRAWAL: Final = {
     "deprecate": _SHIPPED_DEPRECATE_MIGRATION,
     "supersede": _SHIPPED_SUPERSEDE_MIGRATION,
-    "reject": _SHIPPED_REJECT_MIGRATION,
+    "reject": _SHIPPED_INPLACE_MIGRATION.format(status="rejected"),
+    "inplace-draft": _SHIPPED_INPLACE_MIGRATION.format(status="draft"),
 }
 
 
@@ -2296,20 +2310,25 @@ def _masked(response: dict[str, Any]) -> dict[str, Any]:
     return masked
 
 
-@pytest.mark.parametrize("face", ["deprecate", "supersede", "reject"])
+@pytest.mark.parametrize("face", ["deprecate", "supersede", "reject", "inplace-draft"])
 def test_a_withdrawal_purges_the_published_index_without_a_separate_build(
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, face: str
 ) -> None:
     """T-17a, issue #15. Every withdrawal verb closes the window, no rebuild.
 
-    The three verbs ADR-0024 decision 5 names: a retirement (``deprecateItem``), a
+    The verbs ADR-0024 decision 5 names: a retirement (``deprecateItem``); a
     redaction (``upsertRevision`` moving ``currentRevisionId`` past the revision
-    whose chunks hold the pre-redaction text), and a reject in place (an
-    ``upsertRevision`` reusing the current revision id and only changing status --
-    the one an operation-log withdrawal set misses, because the revision id never
-    moves). Driven through the real ``theurian migrate apply`` and with **no
-    ``index build`` after the withdrawal**, because the property is that the purge
-    leaves a published build a search can use.
+    whose chunks hold the pre-redaction text); a reject in place (an
+    ``upsertRevision`` reusing the current revision id and only changing status,
+    the one an operation-log set misses because the revision id never moves); and
+    a **draft in place** -- the same shape, status ``draft``, which is withheld
+    from the *default* index these projects build even though ``may_surface``
+    passes a draft under ``--include-unapproved``. The last is the flavor face: a
+    uniform ``include_unapproved=True`` reduction leaves its now-draft chunk in the
+    default file, moving visible-row rankings (T-17a) in the shipped default. All
+    driven through the real ``theurian migrate apply`` with **no ``index build``
+    after the withdrawal**, because the property is that the purge leaves a
+    published build a search can use.
 
     Three assertions, and the corpus is tuned so each can fail:
 
@@ -2329,7 +2348,8 @@ def test_a_withdrawal_purges_the_published_index_without_a_separate_build(
 
     RED on the pre-fix wiring: `deprecate`/`supersede` keep the secret's chunk
     (op-log worked there); `reject` keeps it because the op-log never saw the
-    reject at all.
+    reject; `inplace-draft` keeps it because a uniform-``True`` reduction judges a
+    draft surfaceable even for a default index.
     """
     base = tmp_path_factory.mktemp("shipped")
     probe_root = base / "holds-it"
@@ -2501,6 +2521,113 @@ def test_a_restored_item_survives_the_replay_a_later_apply_forces(
     )
 
 
+_DRAFT_DOC_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1PDAAAA01234567890ABCDE
+createdAt: 2026-08-03T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.policy-draft
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.policy-draft
+    revisionId: 01K1PDREVA01234567890ABCDE
+    contentFile: ../knowledge/architecture/policy-draft.md
+    metadata:
+      title: Caching policy draft
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: draft
+      owner: platform-team
+      trustLevel: inferred
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/policy-draft.md
+"""
+
+_DEPRECATE_GATEWAY_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1WGATEA01234567890ABCDE
+createdAt: 2026-08-03T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: architecture.gateway
+    reason: retired, and unrelated to the draft
+"""
+
+
+def test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adversarial guard (ADR-0024 decision 5, r3): a legitimately-indexed draft survives.
+
+    A draft an ``--include-unapproved`` build was told to hold is surfaceable *at
+    that index's flavor*, so an unrelated withdrawal's replay must not delete it.
+    Build such an index, then deprecate a *different* item -- which replays the
+    whole set (ADR-0016), touching the draft's own upsert -- and confirm the draft
+    is still in the published index.
+
+    RED under a uniform ``include_unapproved=False`` reduction: the replay would
+    judge the draft non-surfaceable and purge it from the index that legitimately
+    holds it -- the case the security fix must not over-reach into.
+    """
+    data = tmp_path / "data"
+    root = tmp_path / "repo"
+    root.mkdir()
+    for git in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _shipped_cli(root, data, monkeypatch, "init")
+    _shipped_cli(root, data, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID)
+    knowledge = root / ".theurian/knowledge/architecture"
+    migrations = root / ".theurian/migrations"
+    (knowledge / "policy-draft.md").write_text(
+        "# Caching policy draft\n\nThe caching policy draft is under review by the team.\n"
+    )
+    (migrations / "01K1PDAAAA01234567890ABCDE-draft.yaml").write_text(_DRAFT_DOC_MIGRATION)
+    (knowledge / "gateway.md").write_text("# Gateway\n\nThe gateway meters every request.\n")
+    (migrations / "01K1GAAAAA01234567890ABCDE-gateway.yaml").write_text(
+        _SHIPPED_DOC_MIGRATION.format(
+            mid="01K1GAAAAA01234567890ABCDE",
+            item="architecture.gateway",
+            rid="01K1GAREVA01234567890ABCDE",
+            slug="gateway",
+            title="Gateway",
+        )
+    )
+    _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    _shipped_cli(root, data, monkeypatch, "index", "build", "--include-unapproved")
+    assert "architecture.policy-draft" in _published_offers(
+        root, "caching", include_unapproved=True
+    ), "the --include-unapproved build must index the draft, or the guard proves nothing"
+
+    (migrations / "01K1WGATEA01234567890ABCDE-deprecate-gateway.yaml").write_text(
+        _DEPRECATE_GATEWAY_MIGRATION
+    )
+    withdrawn = _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+
+    assert "architecture.gateway" not in _published_offers(
+        root, "gateway", include_unapproved=True
+    ), "the unrelated deprecation must have purged its own item"
+    assert "architecture.policy-draft" in _published_offers(
+        root, "caching", include_unapproved=True
+    ), (
+        "but the draft an --include-unapproved index was told to hold must survive "
+        "the replay -- a uniform False reduction would wrongly delete it"
+    )
+    assert withdrawn["indexPurge"]["published"] is True, (
+        "the purge did publish -- it removed the deprecated gateway -- so this is a "
+        "real purge that kept the draft, not a skip that touched nothing"
+    )
+
+
 def test_migrate_apply_reports_the_index_purge_it_ran(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2539,10 +2666,12 @@ def test_migrate_apply_reports_the_index_purge_it_ran(
         "published": False,
         "indexBuildId": None,
         "removed": 0,
-        "reason": "no-withdrawal",
+        # This apply touched an item (the approved secret), so the engine reports a
+        # candidate -- but there is no index yet, so there is nothing to purge.
+        "reason": "no-published-index",
         "failed": False,
         "remedy": "",
-    }, "an apply that withdraws nothing reports the no-op state"
+    }, "an apply before any index build reports the no-op state"
 
     _shipped_cli(root, data, monkeypatch, "index", "build")
     (root / ".theurian/migrations/01K1WDEPAA01234567890ABCDE-deprecate.yaml").write_text(

@@ -582,21 +582,31 @@ class SqliteIndexStore:
         )
 
     def holds_any_revision(self, revision_ids: Sequence[str]) -> bool:
-        """Whether any chunk in this build carries one of ``revision_ids``.
+        """Whether a purge of ``revision_ids`` would remove anything from this build.
 
         The cheap pre-check that keeps the withdrawal purge (ADR-0024 decision 5)
         from copying a whole index only to delete nothing: ``migrate apply``
         replays the whole set on any state-hash shift (ADR-0016), so a project
         with a past withdrawal asks this on every apply and almost always gets
-        ``False``. Answered by the ``chunks_by_revision`` index, so it is a lookup
-        rather than a scan.
+        ``False``. Answered by the ``chunks_by_revision`` index, so the first
+        clause is a lookup rather than a scan.
+
+        **It tests both seeds of `index_purge._DOOMED`, not just the revision
+        match**, so it stays equivalent to ``derive_purged`` returning a non-zero
+        count. The second is a derived row with no provenance edge -- ``derived =
+        1`` and absent from ``chunk_derivation`` -- which the purge deletes even
+        when nothing was withdrawn (a partial or migrated build leaves them). No
+        chunk carries ``derived = 1`` until RAPTOR writes one (ADR-0008), so the
+        clause is dormant today; without it, once one does, a build with an
+        unprovenanced row but no withdrawn-revision match would be skipped and its
+        residue would survive.
         """
-        if not revision_ids:
-            return False
-        placeholders = ", ".join("?" for _ in revision_ids)
+        placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
+        unprovenanced = "derived = 1 AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)"
         with self._read() as connection:
             row = connection.execute(
-                f"SELECT 1 FROM chunks WHERE revision_id IN ({placeholders}) LIMIT 1",  # noqa: S608 - placeholders generated, values bound
+                f"SELECT 1 FROM chunks "  # noqa: S608 - placeholders generated, values bound
+                f"WHERE revision_id IN ({placeholders}) OR ({unprovenanced}) LIMIT 1",
                 tuple(revision_ids),
             ).fetchone()
             return row is not None

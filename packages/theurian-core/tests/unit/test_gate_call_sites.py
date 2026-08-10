@@ -208,7 +208,7 @@ STATUS_GATE = may_surface.__name__
 #:     and ``test_a_restored_item_survives_the_replay_a_later_apply_forces``).
 STATUS_GATE_CALL_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
-    ("application/migration_engine.py", "_revisions_to_purge"),
+    ("application/migration_engine.py", "revisions_to_purge"),
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/search.py", "_scan"),
     ("mcp/tools.py", "_relation_is_visible"),
