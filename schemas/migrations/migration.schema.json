@@ -130,7 +130,11 @@
           "description": "Media type of the body. Preserved rather than converted, so a structured source stays structured (ADR-0010)."
         },
         "kind": { "$ref": "#/$defs/kind" },
-        "namespace": { "type": "string", "maxLength": 200 },
+        "namespace": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
         "status": { "$ref": "#/$defs/status" },
         "owner": { "type": "string", "minLength": 1, "maxLength": 200 },
         "trustLevel": { "$ref": "#/$defs/trustLevel", "default": "unverified" },
@@ -140,6 +144,7 @@
           "minLength": 1,
           "maxLength": 128,
           "default": "local",
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
           "description": "Tenant boundary for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet: `migrate validate` and `migrate apply` both refuse any value other than 'local', and `migrate status` names the affected migrations under `refusedIds` without refusing -- accepting another value silently would let this field read as an enforced boundary when nothing checks it (issue #63)."
         },
         "aclGroup": {
@@ -147,6 +152,7 @@
           "minLength": 1,
           "maxLength": 128,
           "default": "default",
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
           "description": "Access-control group for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet: `migrate validate` and `migrate apply` both refuse any value other than 'default', and `migrate status` names the affected migrations under `refusedIds` without refusing, for the same reason as `tenantId` (issue #63)."
         },
         "validFrom": { "type": "string", "format": "date-time" },
@@ -202,7 +208,11 @@
         "op": { "const": "createItem" },
         "itemId": { "$ref": "#/$defs/itemId" },
         "kind": { "$ref": "#/$defs/kind" },
-        "namespace": { "type": "string", "maxLength": 200 },
+        "namespace": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+        },
         "owner": { "type": "string", "minLength": 1, "maxLength": 200 },
         "sensitivity": { "$ref": "#/$defs/sensitivity" },
         "trustLevel": { "$ref": "#/$defs/trustLevel" }

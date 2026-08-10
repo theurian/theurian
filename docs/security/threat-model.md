@@ -1546,17 +1546,31 @@ implementation assigned, with no anchor to the restricted source. Nearly
 undetectable after the fact.
 
 **Controls:** the scope key that *would* identify a tree is `(project, tenant,
-sensitivity, acl_group, namespace)`, with a unit separator so two component sets
-cannot render identically — and that key is real and tested, exhaustively over
-all 32 component combinations
-(`test_scope_isolation.py::test_all_scope_pairs_are_distinguishable`). A RAPTOR
-node whose children differed in any component *would* have no tree to belong to,
-which is what *would* make mixing structurally impossible rather than
+sensitivity, acl_group, namespace, status)`, joined with a unit separator that no
+component can contain — `AclGroup`, `TenantId` and `namespace` reject C0 control
+characters and DEL at construction, `ProjectId` is a kebab-case slug, and
+`sensitivity` and `status` are enums — so two component sets cannot render
+identically. That rejection is the mechanism, and it is newer than the claim:
+nothing enforced the separator's absence until Milestone 6, and while nothing
+did, `acl_group="a\x1fb"` with `namespace="c"` rendered the same key as
+`acl_group="a"` with `namespace="b\x1fc"` (demonstrated in review, which is how
+it was found). The key is real and tested,
+exhaustively over all 64 component combinations
+(`test_scope_isolation.py::test_all_scope_pairs_are_distinguishable`), with the
+refusal pinned by the four tests in that file that assert it and the join order
+and encoding pinned against a literal digest in
+`test_raptor_scope.py::test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`.
+A RAPTOR node whose children differed in any component *would* have no tree to
+belong to, which is what *would* make mixing structurally impossible rather than
 policy-checked. The subjunctive is deliberate: `infrastructure/raptor/` is a
 docstring-only package (its own text: "nothing here is built (Milestone 6)"), so
-no summary node exists to mix. This control takes effect when Milestone 6 builds
-the forest; the interim residual is that no RAPTOR summary is generated at all,
-so there is no cross-sensitivity summary to leak (#115).
+no summary node exists to mix. `domain/raptor.py`'s `SummaryNode` refuses
+children whose scope disagrees with its own, which is that refusal written down
+at the value level — it carries scopes and no text, nothing in `src/`
+constructs one, and no table stores one, so it withholds nothing today. This
+control takes effect when Milestone 6 builds the forest; the interim residual is
+that no RAPTOR summary is generated at all, so there is no cross-sensitivity
+summary to leak (#115).
 
 #### T-17 — Search accounting is a truth oracle for withheld content (Information disclosure, **Critical**)
 

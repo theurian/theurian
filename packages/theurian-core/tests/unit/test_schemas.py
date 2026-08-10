@@ -504,6 +504,90 @@ _ULID_CANDIDATES = (
     "",
 )
 
+#: ``namespace``, ``tenantId`` and ``aclGroup`` are the three ``Scope``
+#: components that are free-form text (``project_id`` is already a slug and
+#: ``sensitivity``/``status`` are enums), so all three share the C0-and-DEL
+#: rejection ``_reject_control_characters`` enforces and the published schema
+#: was missing until this pass -- a migration whose ``namespace`` carried
+#: ``\x1f`` validated and applied, then ``KnowledgeItem.scope`` raised on the
+#: very value the schema had just accepted. ``"a\x1fb"`` is not an arbitrary
+#: control character: it is the unit separator ``Scope.key`` joins its
+#: components with, and the exact pair ``test_scope_isolation.py`` measured
+#: colliding before construction refused it. ``"a\nb"`` is the same rejection
+#: through a byte a human is more likely to paste by accident.
+_NAMESPACE_CANDIDATES = (
+    "architecture",
+    "architecture.auth-policy",
+    "",
+    "a" * 200,
+    "a" * 201,
+    "a\x1fb",
+    "a\nb",
+)
+
+_TENANT_ID_CANDIDATES = (
+    "local",
+    "a",
+    "",
+    "a" * 128,
+    "a" * 129,
+    "a\x1fb",
+    "a\nb",
+)
+
+_ACL_GROUP_CANDIDATES = (
+    "default",
+    "a",
+    "",
+    "a" * 128,
+    "a" * 129,
+    "a\x1fb",
+    "a\nb",
+)
+
+#: Where each field's published pattern lives -- every location it is
+#: transcribed to, not just one. The first three are single properties of
+#: ``retrieval-result``; the scope components are nested under
+#: ``revisionMetadata`` in the migration schema instead. ``namespace`` has a
+#: second, independent occurrence: ``opCreateItem`` declares its own
+#: ``namespace`` property rather than ``$ref``-ing ``revisionMetadata``, and it
+#: reaches the identical domain check -- ``migration_engine._create_item``
+#: builds a ``KnowledgeItem`` from it, and ``KnowledgeItem.scope`` constructs
+#: a ``Scope`` from that same string -- so a pattern fixed on one and missed on
+#: the other is the same published-vs-domain gap this table exists to catch.
+#: `grep -n '"namespace"\|"tenantId"\|"aclGroup"'` against the migration
+#: schema is the full population: these four property definitions, plus two
+#: `required`-array mentions that name a property rather than defining one.
+#: `tenantId` and `aclGroup` have no second occurrence -- neither is declared
+#: outside `revisionMetadata`.
+_PUBLISHED_PATTERN_LOCATIONS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "itemId": ((RETRIEVAL_RESULT, ("properties", "itemId")),),
+    "contentType": ((RETRIEVAL_RESULT, ("properties", "contentType")),),
+    "revisionId": ((RETRIEVAL_RESULT, ("properties", "revisionId")),),
+    "namespace": (
+        (
+            "migrations/migration.schema.json",
+            ("$defs", "revisionMetadata", "properties", "namespace"),
+        ),
+        (
+            "migrations/migration.schema.json",
+            ("$defs", "opCreateItem", "properties", "namespace"),
+        ),
+    ),
+    "tenantId": (
+        (
+            "migrations/migration.schema.json",
+            ("$defs", "revisionMetadata", "properties", "tenantId"),
+        ),
+    ),
+    "aclGroup": (
+        (
+            "migrations/migration.schema.json",
+            ("$defs", "revisionMetadata", "properties", "aclGroup"),
+        ),
+    ),
+}
+
 
 @pytest.mark.parametrize(
     ("field", "candidates"),
@@ -511,6 +595,9 @@ _ULID_CANDIDATES = (
         ("itemId", _IDENTIFIER_CANDIDATES),
         ("contentType", _MEDIA_TYPE_CANDIDATES),
         ("revisionId", _ULID_CANDIDATES),
+        ("namespace", _NAMESPACE_CANDIDATES),
+        ("tenantId", _TENANT_ID_CANDIDATES),
+        ("aclGroup", _ACL_GROUP_CANDIDATES),
     ],
 )
 def test_published_patterns_admit_exactly_what_the_domain_constructs(
@@ -522,27 +609,47 @@ def test_published_patterns_admit_exactly_what_the_domain_constructs(
     A response-based check cannot cover this: a fixture reaches the ids it
     happens to contain, and the interesting cases are the ones no corpus has --
     a 201-character item id, a media type carrying a `charset` parameter, a ULID
-    with an ambiguous character. Comparing the two decisions is total over the
-    cases listed and costs no I/O.
+    with an ambiguous character, a namespace carrying the byte ``Scope.key``
+    joins components with. Comparing the two decisions is total over the cases
+    listed and costs no I/O.
 
     "Admits" means what a client's regex engine admits, not what a Python one
     does; ``_admits`` and the note above it carry that, and it is the difference
     between this test measuring the contract and measuring a proxy for it.
     """
-    from theurian.domain.identifiers import ItemId, RevisionId
-    from theurian.domain.values import MediaType
+    from theurian.domain.enums import KnowledgeStatus, Sensitivity
+    from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
+    from theurian.domain.values import AclGroup, MediaType, Scope, TenantId
+
+    def _namespace_builder(value: str) -> object:
+        # ``namespace`` has no dedicated value type -- ``Scope.__post_init__``
+        # is where the domain enforces its shape -- so this varies only the
+        # field under test, holding every other component at a value that is
+        # itself always valid.
+        return Scope(
+            project_id=ProjectId("backend-service"),
+            tenant_id=TenantId(),
+            sensitivity=Sensitivity.INTERNAL,
+            acl_group=AclGroup(),
+            namespace=value,
+            status=KnowledgeStatus.APPROVED,
+        )
 
     builders: dict[str, Callable[[str], object]] = {
         "itemId": ItemId,
         "contentType": MediaType,
         "revisionId": RevisionId,
+        "namespace": _namespace_builder,
+        "tenantId": TenantId,
+        "aclGroup": AclGroup,
     }
-    subschema = _load(RETRIEVAL_RESULT)["properties"][field]
-
-    for candidate in candidates:
-        assert _admits(subschema, candidate) == _constructs(builders[field], candidate), (
-            f"{field}: schema and domain disagree about {candidate!r}"
-        )
+    for relative, pointer in _PUBLISHED_PATTERN_LOCATIONS[field]:
+        subschema = _at(relative, pointer)
+        for candidate in candidates:
+            assert _admits(subschema, candidate) == _constructs(builders[field], candidate), (
+                f"{field} at {relative}#{'/'.join(pointer)}: "
+                f"schema and domain disagree about {candidate!r}"
+            )
 
 
 _PROJECT_ID_CANDIDATES = (

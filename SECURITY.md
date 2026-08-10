@@ -384,14 +384,17 @@ published artifact were what would settle it. Both have now happened: the tag is
   never fetched.
 - **Sensitivity boundaries (Milestone 6, not yet shipped).** The scope key that
   *would* identify a RAPTOR summary node's tree includes project, tenant,
-  sensitivity, ACL group, and namespace, and a node combining two sensitivity
-  levels *would* have no tree it could belong to — mixing impossible by
-  construction rather than prevented by a check. This is design, not running
-  code: `infrastructure/raptor/` is a docstring-only package ("nothing here is
-  built"), so it takes effect when Milestone 6 builds the forest. Until then no
+  sensitivity, ACL group, namespace, and status, and a node combining two
+  sensitivity levels *would* have no tree it could belong to — mixing impossible
+  by construction rather than prevented by a check. That refusal is written down
+  at the value level — `domain/raptor.py`'s `SummaryNode` raises when a child's
+  scope disagrees with its own — and stops there: no builder constructs a node,
+  no table stores one, no traversal reads one, and `infrastructure/raptor/` is
+  still a docstring-only package ("nothing here is built"). So the control is
+  not live yet; it takes effect when Milestone 6 builds the forest. Until then no
   RAPTOR summary is generated, so the interim residual is that there is no
   cross-sensitivity summary to leak. The scope key itself is real and tested over
-  all 32 component combinations (#115).
+  all 64 component combinations (#115).
 - **Approved knowledge.** No MCP tool can write it. Write-intent tools emit
   proposal files that a human reviews and merges.
 
