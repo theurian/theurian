@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -42,6 +43,13 @@ from theurian.application.retrieval_service import ResultGate
 from theurian.domain.enums import may_surface
 
 pytestmark = pytest.mark.unit
+
+#: Repo root, for the security document that lives outside the wheel.
+#:
+#: ``parents[4]`` is ``.../tests/unit/`` → ``tests`` → ``theurian-core`` →
+#: ``packages`` → repo root, the reckoning ``test_schemas.py`` and
+#: ``test_install_claims.py`` use for the same reason.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 #: The package as *imported*, not a path relative to this file.
 #:
@@ -250,4 +258,91 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
         f"`{STATUS_GATE}` before returning content, add a test that goes red when "
         f"it stops, and only then add it here with that test named beside it. If "
         f"you removed or moved one, amend this set and both docstrings together."
+    )
+
+
+# -- The scope filter: its axes are the axes SECURITY.md publishes ------------
+
+#: The shipped WHERE-clause filter (#63) and the security document that claims to
+#: derive its authorization-axis list from it.
+INDEX_STORE = SRC / "infrastructure" / "sqlite" / "index_store.py"
+SECURITY_MD = REPO_ROOT / "SECURITY.md"
+
+#: The block in SECURITY.md whose ``chunks.<column>`` tokens must be exactly the
+#: axes ``_scope`` emits. SECURITY.md's derivation table sources this list to
+#: "the predicates the retrieval path actually emits"; these markers make that
+#: claim checkable instead of a promise a reader has to take on trust.
+ENFORCED_AXES_BEGIN = "enforced-axes:begin"
+ENFORCED_AXES_END = "enforced-axes:end"
+
+
+def _scope_where_axes() -> set[str]:
+    """The ``chunks.<column>`` axes ``_scope``'s WHERE clause names, read from source.
+
+    Parses the shipped ``index_store.py``, walks the ``_scope`` function for its
+    string literals, and pulls the column out of each ``chunks.<column> = ?``
+    predicate. Reads the source rather than calling ``_scope``, so a clause the
+    runtime happens not to take on a given branch — the ``status`` predicate is
+    added only when ``include_unapproved`` is false — still counts as an axis the
+    filter can emit. The docstring beside the clauses mentions ``chunks`` columns
+    in prose but writes no ``chunks.<column> = ?``, so it does not match.
+    """
+    tree = ast.parse(INDEX_STORE.read_text(encoding="utf-8"), filename=str(INDEX_STORE))
+    scope = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_scope"
+    )
+    literals = " ".join(
+        node.value
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+    return set(re.findall(r"chunks\.(\w+)\s*=\s*\?", literals))
+
+
+def _security_md_published_axes() -> set[str]:
+    """The ``chunks.<column>`` axes SECURITY.md publishes as enforced, from its marked block."""
+    text = SECURITY_MD.read_text(encoding="utf-8")
+    begin = text.index(ENFORCED_AXES_BEGIN)
+    end = text.index(ENFORCED_AXES_END)
+    return set(re.findall(r"chunks\.(\w+)", text[begin:end]))
+
+
+def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits() -> None:
+    """Hold SECURITY.md to its own claim: the axes it publishes are the ones ``_scope`` emits.
+
+    SECURITY.md tells a reader that project isolation and status withholding are
+    the two authorization axes enforced on retrieval today (T-11, SEC-13), and its
+    "derivation, list by list" table sources that list to ``_scope``. That is a
+    claim about the shipped filter, and a document naming a control that has
+    drifted from — or never matched — the code is exactly the compliance-claims
+    defect #115 tracks.
+
+    This reads both sides off source: the ``chunks.<column>`` axes ``_scope``'s
+    WHERE clause emits, and the ``chunks.<column>`` tokens SECURITY.md publishes
+    in its marked enforced-axes block. Give ``_scope`` a ``chunks.tenant``
+    predicate without amending SECURITY.md, or trim a predicate the document still
+    advertises, and the two diverge here. The empty-set guard stops the two
+    extractors agreeing vacuously if a marker moves or the clause shape changes.
+    """
+    scope_axes = _scope_where_axes()
+    published_axes = _security_md_published_axes()
+
+    assert scope_axes, (
+        f"Found no `chunks.<column> = ?` predicate in `_scope` at {INDEX_STORE}. "
+        f"The reader broke, not the filter — comparing two empty sets would assert "
+        f"nothing. Fix the extractor before trusting a green result here."
+    )
+    assert published_axes == scope_axes, (
+        f"SECURITY.md's enforced-axes block publishes {sorted(published_axes)}, "
+        f"but `_scope` emits {sorted(scope_axes)}.\n\n"
+        f"SECURITY.md derives its authorization-axis list from `_scope` (its "
+        f"'derivation, list by list' table: 'the predicates the retrieval path "
+        f"actually emits'). The two have diverged. If `_scope` gained or dropped "
+        f"a predicate, re-derive the block delimited by `{ENFORCED_AXES_BEGIN}` "
+        f"and `{ENFORCED_AXES_END}` in SECURITY.md to match — and the FR-R1 "
+        f"disposition table in docs/architecture/requirements-analysis.md with "
+        f"it. A published axis that no predicate emits, or a predicate no document "
+        f"names, is the compliance-claims defect #115 tracks."
     )
