@@ -35,6 +35,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+from collections.abc import Iterator
 
 import pytest
 
@@ -77,6 +78,31 @@ ATTRIBUTE = "admit"
 SOLE_CALL_SITE = ("mcp/search.py", "hybrid_answer")
 
 
+def _iter_nodes_with_scope(tree: ast.AST) -> Iterator[tuple[ast.AST, tuple[str, ...]]]:
+    """Yield ``(node, scope)`` for every node, ``scope`` the dotted enclosing defs.
+
+    Shared by every scan in this file so they agree on what "enclosing function"
+    means. A ``def``/``class`` extends the scope for its body and is not itself
+    yielded as a candidate; everything else is yielded once, under the scope it
+    sits in.
+    """
+
+    def walk(node: ast.AST, scope: tuple[str, ...]) -> Iterator[tuple[ast.AST, tuple[str, ...]]]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                yield from walk(child, (*scope, child.name))
+            else:
+                yield child, scope
+                yield from walk(child, scope)
+
+    yield from walk(tree, ())
+
+
+def _here(module: str, scope: tuple[str, ...]) -> tuple[str, str]:
+    """A scan hit as ``(module path under theurian/, enclosing function)``."""
+    return module, ".".join(scope) or "<module>"
+
+
 def _attribute_uses(path: pathlib.Path) -> list[tuple[str, str]]:
     """Every ``.admit`` in ``path``, as ``(module path, enclosing function)``.
 
@@ -85,19 +111,11 @@ def _attribute_uses(path: pathlib.Path) -> list[tuple[str, str]]:
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     module = path.relative_to(SRC).as_posix()
-    found: list[tuple[str, str]] = []
-
-    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-                visit(child, (*scope, child.name))
-                continue
-            if isinstance(child, ast.Attribute) and child.attr == ATTRIBUTE:
-                found.append((module, ".".join(scope) or "<module>"))
-            visit(child, scope)
-
-    visit(tree, ())
-    return found
+    return [
+        _here(module, scope)
+        for node, scope in _iter_nodes_with_scope(tree)
+        if isinstance(node, ast.Attribute) and node.attr == ATTRIBUTE
+    ]
 
 
 def test_the_scanner_looks_for_a_method_the_gate_actually_has() -> None:
@@ -171,13 +189,18 @@ STATUS_GATE = may_surface.__name__
 #: ``knowledge.get`` and was added after the count was written. A count in a
 #: docstring is enforced by nothing; this set is.
 #:
-#: The five, by responsibility:
-#:   - the index builder decides what to write;
+#: The five, by responsibility, and the behavioural test that holds each to
+#: gating (so removing a site is caught here *and* the removal turns one red):
+#:   - the index builder decides what to write
+#:     (``test_index_builder`` withholds unapproved from the index);
 #:   - ``knowledge.search`` gates each of its two answer paths — the ranked path
 #:     through ``CanonicalVisibility._may_surface`` and the substring fallback
-#:     through ``mcp.search._scan``;
-#:   - ``knowledge.get`` gates the item it hands over by id, and, per edge,
-#:     each endpoint of a relation before publishing it.
+#:     through ``mcp.search._scan``
+#:     (``test_a_withheld_document_changes_nothing_a_caller_can_see``);
+#:   - ``knowledge.get`` gates the item it hands over by id, and, per edge, each
+#:     endpoint of a relation before publishing it
+#:     (``test_knowledge_get_will_not_hand_over_what_search_withheld`` and the
+#:     relation-visibility tests in ``tests/integration/test_mcp_tools.py``).
 STATUS_GATE_CALL_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
@@ -187,31 +210,70 @@ STATUS_GATE_CALL_SITES = {
 }
 
 
-def _name_uses(path: pathlib.Path, name: str) -> list[tuple[str, str]]:
-    """Every bare-``name`` reference in ``path``, as ``(module path, enclosing function)``.
+#: The module ``may_surface`` lives in, matched against imports to follow the
+#: symbol rather than a spelling.
+ENUMS_MODULE = "theurian.domain.enums"
 
-    ``may_surface`` is a module-level function reached by name, so its uses are
-    :class:`ast.Name` nodes. ``from ... import may_surface`` is an
-    :class:`ast.alias`, and its ``def`` is a :class:`ast.FunctionDef`; neither is
-    a :class:`ast.Name`, so the import lines and the definition are not counted —
-    only the places that actually reach the function are. Matches the reference
-    rather than the call, so binding it without calling — ``gate = may_surface``
-    — counts as the site it is, the same way the ``.admit`` scan above does.
+
+def _dotted(node: ast.AST) -> str | None:
+    """The dotted name of a ``Name``/``Attribute`` chain, else ``None``.
+
+    ``theurian.domain.enums`` → ``"theurian.domain.enums"``; a subscript or call
+    in the chain → ``None``, because it is not a plain module reference.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Per module: the local names bound to ``may_surface``, and to the enums module.
+
+    So the scan follows the import, not a spelling. ``import may_surface as gate``
+    binds ``gate`` to the function (a *direct* name); ``import theurian.domain.enums
+    as e`` and ``from theurian.domain import enums`` bind a name to the *module*,
+    through which the function is reached as ``e.may_surface``. Both are how a
+    sixth call site could hide from a scan that only knew the bare name — the
+    adversarial review demonstrated both survive a bare-``Name`` scan.
+    """
+    direct: set[str] = set()
+    module_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and not node.level:
+            if node.module == ENUMS_MODULE:
+                direct |= {a.asname or a.name for a in node.names if a.name == STATUS_GATE}
+            elif node.module == "theurian.domain":
+                module_aliases |= {a.asname or a.name for a in node.names if a.name == "enums"}
+        elif isinstance(node, ast.Import):
+            module_aliases |= {a.asname or a.name for a in node.names if a.name == ENUMS_MODULE}
+    return direct, module_aliases
+
+
+def _status_gate_uses(path: pathlib.Path) -> list[tuple[str, str]]:
+    """Every place ``path`` reaches ``may_surface``, as ``(module path, enclosing function)``.
+
+    Resolves imports rather than matching a spelling, so all reaching forms count:
+    the bare name it is imported under (``may_surface`` or an ``as`` alias) and an
+    attribute on the imported module (``enums.may_surface``). Matches the reference,
+    not the call, so binding without calling counts. The ``def`` and the ``import``
+    lines are a ``FunctionDef``/``ast.alias`` and are matched by neither arm.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     module = path.relative_to(SRC).as_posix()
+    direct, module_aliases = _enums_bindings(tree)
     found: list[tuple[str, str]] = []
-
-    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-                visit(child, (*scope, child.name))
-                continue
-            if isinstance(child, ast.Name) and child.id == name:
-                found.append((module, ".".join(scope) or "<module>"))
-            visit(child, scope)
-
-    visit(tree, ())
+    for node, scope in _iter_nodes_with_scope(tree):
+        by_bare_name = isinstance(node, ast.Name) and node.id in direct
+        by_module_attr = (
+            isinstance(node, ast.Attribute)
+            and node.attr == STATUS_GATE
+            and _dotted(node.value) in module_aliases
+        )
+        if by_bare_name or by_module_attr:
+            found.append(_here(module, scope))
     return found
 
 
@@ -233,14 +295,17 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
     added, and a known one moved or deleted — and names the sites it found. A new
     site is a decision someone records here, not a diff nobody notices.
 
-    Like the ``.admit`` scan above, this reads names: ``getattr``, a dispatch
-    table, or a second status rule under another name all pass it. It is a floor
-    on the review a new call site gets, not a proof that an ungated path cannot
-    exist.
+    The scan follows the import, so the three reaching forms all count: the bare
+    name, an ``as`` alias (``import may_surface as gate; gate(...)``), and an
+    attribute on the imported module (``enums.may_surface(...)``). The adversarial
+    review showed the last two survive a scan that only knew the bare name; both
+    are now killed, which is what makes enums.py's "a sixth cannot land unnoticed"
+    true rather than aspirational. What it still cannot see is a name it cannot
+    resolve statically — ``getattr``, a dispatch table, a re-export under a third
+    name — so it is a floor on the review a new call site gets, not a proof that
+    an ungated path cannot exist.
     """
-    sites = sorted(
-        {site for path in sorted(SRC.rglob("*.py")) for site in _name_uses(path, STATUS_GATE)}
-    )
+    sites = sorted({site for path in sorted(SRC.rglob("*.py")) for site in _status_gate_uses(path)})
 
     assert sites == sorted(STATUS_GATE_CALL_SITES), (
         f"`{STATUS_GATE}` is consulted from {len(sites)} place(s) in the shipped "
@@ -261,88 +326,144 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
     )
 
 
-# -- The scope filter: its axes are the axes SECURITY.md publishes ------------
+# -- The scope filter: its axes are the axes the documents publish ------------
 
-#: The shipped WHERE-clause filter (#63) and the security document that claims to
-#: derive its authorization-axis list from it.
+#: The shipped WHERE-clause filter (#63) and the two documents that claim to
+#: derive their authorization-axis list from it.
 INDEX_STORE = SRC / "infrastructure" / "sqlite" / "index_store.py"
 SECURITY_MD = REPO_ROOT / "SECURITY.md"
+REGISTER_MD = REPO_ROOT / "docs" / "architecture" / "requirements-analysis.md"
 
-#: The block in SECURITY.md whose ``chunks.<column>`` tokens must be exactly the
-#: axes ``_scope`` emits. SECURITY.md's derivation table sources this list to
-#: "the predicates the retrieval path actually emits"; these markers make that
-#: claim checkable instead of a promise a reader has to take on trust.
+#: Every document that publishes the enforced-axis list, each pinned to ``_scope``.
+#: A third copy of ``{project_id, status}`` that no test read is how a count
+#: drifts, so both copies are checked against the one source.
+PINNED_AXIS_DOCS = (
+    ("SECURITY.md", SECURITY_MD),
+    ("requirements-analysis.md", REGISTER_MD),
+)
+
+#: The block, in each of those documents, whose ``chunks.<column>`` tokens *and*
+#: spelled count must both match ``_scope``. The markers name the pinning test
+#: *file* (stable), not a function, so renaming a test does not silently orphan a
+#: document from its check.
 ENFORCED_AXES_BEGIN = "enforced-axes:begin"
 ENFORCED_AXES_END = "enforced-axes:end"
+
+#: Spelled cardinals, so "**two** axes" in a document is pinned to the number of
+#: axes listed beside it — the count-in-prose drift ``may_surface`` had, kept off
+#: the document side too.
+_CARDINALS = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+}
 
 
 def _scope_where_axes() -> set[str]:
     """The ``chunks.<column>`` axes ``_scope``'s WHERE clause names, read from source.
 
-    Parses the shipped ``index_store.py``, walks the ``_scope`` function for its
-    string literals, and pulls the column out of each ``chunks.<column> = ?``
-    predicate. Reads the source rather than calling ``_scope``, so a clause the
-    runtime happens not to take on a given branch — the ``status`` predicate is
-    added only when ``include_unapproved`` is false — still counts as an axis the
-    filter can emit. The docstring beside the clauses mentions ``chunks`` columns
-    in prose but writes no ``chunks.<column> = ?``, so it does not match.
+    Parses the shipped ``index_store.py`` and pulls the column out of every
+    ``chunks.<column>`` that a comparison operator follows, inside ``_scope``'s
+    clause literals. Three deliberate choices:
+
+    - **Any comparison operator, not only ``= ?``.** The next axis is as likely to
+      arrive as ``chunks.sensitivity <= ?`` or ``chunks.acl_group IN (?)`` as an
+      equality; a regex pinned to ``= ?`` would silently miss it.
+    - **The docstring is excluded.** ``ast.walk`` would otherwise read the prose
+      beside the clauses, where a future sentence naming ``chunks.foo`` would add
+      a phantom axis that this test's own SECURITY.md marker could then be edited
+      to "match" — the #115 class, reproduced inside the test.
+    - **Source, not a call.** A clause the runtime takes on only one branch — the
+      ``status`` predicate, added only when ``include_unapproved`` is false —
+      still counts as an axis the filter can emit.
     """
     tree = ast.parse(INDEX_STORE.read_text(encoding="utf-8"), filename=str(INDEX_STORE))
     scope = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_scope"
+        (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_scope"),
+        None,
     )
+    assert scope is not None, (
+        f"No function named `_scope` in {INDEX_STORE}; it was renamed or moved, and "
+        f"this test is now deriving axes from nothing. Point it at the new name — "
+        f"the watcher needs a watcher, the way `ResultGate.admit` has one above."
+    )
+
+    doc = ast.get_docstring(scope, clean=False)
     literals = " ".join(
         node.value
         for node in ast.walk(scope)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value != doc
     )
-    return set(re.findall(r"chunks\.(\w+)\s*=\s*\?", literals))
+    return set(
+        re.findall(
+            r"chunks\.(\w+)(?=\s*(?:[=<>!]|\b(?:IN|IS|LIKE|NOT)\b))",
+            literals,
+            re.IGNORECASE,
+        )
+    )
 
 
-def _security_md_published_axes() -> set[str]:
-    """The ``chunks.<column>`` axes SECURITY.md publishes as enforced, from its marked block."""
-    text = SECURITY_MD.read_text(encoding="utf-8")
+def _published_axes_and_count(path: pathlib.Path) -> tuple[set[str], list[int]]:
+    """A document's marked block: its ``chunks.<column>`` axes and every spelled count in it."""
+    text = path.read_text(encoding="utf-8")
     begin = text.index(ENFORCED_AXES_BEGIN)
     end = text.index(ENFORCED_AXES_END)
-    return set(re.findall(r"chunks\.(\w+)", text[begin:end]))
+    block = text[begin:end]
+    axes = set(re.findall(r"chunks\.(\w+)", block))
+    counts = [_CARDINALS[w] for w in re.findall(r"[a-z]+", block.lower()) if w in _CARDINALS]
+    return axes, counts
 
 
-def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits() -> None:
-    """Hold SECURITY.md to its own claim: the axes it publishes are the ones ``_scope`` emits.
+@pytest.mark.parametrize("label, path", PINNED_AXIS_DOCS, ids=[doc[0] for doc in PINNED_AXIS_DOCS])
+def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits(
+    label: str, path: pathlib.Path
+) -> None:
+    """Hold each document to its own claim: the axes it publishes are the ones ``_scope`` emits.
 
     SECURITY.md tells a reader that project isolation and status withholding are
-    the two authorization axes enforced on retrieval today (T-11, SEC-13), and its
-    "derivation, list by list" table sources that list to ``_scope``. That is a
-    claim about the shipped filter, and a document naming a control that has
-    drifted from — or never matched — the code is exactly the compliance-claims
-    defect #115 tracks.
+    the two authorization axes enforced on retrieval today (T-11, SEC-13), and the
+    FR-R1 register repeats the list; both source it to ``_scope``. A document
+    naming a control that has drifted from — or never matched — the code is exactly
+    the compliance-claims defect #115 tracks, and a *third* copy nothing reads is
+    how the count drifts, so both documents are pinned here against one source.
 
-    This reads both sides off source: the ``chunks.<column>`` axes ``_scope``'s
-    WHERE clause emits, and the ``chunks.<column>`` tokens SECURITY.md publishes
-    in its marked enforced-axes block. Give ``_scope`` a ``chunks.tenant``
-    predicate without amending SECURITY.md, or trim a predicate the document still
-    advertises, and the two diverge here. The empty-set guard stops the two
-    extractors agreeing vacuously if a marker moves or the clause shape changes.
+    Fails three ways, each demonstrated by mutation: give ``_scope`` a
+    ``chunks.tenant`` (or ``chunks.sensitivity <=``) predicate a document does not
+    publish; drop a predicate a document still advertises; or add an axis to a
+    document's block without correcting its spelled count. The empty-set guard
+    stops the two extractors agreeing vacuously if a marker moves.
     """
     scope_axes = _scope_where_axes()
-    published_axes = _security_md_published_axes()
 
     assert scope_axes, (
-        f"Found no `chunks.<column> = ?` predicate in `_scope` at {INDEX_STORE}. "
-        f"The reader broke, not the filter — comparing two empty sets would assert "
+        f"Found no `chunks.<column>` predicate in `_scope` at {INDEX_STORE}. The "
+        f"reader broke, not the filter — comparing two empty sets would assert "
         f"nothing. Fix the extractor before trusting a green result here."
     )
+
+    published_axes, published_counts = _published_axes_and_count(path)
+
     assert published_axes == scope_axes, (
-        f"SECURITY.md's enforced-axes block publishes {sorted(published_axes)}, "
-        f"but `_scope` emits {sorted(scope_axes)}.\n\n"
-        f"SECURITY.md derives its authorization-axis list from `_scope` (its "
-        f"'derivation, list by list' table: 'the predicates the retrieval path "
-        f"actually emits'). The two have diverged. If `_scope` gained or dropped "
-        f"a predicate, re-derive the block delimited by `{ENFORCED_AXES_BEGIN}` "
-        f"and `{ENFORCED_AXES_END}` in SECURITY.md to match — and the FR-R1 "
-        f"disposition table in docs/architecture/requirements-analysis.md with "
-        f"it. A published axis that no predicate emits, or a predicate no document "
-        f"names, is the compliance-claims defect #115 tracks."
+        f"{label}'s enforced-axes block publishes {sorted(published_axes)}, but "
+        f"`_scope` emits {sorted(scope_axes)}.\n\n"
+        f"{label} derives its authorization-axis list from `_scope`. The two have "
+        f"diverged. If `_scope` gained or dropped a predicate, re-derive the block "
+        f"delimited by `{ENFORCED_AXES_BEGIN}`/`{ENFORCED_AXES_END}` in both "
+        f"SECURITY.md and docs/architecture/requirements-analysis.md to match. A "
+        f"published axis that no predicate emits, or a predicate no document names, "
+        f"is the compliance-claims defect #115 tracks."
+    )
+
+    assert set(published_counts) == {len(scope_axes)}, (
+        f"{label}'s enforced-axes block spells its count as {published_counts} but "
+        f"lists {len(scope_axes)} axis/axes ({sorted(scope_axes)}). Correct the "
+        f"spelled number inside the markers so a third axis cannot land while the "
+        f"prose still says 'two' — the count-in-prose drift `may_surface` had, kept "
+        f"off the document side."
     )
