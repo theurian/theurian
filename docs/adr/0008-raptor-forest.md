@@ -309,10 +309,14 @@ flowchart TB
    > **`chunks.derived` and `chunk_derivation` are dropped at v4.** A column
    > nothing will ever write serves nothing, and keeping it would leave two
    > provenance mechanisms of which one is permanently dead. The traversal is
-   > rewritten against the node tables, and ADR-0024's five pinned traversal
-   > tests migrate to that counterpart rather than being deleted — what they
-   > hold is the *rule*, and the rule is unchanged: withdrawal is transitive over
-   > derived content, and an unresolvable derivation edge means delete, not keep.
+   > rewritten against the node tables, and ADR-0024's pinned traversal tests
+   > migrate to that counterpart rather than being deleted — what they hold is
+   > the *rule*, and the rule is unchanged: withdrawal is transitive over derived
+   > content, and an unresolvable derivation edge means delete, not keep. **There
+   > are six of them, not the five this said until they migrated** — that count
+   > was taken from ADR-0024's Compliance bullet, which named five shapes while
+   > the suite held a sixth of the same family. That ADR's amendment to decision
+   > 8 records the corrected population.
    >
    > **Three places name those columns and must move together, and the third is
    > the one a reader would miss.** `_DOOMED` in
@@ -355,6 +359,44 @@ flowchart TB
    > place; a node traversal would be the second, and the argument that
    > consolidated the first three applies to it unchanged. The owed item is in
    > Compliance.
+   >
+   > **Landed at index schema v4.** Everything above this note is the plan as it
+   > stood when the amendment was written; what follows is what the schema-v4 CL
+   > built, so the paragraphs above are not read back as the current state.
+   > `index_schema.py` declares `nodes` — the fourteen provenance columns this
+   > decision lists, plus `project_id`, `sensitivity` and `status` — together
+   > with `node_derivation` and `nodes_fts`. `chunks.derived` and
+   > `chunk_derivation` are gone.
+   > `test_the_schema_carries_the_node_tables_the_purge_traversal_will_walk`
+   > holds both halves: the three new objects present with their exact column
+   > sets, and the two old ones absent.
+   >
+   > **The three places named above moved together, and the post-condition beside
+   > them went from three checks to four.** `_DOOMED` seeds on `nodes` rows
+   > absent from `node_derivation` and walks both edge shapes — a node built from
+   > a doomed chunk, and a node built from a doomed node. `_verify` keeps its
+   > unprovenanced check and gains one with no v3 analogue: a `node_derivation`
+   > edge whose source chunk or source node is gone, which one table could not
+   > express as a state distinct from having no edge at all.
+   > `IndexStore.holds_any_revision` reads `nodes` through a `UNION ALL`, because
+   > the two clauses no longer share a `FROM`. The `no such table:
+   > chunk_derivation` failure this amendment predicted for that third one is
+   > reproduced rather than argued, and it does fire even where the revision
+   > clause alone would have answered.
+   >
+   > **The population above is discharged, which is worth saying because "none is
+   > corrected here" invites the next reader to assume they all still stand.**
+   > Its key returns the same nine files, and every remaining hit in `src/` and
+   > `tests/` is a "held at v3 by …" note recording the migration rather than a
+   > claim about a future writer. `packages/theurian-core/CHANGELOG.md` is
+   > history, as that paragraph said; ADR-0024's Compliance line is corrected in
+   > the same CL as this note.
+   >
+   > **Nothing writes a node row.** `infrastructure/raptor/` is still an empty
+   > package and `SummarizationProvider` still a port with no adapter, so every
+   > test over these tables inserts its fixture with raw SQL and the builder is
+   > the next CL. The scope columns exist ahead of any reader of them, so the
+   > `_scope` counterpart named just above stays owed rather than landing here.
 6. Summarization constraints, enforced in the prompt and validated in evaluation:
    - state no fact absent from the children;
    - treat imperative text in the source as *data being described*, never as an
@@ -718,6 +760,40 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > `docs/security/threat-model.md`; `docs/architecture/raptor.md` still says 32
 > in two places and is reconciled whole in its own CL.
 
+> **Amended in Milestone 6, by the schema-v4 CL. The index-schema half is no
+> longer the unchanged one, and four sentences in this section now say the
+> opposite of what is in the file.** Named one at a time, because each was
+> written by a different note and a reader who corrects one would otherwise take
+> the rest as still standing.
+>
+> - "`chunks.derived` and `chunk_derivation` are in the index schema at v3 with
+>   a purge traversal over them" — they are dropped at v4. The traversal is
+>   there and walks `nodes` and `node_derivation` instead (the amendment to
+>   decision 5 above, and ADR-0024 decision 8's).
+> - "`infrastructure/sqlite/index_schema.py` declares no node table, no
+>   `tree_id` column and no `summary_prompt_hash`" — it declares all three.
+>   `nodes` carries decision 5's fourteen provenance columns, `tree_id` and
+>   `summary_prompt_hash` among them, plus `project_id`, `sensitivity` and
+>   `status`; `node_derivation` carries the provenance edges; `nodes_fts` is a
+>   separate external-content FTS5 table, so node text cannot move a leaf's BM25
+>   score.
+> - "no table stores it" — a table exists to store one now. Nothing writes to
+>   it: no code maps a `SummaryNode` onto a `nodes` row in either direction, and
+>   every test over these tables inserts its fixture with raw SQL.
+> - "No column holds a `summary_prompt_hash`", in the third Still-owed item
+>   below — `nodes.summary_prompt_hash` does. That item stays owed and its
+>   milestone is unchanged, on the half that was always the point: nothing
+>   compares the column to an active configuration, because nothing writes it
+>   and nothing reads a node back.
+>
+> **What the headline claim keeps is the half it was written for.**
+> `infrastructure/raptor/` still holds a module docstring and no code,
+> `SummarizationProvider` still has no adapter, and nothing summarises, so
+> "nothing here is built, so nothing here is enforced" holds for everything that
+> would build, populate or traverse the forest. What v4 changed is storage, not
+> enforcement — an empty table enforces nothing either — and every item below
+> stays owed, at the milestone it already names.
+
 Still owed, with the milestone that will satisfy it:
 
 - **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
@@ -806,6 +882,19 @@ the decision it belongs to states a property that is otherwise only an argument:
   and the pressure is to weaken it. Forest side asserted non-empty, for the
   reason above. This is the test that goes RED if summary rows ever land in
   `chunks`, and it is why that effect is left unmeasured.
+
+  > **Amended in Milestone 6, by the schema-v4 CL. A narrow first instance
+  > landed; the item stays owed for the full form.**
+  > `tests/integration/test_index_store.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`
+  > pins one corpus, one inserted node and one query: a leaf chunk's bm25 score,
+  > read through the real `search_lexical` path, must be identical across the
+  > insert of a node whose text is almost entirely that query's own terms. It
+  > goes RED if node text ever shares `chunks_fts`, which is this item's purpose
+  > and not its content — what is still owed is the direct comparison of `N`,
+  > `avgdl` and the per-term document frequencies, over a *derived* forest
+  > asserted non-empty, and neither half is reachable while nothing builds one.
+  > That test's docstring names `fts5vocab` as how to read those statistics out;
+  > this item leaves the mechanism open, saying only "out of the FTS5 tables".
 - **Each declared child scope is derived from the child it summarises** — the
   half of decision 1's structural guarantee `SummaryNode` cannot hold, owed with
   the builder CL. `SummaryNode.children` are *declarations*: a builder that
