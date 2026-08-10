@@ -75,3 +75,32 @@ def test_edits_and_file_old_new_together_is_rejected_not_silently_resolved(
 
     with pytest.raises(HarnessError):
         _load_spec(spec)
+
+
+def test_a_spec_whose_top_level_is_not_a_list_is_rejected(tmp_path: Path) -> None:
+    """MEDIUM-4: a spec is documented as a JSON list; a bare object is not one.
+
+    ``_load_spec``'s very first check (``isinstance(raw, list)``) had no
+    test of its own -- every other spec fixture in this file is already a
+    list, so a regression here (e.g. accepting a dict and iterating its
+    keys) would have gone unnoticed.
+    """
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"label": "not-a-list"}), encoding="utf-8")
+
+    with pytest.raises(HarnessError, match="a JSON list"):
+        _load_spec(spec)
+
+
+def test_a_non_dict_top_level_entry_is_rejected(tmp_path: Path) -> None:
+    """MEDIUM-4: a top-level list element that is not an object must be refused.
+
+    Distinct from the ``edits``-list check above: this is the *original*
+    ``isinstance(entry, dict)`` guard for each mutation entry itself, which
+    also had no test naming it directly.
+    """
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(["not-an-object"]), encoding="utf-8")
+
+    with pytest.raises(HarnessError, match="is not an object"):
+        _load_spec(spec)
