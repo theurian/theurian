@@ -452,8 +452,13 @@ def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> Non
 
 
 class _Spy:
-    """Records whether `derive_purged` was reached, to catch a copy that should
-    not have happened."""
+    """Records whether `derive_purged` was reached, and writes a real copy there.
+
+    The written file is what lets the ``removed == 0`` discard be *observed*: a
+    spy that wrote nothing leaves no orphan, so `_discard(target)` and a no-op
+    read the same. This writes the completed copy, so the discard has something to
+    clean and a missing discard is a file left behind.
+    """
 
     def __init__(self, *, holds: bool, removed: int) -> None:
         self._holds = holds
@@ -466,8 +471,9 @@ class _Spy:
     def holds_any_revision(self, _revision_ids: Sequence[str]) -> bool:
         return self._holds
 
-    def derive_purged(self, *_args: object, **_kwargs: object) -> int:
+    def derive_purged(self, target: Path, *_args: object, **_kwargs: object) -> int:
         self.derive_called = True
+        target.write_text("a complete purged copy the use case must discard if it removed nothing")
         return self._removed
 
 
@@ -516,6 +522,10 @@ def test_a_copy_that_removes_nothing_is_discarded_and_publishes_nothing(tmp_path
     assert outcome == WithdrawalPurge(published=False, reason=NOTHING_TO_PURGE)
     assert spy.derive_called is True, "this path is the one reached after the copy"
     assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
+    assert sorted(paths.state.glob("theurian-index-*.sqlite")) == [paths.index_for(BUILD_ID)], (
+        "the complete copy that removed nothing must be discarded, not left as an orphan gc "
+        "cannot reap (its id sorts above the published one)"
+    )
 
 
 def test_a_pointer_write_failure_after_a_good_copy_discards_the_orphan(
@@ -547,3 +557,60 @@ def test_a_pointer_write_failure_after_a_good_copy_discards_the_orphan(
     assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
     builds = sorted(paths.state.glob("theurian-index-*.sqlite"))
     assert builds == [paths.index_for(BUILD_ID)], "the unpublished purged copy must be discarded"
+
+
+def _insert_unprovenanced_derived(path: Path, chunk_id: str) -> None:
+    """Add a ``derived = 1`` chunk with no `chunk_derivation` edge -- unprovenanced.
+
+    The state a partial or migrated build leaves once RAPTOR (ADR-0008) writes
+    derived rows. `add_chunks` never sets ``derived``, so this goes in by hand.
+    """
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(
+            "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, heading, "
+            "text, token_estimate, status, sensitivity, trust_level, namespace, derived) "
+            "VALUES (?, ?, ?, ?, 0, '', ?, 3, 'approved', 'internal', 'reviewed', '', 1)",
+            (chunk_id, PROJECT, "architecture.summary", "raptor-summary", "a derived summary"),
+        )
+        connection.commit()
+
+
+def test_an_unprovenanced_derived_row_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> None:
+    """The second `_DOOMED` seed, driven end to end (MEDIUM-2).
+
+    `holds_any_revision` widened to cover both seeds of `index_purge._DOOMED`, so
+    it stays equivalent to ``derive_purged`` returning a non-zero count once
+    derived rows exist. This pins that: a build with an unprovenanced derived row
+    but **no** withdrawn-revision match must have the pre-check return ``True`` and
+    the purge remove the row -- so the ``derived = 1`` clause is actually
+    evaluated, not just present. It kills the ``derived = 1 -> derived = 99``
+    mutation, which the widening's own presence did not.
+    """
+    paths = _paths(tmp_path)
+    _build(paths.index_for(BUILD_ID), include_withdrawn=False)
+    _insert_unprovenanced_derived(paths.index_for(BUILD_ID), "raptor-summary#0")
+    write_active_index_pointer(
+        paths,
+        index_build_id=BUILD_ID,
+        state_hash=STATE_HASH,
+        project_id=PROJECT,
+        indexes_unapproved=False,
+    )
+
+    # The pre-check sees it even though the withdrawn revision matches no chunk.
+    assert SqliteIndexStore(paths.index_for(BUILD_ID)).holds_any_revision(["no-such-revision"]), (
+        "the unprovenanced derived row is the second _DOOMED seed and must be detected"
+    )
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(["no-such-revision"]),
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome.published is True, "a build with something to remove is purged and republished"
+    assert outcome.removed == 1, "the one unprovenanced derived row"
+    assert not _published_store(paths).holds_any_revision(["no-such-revision"]), (
+        "and it is gone from the published build"
+    )

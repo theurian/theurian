@@ -702,9 +702,9 @@ def revisions_to_purge(
     the index's own flag, which is what keeps the purge and the gate from
     disagreeing about what "withheld" means for a given build.
 
-    Sorted for a deterministic result a replay reproduces, which the tests pin; no
-    runtime consumer observes the order, because the purge deletes by set
-    membership.
+    Sorted only for a deterministic result across a replay. No runtime consumer
+    observes the order -- the purge deletes by set membership -- so nothing pins
+    the sortedness and nothing depends on it.
     """
     purge: set[str] = set()
     for candidate in candidates:
