@@ -241,6 +241,52 @@ def test_a_restore_failure_during_rollback_does_not_mask_the_original_cause_or_b
     assert file_a.read_text(encoding="utf-8") == original_a
 
 
+def test_a_non_harnesserror_cause_still_rolls_back_the_edits_that_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MEDIUM-2: rollback must trigger for causes ``_apply_edit`` never wraps.
+
+    The only cause exercised elsewhere is an anchor mismatch, itself already
+    a ``HarnessError`` -- so ``_apply``'s rollback catching ``BaseException``
+    is unproven; narrowing it to ``except HarnessError`` would still pass
+    every other test. Injects a genuine ``OSError`` from ``Path.write_text``
+    on the third edit's target, the same shape as a real disk failure
+    mid-composite, and confirms the first two edits still come back.
+    """
+    file_a = tmp_path / "a.py"
+    file_b = tmp_path / "b.py"
+    file_c = tmp_path / "c.py"
+    file_a.write_text("AAA\n", encoding="utf-8")
+    file_b.write_text("BBB\n", encoding="utf-8")
+    file_c.write_text("CCC\n", encoding="utf-8")
+    original_a = file_a.read_text(encoding="utf-8")
+    original_b = file_b.read_text(encoding="utf-8")
+    real_write_text = Path.write_text
+
+    def _flaky_write_text(self: Path, data: str, *args: object, **kwargs: object) -> int:
+        if self.name == "c.py":
+            raise OSError("simulated disk failure writing c.py")
+        return real_write_text(self, data, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _flaky_write_text)
+    mutation = mutate_edits.Mutation(
+        label="third-edit-os-error",
+        path="a.py",
+        old="AAA",
+        new="XXX",
+        also=(
+            mutate_edits.Edit(path="b.py", old="BBB", new="YYY"),
+            mutate_edits.Edit(path="c.py", old="CCC", new="ZZZ"),
+        ),
+    )
+
+    with pytest.raises(OSError, match="simulated disk failure"):
+        mutate_edits._apply(tmp_path, mutation)
+
+    assert file_a.read_text(encoding="utf-8") == original_a
+    assert file_b.read_text(encoding="utf-8") == original_b
+
+
 def test_digest_targets_reports_every_path_a_composite_mutation_touches() -> None:
     """The integrity check watches every file a composite mutation names.
 
