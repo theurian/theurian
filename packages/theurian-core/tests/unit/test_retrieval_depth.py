@@ -51,8 +51,10 @@ import pytest
 from fakes import truncating, whole
 
 from theurian.application.retrieval_service import (
+    CANDIDATE_DEPTH,
     RetrievalError,
     RetrievalService,
+    SearchOutcome,
     SearchRequest,
 )
 from theurian.application.visibility import CanonicalVisibility
@@ -408,7 +410,7 @@ class _ControlledValiditySession:
         raise NotImplementedError  # pragma: no cover - not read by CanonicalVisibility
 
 
-def _search_pinned_excluding(excluded_at_moment: int) -> _CountingIndex:
+def _search_pinned_excluding(excluded_at_moment: int) -> tuple[_CountingIndex, SearchOutcome]:
     """One ordinary search, pinned to :data:`MOMENT`, over an all-approved,
     all-current corpus in which the first ``excluded_at_moment`` items are not
     yet valid at that moment and everything else is.
@@ -424,9 +426,9 @@ def _search_pinned_excluding(excluded_at_moment: int) -> _CountingIndex:
         moment=MOMENT,
     )
 
-    service.search(SearchRequest(query="gateway", project_id="demo"), visibility)
+    outcome = service.search(SearchRequest(query="gateway", project_id="demo"), visibility)
 
-    return index
+    return index, outcome
 
 
 @pytest.mark.parametrize(
@@ -453,7 +455,7 @@ def test_a_pinned_moment_never_costs_a_second_retrieval_pass(excluded_at_moment:
     one look like, with a caller-chosen moment standing in for a corpus the
     caller cannot control.
     """
-    index = _search_pinned_excluding(excluded_at_moment)
+    index, _outcome = _search_pinned_excluding(excluded_at_moment)
 
     assert _first_read_was_a_choice(index), (
         "the corpus must outlast the first pass, or this measures exhaustion"
@@ -462,6 +464,38 @@ def test_a_pinned_moment_never_costs_a_second_retrieval_pass(excluded_at_moment:
         f"excluding {excluded_at_moment} items by validity must not force a second pass"
     )
     assert index.passes(SUBSTRING_READS) == 1
+
+
+def test_a_pinned_moment_still_returns_valid_rows_ranked_below_candidate_depth() -> None:
+    """HIGH (recall regression), review round 2 of PR #112.
+
+    The top :data:`CANDIDATE_DEPTH` rows by rank are all outside the pinned
+    window; the next :data:`CANDIDATE_DEPTH` -- still inside the first
+    retriever pass, already fetched and already past ``cleared`` -- are
+    inside it. The fix for the CRITICAL closed in round 1 cut to
+    ``CANDIDATE_DEPTH`` *before* calling ``at_moment``, which discarded the
+    fifty valid rows along with the fifty rightly-excluded ones and answered
+    zero results -- while the unranked fallback, which checks validity per
+    row before any cut, answers fifty. Closed by reordering: ``at_moment`` now
+    sees the whole cleared set before anything is cut to size.
+
+    This is deliberately not just a stronger assertion on the pass-count test
+    above: that test never inspected what ``search`` returned, only how many
+    times it read a retriever, so a recall regression exactly this shape
+    could -- and did -- pass it.
+    """
+    index, outcome = _search_pinned_excluding(CANDIDATE_DEPTH)
+
+    assert _first_read_was_a_choice(index), (
+        "the corpus must outlast the first pass, or this measures exhaustion"
+    )
+    assert index.passes(LEXICAL_READS) == 1, (
+        "the recall fix must not reopen the CRITICAL: the pass count must stay independent of asOf"
+    )
+    assert len(outcome.candidates) == CANDIDATE_DEPTH, (
+        f"the {CANDIDATE_DEPTH} rows ranked just below the cut are inside the pinned "
+        f"window and must survive -- got {len(outcome.candidates)}"
+    )
 
 
 #: Withheld counts, each twice the last, for the growth test below.

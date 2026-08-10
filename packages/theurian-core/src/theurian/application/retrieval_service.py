@@ -550,7 +550,24 @@ class RetrievalService:
                 # through timing -- move with `asOf`, reviving the
                 # single-withheld-row oracle `FIRST_PASS_DEPTH` exists to
                 # blunt.
-                return visible.at_moment(cleared[:CANDIDATE_DEPTH])
+                #
+                # Applied to the *whole* of `cleared`, not to `cleared[:
+                # CANDIDATE_DEPTH]` -- a HIGH found in review round 2 of the
+                # same PR. `cleared` can hold more than `CANDIDATE_DEPTH` rows
+                # (the loop exits as soon as it reaches that many, not when it
+                # has exactly that many), so cutting first can throw away rows
+                # ranked just below the cut that are inside the window,
+                # together with higher-ranked ones that are not -- and answer
+                # zero where the unranked fallback, which checks validity
+                # before any cut, answers fifty.
+                # `test_a_pinned_moment_still_returns_valid_rows_ranked_below_candidate_depth`
+                # (`tests/unit/test_retrieval_depth.py`) is red against the
+                # cut-first order. Reordering costs nothing towards the
+                # CRITICAL above: the exit condition on the previous line
+                # already ran, using only `cleared`, before this line is ever
+                # reached, so which order the two operations happen in below
+                # cannot change how many times a retriever was asked.
+                return visible.at_moment(cleared)[:CANDIDATE_DEPTH]
             if len(page.rows) <= served:
                 raise RetrievalError(
                     f"A retriever returned {len(page.rows)} rows at depth {depth} after "
@@ -623,11 +640,16 @@ class RetrievalService:
         # for. The field is still true of it, which is why the port carries it
         # rather than exempting this method.
         #
-        # `at_moment` after the `[:CANDIDATE_DEPTH]` cut, matching
-        # `_visible_ranking` -- this retriever has no depth loop for `asOf` to
-        # bias, but keeping the split uniform means nothing here has to
-        # re-verify that fact to stay correct if one is ever added.
-        return visible.at_moment(visible.cleared(page.rows)[:CANDIDATE_DEPTH])
+        # `at_moment` before the `[:CANDIDATE_DEPTH]` cut, matching
+        # `_visible_ranking` (HIGH, review round 2 of PR #112): cutting first
+        # can discard rows ranked just below `CANDIDATE_DEPTH` that are inside
+        # the pinned window, together with higher-ranked ones that are not.
+        # This retriever has no depth loop for `asOf` to bias -- it always
+        # returns the whole ranking in one call -- but the recall bug does not
+        # need one: it is a property of cutting before filtering, not of the
+        # loop. `at_moment` reuses `cleared`'s memo either way, so ordering it
+        # first costs nothing extra here that `cleared` had not already paid.
+        return visible.at_moment(visible.cleared(page.rows))[:CANDIDATE_DEPTH]
 
 
 @dataclass(frozen=True, slots=True)
