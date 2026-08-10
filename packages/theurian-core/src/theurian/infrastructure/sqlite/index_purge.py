@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from theurian.domain.errors import TheurianError
-from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS
+from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
 
 #: Rows reachable from a withdrawn chunk through :data:`chunk_derivation`,
 #: transitively, plus the withdrawn chunks themselves.
@@ -205,7 +205,7 @@ def _copy(source: Path, target: Path) -> None:
     """
     try:
         with (
-            closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True)) as reader,
+            closing(sqlite3.connect(read_only_uri(source), uri=True)) as reader,
             closing(sqlite3.connect(target)) as writer,
         ):
             reader.backup(writer)

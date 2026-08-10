@@ -755,3 +755,36 @@ def test_a_purge_does_not_touch_a_source_whose_wal_is_hot(
         "rewrote the file the whole design says is immutable"
     )
     assert wal.exists(), "the purge checkpointed and removed the published build's -wal sidecar"
+
+
+def test_verify_refuses_a_build_that_still_holds_an_unprovenanced_derived_row(
+    tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
+) -> None:
+    """`_verify`'s third post-condition, which the traversal keeps unreachable.
+
+    `_DOOMED` seeds on unprovenanced rows, so a real purge removes them and this
+    check never fires -- `test_a_node_derived_only_from_an_unprovenanced_node_
+    goes_with_it` proves the traversal converges. Disabling this check therefore
+    survives the whole suite: nothing reaches it.
+
+    It is the runtime backstop for the day a future `_DOOMED` reconstruction, or
+    a RAPTOR builder writing derived rows, leaves an unprovenanced row the
+    traversal missed -- a row that cannot be shown to hold nothing withdrawn, and
+    so must not be published. This reaches it directly: a build with such a row
+    inserted past the traversal, verified as if a broken purge had handed it over.
+    """
+    stale, _, _ = corpora
+    build = tmp_path / "theurian-index-leaked.sqlite"
+    build.write_bytes(stale.path.read_bytes())
+    with closing(sqlite3.connect(build)) as connection, connection:
+        connection.execute(
+            "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, heading, "
+            "text, token_estimate, status, sensitivity, trust_level, derived) "
+            "VALUES ('leaked#0', ?, 'architecture.leaked', 'leaked', 0, '', "
+            "'SECRET a summary whose sources cannot be named', 10, 'approved', 'internal', "
+            "'reviewed', 1)",
+            (PROJECT,),
+        )
+
+    with pytest.raises(IndexPurgeError, match="no provenance"):
+        _verify(build, [])

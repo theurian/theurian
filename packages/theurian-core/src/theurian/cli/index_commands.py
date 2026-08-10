@@ -546,13 +546,19 @@ def _reclaimable(paths: ProjectPaths, *, published: str) -> list[Path]:
       already under its final name -- so the rule the old `_reclaim` carried is
       restored beside it.
 
-    **Neither is complete alone, and together the residual is stated rather than
-    argued away.** Ids are ULIDs, so lexical order is creation order: within a
-    process `SeededIdGenerator` serialises on a lock, and across processes the
-    ULID timestamp orders to the millisecond. What remains is two builds minted
-    in the same millisecond where one renames into place before the other
-    publishes -- narrower than either window this closes, and the only writers
-    are `index build` and the purge, both of which take the `.building` path.
+    **Neither is complete alone, and in the shipped default there is no residual
+    at all.** The daemon serialises every write through one lock (ADR-0018), so
+    only one build or purge runs at a time and the ULID rule is exact: a finished
+    build's id is strictly above the published one until it publishes. A residual
+    appears only under the *unsupported* configuration of concurrent direct-CLI
+    builds against one project, and even then it is narrow -- a build reclaimed in
+    the write-to-publish window must have an id sorting **below** the published
+    one, which means another build minted a later id and published first while
+    this one was between its `os.replace` and its `_publish`. The only writers are
+    `index build` and the purge, both of which take the `.building` path, so an
+    unfinished build is never a candidate regardless. Recorded rather than closed
+    because the supported deployment does not reach it, and closing it for the
+    unsupported one is the single-writer interface ADR-0018 still owes the index.
 
     Sidecars are matched explicitly rather than by widening the glob, because
     `-wal` and `-shm` are the only two that exist and `*` would take `.building`
