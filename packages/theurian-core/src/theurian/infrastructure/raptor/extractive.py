@@ -79,7 +79,23 @@ MODEL_ID: Final = "theurian-extractive-sentences"
 #: version here does** -- rewording a description is not a semantics change and
 #: must not cost a whole forest a rebuild, while a change that would pick a
 #: different sentence for the same inputs must.
-SEMANTICS_VERSION: Final = "extractive-sentence-selection/1"
+#:
+#: What counts as "a different sentence for the same inputs" reaches past this
+#: module. Selection is charged in ``estimate_tokens``, so its charging model --
+#: ``domain.ranking``'s characters-per-token constant, its dense-script rate,
+#: and which code points it counts as dense -- decides what fits a budget just
+#: as directly as the code below does, and nothing in it is hashed here.
+#: Measured on the suite's own fixtures: raising characters-per-token from 4 to
+#: 5 changes the output at 41 of 56 English budgets, and raising the dense rate
+#: from 1.5 to 2.0 changes it at 101 of 116 Japanese ones, while ``prompt_hash``
+#: does not move at all. **A change to any of the three is a bump here too.**
+#: ``test_extractive_summarizer.py`` pins the two rates so that lands in front
+#: of a reviewer; the dense ranges carry the same obligation with no test
+#: behind it.
+#:
+#: ``/2`` removed trailing whitespace from the truncation fallback (see
+#: :func:`_truncate`).
+SEMANTICS_VERSION: Final = "extractive-sentence-selection/2"
 
 #: Derived, never an independent literal: a revision that had to be bumped in
 #: two places is a revision that will be bumped in one.
@@ -99,14 +115,17 @@ ALGORITHM_DESCRIPTION: Final = (
     "lower-cased character trigrams, of that trigram's count across every "
     "sentence split from this call's `texts`; visiting sentences in "
     "descending score order (ties broken by document position), add a "
-    "sentence to the selection whenever the cost of appending it -- its own "
-    "`estimate_tokens` cost, plus the single-space separator for every "
-    "sentence after the first -- still fits the remaining `max_tokens`, "
+    "sentence to the selection whenever the cost of appending it still fits "
+    "the remaining `max_tokens` -- `estimate_tokens` of the sentence alone for "
+    "the first one kept, and of the single space followed by the sentence, "
+    "priced as one string rather than as a separately-rounded separator, for "
+    "every later one, which is an upper bound on what the join costs -- "
     "skipping -- not stopping at -- one that does not; join the selected "
     "sentences with a single space in document order; if no single sentence's "
     "cost fits `max_tokens`, emit the longest character prefix of the first "
-    "sentence (by document position) whose cost fits, which is the empty "
-    "string when not even its first character fits."
+    "sentence (by document position) whose cost fits, with trailing whitespace "
+    "removed, which is the empty string when not even that sentence's first "
+    "character fits."
 )
 
 #: The largest ``texts`` this will scan, in total characters.
@@ -204,9 +223,11 @@ class ExtractiveSummarizer:
         too small for even the cheapest whole sentence returns a truncated
         prefix rather than silence, because a caller reading a RAPTOR node
         cannot distinguish "summarized to nothing" from "not summarized" any
-        other way. The single exception is a one-token budget against dense
-        script, where ``estimate_tokens`` prices one CJK character at two and
-        the empty string is the only one that fits.
+        other way. The single exception is ``max_tokens`` of exactly 1 where
+        the *first sentence's first character* is dense: ``estimate_tokens``
+        prices one such character at two, so the empty string is the only one
+        that fits. A dense character anywhere else, or any budget of 2 or more,
+        is not that case.
 
         Raises:
             RankingError: ``max_tokens`` is below one token.
@@ -299,8 +320,10 @@ def _score(sentences: tuple[_Sentence, ...]) -> tuple[int, ...]:
     of *distinct* trigrams, instead of one three-character string per character
     of the whole input, alive at once. Measured at
     :data:`MAX_TOTAL_INPUT_CHARS`: 53.9 MB down to 5.6 MB over Latin prose and
-    78.0 MB down to 16.3 MB over Japanese, for 7% more CPU. Re-deriving is the
-    cheap half; holding was the expensive one.
+    78.0 MB down to 16.3 MB over Japanese, for 7% more CPU *on the whole call*
+    -- inside this function alone the second pass costs 41% to 51% more,
+    depending on the corpus, which the whole-call figure hides. Re-deriving is
+    still the cheap half; holding was the expensive one.
     """
     frequency: Counter[str] = Counter()
     for sentence in sentences:
@@ -355,7 +378,14 @@ def _select(sentences: tuple[_Sentence, ...], max_tokens: int) -> tuple[_Sentenc
 
 
 def _truncate(text: str, max_tokens: int) -> str:
-    """The longest prefix of ``text`` whose cost fits ``max_tokens``.
+    """The longest prefix of ``text`` whose cost fits ``max_tokens``, right-stripped.
+
+    The cut lands wherever the budget runs out, which is as often mid-space as
+    mid-word, and a node persisted with a trailing space carries a character
+    that renders as nothing, breaks equality against the same prefix produced
+    any other way, and was paid for out of the caller's budget. Stripping is
+    the whole of ``/2`` in :data:`SEMANTICS_VERSION`, and it can only lower the
+    cost, so the result still fits.
 
     ``estimate_tokens`` is non-decreasing in text length -- dropping trailing
     characters can only lower or hold its cost, never raise it -- so the
@@ -375,9 +405,11 @@ def _truncate(text: str, max_tokens: int) -> str:
     dependency ADR-0009 declines to take for a fallback path, and the result is
     a verbatim prefix of the child text either way.
 
-    Returns the empty string when not even the first character fits -- reachable
-    only at ``max_tokens == 1`` against dense script, where ``estimate_tokens``
-    prices a single CJK character at two. Emitting that character regardless
+    Returns the empty string when not even ``text``'s first character fits --
+    reachable only when ``max_tokens`` is 1 *and* that character is dense,
+    since ``estimate_tokens`` prices one dense character at two and every other
+    at one. From ``summarize`` that means the first character of the first
+    sentence, the only text this is ever called with. Emitting it regardless
     would make this the one place in the module that knowingly returns a string
     costing more than the caller allowed (FR-R4).
     """
@@ -393,4 +425,10 @@ def _truncate(text: str, max_tokens: int) -> str:
             lo = mid
         else:
             hi = mid - 1
-    return text[:lo]
+    prefix = text[:lo]
+    # Unreachable from `summarize`, whose sentences are stripped at the split,
+    # so a fitting prefix always opens on a non-whitespace character. Kept
+    # because that is the caller's invariant and not this function's: a prefix
+    # of an all-whitespace text is worth less than nothing, but returning
+    # nothing at all is the one outcome the fallback exists to avoid.
+    return prefix.rstrip() or prefix

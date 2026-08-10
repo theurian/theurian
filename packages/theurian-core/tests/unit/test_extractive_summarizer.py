@@ -41,7 +41,7 @@ import sys
 
 import pytest
 
-from theurian.domain import chunking
+from theurian.domain import chunking, ranking
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
@@ -248,26 +248,32 @@ def test_prompt_hash_is_a_valid_content_hash() -> None:
 def test_semantics_version_is_the_compact_identifier_the_algorithm_description_already_names() -> (
     None
 ):
-    """Pinned to the literal ``ALGORITHM_DESCRIPTION`` already opens with
-    ("extractive-sentence-selection/1: split each child text ..."), not
+    """Pinned to the literal ``ALGORITHM_DESCRIPTION`` opens with
+    ("extractive-sentence-selection/2: split each child text ..."), not
     invented -- ``SEMANTICS_VERSION`` is that same leading identifier
     promoted to its own constant, not a new value to guess at.
+
+    Re-pinned from ``/1`` when the truncation fallback began stripping trailing
+    whitespace. That edit is the point of the constant: a semantics change is
+    supposed to cost exactly this, a pinned literal that a human has to move
+    while looking at the diff that earned it.
     """
-    assert extractive.SEMANTICS_VERSION == "extractive-sentence-selection/1"
+    assert extractive.SEMANTICS_VERSION == "extractive-sentence-selection/2"
 
 
 def test_model_revision_is_derived_from_semantics_version_not_an_independent_literal() -> None:
     """One constant, two surfaces: ``MODEL_REVISION`` must move automatically
     when ``SEMANTICS_VERSION``'s trailing version does. The two halves are an
-    absolute value and a structural relationship to ``SEMANTICS_VERSION``, and
-    at version 1 they do **not** separate a derivation from a hard-coded
-    literal: ``MODEL_REVISION = "1"`` passes both, because "1" is exactly what
-    the derivation produces. What the second half buys is the first bump --
-    against ``extractive-sentence-selection/2`` a literal "1" no longer ends
-    the version string and this goes red, which is the moment the two could
-    otherwise drift apart unnoticed.
+    absolute value and a structural relationship to ``SEMANTICS_VERSION``.
+
+    The bump this file was written in anticipation of has now happened. At
+    version 1 the two halves could not separate a derivation from a hard-coded
+    ``"1"``, because that is exactly what the derivation produced; going to
+    ``/2`` is the case that does, and a literal left behind at ``"1"`` fails
+    the second half here rather than reaching a stored node as a revision that
+    disagrees with its own semantics.
     """
-    assert extractive.MODEL_REVISION == "1"
+    assert extractive.MODEL_REVISION == "2"
     assert extractive.SEMANTICS_VERSION.endswith(f"/{extractive.MODEL_REVISION}")
 
 
@@ -277,16 +283,22 @@ def test_prompt_hash_is_pinned_to_the_literal_sha256_of_semantics_version() -> N
     never fail, because both sides of the comparison move together no matter
     what the hashing mechanism does or stops doing (this repository's own
     precedent against pinning a value by itself, 3c5bd6d). The literal below
-    is ``sha256("extractive-sentence-selection/1")``, computed independently
+    is ``sha256("extractive-sentence-selection/2")``, computed independently
     of this module. **A semantics change that bumps ``SEMANTICS_VERSION``'s
     trailing digit must re-pin this literal** -- that re-pin, made by a human
     reading the diff, is the staleness mechanism ADR-0008 decision 5 depends
     on to invalidate every existing summary node.
+
+    Exercised once already: the ``/1`` literal
+    (``d2825b71...eade3``) was replaced by hand when the truncation fallback
+    started stripping trailing whitespace. Nothing was persisted yet, so that
+    bump cost a re-pin and no rebuild -- which is the cheapest moment this
+    mechanism will ever be run, and the reason to run it then.
     """
     provider = ExtractiveSummarizer()
 
     assert (
-        provider.prompt_hash == "d2825b717d2c04374a3d19d6b94680344b5e0646ea0a01e2454d31587a5eade3"
+        provider.prompt_hash == "a99790653c03cc4401ac72ee56771cde56befb121956936c0e37b9a65083dddf"
     )
 
 
@@ -298,6 +310,36 @@ def test_semantics_version_appears_in_the_algorithm_description() -> None:
     reading only the prose can still see which version it claims to describe.
     """
     assert extractive.SEMANTICS_VERSION in extractive.ALGORITHM_DESCRIPTION
+
+
+def test_the_charging_model_selection_depends_on_is_pinned_too() -> None:
+    """``SEMANTICS_VERSION`` covers this module's own code, and selection does
+    not live entirely there: every fit decision is priced by
+    ``estimate_tokens``, so ``domain.ranking``'s charging constants decide
+    which sentences survive a budget just as directly.
+
+    Measured on this file's own fixtures, with ``prompt_hash`` held fixed
+    throughout: raising ``CHARS_PER_TOKEN`` from 4 to 5 changes the output at
+    41 of the 56 English budgets, and raising the dense rate from 1.5 to 2.0
+    changes it at 101 of the 116 Japanese ones. A stored node summarised under
+    either would be silently unrebuilt, because nothing in its
+    ``summary_prompt_hash`` moved.
+
+    So this is not a duplicate of ``domain.ranking``'s own tests -- those pin
+    what the numbers do to a token estimate; this pins that **changing them is
+    a ``SEMANTICS_VERSION`` bump for the summarizer**, and puts a red test in
+    front of whoever tunes them. Reading the private dense rate is deliberate:
+    the value is what matters here, not the name it is exported under.
+
+    The two rates are not the whole carrier. ``_DENSE_SCRIPT_RANGES`` decides
+    *which* characters are charged at the dense rate, so adding a script to it
+    moves selection the same way -- pinning a tuple of seven ranges here would
+    go red on every legitimate addition as loudly as on a semantics-changing
+    one, so it is left to the note beside the constant instead. Named rather
+    than left silent: this test does not cover that third carrier.
+    """
+    assert ranking.CHARS_PER_TOKEN == 4
+    assert ranking._DENSE_TOKENS_PER_CHAR == 1.5
 
 
 # -- Async -------------------------------------------------------------
@@ -1155,11 +1197,12 @@ async def test_negative_control_corpus_derived_max_tokens_is_detected_as_differe
 
 # -- Input cap (round 2) -----------------------------------------------------
 #
-# Nothing yet bounds how many characters ``summarize`` will scan, and the
-# trigram scorer's cost grows with corpus size for a single giant sentence.
-# ``MAX_TOTAL_INPUT_CHARS`` is the module's own recorded limit on the total
-# size of ``texts`` -- not implemented yet, so both tests below are RED
-# against the shipped module, which has no such attribute.
+# Nothing bounded how many characters ``summarize`` would scan, and the trigram
+# scorer's cost grows with corpus size for a single giant sentence.
+# ``MAX_TOTAL_INPUT_CHARS`` is the module's own recorded limit on the total size
+# of ``texts``. Both tests below were written first and went red against a
+# module that had no such attribute; the constant landed in the same change, so
+# they are green here.
 
 
 @pytest.mark.asyncio

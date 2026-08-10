@@ -35,10 +35,16 @@ class SummarizationProvider(Protocol):
 
     @property
     def prompt_hash(self) -> str:
-        """Hash of the summarization prompt.
+        """Hash of whatever decides what this implementation produces.
 
-        Persisted per node so a prompt change marks existing summaries stale
-        deterministically rather than leaving an index that mixes two prompt
+        For an implementation that prompts a model, that is the prompt. For one
+        that builds no prompt, it is the identifier of its selection semantics:
+        ``ExtractiveSummarizer`` hashes its ``SEMANTICS_VERSION``, because it
+        has no prompt to hash and a summary node still has to know when the
+        thing that produced it changed.
+
+        Persisted per node so a change to either marks existing summaries stale
+        deterministically rather than leaving an index that mixes two
         generations (ADR-0008).
         """
         ...
