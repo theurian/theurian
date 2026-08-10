@@ -3759,3 +3759,67 @@ async def test_a_stale_index_still_names_the_canonical_state_that_answered(
 
     assert search["retrieval"]["stale"] is True, "an index that is not behind cannot show this"
     assert search["retrieval"]["snapshotId"] == status["stateHash"]
+
+
+@pytest.mark.asyncio
+async def test_a_gc_unlink_between_a_requests_reads_does_not_tear_it(
+    indexed: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#103 item 4, pinned through `hybrid_answer` rather than through the store.
+
+    A search makes several index reads -- `embedding_model`, the retrieval, then
+    `chunk_texts`. `hybrid_answer` opens one read connection for the request
+    (`SqliteIndexStore.session`), so a `theurian index gc` that unlinks the build
+    between two of those reads does not tear the request: on POSIX the held
+    descriptor keeps the inode readable after the name is gone.
+
+    **This is the last load-bearing line of the PR that nothing pinned.** Making
+    `session()` a no-op -- each read opening its own connection again -- left the
+    whole suite green, because every other test constructs a store and reads it
+    once. Here the second read, after the unlink, opens a path that is gone and
+    the whole request degrades to the substring-scan fallback.
+
+    The unlink is deterministic rather than timed: `metadata()` is the first
+    index read inside the session, reached through `embedding_model` -- which is
+    why `useDense=True`, the parameter that makes `embedding_model` consult the
+    stored model. Wrapping it to unlink after it returns puts the unlink between
+    the first read and every one that follows.
+    """
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(indexed.load()["demo"]["rootPath"])
+    build = next((root / ".theurian/state").glob("theurian-index-*.sqlite"))
+
+    real_metadata = SqliteIndexStore.metadata
+    fired = 0
+
+    def unlink_after_the_first_read(self: SqliteIndexStore) -> dict[str, object]:
+        nonlocal fired
+        result = real_metadata(self)
+        if fired == 0:
+            build.unlink()
+        fired += 1
+        return result
+
+    monkeypatch.setattr(SqliteIndexStore, "metadata", unlink_after_the_first_read)
+
+    result = await _call(
+        indexed, "knowledge.search", projectId="demo", query="token", useDense=True
+    )
+
+    assert fired >= 1, (
+        "the hook never fired, so the unlink did not land mid-request and this test proved "
+        "nothing -- `embedding_model` no longer reads `metadata()`, or `useDense` stopped "
+        "reaching it"
+    )
+    assert result["retrieval"]["indexed"] is True, (
+        "the request tore on a `gc` unlink between two of its reads. Without the held session "
+        "connection the second read opened a path that was gone, and the whole request fell "
+        "back to the substring scan -- `retrieval.fallbackReason` is "
+        f"{result['retrieval'].get('fallbackReason')!r}"
+    )
+    assert result["count"] >= 1, "the index answered, so it must have returned the matching hit"
+    assert not build.exists(), (
+        "a read recreated the reaped build: `mode=ro` is what stops `sqlite3.connect` from "
+        "conjuring an empty database at the deleted path"
+    )
