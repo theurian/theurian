@@ -13,8 +13,10 @@ import pytest
 from fakes import FrozenClock, InMemoryWriter
 
 from theurian.application.migration_engine import (
+    ApplyReport,
     MigrationEngine,
     refuse_unenforceable_scope,
+    revisions_to_purge,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
 )
@@ -43,6 +45,7 @@ from theurian.domain.migration import (
     DeprecateItem,
     Migration,
     MigrationSet,
+    RestoreItem,
     RevisionMetadataSpec,
     UpsertRevision,
 )
@@ -95,6 +98,7 @@ REV_1 = RevisionId("01K1REV00101234567890ABCDE")
 REV_2 = RevisionId("01K1REV00201234567890ABCDE")
 MIG_1 = "01K1AAAAAA01234567890ABCDE"
 MIG_2 = "01K1BBBBBB01234567890ABCDE"
+MIG_3 = "01K1CCCCCC01234567890ABCDE"
 
 
 def _create_and_upsert(
@@ -414,6 +418,241 @@ def test_deprecating_records_the_successor_relation() -> None:
         and r.target_item_id == ITEM
         for r in writer.relations
     )
+
+
+# -- ADR-0024 decision 5: what a withdrawal tells a still-published index ----
+
+
+def _purged(report: ApplyReport, *, indexes_unapproved: bool = True) -> list[str]:
+    """The revisions the report's candidates reduce to at a given index flavor.
+
+    The engine gathers candidates (final item states); the purge reduces them
+    against the published index's flavor. These cases are flavor-independent --
+    deprecated/rejected are withheld at both flavors, a restored item at neither --
+    so ``indexes_unapproved`` defaults to True; the flavor split is exercised by
+    :func:`test_a_reject_in_place_to_draft_is_withdrawn_only_from_a_default_index`.
+    """
+    return revisions_to_purge(report.withdrawn_candidates, indexes_unapproved=indexes_unapproved)
+
+
+def test_a_deprecation_reports_the_items_whole_history_as_withdrawn() -> None:
+    """Retiring an item withdraws every revision it ever had.
+
+    A published index built from *any* of them must stop holding it, and the
+    engine cannot know which build is live, so it names all of them. The purge
+    ignores an id no chunk carries, which is what makes naming the whole history
+    safe rather than wasteful (ADR-0024 decision 5).
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1, BODY_V2)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+    engine.apply(
+        writer,
+        PROJECT,
+        MigrationSet.ordered(
+            (
+                _migration(
+                    MIG_2,
+                    UpsertRevision(
+                        item_id=ITEM,
+                        revision_id=REV_2,
+                        content_file_path="../knowledge/a.md",
+                        metadata=_metadata(),
+                        expected_revision=REV_1,
+                        content_sha256=ContentHash.of_text(BODY_V2),
+                    ),
+                ),
+            )
+        ),
+    )
+
+    retire = MigrationSet.ordered(
+        (_migration(MIG_3, DeprecateItem(item_id=ITEM, reason="Retired")),)
+    )
+    report = engine.apply(writer, PROJECT, retire)
+
+    assert sorted(_purged(report)) == sorted((REV_1.value, REV_2.value))
+
+
+def test_a_supersede_reports_the_revision_it_replaced_as_withdrawn() -> None:
+    """A redaction leaves the prior revision holding the pre-redaction text.
+
+    The item stays surfaceable, so no gate withholds it; the only thing between
+    the old text and a caller is a purge of the revision the supersede moved
+    ``currentRevisionId`` off (ADR-0024 decision 5, DECISION 2).
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1, BODY_V2)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    redact = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_2,
+                    content_file_path="../knowledge/a.md",
+                    metadata=_metadata(),
+                    expected_revision=REV_1,
+                    content_sha256=ContentHash.of_text(BODY_V2),
+                ),
+            ),
+        )
+    )
+    report = engine.apply(writer, PROJECT, redact)
+
+    # The revision the supersede left behind, and not the one it created: the new
+    # revision's chunks are the redacted text and must survive.
+    assert _purged(report) == [REV_1.value]
+
+
+def test_an_initial_revision_withdraws_nothing() -> None:
+    """The first revision of an item supersedes nothing, so nothing is withdrawn."""
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    report = engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    assert _purged(report) == []
+
+
+def test_a_reapplied_withdrawal_withdraws_nothing() -> None:
+    """Idempotence reaches the withdrawal record too.
+
+    A migration already applied is skipped, so re-running the set reports no
+    withdrawn revisions -- a purge on every command that changes nothing is work
+    with no cause (FR-K8).
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    setup = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(MIG_2, DeprecateItem(item_id=ITEM, reason="Retired")),
+        )
+    )
+    engine.apply(writer, PROJECT, setup)
+    second = engine.apply(writer, PROJECT, setup)
+
+    assert _purged(second) == []
+
+
+def test_a_reject_in_place_withdraws_the_item_though_its_revision_id_never_moved() -> None:
+    """The third withdrawal verb (ADR-0024 decision 5): reject in place.
+
+    An ``upsertRevision`` that reuses the current revision id and changes only its
+    status to ``rejected`` makes the item non-surfaceable -- ``with_revision``
+    adopts the status, ``may_surface`` then refuses it -- while its revision id
+    never moves. A withdrawn set keyed on "the current revision id changed" misses
+    this entirely. Reading final canonical state does not: the item's status is
+    non-surfaceable, so every revision it holds -- the one whose chunks are indexed
+    included -- is named.
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    reject = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    metadata=_metadata(status=KnowledgeStatus.REJECTED),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+    report = engine.apply(writer, PROJECT, reject)
+
+    item = writer.get_item(PROJECT, ITEM)
+    assert item is not None and item.status is KnowledgeStatus.REJECTED
+    assert _purged(report) == [REV_1.value]
+
+
+@pytest.mark.parametrize("draft_status", [KnowledgeStatus.DRAFT, KnowledgeStatus.PROPOSED])
+def test_a_reject_in_place_to_draft_is_withdrawn_only_from_a_default_index(
+    draft_status: KnowledgeStatus,
+) -> None:
+    """The flavor split (ADR-0024 decision 5, r3), decided at the reduction.
+
+    An ``upsertRevision`` reusing the current revision id and changing an approved
+    item's status to ``draft`` (or ``proposed``) makes it non-surfaceable to a
+    *default* reader while ``may_surface`` still passes it under
+    ``include_unapproved``. So the same candidate must be withdrawn from a default
+    index -- whose only chunks are approved, and now hold a chunk no default reader
+    may see, moving visible-row rankings (T-17a) -- and **kept** in an
+    ``--include-unapproved`` index, which was told to hold drafts. The engine
+    gathers one candidate; the flavor decides.
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    to_draft = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    metadata=_metadata(status=draft_status),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+    report = engine.apply(writer, PROJECT, to_draft)
+
+    assert _purged(report, indexes_unapproved=False) == [REV_1.value], (
+        "a default index holds only approved chunks, so the now-unapproved current "
+        "revision is withheld from it and must be purged"
+    )
+    assert _purged(report, indexes_unapproved=True) == [], (
+        "an --include-unapproved index legitimately holds this draft/proposal, so it "
+        "survives -- a uniform False would wrongly delete it"
+    )
+
+
+def test_a_restore_cancels_a_deprecation_so_the_replay_withdraws_nothing() -> None:
+    """The shape a replay takes, and the bug an operation log has in it.
+
+    ``migrate apply`` re-applies the whole set when the state hash shifts
+    (ADR-0016), so a project whose history is create -> deprecate -> restore
+    replays all three on the next unrelated apply. An operation log re-adds the
+    deprecation's revision on every replay and never cancels it, deleting the
+    restored -- and now ``approved`` -- item from the index. Reading the final
+    state instead: the item is surfaceable and its only revision is current, so
+    nothing is withdrawn.
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    whole_history = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(MIG_2, DeprecateItem(item_id=ITEM, reason="pulled")),
+            _migration(MIG_3, RestoreItem(item_id=ITEM)),
+        )
+    )
+    report = engine.apply(writer, PROJECT, whole_history)
+
+    item = writer.get_item(PROJECT, ITEM)
+    assert item is not None and item.status is KnowledgeStatus.APPROVED
+    assert _purged(report) == [], "a restored item is visible, not withdrawn"
 
 
 def test_changing_owner_and_sensitivity_updates_the_item() -> None:

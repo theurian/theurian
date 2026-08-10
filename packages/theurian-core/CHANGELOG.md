@@ -41,6 +41,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **A withdrawal now publishes a purged index in the same `migrate apply`**
+  ([#15](https://github.com/theurian/theurian/issues/15)), closing the T-17a
+  status-axis disclosure window at its root rather than at the next
+  `theurian index build`. Retiring, superseding or rejecting a revision — or
+  changing its status in place — left the withdrawn rows in the published build
+  until a rebuild; while they stayed, the visible ranking was scored against BM25
+  collection statistics that counted them, so a value the caller may read moved
+  with content it may not (see T-17a in
+  [the threat model](../../docs/security/threat-model.md)). After the write
+  transaction commits, `migrate apply` now derives and publishes a build with
+  those revisions removed, synchronously, in the same command
+  (`publish_purge_for_withdrawal`, wiring ADR-0024 decision 5). The set removed is
+  computed against the published index's own build flavor: a default index purges
+  draft/proposed/deprecated/rejected/superseded and any non-current revision,
+  while an `--include-unapproved` index keeps the drafts and proposals it was told
+  to hold and purges only what is withheld under every flag plus non-current
+  revisions. **Scoped to the status axis** — `may_surface` reads only status; the
+  deferred sensitivity, tenant and ACL axes are
+  [#119](https://github.com/theurian/theurian/issues/119), and this does not claim
+  to enforce them. Two residuals remain, both content-independent and bounded: a
+  single request in flight at the pointer swap finishes against the pre-purge
+  build (the swap protects the next request, not one already served), and a purge
+  that fails leaves the stale build serving until a manual `theurian index build`
+  — reported, not silent, through the apply's `indexPurge` (`published: false`,
+  `failed: true`, and a `remedy` naming the rebuild).
+
+  Not a breaking change to the `migrate apply` contract: its JSON gains an
+  `indexPurge` object and, on a withdrawal, it swaps the active index pointer to
+  the purged build — both additive. No existing field or behaviour is removed, and
+  a withdrawal-free apply skips the purge, reporting `indexPurge` with
+  `published: false` and `reason: "no-withdrawal"`.
+
 - **BREAKING — `migrate validate` and `migrate apply` refuse a revision
   naming a `tenantId` other than `local` or an `aclGroup` other than
   `default`** ([#63](https://github.com/theurian/theurian/issues/63)).

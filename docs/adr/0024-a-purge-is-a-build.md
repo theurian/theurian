@@ -419,13 +419,29 @@ is violated rather than tests that did not exist. Those tests now exist, across
 [#113](https://github.com/theurian/theurian/pull/113); each item below names the
 one that holds it.
 
-**One decision is *not* wired: decision 5, the automatic withdrawal→purge
-trigger.** `IndexStore.derive_purged` is the mechanism, and it has no caller
-outside tests — nothing yet fires a purge when a revision is retired, superseded
-or rejected. That is the next slice, tracked as
-[#15](https://github.com/theurian/theurian/issues/15); #113 *advances* #15 by
-landing the mechanism and the schema, and does not close it. Everything below is
-the mechanism's own acceptance, which #113 discharges;
+**Decision 5 — the automatic withdrawal→purge trigger — is now wired**
+([#15](https://github.com/theurian/theurian/issues/15)). It was unwired when the
+mechanism landed under #113: `IndexStore.derive_purged` had no caller outside
+tests, so nothing fired a purge when a revision was retired, superseded or
+rejected. It now has one. `theurian migrate apply` (`cli/commands.py`
+`migrate_apply`) calls `publish_purge_for_withdrawal`
+(`application/withdrawal_purge.py`) synchronously after the write transaction
+commits and releases the lock, so a retirement, a supersession, a rejection or an
+in-place status change publishes a purged build in the same command that applied
+it — no separate `index build`. The revisions removed are computed against the
+published index's *own* build flavor: `revisions_to_purge` reads
+`indexesUnapproved` off the pointer, so a default index purges what `may_surface`
+withholds from it (draft, proposed, deprecated, rejected, superseded, and any
+non-current revision) while an `--include-unapproved` index keeps the drafts and
+proposals it legitimately holds and purges only what is withheld under every flag
+plus non-current revisions. The closure is held by
+`test_a_withdrawal_purges_the_published_index_without_a_separate_build`
+(`tests/integration/test_absence_proof.py`), parametrised over the four faces —
+`deprecate`, `supersede`, `reject`, and an in-place `draft` (the flavor face) —
+each of which is RED on the pre-trigger wiring. With this, every decision in this
+ADR is wired.
+
+Everything below is the mechanism's own acceptance, which #113 discharges;
 [#103](https://github.com/theurian/theurian/issues/103) tracked these eight as
 one class, and all eight are green.
 

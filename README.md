@@ -444,35 +444,39 @@ the same results, in the same slots, with the same counts. `retrieval.stale`
 says the index is behind, which is a fact about the index and not about your
 query. ([T-17](docs/security/threat-model.md))
 
-**Search ranking is where that equality stops holding, and it is not fixed in
-this milestone.** BM25 scores a row against corpus statistics computed over the
-whole index file, and until the next build the withheld rows are still in that
-file being counted. What that reaches is narrower than it sounds:
+**Search ranking was where that equality stopped holding — now closed for the
+status axis by the withdrawal→purge trigger
+([#15](https://github.com/theurian/theurian/issues/15)).** BM25 scores a row
+against corpus statistics computed over the whole index file, so while a retired,
+superseded or rejected document's rows stayed in that file they were still
+counted. What that reached was narrower than it sounds:
 
-- **Every visible row's BM25 score moves, for any withheld content whatever it
-  says.** One of those statistics is the average document length, so a withheld
-  document sharing not one word with your query still changes them. BM25 scores
+- **Every visible row's BM25 score moved, for any withheld content whatever it
+  said.** One of those statistics is the average document length, so a withheld
+  document sharing not one word with your query still changed them. BM25 scores
   are not themselves published.
-- **The order moves for a minority of corpora, and the published values move
+- **The order moved for a minority of corpora, and the published values moved
   with it.** Across 2,000 random corpora, every visible score moved in 99.9%
   and the order in 13.8%; rows symmetric enough to take an identical delta do
   not reorder at all. Fusion is reciprocal rank fusion, which reads rank
   positions rather than scores, so a moved score reaches `fusedScore` — and the
   excerpt, which is the best-ranked chunk of its document — only by moving a
-  rank first. What a caller sees tracks the 13.8%, not the 99.9%. Measured
+  rank first. What a caller saw tracked the 13.8%, not the 99.9%. Measured
   against SQLite FTS5, not argued — this section has claimed *never* and then
   *always* before now.
-- **Reading content back out of the ranking is narrower still.** That needs a
-  term which also occurs in content you *can* read, so what it can answer is
+- **Reading content back out of the ranking was narrower still.** It needed a
+  term which also occurs in content you *can* read, so what it could answer is
   whether a withheld document contains a term you have already seen somewhere —
   not a term you do not already have.
 
-`theurian index build` closes all three, along with every other consequence of a
-stale index; eliminating the stale window itself is Milestone 6's blue/green
-builds. **If a project's ranking must not depend on retired content at all,
-rebuild the index as part of retiring it rather than on a schedule.** Accepted
-deliberately, with the argument and the measurements recorded.
-([T-17a](docs/security/threat-model.md))
+`theurian migrate apply` now publishes a purged build in the same command as any
+withdrawal, so a search after the apply is scored against a file that no longer
+holds the withdrawn rows — no manual rebuild, no schedule. Two residuals remain,
+both bounded and content-independent: a request in flight when the new build is
+swapped in finishes against the pre-purge one, and a purge that fails leaves the
+stale build serving until you rebuild (reported, not silent). This covers the
+**status** axis; the argument, the measurements and the residuals are
+[T-17a](docs/security/threat-model.md).
 
 **Rebuild the index after upgrading.** An index built under an older schema is
 detected on open and reported rather than silently losing half of itself:

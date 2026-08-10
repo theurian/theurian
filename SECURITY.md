@@ -246,11 +246,12 @@ public security channel — only when **both** of these hold:
 
 **Recovered is the load-bearing word above.** T-17 recovered a sixteen-character
 credential in 203 calls — an arbitrary secret, not a yes-or-no about a known one
-— and condition 1's fourth item sorts it private. T-17a moves published values
-too, but what it yields is bounded to a vocabulary the caller already has: it can
-confirm that a withheld document holds a term they have seen elsewhere, and
-cannot produce one they do not have. That is why it is described further down
-this file and measured in the threat model rather than withheld.
+— and condition 1's fourth item sorts it private. T-17a moved published values
+too, but what it yielded was bounded to a vocabulary the caller already had: it
+could confirm that a withheld document held a term they had seen elsewhere, and
+could not produce one they did not. That bound is why it was described further
+down this file and measured in the threat model rather than withheld — and the
+withdrawal→purge trigger (#15) has since closed it for the status axis.
 
 **A new member of that family is private until its side is established**, and two
 kinds of argument establish it, both taken from cases this repository has already
@@ -414,31 +415,28 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   audience and scope validation, and tenant isolation — none of which the local
   daemon implements, because it does not need them and shipping half of them
   would be worse than shipping none.
-- **Search ranking, while the retrieval index is out of date.** A document you
-  retire or supersede is withheld from results immediately, but it stays in the
-  index file until the next `theurian index build` — and BM25 scores every result
-  against statistics computed over that whole file. So a withheld document can
-  change the relative order of two documents you *can* see, and which paragraph
-  of one of them is excerpted.
+- **Search ranking, for a request in flight during a withdrawal, or if the purge
+  fails.** Retiring, superseding or rejecting a document used to leave its rows in
+  the index file until the next `theurian index build`, and BM25 scores every
+  result against statistics computed over that whole file — so a withheld document
+  could change the relative order of two documents you *can* see, and which
+  paragraph of one is excerpted, for any withheld content whatever it says (one of
+  those statistics is the average document length, measured against SQLite FTS5,
+  not reasoned about). `theurian migrate apply` now closes that window in the same
+  command: on any withdrawal it publishes a purged build synchronously, so a
+  search after the apply is scored against a file that no longer holds the
+  withdrawn rows.
 
-  **Any withheld content can do that, whatever it says.** One of those statistics
-  is the average document length, so a withheld document that shares not one word
-  with your query still changes the score of every visible row — by a different
-  amount for each, which is why the order moves. This was measured against SQLite
-  FTS5 rather than reasoned about; an earlier version of this section claimed the
-  opposite.
-
-  Reading content back out of the ranking is narrower. That needs a term which
-  also occurs in content you *can* read, so what it can answer is whether a
-  withheld document contains a term you have already seen somewhere — not a term
-  you do not already have.
-
-  `theurian index build` closes both, along with every other consequence of a
-  stale index. It is accepted for now rather than fixed for now — the reasoning,
-  the measurements and the scheduled fix are T-17a in
-  [the threat model](docs/security/threat-model.md). **If a project's ranking
-  order must not depend on retired content at all, rebuild the index as part of
-  retiring it rather than on a schedule.**
+  Two residuals remain, both bounded and content-independent. A search already in
+  flight at the moment the new build is swapped in finishes against the pre-purge
+  one — that single request, not a standing gap. And if the purge itself fails,
+  the stale build keeps serving until you rebuild; `migrate apply` reports this
+  (`indexPurge` with `published: false`, `failed: true`, and a remedy), so it is
+  visible rather than silent. The reasoning, the measurements and the closure are
+  T-17a in [the threat model](docs/security/threat-model.md); this covers the
+  **status** axis only — sensitivity, tenant and ACL group are refused at write
+  time and their enforcement as read controls is deferred to
+  [#119](https://github.com/theurian/theurian/issues/119).
 
 ## Personal data in review knowledge
 

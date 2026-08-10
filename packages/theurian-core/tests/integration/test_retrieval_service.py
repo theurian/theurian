@@ -1554,10 +1554,17 @@ def test_a_withheld_row_cannot_choose_which_chunk_of_a_visible_document_is_publi
 #   says something the other denies. Together they are the T-17a acceptance's
 #   third condition.
 #
-# When Milestone 6 lands blue/green builds (ADR-0022) the window closes and the
-# test below starts failing. That is the intended alarm: it is a pin on an
-# accepted residual's *scope*, so the acceptance has to be revisited by whoever
-# makes it stop reproducing -- in either direction.
+# **The mechanism these tests pin is BM25 arithmetic, and it does not change.**
+# Milestone 6 (issue #15) closed T-17a in the *shipped flow*: a withdrawal now
+# purges the withdrawn rows from the published build the instant it commits
+# (ADR-0024 decision 5), so the product no longer leaves a stale *published* index
+# holding them. It does not, and cannot, change what a stale index scores -- a
+# retriever that reads a file still holding the rows still counts them. These
+# fixtures build their stale index by hand and never publish it, so the purge
+# never reaches it, and they stay green as pins on the residual the canonical gate
+# defends: an in-flight request, or a purge that failed. The shipped *close* -- a
+# published build a withdrawal purged answering as one that never held the rows --
+# is proved in `test_absence_proof.py` and `test_withdrawal_purge.py`.
 
 #: The term the withheld document shares with a visible one. Shared on purpose:
 #: it is the precondition for the channel, and a probe term absent from visible
@@ -1900,9 +1907,14 @@ def test_a_withheld_document_can_still_reorder_the_visible_ones(bm25_probe: _BM2
     `per_item=1`, the only mode the MCP surface has — which `excerpt` is
     published all move with it.
 
-    When Milestone 6 closes the stale window (ADR-0022, issue #15) this test goes
-    red, and it is meant to: whoever makes it stop reproducing is the person who
-    should be deleting the acceptance from the threat model in the same change.
+    **This stays a pin after issue #15, not a red alarm.** The mechanism is BM25's
+    and does not change: a stale index that still holds the withheld rows scores
+    the visible ones against them. What Milestone 6 closed is the shipped flow --
+    `theurian migrate apply` now purges a *published* build the moment a
+    withdrawal commits (ADR-0024 decision 5) -- and this fixture's stale index is
+    hand-built and never published, so the purge never reaches it. What it pins is
+    the residual the canonical gate defends (an in-flight request, or a failed
+    purge); the shipped close is `test_absence_proof.py`.
     """
     stale = _published_order(bm25_probe, bm25_probe.stale)
     fresh = _published_order(bm25_probe, bm25_probe.fresh)
@@ -2067,10 +2079,12 @@ def test_a_withheld_document_sharing_no_vocabulary_still_reorders_the_visible_on
     that never held those documents — that is, across an `index build`, which is
     the operation that removes them.
 
-    Like the tests above, this goes red when Milestone 6 closes the stale window
-    (ADR-0022, issue #15), and it is meant to: whoever makes it stop reproducing
-    is the person who should be rewriting the T-17a entry rather than deleting
-    this file.
+    Like the tests above, this is a pin on the enduring mechanism, not a red alarm
+    for issue #15. Milestone 6 closed the shipped flow -- a withdrawal purges the
+    published build (ADR-0024 decision 5) -- and this fixture's stale index is
+    hand-built and never published, so the purge never reaches it. It stays green
+    as the counterexample to the retracted `idf`-only bound; the shipped close is
+    proved in `test_absence_proof.py`.
     """
     probe = bm25_probe_sharing_no_vocabulary
     stale = _published_order(probe, probe.stale)

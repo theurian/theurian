@@ -95,14 +95,25 @@ random pair: guess a character, ask, keep it if a number moves.
 
 The blind spot, named
 ---------------------
-**Presence is not tested here, and it is not safe.** These pairs vary a withheld
-document's *content* and whether it *matches*; they never vary whether it is in
-the index at all, because that is broken today and accepted:
-:func:`test_a_withheld_draft_still_changes_which_document_a_caller_is_handed`
-pins the breakage, with a corpus this module's own generator found. Read
+**Presence is not tested here.** These pairs vary a withheld document's *content*
+and whether it *matches*; they never vary whether it is in the index at all.
+Issue #15's trigger closed presence for every *withdrawal* -- a retirement, a
+supersede, a reject, and an in-place status change that makes a revision
+non-surfaceable **at the published index's own build flavor** (a doc dropped to
+``draft`` in a default index is withheld *there* even though ``may_surface``
+passes a draft under ``--include-unapproved``). All are purged the moment they
+commit (ADR-0024 decision 5), proved in
+:func:`test_a_withdrawal_purges_the_published_index_without_a_separate_build`. The
+one residual it leaves is not a withdrawal at all:
+:func:`test_a_withheld_draft_still_changes_which_document_a_caller_is_handed` pins
+a `draft` an operator *chose* to index with ``--include-unapproved`` and which
+that build legitimately holds -- surfaceable at its flavor, returned to a caller
+who passes the flag, so off by default rather than withheld
+(:func:`test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay`
+holds that the purge does not over-reach and delete it). Read
 *Where the equality is conditional* in
-:mod:`theurian.application.retrieval_service` for the mechanism, T-17a in the
-threat model for the acceptance, and issue #15 for the fix.
+:mod:`theurian.application.retrieval_service` for the mechanism and T-17a in the
+threat model for the residual that remains.
 
 **Three of the five published tools, and the other two are not oversights.** The
 population is ``@server.tool(name=...)`` in :mod:`theurian.mcp.tools` -- five --
@@ -208,13 +219,15 @@ at the end is three hand-written tests that share only :func:`_build_project` an
 :class:`_Document` with everything above. It is not split, for one reason.
 
 **The T-17a block is the exception to the property the rest of the file
-asserts**, and the pair only means anything read together: above, "no published
-value varies with a withheld document"; below, "except that it does, here is the
-corpus, here is the issue that closes it, and this test goes red when it does".
-Splitting puts the acceptance in a file that a reader of the guarantee never
-opens -- and Milestone 5's account of T-17a is precisely that of an acceptance
-drifting away from the measurement behind it, carried for two rounds in the
-orchestrator's own words before anyone re-measured it.
+asserts**, and the two only mean anything read together: above, "no published
+value varies with a withheld document"; below, "except in the residual that
+remains -- here is the corpus and the operator configuration that reaches it" --
+and, in the shipped-close section after it, "and here is the withdrawal that
+removes it, purging the published build with no rebuild". Splitting puts the
+residual and its close in a file that a reader of the guarantee never opens -- and
+Milestone 5's account of T-17a is precisely that of an acceptance drifting away
+from the measurement behind it, carried for two rounds in the orchestrator's own
+words before anyone re-measured it.
 
 The secondary cost is that the split needs a shared helper module in a test tree
 with no package structure (no ``__init__.py``, ``--import-mode=importlib``),
@@ -232,6 +245,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -241,10 +255,16 @@ import pytest
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from typer.testing import CliRunner
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
-from theurian.application.project_service import ProjectPaths, ProjectRegistry
+from theurian.application.project_service import (
+    ProjectPaths,
+    ProjectRegistry,
+    read_active_index_pointer,
+)
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
+from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
@@ -1704,10 +1724,21 @@ def test_a_withheld_draft_still_changes_which_document_a_caller_is_handed(
     the caller is simply handed a different document, with a different excerpt and
     different provenance.
 
-    Like its two siblings, this goes red when Milestone 6 closes the stale window
-    (ADR-0022, issue #15), and it is meant to: whoever makes it stop reproducing
-    is the person who should be rewriting the T-17a acceptance in the threat
-    model in the same change.
+    **This exact shape is *not* closed by issue #15's trigger, and the distinction
+    is the r3 flavor fix.** The draft here is one an operator *chose* to index with
+    ``--include-unapproved``; ``may_surface`` passes it under that flag, so the
+    purge's flavor-aware reduction (`revisions_to_purge`, built with this index's
+    own ``indexesUnapproved=True``) judges it surfaceable *there* and keeps it --
+    which is correct, because a caller who passes the flag is handed it, so it is
+    off by default rather than withheld
+    (`test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay`
+    holds the purge does not over-reach). What the trigger *does* close is the
+    other draft shape -- a doc dropped to ``draft`` **in a default index**, where
+    it is non-surfaceable at that build's flavor and is purged
+    (`test_a_withdrawal_purges_the_published_index_without_a_separate_build`'s
+    ``inplace-draft`` face). This test is built by hand at flavor ``True``, so it
+    pins the narrowed residual the threat model still records for the
+    ``--include-unapproved`` configuration.
     """
     holds_it, never_did = _t17a_projects(tmp_path)
 
@@ -1898,3 +1929,761 @@ def test_the_pair_builder_writes_a_canonical_store_the_gate_actually_reads(
     assert retired.item_id in {row.item_id for row in offered.rows}, (
         "and the index must still offer it on the caller's own flags, or nothing reaches the gate"
     )
+
+
+# ---------------------------------------------------------------------------
+# The shipped close: a withdrawal purges the published index, no rebuild (issue #15)
+# ---------------------------------------------------------------------------
+#
+# Everything above builds its corpora through the application layer and stops a
+# withheld row with the *canonical gate* -- the defense that holds while a stale
+# published index still contains the row (the in-flight / purge-failure residual,
+# ADR-0024 decision 5). This section is the other half: the shipped
+# `theurian migrate apply` now *removes* the withdrawn rows from the published
+# index the instant the withdrawal commits, so the residual is bounded to one
+# command rather than "until someone runs a rebuild".
+#
+# It has to run the real CLI -- `migrate apply` is where the purge is wired, and
+# the property is that no second `index build` is needed. So it builds two real
+# projects, `holds-it` (indexed while the secret was approved, then withdrawn ->
+# purged) and `never-did` (withdrawn first, then indexed), and asserts they answer
+# the same query identically. That is ADR-0024's acceptance property in the flesh:
+# "an index that held the withdrawn rows and had them purged answers identically
+# to an index that never held them" -- the ranking, chunk ids and scores, which is
+# what T-17a moves. Build identity and freshness metadata (`indexBuildId`,
+# `stale`, `note`) differ by construction between a purged build and a fresh one
+# and are not part of that property; they are masked, named, below.
+
+#: Both shipped projects register under this id, in separate registries, so
+#: `projectId` is equal as an input rather than compared as an output -- the same
+#: device the generated pairs use.
+SHIPPED_PROJECT_ID: Final = "absence-pair"
+
+#: Two phrases, because the channel is a *reweighting between* them: one query
+#: term scaled by the withheld document's presence, one carried only by the
+#: visible pair. A single-phrase query scales every row by the same factor and
+#: preserves order -- see `test_the_bm25_probe_corpus_can_still_flip` in
+#: `test_retrieval_service.py`, whose corpus this mirrors.
+SHIPPED_QUERY: Final = "quarantine ledger"
+
+#: A marker no other body contains, so finding a fragment of it in a response is
+#: proof it came out of the withheld document and nowhere else.
+SHIPPED_SECRET_MARKER: Final = "ROTATEME7SECRET"  # noqa: S105 - a test marker, not a credential
+
+_SHIPPED_DOC_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: {mid}
+createdAt: 2026-08-03T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: {item}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {item}
+    revisionId: {rid}
+    contentFile: ../knowledge/architecture/{slug}.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/{slug}.md
+"""
+
+#: Retirement: the whole item is deprecated, so a published index built while it
+#: was approved must stop holding it.
+_SHIPPED_DEPRECATE_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1WDEPAA01234567890ABCDE
+createdAt: 2026-08-03T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: architecture.secret
+    reason: pulled after the index was built
+"""
+
+#: The undo of a deprecation. Sorts after the deprecation (WR > WD), so a replay
+#: applies it second and the item's final status is ``approved``.
+_SHIPPED_RESTORE_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1WRESAA01234567890ABCDE
+createdAt: 2026-08-03T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: restoreItem
+    itemId: architecture.secret
+"""
+
+#: An unrelated later change, whose only job is to shift the state hash so the
+#: next ``migrate apply`` rebuilds the canonical database and replays the whole
+#: set (ADR-0016) -- the moment an operation-log withdrawal set re-purged the
+#: since-restored item.
+_SHIPPED_UNRELATED_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1XADDAA01234567890ABCDE
+createdAt: 2026-08-03T13:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.extra
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.extra
+    revisionId: 01K1XADDV101234567890ABCDE
+    contentFile: ../knowledge/architecture/extra.md
+    metadata:
+      title: Extra note
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/extra.md
+"""
+
+#: Redaction: a new revision supersedes the approved one and moves
+#: ``currentRevisionId`` forward. It is `rejected` -- non-surfaceable under every
+#: flag -- so `never-did` never indexes it and the two builds agree on the item
+#: being absent; the point the purge has to make is that the *previous* revision's
+#: chunks, which hold the pre-redaction text, leave the published index.
+_SHIPPED_SUPERSEDE_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1WDEPAA01234567890ABCDE
+createdAt: 2026-08-03T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.secret
+    revisionId: 01K1SCRTV201234567890ABCDE
+    expectedRevision: 01K1SCRTV101234567890ABCDE
+    contentFile: ../knowledge/architecture/secret-redacted.md
+    metadata:
+      title: Runbook
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/secret-redacted.md
+"""
+
+#: Reject/draft in place -- the third verb and its flavor face (ADR-0024 decision
+#: 5). An ``upsertRevision`` that reuses the item's *current* revision id and its
+#: body, changing only ``status``: the revision id never moves, so an op-log
+#: withdrawal set misses it, while the item's surfaceability changes. The same
+#: content file keeps ``append_revision`` a no-op (FR-K8). ``reject`` is withheld
+#: at every flavor; ``draft`` is withheld from a **default** index only -- which
+#: these projects build -- and its chunks moving visible-row rankings there is the
+#: security face a uniform ``include_unapproved=True`` reduction leaves open.
+_SHIPPED_INPLACE_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1WDEPAA01234567890ABCDE
+createdAt: 2026-08-03T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.secret
+    revisionId: 01K1SCRTV101234567890ABCDE
+    contentFile: ../knowledge/architecture/secret.md
+    metadata:
+      title: Runbook
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: {status}
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/secret.md
+"""
+
+#: The withheld document, tuned to flip the visible pair. Long and dense in
+#: `quarantine`, so its presence moves both BM25's `avgdl` (length) and the `idf`
+#: of the phrase the two visible rows share -- enough to reorder them. This is the
+#: `INCIDENT_BODY` shape from `test_retrieval_service.py`, which a sweep proved
+#: flips; the marker is appended once, a rare token the query never names, so it
+#: changes only the length. Without the purge the probe's stale index ranks the
+#: visible pair the other way from `never-did`, which is what makes the equality
+#: below able to fail.
+_SHIPPED_SECRET_BODY: Final = (
+    "# Payment tenant incident\n\n"
+    + "".join(
+        f"## {section}\n\nThe quarantine rehearsal for the payment tenant is recorded here. " * 6
+        + "\n\n"
+        for section in ("Rehearsal", "Finding")
+    )
+    + f"\n{SHIPPED_SECRET_MARKER}\n"
+)
+
+#: The visible pair, deliberately close and opposite: one leans on `quarantine`,
+#: the other on `ledger`, each naming the other's term once, so a shift in the
+#: withheld document's weight moves them against each other rather than together.
+_SHIPPED_VISIBLE_BODY: Final = {
+    "isolation": (
+        "# Tenant isolation\n\n"
+        + "The quarantine step isolates one tenant. " * 3
+        + "The ledger records that it happened.\n"
+    ),
+    "retention": (
+        "# Records retention\n\n"
+        + "The ledger keeps records for seven years. " * 3
+        + "The quarantine names it.\n"
+    ),
+}
+
+#: Filler carrying neither query term: it lifts N without touching `avgdl` or the
+#: phrases' `nHit`, so `idf` is not degenerate on a three-document corpus and the
+#: flip is a reweighting rather than a tie-break.
+_SHIPPED_NOISE = 6
+
+#: ``(itemId, migrationId, revisionId, slug, title)``. Every id is Crockford
+#: base32 -- no I, L, O or U -- because `MigrationId`/`RevisionId` reject the rest,
+#: and the migration id is also the file's name prefix, which the loader pins.
+_SHIPPED_VISIBLE: Final = (
+    (
+        "architecture.isolation",
+        "01K1VSAAAA01234567890ABCDE",
+        "01K1VSREVA01234567890ABCDE",
+        "isolation",
+        "Tenant isolation",
+    ),
+    (
+        "architecture.retention",
+        "01K1VTAAAA01234567890ABCDE",
+        "01K1VTREVA01234567890ABCDE",
+        "retention",
+        "Records retention",
+    ),
+)
+
+_SHIPPED_CLI = CliRunner()
+
+
+def _shipped_cli(
+    root: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, *args: str
+) -> dict[str, Any]:
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.chdir(root)
+    result = _SHIPPED_CLI.invoke(app, [*args, "--json"], catch_exceptions=False)
+    assert result.exit_code == 0, f"{' '.join(args)}: {result.output}"
+    payload: dict[str, Any] = json.loads(result.output)
+    return payload
+
+
+_SHIPPED_WITHDRAWAL: Final = {
+    "deprecate": _SHIPPED_DEPRECATE_MIGRATION,
+    "supersede": _SHIPPED_SUPERSEDE_MIGRATION,
+    "reject": _SHIPPED_INPLACE_MIGRATION.format(status="rejected"),
+    "inplace-draft": _SHIPPED_INPLACE_MIGRATION.format(status="draft"),
+}
+
+
+def _write_shipped_corpus(root: Path, *, face: str) -> None:
+    knowledge = root / ".theurian/knowledge/architecture"
+    migrations = root / ".theurian/migrations"
+    for item, mid, rid, slug, title in _SHIPPED_VISIBLE:
+        (knowledge / f"{slug}.md").write_text(_SHIPPED_VISIBLE_BODY[slug])
+        (migrations / f"{mid}-{slug}.yaml").write_text(
+            _SHIPPED_DOC_MIGRATION.format(mid=mid, item=item, rid=rid, slug=slug, title=title)
+        )
+    for number in range(_SHIPPED_NOISE):
+        slug = f"window-{number}"
+        (knowledge / f"{slug}.md").write_text(
+            f"# Deployment window {number}\n\nRelease {number} goes out on Thursday after the "
+            f"staging soak has run for a day.\n"
+        )
+        (migrations / f"01K1NZ{number}AAA01234567890ABCDE-{slug}.yaml").write_text(
+            _SHIPPED_DOC_MIGRATION.format(
+                mid=f"01K1NZ{number}AAA01234567890ABCDE",
+                item=f"architecture.{slug}",
+                rid=f"01K1NZ{number}REV01234567890ABCDE",
+                slug=slug,
+                title=f"Deployment window {number}",
+            )
+        )
+    (knowledge / "secret.md").write_text(_SHIPPED_SECRET_BODY)
+    (migrations / "01K1SCRTAA01234567890ABCDE-secret.yaml").write_text(
+        _SHIPPED_DOC_MIGRATION.format(
+            mid="01K1SCRTAA01234567890ABCDE",
+            item="architecture.secret",
+            rid="01K1SCRTV101234567890ABCDE",
+            slug="secret",
+            title="Runbook",
+        )
+    )
+    if face == "supersede":
+        (knowledge / "secret-redacted.md").write_text(
+            "# Runbook\n\nThe credential now lives in the secret store.\n"
+        )
+
+
+def _write_shipped_withdrawal(root: Path, *, face: str) -> None:
+    (root / ".theurian/migrations/01K1WDEPAA01234567890ABCDE-withdraw.yaml").write_text(
+        _SHIPPED_WITHDRAWAL[face]
+    )
+
+
+def _shipped_project(
+    root: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, *, face: str, build_before: bool
+) -> ProjectRegistry:
+    """One real CLI project that withdraws a secret through `migrate apply`.
+
+    ``build_before`` is the whole of the difference between the pair:
+
+    - ``holds-it`` (``True``) builds and publishes the index while the secret is
+      approved -- so it is in the file -- and *then* withdraws it, which is the
+      apply that fires the purge (ADR-0024 decision 5);
+    - ``never-did`` (``False``) withdraws first and builds afterward, so the
+      secret's surfaceable revision is never indexed.
+
+    Both apply the identical migration set, so they reach the identical canonical
+    state and report the identical ``snapshotId``. Neither runs a second
+    ``index build`` after the withdrawal: that a purged build needs no rebuild is
+    the property under test.
+    """
+    root.mkdir(parents=True)
+    for git in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _shipped_cli(root, data_dir, monkeypatch, "init")
+    _shipped_cli(
+        root, data_dir, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID
+    )
+    _write_shipped_corpus(root, face=face)
+    _shipped_cli(root, data_dir, monkeypatch, "migrate", "apply")
+    if build_before:
+        _shipped_cli(root, data_dir, monkeypatch, "index", "build")
+    _write_shipped_withdrawal(root, face=face)
+    _shipped_cli(root, data_dir, monkeypatch, "migrate", "apply")
+    if not build_before:
+        _shipped_cli(root, data_dir, monkeypatch, "index", "build")
+    return ProjectRegistry.default(data_dir)
+
+
+def _published_offers(root: Path, query: str, *, include_unapproved: bool) -> set[str]:
+    """The item ids the *published* build offers for a query, below every gate.
+
+    Resolves the build the pointer names rather than a fixed id, so it reads the
+    purged build after a withdrawal and the original before one.
+    """
+    payload = read_active_index_pointer(ProjectPaths.of(root)).payload
+    assert payload is not None, "the project must have a published index"
+    index = SqliteIndexStore(ProjectPaths.of(root).index_for(str(payload["indexBuildId"])))
+    page = index.search_lexical(
+        query, project_id=SHIPPED_PROJECT_ID, limit=500, include_unapproved=include_unapproved
+    )
+    assert page.exhausted, "the page must be complete for an absence to mean anything"
+    return {row.item_id for row in page.rows}
+
+
+def _masked(response: dict[str, Any]) -> dict[str, Any]:
+    """The response minus the fields that describe the *build*, not the answer.
+
+    ``indexBuildId``, ``stale`` and ``note`` differ by construction between a
+    purged build and a fresh one: the purge preserves the source build's state
+    hash (a removal is not a rebuild), so ``holds-it`` reports ``stale: true`` and
+    ``never-did`` ``stale: false``, and the ``note`` follows ``stale``. None of
+    the three is what T-17a moves -- that is the ranking, which is compared
+    unmasked -- and every other field, ``snapshotId`` included, must be equal.
+    """
+    masked = dict(response)
+    retrieval = dict(masked["retrieval"])
+    for field in ("indexBuildId", "stale", "note"):
+        retrieval.pop(field, None)
+    masked["retrieval"] = retrieval
+    return masked
+
+
+@pytest.mark.parametrize("face", ["deprecate", "supersede", "reject", "inplace-draft"])
+def test_a_withdrawal_purges_the_published_index_without_a_separate_build(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, face: str
+) -> None:
+    """T-17a, issue #15. Every withdrawal verb closes the window, no rebuild.
+
+    The verbs ADR-0024 decision 5 names: a retirement (``deprecateItem``); a
+    redaction (``upsertRevision`` moving ``currentRevisionId`` past the revision
+    whose chunks hold the pre-redaction text); a reject in place (an
+    ``upsertRevision`` reusing the current revision id and only changing status,
+    the one an operation-log set misses because the revision id never moves); and
+    a **draft in place** -- the same shape, status ``draft``, which is withheld
+    from the *default* index these projects build even though ``may_surface``
+    passes a draft under ``--include-unapproved``. The last is the flavor face: a
+    uniform ``include_unapproved=True`` reduction leaves its now-draft chunk in the
+    default file, moving visible-row rankings (T-17a) in the shipped default. All
+    driven through the real ``theurian migrate apply`` with **no ``index build``
+    after the withdrawal**, because the property is that the purge leaves a
+    published build a search can use.
+
+    Three assertions, and the corpus is tuned so each can fail:
+
+    - the published build no longer offers the withheld item at all -- the purge
+      removed its chunks, so no retriever ranks it;
+    - ``holds-it`` (built holding the secret, then purged) answers the query
+      **identically** to ``never-did`` (which never held it), over the whole
+      response but for the three build-identity fields the module masks. This is
+      ADR-0024's acceptance property, and it can only fail on a corpus where the
+      withheld document *reorders* the visible pair -- which is why the secret is
+      long and dense in one query term (`_SHIPPED_SECRET_BODY`). Neutralize the
+      purge and this separates, not just the presence assertion;
+    - the equality's non-vacuity is pinned directly: the probe's own stale build,
+      read before the purge would have run, ranks the visible pair the *other* way
+      from its post-purge answer. If it did not, the equality above would hold for
+      any implementation.
+
+    RED on the pre-fix wiring: `deprecate`/`supersede` keep the secret's chunk
+    (op-log worked there); `reject` keeps it because the op-log never saw the
+    reject; `inplace-draft` keeps it because a uniform-``True`` reduction judges a
+    draft surfaceable even for a default index.
+    """
+    base = tmp_path_factory.mktemp("shipped")
+    probe_root = base / "holds-it"
+    probe = _shipped_project(
+        probe_root, base / "holds-it-data", monkeypatch, face=face, build_before=True
+    )
+    control = _shipped_project(
+        base / "never-did", base / "never-did-data", monkeypatch, face=face, build_before=False
+    )
+
+    offered = _published_offers(probe_root, SHIPPED_QUERY, include_unapproved=True)
+    assert "architecture.secret" not in offered, (
+        "the withdrawal must have purged the secret from the published build, so "
+        "no retriever offers it even under includeUnapproved"
+    )
+
+    from_probe = _call(probe, "knowledge.search", projectId=SHIPPED_PROJECT_ID, query=SHIPPED_QUERY)
+    from_control = _call(
+        control, "knowledge.search", projectId=SHIPPED_PROJECT_ID, query=SHIPPED_QUERY
+    )
+
+    assert from_probe["count"] == from_control["count"] > 0, (
+        "both must answer the visible corpus, or two empty answers prove nothing"
+    )
+    assert "architecture.secret" not in {r["itemId"] for r in from_probe["results"]}, (
+        "and the withheld item must not be in the answer"
+    )
+    assert SHIPPED_SECRET_MARKER not in json.dumps(from_probe), "nor its payload anywhere in it"
+    assert from_probe["retrieval"]["snapshotId"] == from_control["retrieval"]["snapshotId"], (
+        "the two apply the same migrations, so they answer from the same canonical state"
+    )
+    stale_order, purged_order = _visible_orders_before_and_after_the_purge(probe_root)
+    assert stale_order != purged_order, (
+        "the corpus must be one whose visible order the withheld document flips: "
+        "the probe's pre-purge build must rank the visible pair the other way from "
+        "its purged one, or the equality below holds for any implementation"
+    )
+    assert _masked(from_probe) == _masked(from_control), (
+        "a build that held the withdrawn rows and had them purged must answer "
+        "identically to one that never held them -- ranking, chunk ids and scores"
+    )
+
+
+def _visible_orders_before_and_after_the_purge(probe_root: Path) -> tuple[list[str], list[str]]:
+    """The probe's visible lexical order from its pre-purge build and its purged one.
+
+    Publishing never deletes (ADR-0024 point 6), so the build `index build` wrote
+    while the secret was approved is still on disk beside the purged successor the
+    pointer now names. Reading both directly, at the same retriever the tool's
+    first pass uses, is the exact before/after the purge produced -- without
+    rebuilding. Their visible orders differing is what makes the response equality
+    a real test rather than one satisfied by any two corpora that happen to agree.
+    """
+    paths = ProjectPaths.of(probe_root)
+    published = read_active_index_pointer(paths).payload
+    assert published is not None
+    published_id = str(published["indexBuildId"])
+    prefix, suffix = "theurian-index-", ".sqlite"
+
+    def visible_order(build: Path) -> list[str]:
+        page = SqliteIndexStore(build).search_lexical(
+            SHIPPED_QUERY, project_id=SHIPPED_PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+        )
+        seen: list[str] = []
+        for row in page.rows:
+            if row.item_id != "architecture.secret" and row.item_id not in seen:
+                seen.append(row.item_id)
+        return seen
+
+    purged = visible_order(paths.index_for(published_id))
+    for build in sorted(paths.state.glob(f"{prefix}*{suffix}")):
+        if build.name[len(prefix) : -len(suffix)] == published_id:
+            continue
+        offers_secret = any(
+            row.item_id == "architecture.secret"
+            for row in SqliteIndexStore(build)
+            .search_lexical(
+                SHIPPED_QUERY,
+                project_id=SHIPPED_PROJECT_ID,
+                limit=MAX_RESULTS,
+                include_unapproved=True,
+            )
+            .rows
+        )
+        if offers_secret:  # the pre-purge build that still holds the withheld row
+            return visible_order(build), purged
+    raise AssertionError("no pre-purge build holding the secret was found on disk")
+
+
+def test_a_restored_item_survives_the_replay_a_later_apply_forces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HIGH-2, issue #15. A deprecated-then-restored item is not deleted by a replay.
+
+    ``migrate apply`` rebuilds the canonical database and re-applies the whole set
+    whenever the state hash shifts (ADR-0016), which any later knowledge change
+    does. An operation-log withdrawal set re-added every past deprecation's
+    revision on that replay and never cancelled it, so a since-restored -- and now
+    ``approved`` -- item was purged from the published index on an unrelated apply,
+    brought back by a rebuild, and purged again: visible content deleted for good.
+
+    The final-state computation reads the item's *current* status instead, so a
+    restore cancels its deprecation and the replay withdraws nothing. Driven
+    through the real CLI end to end: deprecate (purge fires), restore, rebuild,
+    then an unrelated add whose only effect is to force the replay.
+
+    RED on the pre-fix wiring: the unrelated apply's op-log re-purges the restored
+    secret, and the final assertion -- the item is still offered -- fails.
+    """
+    data = tmp_path / "data"
+    root = tmp_path / "repo"
+    root.mkdir()
+    for git in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _shipped_cli(root, data, monkeypatch, "init")
+    _shipped_cli(root, data, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID)
+    knowledge = root / ".theurian/knowledge/architecture"
+    migrations = root / ".theurian/migrations"
+    (knowledge / "secret.md").write_text(_SHIPPED_SECRET_BODY)
+    (migrations / "01K1SCRTAA01234567890ABCDE-secret.yaml").write_text(
+        _SHIPPED_DOC_MIGRATION.format(
+            mid="01K1SCRTAA01234567890ABCDE",
+            item="architecture.secret",
+            rid="01K1SCRTV101234567890ABCDE",
+            slug="secret",
+            title="Runbook",
+        )
+    )
+    _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    _shipped_cli(root, data, monkeypatch, "index", "build")
+
+    (migrations / "01K1WDEPAA01234567890ABCDE-deprecate.yaml").write_text(
+        _SHIPPED_DEPRECATE_MIGRATION
+    )
+    _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    assert "architecture.secret" not in _published_offers(
+        root, "quarantine", include_unapproved=True
+    ), "the deprecation must have purged the secret, or the restore below proves nothing"
+
+    (migrations / "01K1WRESAA01234567890ABCDE-restore.yaml").write_text(_SHIPPED_RESTORE_MIGRATION)
+    _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    _shipped_cli(root, data, monkeypatch, "index", "build")
+    assert "architecture.secret" in _published_offers(
+        root, "quarantine", include_unapproved=False
+    ), "the rebuild after the restore must index the now-approved secret again"
+
+    # The unrelated add forces the replay that an op-log set re-purged the secret on.
+    (knowledge / "extra.md").write_text(
+        "# Extra note\n\nThe quarantine ledger has an extra note.\n"
+    )
+    (migrations / "01K1XADDAA01234567890ABCDE-extra.yaml").write_text(_SHIPPED_UNRELATED_MIGRATION)
+    _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+
+    assert "architecture.secret" in _published_offers(
+        root, "quarantine", include_unapproved=False
+    ), (
+        "a restored item must survive an unrelated later apply -- the replay must "
+        "not re-purge it from the published index"
+    )
+    registry = ProjectRegistry.default(data)
+    answer = _call(registry, "knowledge.search", projectId=SHIPPED_PROJECT_ID, query="quarantine")
+    assert "architecture.secret" in {result["itemId"] for result in answer["results"]}, (
+        "and a caller must still be handed it"
+    )
+
+
+_DRAFT_DOC_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1PDAAAA01234567890ABCDE
+createdAt: 2026-08-03T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.policy-draft
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.policy-draft
+    revisionId: 01K1PDREVA01234567890ABCDE
+    contentFile: ../knowledge/architecture/policy-draft.md
+    metadata:
+      title: Caching policy draft
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: draft
+      owner: platform-team
+      trustLevel: inferred
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/policy-draft.md
+"""
+
+_DEPRECATE_GATEWAY_MIGRATION: Final = """apiVersion: theurian.dev/v1
+id: 01K1WGATEA01234567890ABCDE
+createdAt: 2026-08-03T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: deprecateItem
+    itemId: architecture.gateway
+    reason: retired, and unrelated to the draft
+"""
+
+
+def test_a_draft_in_an_include_unapproved_index_survives_an_unrelated_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adversarial guard (ADR-0024 decision 5, r3): a legitimately-indexed draft survives.
+
+    A draft an ``--include-unapproved`` build was told to hold is surfaceable *at
+    that index's flavor*, so an unrelated withdrawal's replay must not delete it.
+    Build such an index, then deprecate a *different* item -- which replays the
+    whole set (ADR-0016), touching the draft's own upsert -- and confirm the draft
+    is still in the published index.
+
+    RED under a uniform ``include_unapproved=False`` reduction: the replay would
+    judge the draft non-surfaceable and purge it from the index that legitimately
+    holds it -- the case the security fix must not over-reach into.
+    """
+    data = tmp_path / "data"
+    root = tmp_path / "repo"
+    root.mkdir()
+    for git in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _shipped_cli(root, data, monkeypatch, "init")
+    _shipped_cli(root, data, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID)
+    knowledge = root / ".theurian/knowledge/architecture"
+    migrations = root / ".theurian/migrations"
+    (knowledge / "policy-draft.md").write_text(
+        "# Caching policy draft\n\nThe caching policy draft is under review by the team.\n"
+    )
+    (migrations / "01K1PDAAAA01234567890ABCDE-draft.yaml").write_text(_DRAFT_DOC_MIGRATION)
+    (knowledge / "gateway.md").write_text("# Gateway\n\nThe gateway meters every request.\n")
+    (migrations / "01K1GAAAAA01234567890ABCDE-gateway.yaml").write_text(
+        _SHIPPED_DOC_MIGRATION.format(
+            mid="01K1GAAAAA01234567890ABCDE",
+            item="architecture.gateway",
+            rid="01K1GAREVA01234567890ABCDE",
+            slug="gateway",
+            title="Gateway",
+        )
+    )
+    _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    _shipped_cli(root, data, monkeypatch, "index", "build", "--include-unapproved")
+    assert "architecture.policy-draft" in _published_offers(
+        root, "caching", include_unapproved=True
+    ), "the --include-unapproved build must index the draft, or the guard proves nothing"
+
+    (migrations / "01K1WGATEA01234567890ABCDE-deprecate-gateway.yaml").write_text(
+        _DEPRECATE_GATEWAY_MIGRATION
+    )
+    withdrawn = _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+
+    assert "architecture.gateway" not in _published_offers(
+        root, "gateway", include_unapproved=True
+    ), "the unrelated deprecation must have purged its own item"
+    assert "architecture.policy-draft" in _published_offers(
+        root, "caching", include_unapproved=True
+    ), (
+        "but the draft an --include-unapproved index was told to hold must survive "
+        "the replay -- a uniform False reduction would wrongly delete it"
+    )
+    assert withdrawn["indexPurge"]["published"] is True, (
+        "the purge did publish -- it removed the deprecated gateway -- so this is a "
+        "real purge that kept the draft, not a skip that touched nothing"
+    )
+
+
+def test_migrate_apply_reports_the_index_purge_it_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `indexPurge` block on `migrate apply --json`, pinned field by field.
+
+    It is the operator's only signal that a withdrawal's purge fired -- or, when
+    ``failed`` is true, that a stale build still holds the withdrawn rows. Nothing
+    read it, so every field was hardcodable. Two applies: the one that adds and
+    approves the secret reports the no-op state; the one that deprecates it reports
+    a published purge that removed something and did not fail.
+    """
+    data = tmp_path / "data"
+    root = tmp_path / "repo"
+    root.mkdir()
+    for git in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "T"],
+    ):
+        subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _shipped_cli(root, data, monkeypatch, "init")
+    _shipped_cli(root, data, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID)
+    (root / ".theurian/knowledge/architecture/secret.md").write_text(_SHIPPED_SECRET_BODY)
+    (root / ".theurian/migrations/01K1SCRTAA01234567890ABCDE-secret.yaml").write_text(
+        _SHIPPED_DOC_MIGRATION.format(
+            mid="01K1SCRTAA01234567890ABCDE",
+            item="architecture.secret",
+            rid="01K1SCRTV101234567890ABCDE",
+            slug="secret",
+            title="Runbook",
+        )
+    )
+    created = _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    assert created["indexPurge"] == {
+        "published": False,
+        "indexBuildId": None,
+        "removed": 0,
+        # This apply touched an item (the approved secret), so the engine reports a
+        # candidate -- but there is no index yet, so there is nothing to purge.
+        "reason": "no-published-index",
+        "failed": False,
+        "remedy": "",
+    }, "an apply before any index build reports the no-op state"
+
+    _shipped_cli(root, data, monkeypatch, "index", "build")
+    (root / ".theurian/migrations/01K1WDEPAA01234567890ABCDE-deprecate.yaml").write_text(
+        _SHIPPED_DEPRECATE_MIGRATION
+    )
+    withdrawn = _shipped_cli(root, data, monkeypatch, "migrate", "apply")
+    purge = withdrawn["indexPurge"]
+
+    assert purge["published"] is True, "the withdrawal must have published a purged build"
+    assert purge["failed"] is False
+    assert purge["removed"] > 0, "and it must have removed the secret's chunks"
+    assert isinstance(purge["indexBuildId"], str) and purge["indexBuildId"], (
+        "the purged build is named"
+    )
+    assert purge["reason"] == "" and purge["remedy"] == "", "no reason or remedy on success"

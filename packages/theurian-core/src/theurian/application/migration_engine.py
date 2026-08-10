@@ -15,12 +15,12 @@ adapter, so the same engine runs against SQLite today and PostgreSQL later.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Protocol
 
-from theurian.domain.enums import KnowledgeStatus, RelationType
+from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
@@ -28,7 +28,7 @@ from theurian.domain.errors import (
     ScopeViolation,
     UnenforceableScopeError,
 )
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, SpecId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
     KnowledgeEvidence,
@@ -72,6 +72,9 @@ class MigrationWriter(Protocol):
     def append_revision(self, revision: KnowledgeRevision) -> None: ...
     def put_item(self, item: KnowledgeItem) -> None: ...
     def get_item(self, project_id: ProjectId, item_id: ItemId) -> KnowledgeItem | None: ...
+    def list_revision_ids(
+        self, project_id: ProjectId, item_id: ItemId
+    ) -> tuple[RevisionId, ...]: ...
     def add_relation(self, relation: KnowledgeRelation) -> None: ...
     def remove_relation(self, relation: KnowledgeRelation) -> None: ...
     def add_alias(self, alias: KnowledgeAlias) -> None: ...
@@ -105,6 +108,24 @@ class MigrationPlan:
         return not self.pending
 
 
+@dataclass(frozen=True, slots=True)
+class WithdrawalCandidate:
+    """An item a withdrawal touched, and its final canonical state.
+
+    Enough for the purge to decide -- at the *published index's own build flavor*,
+    which only the index pointer records -- which of the item's revisions that
+    index must stop holding (ADR-0024 decision 5). The engine cannot make that
+    decision on its own: whether a ``draft`` is withheld depends on whether the
+    index was built with ``--include-unapproved``, and the engine never reads the
+    index. So it gathers the final state here and `revisions_to_purge` reduces it
+    against the flavor the pointer carries.
+    """
+
+    status: KnowledgeStatus
+    current_revision_id: str | None
+    revision_ids: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class ApplyReport:
     """The outcome of an apply run."""
@@ -112,6 +133,15 @@ class ApplyReport:
     applied: list[MigrationId] = field(default_factory=list)
     skipped: list[MigrationId] = field(default_factory=list)
     operations_applied: int = 0
+    #: The items this apply moved into or out of a withdrawn state, each with its
+    #: **final** canonical state (status, current and all revisions) -- gathered
+    #: after the apply commits, never accumulated per operation. The purge reduces
+    #: these to a purge set against the published index's own flavor
+    #: (`revisions_to_purge`), because whether a ``draft`` is withheld is a
+    #: property of the *index*, not the store. Reading final state is what makes a
+    #: restore cancel a deprecation, a reject-in-place withdraw an item whose
+    #: revision id never changed, and a full replay idempotent.
+    withdrawn_candidates: list[WithdrawalCandidate] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -305,10 +335,18 @@ class MigrationEngine:
         refuse_unenforceable_scope(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
+        # The items whose surfaceability or current revision an operation could
+        # have moved. Their *final* state is gathered below and reduced to a purge
+        # set by the flavor-aware `revisions_to_purge`, never accumulated per
+        # operation.
+        affected: set[ItemId] = set()
         for migration in plan.pending:
             for operation in migration.operations:
                 self._apply_operation(writer, project_id, migration, operation)
                 report.operations_applied += 1
+                item_id = _withdrawal_affected_item(operation)
+                if item_id is not None:
+                    affected.add(item_id)
             writer.record_migration(
                 project_id,
                 migration.migration_id,
@@ -317,6 +355,7 @@ class MigrationEngine:
             )
             report.applied.append(migration.migration_id)
 
+        report.withdrawn_candidates = _gather_withdrawal_candidates(writer, project_id, affected)
         return report
 
     def _apply_operation(  # noqa: PLR0912 -- a flat dispatch over 14 closed operations
@@ -587,12 +626,103 @@ def _replace_item(item: KnowledgeItem, **changes: object) -> KnowledgeItem:
     return dataclasses.replace(item, **changes)  # type: ignore[arg-type]
 
 
+def _withdrawal_affected_item(operation: Operation) -> ItemId | None:
+    """The item an operation could move into (or out of) a withdrawn state.
+
+    Only the three operations that touch an item's status or its current revision:
+    a ``deprecateItem``, a ``restoreItem`` (which can *undo* a withdrawal), and an
+    ``upsertRevision`` (which can supersede an old revision, or -- reusing a
+    revision id and only changing status -- reject an item in place). The
+    withdrawn set is then read off the final state of exactly these items, so an
+    item some *other* apply withdrew and this one does not touch is left to the
+    apply that did, and a replay that re-touches all of them recomputes the same
+    answer.
+    """
+    match operation:
+        case DeprecateItem() | RestoreItem() | UpsertRevision():
+            return operation.item_id
+        case _:
+            return None
+
+
+def _gather_withdrawal_candidates(
+    writer: MigrationWriter, project_id: ProjectId, affected: set[ItemId]
+) -> list[WithdrawalCandidate]:
+    """The final canonical state of each item a withdrawal touched.
+
+    Read once, inside the transaction, from the store rather than accumulated per
+    operation -- which is what makes a restore cancel a deprecation, a reject in
+    place register though its revision id never moved, and a replay idempotent.
+    The purge, not this, decides which revisions to remove, because that depends
+    on the *index's* flavor (`revisions_to_purge`).
+    """
+    candidates: list[WithdrawalCandidate] = []
+    for item_id in affected:
+        item = writer.get_item(project_id, item_id)
+        if item is None:  # pragma: no cover - the affecting op created or requires it
+            continue
+        current = item.current_revision_id
+        candidates.append(
+            WithdrawalCandidate(
+                status=item.status,
+                current_revision_id=None if current is None else current.value,
+                revision_ids=tuple(
+                    revision_id.value
+                    for revision_id in writer.list_revision_ids(project_id, item_id)
+                ),
+            )
+        )
+    return candidates
+
+
+def revisions_to_purge(
+    candidates: Sequence[WithdrawalCandidate], *, indexes_unapproved: bool
+) -> list[str]:
+    """Revision ids a published index must not hold, **at its own build flavor**.
+
+    The class the withdrawal purge converges on (ADR-0024 decision 5): a published
+    index holds no revision that is non-surfaceable *at that index's own build
+    flavor*, nor non-current. ``indexes_unapproved`` is that flavor, read off the
+    index pointer -- and it is load-bearing, because a uniform flavor is wrong in
+    one direction each:
+
+    - a **default** index (``indexes_unapproved=False``) holds only approved
+      chunks, so a revision now ``draft`` or ``proposed`` -- an in-place status
+      change reaching it from ``approved`` -- is non-surfaceable *there* and must
+      go, along with ``deprecated``/``rejected``. Testing with the flag *True*
+      leaves that now-draft chunk in the file, moving visible-row BM25 rankings
+      (T-17a) in the shipped default;
+    - an ``--include-unapproved`` index (``True``) was told to hold drafts and
+      proposals, so those are surfaceable *there* and survive; only what is
+      withheld under every flag -- deprecated, rejected -- and non-current
+      revisions go. Testing with the flag *False* would delete a draft that build
+      legitimately holds.
+
+    So the same ``may_surface`` rule the surfacing gate uses is applied here with
+    the index's own flag, which is what keeps the purge and the gate from
+    disagreeing about what "withheld" means for a given build.
+
+    Sorted only for a deterministic result across a replay. No runtime consumer
+    observes the order -- the purge deletes by set membership -- so nothing pins
+    the sortedness and nothing depends on it.
+    """
+    purge: set[str] = set()
+    for candidate in candidates:
+        surfaceable = may_surface(candidate.status, include_unapproved=indexes_unapproved)
+        for revision_id in candidate.revision_ids:
+            if not surfaceable or revision_id != candidate.current_revision_id:
+                purge.add(revision_id)
+    return sorted(purge)
+
+
 __all__ = [
     "ApplyReport",
     "MigrationEngine",
     "MigrationPlan",
     "MigrationWriter",
+    "WithdrawalCandidate",
     "refuse_unenforceable_scope",
+    "revisions_to_purge",
     "unenforceable_scope_violations",
     "verify_no_applied_migration_changed",
 ]

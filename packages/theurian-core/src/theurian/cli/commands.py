@@ -34,6 +34,10 @@ from theurian.application.project_service import (
     read_active_state,
     write_active_state,
 )
+from theurian.application.withdrawal_purge import (
+    WithdrawalPurge,
+    publish_purge_for_withdrawal,
+)
 from theurian.cli.context import (
     CommandContext,
     current_commit,
@@ -70,6 +74,7 @@ from theurian.infrastructure.sqlite.connection import (
     create_database,
     write_transaction,
 )
+from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 
@@ -1039,6 +1044,20 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         context.paths, context.state_hash, len(context.loaded.migration_set), context.clock
     )
 
+    # After the write transaction has committed and released the lock, never
+    # inside it: `purge_into` is a whole-file backup, delete and verify, and
+    # holding that across a write transaction blocks every other writer (NFR-8,
+    # ADR-0018 point 5). The purge reads the *published index*, not canonical
+    # state, so the committed withdrawal is all it needs -- and it is the same
+    # application-layer use case a future daemon write path calls (ADR-0024
+    # decision 5). A withdrawal-free apply skips it inside the use case.
+    purge = publish_purge_for_withdrawal(
+        context.paths,
+        withdrawal_candidates=report.withdrawn_candidates,
+        ids=context.ids,
+        index_factory=SqliteIndexStore,
+    )
+
     _emit(
         {
             "stateHash": str(active.state_hash),
@@ -1047,9 +1066,29 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             "skipped": [str(m) for m in report.skipped],
             "operationsApplied": report.operations_applied,
             "changed": report.changed,
+            "indexPurge": _purge_fields(purge),
         },
         as_json=as_json,
     )
+
+
+def _purge_fields(purge: WithdrawalPurge) -> dict[str, object]:
+    """What the withdrawal-triggered index purge did, for the apply's payload.
+
+    Reported rather than swallowed so a purge that *failed* is visible: the
+    withdrawal is committed, but the still-published build holds the withdrawn
+    rows until a rebuild, and a caller acting on the answer has to be able to see
+    that (ADR-0024 decision 5). ``published: false`` with a benign ``reason`` is
+    the ordinary case -- no withdrawal, or no index to purge.
+    """
+    return {
+        "published": purge.published,
+        "indexBuildId": purge.index_build_id,
+        "removed": purge.removed,
+        "reason": purge.reason,
+        "failed": purge.failed,
+        "remedy": purge.remedy,
+    }
 
 
 daemon_app = typer.Typer(help="Manage the local Theurian daemon.", no_args_is_help=True)

@@ -189,7 +189,7 @@ STATUS_GATE = may_surface.__name__
 #: ``knowledge.get`` and was added after the count was written. A count in a
 #: docstring is enforced by nothing; this set is.
 #:
-#: The five, by responsibility, and the behavioural test that holds each to
+#: The six, by responsibility, and the behavioural test that holds each to
 #: gating (so removing a site is caught here *and* the removal turns one red):
 #:   - the index builder decides what to write
 #:     (``test_index_builder`` withholds unapproved from the index);
@@ -200,9 +200,15 @@ STATUS_GATE = may_surface.__name__
 #:   - ``knowledge.get`` gates the item it hands over by id, and, per edge, each
 #:     endpoint of a relation before publishing it
 #:     (``test_knowledge_get_will_not_hand_over_what_search_withheld`` and the
-#:     relation-visibility tests in ``tests/integration/test_mcp_tools.py``).
+#:     relation-visibility tests in ``tests/integration/test_mcp_tools.py``);
+#:   - the withdrawal purge decides which revisions a still-published index must
+#:     stop holding (ADR-0024 decision 5) — the one *inverse* use, naming what is
+#:     non-surfaceable so the purge and the surfacing gate cannot disagree
+#:     (``test_a_withdrawal_purges_the_published_index_without_a_separate_build``
+#:     and ``test_a_restored_item_survives_the_replay_a_later_apply_forces``).
 STATUS_GATE_CALL_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
+    ("application/migration_engine.py", "revisions_to_purge"),
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/search.py", "_scan"),
     ("mcp/tools.py", "_relation_is_visible"),

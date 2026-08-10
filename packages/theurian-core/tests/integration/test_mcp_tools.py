@@ -182,6 +182,31 @@ def _run(*args: str) -> None:
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
 
+def _apply_leaving_the_stale_build_published(root: Path) -> None:
+    """Apply a written withdrawal migration with the index pointer withheld.
+
+    ADR-0024 decision 5 makes ``theurian migrate apply`` purge the withdrawn
+    revisions from whatever build the pointer names, the instant the withdrawal
+    commits -- which is the close this milestone lands, proved end to end in
+    ``test_absence_proof.py``. These fixtures are for the *residual* that close
+    leaves: a request already reading the pre-swap build, or a purge that raised,
+    where the published build still holds the withheld rows and the canonical gate
+    is the only thing between them and a caller (ADR-0024 decision 5's own words).
+
+    Withholding the pointer across the apply reproduces that residual
+    deterministically. With no published build, the purge takes its
+    ``no-published-index`` path and removes nothing; the pre-withdrawal build --
+    which does hold the withheld revision -- is restored afterward, stale against
+    the state the withdrawal advanced to. Every test on these fixtures then reads
+    exactly the state it was written for: the gate withholding an offered row.
+    """
+    pointer = ProjectPaths.of(root).active_index_pointer
+    withheld_pointer = pointer.read_text(encoding="utf-8")
+    pointer.unlink()
+    _run("migrate", "apply")
+    pointer.write_text(withheld_pointer, encoding="utf-8")
+
+
 async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, Any]:
     """Invoke a tool and return its payload, or ``{"_error": ...}``.
 
@@ -1902,9 +1927,14 @@ def withheld(registry: ProjectRegistry, request: pytest.FixtureRequest) -> Proje
     **Synchronous**, because `theurian index build` embeds through
     `asyncio.run`, which raises inside an already-running loop.
 
-    The index is deliberately *not* rebuilt. That is not a contrived state: it
-    is where every project sits between applying the migration that redacts a
-    secret and running the next `index build`.
+    The index is deliberately *not* rebuilt, and after issue #15 that is the
+    *residual* state rather than the steady one: a withdrawal now purges the
+    published build (ADR-0024 decision 5), so the window in which it still holds
+    the withheld rows is a request already in flight or a purge that failed --
+    exactly where the canonical gate is the only defense. The withdrawal is
+    applied with the pointer withheld so the purge acts on nothing, reproducing
+    that residual (`_apply_leaving_the_stale_build_published`); the shipped close
+    of the non-residual case is proved in `test_absence_proof.py`.
     """
     root = Path(registry.load()["demo"]["rootPath"])
     monkey = pytest.MonkeyPatch()
@@ -1918,7 +1948,7 @@ def withheld(registry: ProjectRegistry, request: pytest.FixtureRequest) -> Proje
         _run("index", "build")
 
         request.param(root)
-        _run("migrate", "apply")
+        _apply_leaving_the_stale_build_published(root)
     finally:
         monkey.undo()
     return registry
@@ -2079,6 +2109,12 @@ def crowded(registry: ProjectRegistry, request: pytest.FixtureRequest) -> Projec
     be in the index *before* the redaction, and rebuilding afterwards would
     remove the withheld revision from the index and leave nothing to withhold.
 
+    Like `withheld`, the withdrawal is applied with the index pointer withheld so
+    the issue #15 purge (ADR-0024 decision 5) acts on nothing and the stale build
+    -- which holds the withheld revision among the crowd -- is what the caller
+    reads. That is the residual the canonical gate defends; the shipped close is
+    proved in `test_absence_proof.py`.
+
     **Synchronous**, because `theurian index build` embeds through `asyncio.run`,
     which raises inside an already-running loop.
     """
@@ -2105,7 +2141,7 @@ def crowded(registry: ProjectRegistry, request: pytest.FixtureRequest) -> Projec
         _run("index", "build")
 
         request.param(root)
-        _run("migrate", "apply")
+        _apply_leaving_the_stale_build_published(root)
     finally:
         monkey.undo()
     return registry
@@ -3368,7 +3404,12 @@ def _build_depth_project(
     _run("index", "build")
 
     if holds_the_document:
+        # The withdrawal, applied with the pointer withheld so issue #15's purge
+        # (ADR-0024 decision 5) acts on nothing and the stale build still holds
+        # the withheld runbook -- the residual the depth probes below exercise.
+        # The shipped close of the non-residual case is `test_absence_proof.py`.
         (migrations / f"{DEPTH_RETIRE_ID}-deprecate.yaml").write_text(DEPRECATION_MIGRATION)
+        _apply_leaving_the_stale_build_published(root)
     else:
         (knowledge / "ledger-retention.md").write_text(corpus.unrelated_body)
         (migrations / f"{DEPTH_LATE_ID}-ledger.yaml").write_text(
@@ -3379,7 +3420,7 @@ def _build_depth_project(
                 title=corpus.unrelated_title,
             )
         )
-    _run("migrate", "apply")
+        _run("migrate", "apply")
 
 
 @dataclass(frozen=True, slots=True)
