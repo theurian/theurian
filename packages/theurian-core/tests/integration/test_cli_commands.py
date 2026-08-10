@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -918,6 +919,125 @@ def test_an_already_applied_foreign_tenant_survives_a_state_hash_shift(
     recovered_code, recovered = _invoke("migrate", "apply")
     assert recovered_code == 0
     assert sorted(recovered["applied"]) == sorted([MIGRATION_ID, _SECOND_MIGRATION_ID])
+
+
+def _contains_migration(database: Path, migration_id: str) -> bool:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT 1 FROM migration_history WHERE migration_id = ?", (migration_id,)
+        ).fetchall()
+    finally:
+        connection.close()
+    return bool(rows)
+
+
+_THIRD_MIGRATION_ID = "01K1CCCCCC01234567890ABCDE"
+_THIRD_REVISION_ID = "01K1CCCREV01234567890ABCDE"
+_THIRD_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_THIRD_MIGRATION_ID}
+createdAt: 2026-08-02T12:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.third-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.third-policy
+    revisionId: {_THIRD_REVISION_ID}
+    contentFile: ../knowledge/architecture/third-policy.md
+    metadata:
+      title: Third policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/third-policy.md
+"""
+
+
+def test_a_foreign_tenant_recorded_in_a_non_first_sorted_database_is_still_found(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #63's HIGH-1, round 3, MEDIUM.
+
+    `_applied_migration_ids` must read every `theurian-state-*.sqlite` under
+    `paths.state`, not only the one a glob happens to sort first -- the
+    filename is a content hash, unrelated to apply order or to which
+    database recorded the foreign tenant. Every other test in this file only
+    ever produces *one* state database (a single seed apply; adding a
+    pending migration does not create one), so `sorted(...)[0]` and
+    glob-all are indistinguishable to them -- a mutant that reads only the
+    first-sorted database survives the whole suite without this test.
+
+    Two applies (a clean one alone, then the same clean one plus a foreign
+    tenant together) leave two databases on disk. Which one sorts first is a
+    property of the content hash, not of apply order, so the ordering this
+    test needs is forced deterministically by renaming the databases after
+    seeding, rather than by searching for an unlucky hash by chance.
+    """
+    _invoke("init")
+
+    # Database #1: a clean migration, applied alone.
+    (project / ".theurian/knowledge/architecture/second-policy.md").write_text("# Second\n")
+    (project / f".theurian/migrations/{_SECOND_MIGRATION_ID}-second.yaml").write_text(
+        _SECOND_MIGRATION
+    )
+    clean_code, clean_applied = _invoke("migrate", "apply")
+    assert clean_code == 0
+    assert clean_applied["applied"] == [_SECOND_MIGRATION_ID]
+
+    # Database #2: the same clean migration plus a foreign-tenant one,
+    # applied together -- a different state hash, so a second, independent
+    # database that records *both* ids (nothing carries over from #1).
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+    with monkeypatch.context() as seed:
+        seed.setattr(
+            "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
+        )
+        seed.setattr("theurian.cli.commands.refuse_unenforceable_scope", lambda _ms: None)
+        seed_code, seeded = _invoke("migrate", "apply")
+    assert seed_code == 0, "fixture setup failed: the seeding apply itself was refused"
+    assert sorted(seeded["applied"]) == sorted([MIGRATION_ID, _SECOND_MIGRATION_ID])
+
+    databases = sorted((project / ".theurian/state").glob("theurian-state-*.sqlite"))
+    assert len(databases) == 2, "fixture must produce exactly two state databases"
+    foreign_db = next(db for db in databases if _contains_migration(db, MIGRATION_ID))
+    clean_db = next(db for db in databases if db != foreign_db)
+
+    # Force the unlucky ordering: the database *without* the foreign tenant
+    # sorts first, the one *with* it sorts last. A first-sorted-only glob
+    # would then check only the clean one and miss the foreign migration.
+    clean_db.rename(clean_db.with_name("theurian-state-000000000000.sqlite"))
+    foreign_db.rename(foreign_db.with_name("theurian-state-zzzzzzzzzzzz.sqlite"))
+    renamed = sorted((project / ".theurian/state").glob("theurian-state-*.sqlite"))
+    assert renamed[0].name == "theurian-state-000000000000.sqlite"
+    assert not _contains_migration(renamed[0], MIGRATION_ID)
+    assert _contains_migration(renamed[1], MIGRATION_ID)
+
+    # A further clean, pending migration -- shifts the state hash again, so
+    # neither renamed database matches `context.state_hash` either.
+    (project / ".theurian/knowledge/architecture/third-policy.md").write_text("# Third\n")
+    (project / f".theurian/migrations/{_THIRD_MIGRATION_ID}-third.yaml").write_text(
+        _THIRD_MIGRATION
+    )
+
+    code, error = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR
+    # The applied-case remedy: correct only if the first-sorted-only bug is
+    # NOT present. A first-sorted-only reader would check
+    # theurian-state-000000000000.sqlite, find nothing, and print the
+    # unapplied-case remedy instead.
+    assert ".theurian/state" in error["remedy"]
+    assert "FR-K4" in error["remedy"]
+    assert "then retry" not in error["remedy"]
 
 
 # ==========================================================================

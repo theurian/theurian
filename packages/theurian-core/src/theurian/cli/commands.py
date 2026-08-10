@@ -184,11 +184,22 @@ def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozen
     that has never been built, and checking only that one database made an
     applied revision read as unapplied the moment anything else was added on
     top of it: exactly the ordinary shape of issue #63's own upgrade path,
-    not an edge case. A migration id counts as applied here if *any*
-    still-on-disk database recorded it, which is the only definition
-    consistent with what the FR-K5 guard actually protects -- every database
-    this project has ever built, not only the one this command happens to be
-    about to touch.
+    not an edge case.
+
+    A migration id counts as applied here if *any* still-on-disk database
+    recorded it -- deliberately broader than what FR-K5 itself checks
+    (`_verify_history` guards only the *active* database, via the
+    active-state pointer, not every database on disk). That breadth is a
+    **safe over-correction, not an exact correspondence with FR-K5**: it
+    cannot pick the unapplied-case remedy for a migration genuinely recorded
+    somewhere, which is the direction that matters -- reopening HIGH-1's
+    loop. The risk it takes on instead is the harmless one: offering the
+    always-valid, always-safe applied-case procedure (edit, delete state,
+    rebuild) to a revision whose only on-disk record sits in some
+    long-abandoned, non-active database, where the simpler unapplied-case
+    edit would in principle have sufficed. That costs a reader one
+    unnecessary `rm -rf .theurian/state/` on a contrived history; it never
+    costs a false "nothing was ever applied".
 
     Any failure opening one database is treated as "nothing recorded there"
     rather than surfaced, and the remaining databases are still checked: the
