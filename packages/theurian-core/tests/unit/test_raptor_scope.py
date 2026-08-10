@@ -2,16 +2,18 @@
 
 This is the item ADR-0008's Compliance section names as owed: "constructing a
 node from children with differing scope tuples must raise, and the tree-id
-function must be total over the tuple." Both halves are discharged here.
+function must be total over the tuple." The scope-match refusal and the
+tree-id function are discharged here -- not the whole item.
 ``SummaryNode.__post_init__`` refuses construction -- raising
 ``InvariantViolationError``, the house type for construction invariants and a
 ``DomainError`` subclass, so ``pytest.raises(DomainError, ...)`` below catches
 it without naming the concrete type -- the moment a child's six-component
 ``Scope`` disagrees with the node's own. ``SummaryNode.tree_id`` returns
-``scope.digest``, total over the tuple because ``Scope.digest`` is. What
-ADR-0008's Compliance section still lists as owed beyond this item --
-the node table, builder and traversal in ``infrastructure/raptor/`` -- remains
-unbuilt and is out of scope for this file.
+``scope.digest``, total over the tuple because ``Scope.digest`` is. The
+Compliance entry also carries the claim that no summary node's *text* spans
+two sensitivities; ``SummaryNode`` holds scopes and no text, so that claim is
+not discharged here, and the item stays open until decision 5's provenanced
+node lands (Milestone 6).
 
 Six components, not five: the Milestone 6 amendment to ADR-0008 decision 1 adds
 ``status`` to tree identity, because an ``index build --include-unapproved``

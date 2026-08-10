@@ -235,8 +235,11 @@ class Scope:
 
         Components are separated by ``\\x1f`` (unit separator). The separator
         cannot occur in any component because the components' own validation
-        rejects control characters, so ``a|b`` and ``a`` + ``|b`` cannot
-        collide.
+        rejects control characters, so ``acl_group="a"`` + ``namespace="b\\x1fc"``
+        and ``acl_group="a\\x1fb"`` + ``namespace="c"`` cannot collide -- the
+        real pair that DID render the same key,
+        ``backend-service\\x1flocal\\x1finternal\\x1fa\\x1fb\\x1fc\\x1fapproved``,
+        before construction refused it (measured in ``test_scope_isolation.py``).
         """
         return "\x1f".join(
             (

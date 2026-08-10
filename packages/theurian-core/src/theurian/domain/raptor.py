@@ -6,6 +6,15 @@ the Milestone 6 amendment -- so a node whose children differ in any component
 cannot exist: there is no tree it could belong to. That is a structural
 guarantee only if construction itself refuses the mismatch; :class:`SummaryNode`
 is where that refusal lives.
+
+:attr:`SummaryNode.children` are the DECLARED child scopes, not the children's
+own summary nodes -- the invariant below guarantees only that these
+declarations agree with the node's own scope. Deriving each declaration from
+the scope the actual child was built with is the builder's obligation, not
+something this type can check: a builder that passes ``(parent,) * n`` for
+every node satisfies this type without ever consulting a real child. The
+structural guarantee ADR-0008 decision 1 describes completes only once the
+builder CL derives each declared scope from the child it summarises.
 """
 
 from __future__ import annotations
