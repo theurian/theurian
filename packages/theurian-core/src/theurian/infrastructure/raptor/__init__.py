@@ -1,4 +1,5 @@
-"""RAPTOR forest construction. **Empty: nothing here is built (Milestone 6).**
+"""RAPTOR forest construction. **One summariser and no forest: nothing here
+builds or traverses a tree (Milestone 6).**
 
 The design, which is ADR-0008's and is not yet code: a forest of trees scoped by
 ``(project, tenant, sensitivity, acl_group, namespace, status)``, never one

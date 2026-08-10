@@ -21,11 +21,15 @@ equality test decision 9 owes instead).
 
 Decision 5's staleness rule -- "a summary whose model or prompt hash differs
 from the current configuration is stale by definition and rebuilt" -- is what
-``prompt_hash`` exists to serve, so it is pinned here against the *versioned*
-constant that describes the algorithm, not merely asserted to be a string: a
-future change to selection semantics that forgets to bump that constant would
-leave stale nodes silently unrebuilt, and this test is what would catch it in
-review.
+``prompt_hash`` exists to serve, so it is pinned here against a hard-coded
+sha256 literal rather than against its own derivation: a comparison to
+``ContentHash.of_text(SEMANTICS_VERSION)`` moves whenever the constant moves
+and can never fail (3c5bd6d). What the literal holds is one direction only --
+bumping ``SEMANTICS_VERSION`` cannot land without a human re-pinning the hash
+in the same diff. A selection change that forgets to bump the constant leaves
+every stored node's staleness check blind, and nothing in this file goes red
+for it; that omission is caught by a reviewer reading
+``ALGORITHM_DESCRIPTION`` against the diff, or not at all.
 """
 
 from __future__ import annotations
@@ -236,8 +240,9 @@ def test_prompt_hash_is_a_valid_content_hash() -> None:
 # to hashing a compact ``SEMANTICS_VERSION`` identifier instead, with
 # ``MODEL_REVISION`` derived from that same constant rather than kept as an
 # independent literal an editor can bump in one place and forget in the
-# other. Not implemented yet -- every test below is RED against the shipped
-# module, which has no ``SEMANTICS_VERSION`` attribute at all.
+# other. The tests below were written first and went red against a module
+# that had no ``SEMANTICS_VERSION`` attribute at all; the constant landed in
+# the same change, so they are green here.
 
 
 def test_semantics_version_is_the_compact_identifier_the_algorithm_description_already_names() -> (
@@ -253,10 +258,14 @@ def test_semantics_version_is_the_compact_identifier_the_algorithm_description_a
 
 def test_model_revision_is_derived_from_semantics_version_not_an_independent_literal() -> None:
     """One constant, two surfaces: ``MODEL_REVISION`` must move automatically
-    when ``SEMANTICS_VERSION``'s trailing version does. Checked both as an
-    absolute value and as a structural relationship to ``SEMANTICS_VERSION``,
-    so neither a hard-coded ``MODEL_REVISION`` that happens to read "1" nor a
-    derivation from the wrong source passes both halves.
+    when ``SEMANTICS_VERSION``'s trailing version does. The two halves are an
+    absolute value and a structural relationship to ``SEMANTICS_VERSION``, and
+    at version 1 they do **not** separate a derivation from a hard-coded
+    literal: ``MODEL_REVISION = "1"`` passes both, because "1" is exactly what
+    the derivation produces. What the second half buys is the first bump --
+    against ``extractive-sentence-selection/2`` a literal "1" no longer ends
+    the version string and this goes red, which is the moment the two could
+    otherwise drift apart unnoticed.
     """
     assert extractive.MODEL_REVISION == "1"
     assert extractive.SEMANTICS_VERSION.endswith(f"/{extractive.MODEL_REVISION}")
@@ -512,8 +521,8 @@ async def test_output_never_exceeds_the_token_budget_for_any_corpus(
     *joined* text it actually returns; a sentence-length distribution that
     leaves no slack for ``estimate_tokens``'s ceiling rounding lets the join
     separators push the final string's own cost past what was charged for
-    it. RED against the shipped implementation: all three corpora overshoot
-    today (e.g. the first costs 5 against a budget of 4).
+    it. That is what the charging did before this change, and each corpus is
+    here because it overshot: the first cost 5 against a budget of 4.
     """
     provider = ExtractiveSummarizer()
 
@@ -545,8 +554,8 @@ async def test_output_never_exceeds_the_token_budget_across_every_english_budget
 async def test_output_never_exceeds_the_token_budget_across_every_japanese_budget() -> None:
     """The CJK counterpart: dense-script costs round differently from Latin
     ones, and the exhaustive sweep is what actually finds an overshoot on
-    this fixture (budgets 1, 65, 69 and 98 all exceed their own budget
-    against the shipped charging)."""
+    this fixture: budgets 1, 65, 69 and 98 each exceeded their own budget
+    against the per-sentence charging this change replaced."""
     provider = ExtractiveSummarizer()
     total = sum(estimate_tokens(sentence) for sentence in _JAPANESE_SENTENCES)
 
@@ -588,9 +597,8 @@ async def test_a_budget_below_one_token_is_refused(max_tokens: int) -> None:
     to return. ``domain.ranking.take_within_budget`` faces the identical
     situation (FR-R4) and raises ``RankingError`` rather than silently
     returning something that violates the very budget it was given -- which
-    is what the shipped fallback still does today, returning a single
-    character whose own cost already exceeds the requested budget. RED
-    against the shipped implementation.
+    is what the fallback did before this change, returning a single character
+    whose own cost already exceeded the requested budget.
     """
     provider = ExtractiveSummarizer()
 
@@ -885,6 +893,15 @@ def test_the_sentence_terminator_pattern_currently_matches_chunkings() -> None:
     they silently stop agreeing. A change to one pattern that was not a
     deliberate divergence turns this red; a reviewer then either updates both
     or edits this assertion to record why they now differ.
+
+    One inherited consequence, recorded because it is visible in the output:
+    both patterns end a sentence at a numbered-list marker, so
+    ``"Steps: 1. Install it. 2. Run it."`` splits into ``"Steps: 1."``,
+    ``"Install it."``, ``"2."`` and ``"Run it."`` and a bare ``"2."`` can be
+    selected as a sentence of its own. It comes from ``domain.chunking``
+    rather than being chosen here, and changing it would change which text
+    this module selects for the same children -- which makes it a
+    ``SEMANTICS_VERSION`` bump, not a tidy-up (ADR-0008 decision 5).
     """
     assert extractive._SENTENCE_TERMINATOR.pattern == chunking._SENTENCE_END.pattern
 

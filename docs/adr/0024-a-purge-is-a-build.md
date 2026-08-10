@@ -407,12 +407,18 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > pointer swap with no later stage that looks. Nothing writes a node row yet,
    > so all of this is still pinned over rows inserted with raw SQL.
    >
-   > **Amended in Milestone 6, by the extractive-provider CL. This point's
-   > opening sentence is the one that changes.** `SummarizationProvider` now has
-   > an adapter, `infrastructure/raptor/extractive.py`. Nothing calls it — no
-   > builder maps a `SummaryNode` onto a row — so this point's three rules and
+   > **Amended in Milestone 6, by the extractive-provider CL. Both halves of
+   > "Recorded now, with `infrastructure/raptor/` an empty package and
+   > `SummarizationProvider` a port with no adapter" are false now.** That
+   > package holds `extractive.py`, which implements the port. Nothing calls it —
+   > no builder maps a `SummaryNode` onto a row — so this point's three rules and
    > the raw-SQL-fixture state they were recorded against are otherwise
-   > unaffected.
+   > unaffected, and the reason the purge was designed before the thing that
+   > opens it is unchanged.
+   >
+   > Written first as "this point's opening sentence is the one that changes",
+   > which corrected the adapter half and left the empty-package half standing.
+   > ADR-0008's family-closure note records that under-correction and its cause.
 
 ## Consequences
 
@@ -636,12 +642,18 @@ Landed by the change that implements this ADR:
   with raw SQL. That is still exactly why the traversal is pinned now, and it
   stays pinned that way until the builder CL (Milestone 6).
 
-  **Amended in Milestone 6, by the extractive-provider CL: the second half of
-  that sentence is false now too.** `infrastructure/raptor/extractive.py` is
-  `SummarizationProvider`'s first adapter. Nothing calls it — no builder maps a
-  `SummaryNode` onto a row — so "every fixture above goes in with raw SQL"
-  still holds, for the reason the corrected first half already gives: nothing
-  writes a node row.
+  **Amended in Milestone 6, by the extractive-provider CL: both halves of
+  "`infrastructure/raptor/` is an empty package and `SummarizationProvider` a
+  port with no adapter" are false now.** That package holds `extractive.py`,
+  the port's first adapter. Nothing calls it — no builder maps a `SummaryNode`
+  onto a row — so "every fixture above goes in with raw SQL" still holds, for
+  the reason the paragraph above already gives: nothing writes a node row.
+
+  Written first as "the second half of that sentence is false now too", which
+  read "the corrected first half" as this sentence's when it was the preceding
+  paragraph's — the subject correction from `derived = 1` to a node row. The
+  empty-package half was left standing by that reading; ADR-0008's
+  family-closure note records the class it belongs to.
 - **A purged build holds no orphaned row** — landed:
   `test_a_purged_build_holds_no_embedding_of_a_withdrawn_chunk`, plus a third
   post-condition inside `_verify` that refuses to publish a build with an

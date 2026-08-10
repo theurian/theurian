@@ -50,7 +50,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   stopping at the first one that does not, so a cheap well-scored sentence
   after a pricier one is never lost to it. Selected sentences are re-ordered to
   document position before being joined, so a caller reads a summary top to
-  bottom regardless of the score order that chose it.
+  bottom regardless of the score order that chose it. [ADR-0009](../../docs/adr/0009-no-llm-vendor-lock-in.md)'s
+  port table called this default "extractive (lead + salient sentence
+  selection)"; there is no lead component, and that row is corrected with the
+  reason recorded. Position breaks a score tie, orders the output, and chooses
+  the sentence the truncation fallback cuts; it is never a scoring bonus, so a
+  low-scoring opening line is dropped like any other.
 
   **Pure by construction, per decision 6's amended constraint**: "a summariser
   is a pure function of its own children's texts, its scope tuple, and a
@@ -72,23 +77,89 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   owed to decision 9's tree-level two-corpus test, unreachable here because this
   test holds the child set fixed by construction.
 
-  **Fallback**: when no whole sentence fits `max_tokens`, the output is the
-  longest character prefix of the first sentence (by document position) whose
-  cost still fits — never silence, and never anything but a verbatim prefix.
-  `estimate_tokens` is non-decreasing in text length, so the longest fitting
-  prefix is well defined and a binary search finds it.
+  **The budget is charged for the string that is returned, separators
+  included.** Charging each sentence its own `estimate_tokens` cost and joining
+  afterwards undercharges: `estimate_tokens` rounds up once per call, so the
+  spaces between the selected sentences arrived unpriced and the returned text
+  could cost more than the caller allowed — four four-character sentences at a
+  budget of four came back costing five, and an exhaustive sweep found Japanese
+  overshoots at budgets 1, 65, 69 and 98. Every sentence after the first is now
+  charged `estimate_tokens(" " + text)`, which by
+  `ceil(a) + ceil(b) >= ceil(a + b)` is never less than what appending it adds,
+  and `k` sentences carry `k - 1` separators however they are ordered — so
+  charging in score order and joining in document order price the same string.
+  The charge is an upper bound on the joined cost rather than the cost itself,
+  and deliberately: exact charging admits a second sentence at a budget its
+  joined cost fills to the token, which
+  `test_a_restrictive_budget_selects_the_mixed_childs_first_sentence_whole`
+  requires left out. The under-fill it costs is under two tokens per selected
+  sentence, one per ceiling. Held by every budget from 1 to the corpus total
+  over the English and the Japanese fixture, and by a review fuzz of 12,369
+  (random corpus, budget) pairs over Latin and CJK alphabets, none of which
+  overshot.
 
-  **`prompt_hash` is pinned to a versioned algorithm-description constant**,
-  not merely asserted to be some stable string:
-  `test_prompt_hash_is_pinned_to_the_versioned_algorithm_description` checks it
-  equals `ContentHash.of_text(ALGORITHM_DESCRIPTION).value`. Decision 5's
-  staleness rule — "a summary whose model or prompt hash differs from the
-  current configuration is stale by definition and rebuilt" — depends on
-  `prompt_hash` actually moving when selection semantics change; a change to
-  the algorithm that forgot to bump `ALGORITHM_DESCRIPTION`'s trailing version
-  would leave every stored node's staleness check unable to see it, and this
-  test is what turns that omission into a failing assertion instead of a
-  silent gap.
+  **One budget contract, two call sites.** `max_tokens < 1` raises
+  `RankingError` — the error `domain.ranking.take_within_budget` raises for the
+  same situation and for the same reason: `estimate_tokens` prices even the
+  empty string at one token, so below one token there is nothing a summary could
+  be that would not already break the budget it was handed. Before this it
+  returned a single character regardless, and called that a summary.
+
+  **The fallback floor changed.** When no whole sentence fits `max_tokens`, the
+  output is the longest character prefix of the first sentence (by document
+  position) whose cost still fits — never anything but a verbatim prefix, and
+  no longer a character costing more than the budget.
+  `estimate_tokens` is non-decreasing in text length, so the longest fitting
+  prefix is well defined and a binary search finds it, over a range bounded by
+  the budget rather than by the input. That makes the output **empty** in
+  exactly one case for content-bearing input: `max_tokens == 1` against dense
+  script, where `estimate_tokens` prices one CJK character at two, so no prefix
+  fits at all. Whitespace-only children summarise to the empty string at every
+  budget, which is the other empty case and is unchanged.
+
+  **The staleness key hashes a version, and is pinned by a literal.**
+  `prompt_hash` is `sha256(SEMANTICS_VERSION)`, over the compact constant
+  `extractive-sentence-selection/1`, rather than over `ALGORITHM_DESCRIPTION`'s
+  prose. Rewording the review-facing description no longer invalidates every
+  stored summary node; a change that would pick different sentences for the same
+  children still must bump the version, and `MODEL_REVISION` is derived from
+  that same constant rather than kept as a second literal to forget.
+  `test_prompt_hash_is_pinned_to_the_literal_sha256_of_semantics_version` pins
+  it to a hard-coded digest, following 3c5bd6d: a value compared against its own
+  derivation can never fail.
+
+  **Retracted from this entry as first written**, because it claimed a guarantee
+  no test held: "a change to the algorithm that forgot to bump
+  `ALGORITHM_DESCRIPTION`'s trailing version would leave every stored node's
+  staleness check unable to see it, and this test is what turns that omission
+  into a failing assertion instead of a silent gap." The test it named compared
+  `prompt_hash` against `ContentHash.of_text(ALGORITHM_DESCRIPTION)` — both
+  sides move together, so it could not fail for any reason at all. What the
+  literal pin holds is one direction: bumping `SEMANTICS_VERSION` cannot land
+  without a human re-pinning the digest in the same diff. A semantics change
+  that forgets to bump the constant is still invisible to the suite, and is
+  recorded that way rather than papered over, because no test distinguishes a
+  deliberate scoring change from an accidental one.
+
+  **`model_id` is `theurian-extractive-sentences`**, namespaced the way
+  `HashingEmbedding`'s `theurian-hashed-char-ngram` is and for the same reason:
+  it lands in every summary node's `nodes.summary_model`, where a bare
+  "extractive" could not be told apart from a later, differently-behaved
+  extractive implementation. Nothing writes a node row, so no stored value
+  changes.
+
+  **`MAX_TOTAL_INPUT_CHARS` records the bound that was missing**: 1,000,000
+  characters of `texts` per call — a thousand times `domain.chunking`'s
+  1000-character chunk target — above which `summarize` raises
+  `InvariantViolationError`. Every stage is linear in that count, so without a
+  recorded limit the only bound on one call's work was what the caller passed,
+  and a cluster of a thousand chunks is a clustering defect rather than a large
+  document. Measured at exactly the cap and recorded on the constant: 1.45 s of
+  CPU and 5.6 MB of peak heap over Latin prose, 1.10 s and 16.3 MB over
+  Japanese. Scoring makes two passes and re-derives each sentence's trigrams
+  rather than holding every sentence's at once, which is what keeps those heap
+  figures small — 53.9 MB and 78.0 MB respectively for the one-pass variant —
+  for about 7% more CPU on the whole call.
 
   **Determinism** is pinned in-process against fresh string objects and
   against unrelated calls on the same instance, and verified additionally
@@ -98,6 +169,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   byte-identical output and an identical SHA-256 digest over every
   (budget, output) pair in both runs.
 
+  **Offline by construction, and now asserted rather than argued.**
+  `test_the_default_summarizer_reaches_no_socket_capable_module` imports the
+  module in a fresh interpreter and asserts its whole import closure holds none
+  of sixteen socket-capable standard-library modules — `socket`, `ssl`,
+  `asyncio`, `urllib.request` and twelve others. ADR-0009's no-network control
+  was deferred with the reason that every adapter which could open a socket was
+  unbuilt, so a test would have passed vacuously; this is the first adapter, and
+  that reason expired with it. The item stays owed for `RerankingProvider` and
+  `ReviewProvider`, and for the wider claim about a whole default configuration
+  rather than one module's closure.
+
   **Nothing calls it yet.** `infrastructure/raptor/` still has no builder and
   no traversal, so this lands with no consumer; wiring it into a build is the
   next CL. This discharges the present-tense claim in
@@ -105,10 +187,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   which described no adapter until now and needs no wording change to read
   correctly as of this commit; flagged as exactly that gap in
   [#141](https://github.com/theurian/theurian/pull/141)'s review round.
-  `infrastructure/raptor/__init__.py`'s own docstring is updated in the same
-  diff to say the package now holds a `SummarizationProvider` implementation —
-  the builder and traversal absences it also names stay open, since neither
-  exists yet.
+
+  **The "`infrastructure/raptor/` is empty / `SummarizationProvider` has no
+  adapter" family is closed across the tree**, at 27 assertion sites in 12
+  files: that package's own module docstring, `index_schema.py`, the node-table
+  comments in `test_index_purge.py` and `test_index_store.py`,
+  `test_scope_isolation.py`, `SECURITY.md`, the threat model's T-3 and T-10,
+  three risk rows in `requirements-analysis.md`, and ADR-0008, ADR-0009,
+  ADR-0024 and `docs/architecture/raptor.md`. The key is the *proposition* in
+  five vocabularies rather than the token `SummarizationProvider`; ADR-0008's
+  Compliance section records the search, the count, and why two earlier counts
+  (ten, then twelve) were short. The builder and traversal absences those files
+  also name stay open, since neither exists yet.
 
 ### Changed
 

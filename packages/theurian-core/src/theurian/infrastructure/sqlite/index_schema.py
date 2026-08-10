@@ -238,8 +238,9 @@ CREATE TABLE embeddings (
 -- scope tuple `(project, tenant, sensitivity, acl_group, namespace, status)`, so
 -- these three are read, not derived from it, at query time.
 --
--- Nothing writes a row here yet: RAPTOR (`infrastructure/raptor/`) is an empty
--- package and `SummarizationProvider` a port with no adapter. The table and the
+-- Nothing writes a row here yet: `infrastructure/raptor/` holds one
+-- `SummarizationProvider` adapter (`extractive.py`) and no builder to call it,
+-- so no code turns a summary into a row in either direction. The table and the
 -- purge's traversal over it land first, so that the day a summary node exists
 -- it inherits a purge that already carries it rather than one designed a second
 -- time under pressure.

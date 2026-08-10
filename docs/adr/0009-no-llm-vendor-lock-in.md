@@ -29,7 +29,7 @@ in-tree deterministic default that requires no network.**
 | Port | In-tree default | Quality without configuration |
 | :-- | :-- | :-- |
 | `EmbeddingProvider` | deterministic hashed bag-of-tokens vector | weak semantically, but usable and reproducible; lexical FTS carries retrieval |
-| `SummarizationProvider` | extractive (lead + salient sentence selection) | grounded by construction; never hallucinates because it never generates |
+| `SummarizationProvider` | extractive (trigram-frequency sentence selection) | grounded by construction; never hallucinates because it never generates |
 | `RerankingProvider` | identity (preserves fusion order) | no gain, no loss |
 
 > **Amended in Milestone 5.** "Usable" was too generous, and measuring it said
@@ -51,6 +51,35 @@ in-tree deterministic default that requires no network.**
 > it strengthens rather than weakens rule 1: what makes Theurian functional
 > offline is lexical retrieval — now two tokenizers of it (ADR-0023) — not the
 > default embedder.
+
+> **Amended in Milestone 6, by the extractive-provider CL. The
+> `SummarizationProvider` row said "extractive (lead + salient sentence
+> selection)"; what shipped has no lead component.**
+> `infrastructure/raptor/extractive.py`'s `ExtractiveSummarizer` scores each
+> sentence by the summed frequency of its lower-cased character trigrams across
+> the call's own sentences and takes them in descending score order. Document
+> position enters in three places and none of them is a scoring bonus: it breaks
+> a genuine score tie, it orders the output, and the no-sentence-fits fallback
+> truncates the first sentence. Where a whole sentence does fit, a low-scoring
+> opening line is simply dropped: over one child reading "Unique opening line
+> about zebras. Tokens tokens tokens matter. Tokens tokens tokens count.", a
+> seven-token budget returns the *second* sentence and nothing else — which the
+> row as written would have promised against.
+>
+> The lead half was dropped rather than deferred. A lead bonus is a genre
+> assumption — that the first sentence carries the topic — and nothing here
+> measures whether it holds for the Markdown, YAML and OpenAPI text Theurian
+> indexes, while character trigrams need no such assumption and no
+> script-specific branch, which is what lets one scorer handle Latin and CJK.
+> Adding a position term later changes which sentences are selected for the same
+> children, so it is a `SEMANTICS_VERSION` bump under ADR-0008 decision 5 and
+> not a tuning knob.
+>
+> The quality column is unchanged and is now checked rather than intended:
+> `tests/unit/test_extractive_summarizer.py::test_every_sentence_of_the_output_is_a_verbatim_substring_of_a_child`
+> and `::test_extractiveness_holds_under_a_restrictive_budget_too` hold "never
+> generates" as a property of the output, at a generous budget and at one that
+> forces the truncation fallback.
 
 Rules:
 
@@ -127,23 +156,74 @@ Still owed, with the milestone that will satisfy it:
   every adapter that could open a socket is unbuilt (`SummarizationProvider`,
   `RerankingProvider` and `ReviewProvider` have no real implementation), so the
   property holds vacuously and a test for it today would too.
+
+  > **Amended in Milestone 6, by the extractive-provider CL. The deferral reason
+  > expired for one of the three ports, and the CL that expired it wrote the
+  > test.** `SummarizationProvider` has an adapter now, so "every adapter that
+  > could open a socket is unbuilt" no longer covers it, and the property stopped
+  > holding vacuously the moment it landed.
+  > `tests/unit/test_extractive_summarizer.py::test_the_default_summarizer_reaches_no_socket_capable_module`
+  > imports `theurian.infrastructure.raptor.extractive` in a fresh interpreter and
+  > asserts that its whole import closure contains none of sixteen socket-capable
+  > standard-library modules — `socket`, `ssl`, `asyncio`, `urllib.request` and
+  > twelve others. Fresh, because `sys.modules` inside the test process already
+  > holds most of the standard library and an in-process assertion would fail
+  > whatever the module under test does.
+  >
+  > It asserts an import closure, not a syscall count: a module that reaches none
+  > of those cannot open a socket without first importing one of them, which is
+  > the property this item was deferred over. **The item stays owed on two
+  > halves.** `RerankingProvider` and `ReviewProvider` are still unbuilt, so the
+  > vacuity argument still covers them. And the subject above is the *default
+  > configuration*, whose closure is a whole CLI or daemon invocation rather than
+  > one module — the daemon binds a loopback socket by design, so what has to be
+  > asserted there is that it opens no *outbound* connection, and no test does.
+  > Both come due with the first adapter that calls a hosted API, which is where
+  > this item already points.
 - **There is no opt-in credentialed job.** This section claimed one, running
   each real adapter against a shared Protocol-conformance suite. No workflow
   takes a credential, and no provider port has an adapter that needs one:
   `SummarizationProvider`, `RerankingProvider` and `ReviewProvider` are
   docstring-only. The item comes due with the first adapter that calls a hosted
   API, which is the same moment the socket item above stops being vacuous.
+
+  > **Amended in Milestone 6, by the extractive-provider CL. One of the three is
+  > no longer docstring-only, and the item is unaffected.**
+  > `infrastructure/raptor/extractive.py` implements `SummarizationProvider`, and
+  > it is the case this bullet's condition does not cover: it takes no
+  > credential, calls nothing, and the test above asserts its import closure
+  > cannot. `RerankingProvider` and `ReviewProvider` are still docstring-only
+  > (`infrastructure/github/__init__.py` holds a module docstring and no code,
+  > and no reranking package exists), so "no provider port has an adapter that
+  > needs one" holds as written and the trigger is still the first *hosted*
+  > adapter.
 - **There is no shared conformance suite, and the moment for one has already
   arrived.** This bullet first read "`EmbeddingProvider` is the only port with a
   bundled default" and "the item comes due when a second implementation of any
   provider port lands". Both are false, and the second is the one that misleads:
   it defers the work past a condition that is already met.
 
-  Ports with a bundled in-tree implementation, counted rather than recalled:
-  `SourceParser` (four — `MarkdownParser`, `OpenApiParser`, `YamlParser`,
-  `JsonParser`, from `default_parsers()`), `DaemonManager` (two —
-  `LaunchAgentManager`, `SystemdUserManager`), `EmbeddingProvider`, `SecretStore`,
-  `CanonicalStore`, `Clock`, `IdGenerator`.
+  Ports with a bundled in-tree implementation, counted rather than recalled —
+  **nine of the fifteen in `domain.ports.ALL_PORTS`**: `SourceParser` (four —
+  `MarkdownParser`, `OpenApiParser`, `YamlParser`, `JsonParser`, from
+  `default_parsers()`), `DaemonManager` (two — `LaunchAgentManager`,
+  `SystemdUserManager`), `CanonicalStore` (`SqliteCanonicalStore`), `Clock`
+  (`SystemClock`), `EmbeddingProvider` (`HashingEmbedding`), `IdGenerator`
+  (`UlidGenerator`), `IndexStore` (`SqliteIndexStore`), `SecretStore`
+  (`FileSecretStore`), `SummarizationProvider` (`ExtractiveSummarizer`). The six
+  without one are `AuthorizationProvider`, `ObjectStore`, `RerankingProvider`,
+  `ReviewProvider`, `SpecificationProvider` and `VectorStore`.
+
+  > **Amended in Milestone 6, by the extractive-provider CL. The list gained two,
+  > and only one of them is new code.** `SummarizationProvider`
+  > (`ExtractiveSummarizer`) is what that CL added. `IndexStore`
+  > (`SqliteIndexStore`) was already there and was missing from a list whose own
+  > claim is that it was counted — which is what re-counting it against
+  > `ALL_PORTS` rather than adding to it in place found. Every port is now named
+  > with the class that implements it, and the six with none are named too, so
+  > the next reader checks a list against `src/` instead of counting again. The
+  > conclusion below is unchanged: two ports still have several implementations,
+  > so two adapters can already disagree about one Protocol.
 
   Two of those already have several implementations, so two adapters can already
   disagree about one Protocol. `DaemonManager` also already has the answer:
