@@ -272,8 +272,16 @@ and neither the assertions above nor `access_log=False` would notice.
 
 **Controls:** `projectId` is required on every project-scoped call and validated
 against the schema; there is no process-global or connection-scoped current
-project; an `AuthorizationProvider` check precedes every read; an E2E test asserts
-a query for A never returns B.
+project; every retriever filters on `chunks.project_id` through
+`SqliteIndexStore._scope` before ranking, so a row from another project takes no
+result slot, rank, or published number (T-17, FR-R1); an E2E test asserts a query
+for A never returns B.
+
+*Future control, not shipped:* an `AuthorizationProvider` check before every read
+is the design for the hosted deployment (`domain/ports/authorization.py`), but
+that port is a `Protocol` with no implementation anywhere in this tree — project
+isolation today rests on the `projectId` validation and the `_scope` predicate
+above, not on it (#63, #115).
 
 #### T-13 — Two daemons corrupt the same SQLite file (Tampering, High)
 
@@ -1515,11 +1523,18 @@ contains restricted facts in generated text, carrying whichever ACL the
 implementation assigned, with no anchor to the restricted source. Nearly
 undetectable after the fact.
 
-**Controls:** tree identity is `(project, tenant, sensitivity, acl_group,
-namespace)`. A node whose children differ in any component has no tree to belong
-to, so mixing is structurally impossible rather than policy-checked. The scope key
-uses a unit separator so two component sets cannot render identically. Tested
-exhaustively over all 32 component combinations.
+**Controls:** the scope key that *would* identify a tree is `(project, tenant,
+sensitivity, acl_group, namespace)`, with a unit separator so two component sets
+cannot render identically — and that key is real and tested, exhaustively over
+all 32 component combinations
+(`test_scope_isolation.py::test_all_scope_pairs_are_distinguishable`). A RAPTOR
+node whose children differed in any component *would* have no tree to belong to,
+which is what *would* make mixing structurally impossible rather than
+policy-checked. The subjunctive is deliberate: `infrastructure/raptor/` is a
+docstring-only package (its own text: "nothing here is built (Milestone 6)"), so
+no summary node exists to mix. This control takes effect when Milestone 6 builds
+the forest; the interim residual is that no RAPTOR summary is generated at all,
+so there is no cross-sensitivity summary to leak (#115).
 
 #### T-17 — Search accounting is a truth oracle for withheld content (Information disclosure, **Critical**)
 
