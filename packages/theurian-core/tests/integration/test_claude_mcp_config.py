@@ -279,6 +279,51 @@ def test_replacing_a_conflicting_entry_removes_it_first(home: Path) -> None:
     assert config.installed_entry() == ConnectionSpec().as_entry()
 
 
+def test_a_backup_exists_before_the_destructive_remove_runs(home: Path) -> None:
+    """SEC-18, issue #27. `install` must back up the config before running the
+    destructive `claude mcp remove` on a conflicting entry.
+
+    An end-state check ("a backup exists after `install` returns") would stay
+    green even if the backup were taken *after* the removal -- by which point
+    the removal has already destroyed what it was meant to preserve. So this
+    pins the ordering directly: the fake `claude` runner records, at the exact
+    moment it is asked to run `mcp remove`, whether a `*.backup` sibling of the
+    config already exists and what it contains. Only that moment tells us the
+    backup came first.
+    """
+
+    class BackupOrderingClaude(FakeClaude):
+        """Snapshots the config's `.backup` siblings when asked to `mcp remove`."""
+
+        def __init__(self, config: Path) -> None:
+            super().__init__(config)
+            self.backups_seen_at_removal: list[Path] = []
+
+        @override
+        def run(
+            self,
+            args: Sequence[str],
+            *,
+            timeout: float = 20.0,
+            env: Mapping[str, str] | None = None,
+        ) -> CommandResult:
+            if args[1:3] == ["mcp", "remove"]:
+                self.backups_seen_at_removal = sorted(
+                    self._config.parent.glob(f"{self._config.name}.*.backup")
+                )
+            return super().run(args, timeout=timeout, env=env)
+
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    original_bytes = (home / CONFIG_FILENAME).read_bytes()
+    runner = BackupOrderingClaude(home / CONFIG_FILENAME)
+    config = ClaudeCodeMcpConfig(home=home, runner=runner)
+
+    config.install(ConnectionSpec())
+
+    assert runner.backups_seen_at_removal, "no backup existed at the moment `mcp remove` ran"
+    assert runner.backups_seen_at_removal[0].read_bytes() == original_bytes
+
+
 def test_a_failed_add_is_reported_rather_than_assumed(home: Path) -> None:
     runner = FakeClaude(home / CONFIG_FILENAME, fail="mcp add")
     config = ClaudeCodeMcpConfig(home=home, runner=runner)

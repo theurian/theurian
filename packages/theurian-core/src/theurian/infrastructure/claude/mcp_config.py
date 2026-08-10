@@ -223,17 +223,13 @@ class ClaudeCodeMcpConfig:
             # setup calls `install` only when there is nothing installed, and the
             # sole route here is a race -- an entry appearing between the probe
             # and this call, in which nobody has been shown a difference or asked
-            # anything. The comment this replaces said "the caller has already
-            # shown the difference and asked", which described a workflow that
-            # does not exist.
+            # anything.
             #
-            # Kept rather than deleted: whether a branch only a race can reach
-            # should exist at all is a decision for review, not a cleanup. If it
-            # stays, note that it destroys the user's entry with no backup taken
-            # here -- `back_up` is a separate call this path does not make, where
-            # `LaunchAgentManager.install` calls its own before overwriting.
-            # That decision is filed for Milestone 6 as
-            # https://github.com/theurian/theurian/issues/27 (SEC-18).
+            # Backed up first (SEC-18), matching `LaunchAgentManager.install`:
+            # the alternative -- deleting this branch and letting a stale plan
+            # fail instead -- was considered and not taken, since a backup keeps
+            # the race recoverable without adding new failure semantics here.
+            self.back_up()
             removal = self._claude("mcp", "remove", SERVER_NAME, "--scope", "user")
             if not removal.ok:
                 return f"Could not remove the existing entry: {removal.output}"
