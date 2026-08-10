@@ -3,8 +3,9 @@
 These are ``StrEnum`` so they serialise to their own names in JSON and YAML, which
 keeps migration files and MCP payloads readable without a mapping table.
 
-:func:`may_surface` is here rather than beside a caller because it has four
-callers in three layers -- see its docstring.
+:func:`may_surface` is here rather than beside a caller because it has five
+callers, across the application and MCP layers -- see its docstring, and the
+set spelled out and pinned in ``tests/unit/test_gate_call_sites.py``.
 """
 
 from __future__ import annotations
@@ -225,12 +226,15 @@ def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
     that caused the rejection still lives.
 
     Beside the set it reads, and in the domain, because it is consulted from
-    three layers: the index builder decides what to write, ``knowledge.search``
-    decides what to return on each of its two answer paths, and
-    ``knowledge.get`` decides what to hand over by id. The builder used to
-    inline the two comparisons instead of calling this, which is one copy of a
-    security rule too many -- ``knowledge.get`` having *no* copy is how a caller
-    who could not search for a withheld item could still fetch it.
+    five call sites: the index builder decides what to write; ``knowledge.search``
+    decides what to return on each of its two answer paths; and ``knowledge.get``
+    decides both what to hand over by id and, per edge, whether a related item is
+    surfaceable before it publishes the relation. The builder used to inline the
+    two comparisons instead of calling this, which is one copy of a security rule
+    too many -- ``knowledge.get`` having *no* copy is how a caller who could not
+    search for a withheld item could still fetch it. The sites are spelled out
+    and pinned in ``tests/unit/test_gate_call_sites.py`` so a sixth cannot land
+    unnoticed.
     """
     if status not in SURFACEABLE_STATUSES:
         return False
