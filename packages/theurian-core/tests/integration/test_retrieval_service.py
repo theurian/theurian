@@ -876,30 +876,39 @@ def test_gc_keeps_a_build_that_is_still_being_written(tmp_path: Path) -> None:
 
 
 def test_gc_reclaims_a_superseded_build_but_never_the_published_one(tmp_path: Path) -> None:
-    """The pointer decides, and it is the only thing that does.
+    """The pointer decides which build survives; the id decides which may be reclaimed.
 
-    `_reclaim` took a `keep` argument naming what *this process* had built, which
-    disagreed with the pointer exactly when another build had published while
-    this one ran. `gc` has no such argument to disagree with.
+    **This test pinned the wrong behaviour and a review caught it.** It published
+    `01K1AAAAAA` and expected `01K1DDDDDD` -- an id sorting *above* the published
+    one -- to be reclaimed. That is precisely the finished-but-unpublished build
+    the ULID rule protects: `index build` renames into place and *then* writes
+    the pointer, so a `gc` in that window reclaimed a file the pointer was about
+    to name. Reproduced against the real CLI at 8 of 12 runs.
+
+    So a superseded build is one whose id sorts *below* the published one, and
+    that is what this now asserts. `_reclaim`'s `keep` argument is still gone --
+    it named what *this process* built, which disagreed with the pointer exactly
+    when another build had published while this one ran.
     """
     from theurian.cli.index_commands import _publish, _reclaimable
 
     paths = ProjectPaths.of(tmp_path)
     paths.state.mkdir(parents=True)
-    for build_id in ("01K1AAAAAA", "01K1DDDDDD"):
+    for build_id in ("01K1AAAAAA", "01K1DDDDDD", "01K1ZZZZZZ"):
         paths.index_for(build_id).touch()
     _publish(
         paths,
-        index_build_id="01K1AAAAAA",
+        index_build_id="01K1DDDDDD",
         state_hash="s",
         project_id="demo",
         indexes_unapproved=False,
     )
 
-    reclaimable = _reclaimable(paths, published="01K1AAAAAA")
+    reclaimable = _reclaimable(paths, published="01K1DDDDDD")
 
-    assert [p.name for p in reclaimable] == ["theurian-index-01K1DDDDDD.sqlite"], (
-        "the published build survives whatever its id sorts against"
+    assert [p.name for p in reclaimable] == ["theurian-index-01K1AAAAAA.sqlite"], (
+        "only the build older than the published one may be reclaimed: the published build "
+        "survives, and so does the one whose id sorts above it, which has not published yet"
     )
 
 

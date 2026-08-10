@@ -28,7 +28,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import typer
 
@@ -390,6 +390,18 @@ def _remedy(*, stale: bool, needs_apply: bool, orphaned: bool, pointer_corrupt: 
     return ""
 
 
+#: Filenames `theurian index gc` will consider at all.
+#:
+#: **The prefix is the whole safety property, not a tidiness convention.**
+#: `theurian-state-<hash>.sqlite` -- the canonical store, which is *not* derived
+#: and *not* disposable -- lives in the same directory. A glob that lost this
+#: prefix would reclaim it, and the suite stayed green when exactly that mutation
+#: was applied. ADR-0022 point 2 says the prefix is load-bearing for the same
+#: reason, one layer up: "a glob that could not tell them apart would hand a
+#: retrieval index to the canonical store".
+INDEX_FILENAME_PREFIX: Final = "theurian-index-"
+
+
 @index_app.command("gc")
 def index_gc(
     dry_run: Annotated[
@@ -408,19 +420,31 @@ def index_gc(
     reading is the failure this command exists to avoid, not the service it
     provides.
 
-    **A search already in flight survives this.** `SqliteIndexStore.session`
-    holds one read connection for a request, and on POSIX an open descriptor
-    keeps the file readable after its name is gone. Measured, one request of four
-    index calls with the unlink landing after the first: 4 of 4 answered inside a
-    session, against 1 of 4 with a connection per call. A request that *starts*
-    after the reap resolves the pointer to the published build, which is never
-    reclaimed here.
+    **What a search in flight is guaranteed, and from when.** A request that has
+    already entered `SqliteIndexStore.session` holds an open descriptor, and on
+    POSIX that keeps the file readable after its name is gone: measured, one
+    request of four index reads with the unlink landing after the first answered
+    4 of 4 inside a session against 1 of 4 with a connection per call. The
+    guarantee starts at session acquisition, not at the moment the request
+    arrived -- a request reaped between resolving the pointer and acquiring its
+    connection has no descriptor to protect, and degrades to the substring-scan
+    fallback rather than failing. A request that *starts* after the reap resolves
+    the pointer to the published build, which is never reclaimed here.
 
-    Three things are never reclaimed, and only the first is obvious: the build
-    the pointer names; anything under a `.building` suffix, which is a build or
-    purge still writing and not yet renamed into place; and -- when the pointer
-    cannot be read at all -- everything, because a pointer this command cannot
-    parse is not evidence that any particular build is unreferenced.
+    Four things are never reclaimed:
+
+    - the build the pointer names, and a `gc` run at all is refused when that
+      build's file is missing -- a pointer aimed at nothing is a broken project,
+      and treating every real build as unreferenced is the worst possible reading
+      of it;
+    - any build whose id sorts **above** the published one, which is a build that
+      started later and has not published yet;
+    - anything under a `.building` suffix, which is a writer that has not renamed
+      into place -- or the leftovers of one that crashed, which this cannot tell
+      apart and so reports rather than deletes;
+    - everything, when the pointer cannot be read at all, because a pointer this
+      command cannot parse is not evidence that any particular build is
+      unreferenced.
     """
     from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
 
@@ -438,33 +462,97 @@ def index_gc(
         return
 
     published = str((pointer.payload or {}).get("indexBuildId", ""))
+    if published and not paths.index_for(published).is_file():
+        _fail(
+            f"The published index pointer names build {published}, and that build's file is "
+            f"not there. Nothing was reclaimed.",
+            remedy=(
+                "Run `theurian index build` to publish a build that exists. Reclaiming now "
+                "would delete every build on disk, because none of them is the published one."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
+
     reclaimable = _reclaimable(paths, published=published)
+    stranded = sorted(path.name for path in paths.state.glob(f"{INDEX_FILENAME_PREFIX}*.building"))
     freed = sum(path.stat().st_size for path in reclaimable if path.is_file())
-    if not dry_run:
-        for path in reclaimable:
-            path.unlink(missing_ok=True)
+    if not dry_run and not _reclaim(reclaimable, as_json=as_json):
+        return
 
     _emit(
         {
             "publishedIndexBuildId": published or None,
             "reclaimed": sorted(path.name for path in reclaimable),
             "bytesReclaimed": freed,
+            # Reported, never deleted. A `.building` file is a live writer or a
+            # crash's leftovers and this cannot tell them apart, so telling the
+            # operator what is stranded is the honest half of the job; reclaiming
+            # it needs an age or liveness heuristic that does not exist yet.
+            "strandedBuilding": stranded,
             "dryRun": dry_run,
         },
         as_json=as_json,
     )
 
 
+def _reclaim(paths_to_remove: list[Path], *, as_json: bool) -> bool:
+    """Unlink each file, converting an OS refusal into this command's contract.
+
+    Returns whether the run may report success.
+
+    An unguarded loop is the CP-2 escape `_refuse_if_empty` was built for: a
+    read-only state directory raised a bare `PermissionError` through Typer as a
+    Rich traceback, exit 1, and **empty stdout under `--json`** -- for a
+    condition whose remedy is one `chmod`. `IsADirectoryError` did the same for a
+    directory named like a build.
+    """
+    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+
+    for path in paths_to_remove:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            _fail(
+                f"Reclaiming {path.name} failed: {exc.strerror or exc}.",
+                remedy=(
+                    "Check that .theurian/state/ is writable and holds no directory named "
+                    "like an index build, then run `theurian index gc` again. Nothing else "
+                    "was reclaimed."
+                ),
+                as_json=as_json,
+                code=1,
+            )
+            return False
+    return True
+
+
 def _reclaimable(paths: ProjectPaths, *, published: str) -> list[Path]:
     """Index files the pointer does not name, and their sidecars.
 
-    **The glob is `*.sqlite` and not `*.sqlite*`, which is the difference between
-    reaping a finished build and reaping one being written.** A purge writes to
-    `theurian-index-<id>.sqlite.building` and renames with `os.replace` once the
-    bytes are final, so a file under the completed name is complete by
-    construction -- no argument about ULID ordering required, and none available:
-    `SeededIdGenerator` serialises on a lock within a process and degrades to the
-    ULID timestamp's millisecond resolution across them.
+    **Two mechanisms, because neither covers the other's window**, and keeping
+    only the second is what a review caught:
+
+    - the `.building` suffix covers a writer that has not finished. Both the
+      builder and the purge write there and `os.replace` into position, so a file
+      under the completed name is complete by construction. The glob is
+      `*.sqlite` and not `*.sqlite*` for exactly this reason.
+    - **ULID ordering covers a writer that has finished and not yet published.**
+      `index_build` renames into place and *then* writes the pointer, and a `gc`
+      landing between those two reclaimed the file, after which the pointer named
+      nothing. Reproduced against the real CLI: 8 of 12 runs published a pointer
+      to a reclaimed build. `.building` cannot see this window -- the file is
+      already under its final name -- so the rule the old `_reclaim` carried is
+      restored beside it.
+
+    **Neither is complete alone, and together the residual is stated rather than
+    argued away.** Ids are ULIDs, so lexical order is creation order: within a
+    process `SeededIdGenerator` serialises on a lock, and across processes the
+    ULID timestamp orders to the millisecond. What remains is two builds minted
+    in the same millisecond where one renames into place before the other
+    publishes -- narrower than either window this closes, and the only writers
+    are `index build` and the purge, both of which take the `.building` path.
 
     Sidecars are matched explicitly rather than by widening the glob, because
     `-wal` and `-shm` are the only two that exist and `*` would take `.building`
@@ -479,9 +567,11 @@ def _reclaimable(paths: ProjectPaths, *, published: str) -> list[Path]:
         return []
 
     reclaimable: list[Path] = []
-    for build in sorted(paths.state.glob("theurian-index-*.sqlite")):
-        build_id = build.name[len("theurian-index-") : -len(".sqlite")]
-        if build_id == published:
+    for build in sorted(paths.state.glob(f"{INDEX_FILENAME_PREFIX}*.sqlite")):
+        build_id = build.name[len(INDEX_FILENAME_PREFIX) : -len(".sqlite")]
+        if build_id >= published:
+            # `>=` rather than `!=`: equal is the published build, and greater is
+            # a build that started later and may be about to publish.
             continue
         reclaimable.append(build)
         reclaimable.extend(

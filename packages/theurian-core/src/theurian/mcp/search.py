@@ -469,12 +469,21 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
         """
         return service.search(search, visible)
 
-    # The session spans every read of the index this request makes -- the
-    # provisional report's `embedding_model`, the retrieval inside `admit`, and
-    # `chunk_texts` -- because the window `theurian index gc` can land in is
-    # between any two of them, not only between the two retrievers.
-    with index.session():
-        try:
+    # The session covers every index read in the block below. It does **not**
+    # cover `_searchable_file`'s `is_searchable()`, which ran earlier on its own
+    # connection -- so a request opens the index twice, once to decide whether it
+    # is usable and once to read it, and only the second is held. That first open
+    # is what leaves the window this nesting exists to survive.
+    try:
+        # Acquired *inside* the `try`, and the nesting is the whole of it.
+        # Acquiring the session opens the file, which can fail: `theurian index
+        # gc` may have unlinked the build between the check above and this line,
+        # a window measured at 3-18 us. With the `with` outside, that
+        # `IndexUnreadableError` escaped `except IndexBuildError` and reached the
+        # agent as a tool error -- where the same window on the previous design
+        # degraded cleanly to the substring scan. A change made for resilience
+        # must not remove a fallback.
+        with index.session():
             # Built before the results exist, because `limit` and the budget are
             # charged against it and the caller pays for it whether or not anything
             # matched. `mode` and the two token counts are filled in below; nothing
@@ -499,26 +508,26 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                 ),
                 candidates,
             )
-        except IndexBuildError:
-            # The file passed the version check and then could not answer: a
-            # truncated copy, a dropped table, a metadata row that outlived the
-            # tables it describes. The version gate above is the check that should
-            # catch this; this is what makes "never answer from a broken index"
-            # true even when it does not. It covers the retrieval inside `admit`
-            # too, which is where the index is now read.
-            return _UNREADABLE
+    except IndexBuildError:
+        # The file passed the version check and then could not answer: a
+        # truncated copy, a dropped table, a metadata row that outlived the
+        # tables it describes. The version gate above is the check that should
+        # catch this; this is what makes "never answer from a broken index"
+        # true even when it does not. It covers the retrieval inside `admit`
+        # too, which is where the index is now read.
+        return _UNREADABLE
 
-        return _response(
-            project_id=project_id,
-            query=query,
-            resolved=resolved,
-            retrieval=replace(
-                provisional,
-                mode=mode_of(_retrievers_behind(resolved.results)).value,
-                used_tokens=resolved.used_tokens,
-                dropped_for_budget=resolved.dropped,
-            ),
-        )
+    return _response(
+        project_id=project_id,
+        query=query,
+        resolved=resolved,
+        retrieval=replace(
+            provisional,
+            mode=mode_of(_retrievers_behind(resolved.results)).value,
+            used_tokens=resolved.used_tokens,
+            dropped_for_budget=resolved.dropped,
+        ),
+    )
 
 
 def _shaper(now: datetime) -> ResultShaper:
