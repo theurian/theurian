@@ -960,9 +960,16 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 >   -e 'no adapter' -e 'no implementation'
 > ```
 >
-> **90 matching lines in 24 files against the tree this CL started from; 27
-> assertion sites, in 12 files, are the claim.** A site can span two lines, and
-> a line can match two patterns, so the two counts do not subtract.
+> **Two trees, and they must be named apart, because the CL itself adds matching
+> lines that assert nothing.** Against `c565c88`, the `main` this CL branched
+> from, the search matches **64 lines in 22 files**, and **the 27 assertion sites
+> in 12 files below are counted there** — that is the tree in which every member
+> of the family still stood. Against `4bfec1d`, the tree this documentation pass
+> started from, the same search matches **90 lines in 24 files**: by then the CL
+> had added `extractive.py`, its test file, and the amendment blocks correcting
+> the first ten members, all of which name the package or the port without making
+> a claim about either. A site can span two lines and a line can match two
+> patterns, so neither count subtracts against the other.
 >
 > | File | Sites |
 > | :-- | --: |

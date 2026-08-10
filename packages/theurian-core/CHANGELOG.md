@@ -112,10 +112,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `estimate_tokens` is non-decreasing in text length, so the longest fitting
   prefix is well defined and a binary search finds it, over a range bounded by
   the budget rather than by the input. That makes the output **empty** in
-  exactly one case for content-bearing input: `max_tokens == 1` against dense
-  script, where `estimate_tokens` prices one CJK character at two, so no prefix
-  fits at all. Whitespace-only children summarise to the empty string at every
-  budget, which is the other empty case and is unchanged.
+  exactly one case for content-bearing input: `max_tokens == 1` *and* the first
+  character of the first sentence is dense script, which `estimate_tokens`
+  prices at two, so not even a one-character prefix fits. The same budget over a
+  sentence beginning with a Latin character returns that character. Emitting one
+  costing more than the budget regardless — what it used to do — would make this
+  the one place in the module that knowingly breaks FR-R4. Whitespace-only
+  children summarise to the empty string at every budget, which is the other
+  empty case and is unchanged.
 
   **The staleness key hashes a version, and is pinned by a literal.**
   `prompt_hash` is `sha256(SEMANTICS_VERSION)`, over the compact constant
@@ -161,13 +165,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   figures small — 53.9 MB and 78.0 MB respectively for the one-pass variant —
   for about 7% more CPU on the whole call.
 
-  **Determinism** is pinned in-process against fresh string objects and
-  against unrelated calls on the same instance, and verified additionally
-  across two independent `uv run python` processes — `PYTHONHASHSEED` differs
-  between processes by default and is not testable within one — against the
-  suite's own Japanese and mixed-script fixtures across a spread of budgets:
-  byte-identical output and an identical SHA-256 digest over every
-  (budget, output) pair in both runs.
+  **Determinism** is pinned in-process against freshly built string objects at
+  a restrictive budget, and **across processes by the suite itself**:
+  `test_summarize_is_stable_across_processes` and
+  `test_a_tied_selection_is_stable_across_processes` each run `summarize` in
+  three fresh interpreters at `PYTHONHASHSEED` 0, 1 and 999 — the seeds
+  `test_projection.py` cross-checks under ADR-0020 — and require one distinct
+  output. `PYTHONHASHSEED` varies across interpreter invocations by default and
+  cannot be varied within one, so an iteration order keyed by object hash is
+  invisible in-process. Two tests rather than one because the English fixture
+  has no genuine score ties: a tie-break that started reading a
+  hash-seed-dependent key would have nothing to disagree about there, so the
+  tied fixture is run across the same boundary. Round one checked this by hand
+  in two `uv run python` processes; that is history now, and the property is in
+  the suite.
 
   **Offline by construction, and now asserted rather than argued.**
   `test_the_default_summarizer_reaches_no_socket_capable_module` imports the

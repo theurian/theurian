@@ -289,10 +289,14 @@ do not contain. Quality is lower than an abstractive summary; in exchange every
 sentence is one the children already hold. It is deterministic and, per
 ADR-0008 decision 6's Milestone 6 amendment, pure — a function of only the
 `texts`, `scope` and `max_tokens` one call passes it, nothing cached on the
-instance and no corpus handle held — verified in-process by
-`tests/unit/test_extractive_summarizer.py`, and separately across two
-independent processes with different `PYTHONHASHSEED` values, which
-`PYTHONHASHSEED` variance rules out testing within a single process.
+instance and no corpus handle held — pinned by
+`tests/unit/test_extractive_summarizer.py`, in-process and across process
+boundaries: `test_summarize_is_stable_across_processes` and
+`test_a_tied_selection_is_stable_across_processes` run `summarize` in three
+fresh interpreters at `PYTHONHASHSEED` 0, 1 and 999 and require one distinct
+output. That seed variance is what cannot be tested within a single process,
+and the tied fixture is run separately because a corpus with no score ties
+cannot see a tie-break that started reading a hash-seed-dependent key.
 
 **Nothing calls it yet.** The port is declared in
 `domain/ports/summarization.py` and now has one implementation, but no builder
