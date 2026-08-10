@@ -265,24 +265,40 @@ def test_gc_reports_stranded_building_files_without_deleting_them(project: Path)
     assert stranded.is_file(), "a `.building` file was deleted; it may be a live writer"
 
 
-def test_gc_converts_an_unwritable_state_directory_into_its_own_contract(
-    project: Path,
+def test_gc_converts_a_reclaim_permission_error_into_its_own_contract(
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Kills the CP-2 escape: a bare `PermissionError` through Typer.
 
     Measured before the guard: a Rich traceback, exit 1, and **empty stdout under
     `--json`** -- for a condition whose remedy is one `chmod`. Every command
     promises `{error, remedy}`; an unguarded `unlink` loop does not.
+
+    **Fault-injected rather than chmod-based, and that is a portability fix.** The
+    original made the state directory unwritable with `chmod` -- which is a no-op
+    as root, and the offline CI job runs as root, so it passed locally on macOS
+    and returned exit 0 on the Linux runner (`gc` succeeded because root writes
+    anyway), leaving the contract unverified exactly where it was meant to hold.
+    The behaviour under test is "a `PermissionError` during reclaim becomes the
+    JSON error contract", so the fault is injected at the `unlink` where such an
+    error arises, independent of who is running or what the filesystem honours.
     """
     assert _invoke("index", "build")[0] == 0
     assert _invoke("index", "build")[0] == 0
-    state = project / ".theurian/state"
     before = _builds(project)
-    state.chmod(0o500)
-    try:
-        code, payload = _invoke("index", "gc")
-    finally:
-        state.chmod(0o700)
+
+    real_unlink = Path.unlink
+
+    def refuse_to_unlink_a_build(self: Path, *args: object, **kwargs: object) -> None:
+        # Only the reclaim of an index build is refused; tmp cleanup and any
+        # other unlink proceeds, so the fault is exactly the OS refusal `gc`'s
+        # loop must convert rather than a blanket break.
+        if self.name.startswith("theurian-index-"):
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "unlink", refuse_to_unlink_a_build)
+    code, payload = _invoke("index", "gc")
 
     assert code == 1
     assert set(payload) == {"error", "remedy"}, (
@@ -290,7 +306,7 @@ def test_gc_converts_an_unwritable_state_directory_into_its_own_contract(
         f"{sorted(payload)}"
     )
     assert "chmod" in payload["remedy"] or "writable" in payload["remedy"]
-    assert _builds(project) == before
+    assert _builds(project) == before, "a run that refused mid-reclaim still deleted a build"
 
 
 def test_gc_is_idempotent(project: Path) -> None:
