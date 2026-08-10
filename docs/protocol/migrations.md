@@ -123,6 +123,76 @@ Theurian exists to prevent.
 Re-applying an applied migration is a no-op. This is a property of the engine,
 not something each migration author has to implement.
 
+### Tenant and ACL scope (issue #63)
+
+`upsertRevision`'s `metadata` carries `tenantId` (default `local`) and
+`aclGroup` (default `default`). The schema keeps both fields and their types —
+they describe the shape a hosted, multi-tenant deployment needs (ADR-0003) —
+but no `AuthorizationProvider` is implemented anywhere in Theurian Core yet.
+Accepting a document that names another tenant or ACL group would let the
+field read as an enforced boundary when nothing checks it.
+
+**`migrate validate` and `migrate apply` both refuse a revision naming a
+`tenantId` other than `local` or an `aclGroup` other than `default`.** The
+refusal runs on the same function in both commands, checked against the
+*whole* migration set rather than only what is still pending, so a document
+is refused by both or by neither — never accepted by one and rejected by the
+other, and never accepted quietly just because the offending revision already
+applied. `migrate status` does not refuse — its contract is observation, not
+a gate — but names every affected migration under `refusedIds`, so the same
+property is visible there too. A later milestone lifts the refusal once a
+hosted deployment ships a real principal to check these fields against.
+
+```yaml
+metadata:
+  tenantId: local   # any other value is refused, in this build
+  aclGroup: default  # any other value is refused, in this build
+```
+
+**Existing rows are not migrated by this fix — it closes the write side
+only.** A revision that already carries a non-default `tenantId` or
+`aclGroup` in canonical state (see below) keeps that value; nothing here
+rewrites it, and reading it back through `knowledge.get` or `knowledge.search`
+is unaffected. This is Phase 1 of #63 (FR-R1 scope filtering); enforcing the
+field on read is later work.
+
+#### Upgrading a project that already applied one of these
+
+If a revision naming a foreign tenant or ACL group was applied before this
+refusal shipped (possible only on `0.1.0.dev0` or `0.1.0.dev1`), the next
+`migrate validate` or `migrate apply` against that project still refuses it —
+but with a different remedy than an unapplied revision gets, because editing
+an *applied* migration's file changes its checksum and would trip FR-K5's
+tamper check instead ([`MigrationChecksumMismatchError`](#errors-you-will-actually-hit)),
+whose own remedy says to restore the file. Following that remedy undoes the
+edit and reintroduces the scope refusal — the two errors otherwise loop a
+reader between them with no documented way out.
+
+**The generic checksum remedy above — "restore the original, or write a new
+migration" — does not escape this loop.** A new migration can add a new
+revision; it cannot rewrite what an *earlier* revision's metadata already
+says, and whole-set checking inspects every revision ever recorded, not only
+an item's current one. The working procedure:
+
+1. Edit `tenantId`/`aclGroup` to the default in **every** migration naming
+   another value.
+2. Delete `.theurian/state/` entirely.
+3. Run `theurian migrate apply` to rebuild canonical state from the edited
+   migrations from empty — this is what makes step 1 safe: state is fully
+   reconstructible from the Git-tracked migrations (FR-K4), so there is
+   nothing an in-place edit could leave inconsistent once the rebuild starts
+   from nothing.
+
+This is the one case in this document where deleting `.theurian/state/` after
+an edit is the *correct*, sanctioned procedure, not a violation of node E's
+"do not delete state" below — because the edit is deliberate and the loss it
+causes is named and accepted, not accidental. It discards FR-K5's
+tamper-evidence for every migration applied before that point: after the
+rebuild, nothing in canonical state distinguishes "this file was always
+`local`" from "this file was edited to say `local`". Do this once,
+deliberately, when this section applies — not as a routine fix for an
+ordinary checksum mismatch.
+
 ### Path safety
 
 `contentFile` is resolved relative to the migration file and must stay inside the
@@ -151,8 +221,10 @@ flowchart TD
     A["Discover .theurian/migrations/*.yaml"] --> B["Validate against the JSON Schema"]
     B --> C["Verify each file's checksum"]
     C --> D{"Applied id with a<br/>different checksum?"}
-    D -->|yes| E["FATAL: an applied migration was edited.<br/>Do not repair. Do not delete state."]
-    D -->|no| F["Topologically sort by dependsOn"]
+    D -->|yes| E["FATAL: an applied migration was edited.<br/>Do not repair. Do not delete state --<br/>except the recovery in 'Upgrading a<br/>project that already applied one of<br/>these', above (issue #63)."]
+    D -->|no| S{"Any tenantId != local<br/>or aclGroup != default?"}
+    S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No AuthorizationProvider exists yet (issue #63)."]
+    S -->|no| F["Topologically sort by dependsOn"]
     F --> G{"Cycle?"}
     G -->|yes| H["FATAL: report the cycle"]
     G -->|no| I["For each unapplied migration"]
@@ -169,9 +241,22 @@ flowchart TD
 
     style E fill:#8a2f2f,color:#fff
     style H fill:#8a2f2f,color:#fff
+    style T fill:#8a2f2f,color:#fff
     style L fill:#8a6f2f,color:#fff
     style R fill:#1f6f4a,color:#fff
 ```
+
+**Checksum verification (C/D) runs before the scope check (S), and it happens
+at two places this one node stands in for**: `_verify_history` compares
+against the *previously active* database (only when the state hash changed —
+see [ADR-0007](../adr/0007-state-hash-partitioned-databases.md)), and
+`MigrationEngine.plan` compares again against the *current* one, inside the
+write transaction. Either can raise `MigrationChecksumMismatchError` first.
+The scope check runs only once both have passed, which is why a migration
+that is *both* tampered *and* names a foreign tenant is reported as a
+checksum problem, never as a scope one — a reader who sees
+`MigrationChecksumMismatchError` should never have to wonder whether a hidden
+scope problem is the real reason their edit went unreported.
 
 All operations in one migration share one transaction: either the whole logical
 change lands or none of it does. Transactions stay short and never contain
@@ -201,9 +286,12 @@ scanning a directory listing and may be changed freely.
 | `MigrationCycleError` | `dependsOn` loops | Break the cycle; the reported path shows where. |
 | `MigrationDependencyMissingError` | A dependency is not in the reachable set | Usually a rebase dropped a migration. Check the branch. |
 | `PathEscapeError` | `contentFile` points outside the root | Fix the path. If it looks intentional, treat it as a security finding. |
+| `UnenforceableScopeError` | A revision named a `tenantId` other than `local` or an `aclGroup` other than `default` | Edit it to the default. **Unless the revision was already applied** — then the fix above does not apply; see [Upgrading a project that already applied one of these](#upgrading-a-project-that-already-applied-one-of-these), and do not use this row's checksum-error advice as a substitute (issue #63). |
 
 ## Related
 
+- [ADR-0003 — ports and adapters](../adr/0003-ports-and-adapters.md), for why `tenantId` and `aclGroup` exist in the schema at all
 - [ADR-0005 — YAML knowledge migrations](../adr/0005-yaml-knowledge-migrations.md)
 - [ADR-0006 — immutable revisions and optimistic concurrency](../adr/0006-immutable-revisions-and-optimistic-concurrency.md)
 - [ADR-0007 — state-hash-partitioned databases](../adr/0007-state-hash-partitioned-databases.md)
+- [issue #63](https://github.com/theurian/theurian/issues/63) — the tenant/ACL refusal this page documents

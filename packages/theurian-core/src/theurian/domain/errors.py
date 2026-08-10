@@ -6,7 +6,7 @@ message that says only "conflict" forces the reader back into the code.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
@@ -89,6 +89,57 @@ class MigrationDependencyMissingError(MigrationError):
         self.migration_id = migration_id
         self.missing = missing
         super().__init__(f"Migration {migration_id} depends on unknown migration {missing}")
+
+
+class ScopeViolation(NamedTuple):
+    """One field on a revision naming a value nothing can yet enforce (issue #63).
+
+    ``default`` is carried alongside ``field_name``/``value`` rather than left
+    for the reader to look up, because the two fields this applies to
+    (``tenantId``, ``aclGroup``) do not share one default.
+    """
+
+    field_name: str
+    value: str
+    default: str
+
+
+class UnenforceableScopeError(MigrationError):
+    """A revision names a tenant or ACL group nothing yet enforces (issue #63).
+
+    ``tenantId`` and ``aclGroup`` are kept by the migration schema because they
+    describe the hosted deployment's shape (ADR-0003), but no
+    ``AuthorizationProvider`` (``domain/ports/authorization.py``) is implemented
+    anywhere in this tree. Accepting a value other than the enforced default
+    would let the field read as a security boundary while nothing checks it --
+    so it is refused at write time instead of silently accepted.
+
+    ``violations`` holds every offending field on the one revision, not only
+    the first: a revision naming both a foreign tenant and a foreign ACL group
+    is one problem statement, not two separate errors a reader fixes one at a
+    time by re-running the command twice.
+
+    Deliberately carries no "how to fix this" text -- whether the honest fix
+    is "edit the field" or "rebuild state" depends on whether this revision
+    was already applied, which only the caller holding a store can know
+    (``cli/commands.py`` decides; see ``UNENFORCEABLE_SCOPE_REMEDY_APPLIED``
+    and its unapplied counterpart, issue #63's HIGH-1).
+    """
+
+    def __init__(
+        self,
+        migration_id: MigrationId,
+        revision_id: RevisionId,
+        violations: tuple[ScopeViolation, ...],
+    ) -> None:
+        self.migration_id = migration_id
+        self.revision_id = revision_id
+        self.violations = violations
+        named = "; ".join(f"{v.field_name} {v.value!r}" for v in violations)
+        super().__init__(
+            f"{migration_id}: revision {revision_id} names {named}, but Theurian has no "
+            f"AuthorizationProvider implemented to enforce it (issue #63)."
+        )
 
 
 class SecurityError(TheurianError):
