@@ -164,6 +164,15 @@ def publish_purge_for_withdrawal(
             # only fail on the missing tables; a rebuild is the standing remedy.
             return WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
 
+        # No new index-write lock is taken. Safety against a concurrent producer
+        # rests on the same two mechanisms `index build` uses (ADR-0022, #113): a
+        # fresh ULID sorts above the published one so `theurian index gc` never
+        # reaps this build before it publishes, and `purge_into` writes under a
+        # `.building` name and `os.replace`s into position, so a file under the
+        # final name is complete by construction. The single index-writer
+        # interface ADR-0018 point 1 still owes the index is entangled with this
+        # purge -- both are "productions of a new build" -- and is tracked in
+        # issue #15's follow-through rather than opened here.
         new_id = ids.new_ulid().value
         removed = current.derive_purged(
             target=paths.index_for(new_id),
