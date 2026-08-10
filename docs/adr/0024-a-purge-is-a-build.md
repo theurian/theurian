@@ -295,6 +295,51 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    impossible at *build* time and says nothing about withdrawal *after* build;
    this point is that gap, closed before the thing that opens it is written.
 
+   > **Amended in Milestone 6. The rule holds; the storage it was
+   > implemented on does not, and "deletes or recomputes" is now decided.**
+   > [ADR-0008](0008-raptor-forest.md), amended the same day, puts summary nodes
+   > in their own tables at index schema v4 rather than in `chunks` rows with
+   > `derived = 1`: summary text repeats its children's terms, so nodes sharing
+   > `chunks_fts` would move `N`, `avgdl` and the per-term document frequencies
+   > under every ordinary leaf query, and a visible leaf's rank would become a
+   > function of the forest's shape. That ADR also decides what "deletes or
+   > recomputes" resolves to for a summary node: withdrawal **re-derives each
+   > affected tree** from its surviving rows. Deleting the node leaves the purged
+   > index missing a node the never-held corpus would have — the same equality
+   > this ADR rests on, broken in the other direction — while a recompute
+   > confined to the existing node cannot reproduce a threshold or a clustering
+   > decision that the corpus itself determines.
+   >
+   > **The cost model here is untouched, and is narrower than it may now read.**
+   > The 51× to 65× copy-not-derive measurement is about the *chunk* index, and
+   > it stands: a purge still copies chunks rather than re-deriving them. What
+   > ADR-0008 adds is a re-derivation term for the affected trees only, never for
+   > the corpus, unmeasured and owed with the CL that closes the purge over
+   > nodes. Nothing in this ADR's tables measured a forest, because there was
+   > none to measure.
+   >
+   > A failed purge over nodes lands in the residual that already exists rather
+   > than opening a new one: nothing is published, the stale build keeps serving,
+   > and `migrate apply` says so — `indexPurge` carries `published: false`,
+   > `failed: true` and a `remedy` naming the rebuild (`cli/commands.py`). That
+   > is T-17a's residual 2, unchanged in kind by there being nodes in the build.
+   >
+   > None of this point's three rules changes; the second one's open choice is
+   > simply now made. What changes is where their counterpart has to be written.
+   > `chunks.derived` and `chunk_derivation` are **dropped at v4**, because a
+   > column nothing will ever write serves nothing. Three places name them and
+   > move together: `_DOOMED`, `_verify`'s unprovenanced-row post-condition, and
+   > `IndexStore.holds_any_revision` — whose unprovenanced clause is an executed
+   > SQL predicate, not a comment, and which `application/withdrawal_purge.py`
+   > calls as the pre-check on every withdrawing `migrate apply`. Against a v4
+   > index that predicate raises `no such table: chunk_derivation`, so this drop
+   > reaches the withdrawal path and not only the purge. The five traversal tests
+   > listed in Compliance below migrate to the node-table counterpart rather than
+   > being deleted — what they hold is this rule, and this rule stands. The third bullet — an unresolvable derivation edge means
+   > delete, not keep — survives the switch to re-derivation unchanged: a node
+   > that cannot say what it was built from cannot be rebuilt from it either. The
+   > amendment to ADR-0008 decision 5 names the owed tests.
+
 ## Consequences
 
 ### Positive
@@ -390,6 +435,15 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
   `INDEX_SCHEMA_VERSION` bump for a table nothing yet writes to. ADR-0022 point 3
   is exactly why that is affordable: an index schema change costs an index
   rebuild and nothing else.
+
+  > **Amended in Milestone 6. It is billed twice, not once.** v3 bought
+  > `chunks.derived` and `chunk_derivation` for a writer that will now never
+  > exist — [ADR-0008](0008-raptor-forest.md) puts summary nodes in their own
+  > tables — and v4 pays a second bump to add those tables and drop these
+  > columns. The affordability argument is unchanged and is what makes this
+  > recoverable rather than costly; what is worth recording is that "land the
+  > schema ahead of the feature" bought a rehearsal of the *rule* and none of
+  > the storage, and the rule is the part that survived.
 
 ### Neutral
 
