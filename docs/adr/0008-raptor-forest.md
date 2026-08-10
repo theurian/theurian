@@ -215,6 +215,10 @@ flowchart TB
    > everything downstream of the value type — no builder constructs a node, no
    > table stores one, no traversal reads one — so the routing-and-recall cost
    > argued above is still argued about work that has not been built.
+   >
+   > That last exception is discharged by
+   > [#136](https://github.com/theurian/theurian/issues/136); see the Compliance
+   > note below.
 2. Three levels: Document Tree (within one knowledge item), Domain Tree (within
    one namespace/kind), Global Catalog Tree (within one scope tuple).
 3. Incremental rebuild: changed item → its Document Tree → the affected part of
@@ -272,6 +276,10 @@ flowchart TB
    > and the `indexing/__init__.py` docstring. They are named here rather than
    > corrected here — this amendment is scoped to the ADR — so that the next
    > reader does not take a second sighting as corroboration.
+   >
+   > `docs/architecture/raptor.md` is discharged by
+   > [#136](https://github.com/theurian/theurian/issues/136), leaving four; see
+   > the Compliance note below.
    >
    > The property this decision asserts is unchanged, and ADR-0024 is what holds it:
    > publishing is a pointer swap, an unverified or partial build is never pointed
@@ -817,6 +825,33 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > exists to prevent. Corrected here, in the same CL as `SECURITY.md` and
 > `docs/security/threat-model.md`; `docs/architecture/raptor.md` still says 32
 > in two places and is reconciled whole in its own CL.
+
+> **Amended in Milestone 6, by the `docs/architecture/raptor.md` reconciliation
+> CL ([#136](https://github.com/theurian/theurian/issues/136)). Three statements
+> above hold that file open, and all three are discharged.** Named one at a
+> time, because each was written by a different note and a reader who checks one
+> would otherwise take the other two as still standing.
+>
+> - "`docs/architecture/raptor.md` still says 32 in two places" — the note
+>   directly above. That file states 64 now, and names
+>   `test_all_scope_pairs_are_distinguishable` and the `len(scopes) == 64`
+>   assertion that pins the product. Re-running that note's own search,
+>   `rg "32 (component |scope |)combinations|32 distinct|all 32"`, returns this
+>   ADR alone — where the string is this population's record and not a claim.
+> - "corrected in every file it names except `docs/architecture/raptor.md`" —
+>   the amendment to decision 1. That file states the six-component tuple, in
+>   its prose and in both scope labels of its structure diagram.
+> - The `active_indexes` population in the amendment to decision 4 named that
+>   file as one of five. It is **four**: `docs/architecture/overview.md`,
+>   `docs/architecture/local-daemon.md`,
+>   `docs/architecture/requirements-analysis.md`, and the
+>   `indexing/__init__.py` docstring. `git grep active_indexes` still returns
+>   `raptor.md`, at a sentence stating that no such table exists rather than
+>   asserting a swap of one, so that grep is no longer the population on its own.
+>
+> Nothing in Still owed below moves. That CL is prose: it marks the builder, the
+> node traversal and the evaluation harness as unbuilt where the file described
+> them in the present tense, and it does not build any of them.
 
 > **Amended in Milestone 6, by the schema-v4 CL. The index-schema half is no
 > longer the unchanged one, and four sentences in this section now say the
