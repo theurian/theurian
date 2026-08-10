@@ -87,8 +87,25 @@ class CanonicalStore(Protocol):
         context: RequestContext,
         *,
         namespace: str | None = None,
-        current_at: datetime | None = None,
-    ) -> tuple[KnowledgeItem, ...]: ...
+    ) -> tuple[KnowledgeItem, ...]:
+        """Every item in scope, unfiltered by validity window.
+
+        Deliberately carries no ``current_at``. It did once, implemented as a
+        SQL ``WHERE`` clause comparing a stored ``valid_from``/``valid_to``
+        against a bound parameter as SQLite ``TEXT`` -- a lexicographic
+        ordering of the ISO-8601 string, not of the absolute instant it
+        names, so it silently disagreed with
+        :meth:`~theurian.domain.values.ValidityPeriod.contains` whenever the
+        two sides were authored in different UTC offsets (found in review
+        round 1 of PR #112, #63 phase 2). Deleted rather than fixed in place:
+        a caller that needs a validity-window filter constructs the moment
+        once, as a timezone-aware ``datetime``, and applies
+        ``ValidityPeriod.contains`` in Python -- the same method every other
+        caller in this codebase already uses, so there is exactly one
+        comparison to get right instead of two that have to be kept in
+        agreement.
+        """
+        ...
 
     # -- Relations, aliases, evidence --------------------------------------
 

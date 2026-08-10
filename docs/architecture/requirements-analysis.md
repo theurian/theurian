@@ -74,16 +74,28 @@ content yet, which is why this remains a deferral and not a defect.
 The validity-window axis is no longer wholly unenforced, and it is
 deliberately not unconditional either
 ([#63](https://github.com/theurian/theurian/issues/63) phase 2).
-`knowledge.search` takes an optional `asOf` timestamp; passing one gives
-`SqliteCanonicalStore.list_items(current_at=…)` its first caller on the
-unranked fallback path, and applies the equivalent per-candidate check inside
-`CanonicalVisibility` on the ranked one. Omitting `asOf` filters on nothing
-more than before this parameter existed — a default validity filter was
-rejected, because it would make `freshness.isWithinValidity` constant-`true`
-on every published result and give the ranked path a stale-index statistics
-residual with no way to turn off, rather than only while an index build is
-behind. Tenant, ACL and sensitivity remain wholly unenforced; that part of
-Milestone 6's scope filtering is still open.
+`knowledge.search` takes an optional `asOf` timestamp; passing one applies
+`ValidityPeriod.contains`, in Python, identically on both answer paths —
+`CanonicalVisibility.at_moment` on the ranked path and a plain check inside
+`mcp.search._scan` on the unranked fallback. `SqliteCanonicalStore` never
+compares a timestamp: an earlier version gave `list_items` a `current_at`
+parameter that filtered in SQL, and it is deleted rather than kept, because it
+compared the stored `validFrom`/`validTo` against `asOf` as SQLite TEXT and so
+silently disagreed with the Python comparison whenever the two were authored
+in different UTC offsets — a HIGH finding in review round 1 of PR #112.
+`CanonicalVisibility.at_moment` also runs strictly *after* the depth-doubling
+loop that decides how many times a retriever is asked for more, never inside
+the check that loop's own exit condition watches — folding it in there was a
+second, CRITICAL finding in the same round: a caller-chosen moment would have
+let that loop's retriever-call count move with `asOf`, reviving the
+single-withheld-row timing oracle `FIRST_PASS_DEPTH` exists to blunt (see
+`theurian.application.visibility.Visibility.at_moment`'s docstring). Omitting
+`asOf` filters on nothing more than before this parameter existed — a default
+validity filter was rejected, because it would make `freshness.isWithinValidity`
+constant-`true` on every published result and give the ranked path a
+stale-index statistics residual with no way to turn off, rather than only
+while an index build is behind. Tenant, ACL and sensitivity remain wholly
+unenforced; that part of Milestone 6's scope filtering is still open.
 
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One

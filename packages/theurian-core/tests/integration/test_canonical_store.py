@@ -439,30 +439,24 @@ def test_migration_history_records_order_and_checksums(database: Path, lock: Pat
     assert history == ((MIGRATION, first_checksum), (second, second_checksum))
 
 
-# -- Validity window (#63 phase 2) ------------------------------------------
+def test_list_items_never_filters_by_validity(database: Path, lock: Path) -> None:
+    """FR-R1's validity axis is not this store's job (#63 phase 2, CRITICAL
+    finding in review round 1 of PR #112).
 
-
-def test_the_validity_filter_is_reachable_from_a_caller(database: Path, lock: Path) -> None:
-    """FR-R1's validity axis, pinned at the store rather than through the MCP
-    surface, so a regression on the caller side cannot make this test look
-    green for the wrong reason.
-
-    ``list_items(current_at=…)`` implements the half-open window below and had
-    no caller in `src/` at all (issue #63): every one of the five call sites
-    passed ``context`` alone, so this filter was written and dead.
-    ``theurian.mcp.search._scan`` is the first caller, reached through
-    `knowledge.search`'s optional ``asOf`` parameter -- this test replaces
-    "written and dead" with "written and called" for the store method itself,
-    independent of that caller's own tests
-    (``test_a_search_pinned_to_a_moment_returns_only_knowledge_valid_then``,
-    ``tests/integration/test_mcp_tools.py``).
-
-    Placed in this file rather than ``tests/integration/test_index_store.py``:
-    ``list_items`` is a method of ``SqliteCanonicalStore``, exercised nowhere
-    near ``SqliteIndexStore`` -- the retrieval index that file's fixtures and
-    imports are entirely about, and which carries no validity column at all
-    (``infrastructure/sqlite/index_schema.py``). This axis is filtered at the
-    canonical store, not the index, on both `knowledge.search` answer paths.
+    An earlier version gave ``list_items`` a ``current_at`` parameter that
+    filtered in SQL, comparing a stored ``valid_from``/``valid_to`` against a
+    bound moment as SQLite TEXT -- silently wrong whenever the two were
+    authored in different UTC offsets, since that comparison is lexicographic
+    over the ISO-8601 string rather than over the absolute instant it names.
+    Deleted rather than fixed in place: both `knowledge.search` answer paths
+    now apply ``ValidityPeriod.contains`` in Python instead --
+    ``CanonicalVisibility.at_moment`` on the ranked path (deliberately *after*
+    the depth-doubling loop that ``cleared`` drives, so a caller-chosen moment
+    cannot bias that loop's own retriever-call count; see that method's
+    docstring for the CRITICAL finding this closes) and a plain
+    ``item.validity.contains`` check inside ``mcp.search._scan`` on the
+    unranked fallback. Neither reaches this store, which is what this test
+    pins: every item is returned, whatever its validity window, always.
     """
     always = replace(
         _item(), item_id=ItemId("architecture.always"), validity=ValidityPeriod(valid_from=NOW)
@@ -479,21 +473,12 @@ def test_the_validity_filter_is_reachable_from_a_caller(database: Path, lock: Pa
         writer.put_item(later)
 
     with SqliteCanonicalStore(database) as store:
-        context = RequestContext(project_id=PROJECT)
-        unfiltered = store.list_items(context)
-        pinned_before = store.list_items(context, current_at=NOW)
-        pinned_after = store.list_items(context, current_at=NOW + timedelta(days=400))
+        items = store.list_items(RequestContext(project_id=PROJECT))
 
-    assert {i.item_id.value for i in unfiltered} == {"architecture.always", "architecture.later"}, (
-        "no `current_at` filters on nothing, as every other caller relies on"
+    assert {i.item_id.value for i in items} == {"architecture.always", "architecture.later"}, (
+        "an item not yet valid is still listed -- this store has no concept of "
+        "`current_at` to exclude it with"
     )
-    assert {i.item_id.value for i in pinned_before} == {"architecture.always"}, (
-        "the item not yet valid at `NOW` must be excluded"
-    )
-    assert {i.item_id.value for i in pinned_after} == {
-        "architecture.always",
-        "architecture.later",
-    }, "and included once its own `valid_from` has passed"
 
 
 # -- Session lifetime ------------------------------------------------------

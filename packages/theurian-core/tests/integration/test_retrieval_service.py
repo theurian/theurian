@@ -70,6 +70,10 @@ class _NothingWithheld:
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(ranked)
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
+        return tuple(ranked)
+
 
 NOTHING_WITHHELD = _NothingWithheld()
 
@@ -1401,6 +1405,10 @@ class _WithoutTheRunbook:
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(row for row in ranked if row.item_id != _WITHHELD)
+
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
+        return tuple(ranked)
 
 
 def test_a_withheld_row_cannot_choose_which_chunk_of_a_visible_document_is_published() -> None:

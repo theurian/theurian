@@ -178,6 +178,10 @@ class _WithoutTheWithdrawn:
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(row for row in ranked if not row.item_id.startswith(WITHDRAWN))
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
+        return tuple(ranked)
+
 
 @final
 class _CountedStore:

@@ -95,8 +95,9 @@ Schema: [`retrieval-result.schema.json`](../../schemas/knowledge/retrieval-resul
 
 ### `asOf` pins a search to a moment
 
-`knowledge.search` takes an optional `asOf`: an RFC 3339 timestamp with an
-explicit UTC offset, e.g. `2026-08-01T00:00:00Z`. Omit it and nothing changes —
+`knowledge.search` takes an optional `asOf`: an RFC 3339 timestamp with any
+explicit offset, e.g. `2026-08-01T00:00:00Z` or `2026-08-01T09:00:00+09:00` —
+not only `Z`. Omit it and nothing changes —
 every surfaceable item is a candidate whatever its declared validity window,
 exactly as every prior release of this tool already behaved. Pass it and an
 item outside its `validFrom`/`validTo` window *at that moment* is excluded from

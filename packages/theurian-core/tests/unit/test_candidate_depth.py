@@ -173,6 +173,10 @@ class _NothingIsWithheld:
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(ranked)
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
+        return tuple(ranked)
+
 
 def _search() -> SearchOutcome:
     """One ordinary search over two thirty-one-row rankings."""

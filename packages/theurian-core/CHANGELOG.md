@@ -14,9 +14,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
-- **`knowledge.search` takes an optional `asOf`** (RFC 3339, explicit UTC
-  offset required), pinning results to FR-R1's validity-window axis at that
-  moment ([#63](https://github.com/theurian/theurian/issues/63) phase 2 — the
+- **`knowledge.search` takes an optional `asOf`** (RFC 3339, any explicit
+  offset), pinning results to FR-R1's validity-window axis at that moment
+  ([#63](https://github.com/theurian/theurian/issues/63) phase 2 — the
   milestone advances, the issue stays open for the four remaining axes).
   Additive: omitting `asOf` filters on nothing more than before this parameter
   existed, on both answer paths. A permanent default filter was considered and
@@ -30,6 +30,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for a document a caller may not read. `knowledge.get` deliberately does not
   take it — see its docstring for why "not found" would be a worse answer than
   `isWithinValidity: false`. An unparseable `asOf` is a clean tool error.
+  Both answer paths compare the pinned moment through the identical
+  `ValidityPeriod.contains`, in Python, on timezone-aware `datetime` values —
+  no timestamp is ever compared as SQLite text — and the ranked path applies
+  it only after its retriever depth-doubling loop has already stopped asking
+  for more, so a pinned moment cannot change how many times a request reads a
+  retriever.
 
 ## [0.1.0.dev1] - 2026-08-09
 

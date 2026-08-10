@@ -91,11 +91,17 @@ def _parse_as_of(raw: str) -> datetime:
     caller gets a message naming the fix instead of an internal domain rule
     surfacing through the SDK's generic `Error executing tool …: {e}` --
     exactly the drop `_with_remedy` exists to stop for `ProjectError`.
+
+    Accepts whatever `datetime.fromisoformat` accepts, which is a superset of
+    RFC 3339 -- fractional seconds to arbitrary precision, for instance, which
+    RFC 3339 caps at nanoseconds. Documented as RFC 3339 because that is the
+    subset every caller needs and the one this project publishes; refusing
+    the rest would refuse timestamps this same standard library produces.
     """
     if len(raw) > MAX_AS_OF_CHARS:
         msg = (
             f"`asOf` is {len(raw)} characters long, which is longer than any real "
-            f"timestamp. Pass an RFC 3339 timestamp with an explicit UTC offset, "
+            f"timestamp. Pass an RFC 3339 timestamp with an explicit offset, "
             f"e.g. '2026-08-01T00:00:00Z', or omit `asOf` to search without a "
             f"validity cutoff."
         )
@@ -105,7 +111,7 @@ def _parse_as_of(raw: str) -> datetime:
     except ValueError as exc:
         msg = (
             f"`asOf` is not an RFC 3339 timestamp ({exc}). Pass one with an "
-            f"explicit UTC offset, e.g. '2026-08-01T00:00:00Z', or omit `asOf` to "
+            f"explicit offset, e.g. '2026-08-01T00:00:00Z', or omit `asOf` to "
             f"search without a validity cutoff."
         )
         raise ToolError(msg) from exc
@@ -377,7 +383,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         default would be indistinguishable from a team decision, which is the
         failure this whole system exists to prevent.
 
-        ``asOf`` pins the search to a moment (RFC 3339, an explicit UTC offset
+        ``asOf`` pins the search to a moment (RFC 3339, an explicit offset
         required) and is a *refinement*, never a default filter (FR-R1, #63
         phase 2). Omit it and nothing changes from before this parameter
         existed: every approved (or, with ``includeUnapproved``, every

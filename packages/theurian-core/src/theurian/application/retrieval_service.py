@@ -539,7 +539,18 @@ class RetrievalService:
             page = fetch(depth)
             cleared = visible.cleared(page.rows)
             if len(cleared) >= CANDIDATE_DEPTH or page.exhausted:
-                return cleared[:CANDIDATE_DEPTH]
+                # `at_moment` (FR-R1's validity-window axis, #63 phase 2) is
+                # applied here, once, after the loop above has already
+                # stopped asking retrievers for more -- never inside
+                # `cleared`, which is what the loop's own exit condition
+                # watches. See `Visibility.at_moment`'s docstring for the
+                # CRITICAL finding (review round 1 of PR #112) that this
+                # placement closes: a caller-chosen moment folded into
+                # `cleared` would make the retriever pass count -- observable
+                # through timing -- move with `asOf`, reviving the
+                # single-withheld-row oracle `FIRST_PASS_DEPTH` exists to
+                # blunt.
+                return visible.at_moment(cleared[:CANDIDATE_DEPTH])
             if len(page.rows) <= served:
                 raise RetrievalError(
                     f"A retriever returned {len(page.rows)} rows at depth {depth} after "
@@ -611,7 +622,12 @@ class RetrievalService:
         # retriever returns the whole ranking, so there is no depth to go back
         # for. The field is still true of it, which is why the port carries it
         # rather than exempting this method.
-        return visible.cleared(page.rows)[:CANDIDATE_DEPTH]
+        #
+        # `at_moment` after the `[:CANDIDATE_DEPTH]` cut, matching
+        # `_visible_ranking` -- this retriever has no depth loop for `asOf` to
+        # bias, but keeping the split uniform means nothing here has to
+        # re-verify that fact to stay correct if one is ever added.
+        return visible.at_moment(visible.cleared(page.rows)[:CANDIDATE_DEPTH])
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,9 +751,14 @@ class ResultRequest:
     #: The caller's ``asOf``, or ``None`` for no validity-window pin (FR-R1,
     #: #63 phase 2). Threaded through rather than read here because the moment
     #: has to reach :class:`~theurian.application.visibility.CanonicalVisibility`
-    #: *before* a row is ranked, for the same reason ``include_unapproved`` does
-    #: -- a post-filter would let a row outside its window occupy a candidate
-    #: slot. ``None`` is not "everything is visible"; it is "apply no
+    #: at construction, still before RRF fusion runs -- but, unlike
+    #: ``include_unapproved``, it is *not* applied inside the depth loop that
+    #: decides how many times a retriever is asked for more:
+    #: :meth:`~theurian.application.visibility.Visibility.at_moment` applies
+    #: it once, after that loop has already stopped, so the number of
+    #: retriever calls one request makes cannot move with a caller-chosen
+    #: moment (CRITICAL, review round 1 of PR #112 -- see that method's
+    #: docstring). ``None`` is not "everything is visible"; it is "apply no
     #: *additional* temporal restriction", the distinction that class's own
     #: docstring draws for its ``moment`` parameter.
     moment: datetime | None = None

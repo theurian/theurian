@@ -405,12 +405,14 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
 
     ``as_of`` is the parsed form of `knowledge.search`'s optional ``asOf``
     (FR-R1, #63 phase 2). It reaches two places for two different reasons: the
-    gate below, where ``None`` means "no additional validity-window filter" and
-    a moment means one candidate at a time is checked against
-    ``item.validity`` before it can be ranked; and :func:`_shaper`, where it is
-    the moment every returned hit's ``freshness`` is computed against --
-    ``datetime.now(UTC)`` when the caller pinned nothing, exactly as before this
-    parameter existed.
+    gate below, where ``None`` means "no additional validity-window filter"
+    and a moment is checked against ``item.validity``, once, on the far side
+    of `CanonicalVisibility`'s own depth-doubling loop -- see
+    :meth:`~theurian.application.visibility.Visibility.at_moment` for why it
+    is never folded into the check that loop's exit condition watches; and
+    :func:`_shaper`, where it is the moment every returned hit's ``freshness``
+    is computed against -- ``datetime.now(UTC)`` when the caller pinned
+    nothing, exactly as before this parameter existed.
     """
     published = _published_index(
         paths, project_id=project_id, include_unapproved=include_unapproved
@@ -739,10 +741,14 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     could disagree with the one that chose ``database`` (SEC-13/T-15 — see
     `_Retrieval.snapshot_id`).
 
-    ``as_of`` is FR-R1's validity axis (#63 phase 2), on the path this project's
-    requirements register named as the one with no caller for it:
-    ``SqliteCanonicalStore.list_items(current_at=…)``. :func:`_scan` is that
-    caller now.
+    ``as_of`` is FR-R1's validity axis (#63 phase 2). :func:`_scan` applies it
+    in Python, through ``ValidityPeriod.contains`` -- the identical check the
+    ranked path applies via ``CanonicalVisibility.at_moment``, and not through
+    a SQL ``current_at`` filter :class:`~theurian.infrastructure.sqlite.store.
+    SqliteCanonicalStore` no longer has (see its docstring): that filter
+    compared a stored ``validFrom``/``validTo`` against ``as_of`` as SQLite
+    TEXT, silently disagreeing with the ranked path whenever the two were
+    authored in different UTC offsets (found in review round 1 of PR #112).
     """
     provisional = _Retrieval(
         # "substring" here names the unranked canonical scan, not the trigram
@@ -802,20 +808,29 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     Stops at ``limit`` so an unranked scan cannot walk a whole corpus to build
     an answer the budget will discard anyway.
 
-    ``as_of=None`` passes ``current_at=None`` straight through to
-    ``list_items``, which is a no-op filter -- this scan's behaviour when the
-    caller pins nothing is unchanged from before ``asOf`` existed. A moment
-    gives ``list_items(current_at=…)`` its first caller in `src/` (#63 phase
-    2): the half-open window it already implements
-    (``infrastructure/sqlite/store.py``) was written and never read.
+    ``as_of=None`` skips the ``item.validity.contains`` check below entirely --
+    this scan's behaviour when the caller pins nothing is unchanged from
+    before ``asOf`` existed. A moment is checked in Python, against the
+    ``KnowledgeItem`` this loop already holds: an earlier version passed
+    ``current_at=as_of`` to ``list_items`` and let a now-deleted SQL clause do
+    it, which compared the stored timestamp and ``as_of`` as SQLite TEXT and
+    so disagreed with the ranked path whenever they were authored in
+    different UTC offsets (found in review round 1 of PR #112). Filtering
+    here instead costs nothing extra: every item was already being read to
+    reach its status. This scan also has no depth-doubling loop for a
+    caller-chosen moment to bias the pass count of -- unlike the ranked path
+    (see ``CanonicalVisibility.at_moment``), it walks the whole corpus once
+    whatever ``as_of`` excludes.
     """
     now = as_of if as_of is not None else datetime.now(UTC)
     context = RequestContext(project_id=ProjectId(project_id))
     matches: list[dict[str, Any]] = []
 
     with SqliteCanonicalStore(database) as store:
-        for item in store.list_items(context, current_at=as_of):
+        for item in store.list_items(context):
             if not may_surface(item.status, include_unapproved=include_unapproved):
+                continue
+            if as_of is not None and not item.validity.contains(as_of):
                 continue
             if item.current_revision_id is None:
                 continue

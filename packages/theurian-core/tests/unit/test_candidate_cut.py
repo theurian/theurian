@@ -212,6 +212,10 @@ class _WithoutTheWithheld:
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(row for row in ranked if not row.item_id.startswith(WITHHELD))
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's scope: nothing is pinned, so nothing moves."""
+        return tuple(ranked)
+
 
 def _search(withheld: int) -> SearchOutcome:
     """One ordinary search against a corpus withholding ``withheld`` top rows.
