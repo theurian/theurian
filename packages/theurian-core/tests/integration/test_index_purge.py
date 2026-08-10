@@ -57,7 +57,7 @@ WITHDRAWN = 6
 QUERIES = ("retention isolation", "authentication token", "quarantine ledger")
 
 
-def _indexable(chunk_id: str, text: str, *, revision: str, derived: bool = False) -> IndexableChunk:
+def _indexable(chunk_id: str, text: str, *, revision: str) -> IndexableChunk:
     return IndexableChunk(
         chunk=Chunk(chunk_id=chunk_id, ordinal=0, text=text, heading=""),
         project_id=PROJECT,
@@ -472,8 +472,11 @@ def test_a_node_derived_from_both_a_withdrawn_and_a_surviving_chunk_goes(
     Held at v3 by the same-named test over `chunk_derivation`; the case keeps its
     shape at v4. The node holds content from a chunk the caller may no longer
     read. That it also holds permitted content does not make it publishable -- a
-    summary cannot be partially withdrawn, which is why decision 8 says delete
-    *or recompute* and this half implements the first.
+    summary cannot be partially withdrawn. The choice between deleting it and
+    recomputing it is settled as re-derivation (ADR-0024's amendment); this CL
+    ships the delete half as the v4 baseline, and the purge-closure CL that adds
+    a RAPTOR builder is what upgrades a doomed node to a recomputed one instead
+    of a deleted one.
     """
     stale, _, withdrawn = corpora
     _add_node(stale, "mixed#0", sources=[f"{withdrawn[0]}#0", "keep-001#0"])
@@ -518,9 +521,22 @@ def test_an_ordinary_chunk_is_never_treated_as_an_unprovenanced_node(
     Held at v3 by `test_an_ordinary_row_is_never_treated_as_derived`. No node is
     written here at all, so `nodes` must stay empty across the purge -- a rule
     that swept ordinary chunks into the unprovenanced-node seed regardless of
-    which table it read would empty the index on the first purge, and every
-    other test in this section would still pass, because they assert what is
-    gone, not what is left.
+    which table it read would empty the index on the first purge.
+
+    Not a claim this file's other tests would quietly cover instead: attributed
+    by mutating both readings (`_UNPROVENANCED_NODES` selecting from `chunks`
+    instead of `nodes`, and `doomed_chunks` gaining an `OR chunk_id NOT IN
+    (SELECT node_id FROM node_derivation)` arm) and running the whole file
+    without `-x`. Both redden several neighbours in this section too --
+    `test_purging_nothing_is_a_faithful_copy`,
+    `test_a_node_that_cannot_say_where_it_came_from_is_deleted`,
+    `test_a_node_derived_only_from_an_unprovenanced_node_goes_with_it` among
+    them -- and the `OR` reading also reddens
+    `test_a_node_derived_from_a_withdrawn_chunk_goes_with_it`, which asserts a
+    *survivor* (`"summary-of-kept#0" in surviving`) and not only an absence.
+    This test earns its place by being the one member of the section whose
+    fixture writes no node at all, so it is the only one a chunk-sweeping bug
+    cannot pass by accident of what else happens to be in the corpus.
     """
     stale, _, withdrawn = corpora
     purged_path = tmp_path / "theurian-index-purged.sqlite"
@@ -625,9 +641,12 @@ def test_the_post_condition_also_refuses_an_orphaned_embedding(
     """The other half of `_verify`, and the one the pragma is supposed to prevent.
 
     Constructed the way a pragma-less delete would leave the file: the chunk
-    gone, the vector behind. The message names the cause rather than the symptom,
-    because "an embedding has no chunk" sends the reader to the schema and
-    `PRAGMA foreign_keys` sends them to the connection.
+    gone, the vector behind. Matched on "whose chunk is gone" rather than on
+    the `PRAGMA foreign_keys` explanation the message also carries today: that
+    clause names a cause that cannot be true on this path -- `_writing`'s
+    `CONNECTION_PRAGMAS` always turn foreign keys on -- and is expected to be
+    replaced by wording that says what actually happened (the source build
+    already held the damage), which this match must survive.
     """
     stale, _, _ = corpora
     damaged = tmp_path / "theurian-index-damaged.sqlite"
@@ -638,7 +657,7 @@ def test_the_post_condition_also_refuses_an_orphaned_embedding(
             "INSERT INTO embeddings (chunk_id, dimension, vector) VALUES ('ghost#0', 3, X'00')"
         )
 
-    with pytest.raises(IndexPurgeError, match="foreign_keys"):
+    with pytest.raises(IndexPurgeError, match="whose chunk is gone"):
         _verify(damaged, [])
 
 
@@ -898,5 +917,5 @@ def test_verify_refuses_a_build_whose_node_derivation_points_at_a_chunk_that_is_
         connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("DELETE FROM chunks WHERE chunk_id = 'keep-000#0'")
 
-    with pytest.raises(IndexPurgeError):
+    with pytest.raises(IndexPurgeError, match="whose source is gone"):
         _verify(build, [])

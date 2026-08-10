@@ -205,8 +205,9 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             return WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
         if not current.holds_any_revision(deduped):
             # The published build holds nothing `derive_purged` would remove:
-            # neither a chunk of the withdrawn revisions nor an unprovenanced
-            # derived row (`holds_any_revision` checks both seeds of `_DOOMED`).
+            # neither a chunk of the withdrawn revisions nor a node the purge
+            # would remove -- `holds_any_revision` runs the same SQL literals the
+            # purge's own predicate is built from, so the two cannot disagree.
             # Copying it to delete nothing and republishing an identical build is
             # pure churn -- the common replay case for a project with any past
             # withdrawal -- so skip before any file is copied.

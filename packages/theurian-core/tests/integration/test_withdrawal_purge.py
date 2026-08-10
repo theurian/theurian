@@ -582,7 +582,7 @@ def _insert_unprovenanced_node(path: Path, node_id: str) -> None:
 
 
 def test_an_unprovenanced_node_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> None:
-    """The second `_DOOMED` seed, driven end to end (MEDIUM-2).
+    """`_DOOMED`'s no-provenance arm, driven end to end (MEDIUM-2).
 
     Held at v3 by `test_an_unprovenanced_derived_row_is_seen_by_the_pre_check_
     and_purged`, over a `chunks.derived = 1` row and `holds_any_revision`'s
@@ -613,7 +613,7 @@ def test_an_unprovenanced_node_is_seen_by_the_pre_check_and_purged(tmp_path: Pat
     # The pre-check sees it even though the withdrawn revision matches no chunk,
     # and does so without raising -- the property the old table name broke.
     assert SqliteIndexStore(paths.index_for(BUILD_ID)).holds_any_revision(["no-such-revision"]), (
-        "the unprovenanced node is the second _DOOMED seed and must be detected"
+        "an unprovenanced node is one of _DOOMED's arms and must be detected"
     )
 
     outcome = publish_purge_for_withdrawal(
@@ -625,6 +625,81 @@ def test_an_unprovenanced_node_is_seen_by_the_pre_check_and_purged(tmp_path: Pat
 
     assert outcome.published is True, "a build with something to remove is purged and republished"
     assert outcome.removed == 1, "the one unprovenanced node"
+    assert not _published_store(paths).holds_any_revision(["no-such-revision"]), (
+        "and it is gone from the published build"
+    )
+
+
+def _insert_dangling_node(path: Path, node_id: str) -> None:
+    """Add a `nodes` row with an edge naming a chunk that is not there.
+
+    A third shape, and one neither seed of the traversal this replaced covered:
+    this node *has* a `node_derivation` row, so it is not unprovenanced, and its
+    `source_chunk_id` names no withdrawn revision, so the revision clause missed
+    it too. `PRAGMA foreign_keys` off, the same way a delete that ran without it
+    would leave a dangling edge behind (`_writing`'s docstring in
+    `index_purge.py`).
+    """
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        with connection:
+            connection.execute(
+                "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
+                "summary_model, summary_model_revision, summary_prompt_hash, embedding_model, "
+                "embedding_model_revision, embedding_dimension, source_revision_id, "
+                "index_build_id, project_id, sensitivity, status) "
+                "VALUES (?, 'tree-abc', 1, 'document', ?, 'deadbeef', '', '', '', '', '', 0, '', "
+                "'test-build', ?, 'internal', 'approved')",
+                (node_id, "a summary whose source chunk is gone", PROJECT),
+            )
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES (?, 'ghost#0', NULL)",
+                (node_id,),
+            )
+
+
+def test_a_dangling_edge_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> None:
+    """A build whose only damage is a dangling edge must not be silently skipped.
+
+    Measured (`sec/exp7_precheck.py`): `holds_any_revision`'s two clauses --
+    "a chunk of the withdrawn revision" and "a node with zero edges" -- both
+    miss a node whose one edge resolves to nothing, so the pre-check answers
+    `False` and `publish_purge_for_withdrawal` reports `NOTHING_TO_PURGE`
+    without ever copying the file. Yet a real purge over the same file, run
+    directly, refuses to publish -- the pre-check just called clean the very
+    build a purge would not accept. Under well-founded reachability this node
+    is exactly as ungrounded as one with no edges at all: it cannot be shown to
+    hold nothing withdrawn, so it must be a third seed of both the pre-check
+    and the traversal, not a state either one is silent about.
+    """
+    paths = _paths(tmp_path)
+    _build(paths.index_for(BUILD_ID), include_withdrawn=False)
+    _insert_dangling_node(paths.index_for(BUILD_ID), "dangling-summary#0")
+    write_active_index_pointer(
+        paths,
+        index_build_id=BUILD_ID,
+        state_hash=STATE_HASH,
+        project_id=PROJECT,
+        indexes_unapproved=False,
+    )
+
+    assert SqliteIndexStore(paths.index_for(BUILD_ID)).holds_any_revision(["no-such-revision"]), (
+        "a node with a dangling edge cannot be shown to hold nothing withdrawn, and the "
+        "pre-check must see it exactly as it sees an unprovenanced node"
+    )
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(["no-such-revision"]),
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome.published is True, (
+        "a build with a dangling edge is purged and republished, not skipped as clean"
+    )
+    assert outcome.removed == 1, "the one ungrounded node"
     assert not _published_store(paths).holds_any_revision(["no-such-revision"]), (
         "and it is gone from the published build"
     )

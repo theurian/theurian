@@ -1561,12 +1561,293 @@ def test_the_schema_carries_the_node_tables_the_purge_traversal_will_walk(
     )
 
 
+# -- Schema-v4 hardening (RAPTOR CL 3, round 2) ------------------------------
+#
+# `nodes.node_id` and `chunks.chunk_id` are declared `TEXT PRIMARY KEY`, and
+# SQLite's rowid tables only imply `NOT NULL` on an *integer* primary key -- a
+# `TEXT` one silently admits a single `NULL` row (the "SQLite TEXT PK quirk").
+# A `NULL` cell there disables `index_purge`'s dangling and orphan checks,
+# because every one of them is `x NOT IN (SELECT ... )`, which is `NULL` --
+# never true -- the moment one `NULL` sits in the subquery. `node_derivation`
+# has a matching gap: its exclusive-source `CHECK` says nothing about a self
+# edge, and its `UNIQUE` index is over three columns two of which are always
+# mutually exclusive, so SQLite's "a `NULL` never equals another `NULL`" rule
+# means it never actually fires. Measured, not assumed: every test below is
+# paired with the accepted-today behaviour it replaces.
+
+
+def _node_row(*, node_id: object, text: str = "a summary") -> tuple[object, ...]:
+    """The 17-column `nodes` insert tuple, `node_id` free to be anything -- including `None`."""
+    return (
+        node_id,
+        "tree-abc",
+        1,
+        "document",
+        text,
+        "deadbeef",
+        "",
+        "",
+        "",
+        "",
+        "",
+        0,
+        "",
+        "build-abc",
+        "demo",
+        "internal",
+        "approved",
+    )
+
+
+_NODE_INSERT = (
+    "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
+    "summary_model, summary_model_revision, summary_prompt_hash, embedding_model, "
+    "embedding_model_revision, embedding_dimension, source_revision_id, "
+    "index_build_id, project_id, sensitivity, status) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+def test_node_id_and_chunk_id_refuse_a_null_value(store: SqliteIndexStore) -> None:
+    """`TEXT PRIMARY KEY` does not imply `NOT NULL`; a `NULL` id must be refused explicitly.
+
+    Only an `INTEGER PRIMARY KEY` is a rowid alias SQLite refuses `NULL` for on
+    its own. `chunks.chunk_id` and `nodes.node_id` are both `TEXT PRIMARY KEY`,
+    so today each admits exactly one `NULL` row -- past which every dangling and
+    orphan check in `index_purge` goes silently inert, because each is written
+    as `x NOT IN (SELECT ...)`, and SQL's `NOT IN` against a set containing one
+    `NULL` answers `NULL` (falsy) for every row, not merely for the `NULL` one.
+    Explicit `NOT NULL` is what a rowid alias would have given for free.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(_NODE_INSERT, _node_row(node_id=None))
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
+                "heading, text, token_estimate, status, sensitivity, trust_level) "
+                "VALUES (NULL, 'demo', 'a.x', 'x', 0, '', 'text', 1, 'approved', "
+                "'internal', 'reviewed')"
+            )
+
+
+def test_a_node_derivation_edge_naming_itself_is_refused(store: SqliteIndexStore) -> None:
+    """A node cannot be its own source (RAPTOR CL 3 round 2).
+
+    `node_derivation`'s exclusive-source `CHECK` only says a row names exactly
+    one of a chunk or a node -- it says nothing about *which* node, so
+    `('n1', NULL, 'n1')` satisfies it today. A self edge is the smallest cycle
+    the well-founded traversal has to refuse: a node reachable only through
+    itself is grounded in nothing, however many steps the walk is given.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            connection.execute(_NODE_INSERT, _node_row(node_id="n1"))
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', NULL, 'n1')"
+            )
+
+
+def test_the_node_derivation_check_refuses_both_and_neither_source(
+    store: SqliteIndexStore,
+) -> None:
+    """The exclusive-source `CHECK`'s other two shapes, pinned directly.
+
+    `sources=[...]` / `node_sources=[...]` fixtures elsewhere in the suite only
+    ever exercise the two shapes the `CHECK` accepts (chunk-only, node-only).
+    Mutation showed the whole `CHECK` can be replaced with `CHECK (1)` and the
+    suite stays green (`15-schema-drop-exclusive-null-check`) -- nothing had
+    ever tried to write the two shapes it exists to refuse: naming both a chunk
+    and a node in one row, and naming neither.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            connection.execute(
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
+                "heading, text, token_estimate, status, sensitivity, trust_level) "
+                "VALUES ('c1#0', 'demo', 'a.x', 'x', 0, '', 'text', 1, 'approved', "
+                "'internal', 'reviewed')"
+            )
+            connection.execute(_NODE_INSERT, _node_row(node_id="n1"))
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', 'c1#0', 'n1')"
+            )
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', NULL, NULL)"
+            )
+
+
+def test_duplicate_derivation_edges_are_refused(store: SqliteIndexStore) -> None:
+    """An exact-duplicate edge, of either shape, must be refused at the schema.
+
+    `node_derivation_edge`'s `UNIQUE` index is declared over all three columns
+    `(node_id, source_chunk_id, source_node_id)`, and exactly one of the last
+    two is always `NULL` per row (the exclusive-source `CHECK`). SQL's `UNIQUE`
+    treats `NULL` as distinct from every other `NULL`, including itself, so a
+    3-column index where one column is always `NULL` never actually compares
+    equal to anything -- the index accepts an unbounded number of identical
+    rows. Measured: mutating `UNIQUE INDEX` to a plain `INDEX` leaves the whole
+    suite green (`16-schema-drop-unique-edge-index`), which is the same defect
+    from the other side. A schema that means to forbid a duplicate edge needs
+    one partial unique index per source column, each `WHERE` on the column
+    that is never `NULL` in the rows it covers.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            connection.execute(
+                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
+                "heading, text, token_estimate, status, sensitivity, trust_level) "
+                "VALUES ('c1#0', 'demo', 'a.x', 'x', 0, '', 'text', 1, 'approved', "
+                "'internal', 'reviewed')"
+            )
+            connection.execute(_NODE_INSERT, _node_row(node_id="n1"))
+            connection.execute(_NODE_INSERT, _node_row(node_id="n2"))
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', 'c1#0', NULL)"
+            )
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', NULL, 'n2')"
+            )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', 'c1#0', NULL)"
+            )
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES ('n1', NULL, 'n2')"
+            )
+
+
+def test_the_schema_carries_the_node_embeddings_table(store: SqliteIndexStore) -> None:
+    """`node_embeddings`, mirroring `embeddings` for the dense retriever over nodes.
+
+    A RAPTOR summary needs a vector the same way a chunk does, and `embeddings`
+    cannot hold it: it is keyed on `chunk_id REFERENCES chunks`, and a node id
+    is not a chunk id. Without its own table a summary's vector has nowhere to
+    live and dense search over the forest cannot exist -- and without `ON
+    DELETE CASCADE` a purged node's vector would outlive the node exactly as an
+    orphaned `embeddings` row would.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "node_embeddings" in tables, (
+            "node_embeddings is missing -- a RAPTOR summary has nowhere to store a vector"
+        )
+        columns = {row[1]: row for row in connection.execute("PRAGMA table_info(node_embeddings)")}
+        assert set(columns) == {"node_id", "dimension", "vector"}, (
+            f"node_embeddings carries the wrong columns: {sorted(columns)}"
+        )
+        assert columns["node_id"][5] == 1, (
+            "node_id must be the primary key, as chunk_id is on embeddings"
+        )
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(node_embeddings)").fetchall()
+        assert any(
+            row[2] == "nodes" and row[3] == "node_id" and row[6] == "CASCADE"
+            for row in foreign_keys
+        ), (
+            f"node_embeddings.node_id must REFERENCES nodes(node_id) ON DELETE CASCADE: "
+            f"{foreign_keys}"
+        )
+
+
+def test_the_schema_carries_nodes_trigram(store: SqliteIndexStore) -> None:
+    """`nodes_trigram`, mirroring `chunks_trigram` so Japanese node text is searchable.
+
+    `chunks_trigram` is what makes substring matching work for a script
+    `unicode61` cannot segment (module docstring, `index_schema.py`). A summary
+    written in Japanese needs the same index, kept apart from `chunks_trigram`
+    for the identical reason `nodes_fts` is kept apart from `chunks_fts`: a
+    summary's text repeats its children's terms, and a shared external-content
+    table would move the surviving leaves' trigram statistics too.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'nodes_trigram'"
+        ).fetchone()
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'nodes'"
+            )
+        }
+    assert ddl is not None, "nodes_trigram is missing -- a Japanese summary is invisible to search"
+    assert "content='nodes'" in ddl[0], (
+        f"nodes_trigram is not external-content over nodes: {ddl[0]}"
+    )
+    assert 'tokenize="trigram"' in ddl[0] or "tokenize='trigram'" in ddl[0], (
+        f"nodes_trigram is not trigram-tokenized: {ddl[0]}"
+    )
+    assert {"nodes_trigram_insert", "nodes_trigram_delete", "nodes_trigram_update"} <= triggers, (
+        f"nodes_trigram is missing a sync trigger, and will drift from nodes: {sorted(triggers)}"
+    )
+
+
+def _trigram_score(store: SqliteIndexStore, query: str, *, chunk_id: str) -> float:
+    page = store.search_substring(query, project_id="demo", limit=10, include_unapproved=False)
+    matches = [row.score for row in page.rows if row.chunk_id == chunk_id]
+    assert matches, f"{chunk_id!r} did not match {query!r} -- the fixture cannot show isolation"
+    return matches[0]
+
+
+def test_a_node_row_does_not_move_a_leaf_chunks_trigram_score(store: SqliteIndexStore) -> None:
+    """The trigram mirror of `test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`.
+
+    `chunks_trigram` scores every visible row against collection statistics
+    computed over *every* row in `chunks`, exactly as `chunks_fts` does. Once
+    `nodes_trigram` exists, a node's text must land there and nowhere near
+    `chunks_trigram`, or a RAPTOR summary would reweight ordinary substring
+    search the same way it would reweight ordinary word search.
+    """
+    store.add_chunks(
+        [
+            _indexable("c1", "retention and isolation are decided per namespace"),
+            _indexable("c2", "authentication tokens rotate on restart"),
+        ]
+    )
+    before = _trigram_score(store, "retention isolation", chunk_id="c1")
+
+    _add_node(
+        store,
+        "node-1",
+        text="retention isolation retention isolation retention isolation " * 20,
+    )
+
+    after = _trigram_score(store, "retention isolation", chunk_id="c1")
+    assert after == before, (
+        "inserting a node moved a leaf chunk's trigram score -- nodes_trigram and "
+        "chunks_trigram are not isolated"
+    )
+
+
 def _add_node(store: SqliteIndexStore, node_id: str, *, text: str) -> None:
     """A minimal node row, written the way RAPTOR would (ADR-0008 decision 5).
 
     Local to this test rather than shared: `test_index_purge.py` and
     `test_withdrawal_purge.py` each already keep their own row-insertion helper
-    local to the file (`_add_derived`, `_insert_unprovenanced_derived`), and this
+    local to the file (`_add_node`, `_insert_unprovenanced_node`), and this
     test needs nothing from theirs -- it does not touch `node_derivation` at all.
     """
     with closing(sqlite3.connect(store.path)) as connection, connection:
@@ -1603,9 +1884,12 @@ def test_a_node_row_does_not_move_a_leaf_chunks_bm25_score(store: SqliteIndexSto
     must leave a fixed chunk's own bm25 score exactly where it was.
 
     Narrower than the equality the ADR names as owed for the closing CL, which
-    compares `N`, `avgdl` and the per-term document frequencies directly through
-    `fts5vocab`. This is the first instance: one corpus, one inserted node, one
-    query, read through the real `search_lexical` path before and after.
+    compares `N`, `avgdl` and the per-term document frequencies directly "out of
+    the FTS5 tables" -- the ADR leaves the mechanism open on purpose. `fts5vocab`
+    is this docstring's own choice of how to read those statistics out, not
+    something the ADR names. This is the first instance: one corpus, one
+    inserted node, one query, read through the real `search_lexical` path before
+    and after.
     """
     store.add_chunks(
         [

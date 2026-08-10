@@ -33,7 +33,7 @@ from theurian.domain.chunking import IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
-from theurian.infrastructure.sqlite.index_purge import purge_into
+from theurian.infrastructure.sqlite.index_purge import ANY_DOOMED_ROW, purge_into
 from theurian.infrastructure.sqlite.index_query import (
     MAX_QUERY_CHARS,
     MAX_QUERY_TERMS,
@@ -584,23 +584,30 @@ class SqliteIndexStore:
     def holds_any_revision(self, revision_ids: Sequence[str]) -> bool:
         """Whether a purge of ``revision_ids`` would remove anything from this build.
 
-        The cheap pre-check that keeps the withdrawal purge (ADR-0024 decision 5)
-        from copying a whole index only to delete nothing: ``migrate apply``
-        replays the whole set on any state-hash shift (ADR-0016), so a project
-        with a past withdrawal asks this on every apply and almost always gets
-        ``False``. Answered by the ``chunks_by_revision`` index, so the first
-        clause is a lookup rather than a scan.
+        The pre-check that keeps the withdrawal purge (ADR-0024 decision 5) from
+        copying a whole index only to delete nothing: ``migrate apply`` replays
+        the whole set on any state-hash shift (ADR-0016), so a project with a
+        past withdrawal asks this on every apply and almost always gets
+        ``False``. The withdrawn-chunk arm is answered by the
+        ``chunks_by_revision`` index, so a *positive* answer is a lookup rather
+        than a scan and ``LIMIT 1`` stops there.
 
-        **It tests both seeds of `index_purge._DOOMED`, not just the revision
-        match**, so it stays equivalent to ``derive_purged`` returning a non-zero
-        count. The second is a node with no provenance edge at all -- absent from
-        ``node_derivation`` -- which the purge deletes even when nothing was
-        withdrawn (a partial or migrated build leaves them). No node exists until
-        RAPTOR writes one (ADR-0008), so the clause is dormant today; without it,
-        once one does, a build with an unprovenanced node but no withdrawn-
-        revision match would be skipped and its residue would survive.
+        **It runs `index_purge.ANY_DOOMED_ROW`, which is built from the same SQL
+        literals as `_DOOMED` itself**, so "would a purge remove anything" and
+        "did a purge remove anything" cannot drift apart: the pre-check is
+        `_DOOMED` minus its upward closure, and a closure over an empty seed is
+        empty. Keeping two hand-written predicates in step is what v3 tried, and
+        a build whose only damage was a dangling derivation edge answered
+        "nothing to purge" here and "refuse to publish" over there.
 
-        **v4, not v3.** The second clause moved from ``chunks``/``derived = 1``/
+        A node the surviving corpus cannot ground is removed even when nothing
+        was withdrawn — a partial build, a migrated one, or a forest whose
+        provenance closes into a cycle — so this is not merely a revision lookup.
+        No node exists until RAPTOR writes one (ADR-0008), so those arms are
+        dormant today; without them, once one does, a build with residue but no
+        withdrawn-revision match would be skipped and the residue would survive.
+
+        **v4, not v3.** The node arms moved from ``chunks``/``derived = 1``/
         ``chunk_derivation`` to ``nodes``/``node_derivation`` when ADR-0008
         decision 5's amendment gave RAPTOR summaries their own tables -- a
         predicate still naming ``chunk_derivation`` would raise ``no such table``
@@ -609,18 +616,14 @@ class SqliteIndexStore:
         the pre-check on every ``migrate apply`` that withdraws anything), not
         only on the purge path.
 
-        Two ``SELECT``s joined by ``UNION ALL`` rather than one ``OR``, because
-        the two clauses now read different tables and ``OR`` cannot span a
-        ``FROM``. Still one round trip: the second half only has to be evaluated
-        when the first finds nothing, and ``LIMIT 1`` over the union stops there.
+        The withdrawn revisions are bound twice because the statement names them
+        twice: once for the chunks it would delete, once for the
+        ``source_revision_id`` stamp that dooms a node whose edges all resolve.
         """
         placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
-        unprovenanced = "node_id NOT IN (SELECT node_id FROM node_derivation)"
         with self._read() as connection:
             row = connection.execute(
-                f"SELECT 1 FROM chunks WHERE revision_id IN ({placeholders}) "  # noqa: S608 - placeholders generated, values bound
-                f"UNION ALL SELECT 1 FROM nodes WHERE {unprovenanced} LIMIT 1",
-                tuple(revision_ids),
+                ANY_DOOMED_ROW % (placeholders, placeholders), tuple(revision_ids) * 2
             ).fetchone()
             return row is not None
 
