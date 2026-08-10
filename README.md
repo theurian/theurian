@@ -502,14 +502,14 @@ yet, and grades it.
 
 ## Status
 
-**Alpha, Milestone 5 of 8.** Usable against real repositories, and not yet
+**Alpha, Milestone 6 of 8.** Usable against real repositories, and not yet
 stable enough to promise upgrade paths.
 
 | Milestone | Scope | Status |
 | :-- | :-- | :-- |
 | 0–4 | Architecture and ADRs · canonical store and migrations · source ingestion · single MCP daemon · Claude Code plugin | **done** |
 | 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
-| 6 | RAPTOR forest, incremental rebuild, blue/green index, scope filtering | next |
+| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) · RAPTOR forest not started | in progress |
 | 7 | GitHub review ingestion and knowledge candidates | planned |
 | 8 | Specification and traceability tooling, drift detection | planned |
 
