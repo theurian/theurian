@@ -394,6 +394,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     include_unapproved: bool,
     budget_tokens: int,
     use_dense: bool,
+    as_of: datetime | None,
 ) -> dict[str, Any] | Fallback:
     """Answer from the retrieval index, or say why it could not.
 
@@ -401,6 +402,17 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     makes ``snapshotId`` true. It is the pointer that chose ``database``, so the
     hash reported names the state the results actually came from even if
     ``migrate apply`` replaces the pointer mid-request.
+
+    ``as_of`` is the parsed form of `knowledge.search`'s optional ``asOf``
+    (FR-R1, #63 phase 2). It reaches two places for two different reasons: the
+    gate below, where ``None`` means "no additional validity-window filter"
+    and a moment is checked against ``item.validity``, once, on the far side
+    of `CanonicalVisibility`'s own depth-doubling loop -- see
+    :meth:`~theurian.application.visibility.Visibility.at_moment` for why it
+    is never folded into the check that loop's exit condition watches; and
+    :func:`_shaper`, where it is the moment every returned hit's ``freshness``
+    is computed against -- ``datetime.now(UTC)`` when the caller pinned
+    nothing, exactly as before this parameter existed.
     """
     published = _published_index(
         paths, project_id=project_id, include_unapproved=include_unapproved
@@ -496,7 +508,8 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                 snapshot_id=current_state_hash,
             )
             resolved = ResultGate(
-                store_factory=SqliteCanonicalStore, shape=_shaper(datetime.now(UTC))
+                store_factory=SqliteCanonicalStore,
+                shape=_shaper(as_of if as_of is not None else datetime.now(UTC)),
             ).admit(
                 ResultRequest(
                     database=database,
@@ -505,6 +518,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                     limit=limit,
                     budget_tokens=budget_tokens,
                     reserved_tokens=_envelope_tokens(project_id, query, provisional),
+                    moment=as_of,
                 ),
                 candidates,
             )
@@ -711,6 +725,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     include_unapproved: bool,
     budget_tokens: int,
     fallback: Fallback,
+    as_of: datetime | None,
 ) -> dict[str, Any]:
     """Answer by scanning the canonical store, when no index can.
 
@@ -725,6 +740,15 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     thing it used them for — re-reading `active.json` — is exactly the read that
     could disagree with the one that chose ``database`` (SEC-13/T-15 — see
     `_Retrieval.snapshot_id`).
+
+    ``as_of`` is FR-R1's validity axis (#63 phase 2). :func:`_scan` applies it
+    in Python, through ``ValidityPeriod.contains`` -- the identical check the
+    ranked path applies via ``CanonicalVisibility.at_moment``, and not through
+    a SQL ``current_at`` filter :class:`~theurian.infrastructure.sqlite.store.
+    SqliteCanonicalStore` no longer has (see its docstring): that filter
+    compared a stored ``validFrom``/``validTo`` against ``as_of`` as SQLite
+    TEXT, silently disagreeing with the ranked path whenever the two were
+    authored in different UTC offsets (found in review round 1 of PR #112).
     """
     provisional = _Retrieval(
         # "substring" here names the unranked canonical scan, not the trigram
@@ -752,6 +776,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
             needle=query.strip().lower(),
             limit=limit,
             include_unapproved=include_unapproved,
+            as_of=as_of,
         ),
         budget_tokens=budget_tokens,
         reserved_tokens=_envelope_tokens(project_id, query, provisional),
@@ -769,26 +794,43 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     )
 
 
-def _scan(
+def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `database`
     database: Path,
     *,
     project_id: str,
     needle: str,
     limit: int,
     include_unapproved: bool,
+    as_of: datetime | None,
 ) -> list[dict[str, Any]]:
     """Every current revision whose title or body contains ``needle``.
 
     Stops at ``limit`` so an unranked scan cannot walk a whole corpus to build
     an answer the budget will discard anyway.
+
+    ``as_of=None`` skips the ``item.validity.contains`` check below entirely --
+    this scan's behaviour when the caller pins nothing is unchanged from
+    before ``asOf`` existed. A moment is checked in Python, against the
+    ``KnowledgeItem`` this loop already holds: an earlier version passed
+    ``current_at=as_of`` to ``list_items`` and let a now-deleted SQL clause do
+    it, which compared the stored timestamp and ``as_of`` as SQLite TEXT and
+    so disagreed with the ranked path whenever they were authored in
+    different UTC offsets (found in review round 1 of PR #112). Filtering
+    here instead costs nothing extra: every item was already being read to
+    reach its status. This scan also has no depth-doubling loop for a
+    caller-chosen moment to bias the pass count of -- unlike the ranked path
+    (see ``CanonicalVisibility.at_moment``), it walks the whole corpus once
+    whatever ``as_of`` excludes.
     """
-    now = datetime.now(UTC)
+    now = as_of if as_of is not None else datetime.now(UTC)
     context = RequestContext(project_id=ProjectId(project_id))
     matches: list[dict[str, Any]] = []
 
     with SqliteCanonicalStore(database) as store:
         for item in store.list_items(context):
             if not may_surface(item.status, include_unapproved=include_unapproved):
+                continue
+            if as_of is not None and not item.validity.contains(as_of):
                 continue
             if item.current_revision_id is None:
                 continue

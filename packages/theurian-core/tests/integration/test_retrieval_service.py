@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, final
 
@@ -32,9 +33,11 @@ from theurian.application.retrieval_service import (
     Surfaced,
     within_budget,
 )
-from theurian.application.visibility import Visibility
+from theurian.application.visibility import CanonicalVisibility, Visibility
 from theurian.cli.main import app
 from theurian.domain.chunking import IndexableChunk
+from theurian.domain.context import RequestContext
+from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ranking import DENSE, Ranked, RetrievalMode, RetrieverPage, mode_of
 from theurian.infrastructure.embedding import HashingEmbedding
@@ -68,6 +71,10 @@ class _NothingWithheld:
     """
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        return tuple(ranked)
+
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
         return tuple(ranked)
 
 
@@ -328,6 +335,52 @@ def test_dense_participates_when_asked_for(project: Path) -> None:
 
     assert _mode(outcome) is RetrievalMode.HYBRID
     assert service.embedding_model(use_dense=True) == embedder.model_id
+
+
+def test_a_pinned_moment_excludes_a_dense_hit_too(project: Path) -> None:
+    """MEDIUM, review round 2 of PR #112.
+
+    `_dense` calls `at_moment` too, and until this test existed nothing
+    exercised it: none of the `asOf` tests pass `useDense`, and none of the
+    dense tests pin a moment, so mutating that call to a no-op survived the
+    whole suite. `CanonicalVisibility` is used for real here, not
+    `NOTHING_WITHHELD` -- a fake `Visibility` proves nothing about whether
+    `_dense`'s own call site is wired to it.
+
+    `architecture.auth`'s `validFrom` defaults to the moment `project`'s
+    fixture applied its migration, in effect "now" -- so a moment from years
+    earlier is squarely outside its window, without a dedicated migration
+    naming one explicitly.
+    """
+    embedder = HashingEmbedding()
+    service = _service(_build(project, embedder=embedder), embedder)
+    request = SearchRequest(query="signed JWT", project_id="demo", use_dense=True)
+    context = RequestContext(project_id=ProjectId("demo"))
+
+    with SqliteCanonicalStore(_database(project)) as store:
+        unpinned = CanonicalVisibility(store, context, include_unapproved=False)
+        outcome_unpinned = service.search(request, unpinned)
+
+    unpinned_ids = {candidate.item_id for candidate in outcome_unpinned.candidates}
+    assert "architecture.auth" in unpinned_ids, (
+        "precondition: dense must actually surface this item, or excluding it proves nothing"
+    )
+    assert any(
+        "dense" in candidate.found_by
+        for candidate in outcome_unpinned.candidates
+        if candidate.item_id == "architecture.auth"
+    ), "precondition: the dense retriever specifically must be the one finding it"
+
+    with SqliteCanonicalStore(_database(project)) as store:
+        pinned = CanonicalVisibility(
+            store, context, include_unapproved=False, moment=datetime(2020, 1, 1, tzinfo=UTC)
+        )
+        outcome_pinned = service.search(request, pinned)
+
+    pinned_ids = {candidate.item_id for candidate in outcome_pinned.candidates}
+    assert "architecture.auth" not in pinned_ids, (
+        "_dense must apply at_moment: a dense hit outside the pinned window must not surface"
+    )
 
 
 def test_an_index_without_embeddings_degrades_visibly_to_lexical(project: Path) -> None:
@@ -1401,6 +1454,10 @@ class _WithoutTheRunbook:
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(row for row in ranked if row.item_id != _WITHHELD)
+
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
+        return tuple(ranked)
 
 
 def test_a_withheld_row_cannot_choose_which_chunk_of_a_visible_document_is_published() -> None:

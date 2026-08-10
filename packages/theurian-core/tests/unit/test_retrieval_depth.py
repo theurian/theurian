@@ -42,6 +42,7 @@ Pure: the index is a fake, the visibility is a fake, and no file is opened.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import NamedTuple, final
@@ -50,12 +51,20 @@ import pytest
 from fakes import truncating, whole
 
 from theurian.application.retrieval_service import (
+    CANDIDATE_DEPTH,
     RetrievalError,
     RetrievalService,
+    SearchOutcome,
     SearchRequest,
 )
+from theurian.application.visibility import CanonicalVisibility
 from theurian.domain.chunking import IndexableChunk
+from theurian.domain.context import RequestContext
+from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
+from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
+from theurian.domain.knowledge import KnowledgeItem, KnowledgeRevision
 from theurian.domain.ranking import Ranked, RetrieverPage
+from theurian.domain.values import ValidityPeriod
 
 pytestmark = pytest.mark.unit
 
@@ -231,6 +240,10 @@ class _WithoutTheWithheld:
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(row for row in ranked if not row.item_id.startswith(WITHHELD))
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's scope: nothing is pinned, so nothing moves."""
+        return tuple(ranked)
+
 
 def _search(withheld: int, *, honours_limit: bool = True) -> _CountingIndex:
     """Run one ordinary search over a corpus withholding ``withheld`` top rows."""
@@ -313,6 +326,176 @@ def test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before(
     )
     assert index.passes(LEXICAL_READS) == expected_passes
     assert index.passes(SUBSTRING_READS) == expected_passes
+
+
+# -- `asOf` must not drive this loop (CRITICAL, review round 1 of PR #112) ---
+#
+# `CanonicalVisibility.cleared` -- checked above only for status -- is exactly
+# what this loop's exit condition watches. Folding a caller-chosen moment into
+# it would let a caller spend knowledge they already have (every non-withheld
+# item's own validity window, readable in an ordinary unpinned search) to dial
+# the *known* fraction of a page `cleared` excludes right up to
+# `CANDIDATE_DEPTH`'s own boundary — reproducing `test_the_second_pass_
+# arrives_at_fifty_withheld_rows_and_not_before` above with the corpus
+# replaced by a parameter the caller supplies for free, and reviving the
+# single-withheld-row timing oracle `FIRST_PASS_DEPTH` exists to require
+# fifty-one rows of, not one. The real `CanonicalVisibility` is used here,
+# not a fake `Visibility`, because the property under test is that its own
+# `cleared` never reads the moment it was given — a fake `Visibility` that
+# got this right would prove nothing about whether the class it stands in for
+# does.
+
+MOMENT = datetime(2026, 1, 1, tzinfo=UTC)
+DEMO = ProjectId("demo")
+DEMO_CONTEXT = RequestContext(project_id=DEMO)
+
+
+def _moment_row(number: int) -> Ranked:
+    """A ranked row with a proper 26-character ULID revision id.
+
+    Unlike :func:`_row` above, whose revision ids are never validated because
+    every ``Visibility`` fake in this file treats them as opaque strings, this
+    one is read by the real ``CanonicalVisibility``, which builds a
+    ``RevisionId`` from the matching ``KnowledgeItem`` and compares it against
+    this field -- so it has to actually construct.
+    """
+    revision = f"01K1M{number:021d}"
+    return Ranked(
+        chunk_id=f"{revision}#0", item_id=f"architecture.item-{number:04d}", revision_id=revision
+    )
+
+
+@final
+class _ControlledValiditySession:
+    """A canonical read session whose items are all approved and current, and
+    whose validity window is set per item by the caller -- so
+    ``CanonicalVisibility`` can be exercised for real, against a controllable
+    fraction of items outside a pinned moment, without a database.
+    """
+
+    def __init__(self, valid_at_moment: Mapping[str, bool]) -> None:
+        self._valid_at_moment = valid_at_moment
+
+    def __enter__(self) -> _ControlledValiditySession:
+        return self
+
+    def __exit__(self, *details: object) -> None:
+        return None
+
+    def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
+        raise NotImplementedError  # pragma: no cover - CanonicalVisibility never lists
+
+    def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:  # noqa: ARG002
+        valid = self._valid_at_moment.get(item_id.value)
+        if valid is None:
+            return None
+        return KnowledgeItem(
+            item_id=item_id,
+            project_id=DEMO,
+            namespace="architecture",
+            kind=KnowledgeKind.ARCHITECTURE,
+            status=KnowledgeStatus.APPROVED,
+            current_revision_id=RevisionId(f"01K1M{int(item_id.value.rsplit('-', 1)[-1]):021d}"),
+            owner="platform-team",
+            trust_level=TrustLevel.REVIEWED,
+            sensitivity=Sensitivity.INTERNAL,
+            validity=ValidityPeriod(
+                valid_from=MOMENT if valid else MOMENT + timedelta(days=1),
+            ),
+        )
+
+    def get_revision(
+        self, context: RequestContext, revision_id: RevisionId
+    ) -> KnowledgeRevision | None:
+        raise NotImplementedError  # pragma: no cover - not read by CanonicalVisibility
+
+
+def _search_pinned_excluding(excluded_at_moment: int) -> tuple[_CountingIndex, SearchOutcome]:
+    """One ordinary search, pinned to :data:`MOMENT`, over an all-approved,
+    all-current corpus in which the first ``excluded_at_moment`` items are not
+    yet valid at that moment and everything else is.
+    """
+    rows = tuple(_moment_row(number) for number in range(VISIBLE_TAIL))
+    valid_at_moment = {row.item_id: number >= excluded_at_moment for number, row in enumerate(rows)}
+    index = _CountingIndex(rows)
+    service = RetrievalService(index)
+    visibility = CanonicalVisibility(
+        _ControlledValiditySession(valid_at_moment),
+        DEMO_CONTEXT,
+        include_unapproved=False,
+        moment=MOMENT,
+    )
+
+    outcome = service.search(SearchRequest(query="gateway", project_id="demo"), visibility)
+
+    return index, outcome
+
+
+@pytest.mark.parametrize(
+    "excluded_at_moment",
+    [0, ABSORBED_WITHHELD_ROWS - 1, ABSORBED_WITHHELD_ROWS, ABSORBED_WITHHELD_ROWS + 1, 100],
+    ids=[
+        "none",
+        "one-below-the-old-threshold",
+        "at-the-old-threshold",
+        "one-past-it",
+        "far-past-it",
+    ],
+)
+def test_a_pinned_moment_never_costs_a_second_retrieval_pass(excluded_at_moment: int) -> None:
+    """CRITICAL, review round 1 of PR #112.
+
+    However many items a pinned ``asOf`` excludes -- even past the fifty-row
+    threshold that would force a second pass if the exclusion ran through
+    ``cleared`` -- the pass count must stay at one, because
+    ``CanonicalVisibility.at_moment`` is applied only after this loop has
+    already stopped asking retrievers for more. This is the same shape as
+    ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``
+    above, deliberately: that test is what a regression here would make this
+    one look like, with a caller-chosen moment standing in for a corpus the
+    caller cannot control.
+    """
+    index, _outcome = _search_pinned_excluding(excluded_at_moment)
+
+    assert _first_read_was_a_choice(index), (
+        "the corpus must outlast the first pass, or this measures exhaustion"
+    )
+    assert index.passes(LEXICAL_READS) == 1, (
+        f"excluding {excluded_at_moment} items by validity must not force a second pass"
+    )
+    assert index.passes(SUBSTRING_READS) == 1
+
+
+def test_a_pinned_moment_still_returns_valid_rows_ranked_below_candidate_depth() -> None:
+    """HIGH (recall regression), review round 2 of PR #112.
+
+    The top :data:`CANDIDATE_DEPTH` rows by rank are all outside the pinned
+    window; the next :data:`CANDIDATE_DEPTH` -- still inside the first
+    retriever pass, already fetched and already past ``cleared`` -- are
+    inside it. The fix for the CRITICAL closed in round 1 cut to
+    ``CANDIDATE_DEPTH`` *before* calling ``at_moment``, which discarded the
+    fifty valid rows along with the fifty rightly-excluded ones and answered
+    zero results -- while the unranked fallback, which checks validity per
+    row before any cut, answers fifty. Closed by reordering: ``at_moment`` now
+    sees the whole cleared set before anything is cut to size.
+
+    This is deliberately not just a stronger assertion on the pass-count test
+    above: that test never inspected what ``search`` returned, only how many
+    times it read a retriever, so a recall regression exactly this shape
+    could -- and did -- pass it.
+    """
+    index, outcome = _search_pinned_excluding(CANDIDATE_DEPTH)
+
+    assert _first_read_was_a_choice(index), (
+        "the corpus must outlast the first pass, or this measures exhaustion"
+    )
+    assert index.passes(LEXICAL_READS) == 1, (
+        "the recall fix must not reopen the CRITICAL: the pass count must stay independent of asOf"
+    )
+    assert len(outcome.candidates) == CANDIDATE_DEPTH, (
+        f"the {CANDIDATE_DEPTH} rows ranked just below the cut are inside the pinned "
+        f"window and must survive -- got {len(outcome.candidates)}"
+    )
 
 
 #: Withheld counts, each twice the last, for the growth test below.

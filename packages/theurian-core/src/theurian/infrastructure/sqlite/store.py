@@ -319,17 +319,20 @@ class SqliteCanonicalStore:
         context: RequestContext,
         *,
         namespace: str | None = None,
-        current_at: datetime | None = None,
     ) -> tuple[KnowledgeItem, ...]:
+        # No `current_at` here -- see the port's docstring
+        # (`domain/ports/canonical_store.py`) for why a SQL-side comparison of
+        # `valid_from`/`valid_to` against a bound moment was removed rather
+        # than fixed: it compared them as SQLite TEXT, which is a
+        # lexicographic ordering of the ISO-8601 string rather than of the
+        # absolute instant it names, and it silently disagreed with
+        # `ValidityPeriod.contains` whenever the two sides were authored in
+        # different UTC offsets.
         sql = "SELECT * FROM knowledge_items WHERE project_id = ?"
         params: tuple[str, ...] = (context.project_id.value,)
         if namespace is not None:
             sql += " AND namespace = ?"
             params += (namespace,)
-        if current_at is not None:
-            # Half-open window, matching ValidityPeriod.contains.
-            sql += " AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)"
-            params += (current_at.isoformat(), current_at.isoformat())
         sql += " ORDER BY item_id"
         return self._read_all(sql, params, _item_from_row)
 

@@ -12,6 +12,31 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`knowledge.search` takes an optional `asOf`** (RFC 3339, any explicit
+  offset), pinning results to FR-R1's validity-window axis at that moment
+  ([#63](https://github.com/theurian/theurian/issues/63) phase 2 — the
+  milestone advances, the issue stays open for the four remaining axes).
+  Additive: omitting `asOf` filters on nothing more than before this parameter
+  existed, on both answer paths. A permanent default filter was considered and
+  rejected, because it would make the published `freshness.isWithinValidity`
+  field constant-`true` on a healthy index and give the ranked path a
+  stale-index statistics residual with no way to turn off (see T-17a in
+  [the threat model](../../docs/security/threat-model.md)). `asOf` is a
+  refinement rather than a withholding: everything one call excludes is
+  returned to the same caller by the identical query with the parameter
+  omitted, so it opens none of the disclosure guarantees this project holds
+  for a document a caller may not read. `knowledge.get` deliberately does not
+  take it — see its docstring for why "not found" would be a worse answer than
+  `isWithinValidity: false`. An unparseable `asOf` is a clean tool error.
+  Both answer paths compare the pinned moment through the identical
+  `ValidityPeriod.contains`, in Python, on timezone-aware `datetime` values —
+  no timestamp is ever compared as SQLite text — and the ranked path applies
+  it only after its retriever depth-doubling loop has already stopped asking
+  for more, so a pinned moment cannot change how many times a request reads a
+  retriever.
+
 ## [0.1.0.dev1] - 2026-08-09
 
 **If you installed `theurian` before today, upgrade.** `0.1.0.dev0` was the only

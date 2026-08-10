@@ -23,6 +23,7 @@ request is that two rows in one answer cannot be judged against two states.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol, final, runtime_checkable
 
 from theurian.domain.context import RequestContext
@@ -54,6 +55,31 @@ class Visibility(Protocol):
         """The subset of ``ranked``, in the order given, that may be shown."""
         ...
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """The subset of ``ranked`` -- already :meth:`cleared` -- valid at the
+        pinned moment, or ``ranked`` unchanged when nothing is pinned.
+
+        Deliberately a second method rather than a second condition inside
+        :meth:`cleared` (#63 phase 2, CRITICAL finding in review round 1 of
+        PR #112). ``cleared`` drives the depth-doubling loop in
+        :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`:
+        a retriever is asked deeper until ``CANDIDATE_DEPTH`` rows survive
+        ``cleared`` or it has nothing left, so the number of retriever calls a
+        request makes is observable through both count and timing (T-17,
+        ``FIRST_PASS_DEPTH``). The caller freely chooses the pinned moment and
+        can already read every non-withheld item's own validity window, so
+        folding it into ``cleared`` would let a caller spend that knowledge to
+        dial the *known* fraction of a page it excludes right up to
+        ``CANDIDATE_DEPTH``'s own boundary -- at which point whether one
+        further row is also excluded, because it happens to be withheld and
+        not because of the pinned moment, is exactly the single-row signal
+        ``FIRST_PASS_DEPTH`` exists to require fifty-one of, not one. Applied
+        once instead, to the slice ``_visible_ranking``/``_dense`` already
+        settled on, after which nothing asks a retriever for more -- so no
+        pass count can move with it.
+        """
+        ...
+
 
 @final
 class CanonicalVisibility:
@@ -83,10 +109,30 @@ class CanonicalVisibility:
         context: RequestContext,
         *,
         include_unapproved: bool,
+        moment: datetime | None = None,
     ) -> None:
+        """``moment`` is the caller's ``asOf``, or ``None`` for no pin (#63).
+
+        Defaulted, unlike ``include_unapproved``, because ``None`` here means
+        "apply no *additional* temporal restriction" rather than "everything is
+        visible" -- status and current-revision identity are still checked
+        unconditionally by :meth:`cleared`, whatever ``moment`` is. It is the
+        FR-R1 axis `knowledge.search`'s optional ``asOf`` parameter exists to
+        fill, and it stays a refinement rather than a default filter for the
+        reason recorded on that parameter: a permanent filter would make
+        `isWithinValidity` constant-``true`` on a fresh index and inherit a
+        stale-index residual shaped like T-17a's, for a different cause, with
+        no way to turn it off.
+
+        Deliberately never read by :meth:`cleared`/:meth:`_may_surface` --
+        only by :meth:`at_moment`, which every caller applies *after*
+        ``cleared`` has already run. See :meth:`at_moment` for why that split
+        exists.
+        """
         self._store = store
         self._context = context
         self._include_unapproved = include_unapproved
+        self._moment = moment
         self._items: dict[str, KnowledgeItem | None] = {}
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
@@ -146,6 +192,31 @@ class CanonicalVisibility:
         is required to have opened the session already.
         """
         return tuple(row for row in ranked if self._may_surface(row))
+
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """FR-R1's validity-window axis, applied once, after :meth:`cleared`
+        has already run (#63 phase 2; see the Protocol docstring for why it is
+        not folded into :meth:`cleared` itself).
+
+        Reads ``item()``'s memo rather than the store again: every row here
+        already passed ``cleared``, so its item has already been paid for and
+        this adds no canonical read of its own -- only the ``ValidityPeriod.
+        contains`` comparison, in Python, against a timezone-aware ``datetime``
+        on both sides. That is the whole fix for the review-round-1 offset
+        defect too: there is no second implementation of this comparison
+        anywhere left to disagree with this one -- `mcp.search._scan` calls
+        this same method's twin logic (`item.validity.contains`) directly, not
+        a SQL clause that compared timestamps as text.
+        """
+        moment = self._moment
+        if moment is None:
+            return tuple(ranked)
+        surfaced: list[Ranked] = []
+        for row in ranked:
+            item = self.item(row.item_id)
+            if item is not None and item.validity.contains(moment):
+                surfaced.append(row)
+        return tuple(surfaced)
 
     def item(self, item_id: str) -> KnowledgeItem | None:
         """The item behind a chunk, or ``None`` if there is nothing to ask about.
@@ -210,6 +281,19 @@ class CanonicalVisibility:
         # `rejected`, which is where the secret that caused the rejection lives.
         if not may_surface(item.status, include_unapproved=self._include_unapproved):
             return False
+        # Deliberately no validity-window check here. `self._moment` (#63
+        # phase 2) is applied by `at_moment`, once, after the depth loop in
+        # `RetrievalService._visible_ranking` has already stopped asking
+        # retrievers for more -- never here, where it would join the count
+        # that loop's exit condition watches. See `at_moment` and the CRITICAL
+        # finding recorded in review round 1 of PR #112: a caller freely
+        # chooses `self._moment` and can already read every non-withheld
+        # item's own validity window, so checking it here would let that
+        # caller spend that knowledge to dial the *known* fraction of a page
+        # this method excludes right up to the depth loop's own boundary,
+        # reviving the single-withheld-row timing oracle `FIRST_PASS_DEPTH`
+        # exists to require fifty-one rows of, not one.
+        #
         # Likewise for *which revision* is current. Replacing a revision is how a
         # secret gets removed from approved knowledge, so serving the pinned one
         # would keep answering with the very text the team just retracted, under

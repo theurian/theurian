@@ -93,6 +93,36 @@ guarantee here.
 
 Schema: [`retrieval-result.schema.json`](../../schemas/knowledge/retrieval-result.schema.json).
 
+### `asOf` pins a search to a moment
+
+`knowledge.search` takes an optional `asOf`: an RFC 3339 timestamp with any
+explicit offset, e.g. `2026-08-01T00:00:00Z` or `2026-08-01T09:00:00+09:00` —
+not only `Z`. Omit it and nothing changes —
+every surfaceable item is a candidate whatever its declared validity window,
+exactly as every prior release of this tool already behaved. Pass it and an
+item outside its `validFrom`/`validTo` window *at that moment* is excluded from
+`results`, and every returned hit's `freshness.isWithinValidity` is computed
+against that same moment rather than against real time.
+
+It is a refinement, not a default filter (FR-R1,
+[#63](https://github.com/theurian/theurian/issues/63) phase 2). A permanent
+filter was rejected: it would make `isWithinValidity` constant-`true` on a
+healthy index — a published field that can never read `false` is not a field —
+and it would give the ranked path a stale-index statistics residual with no way
+to turn off. It is also not a withholding: everything one call excludes is
+returned to the same caller by the identical query with `asOf` omitted, so no
+response field here can carry information the caller could not already obtain
+directly, and none of the disclosure guarantees this page states elsewhere for
+a document a caller may not read apply to it.
+
+`knowledge.get` does not take `asOf`. It names an item by id, and refusing to
+resolve an id the caller already holds — on the grounds that the item is not
+current *at some other moment* — would be a worse answer than the one it
+already gives: `freshness.isWithinValidity: false` on the current revision,
+computed against real time, exactly as before this parameter existed.
+
+An unparseable `asOf` is a clean `ToolError` naming the fix, never a traceback.
+
 ## Review
 
 | Tool | Purpose |

@@ -160,6 +160,7 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, final
 
@@ -538,7 +539,35 @@ class RetrievalService:
             page = fetch(depth)
             cleared = visible.cleared(page.rows)
             if len(cleared) >= CANDIDATE_DEPTH or page.exhausted:
-                return cleared[:CANDIDATE_DEPTH]
+                # `at_moment` (FR-R1's validity-window axis, #63 phase 2) is
+                # applied here, once, after the loop above has already
+                # stopped asking retrievers for more -- never inside
+                # `cleared`, which is what the loop's own exit condition
+                # watches. See `Visibility.at_moment`'s docstring for the
+                # CRITICAL finding (review round 1 of PR #112) that this
+                # placement closes: a caller-chosen moment folded into
+                # `cleared` would make the retriever pass count -- observable
+                # through timing -- move with `asOf`, reviving the
+                # single-withheld-row oracle `FIRST_PASS_DEPTH` exists to
+                # blunt.
+                #
+                # Applied to the *whole* of `cleared`, not to `cleared[:
+                # CANDIDATE_DEPTH]` -- a HIGH found in review round 2 of the
+                # same PR. `cleared` can hold more than `CANDIDATE_DEPTH` rows
+                # (the loop exits as soon as it reaches that many, not when it
+                # has exactly that many), so cutting first can throw away rows
+                # ranked just below the cut that are inside the window,
+                # together with higher-ranked ones that are not -- and answer
+                # zero where the unranked fallback, which checks validity
+                # before any cut, answers fifty.
+                # `test_a_pinned_moment_still_returns_valid_rows_ranked_below_candidate_depth`
+                # (`tests/unit/test_retrieval_depth.py`) is red against the
+                # cut-first order. Reordering costs nothing towards the
+                # CRITICAL above: the exit condition on the previous line
+                # already ran, using only `cleared`, before this line is ever
+                # reached, so which order the two operations happen in below
+                # cannot change how many times a retriever was asked.
+                return visible.at_moment(cleared)[:CANDIDATE_DEPTH]
             if len(page.rows) <= served:
                 raise RetrievalError(
                     f"A retriever returned {len(page.rows)} rows at depth {depth} after "
@@ -610,7 +639,17 @@ class RetrievalService:
         # retriever returns the whole ranking, so there is no depth to go back
         # for. The field is still true of it, which is why the port carries it
         # rather than exempting this method.
-        return visible.cleared(page.rows)[:CANDIDATE_DEPTH]
+        #
+        # `at_moment` before the `[:CANDIDATE_DEPTH]` cut, matching
+        # `_visible_ranking` (HIGH, review round 2 of PR #112): cutting first
+        # can discard rows ranked just below `CANDIDATE_DEPTH` that are inside
+        # the pinned window, together with higher-ranked ones that are not.
+        # This retriever has no depth loop for `asOf` to bias -- it always
+        # returns the whole ranking in one call -- but the recall bug does not
+        # need one: it is a property of cutting before filtering, not of the
+        # loop. `at_moment` reuses `cleared`'s memo either way, so ordering it
+        # first costs nothing extra here that `cleared` had not already paid.
+        return visible.at_moment(visible.cleared(page.rows))[:CANDIDATE_DEPTH]
 
 
 @dataclass(frozen=True, slots=True)
@@ -731,6 +770,20 @@ class ResultRequest:
     #: against a fresh index, none of it counted: a caller asking for 2,000 was
     #: sent 2,030 while being told the answer cost 1,860 (FR-R4).
     reserved_tokens: int = 0
+    #: The caller's ``asOf``, or ``None`` for no validity-window pin (FR-R1,
+    #: #63 phase 2). Threaded through rather than read here because the moment
+    #: has to reach :class:`~theurian.application.visibility.CanonicalVisibility`
+    #: at construction, still before RRF fusion runs -- but, unlike
+    #: ``include_unapproved``, it is *not* applied inside the depth loop that
+    #: decides how many times a retriever is asked for more:
+    #: :meth:`~theurian.application.visibility.Visibility.at_moment` applies
+    #: it once, after that loop has already stopped, so the number of
+    #: retriever calls one request makes cannot move with a caller-chosen
+    #: moment (CRITICAL, review round 1 of PR #112 -- see that method's
+    #: docstring). ``None`` is not "everything is visible"; it is "apply no
+    #: *additional* temporal restriction", the distinction that class's own
+    #: docstring draws for its ``moment`` parameter.
+    moment: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.limit < 1:
@@ -777,7 +830,10 @@ class ResultGate:
         context = RequestContext(project_id=ProjectId(request.project_id))
         with self._store_factory(request.database) as store:
             visible = CanonicalVisibility(
-                store, context, include_unapproved=request.include_unapproved
+                store,
+                context,
+                include_unapproved=request.include_unapproved,
+                moment=request.moment,
             )
             outcome = source(visible)
             surfaced = self._surfaced(store, context, visible, outcome, limit=request.limit)

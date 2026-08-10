@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -436,6 +437,48 @@ def test_migration_history_records_order_and_checksums(database: Path, lock: Pat
         history = store.applied_migrations(PROJECT)
 
     assert history == ((MIGRATION, first_checksum), (second, second_checksum))
+
+
+def test_list_items_never_filters_by_validity(database: Path, lock: Path) -> None:
+    """FR-R1's validity axis is not this store's job (#63 phase 2, CRITICAL
+    finding in review round 1 of PR #112).
+
+    An earlier version gave ``list_items`` a ``current_at`` parameter that
+    filtered in SQL, comparing a stored ``valid_from``/``valid_to`` against a
+    bound moment as SQLite TEXT -- silently wrong whenever the two were
+    authored in different UTC offsets, since that comparison is lexicographic
+    over the ISO-8601 string rather than over the absolute instant it names.
+    Deleted rather than fixed in place: both `knowledge.search` answer paths
+    now apply ``ValidityPeriod.contains`` in Python instead --
+    ``CanonicalVisibility.at_moment`` on the ranked path (deliberately *after*
+    the depth-doubling loop that ``cleared`` drives, so a caller-chosen moment
+    cannot bias that loop's own retriever-call count; see that method's
+    docstring for the CRITICAL finding this closes) and a plain
+    ``item.validity.contains`` check inside ``mcp.search._scan`` on the
+    unranked fallback. Neither reaches this store, which is what this test
+    pins: every item is returned, whatever its validity window, always.
+    """
+    always = replace(
+        _item(), item_id=ItemId("architecture.always"), validity=ValidityPeriod(valid_from=NOW)
+    )
+    later = replace(
+        _item(),
+        item_id=ItemId("architecture.later"),
+        validity=ValidityPeriod(valid_from=NOW + timedelta(days=365)),
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.put_item(always)
+        writer.put_item(later)
+
+    with SqliteCanonicalStore(database) as store:
+        items = store.list_items(RequestContext(project_id=PROJECT))
+
+    assert {i.item_id.value for i in items} == {"architecture.always", "architecture.later"}, (
+        "an item not yet valid is still listed -- this store has no concept of "
+        "`current_at` to exclude it with"
+    )
 
 
 # -- Session lifetime ------------------------------------------------------

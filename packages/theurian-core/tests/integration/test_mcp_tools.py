@@ -51,6 +51,10 @@ class _NothingWithheld:
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         return tuple(ranked)
 
+    def at_moment(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
+        """No `asOf` in this file's use of it: nothing is pinned either."""
+        return tuple(ranked)
+
 
 NOTHING_WITHHELD = _NothingWithheld()
 
@@ -3885,3 +3889,777 @@ async def test_a_gc_unlink_in_the_acquisition_window_degrades_rather_than_raisin
     assert retrieval["fallbackReason"] == "index-unreadable"
     assert result["count"] >= 1, "the substring scan still answers from the canonical store"
     assert not build.exists(), "a read recreated the reaped build; `mode=ro` must prevent it"
+
+
+# -- `asOf`: a refinement, not a default filter (FR-R1, #63 phase 2) ---------
+#
+# Three items sharing one query term, distinguished only by their validity
+# window: one open-ended since 2020, one expired at the end of 2021, one not
+# valid until 2031. A moment pinned to mid-2020 must include the first two and
+# exclude the third -- and, for the second, `freshness.isWithinValidity` must
+# read `true` at that pinned moment even though the same field on the very
+# same revision reads `false` against real time, which is what proves the
+# field is computed against `asOf` and not against `datetime.now()`.
+
+AS_OF_QUERY = "governance decision"
+
+AS_OF_ALWAYS_MIGRATION_ID = "01K1QAAAAA01234567890ABCDE"
+AS_OF_ALWAYS_REVISION_ID = "01K1QAAREV01234567890ABCDE"
+AS_OF_LATER_MIGRATION_ID = "01K1RAAAAA01234567890ABCDE"
+AS_OF_LATER_REVISION_ID = "01K1RAAREV01234567890ABCDE"
+AS_OF_EXPIRED_MIGRATION_ID = "01K1SAAAAA01234567890ABCDE"
+AS_OF_EXPIRED_REVISION_ID = "01K1SAAREV01234567890ABCDE"
+
+AS_OF_ALWAYS_BODY = "# Governance always current\n\nA governance decision with no expiry.\n"
+AS_OF_LATER_BODY = "# Governance starting later\n\nA governance decision that starts later.\n"
+AS_OF_EXPIRED_BODY = "# Governance already expired\n\nA governance decision retired long ago.\n"
+
+AS_OF_ALWAYS_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {AS_OF_ALWAYS_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.governance-always
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.governance-always
+    revisionId: {AS_OF_ALWAYS_REVISION_ID}
+    contentFile: ../knowledge/architecture/governance-always.md
+    metadata:
+      title: Governance always current
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://as-of-demo/governance-always.md
+"""
+
+AS_OF_LATER_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {AS_OF_LATER_MIGRATION_ID}
+createdAt: 2026-08-02T10:05:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.governance-later
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.governance-later
+    revisionId: {AS_OF_LATER_REVISION_ID}
+    contentFile: ../knowledge/architecture/governance-later.md
+    metadata:
+      title: Governance starting later
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2031-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://as-of-demo/governance-later.md
+"""
+
+AS_OF_EXPIRED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {AS_OF_EXPIRED_MIGRATION_ID}
+createdAt: 2026-08-02T10:10:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.governance-expired
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.governance-expired
+    revisionId: {AS_OF_EXPIRED_REVISION_ID}
+    contentFile: ../knowledge/architecture/governance-expired.md
+    metadata:
+      title: Governance already expired
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      validTo: 2021-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://as-of-demo/governance-expired.md
+"""
+
+#: Strictly between `governance-always`/`governance-expired`'s `validFrom` and
+#: `validTo`/`governance-later`'s `validFrom`. RFC 3339, offset required, the
+#: same format `asOf` publishes.
+AS_OF_PINNED_MOMENT = "2020-06-01T00:00:00+09:00"
+
+
+@pytest.fixture
+def as_of_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
+    """A registered project holding the three items described above."""
+    root = tmp_path / "as-of-demo"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    data_dir = tmp_path / "as-of-datadir"
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.chdir(root)
+
+    _run("init")
+    knowledge = root / ".theurian/knowledge/architecture"
+    (knowledge / "governance-always.md").write_text(AS_OF_ALWAYS_BODY)
+    (knowledge / "governance-later.md").write_text(AS_OF_LATER_BODY)
+    (knowledge / "governance-expired.md").write_text(AS_OF_EXPIRED_BODY)
+    (root / f".theurian/migrations/{AS_OF_ALWAYS_MIGRATION_ID}-always.yaml").write_text(
+        AS_OF_ALWAYS_MIGRATION
+    )
+    (root / f".theurian/migrations/{AS_OF_LATER_MIGRATION_ID}-later.yaml").write_text(
+        AS_OF_LATER_MIGRATION
+    )
+    (root / f".theurian/migrations/{AS_OF_EXPIRED_MIGRATION_ID}-expired.yaml").write_text(
+        AS_OF_EXPIRED_MIGRATION
+    )
+    _run("project", "register")
+    _run("migrate", "apply")
+
+    yield ProjectRegistry.default(data_dir)
+
+
+@pytest.fixture
+def as_of_indexed(as_of_registry: ProjectRegistry) -> ProjectRegistry:
+    """`as_of_registry`, plus a built retrieval index -- the ranked answer path."""
+    root = Path(as_of_registry.load()["as-of-demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return as_of_registry
+
+
+@pytest.fixture(params=["as_of_indexed", "as_of_registry"], ids=["ranked", "fallback"])
+def as_of_either_answer_path(request: pytest.FixtureRequest) -> ProjectRegistry:
+    """`as_of_registry`, ranked and unranked.
+
+    The unranked scan is a named blind spot of the whole absence-proof suite in
+    this module -- `test_a_withheld_document_changes_nothing_a_caller_can_see`
+    only ever ranks -- so `asOf` has to be reached by name on both paths rather
+    than trusted to generalise from one of them.
+    """
+    chosen: ProjectRegistry = request.getfixturevalue(request.param)
+    return chosen
+
+
+@pytest.mark.asyncio
+async def test_a_search_pinned_to_a_moment_returns_only_knowledge_valid_then(
+    as_of_either_answer_path: ProjectRegistry,
+) -> None:
+    """FR-R1, #63 phase 2. `asOf` pins the *validity window*, not the query:
+    all three items match `AS_OF_QUERY`, so what changes between the two calls
+    below is which items are inside their declared window at the pinned
+    moment, checked through the identical `ValidityPeriod.contains` on both
+    the ranked path (`CanonicalVisibility.at_moment`) and the unranked
+    fallback (`_scan`, in Python -- not through a SQL `current_at` filter,
+    which this project's own `SqliteCanonicalStore` no longer has after
+    review round 1 of PR #112 found it comparing timestamps as SQLite TEXT).
+
+    Every fixture here uses a single UTC offset (`+09:00`) throughout, so it
+    cannot exercise the offset-mismatch defect that filter had; that case is
+    `test_a_mixed_utc_offset_does_not_change_which_items_are_in_the_window`.
+
+    Also the test for the parameter's second published effect: a hit's
+    `freshness.isWithinValidity` **and** `freshness.ageDays` must be computed
+    against the pinned moment, not against real time. `governance-expired` is
+    chosen for the `isWithinValidity` assertion specifically because its
+    real-time answer and its pinned-moment answer disagree -- proving the
+    field moved with `asOf` rather than merely happening to agree with it.
+    `governance-always`, created at `2026-08-02T10:00:00+09:00` and pinned at
+    `AS_OF_PINNED_MOMENT` (`2020-06-01T00:00:00+09:00`, six years earlier),
+    is what proves `ageDays` moved too: computed against real time it can only
+    grow from today; computed against the pinned moment it is clamped to zero,
+    which is the floor `mcp.results.result_payload` applies to a negative age
+    -- unreachable unless the moment behind it is the pinned one.
+    """
+    unpinned = await _call(
+        as_of_either_answer_path, "knowledge.search", projectId="as-of-demo", query=AS_OF_QUERY
+    )
+    pinned = await _call(
+        as_of_either_answer_path,
+        "knowledge.search",
+        projectId="as-of-demo",
+        query=AS_OF_QUERY,
+        asOf=AS_OF_PINNED_MOMENT,
+    )
+
+    assert {r["itemId"] for r in unpinned["results"]} == {
+        "architecture.governance-always",
+        "architecture.governance-later",
+        "architecture.governance-expired",
+    }, "without `asOf` nothing is filtered by validity, exactly as before this parameter existed"
+    unpinned_expired = next(
+        r for r in unpinned["results"] if r["itemId"] == "architecture.governance-expired"
+    )
+    assert unpinned_expired["freshness"]["isWithinValidity"] is False, (
+        "expired against real time -- the precondition that makes the pinned "
+        "assertion below mean something"
+    )
+    unpinned_always = next(
+        r for r in unpinned["results"] if r["itemId"] == "architecture.governance-always"
+    )
+    assert unpinned_always["freshness"]["ageDays"] > 0, (
+        "against real time, a revision created in the past has a positive age"
+    )
+
+    assert {r["itemId"] for r in pinned["results"]} == {
+        "architecture.governance-always",
+        "architecture.governance-expired",
+    }, "the item not yet valid at the pinned moment must be excluded"
+    pinned_expired = next(
+        r for r in pinned["results"] if r["itemId"] == "architecture.governance-expired"
+    )
+    assert pinned_expired["freshness"]["isWithinValidity"] is True, (
+        "computed against the pinned moment, not against real time"
+    )
+    pinned_always = next(
+        r for r in pinned["results"] if r["itemId"] == "architecture.governance-always"
+    )
+    assert pinned_always["freshness"]["ageDays"] == 0, (
+        "computed against the pinned moment, six years before the revision was "
+        "created -- clamped to zero rather than negative, and only reachable "
+        "at all if `ageDays` moved with `asOf` rather than staying pinned to "
+        "real time (MEDIUM-3, review round 1 of PR #112)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_everything_as_of_excludes_is_returned_by_the_same_query_without_it(
+    as_of_either_answer_path: ProjectRegistry,
+) -> None:
+    """The recorded closure argument for `asOf`, as a test rather than as prose.
+
+    `asOf` is not a withholding: everything it excludes is returned to the
+    same caller by the same query with the parameter omitted, so no observable
+    here can carry a bit the caller could not obtain directly, and the
+    disclosure-family checklist SEC-13/T-15 opens for a document a caller may
+    not read does not apply. Filtering by default was rejected for the
+    corresponding reason a *permanent* filter would reopen it: it would make
+    `freshness.isWithinValidity` constant-`true` on a fresh index and give the
+    ranked path a stale-index statistics residual with no way to turn off, the
+    shape T-17a already carries for a different cause
+    (`theurian.application.retrieval_service`).
+
+    Checked two ways, not one: the excluded item is still present, whole, in
+    the identical `knowledge.search` call with `asOf` omitted, *and*
+    independently confirmed through `knowledge.get` -- a different tool,
+    reached by id rather than by query -- so this is not merely "a shorter
+    excerpt survives", it is "the item was never inaccessible".
+
+    **This does not assert `pinned ⊆ unpinned`, and an earlier version did.**
+    That is false in general: when `limit`/`maxTokens` truncate the unpinned
+    answer, excluding a top candidate via `asOf` can *promote* a
+    lower-ranked one that the untruncated unpinned ranking also contains but
+    the truncated unpinned *response* does not display -- reviewer-measured
+    on a 150-document corpus (MEDIUM-1, review round 1 of PR #112). It
+    happens not to be reachable through this three-item fixture, which is
+    exactly why it read as a general property here;
+    `test_asof_can_promote_an_item_the_unpinned_response_truncated_away`
+    demonstrates it directly and pins the property that *is* true instead.
+    """
+    unpinned = await _call(
+        as_of_either_answer_path, "knowledge.search", projectId="as-of-demo", query=AS_OF_QUERY
+    )
+    pinned = await _call(
+        as_of_either_answer_path,
+        "knowledge.search",
+        projectId="as-of-demo",
+        query=AS_OF_QUERY,
+        asOf=AS_OF_PINNED_MOMENT,
+    )
+
+    unpinned_by_id = {r["itemId"]: r for r in unpinned["results"]}
+    pinned_ids = {r["itemId"] for r in pinned["results"]}
+    excluded = set(unpinned_by_id) - pinned_ids
+
+    assert excluded == {"architecture.governance-later"}, "the pin must exclude something real"
+
+    excluded_hit = unpinned_by_id["architecture.governance-later"]
+    assert excluded_hit["title"] == "Governance starting later"
+    assert excluded_hit["sourceAnchors"], "a whole, ordinary result, not a redacted one"
+
+    fetched = await _call(
+        as_of_either_answer_path,
+        "knowledge.get",
+        projectId="as-of-demo",
+        itemId="architecture.governance-later",
+    )
+    assert fetched["body"] == AS_OF_LATER_BODY, (
+        "reachable through a second, independent tool too -- `asOf` narrows one "
+        "query, it does not narrow what this caller may read"
+    )
+
+
+# -- `asOf` can promote a candidate the unpinned response truncated away -----
+#
+# MEDIUM-1, review round 1 of PR #112. The closure test above used to assert
+# `pinned_ids <= set(unpinned_by_id)`. That is not a general property: when
+# `limit` truncates the unpinned answer, excluding a candidate via `asOf`
+# changes which items fill the remaining slots, so a pinned response can
+# contain an id the truncated unpinned one does not display. It read as a
+# general property only because this fixture's three items never fill
+# `limit=10` -- promotion needs a `limit` the untruncated candidate set
+# actually exceeds, which this fixture below is built to do at `limit=2`.
+
+PROMOTION_QUERY = "promotion ordering decision"
+
+PROMOTION_EXCLUDED_ID = "architecture.aaa-not-yet-valid"
+PROMOTION_KEPT_ID = "architecture.bbb-always-valid"
+PROMOTION_PROMOTED_ID = "architecture.ccc-always-valid"
+
+#: Before every item's `validFrom` below except the one it must exclude.
+PROMOTION_AS_OF = "2026-01-01T00:00:00+09:00"
+
+PROMOTION_EXCLUDED_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1WAAAAA01234567890ABCDE
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.aaa-not-yet-valid
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.aaa-not-yet-valid
+    revisionId: 01K1WAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/aaa-not-yet-valid.md
+    metadata:
+      title: Not yet valid, alphabetically first
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2031-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://promotion-demo/aaa-not-yet-valid.md
+"""
+
+PROMOTION_KEPT_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1XAAAAA01234567890ABCDE
+createdAt: 2026-08-02T10:05:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.bbb-always-valid
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.bbb-always-valid
+    revisionId: 01K1XAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/bbb-always-valid.md
+    metadata:
+      title: Always valid, alphabetically second
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://promotion-demo/bbb-always-valid.md
+"""
+
+PROMOTION_PROMOTED_MIGRATION = """apiVersion: theurian.dev/v1
+id: 01K1YAAAAA01234567890ABCDE
+createdAt: 2026-08-02T10:10:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.ccc-always-valid
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.ccc-always-valid
+    revisionId: 01K1YAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/ccc-always-valid.md
+    metadata:
+      title: Always valid, alphabetically third
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://promotion-demo/ccc-always-valid.md
+"""
+
+PROMOTION_BODY = "A promotion ordering decision distinguished only by its item id.\n"
+
+
+@pytest.fixture
+def promotion_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[ProjectRegistry]:
+    """Three items, alphabetically `aaa` < `bbb` < `ccc`, never indexed --
+    the fallback path orders by item id, which is what makes the promotion
+    at `limit=2` deterministic: `aaa` is excluded by `PROMOTION_AS_OF`, so its
+    slot goes to `ccc` rather than staying empty.
+    """
+    root = tmp_path / "promotion-demo"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    data_dir = tmp_path / "promotion-datadir"
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.chdir(root)
+
+    _run("init")
+    knowledge = root / ".theurian/knowledge/architecture"
+    (knowledge / "aaa-not-yet-valid.md").write_text(PROMOTION_BODY)
+    (knowledge / "bbb-always-valid.md").write_text(PROMOTION_BODY)
+    (knowledge / "ccc-always-valid.md").write_text(PROMOTION_BODY)
+    (root / ".theurian/migrations/01K1WAAAAA01234567890ABCDE-aaa.yaml").write_text(
+        PROMOTION_EXCLUDED_MIGRATION
+    )
+    (root / ".theurian/migrations/01K1XAAAAA01234567890ABCDE-bbb.yaml").write_text(
+        PROMOTION_KEPT_MIGRATION
+    )
+    (root / ".theurian/migrations/01K1YAAAAA01234567890ABCDE-ccc.yaml").write_text(
+        PROMOTION_PROMOTED_MIGRATION
+    )
+    _run("project", "register")
+    _run("migrate", "apply")
+
+    yield ProjectRegistry.default(data_dir)
+
+
+@pytest.mark.asyncio
+async def test_asof_can_promote_an_item_the_unpinned_response_truncated_away(
+    promotion_registry: ProjectRegistry,
+) -> None:
+    """The property that replaced `pinned ⊆ unpinned` (MEDIUM-1, PR #112
+    review round 1): a promoted item is absent from the truncated unpinned
+    slice, not absent from what this caller may read. It is independently
+    reachable both through `knowledge.get` and through the identical unpinned
+    query once its own `limit` is generous enough not to cut it.
+    """
+    unpinned = await _call(
+        promotion_registry,
+        "knowledge.search",
+        projectId="promotion-demo",
+        query=PROMOTION_QUERY,
+        limit=2,
+    )
+    pinned = await _call(
+        promotion_registry,
+        "knowledge.search",
+        projectId="promotion-demo",
+        query=PROMOTION_QUERY,
+        limit=2,
+        asOf=PROMOTION_AS_OF,
+    )
+
+    unpinned_ids = {r["itemId"] for r in unpinned["results"]}
+    pinned_ids = {r["itemId"] for r in pinned["results"]}
+
+    assert unpinned_ids == {PROMOTION_EXCLUDED_ID, PROMOTION_KEPT_ID}, (
+        "unranked order is by item id: the two alphabetically earliest fill `limit=2`"
+    )
+    assert pinned_ids == {PROMOTION_KEPT_ID, PROMOTION_PROMOTED_ID}, (
+        "excluding the alphabetically earliest promotes the third into the same `limit=2`"
+    )
+    assert not pinned_ids <= unpinned_ids, (
+        f"{PROMOTION_PROMOTED_ID!r} is in the pinned answer and not in the truncated "
+        "unpinned one -- demonstrating why that subset property does not hold in general"
+    )
+
+    fetched = await _call(
+        promotion_registry,
+        "knowledge.get",
+        projectId="promotion-demo",
+        itemId=PROMOTION_PROMOTED_ID,
+    )
+    assert fetched["itemId"] == PROMOTION_PROMOTED_ID, "reachable directly, by id"
+
+    unpinned_untruncated = await _call(
+        promotion_registry,
+        "knowledge.search",
+        projectId="promotion-demo",
+        query=PROMOTION_QUERY,
+        limit=3,
+    )
+    assert PROMOTION_PROMOTED_ID in {r["itemId"] for r in unpinned_untruncated["results"]}, (
+        "and reachable through the identical unpinned search once `limit` does not "
+        "truncate it -- it was never withheld, only outside a small slice"
+    )
+
+
+# -- A mixed UTC offset must not change which items are in the window --------
+#
+# Found in round 1 of PR #112's review: `SqliteCanonicalStore.list_items(
+# current_at=...)` compared a stored `validFrom`/`validTo` against `asOf` as
+# SQLite TEXT -- a lexicographic ordering of the ISO-8601 string, never the
+# absolute instant it names. `'2020-01-01T00:00:00+09:00'` sorts *after*
+# `'2019-12-31T16:00:00Z'` even though the first names the earlier absolute
+# moment: `'2'` outranks `'1'` at the fourth character, and nothing downstream
+# of that comparison ever looks further. The ranked path never had this bug --
+# `CanonicalVisibility` always compared through `ValidityPeriod.contains`,
+# which parses both sides into timezone-aware `datetime` objects first -- so
+# every fixture above that used one offset throughout (`+09:00` for
+# `validFrom`/`validTo` and for `asOf`) could not have found it: the
+# lexicographic order and the absolute order agree whenever every timestamp
+# compared shares a common prefix length and offset.
+#
+# Closed by deleting `current_at` and its SQL branch outright rather than
+# normalizing it: both paths now build their moment from `ValidityPeriod.
+# contains`, so there is exactly one comparison to get right instead of two
+# that have to be kept in agreement.
+
+MIXED_OFFSET_QUERY = "timezone boundary decision"
+
+MIXED_OFFSET_INSIDE_ID = "architecture.boundary-inside-window"
+MIXED_OFFSET_EXPIRED_ID = "architecture.boundary-already-expired"
+
+MIXED_OFFSET_INSIDE_MIGRATION_ID = "01K1TAAAAA01234567890ABCDE"
+MIXED_OFFSET_INSIDE_REVISION_ID = "01K1TAAREV01234567890ABCDE"
+MIXED_OFFSET_EXPIRED_MIGRATION_ID = "01K1VAAAAA01234567890ABCDE"
+MIXED_OFFSET_EXPIRED_REVISION_ID = "01K1VAAREV01234567890ABCDE"
+
+MIXED_OFFSET_INSIDE_BODY = (
+    "# Timezone boundary, inside the window\n\n"
+    "A timezone boundary decision valid from a JST midnight with no expiry.\n"
+)
+MIXED_OFFSET_EXPIRED_BODY = (
+    "# Timezone boundary, already expired\n\n"
+    "A timezone boundary decision that expired at a JST midnight.\n"
+)
+
+#: `validFrom` is `2020-01-01T00:00:00+09:00`, i.e. `2019-12-31T15:00:00Z`.
+#: `MIXED_OFFSET_AS_OF` below is one absolute hour after that, so this item is
+#: *inside* its open-ended window at the pinned moment -- the item review
+#: round 1 found the fallback path wrongly excluding.
+MIXED_OFFSET_INSIDE_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {MIXED_OFFSET_INSIDE_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: {MIXED_OFFSET_INSIDE_ID}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {MIXED_OFFSET_INSIDE_ID}
+    revisionId: {MIXED_OFFSET_INSIDE_REVISION_ID}
+    contentFile: ../knowledge/architecture/boundary-inside-window.md
+    metadata:
+      title: Timezone boundary, inside the window
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2020-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://mixed-offset-demo/boundary-inside-window.md
+"""
+
+#: `validTo` is the identical absolute instant as `validFrom` above,
+#: `2019-12-31T15:00:00Z`, so this item is *expired* at `MIXED_OFFSET_AS_OF`
+#: (one absolute hour later) -- the item review round 1 found the fallback
+#: path wrongly including, with its own `freshness.isWithinValidity: false`
+#: printed on the same payload.
+MIXED_OFFSET_EXPIRED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {MIXED_OFFSET_EXPIRED_MIGRATION_ID}
+createdAt: 2026-08-02T10:05:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: {MIXED_OFFSET_EXPIRED_ID}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {MIXED_OFFSET_EXPIRED_ID}
+    revisionId: {MIXED_OFFSET_EXPIRED_REVISION_ID}
+    contentFile: ../knowledge/architecture/boundary-already-expired.md
+    metadata:
+      title: Timezone boundary, already expired
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      validFrom: 2010-01-01T00:00:00+09:00
+      validTo: 2020-01-01T00:00:00+09:00
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://mixed-offset-demo/boundary-already-expired.md
+"""
+
+#: One absolute hour after both migrations' JST-authored boundary
+#: (`2019-12-31T15:00:00Z`), given in `Z` rather than `+09:00` -- the mixed
+#: offset itself. Inside `MIXED_OFFSET_INSIDE_ID`'s open-ended window and past
+#: `MIXED_OFFSET_EXPIRED_ID`'s `validTo`, in absolute time.
+MIXED_OFFSET_AS_OF = "2019-12-31T16:00:00Z"
+
+
+@pytest.fixture
+def mixed_offset_projects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectRegistry:
+    """The mixed-offset corpus above, registered twice under one registry:
+    once left unindexed, so the unranked fallback answers, and once indexed,
+    so the ranked path answers -- so one test can compare both answers to the
+    identical query against the identical corpus, which a parametrised
+    ranked-or-fallback fixture cannot give it.
+    """
+    data_dir = tmp_path / "mixed-offset-datadir"
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+
+    for name, build_index in (("mixed-offset-fallback", False), ("mixed-offset-ranked", True)):
+        root = tmp_path / name
+        root.mkdir()
+        for args in (
+            ["git", "init", "-q", "-b", "main"],
+            ["git", "config", "user.email", "test@example.com"],
+            ["git", "config", "user.name", "Test"],
+        ):
+            subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+        monkeypatch.chdir(root)
+        _run("init")
+        knowledge = root / ".theurian/knowledge/architecture"
+        (knowledge / "boundary-inside-window.md").write_text(MIXED_OFFSET_INSIDE_BODY)
+        (knowledge / "boundary-already-expired.md").write_text(MIXED_OFFSET_EXPIRED_BODY)
+        (root / f".theurian/migrations/{MIXED_OFFSET_INSIDE_MIGRATION_ID}-inside.yaml").write_text(
+            MIXED_OFFSET_INSIDE_MIGRATION
+        )
+        (
+            root / f".theurian/migrations/{MIXED_OFFSET_EXPIRED_MIGRATION_ID}-expired.yaml"
+        ).write_text(MIXED_OFFSET_EXPIRED_MIGRATION)
+        _run("project", "register")
+        _run("migrate", "apply")
+        if build_index:
+            _run("index", "build")
+
+    return ProjectRegistry.default(data_dir)
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_utc_offset_does_not_change_which_items_are_in_the_window(
+    mixed_offset_projects: ProjectRegistry,
+) -> None:
+    """The closure condition for HIGH-1, review round 1 of PR #112.
+
+    Same corpus, same query, same pinned moment, two retrievers. If the two
+    disagree, at least one of them is wrong, and this project has no way to
+    tell a caller which -- so the only correct answer is that they cannot
+    disagree. Before the fix they did, on both items at once: the fallback
+    path reported ``{MIXED_OFFSET_EXPIRED_ID}`` -- excluding the item that is
+    actually inside its window and including the one that has actually
+    expired, the two faces review round 1 measured through the real MCP
+    surface. This also stands in for "the fallback path applies
+    ``ValidityPeriod.contains`` in Python": no implementation of ``_scan``
+    that instead re-introduced a SQL-side comparison of the raw strings could
+    pass this alongside the ranked path, whatever mechanism it used.
+
+    This is also the only test in this module that runs the ranked and the
+    unranked answer through the same assertions in the same test, rather than
+    through `as_of_either_answer_path`'s parametrisation -- deliberately: the
+    property under test is an equality *between* the two paths, which a
+    fixture that hands back only one of them at a time cannot state.
+    """
+    fallback = await _call(
+        mixed_offset_projects,
+        "knowledge.search",
+        projectId="mixed-offset-fallback",
+        query=MIXED_OFFSET_QUERY,
+        asOf=MIXED_OFFSET_AS_OF,
+    )
+    ranked = await _call(
+        mixed_offset_projects,
+        "knowledge.search",
+        projectId="mixed-offset-ranked",
+        query=MIXED_OFFSET_QUERY,
+        asOf=MIXED_OFFSET_AS_OF,
+    )
+
+    assert fallback["retrieval"]["indexed"] is False, "must actually exercise the fallback path"
+    assert ranked["retrieval"]["indexed"] is True, "must actually exercise the ranked path"
+
+    fallback_ids = {r["itemId"] for r in fallback["results"]}
+    ranked_ids = {r["itemId"] for r in ranked["results"]}
+
+    assert ranked_ids == {MIXED_OFFSET_INSIDE_ID}, (
+        "the correct answer, in absolute time: the open-ended item is valid "
+        "at the pinned moment, the already-expired one is not"
+    )
+    assert fallback_ids == ranked_ids, (
+        "same corpus, same query, same pinned moment -- which retriever "
+        "answered must not change which items are in the window"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("not-a-timestamp", "RFC 3339"),
+        ("2026-08-01T00:00:00", "UTC offset"),
+        ("2026-13-40T00:00:00Z", "RFC 3339"),
+        ("2026-08-01T00:00:00Z" + "0" * 200, "characters long"),
+    ],
+    ids=["garbage", "no-offset", "invalid-calendar-date", "absurdly-long"],
+)
+async def test_an_unparseable_as_of_is_a_clean_tool_error(
+    as_of_registry: ProjectRegistry, raw: str, expected: str
+) -> None:
+    """Validated the way the surface validates everything else: a boundary
+    check in `_parse_as_of` that raises `ToolError` with a remedy, before the
+    value can reach `ValidityPeriod.contains` -- which refuses a naive moment
+    with a bare `DomainError` carrying no remedy at all, raised from inside a
+    canonical read session rather than from the tool surface. Mirrors
+    `test_an_empty_query_is_refused` and
+    `test_a_malformed_item_id_names_the_tool_that_finds_a_real_one`: a clean
+    `ToolError`, never a traceback, and never an unbounded echo of the input.
+    """
+    message = await _call_failing(
+        as_of_registry, "knowledge.search", projectId="as-of-demo", query=AS_OF_QUERY, asOf=raw
+    )
+
+    assert "asOf" in message
+    assert expected in message
+    assert len(message) < 500, f"the message must not grow with its input ({len(message)} chars)"
