@@ -71,6 +71,29 @@ status — a check FR-R1 does not name. Tenant and ACL have no column; the
 reads them. Routing does not change today for those, because the axes hold no
 content yet, which is why this remains a deferral and not a defect.
 
+**Per-axis disposition — the register that closes
+[#63](https://github.com/theurian/theurian/issues/63).** Each of FR-R1's five
+named axes, plus the `status` check `_scope` adds that FR-R1 does not name, with
+what the pre-1.0 product actually does about it and the PR that established that
+disposition. The maintainer's recorded decision: sensitivity-based access
+control is deferred to the milestone that lands `AuthorizationProvider`; until
+then sensitivity is a published label on every result, not a control. Only
+Project, status and (on request) the validity window are enforced pre-1.0.
+
+| Axis | Pre-1.0 disposition | Mechanism | Landed |
+| :-- | :-- | :-- | :-- |
+| Project | **Enforced** — a pre-ranking WHERE predicate every retriever builds from | `chunks.project_id = ?` in `SqliteIndexStore._scope` | [#32](https://github.com/theurian/theurian/pull/32) |
+| status | **Enforced** — a pre-ranking WHERE predicate, plus the canonical-read gate | `chunks.status = ?` in `_scope`; `may_surface` in `domain/enums.py` | [#32](https://github.com/theurian/theurian/pull/32) |
+| tenant | **Refused at write time** — a migration naming a `tenantId` other than `local` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
+| ACL group | **Refused at write time** — a migration naming an `aclGroup` other than `default` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
+| sensitivity | **Published label, not a control** — carried on every result, read by no retrieval predicate | `results.py` emits `sensitivity`; the `chunks.sensitivity` column is unread | [#32](https://github.com/theurian/theurian/pull/32); control **deferred** to the `AuthorizationProvider` milestone |
+| validity window | **Caller-chosen refinement, not a default filter** — omitting `asOf` filters on nothing | `knowledge.search`'s optional `asOf` → `ValidityPeriod.contains`, in Python, on both answer paths | [#112](https://github.com/theurian/theurian/pull/112) (phase 2) |
+
+The two enforced predicates are exactly what `_scope` emits;
+`tests/unit/test_gate_call_sites.py` pins that set against SECURITY.md's
+published axis list so the two cannot drift, and enumerates every `may_surface`
+call site so the `status` gate cannot silently gain one.
+
 The validity-window axis is no longer wholly unenforced, and it is
 deliberately not unconditional either
 ([#63](https://github.com/theurian/theurian/issues/63) phase 2).
