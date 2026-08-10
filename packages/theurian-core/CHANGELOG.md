@@ -39,6 +39,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for more, so a pinned moment cannot change how many times a request reads a
   retriever.
 
+### Changed
+
+- **`Scope` gains `status: KnowledgeStatus` as a required sixth component of
+  RAPTOR tree identity** (ADR-0008 decision 1's Milestone 6 amendment, SEC-14,
+  T-10, R-14): `(project, tenant, sensitivity, acl_group, namespace, status)`.
+  Without it, an `index build --include-unapproved` run could mix a `draft`
+  and an `approved` child into one summary node with no tree boundary to stop
+  it, even though `_scope` already filters chunk reads on status — the
+  five-component tuple never named the axis that filters.
+
+  **BREAKING — every `Scope` construction site must now pass `status`.** There
+  is no default: the other five fields have none, and a silently-defaulted
+  status is the exact builder-filled-column failure the amendment exists to
+  prevent. The two construction sites in this tree supply it without a
+  signature change of their own — `RevisionMetadata.scope_for` from
+  `self.status`, `KnowledgeItem.scope` from `self.status` — but any other
+  caller constructing `Scope` directly now fails at the call site. `key` and
+  `digest` join all six components, so this changes every `Scope.digest` this
+  tree can compute; that costs nothing today, because nothing in `src/`
+  persists a tree id yet.
+
+- **`domain/raptor.py` adds `SummaryNode`**, the node type ADR-0008's
+  Compliance section names as owed. A frozen node refuses construction from an
+  empty child tuple, and refuses construction from any child whose scope
+  differs from the node's own in any of the six components — comparing whole
+  `Scope` values, not an enumerated field list that could omit one. This
+  discharges the `tests/unit/test_raptor_scope.py` item, the first of
+  ADR-0008's "Still owed" Compliance entries, now landed with tests that hold
+  it over the six-component tuple. `test_scope_isolation.py`'s exhaustive
+  product moves with it, from 32 combinations over five components to 64 over
+  six.
+
 ### Fixed
 
 - **A withdrawal now publishes a purged index in the same `migrate apply`**

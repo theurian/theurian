@@ -615,6 +615,25 @@ Still owed, with the milestone that will satisfy it:
   > build mixed draft and approved children into one node, which is the case that
   > amendment exists to prevent. `test_scope_isolation.py`'s 32 combinations are
   > the five-component count and move to 64 with it.
+  >
+  > **Amended in Milestone 6.** The file exists now and holds this.
+  > `test_a_node_refuses_a_child_that_differs_in_one_component` is parametrised
+  > over all six components (`project_id`, `tenant_id`, `sensitivity`,
+  > `acl_group`, `namespace`, `status`), one differing value at a time, with one
+  > matching child alongside the mismatched one so a constructor checking only
+  > the first or last child cannot pass it.
+  > `test_a_node_with_no_children_is_refused` is the empty-child-tuple case,
+  > distinct because there is no scope to compare.
+  > `test_a_node_accepts_children_that_all_share_its_scope` is the positive
+  > case, ruling out a constructor that raises unconditionally and would
+  > otherwise pass every refusal test above for the wrong reason.
+  > `test_tree_identity_is_total_over_the_full_scope_tuple` pins that a node's
+  > tree comes from `Scope.digest` rather than a private encoding of the tuple,
+  > and defers the exhaustive proof that no two of the six-component
+  > combinations collide to
+  > `test_scope_isolation.py::test_all_scope_pairs_are_distinguishable` rather
+  > than repeating it. Total over **six** components, per the amendment to
+  > decision 1 above.
 - **An in-progress `index_build` is never returned by search** (Milestone 6).
   The equivalent for the chunk index is
   `tests/integration/test_index_store.py::test_building_over_an_existing_file_is_refused`;
