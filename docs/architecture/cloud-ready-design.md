@@ -118,9 +118,9 @@ findable in a different place.
 
 Note what the last row of the table is not covered by. Tenant checks are exactly
 the drift this document warns about, and FR-R1's tenant axis is unimplemented
-with no column to hold it
-([#63](https://github.com/theurian/theurian/issues/63)). The vendor grep does
-not reach that; nothing does.
+with no column to hold it — refused at write time (#110) and enforced by
+[#119](https://github.com/theurian/theurian/issues/119), the successor to #63.
+The vendor grep does not reach that; nothing does.
 
 ## Migration path
 

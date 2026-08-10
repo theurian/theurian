@@ -153,8 +153,9 @@ metadata:
 only.** A revision that already carries a non-default `tenantId` or
 `aclGroup` in canonical state (see below) keeps that value; nothing here
 rewrites it, and reading it back through `knowledge.get` or `knowledge.search`
-is unaffected. This is Phase 1 of #63 (FR-R1 scope filtering); enforcing the
-field on read is later work.
+is unaffected. This was Phase 1 of #63 (FR-R1 scope filtering); enforcing the
+field on read is [#119](https://github.com/theurian/theurian/issues/119), the
+successor to #63.
 
 #### Upgrading a project that already applied one of these
 

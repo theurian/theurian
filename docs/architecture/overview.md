@@ -172,7 +172,9 @@ rows. Tenant and ACL groups exist as domain values (`Scope`, `TenantId`,
 single-tenant case; the index carries `sensitivity`, `trust_level` and
 `namespace` as columns no query reads. Steps 3, 4 and 6 are likewise Milestone 6
 — dense retrieval is built but off by default, and RAPTOR is not built at all.
-The pre-filter gap is [#63](https://github.com/theurian/theurian/issues/63).
+The remaining pre-filter gap — enforcing tenant, ACL and sensitivity — is
+[#119](https://github.com/theurian/theurian/issues/119); #63 phase 0 recorded
+the per-axis disposition and closed.
 
 Every result carries `itemId`, `revisionId`, `snapshotId`, `indexBuildId`,
 `sourceAnchors`, `raptorPath`, `trustLevel`, `freshness`, and the safety triple
