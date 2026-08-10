@@ -8,7 +8,7 @@ them.
 
 The companion rule — *whether* a hit may be shown at all — used to live here too
 and now lives in :func:`theurian.domain.enums.may_surface`. It is reached from
-five call sites, one being the application-layer index builder, which cannot
+six call sites, one being the application-layer index builder, which cannot
 import this module (ADR-0003) and so kept its own copy of the comparison until
 the rule moved to the domain, where every caller can reach it.
 """
