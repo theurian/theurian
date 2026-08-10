@@ -662,7 +662,7 @@ def _insert_dangling_node(path: Path, node_id: str) -> None:
 def test_a_dangling_edge_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> None:
     """A build whose only damage is a dangling edge must not be silently skipped.
 
-    Measured (`sec/exp7_precheck.py`): `holds_any_revision`'s two clauses --
+    Measured against the pre-check as it stood: its two clauses --
     "a chunk of the withdrawn revision" and "a node with zero edges" -- both
     miss a node whose one edge resolves to nothing, so the pre-check answers
     `False` and `publish_purge_for_withdrawal` reports `NOTHING_TO_PURGE`

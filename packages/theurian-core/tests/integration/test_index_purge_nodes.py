@@ -16,8 +16,10 @@ a withdrawn revision -- goes with the withdrawal. The reading these tests were
 written against seeded on an *unprovenanced* node and walked forward from a
 withdrawn chunk, which left every one of those shapes standing: a node with
 edges is never a seed, and a node reachable from nothing withdrawn is never
-reached (measured: `sec/exp1_traversal.py`, `sec/exp4_differential.py`, whose
-91 divergences from a well-founded reference were all cycle-reachable).
+reached. Measured by a differential over 400 random graphs against a
+well-founded reference: that reading diverged on 91 of them, every divergence
+cycle-reachable, and on 11 once the schema's self-edge `CHECK` had removed the
+smallest cycle from the population. The one under test diverges on none.
 """
 
 from __future__ import annotations
@@ -198,11 +200,11 @@ def test_a_node_stamped_with_a_withdrawn_revision_is_doomed_even_when_grounded(
     build inputs have moved on is detectably stale; `source_revision_id` names
     the revision the node's *own content* was built against, independent of
     which chunk ids its `node_derivation` edges happen to still name. Measured
-    before the stamp became an arm of `_UNANCHORED_NODES` (`sec/exp8_srcrev.py`):
-    a node stamped with a withdrawn revision, whose only edge points at a chunk
-    that survives, is neither unprovenanced nor reachable from a doomed chunk,
-    so the seeded traversal kept it -- and its text, built against the withdrawn
-    state, survived the purge intact and stayed findable through `nodes_fts`.
+    before the stamp became an arm of `_UNANCHORED_NODES`: a node stamped with a
+    withdrawn revision, whose only edge points at a chunk that survives, is
+    neither unprovenanced nor reachable from a doomed chunk, so the seeded
+    traversal kept it -- and its text, built against the withdrawn state,
+    survived the purge intact and stayed findable through `nodes_fts`.
     """
     build = tmp_path / "theurian-index-stamped.sqlite"
     build.write_bytes(store.path.read_bytes())
@@ -241,11 +243,11 @@ def test_a_dangling_only_build_is_purged_rather_than_refused(
     purged` itself does when called directly, bypassing the pre-check. Under the
     seeded traversal this build had no answer at all: the node was not a seed and
     nothing reached it, so `_delete` left it and `_verify`'s dangling check then
-    refused to publish the whole build over the one bad row (measured:
-    `sec/exp7_precheck.py`). Under well-founded reachability a node with an edge
-    that resolves to nothing is exactly as ungrounded as one in a cycle -- not
-    reachable to a surviving chunk in finitely many steps -- so it is removed and
-    the build publishes, like any other ungrounded node.
+    refused to publish the whole build over the one bad row -- measured, with the
+    pre-check calling the same build clean. Under well-founded reachability a
+    node with an edge that resolves to nothing is exactly as ungrounded as one in
+    a cycle -- not reachable to a surviving chunk in finitely many steps -- so it
+    is removed and the build publishes, like any other ungrounded node.
     """
     build = tmp_path / "theurian-index-dangling-only.sqlite"
     build.write_bytes(store.path.read_bytes())
@@ -329,13 +331,12 @@ def test_restamp_updates_survivors_index_build_id_too(
 ) -> None:
     """`_restamp` gives the purged build a new identity -- and so must its rows.
 
-    Measured before `_restamp` reached the node table (`cl3/e11_restamp_scope.
-    py`): it wrote the new build id into `index_metadata` only.
-    `nodes.index_build_id` is one of ADR-0008 decision 5's fourteen provenance
-    columns, and a surviving node whose own row still names the build it was
-    copied *from* disagrees with the pointer that now names the build it belongs
-    to -- exactly the disagreement `_restamp` exists to prevent at the file
-    level, one column short of covering the row.
+    Measured before `_restamp` reached the node table: it wrote the new build id
+    into `index_metadata` only. `nodes.index_build_id` is one of ADR-0008
+    decision 5's fourteen provenance columns, and a surviving node whose own row
+    still names the build it was copied *from* disagrees with the pointer that
+    now names the build it belongs to -- exactly the disagreement `_restamp`
+    exists to prevent at the file level, one column short of covering the row.
     """
     build = tmp_path / "theurian-index-stale.sqlite"
     build.write_bytes(store.path.read_bytes())

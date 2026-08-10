@@ -64,9 +64,10 @@ doomed_chunks(chunk_id) AS (
 #: inferred, because a cycle is the one ungrounded shape no forward walk from a
 #: withdrawn chunk and no backward walk from a broken edge can reach: every
 #: member has provenance, every edge resolves, and no member is ever grounded.
-#: Measured before this existed: a two-cycle of summaries of a withdrawn
-#: incident survived a purge of the *entire* corpus, `_verify` accepting the
-#: build (`sec/exp1_traversal.py`, `cl3/e5_cycle_survives_total_purge.py`).
+#: Measured before this existed, by purging a build of two chunks and three
+#: summaries with *both* revisions withdrawn: a two-cycle of summaries of the
+#: withdrawn incident survived, text intact, and `_verify` accepted the build
+#: as publishable.
 #:
 #: `UNION` and not `UNION ALL`, which is what makes it terminate: the closure is
 #: at most one row per ordered pair of nodes, and deduplication is what stops the
@@ -102,10 +103,17 @@ cyclic(node_id) AS (
 #: **The rule is universal, not existential: *every* declared source has to
 #: terminate at a surviving chunk, not merely one of them.** A summary cannot be
 #: partially grounded any more than it can be partially withdrawn, so a node with
-#: one good parent and one that leads nowhere goes. That is the difference the
-#: 400-graph differential in `sec/exp4_differential.py` measures against a
-#: well-founded reference; all 91 divergences of the seeded-traversal reading it
-#: replaces were cycle-reachable.
+#: one good parent and one that leads nowhere goes.
+#:
+#: Measured by a differential over 400 random graphs against a well-founded
+#: reference, run three times and reported as three numbers because the
+#: population changed underneath it. The seeded traversal this replaces diverged
+#: on **91** of the 400 -- its smallest counterexample a node naming itself as
+#: its own source -- and every divergence was cycle-reachable. Once the schema's
+#: self-edge `CHECK` removes that shape from the population (142 of the
+#: generated edges), the same seeded traversal diverges on **11**, which is the
+#: part of the gap the `CHECK` alone does not close. The reading below diverges
+#: on **none**.
 #:
 #: `EXISTS`/`NOT EXISTS` rather than `IN`/`NOT IN` throughout, kept even now that
 #: both id columns are `NOT NULL`: `x NOT IN (SELECT ...)` answers NULL -- falsy,
@@ -318,7 +326,10 @@ _CASCADE_RAN: Final = (
 #: point lower is grounded by the ones below it. That is why the cycle count is
 #: here and not merely `_DOOMED` asked a second time -- a post-condition computed
 #: by the function being checked cannot catch that function being wrong, which is
-#: the whole reason `_verify` exists (ADR-0024 decision 4).
+#: the whole reason `_verify` exists. ADR-0024's first decision is what leaves it
+#: no second chance: from the moment `active-index.json` names a build, that file
+#: is read-only for the rest of its life, so publishing is a pointer swap and
+#: nothing downstream ever looks inside.
 _POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
     (
         _WITHDRAWN_ROWS,
@@ -543,10 +554,11 @@ def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
 
     **`nodes` carries a second copy of that identity and needs the same
     treatment.** `index_build_id` is one of ADR-0008 decision 5's fourteen
-    provenance columns, recording which build a summary belongs to; measured
-    (`cl3/e11_restamp_scope.py`), a surviving node named the build it was copied
-    from while `index_metadata` named the new one — the same disagreement one
-    level down.
+    provenance columns, recording which build a summary belongs to. Measured by
+    purging a build with one node anchored in a surviving chunk and reading both
+    columns back: the surviving node named the build it was copied from while
+    `index_metadata` named the new one — the same disagreement one level down,
+    which is what `test_restamp_updates_survivors_index_build_id_too` now pins.
     """
     with _writing(target) as connection, connection:
         connection.execute(

@@ -36,12 +36,15 @@ rather than kept beside the new tables: a column nothing will ever write serves
 nothing, and keeping it would leave two provenance mechanisms of which one is
 permanently dead.
 
-The purge's transitive walk (ADR-0024 decision 8) moves with the storage: it
-seeds on unprovenanced `nodes` rows now instead of `chunks` rows with
-`derived = 1`, and follows `node_derivation` edges instead of
-`chunk_derivation` ones. `IndexStore.holds_any_revision`'s pre-check moves with
-it too, because it names `node_derivation` as an executed SQL predicate on the
-withdrawal path (`application/withdrawal_purge.py`), not only on the purge path.
+The purge's reading of derived content (ADR-0024 decision 8) moves with the
+storage: it reads `nodes` and `node_derivation` instead of `chunks` rows with
+`derived = 1` and `chunk_derivation`. What it *does* with them — a node survives
+only if every derivation path below it terminates at a surviving chunk — is
+`_DOOMED`'s own docstring in `index_purge.py`, and is not restated here, because
+a second telling of a predicate is a second thing to keep true.
+`IndexStore.holds_any_revision`'s pre-check moves with it too, because it names
+`node_derivation` as an executed SQL predicate on the withdrawal path
+(`application/withdrawal_purge.py`), not only on the purge path.
 
 Bumping the version means every index built under an *earlier* version reports
 `index-schema-mismatch` and falls back to the substring scan until
@@ -85,12 +88,19 @@ CREATE TABLE index_metadata (
 --
 -- `NOT NULL` is spelled out because `PRIMARY KEY` does not imply it here. Only
 -- an INTEGER primary key is a rowid alias SQLite refuses NULL for; a TEXT one
--- admits a single NULL row. That is not a tidiness point: every orphan and
--- dangling check in `index_purge` is `x NOT IN (SELECT ...)`, and SQL's `NOT IN`
+-- admits a single NULL row. That is not a tidiness point, and the reason is
+-- what this column was found to have broken: every orphan and dangling check in
+-- `index_purge` was then written `x NOT IN (SELECT ...)`, and SQL's `NOT IN`
 -- against a set holding one NULL answers NULL -- falsy -- for *every* row, so a
--- single NULL id here would silently disable two of the purge's four
--- post-conditions rather than fail one of them. Measured on 3.51.2: the column
--- took two NULLs, and `'a' NOT IN (SELECT id FROM t)` then answered NULL.
+-- single NULL id here silently disabled two of them rather than failing one.
+-- Measured on 3.51.2: the column took two NULLs, and
+-- `'a' NOT IN (SELECT id FROM t)` then answered NULL.
+--
+-- Those checks are `NOT EXISTS` today, and all six of them, so the constraint is
+-- no longer the only thing standing between one NULL and a post-condition that
+-- stops checking. It stays because two defences against a state nothing should
+-- ever write is the right number when the failure is silent in the direction of
+-- keeping withdrawn content.
 CREATE TABLE chunks (
     chunk_id     TEXT PRIMARY KEY NOT NULL,
     project_id   TEXT    NOT NULL,
