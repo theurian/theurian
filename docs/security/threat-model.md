@@ -1567,7 +1567,11 @@ docstring-only package (its own text: "nothing here is built (Milestone 6)"), so
 no summary node exists to mix. `domain/raptor.py`'s `SummaryNode` refuses
 children whose scope disagrees with its own, which is that refusal written down
 at the value level — it carries scopes and no text, nothing in `src/`
-constructs one, and no table stores one, so it withholds nothing today. This
+constructs one, and the `nodes` table that index schema v4 adds to store one has
+no writer, so it withholds nothing today. That table does enforce its own
+integrity conditions — `NOT NULL` ids, one source per provenance edge, no self
+edge — but against rows that only tests insert, and enforcing scope is not among
+them: `sensitivity` is a stored label there, as it is on `chunks`. This
 control takes effect when Milestone 6 builds the forest; the interim residual is
 that no RAPTOR summary is generated at all, so there is no cross-sensitivity
 summary to leak (#115).

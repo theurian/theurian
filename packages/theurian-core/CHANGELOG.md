@@ -120,9 +120,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `expectedIndexSchemaVersion`, counts the build as `stale`, and its `remedy`
   names the command.
 
-  **Affects `0.1.0.dev0` and `0.1.0.dev1`**, both of which ship index schema 3.
-  Nothing canonical needs migrating and no state hash moves; what is lost is the
-  index build itself, and rebuilding it is the whole remedy.
+  **Affects `0.1.0.dev0` and `0.1.0.dev1`**, both of which ship index schema
+  **2** — each tag pins `INDEX_SCHEMA_VERSION: Final = 2`. So a released
+  Theurian meets this as 2 → 4 in one step: schema 3 exists only on `main` and
+  was never in a release, even though the 2 → 3 entry below is filed under
+  `[0.1.0.dev0]`, which
+  [#138](https://github.com/theurian/theurian/issues/138) moves. Nothing
+  canonical needs migrating and no state hash moves; what is lost is the index
+  build itself, and rebuilding it is the whole remedy.
 
   `nodes` carries the fourteen provenance columns ADR-0008 decision 5 names —
   `node_id`, `tree_id`, `level`, `node_type`, `text`, `content_hash`, three
@@ -149,6 +154,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   unchanged. It is a first, narrow instance of the whole-statistics test
   ADR-0008 still owes, not that test.
 
+  **`node_embeddings` and `nodes_trigram` land at v4 as well, so node storage
+  costs one schema bump rather than three.** `embeddings` is keyed on
+  `chunk_id REFERENCES chunks`, so a summary's vector had nowhere to live;
+  `nodes_trigram` exists because `unicode61` splits on whitespace and
+  punctuation only, which makes a Japanese summary a single token, and this
+  project's own knowledge is written in Japanese. Both mirror their chunk
+  counterparts including `ON DELETE CASCADE`, and `_verify`'s orphan check for
+  node vectors exists from birth rather than arriving with whichever CL first
+  writes one.
+
   **`chunks.derived` and `chunk_derivation` are dropped rather than kept beside
   the new tables.** Nothing ever wrote either: v3 added them ahead of RAPTOR
   (ADR-0024 decision 8) on the assumption that RAPTOR would be their writer, and
@@ -160,15 +175,67 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   delete, not keep. ADR-0024's Compliance section counted five of the six until
   this change corrected it; the sixth had been in the suite from the start.
 
-  The purge moves with the storage. `index_purge._DOOMED` seeds on `nodes` rows
-  absent from `node_derivation` instead of `chunks` rows with `derived = 1`, and
-  walks `node_derivation` transitively through both edge shapes — a node built
-  from a doomed chunk, and a node built from a doomed node. `_verify` gains a
-  fourth post-condition with no v3 analogue: a `node_derivation` edge whose
-  source chunk or source node is gone. Two tables make a dangling edge and an
-  unprovenanced row different states where v3's single table made them one, so a
-  node can now hold an edge that points at nothing while still having an edge —
-  which the unprovenanced count, then and now, does not see.
+  **The purge moves with the storage, and its rule for a node is universal
+  grounding: a node survives only if *every* derivation path below it terminates
+  at a surviving chunk in finitely many steps.** `index_purge._DOOMED` computes
+  the complement, because grounding is a least fixed point under a universal
+  quantifier and SQLite's row-at-a-time recursion cannot express one. *Unanchored*
+  is five arms — a `source_revision_id` naming a withdrawn revision, no
+  `node_derivation` row at all, an edge naming a withdrawn or absent chunk, an
+  edge naming an absent node, and a node standing on a provenance cycle — closed
+  upward over "is built from", so a node built on an unanchored node goes too. A
+  summary cannot be partially grounded any more than it can be partially
+  withdrawn, so one good parent and one that leads nowhere is still removed.
+  Every one of those shapes survived the reading this replaces, which seeded on
+  unprovenanced rows and walked forward from the withdrawn chunks: measured, a
+  two-cycle of summaries of a withdrawn incident survived a purge of the *entire*
+  corpus with its text intact, and `_verify` accepted the build. Against a
+  well-founded reference over 400 randomly generated graphs — self edges and
+  cycles allowed, one fixed seed — the shipped reading now diverges on none; the
+  reading it replaces still diverges on 11 of the same 400, and on 91 of them
+  before the self-edge `CHECK` below started refusing those graphs' self edges
+  outright.
+
+  **`_verify` is six post-conditions, not v3's three**: rows of the withdrawn
+  revisions (chunks by `revision_id` *and* nodes by the `source_revision_id`
+  stamp, where v3 counted chunks only), an orphaned chunk embedding, an
+  unprovenanced node, a `node_derivation` edge whose source chunk or source node
+  is gone, a node standing on a cycle, and an orphaned node embedding. The
+  dangling-edge check has no v3 analogue at all: two tables make a dangling edge
+  and an unprovenanced row different states where v3's single table made them
+  one, so a node can hold an edge that points at nothing while still having an
+  edge — which the unprovenanced count, then and now, does not see. The cycle
+  count is computed independently rather than by asking `_DOOMED` a second time,
+  because a post-condition computed by the function it checks cannot catch that
+  function being wrong. With it the six are jointly complete: no cycle makes the
+  node graph finite and well ordered, no dangling edge and no unprovenanced node
+  make every edge name a surviving row, and grounding follows by induction up
+  that order.
+
+  **`_restamp` reaches `nodes.index_build_id` too, not only `index_metadata`.**
+  That column is one of decision 5's fourteen provenance columns; measured, a
+  surviving node named the build it had been copied from while `index_metadata`
+  named the new one — the disagreement `_restamp` exists to prevent at the file
+  level, one level down inside it.
+
+  **Four schema hardenings, each closing a check that had stopped checking.**
+  `chunks.chunk_id`, `nodes.node_id`, `embeddings.chunk_id` and
+  `node_embeddings.node_id` gain `NOT NULL`: only an INTEGER primary key is a
+  rowid alias SQLite refuses NULL for, so a TEXT one admitted a single NULL row,
+  and one NULL in a `NOT IN` subquery answers NULL — falsy — for *every* row.
+  Measured against the `NOT IN` form those checks were first written in, one NULL
+  `chunk_id` turned two of the purge's post-conditions inert and `_verify` then
+  accepted a build holding both a dangling edge and an orphaned embedding — the
+  checks are `NOT EXISTS` now as well, so neither guard depends on the other.
+  `node_derivation` refuses a self edge,
+  the smallest provenance cycle. Its three-column `UNIQUE` index never fired,
+  because the exclusive-source `CHECK` leaves one of those columns NULL in every
+  row and no NULL equals another — three byte-identical edges went in through it
+  — so two partial unique indexes replace it, one per source column. A partial
+  index cannot answer `WHERE node_id = ?`, which the three-column one had been
+  serving by accident of being its leftmost column, so `node_derivation_by_node`
+  is declared explicitly: dropping it takes the no-provenance check from 0.29 ms
+  to 227.8 ms over 1,100 nodes and from 1.42 ms to 5.78 s over 5,500.
 
   **`IndexStore.holds_any_revision` moves with them, and it is the one that
   reaches past the purge.** Its second clause is an executed SQL predicate, not
@@ -177,9 +244,22 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   it raises `no such table: chunk_derivation` against a v4 index — reproduced,
   and it raises even where the revision clause alone would have answered,
   because SQLite resolves the whole statement before evaluating any of it. So
-  the drop would have broken withdrawal and not only purging. The predicate is
-  now two `SELECT`s joined by `UNION ALL`, because the two clauses read
-  different tables and `OR` cannot span a `FROM`.
+  the drop would have broken withdrawal and not only purging.
+
+  **It stops being a second hand-written predicate.** It runs
+  `index_purge.ANY_DOOMED_ROW`, composed from the same withdrawn-chunk and
+  unanchored-node literals `_DOOMED` is built from, so the pre-check is `_DOOMED`
+  minus an upward closure over an empty seed and the two agree by construction
+  rather than by being kept in step. Kept in step by hand, they did not agree: a
+  build whose only damage was a pre-existing dangling edge answered "nothing to
+  purge" on the pre-check — so `migrate apply` skipped it as clean without
+  copying the file — while a purge run directly on that same build refused to
+  publish over the one bad row. Under universal grounding that node is exactly as
+  ungrounded as one with no edges at all, so it is removed and the build
+  publishes. Ten hand-enumerated graph shapes pin the equivalence
+  (`test_holds_any_revision_agrees_with_whether_a_purge_removes_anything`), each
+  carrying its own chunk corpus so that no case can agree for the wrong reason
+  through the withdrawn-chunk arm.
 
   **Nothing writes a node row.** `infrastructure/raptor/` is still an empty
   package and `SummarizationProvider` still a port with no adapter, so every

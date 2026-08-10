@@ -344,15 +344,42 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > **Landed at index schema v4.** Everything above this note is the plan as it
    > stood when the amendment was written; what follows is what the schema-v4 CL
    > actually did, so that a later reader does not take the plan for the state.
-   > `nodes`, `node_derivation` and `nodes_fts` are in `index_schema.py`;
-   > `chunks.derived` and `chunk_derivation` are gone; and all three predicates
-   > named above moved together — `_DOOMED`, `_verify`'s unprovenanced
-   > post-condition, and `IndexStore.holds_any_revision`, whose clause is now two
-   > `SELECT`s joined by `UNION ALL` because the two halves read different
-   > tables. The failure this amendment predicted for that third one is
+   > `nodes`, `node_derivation`, `nodes_fts`, `nodes_trigram` and
+   > `node_embeddings` are in `index_schema.py`; `chunks.derived` and
+   > `chunk_derivation` are gone; and all three predicates named above moved
+   > together. The failure this amendment predicted for the third of them is
    > reproduced rather than reasoned about: against a v4 index the v3 clause
    > gives `no such table: chunk_derivation`, and it gives it even where the
    > revision clause alone would have answered.
+   >
+   > **They did not stay three predicates, and that is the correction to this
+   > note.** It said `holds_any_revision`'s clause was "now two `SELECT`s joined
+   > by `UNION ALL` because the two halves read different tables" — which is a
+   > second hand-written predicate, the arrangement v3 had and the one that let
+   > the pair disagree. `holds_any_revision` now runs `index_purge.ANY_DOOMED_ROW`,
+   > composed from the same withdrawn-chunk and unanchored-node literals `_DOOMED`
+   > is built from, so the pre-check is `_DOOMED` minus an upward closure over an
+   > empty seed and the two agree by construction rather than by being kept in
+   > step by hand. Ten hand-enumerated graph shapes pin the equivalence
+   > (`test_index_purge_nodes.py::test_holds_any_revision_agrees_with_whether_a_purge_removes_anything`),
+   > each carrying its own chunk corpus so that no case can agree for the wrong
+   > reason through the withdrawn-chunk arm. A first draft shared one corpus
+   > across all ten, which made that arm answer `True` whatever the node shape;
+   > the mutation that drops the node arm survived it, and mutating the test is
+   > what found that.
+   >
+   > **The disagreement was real, and closing it changed an outcome.** A build
+   > whose only damage was a pre-existing dangling edge answered "nothing to
+   > purge" on the pre-check, so `migrate apply` skipped it as clean without
+   > copying the file, while a purge run directly on that same build refused to
+   > publish over the one bad row: the pre-check called clean the very build a
+   > purge would not accept. Under the well-founded reading that node is exactly
+   > as ungrounded as one with no edges at all — it cannot be shown to hold
+   > nothing withdrawn — so it is removed and the build publishes.
+   > `test_withdrawal_purge.py::test_a_dangling_edge_is_seen_by_the_pre_check_and_purged`
+   > pins the pre-check half and
+   > `test_index_purge_nodes.py::test_a_dangling_only_build_is_purged_rather_than_refused`
+   > the direct-call half.
    >
    > **Those traversal tests are six, not five — the count this amendment took
    > from Compliance below was that section's, and it was already wrong.**
@@ -364,14 +391,21 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > six traversal tests and `_verify`'s unprovenanced backstop, which migrated
    > too and belongs to the post-condition family rather than this one.
    >
-   > **`_verify` gains a post-condition this point could not have named, because
-   > the v3 storage could not express the state it checks for**: a
-   > `node_derivation` edge whose source chunk or source node is gone. One table
-   > made a dangling edge and an unprovenanced row the same state; two tables
-   > make them different ones, so a node can now hold an edge that points at
-   > nothing while still having an edge — which the unprovenanced count does not
-   > see. Nothing writes a node row yet, so all of this is still pinned over rows
-   > inserted with raw SQL.
+   > **`_verify` goes from three post-conditions to six, and one of the three it
+   > gains this point could not have named, because the v3 storage could not
+   > express the state it checks for**: a `node_derivation` edge whose source
+   > chunk or source node is gone. One table made a dangling edge and an
+   > unprovenanced row the same state; two tables make them different ones, so a
+   > node can now hold an edge that points at nothing while still having an edge
+   > — which the unprovenanced count does not see. The other two are a node
+   > standing on a provenance cycle and an orphaned node embedding; the withdrawn-
+   > rows count also widens, from chunks by `revision_id` to those plus nodes
+   > carrying a withdrawn `source_revision_id` stamp. The cycle count is computed
+   > independently rather than by asking `_DOOMED` a second time, for the reason
+   > `_verify` exists at all: a post-condition computed by the function it checks
+   > cannot catch that function being wrong, and what publishes a build is a
+   > pointer swap with no later stage that looks. Nothing writes a node row yet,
+   > so all of this is still pinned over rows inserted with raw SQL.
 
 ## Consequences
 
