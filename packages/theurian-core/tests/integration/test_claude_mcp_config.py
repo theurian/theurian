@@ -408,6 +408,59 @@ def test_backing_up_a_missing_config_yields_nothing(home: Path) -> None:
     assert _config(home).back_up() is None
 
 
+def test_a_short_backup_write_aborts_the_removal_and_leaves_no_partial_backup(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. `back_up` calls `os.write(descriptor, payload)` and
+    discards the return value -- but POSIX `write()` is permitted to write
+    fewer bytes than requested and still return normally; nothing about that
+    is an error condition the OS reports on its own. Reproduced: a wrapper
+    around `os.write` that truncates the write to the backup descriptor lets
+    `back_up` return a path with no exception, so `install`'s removal branch
+    treats a truncated file under a `.backup` name as a successful backup and
+    proceeds to run the destructive `claude mcp remove` on top of it.
+
+    Only the write to the backup file's own descriptor is truncated -- tracked
+    by wrapping `os.open` to note which descriptor a `.backup` path was opened
+    on -- so this does not disturb any other write the test process makes.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    original_bytes = (home / CONFIG_FILENAME).read_bytes()
+    cap = 32
+    assert len(original_bytes) > cap, "the payload must exceed the cap for a short write to occur"
+
+    real_open = os.open
+    real_write = os.write
+    backup_descriptors: set[int] = set()
+
+    def tracking_open(path: Any, flags: int, mode: int = 0o777, *args: Any, **kwargs: Any) -> int:
+        descriptor = real_open(path, flags, mode, *args, **kwargs)
+        if str(path).endswith(".backup"):
+            backup_descriptors.add(descriptor)
+        return descriptor
+
+    def short_write(fd: int, data: bytes) -> int:
+        if fd in backup_descriptors:
+            return real_write(fd, data[:cap])
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "write", short_write)
+    runner = FakeClaude(home / CONFIG_FILENAME)
+    config = ClaudeCodeMcpConfig(home=home, runner=runner)
+
+    failure = config.install(ConnectionSpec())
+
+    assert failure != "", "a short backup write must not be treated as a successful backup"
+    assert runner.commands == [], (
+        "claude must never be invoked once the backup itself is incomplete"
+    )
+    assert config.installed_entry() == {"type": "http", "url": "http://old/mcp"}
+    assert list(home.glob(f"{CONFIG_FILENAME}.*.backup")) == [], (
+        "a truncated file under a `.backup` name is not a backup"
+    )
+
+
 def test_a_backup_is_born_0600_never_briefly_wider(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -417,13 +470,23 @@ def test_a_backup_is_born_0600_never_briefly_wider(
     a bearer token included -- is as readable as the process umask allows.
     Measured: 0644 under the common umask 022.
 
-    Neutralising `chmod` to a no-op isolates the claim to *creation*: with
-    `chmod` doing nothing, the only way the file can end up 0600 is if the
-    mode came from the call that created it, so it was never briefly wider.
+    Neutralising `Path.chmod` alone is not enough: a write-then-`chmod`
+    implementation may just as well call the module-level `os.chmod` on the
+    path, which is a different callable and survives a `Path.chmod` no-op
+    untouched -- a mutation doing exactly that (`write_bytes` + `os.chmod`,
+    keeping the name-uniqueness loop) passed this test before both were
+    neutralised. `os.fchmod` is left real: the fix legitimately calls it on
+    the still-restrictive descriptor `os.open` returned, and stubbing it out
+    would make the assertion pass for the wrong reason.
+
+    With both `chmod`s doing nothing, the only way the file can end up 0600
+    is if the mode came from the call that created it, so it was never
+    briefly wider.
     """
     _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
     config = _config(home)
     monkeypatch.setattr(Path, "chmod", lambda self, mode: None)  # noqa: ARG005
+    monkeypatch.setattr(os, "chmod", lambda *args, **kwargs: None)  # noqa: ARG005
     previous_umask = os.umask(0o000)
 
     try:
@@ -433,6 +496,41 @@ def test_a_backup_is_born_0600_never_briefly_wider(
 
     assert backup is not None
     assert backup.stat().st_mode & 0o777 == 0o600, "the backup was wider than 0600 at some point"
+
+
+def test_a_backup_is_exactly_0600_regardless_of_umask(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. `back_up` passes mode 0o600 to `os.open`, but that
+    mode is ANDed with the process umask the same as any `creat()` call --
+    `os.open` never widens what was asked for, but an unusual umask can still
+    strip bits from it. Under umask 0o400 (which clears the owner-read bit),
+    the file this creates is 0200: the owner cannot read their own backup, and
+    the CHANGELOG's unconditional "created 0600 from birth" is false for this
+    umask.
+
+    Two properties, not one: the mode can never be *wider* than 0600 -- umask
+    only removes bits, and `os.open`'s own mode argument is the sole point of
+    creation, so there is no window in which more bits are set than that --
+    but "never wider" is not "exactly 0600", and only the second is what the
+    CHANGELOG asserts unconditionally. The fix restores it with
+    `os.fchmod(descriptor, 0o600)` on the still-open, still-private descriptor
+    after `os.open` returns, which is safe for the same reason: the descriptor
+    was never reachable by another process at a wider mode in between.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    config = _config(home)
+    previous_umask = os.umask(0o400)
+
+    try:
+        backup = config.back_up()
+    finally:
+        os.umask(previous_umask)
+
+    assert backup is not None
+    mode = backup.stat().st_mode & 0o777
+    assert mode & ~0o600 == 0, "the backup must never be wider than 0600, regardless of umask"
+    assert mode == 0o600, "the backup must be exactly 0600, not merely a subset of it"
 
 
 def test_two_backups_in_the_same_second_do_not_collide(
@@ -500,6 +598,79 @@ def test_a_failing_backup_is_installs_own_failure_not_an_exception(
     assert "back" in failure.lower(), "the failure must name the backup, not just fail generically"
     assert runner.commands == [], "claude must never be invoked once the backup itself failed"
     assert config.installed_entry() == {"type": "http", "url": "http://old/mcp"}
+
+
+def test_a_backup_name_collision_is_retried_but_no_other_open_failure_is(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. `back_up`'s naming loop catches `FileExistsError`
+    specifically, not `OSError` broadly -- a name collision (two backups in the
+    same UTC second) is the only condition worth retrying; anything else
+    `os.open` can raise (an unwritable home, a full disk, a permission
+    problem) is a real failure and must propagate on the first attempt rather
+    than spin through all `_MAX_BACKUP_ATTEMPTS` names before finally giving
+    up with the wrong diagnosis ("could not find a free name" instead of
+    "permission denied").
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    runner = FakeClaude(home / CONFIG_FILENAME)
+    config = ClaudeCodeMcpConfig(home=home, runner=runner)
+    attempts: list[int] = []
+
+    def always_permission_denied(
+        path: Any,  # part of the os.open signature being replaced
+        flags: int,
+        mode: int = 0o777,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int:
+        attempts.append(1)
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "open", always_permission_denied)
+
+    failure = config.install(ConnectionSpec())
+
+    assert len(attempts) == 1, (
+        "only FileExistsError should be retried; any other OSError must propagate immediately"
+    )
+    assert failure != ""
+    assert "back" in failure.lower()
+    assert runner.commands == [], "claude must never be invoked once the backup itself failed"
+    assert config.installed_entry() == {"type": "http", "url": "http://old/mcp"}
+
+
+def test_exhausting_every_backup_name_is_installs_own_failure_too(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. When every candidate name in the same UTC second
+    collides -- `_MAX_BACKUP_ATTEMPTS` of them -- `back_up` gives up and
+    raises its own `OSError` naming the reason, rather than looping forever.
+    `install` must fold that into its own failure string, exactly like any
+    other backup failure, and must not have run `claude` on top of it.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    runner = FakeClaude(home / CONFIG_FILENAME)
+    config = ClaudeCodeMcpConfig(home=home, runner=runner)
+
+    def always_exists(
+        path: Any,  # part of the os.open signature being replaced
+        flags: int,
+        mode: int = 0o777,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int:
+        raise FileExistsError(17, "File exists")
+
+    monkeypatch.setattr(os, "open", always_exists)
+
+    failure = config.install(ConnectionSpec())
+
+    assert failure != ""
+    assert "free backup name" in failure, "the exhaustion diagnosis must reach the caller"
+    assert runner.commands == [], "claude must never be invoked once the backup itself failed"
+    assert config.installed_entry() == {"type": "http", "url": "http://old/mcp"}
+    assert list(home.glob(f"{CONFIG_FILENAME}.*.backup")) == []
 
 
 # -- Removing --------------------------------------------------------------

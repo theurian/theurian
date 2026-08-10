@@ -300,13 +300,25 @@ class ClaudeCodeMcpConfig:
         creates the file, not by writing and then `chmod`-ing: the config being
         copied is Claude Code's live state, a bearer token included, and a
         write-then-chmod leaves a window in which the copy is as readable as the
-        process umask allows.
+        process umask allows. That mode argument is itself ANDed with the
+        process umask the same as any `creat()` call, so it is re-asserted with
+        `os.fchmod` on the descriptor immediately after `os.open` returns and
+        before any byte is written, keeping the file's mode at 0600 -- never
+        wider -- from before it has content.
 
         The name carries a second-precision timestamp, so two calls landing in
         the same UTC second collide on it; `O_EXCL` turns that collision into
         `FileExistsError` instead of silently overwriting the first backup, and
         a numeric suffix (``-1``, ``-2``, ...) is appended before ``.backup``
         until a free name is found, so both copies survive.
+
+        The write is checked for completeness rather than trusted: `os.write`
+        may report having written fewer bytes than given without that being an
+        error condition of its own, and a short write here is treated as
+        unrecoverable rather than retried. Any failure along that path --
+        including an incomplete write -- unlinks the partial candidate before
+        propagating `OSError`, because a truncated file under a `.backup` name
+        is not a backup for `install` to fall back on.
         """
         if not self.path.is_file():
             return None
@@ -320,14 +332,40 @@ class ClaudeCodeMcpConfig:
             except FileExistsError:
                 continue
             try:
-                os.write(descriptor, payload)
-            finally:
+                # Re-assert 0600 before any content exists: `os.open`'s mode
+                # argument is itself ANDed with the process umask, so an
+                # unusual umask (e.g. 0400) can leave the file wider or
+                # narrower than what was asked for.
+                os.fchmod(descriptor, 0o600)
+                _write_all(descriptor, payload)
+            except OSError:
                 os.close(descriptor)
+                candidate.unlink(missing_ok=True)
+                raise
+            os.close(descriptor)
             return candidate
         msg = (
             f"Could not find a free backup name for {self.path} at {stamp} "
             f"after {_MAX_BACKUP_ATTEMPTS} attempts."
         )
+        raise OSError(msg)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    """Write every byte of *payload* to *descriptor*, or fail without retrying.
+
+    POSIX permits `write()` to write fewer bytes than requested and still
+    return normally -- that is not an error condition the OS reports on its
+    own, so an unchecked call can silently leave a truncated file behind. A
+    backup this small has no legitimate reason to be accepted only partially,
+    so a short write is treated as unrecoverable rather than retried:
+    retrying into the resource condition that caused it (a full disk,
+    `RLIMIT_FSIZE`) either spins for no benefit or hits the same wall on the
+    very next call.
+    """
+    sent = os.write(descriptor, payload)
+    if sent != len(payload):
+        msg = f"short write to {descriptor}: wrote {sent} of {len(payload)} bytes"
         raise OSError(msg)
 
 
