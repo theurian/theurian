@@ -8,6 +8,7 @@ able to assert on the exact JSON a caller receives.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -656,6 +657,153 @@ def test_an_empty_project_validates(project: Path) -> None:
     code, validated = _invoke("migrate", "validate")
     assert code == 0
     assert validated["migrationCount"] == 0
+
+
+# -- issue #63: tenantId/aclGroup nothing can yet enforce -------------------
+
+
+def _migration_with_scope(tenant_id: str | None = None, acl_group: str | None = None) -> str:
+    lines = [f"      tenantId: {tenant_id}"] if tenant_id is not None else []
+    if acl_group is not None:
+        lines.append(f"      aclGroup: {acl_group}")
+    insertion = "\n".join((*lines, "      sourceAnchors:"))
+    return MIGRATION.replace("      sourceAnchors:", insertion)
+
+
+def test_default_tenant_and_acl_group_apply_cleanly_end_to_end(project: Path) -> None:
+    """Negative control: default scope is not refused, at either command."""
+    _invoke("init")
+    _write_migration(
+        project, migration=_migration_with_scope(tenant_id="local", acl_group="default")
+    )
+
+    validate_code, _ = _invoke("migrate", "validate")
+    apply_code, applied = _invoke("migrate", "apply")
+
+    assert validate_code == 0
+    assert apply_code == 0
+    assert applied["applied"] == [MIGRATION_ID]
+
+
+def test_validate_and_apply_refuse_an_unenforceable_tenant_identically(project: Path) -> None:
+    """Issue #63's MEDIUM-1. Nothing below the CLI pinned that `migrate
+    validate`'s call to `refuse_unenforceable_scope`, or `migrate apply`'s
+    dedicated `except UnenforceableScopeError` clause, actually runs:
+    deleting either line from `cli/commands.py` left the full test suite
+    green (mutation-verified). Both assertions below must go RED if either
+    is removed -- exit code and remedy text are pinned against known values,
+    not only against each other, since two commands that agree by both
+    falling back to the *same wrong* text would still pass an equality-only
+    check.
+    """
+    _invoke("init")
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["error"] == apply_error["error"]
+    assert validate_error["remedy"] == apply_error["remedy"]
+    assert "tenantId" in validate_error["remedy"]
+    assert "'local'" in validate_error["remedy"]
+    assert "#63" in validate_error["remedy"]
+    assert validate_error["remedy"] != "Fix the migration set, then retry."
+
+
+def test_a_refused_apply_leaves_no_database_file(project: Path) -> None:
+    """Issue #63 LOW: the refusal is checked before `create_database`, so a
+    refused `apply` costs the same as a refused `validate` -- nothing."""
+    _invoke("init")
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+
+    code, _ = _invoke("migrate", "apply")
+
+    assert code == EXIT_STATE_ERROR
+    assert list((project / ".theurian/state").glob("*.sqlite")) == []
+
+
+def test_status_reports_refused_ids_without_gating(project: Path) -> None:
+    """Issue #63's MEDIUM-3: `migrate status` is observation, not a gate, so
+    it keeps exit 0 -- but the same statically decidable property must be
+    visible here too, via `refusedIds`."""
+    _invoke("init")
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+
+    code, status = _invoke("migrate", "status")
+
+    assert code == 0
+    assert status["refusedIds"] == [MIGRATION_ID]
+    assert status["pendingIds"] == [MIGRATION_ID]
+
+
+def test_status_reports_no_refused_ids_for_a_clean_set(project: Path) -> None:
+    _invoke("init")
+    _write_migration(project)
+    code, status = _invoke("migrate", "status")
+    assert code == 0
+    assert status["refusedIds"] == []
+
+
+def test_an_already_applied_foreign_tenant_gets_a_remedy_that_actually_works(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #63's HIGH-1. A revision applied by an earlier build that did not
+    refuse it (only possible on `0.1.0.dev0`/`0.1.0.dev1`) must not get the
+    "just edit the field" remedy: editing an already-applied migration's file
+    changes its checksum and trips FR-K5's tamper-evidence check instead,
+    whose own remedy says to restore the file -- looping the reader between
+    two contradictory errors with no documented way out.
+
+    Simulated by disabling the refusal for one seeding `apply`, standing in
+    for the earlier, unrefusing build that produced this exact state.
+
+    The seeding patch uses `monkeypatch.context()`, a *separate* scoped
+    `MonkeyPatch`, rather than calling `.undo()` on the fixture-provided
+    `monkeypatch` directly: the `project` fixture above also patches through
+    that same instance (`chdir` into the temp project, `setenv` for
+    `THEURIAN_DATA_DIR`), and `.undo()` reverts every patch it has recorded,
+    not only this test's two -- it was caught here reverting the working
+    directory back to wherever pytest was invoked from mid-test, which is
+    exactly the real checkout the isolation rules in this repository exist to
+    keep the CLI away from. `migrate validate` never writes, so nothing was
+    written by the mistake, but the harness itself must not depend on that.
+    """
+    _invoke("init")
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+
+    with monkeypatch.context() as seed:
+        seed.setattr(
+            "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
+        )
+        seed.setattr("theurian.cli.commands.refuse_unenforceable_scope", lambda _ms: None)
+        seed_code, seeded = _invoke("migrate", "apply")
+    assert seed_code == 0, "fixture setup failed: the seeding apply itself was refused"
+    assert seeded["applied"] == [MIGRATION_ID]
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["remedy"] == apply_error["remedy"]
+    assert ".theurian/state" in validate_error["remedy"]
+    assert "FR-K4" in validate_error["remedy"]
+    # Must NOT be the unapplied-case remedy: that exact text is what HIGH-1
+    # found looping the reader between two contradictory errors, since
+    # editing an applied migration's file trips the checksum guard instead.
+    assert "then retry" not in validate_error["remedy"]
+
+    # And the working procedure the remedy describes must actually work:
+    # edit every offending field to the default, delete state, reapply.
+    (project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(
+        _migration_with_scope(tenant_id="local")
+    )
+    shutil.rmtree(project / ".theurian/state")
+    recovered_code, recovered = _invoke("migrate", "apply")
+    assert recovered_code == 0
+    assert recovered["applied"] == [MIGRATION_ID]
 
 
 # ==========================================================================

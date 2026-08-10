@@ -22,6 +22,7 @@ from theurian.application.ingestion_service import (
 from theurian.application.migration_engine import (
     MigrationEngine,
     refuse_unenforceable_scope,
+    unenforceable_scope_violations,
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (
@@ -55,7 +56,7 @@ from theurian.domain.extras import (
     DAEMON_EXTRA_REMEDY,
     provided_by_daemon_extra,
 )
-from theurian.domain.identifiers import ProjectId
+from theurian.domain.identifiers import MigrationId, ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
@@ -126,15 +127,72 @@ STATE_REBUILD_REMEDY: Final = (
     "Git-tracked migrations. Nothing authored is lost."
 )
 
-#: Cure for `UnenforceableScopeError` (issue #63). Named once and shared by
-#: `migrate validate` and `migrate apply`, which is what keeps the fix they
-#: point at the same for both -- the remedy field is a contract callers read
-#: without parsing `error`.
-UNENFORCEABLE_SCOPE_REMEDY: Final = (
-    "Set tenantId to 'local' and aclGroup to 'default' in the revision's metadata. "
-    "A later milestone lifts this refusal once a hosted deployment has a real "
-    "AuthorizationProvider to enforce other values against (issue #63)."
+#: Cure for `UnenforceableScopeError` when the offending revision has not yet
+#: been applied (issue #63). Editing the migration file is unconditionally
+#: safe here: nothing has recorded a checksum for it, so nothing can trip
+#: FR-K5's tamper check. Named once and shared by `migrate validate` and
+#: `migrate apply`'s "unapplied" branch, which is what keeps the fix they
+#: point at the same -- the remedy field is a contract callers read without
+#: parsing `error`.
+UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED: Final = (
+    "Set tenantId to 'local' and aclGroup to 'default' in the revision's metadata, "
+    "then retry. A later milestone lifts this refusal once a hosted deployment has "
+    "a real AuthorizationProvider to enforce other values against (issue #63)."
 )
+
+#: Cure for `UnenforceableScopeError` when the offending revision was already
+#: applied -- only reachable on a project built by a version older than this
+#: refusal (`0.1.0.dev0`, `0.1.0.dev1`). Editing the field in place would
+#: change the migration file's checksum and trip FR-K5's tamper check instead
+#: of this one, and that check's own remedy says to restore the file --
+#: looping the reader between two remedies with no documented way out (issue
+#: #63's HIGH-1). The only procedure verified end to end: edit the field(s),
+#: then rebuild state from empty rather than try to reconcile it in place.
+UNENFORCEABLE_SCOPE_REMEDY_APPLIED: Final = (
+    "This revision was already applied, by an earlier build that did not refuse it. "
+    "Edit tenantId to 'local' and aclGroup to 'default' in every migration naming "
+    "another value, delete `.theurian/state/`, then run `theurian migrate apply` to "
+    "rebuild canonical state from the edited migrations -- state is fully "
+    "reconstructible from the Git-tracked migrations (FR-K4). This discards FR-K5's "
+    "tamper-evidence for every migration applied before that point, so do this once, "
+    "deliberately, not as a routine fix (issue #63)."
+)
+
+
+def _applied_migration_ids(database: Path, project_id: ProjectId) -> frozenset[MigrationId]:
+    """Migration ids already recorded as applied in ``database``.
+
+    Read-only, and never the authority for whether a migration is safe to
+    apply -- that is :meth:`MigrationEngine.plan`'s job, inside a real write
+    transaction. Used only to choose which `UnenforceableScopeError` remedy to
+    print (issue #63's HIGH-1): editing a migration nobody has applied yet is
+    a routine fix; editing one this database already recorded trips FR-K5's
+    checksum guard instead, and needs a different, honest procedure.
+
+    Any failure opening ``database`` is treated as "nothing recorded" rather
+    than surfaced: the caller is already reporting a different failure
+    (`UnenforceableScopeError`), and replacing it with an unrelated crash from
+    a code path whose only job is choosing a string would be worse than
+    picking the more common remedy.
+    """
+    if not database.exists():
+        return frozenset()
+    try:
+        with SqliteCanonicalStore(database) as store:
+            return frozenset(
+                migration_id for migration_id, _ in store.applied_migrations(project_id)
+            )
+    except (SchemaVersionMismatchError, StateDatabaseUnreadableError):
+        return frozenset()
+
+
+def _unenforceable_scope_remedy(
+    exc: UnenforceableScopeError, database: Path, project_id: ProjectId
+) -> str:
+    """Which of the two `UnenforceableScopeError` remedies applies (issue #63)."""
+    if exc.migration_id in _applied_migration_ids(database, project_id):
+        return UNENFORCEABLE_SCOPE_REMEDY_APPLIED
+    return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
 
 
 def _state_remedy(exc: TheurianError) -> str:
@@ -740,8 +798,17 @@ def project_status(as_json: JsonOption = False) -> None:
 
 @migrate_app.command("status")
 def migrate_status(as_json: JsonOption = False) -> None:
-    """Report applied and pending migrations."""
+    """Report applied and pending migrations.
+
+    Unlike `migrate validate` and `migrate apply`, this command never refuses
+    (issue #63's MEDIUM-3): its contract is observation, so a set containing a
+    revision naming a tenant or ACL group nothing can yet enforce is still
+    reported in full, with `refusedIds` naming which migrations `validate`/
+    `apply` will refuse -- the statically decidable property this issue is
+    about stays visible here too, on the one consumer that keeps going.
+    """
     context, database = _require_project(as_json)
+    refused_ids = [str(m) for m in unenforceable_scope_violations(context.loaded.migration_set)]
 
     if not database.exists():
         _emit(
@@ -752,6 +819,7 @@ def migrate_status(as_json: JsonOption = False) -> None:
                 "applied": 0,
                 "pending": len(context.loaded.migration_set),
                 "pendingIds": [str(m.migration_id) for m in context.loaded.migration_set],
+                "refusedIds": refused_ids,
             },
             as_json=as_json,
         )
@@ -790,6 +858,7 @@ def migrate_status(as_json: JsonOption = False) -> None:
             "applied": len(plan.already_applied),
             "pending": len(plan.pending),
             "pendingIds": [str(m.migration_id) for m in plan.pending],
+            "refusedIds": refused_ids,
         },
         as_json=as_json,
     )
@@ -807,14 +876,24 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     `MigrationSet` `migrate apply` would see -- `MigrationEngine.apply` calls
     the identical function internally. A document that names a tenant or ACL
     group nothing can yet enforce (issue #63) is refused by both commands or
-    neither; validate cannot pass a document apply will reject (issue #36).
+    neither, *for this one statically decidable rule*. That is not a general
+    guarantee that validate cannot pass a document apply will reject: it still
+    cannot see every invariant domain construction enforces -- INV-8's
+    source-anchor requirement is one, and the shipped
+    `examples/sample-project/` demonstrates it validating a document `migrate
+    apply` then rejects (issue #36).
     """
-    context, _ = _require_project(as_json)
+    context, database = _require_project(as_json)
 
     try:
         refuse_unenforceable_scope(context.loaded.migration_set)
     except UnenforceableScopeError as exc:
-        _fail(str(exc), remedy=UNENFORCEABLE_SCOPE_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
+        _fail(
+            str(exc),
+            remedy=_unenforceable_scope_remedy(exc, database, context.project_id),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
         return
 
     _emit(
@@ -837,6 +916,21 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     nothing (FR-K8).
     """
     context, database = _require_project(as_json)
+
+    try:
+        refuse_unenforceable_scope(context.loaded.migration_set)
+    except UnenforceableScopeError as exc:
+        # Checked before `create_database` below, so a refused apply leaves no
+        # database file behind (issue #63): `migrate validate` already costs
+        # nothing on refusal, and `apply` should not cost more just because it
+        # would otherwise have created state.
+        _fail(
+            str(exc),
+            remedy=_unenforceable_scope_remedy(exc, database, context.project_id),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
 
     created = False
     if not database.exists():
@@ -883,10 +977,18 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         )
         return
     except UnenforceableScopeError as exc:
-        # Caught ahead of the generic `MigrationError` clause below, since it
-        # is one -- and a more specific remedy than "fix the migration set" is
-        # available here.
-        _fail(str(exc), remedy=UNENFORCEABLE_SCOPE_REMEDY, as_json=as_json, code=EXIT_STATE_ERROR)
+        # Defense in depth, not the primary path: the pre-check above already
+        # refuses before `create_database` runs, for every input this command
+        # can receive. `MigrationEngine.apply` enforces the same rule on its
+        # own, so this stays correct even for a caller that invokes it
+        # directly without going through this command. Caught ahead of the
+        # generic `MigrationError` clause below, since it is one.
+        _fail(
+            str(exc),
+            remedy=_unenforceable_scope_remedy(exc, database, context.project_id),
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
         return
     except (MigrationCycleError, MigrationError) as exc:
         _fail(
