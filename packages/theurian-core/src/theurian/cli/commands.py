@@ -1053,7 +1053,6 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     # decision 5). A withdrawal-free apply skips it inside the use case.
     purge = publish_purge_for_withdrawal(
         context.paths,
-        project_id=context.project_id.value,
         withdrawn_revision_ids=report.withdrawn_revisions,
         ids=context.ids,
         index_factory=SqliteIndexStore,
@@ -1088,6 +1087,7 @@ def _purge_fields(purge: WithdrawalPurge) -> dict[str, object]:
         "removed": purge.removed,
         "reason": purge.reason,
         "failed": purge.failed,
+        "remedy": purge.remedy,
     }
 
 

@@ -581,6 +581,26 @@ class SqliteIndexStore:
             state_hash=state_hash,
         )
 
+    def holds_any_revision(self, revision_ids: Sequence[str]) -> bool:
+        """Whether any chunk in this build carries one of ``revision_ids``.
+
+        The cheap pre-check that keeps the withdrawal purge (ADR-0024 decision 5)
+        from copying a whole index only to delete nothing: ``migrate apply``
+        replays the whole set on any state-hash shift (ADR-0016), so a project
+        with a past withdrawal asks this on every apply and almost always gets
+        ``False``. Answered by the ``chunks_by_revision`` index, so it is a lookup
+        rather than a scan.
+        """
+        if not revision_ids:
+            return False
+        placeholders = ", ".join("?" for _ in revision_ids)
+        with self._read() as connection:
+            row = connection.execute(
+                f"SELECT 1 FROM chunks WHERE revision_id IN ({placeholders}) LIMIT 1",  # noqa: S608 - placeholders generated, values bound
+                tuple(revision_ids),
+            ).fetchone()
+            return row is not None
+
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         """Store one vector per chunk.
 

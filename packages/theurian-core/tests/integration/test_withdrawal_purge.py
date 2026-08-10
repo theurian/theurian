@@ -11,6 +11,9 @@ report itself failed.
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -24,6 +27,7 @@ from theurian.application.withdrawal_purge import (
     INDEX_UNUSABLE,
     NO_PUBLISHED_INDEX,
     NO_WITHDRAWAL,
+    NOTHING_TO_PURGE,
     PurgeableIndex,
     WithdrawalPurge,
     publish_purge_for_withdrawal,
@@ -142,7 +146,6 @@ def test_a_purge_publishes_a_build_that_answers_as_if_the_rows_were_never_indexe
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        project_id=PROJECT,
         withdrawn_revision_ids=withdrawn,
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
@@ -173,7 +176,6 @@ def test_the_pointer_swaps_to_the_new_build_and_the_old_file_stays(tmp_path: Pat
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        project_id=PROJECT,
         withdrawn_revision_ids=withdrawn,
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
@@ -197,7 +199,6 @@ def test_an_empty_withdrawal_publishes_nothing(tmp_path: Path) -> None:
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        project_id=PROJECT,
         withdrawn_revision_ids=[],
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
@@ -218,7 +219,6 @@ def test_no_published_index_is_a_state_not_a_failure(tmp_path: Path) -> None:
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        project_id=PROJECT,
         withdrawn_revision_ids=["gone-000"],
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
@@ -247,7 +247,6 @@ def test_a_pointer_naming_a_missing_or_unreadable_build_is_unusable(tmp_path: Pa
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        project_id=PROJECT,
         withdrawn_revision_ids=["gone-000"],
         ids=UlidGenerator(),
         index_factory=SqliteIndexStore,
@@ -257,23 +256,91 @@ def test_a_pointer_naming_a_missing_or_unreadable_build_is_unusable(tmp_path: Pa
     assert read_active_index_pointer(paths).payload is not None, "the pointer is left as it was"
 
 
+def test_a_build_holding_none_of_the_withdrawn_revisions_is_left_alone(tmp_path: Path) -> None:
+    """The common replay case, made cheap and made not to churn (HIGH-2).
+
+    ``migrate apply`` replays the whole set on any state-hash shift, so a project
+    with a past withdrawal asks this on every apply. If the published build holds
+    none of the withdrawn revisions -- already purged, or built after the
+    withdrawal -- there is nothing to do: no copy, no pointer swap. Otherwise a
+    restored item is deleted on one apply and a rebuild brings it back on the
+    next, forever, and every apply republishes an identical build.
+    """
+    paths = _paths(tmp_path)
+    # A build that never held the withdrawn revisions at all.
+    _publish_source(paths, include_withdrawn=False)
+    pointer_before = read_active_index_pointer(paths).payload
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawn_revision_ids=["gone-000", "gone-001"],
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome == WithdrawalPurge(published=False, reason=NOTHING_TO_PURGE)
+    assert read_active_index_pointer(paths).payload == pointer_before, "the pointer is untouched"
+    assert len(list(paths.state.glob("theurian-index-*.sqlite"))) == 1, (
+        "and no copy was left behind"
+    )
+
+
+def test_the_purge_preserves_the_published_project_id_not_the_callers(tmp_path: Path) -> None:
+    """HIGH-3. A rename must not make the purge orphan the index.
+
+    A build's chunks are stamped with the project id that wrote them, and the
+    pointer records it. After a rename (`project unregister` then `register
+    --project-id new`) the canonical store is addressed by the new id, but the
+    published build is still the old one's. A purge that stamped the *new* id onto
+    the pointer would make `knowledge.search` answer `count: 0, indexed: true` for
+    content that is really there. So the purge carries the pointer's own project
+    id forward, exactly as it does the state hash.
+    """
+    paths = _paths(tmp_path)
+    withdrawn = _build(paths.index_for(BUILD_ID), include_withdrawn=True)
+    write_active_index_pointer(
+        paths,
+        index_build_id=BUILD_ID,
+        state_hash=STATE_HASH,
+        project_id="the-original-id",
+        indexes_unapproved=True,
+    )
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawn_revision_ids=withdrawn,
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome.published is True
+    payload = read_active_index_pointer(paths).payload
+    assert payload is not None
+    assert payload["projectId"] == "the-original-id", "the build's own id, not the caller's"
+    assert payload["indexesUnapproved"] is True, "draft coverage is preserved across the purge too"
+
+
 class _RaisingIndex:
     """A published build the use case can read but cannot purge."""
 
     def is_searchable(self) -> bool:
         return True
 
+    def holds_any_revision(self, _revision_ids: Sequence[str]) -> bool:
+        return True
+
     def derive_purged(self, *_args: object, **_kwargs: object) -> int:
-        raise IndexPurgeError("the copy could not be read")
+        raise IndexPurgeError("the copy could not be read at /home/someone/secret/path.sqlite")
 
 
 def test_a_purge_that_raises_leaves_the_old_build_serving(tmp_path: Path) -> None:
     """All-or-nothing (ADR-0024). The withdrawal is committed; only the follow-up failed.
 
     So the apply must not report itself failed -- the use case returns rather than
-    raising -- and the still-published stale build is named through `failed` so
-    the operator rebuilds rather than discovering it in a leak. The pointer must
-    still name the original build.
+    raising -- and the still-published stale build is named through `failed`, with
+    a remedy, so the operator rebuilds rather than discovering it in a leak. The
+    reason carries the exception *type* only: the message would leak the
+    operator's absolute paths, which `index_purge` deliberately keeps out.
     """
     paths = _paths(tmp_path)
     withdrawn = _publish_source(paths, include_withdrawn=True)
@@ -283,7 +350,6 @@ def test_a_purge_that_raises_leaves_the_old_build_serving(tmp_path: Path) -> Non
 
     outcome = publish_purge_for_withdrawal(
         paths,
-        project_id=PROJECT,
         withdrawn_revision_ids=withdrawn,
         ids=UlidGenerator(),
         index_factory=factory,
@@ -291,7 +357,75 @@ def test_a_purge_that_raises_leaves_the_old_build_serving(tmp_path: Path) -> Non
 
     assert outcome.published is False
     assert outcome.failed is True
-    assert "purge-failed" in outcome.reason
+    assert outcome.reason == "purge-failed: IndexPurgeError"
+    assert "path.sqlite" not in outcome.reason, "the exception message must not leak a path"
+    assert outcome.remedy, "a failed purge names the rebuild"
+    assert "index build" in outcome.remedy
     payload = read_active_index_pointer(paths).payload
     assert payload is not None
     assert payload["indexBuildId"] == BUILD_ID, "the old build must still be published"
+
+
+def test_a_non_sqlite_adapter_failure_also_fails_closed(tmp_path: Path) -> None:
+    """The all-or-nothing contract holds for any adapter, not only SQLite.
+
+    The use case fails closed on *any* exception a `PurgeableIndex` raises, not a
+    hard-coded `sqlite3.Error` tuple -- otherwise a future non-SQLite adapter's
+    exception would escape and crash `migrate apply` with a traceback, breaking
+    the contract for everything but SQLite.
+    """
+    paths = _paths(tmp_path)
+    withdrawn = _publish_source(paths, include_withdrawn=True)
+
+    class _NonSqliteFailure:
+        def is_searchable(self) -> bool:
+            return True
+
+        def holds_any_revision(self, _revision_ids: Sequence[str]) -> bool:
+            return True
+
+        def derive_purged(self, *_args: object, **_kwargs: object) -> int:
+            raise RuntimeError("a bespoke adapter blew up")
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawn_revision_ids=withdrawn,
+        ids=UlidGenerator(),
+        index_factory=lambda _path: _NonSqliteFailure(),
+    )
+
+    assert outcome.failed is True
+    assert outcome.reason == "purge-failed: RuntimeError"
+    assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
+
+
+def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> None:
+    """The is_searchable() branch, exercised by a real corrupt build.
+
+    A build whose schema this process does not understand is one retrieval falls
+    back past, so it never scores the withdrawn rows; the purge leaves it and its
+    pointer alone rather than failing on its missing tables.
+    """
+    paths = _paths(tmp_path)
+    withdrawn = _build(paths.index_for(BUILD_ID), include_withdrawn=True)
+    write_active_index_pointer(
+        paths,
+        index_build_id=BUILD_ID,
+        state_hash=STATE_HASH,
+        project_id=PROJECT,
+        indexes_unapproved=False,
+    )
+    # Corrupt the build's schema version so `is_searchable()` returns False.
+    with closing(sqlite3.connect(paths.index_for(BUILD_ID))) as connection:
+        connection.execute("UPDATE index_metadata SET index_schema_version = -1 WHERE id = 1")
+        connection.commit()
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawn_revision_ids=withdrawn,
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome == WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
+    assert read_active_index_pointer(paths).payload is not None, "the pointer is left as it was"

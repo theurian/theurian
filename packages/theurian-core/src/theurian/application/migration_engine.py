@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Protocol
 
-from theurian.domain.enums import KnowledgeStatus, RelationType
+from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
@@ -116,13 +116,15 @@ class ApplyReport:
     skipped: list[MigrationId] = field(default_factory=list)
     operations_applied: int = 0
     #: Revision ids whose chunks a still-published index must no longer hold
-    #: (ADR-0024 decision 5). A retirement contributes the item's whole history;
-    #: a supersede that moves ``currentRevisionId`` forward contributes the
-    #: revisions it left behind -- their chunks carry the pre-redaction text. The
-    #: list is a superset of what any one index holds: the purge deletes by
-    #: ``revision_id IN (...)`` and ignores an id no chunk carries, and an index
-    #: built from an older revision than the one current at withdrawal time is
-    #: exactly why the whole history is recorded rather than only the current id.
+    #: (ADR-0024 decision 5), read off the **final** canonical state after the
+    #: apply commits -- never accumulated per operation. A revision is here when
+    #: its item is non-surfaceable in that final state (deprecated or rejected) or
+    #: when it is not the item's current revision (a superseded/redacted revision
+    #: whose stale content is still indexed). Reading final state is what makes a
+    #: restore cancel a deprecation, a reject-in-place withdraw an item whose
+    #: revision id never changed, and a full replay idempotent -- three things an
+    #: operation log gets wrong (see `_revisions_to_purge`). Sorted, so a replay
+    #: produces an identical list.
     withdrawn_revisions: list[str] = field(default_factory=list)
 
     @property
@@ -317,12 +319,17 @@ class MigrationEngine:
         refuse_unenforceable_scope(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
+        # The items whose surfaceability or current revision an operation could
+        # have moved. The withdrawn set is read off their *final* state below,
+        # never accumulated per operation -- see `_revisions_to_purge`.
+        affected: set[ItemId] = set()
         for migration in plan.pending:
             for operation in migration.operations:
-                report.withdrawn_revisions.extend(
-                    self._apply_operation(writer, project_id, migration, operation)
-                )
+                self._apply_operation(writer, project_id, migration, operation)
                 report.operations_applied += 1
+                item_id = _withdrawal_affected_item(operation)
+                if item_id is not None:
+                    affected.add(item_id)
             writer.record_migration(
                 project_id,
                 migration.migration_id,
@@ -331,6 +338,7 @@ class MigrationEngine:
             )
             report.applied.append(migration.migration_id)
 
+        report.withdrawn_revisions = _revisions_to_purge(writer, project_id, affected)
         return report
 
     def _apply_operation(  # noqa: PLR0912 -- a flat dispatch over 14 closed operations
@@ -339,19 +347,12 @@ class MigrationEngine:
         project_id: ProjectId,
         migration: Migration,
         operation: Operation,
-    ) -> tuple[str, ...]:
-        """Apply one operation and return the revision ids it withdrew.
-
-        Non-empty only for the two operations that make a published index hold
-        content no caller may read (ADR-0024 decision 5): a retirement, and a
-        supersede that moves ``currentRevisionId`` forward. Every other case
-        returns ``()`` -- the empty tuple is the answer, not a missing one.
-        """
+    ) -> None:
         match operation:
             case CreateItem():
                 self._create_item(writer, project_id, operation)
             case UpsertRevision():
-                return self._upsert_revision(writer, project_id, migration, operation)
+                self._upsert_revision(writer, project_id, migration, operation)
             case DeprecateItem():
                 self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.DEPRECATED)
                 if operation.superseded_by is not None:
@@ -365,14 +366,6 @@ class MigrationEngine:
                             note=operation.reason,
                         )
                     )
-                # The whole item is retired, so every revision it ever had is
-                # withdrawn -- a published index built from any of them must stop
-                # holding it. `list_revision_ids` reads inside the transaction, so
-                # it sees the item as this apply has left it.
-                return tuple(
-                    revision_id.value
-                    for revision_id in writer.list_revision_ids(project_id, operation.item_id)
-                )
             case RestoreItem():
                 self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.APPROVED)
             case AddRelation():
@@ -436,9 +429,6 @@ class MigrationEngine:
                 raise MigrationError(
                     f"{migration.migration_id}: unsupported operation {operation.kind}"
                 )
-        # Every case above either returned its withdrawn revisions or withdrew
-        # nothing; the empty tuple is what "nothing" is.
-        return ()
 
     # -- Operation implementations ----------------------------------------
 
@@ -473,28 +463,9 @@ class MigrationEngine:
         project_id: ProjectId,
         migration: Migration,
         operation: UpsertRevision,
-    ) -> tuple[str, ...]:
+    ) -> None:
         item = writer.get_item(project_id, operation.item_id)
         self._check_expected_revision(item, operation)
-
-        # A supersede -- an ``expectedRevision`` that names a different current
-        # revision than this one creates -- moves ``currentRevisionId`` forward
-        # and leaves the prior revisions holding the pre-redaction text (ADR-0024
-        # decision 5). Captured before the append below, so it is exactly the set
-        # this operation supersedes and never the new revision itself. An initial
-        # revision (`expected_revision is None`) or a re-application to the same id
-        # withdraws nothing.
-        withdrawn: tuple[str, ...] = ()
-        if (
-            operation.expected_revision is not None
-            and item is not None
-            and item.current_revision_id is not None
-            and item.current_revision_id != operation.revision_id
-        ):
-            withdrawn = tuple(
-                revision_id.value
-                for revision_id in writer.list_revision_ids(project_id, operation.item_id)
-            )
 
         if operation.content_sha256 is None:  # pragma: no cover - loader always sets it
             raise MigrationError(
@@ -552,7 +523,6 @@ class MigrationEngine:
                 validity=ValidityPeriod(valid_from=valid_from),
             )
         writer.put_item(item.with_revision(revision))
-        return withdrawn
 
     @staticmethod
     def _check_expected_revision(item: KnowledgeItem | None, operation: UpsertRevision) -> None:
@@ -637,6 +607,70 @@ def _replace_item(item: KnowledgeItem, **changes: object) -> KnowledgeItem:
     if unexpected:  # pragma: no cover - guards a future caller, not current ones
         raise MigrationError(f"Cannot change {sorted(unexpected)} on an item")
     return dataclasses.replace(item, **changes)  # type: ignore[arg-type]
+
+
+def _withdrawal_affected_item(operation: Operation) -> ItemId | None:
+    """The item an operation could move into (or out of) a withdrawn state.
+
+    Only the three operations that touch an item's status or its current revision:
+    a ``deprecateItem``, a ``restoreItem`` (which can *undo* a withdrawal), and an
+    ``upsertRevision`` (which can supersede an old revision, or -- reusing a
+    revision id and only changing status -- reject an item in place). The
+    withdrawn set is then read off the final state of exactly these items, so an
+    item some *other* apply withdrew and this one does not touch is left to the
+    apply that did, and a replay that re-touches all of them recomputes the same
+    answer.
+    """
+    match operation:
+        case DeprecateItem() | RestoreItem() | UpsertRevision():
+            return operation.item_id
+        case _:
+            return None
+
+
+def _revisions_to_purge(
+    writer: MigrationWriter, project_id: ProjectId, affected: set[ItemId]
+) -> list[str]:
+    """Revision ids the published index must not hold, from FINAL canonical state.
+
+    The correctness property, stated as a set: a revision is purged when its item
+    is non-surfaceable in the state this apply has left (``deprecated`` or
+    ``rejected`` -- tested with ``include_unapproved=True``, the strictest reading,
+    so it also covers an index built with ``--include-unapproved``), or when it is
+    not that item's current revision (a superseded or redacted revision whose
+    stale content is still indexed).
+
+    **A function of the store, not of the operations that got there**, which is
+    the whole point of the reframe. An operation log gets three cases wrong that
+    this does not:
+
+    - a *reject in place* -- an ``upsertRevision`` reusing the same revision id and
+      changing only ``status`` to ``rejected`` -- withdraws the item though its
+      current revision id never moved, so a log keyed on "the revision id changed"
+      misses it. Here the item's final status is non-surfaceable, so every
+      revision is purged;
+    - a *restore* after a deprecation leaves the item ``approved``, so a log that
+      re-added the deprecation's revisions on replay would delete visible content;
+      here the final status is surfaceable and only non-current revisions are
+      named, so a single-revision restored item contributes nothing;
+    - a *replay* -- ``migrate apply`` re-applies the whole set whenever the state
+      hash shifts (ADR-0016) -- is idempotent, because reading the same final
+      state twice yields the same set.
+
+    Sorted, so the list is deterministic and a replay's result equals the first
+    apply's.
+    """
+    purge: set[str] = set()
+    for item_id in affected:
+        item = writer.get_item(project_id, item_id)
+        if item is None:  # pragma: no cover - the affecting op created or requires it
+            continue
+        surfaceable = may_surface(item.status, include_unapproved=True)
+        current = item.current_revision_id
+        for revision_id in writer.list_revision_ids(project_id, item_id):
+            if not surfaceable or revision_id != current:
+                purge.add(revision_id.value)
+    return sorted(purge)
 
 
 __all__ = [

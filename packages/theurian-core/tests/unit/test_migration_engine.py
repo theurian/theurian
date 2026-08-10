@@ -43,6 +43,7 @@ from theurian.domain.migration import (
     DeprecateItem,
     Migration,
     MigrationSet,
+    RestoreItem,
     RevisionMetadataSpec,
     UpsertRevision,
 )
@@ -526,6 +527,71 @@ def test_a_reapplied_withdrawal_withdraws_nothing() -> None:
     second = engine.apply(writer, PROJECT, setup)
 
     assert second.withdrawn_revisions == []
+
+
+def test_a_reject_in_place_withdraws_the_item_though_its_revision_id_never_moved() -> None:
+    """The third withdrawal verb (ADR-0024 decision 5): reject in place.
+
+    An ``upsertRevision`` that reuses the current revision id and changes only its
+    status to ``rejected`` makes the item non-surfaceable -- ``with_revision``
+    adopts the status, ``may_surface`` then refuses it -- while its revision id
+    never moves. A withdrawn set keyed on "the current revision id changed" misses
+    this entirely. Reading final canonical state does not: the item's status is
+    non-surfaceable, so every revision it holds -- the one whose chunks are indexed
+    included -- is named.
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    reject = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    metadata=_metadata(status=KnowledgeStatus.REJECTED),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+    report = engine.apply(writer, PROJECT, reject)
+
+    item = writer.get_item(PROJECT, ITEM)
+    assert item is not None and item.status is KnowledgeStatus.REJECTED
+    assert report.withdrawn_revisions == [REV_1.value]
+
+
+def test_a_restore_cancels_a_deprecation_so_the_replay_withdraws_nothing() -> None:
+    """The shape a replay takes, and the bug an operation log has in it.
+
+    ``migrate apply`` re-applies the whole set when the state hash shifts
+    (ADR-0016), so a project whose history is create -> deprecate -> restore
+    replays all three on the next unrelated apply. An operation log re-adds the
+    deprecation's revision on every replay and never cancels it, deleting the
+    restored -- and now ``approved`` -- item from the index. Reading the final
+    state instead: the item is surfaceable and its only revision is current, so
+    nothing is withdrawn.
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    whole_history = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(MIG_2, DeprecateItem(item_id=ITEM, reason="pulled")),
+            _migration(MIG_3, RestoreItem(item_id=ITEM)),
+        )
+    )
+    report = engine.apply(writer, PROJECT, whole_history)
+
+    item = writer.get_item(PROJECT, ITEM)
+    assert item is not None and item.status is KnowledgeStatus.APPROVED
+    assert report.withdrawn_revisions == [], "a restored item is visible, not withdrawn"
 
 
 def test_changing_owner_and_sensitivity_updates_the_item() -> None:
