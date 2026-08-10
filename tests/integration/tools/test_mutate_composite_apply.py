@@ -107,6 +107,140 @@ def test_restoring_two_edits_in_one_file_reverses_the_apply_order(tmp_path: Path
     assert target.read_text(encoding="utf-8") == original
 
 
+def test_the_reported_mutated_digest_for_the_last_edit_matches_the_tree_at_apply_time(
+    tmp_path: Path,
+) -> None:
+    """HIGH-1: the digest keyed ``:mutated`` must be the state the suite ran.
+
+    Basename-only keys used to make two edits to one file collide: the
+    reported ``:mutated`` digest was silently overwritten and ended up being
+    edit 1's hash, not edit 2's -- a state the suite never actually ran
+    against. Nothing held this; replacing the key with a constant left every
+    existing test green.
+    """
+    target = tmp_path / "file.py"
+    target.write_text("AAA\nBBB\nCCC\n", encoding="utf-8")
+    mutation = mutate_edits.Mutation(
+        label="two-edits",
+        path="file.py",
+        old="AAA",
+        new="XXX",
+        also=(mutate_edits.Edit(path="file.py", old="BBB", new="YYY"),),
+    )
+
+    landed = mutate_edits._apply(tmp_path, mutation)
+    tree_digest_at_apply_time = _sha256(target)
+
+    digests = mutate_edits._restore_all(landed, tmp_path)
+
+    assert digests["file.py#1:mutated"] == tree_digest_at_apply_time
+    assert len([key for key in digests if key.startswith("file.py")]) == 6
+
+
+def test_two_files_with_the_same_basename_both_get_their_own_digest_entries(
+    tmp_path: Path,
+) -> None:
+    """HIGH-1 face B: a shared basename in different directories must not collide.
+
+    ``pkg_a/ranking.py`` and ``pkg_b/ranking.py`` used to report under the
+    same ``ranking.py:*`` keys, so the second file's trail silently
+    overwrote the first's.
+    """
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    file_a = tmp_path / "pkg_a" / "ranking.py"
+    file_b = tmp_path / "pkg_b" / "ranking.py"
+    file_a.write_text("A = 1\n", encoding="utf-8")
+    file_b.write_text("B = 1\n", encoding="utf-8")
+    mutation = mutate_edits.Mutation(
+        label="same-basename",
+        path="pkg_a/ranking.py",
+        old="A = 1",
+        new="A = 2",
+        also=(mutate_edits.Edit(path="pkg_b/ranking.py", old="B = 1", new="B = 2"),),
+    )
+
+    landed = mutate_edits._apply(tmp_path, mutation)
+    digests = mutate_edits._restore_all(landed, tmp_path)
+
+    assert len([key for key in digests if key.startswith("pkg_a/ranking.py")]) == 3
+    assert len([key for key in digests if key.startswith("pkg_b/ranking.py")]) == 3
+
+
+def test_a_composite_edit_against_a_non_utf8_file_rolls_back_the_first_edit(
+    tmp_path: Path,
+) -> None:
+    """HIGH-2 face 2: a non-UTF-8 second file must raise HarnessError, not crash.
+
+    Before the fix, ``target.read_text(encoding="utf-8")`` on a binary file
+    raised a bare ``UnicodeDecodeError`` -- not a ``HarnessError`` -- so
+    ``_apply``'s rollback (``except HarnessError`` only) never triggered and
+    the first edit's file was left mutated.
+    """
+    file_a = tmp_path / "a.py"
+    file_a.write_text("AAA\n", encoding="utf-8")
+    original_a = file_a.read_text(encoding="utf-8")
+    binary = tmp_path / "asset.bin"
+    binary.write_bytes(b"\xff\xfe\x00\x01not valid utf-8")
+    mutation = mutate_edits.Mutation(
+        label="hits-binary",
+        path="a.py",
+        old="AAA",
+        new="XXX",
+        also=(mutate_edits.Edit(path="asset.bin", old="anything", new="else"),),
+    )
+
+    with pytest.raises(mutate_edits.HarnessError):
+        mutate_edits._apply(tmp_path, mutation)
+
+    assert file_a.read_text(encoding="utf-8") == original_a
+
+
+def test_a_restore_failure_during_rollback_does_not_mask_the_original_cause_or_block_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HIGH-2 face 3: a failing restore must not hide why ``_apply`` failed.
+
+    Three edits: the first two land, the third fails on a genuine anchor
+    mismatch (the ORIGINAL cause). Rollback then tries to restore the second
+    edit first (reverse order) and that restore is made to fail here. The
+    original anchor-mismatch error must still be what propagates, and the
+    first edit must still be restored despite the second edit's restore
+    failing.
+    """
+    file_a = tmp_path / "a.py"
+    file_b = tmp_path / "b.py"
+    file_a.write_text("AAA\n", encoding="utf-8")
+    file_b.write_text("BBB\n", encoding="utf-8")
+    original_a = file_a.read_text(encoding="utf-8")
+    real_restore = mutate_edits._restore
+
+    def _flaky_restore(applied: mutate_edits.Applied, tree: Path) -> str:
+        if applied.target.name == "b.py":
+            raise mutate_edits.HarnessError("simulated restore failure for b.py")
+        return real_restore(applied, tree)
+
+    monkeypatch.setattr(mutate_edits, "_restore", _flaky_restore)
+    mutation = mutate_edits.Mutation(
+        label="third-edit-fails",
+        path="a.py",
+        old="AAA",
+        new="XXX",
+        also=(
+            mutate_edits.Edit(path="b.py", old="BBB", new="YYY"),
+            # "ZZZ" does not occur in b.py (now "YYY\n"): the ORIGINAL cause.
+            mutate_edits.Edit(path="b.py", old="ZZZ", new="QQQ"),
+        ),
+    )
+
+    with pytest.raises(mutate_edits.HarnessError, match="anchor matched 0 times"):
+        mutate_edits._apply(tmp_path, mutation)
+
+    # a.py is restored *after* b.py's restore fails (reverse order): proof
+    # that the loop did not stop when the earlier restore raised.
+    assert file_a.read_text(encoding="utf-8") == original_a
+
+
 def test_digest_targets_reports_every_path_a_composite_mutation_touches() -> None:
     """The integrity check watches every file a composite mutation names.
 
