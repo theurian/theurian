@@ -37,6 +37,34 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for more, so a pinned moment cannot change how many times a request reads a
   retriever.
 
+### Fixed
+
+- **BREAKING — `migrate validate` and `migrate apply` refuse a revision
+  naming a `tenantId` other than `local` or an `aclGroup` other than
+  `default`** ([#63](https://github.com/theurian/theurian/issues/63)).
+  Neither field was enforced — no `AuthorizationProvider` is implemented
+  anywhere in this tree — so a migration using either read as a security
+  boundary that nothing checked. The schema keeps both fields and their type
+  (ADR-0003: they describe the hosted deployment's shape); only their
+  `description` changed. `migrate status` keeps exit 0 and gains
+  `refusedIds`, naming the same migrations without gating on them.
+
+  **If a migration naming a foreign tenant or ACL group was already applied**
+  — possible only on `0.1.0.dev0` or `0.1.0.dev1` — the next `migrate
+  validate` or `migrate apply` against that project refuses it with a
+  different remedy than an unapplied revision gets: editing the field in
+  place changes the migration file's checksum and trips the existing
+  tamper-evidence check instead, which loops back to the same refusal. The
+  working procedure: edit every offending `tenantId`/`aclGroup` to the
+  default, delete `.theurian/state/`, then run `theurian migrate apply` to
+  rebuild canonical state from the edited migrations — state is fully
+  reconstructible from the Git-tracked migrations (FR-K4). This discards the
+  tamper-evidence guarantee (FR-K5) for every migration applied before that
+  point, so do it once, deliberately, not as a routine fix. Existing rows
+  already written with a non-default tenant or ACL group are not migrated by
+  this fix — it closes the write side only; nothing here rewrites canonical
+  state or changes what `knowledge.search`/`knowledge.get` return.
+
 ## [0.1.0.dev1] - 2026-08-09
 
 **If you installed `theurian` before today, upgrade.** `0.1.0.dev0` was the only

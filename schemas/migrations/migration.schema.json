@@ -137,15 +137,17 @@
         "sensitivity": { "$ref": "#/$defs/sensitivity", "default": "internal" },
         "tenantId": {
           "type": "string",
+          "minLength": 1,
           "maxLength": 128,
           "default": "local",
-          "description": "Tenant boundary for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet, so `migrate validate` and `migrate apply` both refuse any value other than 'local' -- accepting one would let this field read as an enforced boundary when nothing checks it (issue #63)."
+          "description": "Tenant boundary for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet: `migrate validate` and `migrate apply` both refuse any value other than 'local', and `migrate status` names the affected migrations under `refusedIds` without refusing -- accepting another value silently would let this field read as an enforced boundary when nothing checks it (issue #63)."
         },
         "aclGroup": {
           "type": "string",
+          "minLength": 1,
           "maxLength": 128,
           "default": "default",
-          "description": "Access-control group for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet, so `migrate validate` and `migrate apply` both refuse any value other than 'default' for the same reason as `tenantId` (issue #63)."
+          "description": "Access-control group for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet: `migrate validate` and `migrate apply` both refuse any value other than 'default', and `migrate status` names the affected migrations under `refusedIds` without refusing, for the same reason as `tenantId` (issue #63)."
         },
         "validFrom": { "type": "string", "format": "date-time" },
         "validTo": { "type": ["string", "null"], "format": "date-time" },
