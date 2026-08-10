@@ -31,7 +31,8 @@ that check would let the loop's retriever-call count move with ``asOf``,
 reviving the single-withheld-row timing oracle the loop's depth margin exists
 to prevent (a second CRITICAL finding in the same review round; see
 ``theurian.application.visibility.Visibility.at_moment``). Tenant, ACL and
-sensitivity remain wholly unenforced; that is still #63's open scope.
+sensitivity remain unenforced as controls; enforcing them is tracked by #119,
+the successor to #63.
 
 This docstring ships inside the wheel, so it is the one a user reads from
 ``theurian.retrieval.__doc__`` rather than from the repository.

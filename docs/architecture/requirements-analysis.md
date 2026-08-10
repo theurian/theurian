@@ -66,33 +66,46 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 
 **FR-R1 is one of five axes as of Milestone 5.** `SqliteIndexStore._scope`
 builds the WHERE clause every retriever uses, and it filters on Project and on
-status — a check FR-R1 does not name. Tenant and ACL have no column; the
-`chunks` table carries `sensitivity`, `trust_level` and `namespace` and no query
-reads them. Routing does not change today for those, because the axes hold no
-content yet, which is why this remains a deferral and not a defect.
+status — a check FR-R1 does not name. Tenant and ACL have no column and hold no
+content: a migration naming a non-default tenant or ACL group is refused at
+write time (#110). The `chunks` table carries `sensitivity`, `trust_level` and
+`namespace`, and no query reads them; `sensitivity` differs from the other two
+in that its values *are* ingested — a `restricted` document is stored and
+returned, labelled — so it is a published label rather than an empty axis.
+Routing changes for none of these today, which is why each is a recorded
+deferral and not a defect; the per-axis register below states them one by one
+(#63, #119).
 
 **Per-axis disposition — the register that closes
 [#63](https://github.com/theurian/theurian/issues/63).** Each of FR-R1's five
 named axes, plus the `status` check `_scope` adds that FR-R1 does not name, with
 what the pre-1.0 product actually does about it and the PR that established that
-disposition. The maintainer's recorded decision: sensitivity-based access
-control is deferred to the milestone that lands `AuthorizationProvider`; until
-then sensitivity is a published label on every result, not a control. Only
-Project, status and (on request) the validity window are enforced pre-1.0.
+disposition. The maintainer's recorded decision: enforcing tenant, ACL group and
+sensitivity is deferred to [#119](https://github.com/theurian/theurian/issues/119),
+the successor to this issue. Landing `AuthorizationProvider` is necessary but not
+sufficient — its local adapter is "allow all" (the port table above), so #119
+also has to give sensitivity a retrieval predicate. Until then sensitivity is a
+published label on every result, not a control. Only Project, status and (on
+request) the validity window are enforced pre-1.0.
 
 | Axis | Pre-1.0 disposition | Mechanism | Landed |
 | :-- | :-- | :-- | :-- |
 | Project | **Enforced** — a pre-ranking WHERE predicate every retriever builds from | `chunks.project_id = ?` in `SqliteIndexStore._scope` | [#32](https://github.com/theurian/theurian/pull/32) |
-| status | **Enforced** — a pre-ranking WHERE predicate, plus the canonical-read gate | `chunks.status = ?` in `_scope`; `may_surface` in `domain/enums.py` | [#32](https://github.com/theurian/theurian/pull/32) |
+| status | **Enforced** — a pre-ranking WHERE predicate when the caller has not passed `includeUnapproved`; `may_surface` at the canonical gate otherwise | `chunks.status = ?` in `_scope` (added only when `include_unapproved` is false); `may_surface` in `domain/enums.py` | [#32](https://github.com/theurian/theurian/pull/32) |
 | tenant | **Refused at write time** — a migration naming a `tenantId` other than `local` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
 | ACL group | **Refused at write time** — a migration naming an `aclGroup` other than `default` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
-| sensitivity | **Published label, not a control** — carried on every result, read by no retrieval predicate | `results.py` emits `sensitivity`; the `chunks.sensitivity` column is unread | [#32](https://github.com/theurian/theurian/pull/32); control **deferred** to the `AuthorizationProvider` milestone |
-| validity window | **Caller-chosen refinement, not a default filter** — omitting `asOf` filters on nothing | `knowledge.search`'s optional `asOf` → `ValidityPeriod.contains`, in Python, on both answer paths | [#112](https://github.com/theurian/theurian/pull/112) (phase 2) |
+| sensitivity | **Published label, not a control** — values *are* ingested (a `restricted` document is stored and returned), but read by no retrieval predicate | `results.py` emits `sensitivity`; the `chunks.sensitivity` column is unread | [#32](https://github.com/theurian/theurian/pull/32); control **deferred** to [#119](https://github.com/theurian/theurian/issues/119) |
+| validity window | **Caller-chosen refinement, not a default filter** — omitting `asOf` filters on nothing; applied after ranking, never inside the retriever depth loop | `knowledge.search`'s optional `asOf` → `ValidityPeriod.contains`, in Python, on both answer paths | [#112](https://github.com/theurian/theurian/pull/112) (phase 2) |
 
-The two enforced predicates are exactly what `_scope` emits;
-`tests/unit/test_gate_call_sites.py` pins that set against SECURITY.md's
-published axis list so the two cannot drift, and enumerates every `may_surface`
-call site so the `status` gate cannot silently gain one.
+The enforced predicates are exactly what `_scope` emits, and this register is
+pinned to that same source the way SECURITY.md is:
+<!-- enforced-axes:begin — the enforced-axis set and its count, pinned to _scope by tests/unit/test_gate_call_sites.py -->
+**two** enforced axes — `chunks.project_id` and `chunks.status`.
+<!-- enforced-axes:end -->
+`tests/unit/test_gate_call_sites.py` checks both this block and SECURITY.md's
+against what `_scope` emits — the axis tokens and the spelled count — so the
+three copies cannot drift, and enumerates every `may_surface` call site (bare,
+aliased, or module-attribute) so the `status` gate cannot silently gain one.
 
 The validity-window axis is no longer wholly unenforced, and it is
 deliberately not unconditional either
@@ -117,8 +130,10 @@ single-withheld-row timing oracle `FIRST_PASS_DEPTH` exists to blunt (see
 validity filter was rejected, because it would make `freshness.isWithinValidity`
 constant-`true` on every published result and give the ranked path a
 stale-index statistics residual with no way to turn off, rather than only
-while an index build is behind. Tenant, ACL and sensitivity remain wholly
-unenforced; that part of Milestone 6's scope filtering is still open.
+while an index build is behind. Tenant, ACL and sensitivity remain unenforced as
+controls; enforcing them is tracked by
+[#119](https://github.com/theurian/theurian/issues/119), the successor to this
+issue.
 
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One
@@ -756,11 +771,11 @@ daemon, MCP tools, ingestion, retrieval, RAPTOR, GitHub. Those are Milestones 1�
 | :-- | :-- | :-- | :-- |
 | R-1 | Single-daemon guarantee fails under a race (two `claude` launches at once) | Two writers on one SQLite file → corruption | OS-level `flock` on a lock file **plus** a port health probe **plus** a startup handshake; loser exits 0 after confirming the winner is healthy. Tested by launching N processes concurrently. |
 | R-2 | `state_hash` is unstable across machines | Every branch switch rebuilds; caches never hit | Hash only normalized, ordered, content-derived inputs. Never absolute paths, mtimes, or locale-dependent ordering. Golden-vector test. |
-| R-3 | RAPTOR summaries leak facts not present in the source | Knowledge platform emits fiction | Extractive-first default; abstractive summaries are opt-in, carry `summary_model` provenance, and are validated by an entailment check in evaluation. Every node keeps child references. |
-| R-4 | Prompt injection through ingested knowledge | An agent executes instructions embedded in a document | Content is always labeled untrusted; summarization wraps source in a delimited untrusted region; MCP results carry `mayContainInstructions`. Documented as a shared responsibility with the calling agent. |
-| R-5 | `sqlite-vec` is pre-1.0 and may break | Index layer breaks on upgrade | Reached only through `VectorStore`; a brute-force fallback ships in-tree; the version is pinned exactly. |
+| R-3 | RAPTOR summaries leak facts not present in the source | Knowledge platform emits fiction | Milestone 6, not yet shipped: the design is extractive-first, with opt-in abstractive summaries that *would* carry `summary_model` provenance and be validated by an entailment check, every node keeping child references. None of that is built — `infrastructure/raptor/` is docstring-only, and there is no `summary_model` column or entailment check in the tree — so the interim residual is that no summary is generated at all, and so none can emit fiction (#115). |
+| R-4 | Prompt injection through ingested knowledge | An agent executes instructions embedded in a document | Content is always labeled untrusted and MCP results carry `mayContainInstructions` (both shipped — the safety triple on every hit, SEC-15/T-3). The summarization step that *would* additionally wrap source in a delimited untrusted region is Milestone 6 and unbuilt, so no generated summary text exists to inject through today. Documented as a shared responsibility with the calling agent (#115). |
+| R-5 | `sqlite-vec` is pre-1.0 and may break | Index layer breaks on upgrade | Dense retrieval ships as an exact scan in `SqliteIndexStore.search_dense`, not through a `VectorStore` adapter: `infrastructure/vector/` is empty and `sqlite-vec` is imported nowhere in `src/`, so the pre-1.0 dependency cannot break a path that does not use it. If an ANN adapter ever lands it stays confined to that package (`test_layering.py::test_volatile_dependencies_are_confined` enforces it) and its version is pinned exactly (ADR-0014, #115). |
 | R-6 | MCP Python SDK 2.x is young; the API changed from 1.x (`FastMCP` → `MCPServer`) | Daemon breaks on upgrade | Version pinned; the SDK is confined to `mcp/` and `daemon/`; a contract test asserts the wire protocol, not the SDK API. |
-| R-7 | Index build blows up wall-clock and memory on a large monorepo | Setup appears hung | Incremental builds by default; the forest limits blast radius; builds are cancellable; progress is reported; the old index keeps serving. |
+| R-7 | Index build blows up wall-clock and memory on a large monorepo | Setup appears hung | Incremental builds by default; builds are cancellable; progress is reported; the old index keeps serving. (The RAPTOR forest that *would* further limit blast radius is Milestone 6 and unbuilt — `infrastructure/raptor/` is docstring-only — so it is design, not a shipped mitigation, #115.) |
 | R-8 | Write-queue serialization becomes a throughput bottleneck | Slow ingestion | Batch operations inside one transaction; keep transactions short; measure before optimizing. Correctness outranks throughput. |
 | R-9 | Setup corrupts a hand-tuned Claude Code config | User loses their configuration | Merge, never replace; back up with a timestamp; show a diff; ship a `--dry-run`. |
 | R-10 | Uninstall leaves orphaned OS services or files | Users cannot cleanly remove Theurian | Every created path is journaled; `uninstall --dry-run` enumerates before deleting; there is an E2E test for it. |

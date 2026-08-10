@@ -76,8 +76,8 @@ CREATE TABLE chunks (
     -- by watching how many results disappeared.
     --
     -- Today only `status` is filtered on. `sensitivity`, `trust_level`, and
-    -- `namespace` are carried for the scope filtering Milestone 6 adds and are
-    -- read by no query yet -- said plainly here because a comment that implies
+    -- `namespace` are carried for the scope filtering #119 adds (Milestone 6)
+    -- and are read by no query yet -- said plainly here because a comment that implies
     -- an access control which does not exist is how the next person concludes
     -- it is already handled. `namespace` is not even populated by the builder.
     status       TEXT    NOT NULL,

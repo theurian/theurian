@@ -124,8 +124,8 @@ project, the snapshot, and the principal all come from the request.
 The pre-filter step said "(tenant, ACL, sensitivity, validity)" until this pass,
 which is FR-R1's list of axes rather than the two `SqliteIndexStore._scope`
 emits. Filtering happens before ranking, which is the property FR-R1 exists for
-and which does hold; the other three axes are Milestone 6's scope filtering
-([#63](https://github.com/theurian/theurian/issues/63)).
+and which does hold; enforcing the other three axes (tenant, ACL, sensitivity)
+is [#119](https://github.com/theurian/theurian/issues/119), the successor to #63.
 
 ## Health endpoint
 

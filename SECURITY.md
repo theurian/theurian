@@ -205,21 +205,24 @@ public security channel — only when **both** of these hold:
     [threat model's actor table](docs/security/threat-model.md) marks untrusted —
     another local process, a visited web page, a repository contributor, an
     external system, an agent reasoning over untrusted input (T-1, T-2);
-  - content read by a caller not authorized for it. **Two axes are enforced on
-    the retrieval path today**, and they are exactly the WHERE-clause columns
+  - content read by a caller not authorized for it. The axes enforced on the
+    retrieval path today are exactly the WHERE-clause columns
     `SqliteIndexStore._scope` emits — re-derived from that source, not listed
     here from memory:
-    <!-- enforced-axes:begin — pinned to _scope by test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits -->
-    the project (`chunks.project_id`) and approval status (`chunks.status`, the
-    same rule `may_surface` applies at the canonical gate).
+    <!-- enforced-axes:begin — the enforced-axis set and its count, pinned to _scope by tests/unit/test_gate_call_sites.py -->
+    **two** axes: the project (`chunks.project_id`) and approval status
+    (`chunks.status`, the rule `may_surface` applies at the canonical gate).
     <!-- enforced-axes:end -->
-    A defect in either is out (T-11, SEC-13). Tenant, sensitivity, ACL group and
-    namespace are design intent that no retrieval predicate implements yet; they
-    hold no content today, so nothing routes on them. This list moves when — and
-    only when — `_scope` gains or drops a WHERE predicate: an axis that reaches
-    the schema but not that clause has not moved it, which is exactly the state
-    `sensitivity` is in — a `chunks.sensitivity` column no query reads, published
-    on each result as a label rather than enforced as a boundary (#63);
+    A defect in either is out (T-11, SEC-13). Tenant, ACL group and namespace are
+    design intent that no retrieval predicate implements yet, and hold no content
+    today, so nothing routes on them. Sensitivity is different: its values *do*
+    vary — the migration schema accepts `public|internal|confidential|restricted`
+    with no refusal (unlike tenant and ACL group, which are refused at write
+    time), so a `restricted` document *is* ingested and returned, labelled — but
+    no retrieval predicate reads `chunks.sensitivity`, so it is a published label,
+    not a control. This list moves when — and only when — `_scope` gains or drops
+    a WHERE predicate; an axis that reaches the schema but not that clause has not
+    moved it (#63, #119);
   - content withheld by approval state, supersession or retirement, read
     directly or **recovered** from any observable that moves with it (T-17) —
     not only a published field. The families are enumerated in

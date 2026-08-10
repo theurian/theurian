@@ -270,18 +270,27 @@ and neither the assertions above nor `access_log=False` would notice.
 
 #### T-11 — A client authorized for Project A reads Project B (EoP, High)
 
-**Controls:** `projectId` is required on every project-scoped call and validated
-against the schema; there is no process-global or connection-scoped current
-project; every retriever filters on `chunks.project_id` through
+**Controls:** `projectId` is required on every project-scoped call. It is *not*
+validated by a JSON schema at the MCP boundary — there is no such validation,
+`jsonschema` is imported only by the migration loader — but it is validated by
+construction: the tool builds a `ProjectId`, which rejects a malformed id, and
+resolves it through `ProjectRegistry.load()`, which excludes any registry key
+that is not itself a usable `ProjectId`
+(`application/project_service.py::_usable_id`), so an id that names no registered
+project cannot resolve to one. There is no process-global or connection-scoped
+current project; every retriever filters on `chunks.project_id` through
 `SqliteIndexStore._scope` before ranking, so a row from another project takes no
 result slot, rank, or published number (T-17, FR-R1); an E2E test asserts a query
 for A never returns B.
 
-*Future control, not shipped:* an `AuthorizationProvider` check before every read
-is the design for the hosted deployment (`domain/ports/authorization.py`), but
-that port is a `Protocol` with no implementation anywhere in this tree — project
-isolation today rests on the `projectId` validation and the `_scope` predicate
-above, not on it (#63, #115).
+*Future controls, not shipped:* SEC-12 — validating every MCP tool input against
+its published JSON Schema at the boundary — is not implemented; input is checked
+by domain construction as above, not against the schemas. And an
+`AuthorizationProvider` check before every read is the design for the hosted
+deployment (`domain/ports/authorization.py`), but that port is a `Protocol` with
+no implementation anywhere in this tree — project isolation today rests on the
+`ProjectId`/registry validation and the `_scope` predicate above, not on it
+(#63, #115).
 
 #### T-13 — Two daemons corrupt the same SQLite file (Tampering, High)
 
@@ -1490,8 +1499,13 @@ shape constructed in two places drifts in one of them. `executable` is pinned to
 against a *real* tool response by
 `tests/integration/test_wire_contract.py::test_the_trust_triple_is_on_real_output_not_only_in_the_schema`,
 with `::test_the_conformance_check_can_fail` asserting that a response carrying
-`executable: true` is rejected. Summarization wraps source content in a delimited
-untrusted region and never interpolates it into a system-role message.
+`executable: true` is rejected. The summarization step that *would* additionally
+wrap source content in a delimited untrusted region, and never interpolate it
+into a system-role message, is Milestone 6 and unbuilt: `infrastructure/raptor/`
+is docstring-only and there is no `SummarizationProvider` implementation, so no
+generated summary text exists on any answer path today. The interim residual is
+that the only untrusted content a result carries is the source excerpt, already
+labelled by the triple above (#115).
 
 > **Corrected in Milestone 5, review round 8. This entry named the wrong
 > enforcement mechanism.** It said "`executable` cannot be set true — the type
@@ -1510,6 +1524,13 @@ untrusted region and never interpolates it into a system-role message.
 > `Fused.ranks` case — `result_payload` copies rather than sharing a reference, so
 > the only way in is in-process code importing the module — and it is still a
 > weaker statement than the one this entry used to make.
+>
+> **Corrected again in #63 phase 0 review.** The Controls paragraph also stated
+> "Summarization wraps source content in a delimited untrusted region" in the
+> present tense while no summariser is built — the #115 class. It now names that
+> step as the Milestone 6 design it is and states the interim residual; the
+> shipped controls in this entry are the safety triple and its wire-contract
+> test, and the summarization sentence is design, not a control.
 
 **Residual risk:** **Theurian labels; it does not enforce.** An agent that
 ignores the label will be influenced. This is a shared responsibility with the
