@@ -602,7 +602,9 @@ class SqliteIndexStore:
         residue would survive.
         """
         placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
-        unprovenanced = "derived = 1 AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)"
+        unprovenanced = (
+            "derived = 1 AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)"
+        )
         with self._read() as connection:
             row = connection.execute(
                 f"SELECT 1 FROM chunks "  # noqa: S608 - placeholders generated, values bound
