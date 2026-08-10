@@ -95,6 +95,7 @@ REV_1 = RevisionId("01K1REV00101234567890ABCDE")
 REV_2 = RevisionId("01K1REV00201234567890ABCDE")
 MIG_1 = "01K1AAAAAA01234567890ABCDE"
 MIG_2 = "01K1BBBBBB01234567890ABCDE"
+MIG_3 = "01K1CCCCCC01234567890ABCDE"
 
 
 def _create_and_upsert(
@@ -414,6 +415,117 @@ def test_deprecating_records_the_successor_relation() -> None:
         and r.target_item_id == ITEM
         for r in writer.relations
     )
+
+
+# -- ADR-0024 decision 5: what a withdrawal tells a still-published index ----
+
+
+def test_a_deprecation_reports_the_items_whole_history_as_withdrawn() -> None:
+    """Retiring an item withdraws every revision it ever had.
+
+    A published index built from *any* of them must stop holding it, and the
+    engine cannot know which build is live, so it names all of them. The purge
+    ignores an id no chunk carries, which is what makes naming the whole history
+    safe rather than wasteful (ADR-0024 decision 5).
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1, BODY_V2)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+    engine.apply(
+        writer,
+        PROJECT,
+        MigrationSet.ordered(
+            (
+                _migration(
+                    MIG_2,
+                    UpsertRevision(
+                        item_id=ITEM,
+                        revision_id=REV_2,
+                        content_file_path="../knowledge/a.md",
+                        metadata=_metadata(),
+                        expected_revision=REV_1,
+                        content_sha256=ContentHash.of_text(BODY_V2),
+                    ),
+                ),
+            )
+        ),
+    )
+
+    retire = MigrationSet.ordered(
+        (_migration(MIG_3, DeprecateItem(item_id=ITEM, reason="Retired")),)
+    )
+    report = engine.apply(writer, PROJECT, retire)
+
+    assert sorted(report.withdrawn_revisions) == sorted((REV_1.value, REV_2.value))
+
+
+def test_a_supersede_reports_the_revision_it_replaced_as_withdrawn() -> None:
+    """A redaction leaves the prior revision holding the pre-redaction text.
+
+    The item stays surfaceable, so no gate withholds it; the only thing between
+    the old text and a caller is a purge of the revision the supersede moved
+    ``currentRevisionId`` off (ADR-0024 decision 5, DECISION 2).
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1, BODY_V2)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    redact = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_2,
+                    content_file_path="../knowledge/a.md",
+                    metadata=_metadata(),
+                    expected_revision=REV_1,
+                    content_sha256=ContentHash.of_text(BODY_V2),
+                ),
+            ),
+        )
+    )
+    report = engine.apply(writer, PROJECT, redact)
+
+    # The revision the supersede left behind, and not the one it created: the new
+    # revision's chunks are the redacted text and must survive.
+    assert report.withdrawn_revisions == [REV_1.value]
+
+
+def test_an_initial_revision_withdraws_nothing() -> None:
+    """The first revision of an item supersedes nothing, so nothing is withdrawn."""
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    report = engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    assert report.withdrawn_revisions == []
+
+
+def test_a_reapplied_withdrawal_withdraws_nothing() -> None:
+    """Idempotence reaches the withdrawal record too.
+
+    A migration already applied is skipped, so re-running the set reports no
+    withdrawn revisions -- a purge on every command that changes nothing is work
+    with no cause (FR-K8).
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    setup = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(MIG_2, DeprecateItem(item_id=ITEM, reason="Retired")),
+        )
+    )
+    engine.apply(writer, PROJECT, setup)
+    second = engine.apply(writer, PROJECT, setup)
+
+    assert second.withdrawn_revisions == []
 
 
 def test_changing_owner_and_sensitivity_updates_the_item() -> None:

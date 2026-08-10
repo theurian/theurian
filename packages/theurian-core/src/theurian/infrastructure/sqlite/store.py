@@ -761,6 +761,26 @@ class SqliteWriter:
             ).fetchone()
             return None if row is None else _item_from_row(row)
 
+    def list_revision_ids(self, project_id: ProjectId, item_id: ItemId) -> tuple[RevisionId, ...]:
+        """Every revision id an item has, read inside the write transaction.
+
+        The engine reads this to say which revisions a withdrawal takes out of a
+        still-published index (ADR-0024 decision 5). Ids only, not whole
+        revisions: the purge deletes by ``revision_id``, and reconstructing a
+        `KnowledgeRevision` here would read the body and its anchors for nothing.
+
+        Guarded like `get_item`: it is a read, and it must see the item as this
+        transaction has left it -- a revision this apply just appended is one the
+        withdrawal in the same apply must be able to name.
+        """
+        with _reading():
+            rows = self._conn.execute(
+                "SELECT revision_id FROM knowledge_revisions "
+                "WHERE project_id = ? AND item_id = ? ORDER BY revision_id",
+                (project_id.value, item_id.value),
+            ).fetchall()
+            return tuple(RevisionId(row["revision_id"]) for row in rows)
+
 
 # -- Row mapping ----------------------------------------------------------
 #

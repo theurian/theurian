@@ -1193,32 +1193,32 @@ async def test_the_corpus_reaches_each_converter_family(
 
 # -- Where the guard sits, on the writer -----------------------------------
 #
-# `SqliteWriter` reads four times and is guarded three times, and until now
-# nothing anywhere held either half. Deleting any of the three guards left 1464
-# tests green while the corrupted cell walked out of `theurian migrate status`
+# `SqliteWriter` reads five times and is guarded four times, and until now
+# nothing anywhere held either half. Deleting any of the four guards left the
+# suite green while the corrupted cell walked out of `theurian migrate status`
 # -- so the placement was correct and unproven, which is the state a later edit
-# removes without noticing. The fourth read, `append_revision`'s
+# removes without noticing. The remaining read, `append_revision`'s
 # `content_sha256`, is unguarded on purpose, and
 # `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`
 # below is the half that holds the absence.
 #
 # Reached through the writer directly rather than through the CLI, and that is
-# forced rather than convenient. `record_migration`, `get_item` and
-# `append_revision` run only for a *pending* migration, and adding one to the
-# corpus changes the migration set, which changes the state hash, which sends
-# the next command to a different -- empty, undamaged -- database file
-# (ADR-0016). There is no CLI invocation that reaches them over a damaged
-# state. `applied_migrations` is the exception and is swept through `migrate
-# status` as well.
+# forced rather than convenient. `record_migration`, `get_item`,
+# `list_revision_ids` and `append_revision` run only for a *pending* migration,
+# and adding one to the corpus changes the migration set, which changes the state
+# hash, which sends the next command to a different -- empty, undamaged --
+# database file (ADR-0016). There is no CLI invocation that reaches them over a
+# damaged state. `applied_migrations` is the exception and is swept through
+# `migrate status` as well.
 
 PROJECT_ID: Final = ProjectId("demo")
 ITEM_ID: Final = ItemId("architecture.auth-policy")
 REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
-#: Three of the four reads :class:`SqliteWriter` performs, each over a cell whose
-#: converter quotes what it would not accept. Every one of these three sits behind
-#: a guard today. The fourth, `append_revision`'s `content_sha256`, deliberately
+#: Four of the five reads :class:`SqliteWriter` performs, each over a cell whose
+#: converter quotes what it would not accept. Every one of these four sits behind
+#: a guard today. The fifth, `append_revision`'s `content_sha256`, deliberately
 #: does not, and is held one test below rather than here.
 WRITER_READS: Final = (
     (
@@ -1226,6 +1226,16 @@ WRITER_READS: Final = (
         "knowledge_items",
         "status",
         lambda writer: writer.get_item(PROJECT_ID, ITEM_ID),
+    ),
+    (
+        # A retirement asks this for the revisions a still-published index must
+        # stop holding (ADR-0024 decision 5), and it builds a `RevisionId` per
+        # row -- so a corrupt `revision_id` reaches `theurian migrate apply`'s
+        # transaction exactly as `get_item`'s corrupt `status` does.
+        "list_revision_ids",
+        "knowledge_revisions",
+        "revision_id",
+        lambda writer: writer.list_revision_ids(PROJECT_ID, ITEM_ID),
     ),
     (
         "applied_migrations",

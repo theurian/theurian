@@ -14,7 +14,7 @@ from typing import final
 
 from theurian.domain.enums import SpecificationStatus
 from theurian.domain.errors import InvariantViolationError
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, SpecId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
     KnowledgeEvidence,
@@ -53,6 +53,19 @@ class InMemoryWriter:
 
     def get_item(self, project_id: ProjectId, item_id: ItemId) -> KnowledgeItem | None:
         return self.items.get((project_id.value, item_id.value))
+
+    def list_revision_ids(self, project_id: ProjectId, item_id: ItemId) -> tuple[RevisionId, ...]:
+        return tuple(
+            sorted(
+                (
+                    revision.revision_id
+                    for revision in self.revisions.values()
+                    if revision.project_id.value == project_id.value
+                    and revision.item_id.value == item_id.value
+                ),
+                key=lambda revision_id: revision_id.value,
+            )
+        )
 
     def add_relation(self, relation: KnowledgeRelation) -> None:
         key = (

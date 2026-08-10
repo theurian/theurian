@@ -28,7 +28,7 @@ from theurian.domain.errors import (
     ScopeViolation,
     UnenforceableScopeError,
 )
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, SpecId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
     KnowledgeEvidence,
@@ -72,6 +72,9 @@ class MigrationWriter(Protocol):
     def append_revision(self, revision: KnowledgeRevision) -> None: ...
     def put_item(self, item: KnowledgeItem) -> None: ...
     def get_item(self, project_id: ProjectId, item_id: ItemId) -> KnowledgeItem | None: ...
+    def list_revision_ids(
+        self, project_id: ProjectId, item_id: ItemId
+    ) -> tuple[RevisionId, ...]: ...
     def add_relation(self, relation: KnowledgeRelation) -> None: ...
     def remove_relation(self, relation: KnowledgeRelation) -> None: ...
     def add_alias(self, alias: KnowledgeAlias) -> None: ...
@@ -112,6 +115,15 @@ class ApplyReport:
     applied: list[MigrationId] = field(default_factory=list)
     skipped: list[MigrationId] = field(default_factory=list)
     operations_applied: int = 0
+    #: Revision ids whose chunks a still-published index must no longer hold
+    #: (ADR-0024 decision 5). A retirement contributes the item's whole history;
+    #: a supersede that moves ``currentRevisionId`` forward contributes the
+    #: revisions it left behind -- their chunks carry the pre-redaction text. The
+    #: list is a superset of what any one index holds: the purge deletes by
+    #: ``revision_id IN (...)`` and ignores an id no chunk carries, and an index
+    #: built from an older revision than the one current at withdrawal time is
+    #: exactly why the whole history is recorded rather than only the current id.
+    withdrawn_revisions: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -307,7 +319,9 @@ class MigrationEngine:
 
         for migration in plan.pending:
             for operation in migration.operations:
-                self._apply_operation(writer, project_id, migration, operation)
+                report.withdrawn_revisions.extend(
+                    self._apply_operation(writer, project_id, migration, operation)
+                )
                 report.operations_applied += 1
             writer.record_migration(
                 project_id,
@@ -325,12 +339,19 @@ class MigrationEngine:
         project_id: ProjectId,
         migration: Migration,
         operation: Operation,
-    ) -> None:
+    ) -> tuple[str, ...]:
+        """Apply one operation and return the revision ids it withdrew.
+
+        Non-empty only for the two operations that make a published index hold
+        content no caller may read (ADR-0024 decision 5): a retirement, and a
+        supersede that moves ``currentRevisionId`` forward. Every other case
+        returns ``()`` -- the empty tuple is the answer, not a missing one.
+        """
         match operation:
             case CreateItem():
                 self._create_item(writer, project_id, operation)
             case UpsertRevision():
-                self._upsert_revision(writer, project_id, migration, operation)
+                return self._upsert_revision(writer, project_id, migration, operation)
             case DeprecateItem():
                 self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.DEPRECATED)
                 if operation.superseded_by is not None:
@@ -344,6 +365,14 @@ class MigrationEngine:
                             note=operation.reason,
                         )
                     )
+                # The whole item is retired, so every revision it ever had is
+                # withdrawn -- a published index built from any of them must stop
+                # holding it. `list_revision_ids` reads inside the transaction, so
+                # it sees the item as this apply has left it.
+                return tuple(
+                    revision_id.value
+                    for revision_id in writer.list_revision_ids(project_id, operation.item_id)
+                )
             case RestoreItem():
                 self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.APPROVED)
             case AddRelation():
@@ -407,6 +436,9 @@ class MigrationEngine:
                 raise MigrationError(
                     f"{migration.migration_id}: unsupported operation {operation.kind}"
                 )
+        # Every case above either returned its withdrawn revisions or withdrew
+        # nothing; the empty tuple is what "nothing" is.
+        return ()
 
     # -- Operation implementations ----------------------------------------
 
@@ -441,9 +473,28 @@ class MigrationEngine:
         project_id: ProjectId,
         migration: Migration,
         operation: UpsertRevision,
-    ) -> None:
+    ) -> tuple[str, ...]:
         item = writer.get_item(project_id, operation.item_id)
         self._check_expected_revision(item, operation)
+
+        # A supersede -- an ``expectedRevision`` that names a different current
+        # revision than this one creates -- moves ``currentRevisionId`` forward
+        # and leaves the prior revisions holding the pre-redaction text (ADR-0024
+        # decision 5). Captured before the append below, so it is exactly the set
+        # this operation supersedes and never the new revision itself. An initial
+        # revision (`expected_revision is None`) or a re-application to the same id
+        # withdraws nothing.
+        withdrawn: tuple[str, ...] = ()
+        if (
+            operation.expected_revision is not None
+            and item is not None
+            and item.current_revision_id is not None
+            and item.current_revision_id != operation.revision_id
+        ):
+            withdrawn = tuple(
+                revision_id.value
+                for revision_id in writer.list_revision_ids(project_id, operation.item_id)
+            )
 
         if operation.content_sha256 is None:  # pragma: no cover - loader always sets it
             raise MigrationError(
@@ -501,6 +552,7 @@ class MigrationEngine:
                 validity=ValidityPeriod(valid_from=valid_from),
             )
         writer.put_item(item.with_revision(revision))
+        return withdrawn
 
     @staticmethod
     def _check_expected_revision(item: KnowledgeItem | None, operation: UpsertRevision) -> None:
