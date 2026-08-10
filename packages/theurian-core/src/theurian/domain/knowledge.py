@@ -100,6 +100,7 @@ class RevisionMetadata:
             sensitivity=self.sensitivity,
             acl_group=self.acl_group,
             namespace=self.namespace,
+            status=self.status,
         )
 
 
@@ -264,6 +265,7 @@ class KnowledgeItem:
             sensitivity=self.sensitivity,
             acl_group=self.acl_group,
             namespace=self.namespace,
+            status=self.status,
         )
 
 

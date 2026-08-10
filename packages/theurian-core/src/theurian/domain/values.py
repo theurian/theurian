@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Self, override
 
-from theurian.domain.enums import Sensitivity
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import DomainError, InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 
@@ -182,6 +182,11 @@ class Scope:
     Because tree identity is derived from it, a node mixing two scopes has no
     tree to belong to -- the isolation is structural rather than a check someone
     could forget to write.
+
+    ``status`` is the sixth component, added by the Milestone 6 amendment to
+    decision 1: an ``index build --include-unapproved`` run can otherwise mix a
+    ``draft`` and an ``approved`` child into one summary node, since ``_scope``
+    filters on status but the five-component tuple never named it.
     """
 
     project_id: ProjectId
@@ -189,6 +194,7 @@ class Scope:
     sensitivity: Sensitivity
     acl_group: AclGroup
     namespace: str
+    status: KnowledgeStatus
 
     def __post_init__(self) -> None:
         if len(self.namespace) > MAX_NAMESPACE_LENGTH:
@@ -211,6 +217,7 @@ class Scope:
                 self.sensitivity.value,
                 self.acl_group.value,
                 self.namespace,
+                self.status.value,
             )
         )
 

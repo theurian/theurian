@@ -17,7 +17,7 @@ import itertools
 
 import pytest
 
-from theurian.domain.enums import Sensitivity
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import DomainError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.values import AclGroup, Scope, TenantId
@@ -30,6 +30,7 @@ def _scope(**overrides: object) -> Scope:
         "sensitivity": Sensitivity.INTERNAL,
         "acl_group": AclGroup("default"),
         "namespace": "architecture",
+        "status": KnowledgeStatus.APPROVED,
     }
     base.update(overrides)
     return Scope(**base)  # type: ignore[arg-type]
@@ -41,15 +42,19 @@ VARIATIONS: dict[str, object] = {
     "sensitivity": Sensitivity.RESTRICTED,
     "acl_group": AclGroup("security-team"),
     "namespace": "operations",
+    "status": KnowledgeStatus.DRAFT,
 }
 
 
 @pytest.mark.parametrize("field", sorted(VARIATIONS))
 def test_every_component_changes_the_tree_identity(field: str) -> None:
-    """All five components discriminate.
+    """All six components discriminate.
 
     If any one did not, content that differs only in that component could share
-    a summary node -- which for `sensitivity` or `acl_group` is a disclosure.
+    a summary node -- which for `sensitivity` or `acl_group` is a disclosure,
+    and for `status` (Milestone 6) is a `draft` and an `approved` child landing
+    in the same summary because an `--include-unapproved` build filled the
+    column without a tree boundary to stop it.
     """
     base = _scope()
     changed = _scope(**{field: VARIATIONS[field]})
@@ -64,7 +69,14 @@ def test_identical_scopes_produce_identical_digests() -> None:
 
 
 def test_all_scope_pairs_are_distinguishable() -> None:
-    """Exhaustive over the component combinations, not just one-at-a-time."""
+    """Exhaustive over the component combinations, not just one-at-a-time.
+
+    Two values per component over six components is 64 combinations (Milestone
+    6 amendment to ADR-0008 decision 1, adding `status` as the sixth). This is
+    the security argument ADR-0008 is accepted on: a RAPTOR forest that reads
+    tree identity from `Scope.digest` cannot place two distinguishable scopes
+    in one tree, because no two of these 64 collide.
+    """
     scopes = [
         Scope(
             project_id=project,
@@ -72,15 +84,19 @@ def test_all_scope_pairs_are_distinguishable() -> None:
             sensitivity=sensitivity,
             acl_group=acl,
             namespace=namespace,
+            status=status,
         )
-        for project, tenant, sensitivity, acl, namespace in itertools.product(
+        for project, tenant, sensitivity, acl, namespace, status in itertools.product(
             (ProjectId("a"), ProjectId("b")),
             (TenantId("t1"), TenantId("t2")),
             (Sensitivity.PUBLIC, Sensitivity.RESTRICTED),
             (AclGroup("g1"), AclGroup("g2")),
             ("ns1", "ns2"),
+            (KnowledgeStatus.APPROVED, KnowledgeStatus.DRAFT),
         )
     ]
+    assert len(scopes) == 64, "the product itself drifted off six components"
+
     digests = {scope.digest.value for scope in scopes}
     assert len(digests) == len(scopes), "two distinct scopes collided onto one tree"
 
