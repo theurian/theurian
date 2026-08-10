@@ -530,6 +530,51 @@ def read_active_index(paths: ProjectPaths) -> dict[str, Any] | None:
     return dict(payload) if payload is not None else None
 
 
+def write_active_index_pointer(
+    paths: ProjectPaths,
+    *,
+    index_build_id: str,
+    state_hash: str,
+    project_id: str,
+    indexes_unapproved: bool,
+) -> None:
+    """Point retrieval at a finished build, atomically (ADR-0007, ADR-0024).
+
+    Write-to-temp then ``os.replace``, which is atomic on POSIX. A reader must
+    never observe a half-written pointer, because that would send it to an index
+    that does not exist.
+
+    In the application layer rather than the index CLI because two composition
+    roots publish now: ``theurian index build`` (:mod:`cli.index_commands`) and
+    the withdrawal-triggered purge (:mod:`application.withdrawal_purge`). A pointer
+    written two different ways drifts in one of them, and the field set is a wire
+    contract the retrieval side reads back key by key
+    (:func:`theurian.mcp.search._published_index`).
+
+    Every chunk in the file is stamped with the ``project_id`` that built it, and
+    nothing else records which one that was: without it an index orphaned by an id
+    change is indistinguishable from a project that simply has no knowledge.
+    ``indexesUnapproved`` lets a search say *why* an ``includeUnapproved`` query
+    returned nothing rather than looking like an empty result.
+    """
+    pointer = paths.active_index_pointer
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    temporary = pointer.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "indexBuildId": index_build_id,
+                "stateHash": state_hash,
+                "projectId": project_id,
+                "indexesUnapproved": indexes_unapproved,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, pointer)  # noqa: PTH105 - os.replace is the atomic primitive
+
+
 def write_active_state(
     paths: ProjectPaths, state_hash: StateHash, migration_count: int, clock: Clock
 ) -> ActiveState:

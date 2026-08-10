@@ -24,7 +24,6 @@ underneath.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 from pathlib import Path
@@ -37,6 +36,7 @@ from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     ProjectPaths,
     read_active_index_pointer,
+    write_active_index_pointer,
 )
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
@@ -596,33 +596,18 @@ def _publish(
 ) -> None:
     """Point retrieval at a finished build, atomically.
 
-    Write-to-temp then ``os.replace``, which is atomic on POSIX. A reader must
-    never observe a half-written pointer, because that would send it to an index
-    that does not exist (the same reasoning as ADR-0007).
+    A thin alias over :func:`~theurian.application.project_service.
+    write_active_index_pointer`, kept so this module reads as build-then-publish
+    and so the pointer swap has one implementation shared with the
+    withdrawal-triggered purge. The reasoning lives at the definition.
     """
-    pointer = paths.active_index_pointer
-    pointer.parent.mkdir(parents=True, exist_ok=True)
-    temporary = pointer.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(
-            {
-                "indexBuildId": index_build_id,
-                "stateHash": state_hash,
-                # Every chunk in the file is stamped with the project id that
-                # built it, and nothing else records which one that was. Without
-                # it an index orphaned by an id change is indistinguishable from
-                # a project that simply has no knowledge: `count: 0`,
-                # `indexed: true`, and a status saying nothing needs doing.
-                "projectId": project_id,
-                # Recorded so a search can say *why* `includeUnapproved=True`
-                # returned nothing, instead of looking like an empty result.
-                "indexesUnapproved": indexes_unapproved,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_active_index_pointer(
+        paths,
+        index_build_id=index_build_id,
+        state_hash=state_hash,
+        project_id=project_id,
+        indexes_unapproved=indexes_unapproved,
     )
-    os.replace(temporary, pointer)  # noqa: PTH105 - os.replace is the atomic primitive
 
 
 def _indexable_items(database: Path, *, include_unapproved: bool) -> dict[str, int]:
