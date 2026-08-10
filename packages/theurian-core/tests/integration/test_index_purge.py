@@ -306,30 +306,83 @@ def test_purging_nothing_is_a_faithful_copy(
     assert _ranking(SqliteIndexStore(purged_path), QUERIES[0]) == _ranking(stale, QUERIES[0])
 
 
-# -- Derived rows (ADR-0024 decision 8) --------------------------------------
+# -- Node rows (ADR-0008 decision 5's amendment, ADR-0024 decision 8) --------
 #
-# Nothing writes `derived = 1` yet: RAPTOR (ADR-0008) is an empty package, and
+# Nothing writes a node row yet: RAPTOR (ADR-0008) is an empty package, and
 # `SummarizationProvider` a port with no adapter. The rows below are inserted
 # with raw SQL for exactly that reason, and the seam is deliberate -- the
 # *traversal* is what is under test and it runs through the interface. Writing
 # the purge's transitive path after RAPTOR lands would mean designing it twice,
 # and the second time under pressure from a feature that already ships.
+#
+# **v4, not v3.** Until ADR-0008's amendment these rows lived in `chunks` with
+# `derived = 1`, and their provenance in `chunk_derivation`. The amendment moves
+# both into their own tables -- `nodes` and `node_derivation` -- because a
+# summary's text repeats its children's terms and a derived row sharing
+# `chunks_fts` would move that table's BM25 collection statistics under every
+# ordinary leaf query. The five tests this section held at v3 (ADR-0024's
+# Compliance section: direct, a three-level chain, mixed provenance, an
+# unprovenanced node and its children, and a control) migrate here rather than
+# being deleted -- what they hold is the *rule*, and the rule is unchanged:
+# withdrawal is transitive over derived content, and an unresolvable derivation
+# edge means delete, not keep. A sixth, `test_a_derived_row_that_cannot_say_
+# where_it_came_from_is_deleted` at v3, migrates alongside them: it is a distinct
+# case from the fixed-point one below (zero children reachable through it, not
+# one node reachable *from* an unprovenanced node), and dropping `chunk_
+# derivation` would otherwise leave it stranded against a table that no longer
+# exists.
 
 
-def _add_derived(store: SqliteIndexStore, node: str, sources: list[str]) -> None:
-    """A summary row and its provenance, as RAPTOR would write them."""
+def _add_node(  # noqa: PLR0913 - one keyword per column a migrated test needs to vary
+    store: SqliteIndexStore,
+    node_id: str,
+    *,
+    sources: list[str] | None = None,
+    node_sources: list[str] | None = None,
+    node_type: str = "document",
+    level: int = 1,
+    tree_id: str = "tree-abc",
+) -> None:
+    """A node row and its provenance, as RAPTOR would write them (decision 5's amendment).
+
+    `sources` names chunk ids this node derives from; `node_sources` names other
+    node ids -- a Domain node summarises Document-tree nodes, a Document node
+    summarises chunks (decision 5's amendment to ADR-0008). `node_derivation`'s
+    `source_chunk_id`/`source_node_id` are nullable and mutually exclusive per
+    row, so a mixed-provenance edge set writes one row per source rather than one
+    row with both populated -- the row shape decision 5 leaves to the schema, not
+    a choice this test module's helper needs to defend beyond internal
+    consistency with itself.
+    """
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         with connection:
             connection.execute(
-                "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
-                "heading, text, token_estimate, status, sensitivity, trust_level, derived) "
-                "VALUES (?, ?, ?, ?, 0, '', ?, 10, 'approved', 'internal', 'reviewed', 1)",
-                (node, PROJECT, f"architecture.{node}", node, f"A summary of {sources}."),
+                "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
+                "summary_model, summary_model_revision, summary_prompt_hash, embedding_model, "
+                "embedding_model_revision, embedding_dimension, source_revision_id, "
+                "index_build_id, project_id, sensitivity, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', 0, '', 'test-build', ?, "
+                "'internal', 'approved')",
+                (
+                    node_id,
+                    tree_id,
+                    level,
+                    node_type,
+                    f"A summary of {(sources or []) + (node_sources or [])}.",
+                    hashlib.sha256(node_id.encode()).hexdigest(),
+                    PROJECT,
+                ),
             )
             connection.executemany(
-                "INSERT INTO chunk_derivation (node_chunk_id, source_chunk_id) VALUES (?, ?)",
-                [(node, source) for source in sources],
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES (?, ?, NULL)",
+                [(node_id, source) for source in sources or []],
+            )
+            connection.executemany(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES (?, NULL, ?)",
+                [(node_id, source) for source in node_sources or []],
             )
 
 
@@ -338,26 +391,38 @@ def _surviving(path: Path) -> set[str]:
         return {str(row[0]) for row in connection.execute("SELECT chunk_id FROM chunks")}
 
 
-def test_a_row_derived_from_a_withdrawn_chunk_goes_with_it(
+def _surviving_nodes(path: Path) -> set[str]:
+    with closing(sqlite3.connect(path)) as connection:
+        return {str(row[0]) for row in connection.execute("SELECT node_id FROM nodes")}
+
+
+def _node_count(path: Path) -> int:
+    with closing(sqlite3.connect(path)) as connection:
+        return int(connection.execute("SELECT count(*) FROM nodes").fetchone()[0])
+
+
+def test_a_node_derived_from_a_withdrawn_chunk_goes_with_it(
     tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
 ) -> None:
     """The case the whole decision exists for.
 
-    A purge can delete a chunk. It cannot delete a sentence out of a summary
-    built from that chunk, so a summary that survives its source is a withdrawal
-    that withdrew nothing -- the content is still retrievable, under a different
-    id, and no gate will catch it because the summary is not the withheld row.
+    Held at v3 by `test_a_row_derived_from_a_withdrawn_chunk_goes_with_it`, over
+    a `chunks.derived = 1` row. A purge can delete a chunk. It cannot delete a
+    sentence out of a summary built from that chunk, so a summary that survives
+    its source is a withdrawal that withdrew nothing -- the content is still
+    retrievable, under a different id, and no gate will catch it because the
+    summary is not the withheld row.
     """
     stale, _, withdrawn = corpora
-    _add_derived(stale, "summary-of-gone#0", [f"{withdrawn[0]}#0"])
-    _add_derived(stale, "summary-of-kept#0", ["keep-000#0"])
+    _add_node(stale, "summary-of-gone#0", sources=[f"{withdrawn[0]}#0"])
+    _add_node(stale, "summary-of-kept#0", sources=["keep-000#0"])
     purged_path = tmp_path / "theurian-index-purged.sqlite"
 
     stale.derive_purged(
         purged_path, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
     )
 
-    surviving = _surviving(purged_path)
+    surviving = _surviving_nodes(purged_path)
     assert "summary-of-gone#0" not in surviving, (
         "a summary built from a withdrawn chunk still contains it; deleting the chunk and "
         "keeping the summary withdraws nothing"
@@ -368,28 +433,34 @@ def test_a_row_derived_from_a_withdrawn_chunk_goes_with_it(
     )
 
 
-def test_withdrawal_is_transitive_through_a_chain_of_derivations(
+def test_withdrawal_is_transitive_through_a_document_and_a_domain_node(
     tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
 ) -> None:
-    """A summary of a summary. RAPTOR builds trees, so the chain is the normal case.
+    """A Domain node summarising a Document node. RAPTOR builds trees, so this is the normal case.
 
-    One level of traversal would pass the test above and leave the grandparent
-    standing, which is the same disclosure one indirection further out.
+    Held at v3 by `test_withdrawal_is_transitive_through_a_chain_of_derivations`,
+    over a chain of three plain `chunks.derived = 1` rows. v4 gives the chain its
+    real shape: a Document-tree node built from the withdrawn chunk, and a
+    Domain-tree node built from that node (ADR-0008 decision 2's three levels).
+    One level of traversal would pass the direct test above and leave the
+    Domain node standing, which is the same disclosure one indirection further
+    out.
     """
     stale, _, withdrawn = corpora
-    _add_derived(stale, "level-1#0", [f"{withdrawn[0]}#0"])
-    _add_derived(stale, "level-2#0", ["level-1#0"])
-    _add_derived(stale, "level-3#0", ["level-2#0"])
+    _add_node(
+        stale, "document-node#0", sources=[f"{withdrawn[0]}#0"], node_type="document", level=1
+    )
+    _add_node(stale, "domain-node#0", node_sources=["document-node#0"], node_type="domain", level=2)
     purged_path = tmp_path / "theurian-index-purged.sqlite"
 
     stale.derive_purged(
         purged_path, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
     )
 
-    surviving = _surviving(purged_path)
-    assert not {"level-1#0", "level-2#0", "level-3#0"} & surviving, (
+    surviving = _surviving_nodes(purged_path)
+    assert not {"document-node#0", "domain-node#0"} & surviving, (
         f"every node reachable from a withdrawn chunk must go; these survived: "
-        f"{sorted({'level-1#0', 'level-2#0', 'level-3#0'} & surviving)}"
+        f"{sorted({'document-node#0', 'domain-node#0'} & surviving)}"
     )
 
 
@@ -398,53 +469,58 @@ def test_a_node_derived_from_both_a_withdrawn_and_a_surviving_chunk_goes(
 ) -> None:
     """Mixed provenance resolves against the withdrawal, not for it.
 
-    The node holds content from a chunk the caller may no longer read. That it
-    also holds permitted content does not make it publishable -- a summary cannot
-    be partially withdrawn, which is why decision 8 says delete *or recompute*
-    and this half implements the first.
+    Held at v3 by the same-named test over `chunk_derivation`; the case keeps its
+    shape at v4. The node holds content from a chunk the caller may no longer
+    read. That it also holds permitted content does not make it publishable -- a
+    summary cannot be partially withdrawn, which is why decision 8 says delete
+    *or recompute* and this half implements the first.
     """
     stale, _, withdrawn = corpora
-    _add_derived(stale, "mixed#0", [f"{withdrawn[0]}#0", "keep-001#0"])
+    _add_node(stale, "mixed#0", sources=[f"{withdrawn[0]}#0", "keep-001#0"])
     purged_path = tmp_path / "theurian-index-purged.sqlite"
 
     stale.derive_purged(
         purged_path, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
     )
 
-    assert "mixed#0" not in _surviving(purged_path)
+    assert "mixed#0" not in _surviving_nodes(purged_path)
 
 
-def test_a_derived_row_that_cannot_say_where_it_came_from_is_deleted(
+def test_a_node_that_cannot_say_where_it_came_from_is_deleted(
     tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
 ) -> None:
     """Decision 8's last clause, and the one a traversal alone does not reach.
 
-    A node with no edges is reachable from nothing, so the recursive walk cannot
+    Held at v3 by `test_a_derived_row_that_cannot_say_where_it_came_from_is_
+    deleted`, over a `chunks.derived = 1` row with no `chunk_derivation` edge. A
+    node with no edges is reachable from nothing, so the recursive walk cannot
     see it. It is deleted rather than kept because a row that cannot say what it
     was built from cannot be shown to hold nothing withdrawn -- and the state
     arises from a partial build or a schema migration, which is to say from the
     situations where the index is least trustworthy.
     """
     stale, _, withdrawn = corpora
-    _add_derived(stale, "unprovenanced#0", [])
+    _add_node(stale, "unprovenanced#0", sources=[])
     purged_path = tmp_path / "theurian-index-purged.sqlite"
 
     stale.derive_purged(
         purged_path, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
     )
 
-    assert "unprovenanced#0" not in _surviving(purged_path)
+    assert "unprovenanced#0" not in _surviving_nodes(purged_path)
 
 
-def test_an_ordinary_row_is_never_treated_as_derived(
+def test_an_ordinary_chunk_is_never_treated_as_an_unprovenanced_node(
     tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
 ) -> None:
-    """The control for the test above.
+    """The control for the tests above.
 
-    `derived` defaults to 0, and every row the builder writes is ordinary. A rule
-    that deleted rows with no provenance edges *regardless* of that flag would
-    empty the index on the first purge, and every other test in this file would
-    still pass -- they assert what is gone, not what is left.
+    Held at v3 by `test_an_ordinary_row_is_never_treated_as_derived`. No node is
+    written here at all, so `nodes` must stay empty across the purge -- a rule
+    that swept ordinary chunks into the unprovenanced-node seed regardless of
+    which table it read would empty the index on the first purge, and every
+    other test in this section would still pass, because they assert what is
+    gone, not what is left.
     """
     stale, _, withdrawn = corpora
     purged_path = tmp_path / "theurian-index-purged.sqlite"
@@ -455,6 +531,7 @@ def test_an_ordinary_row_is_never_treated_as_derived(
 
     assert removed == len(withdrawn), "only the withdrawn chunks should have gone"
     assert SqliteIndexStore(purged_path).chunk_count() == ORDINARY
+    assert _node_count(purged_path) == 0, "no node was written; the purge must not conjure one"
 
 
 # -- Guards that a correct purge never reaches -------------------------------
@@ -608,27 +685,28 @@ def test_a_node_derived_only_from_an_unprovenanced_node_goes_with_it(
 ) -> None:
     """The fixed point, and the case two independent sweeps left standing.
 
-    An unprovenanced node is deleted because it cannot say what it was built
-    from. A node built *from* it inherits exactly that problem -- and it is
-    reachable from nothing withdrawn, so the recursive walk never saw it. With
-    the two sets deleted independently the parent went and the child stayed,
-    text intact and retrievable.
+    Held at v3 by the same-named test over `chunk_derivation`. An unprovenanced
+    node is deleted because it cannot say what it was built from. A node built
+    *from* it inherits exactly that problem -- and it is reachable from nothing
+    withdrawn, so the recursive walk never saw it. With the two sets deleted
+    independently the parent went and the child stayed, text intact and
+    retrievable.
 
     Seeding both into one recursive query takes the traversal to its fixed point
     instead, which is what makes this a property of the query rather than of the
     order two statements happen to run in.
     """
     stale, _, withdrawn = corpora
-    _add_derived(stale, "orphan#0", [])
-    _add_derived(stale, "child-of-orphan#0", ["orphan#0"])
-    _add_derived(stale, "grandchild#0", ["child-of-orphan#0"])
+    _add_node(stale, "orphan#0", sources=[])
+    _add_node(stale, "child-of-orphan#0", node_sources=["orphan#0"])
+    _add_node(stale, "grandchild#0", node_sources=["child-of-orphan#0"])
     purged_path = tmp_path / "theurian-index-purged.sqlite"
 
     stale.derive_purged(
         purged_path, revision_ids=withdrawn, index_build_id="01K1PURGED", state_hash="state-abc"
     )
 
-    surviving = _surviving(purged_path)
+    surviving = _surviving_nodes(purged_path)
     assert not {"orphan#0", "child-of-orphan#0", "grandchild#0"} & surviving, (
         f"the whole chain below an unprovenanced node must go; these survived: "
         f"{sorted({'orphan#0', 'child-of-orphan#0', 'grandchild#0'} & surviving)}"
@@ -757,34 +835,68 @@ def test_a_purge_does_not_touch_a_source_whose_wal_is_hot(
     assert wal.exists(), "the purge checkpointed and removed the published build's -wal sidecar"
 
 
-def test_verify_refuses_a_build_that_still_holds_an_unprovenanced_derived_row(
+def test_verify_refuses_a_build_that_still_holds_an_unprovenanced_node(
     tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
 ) -> None:
-    """`_verify`'s third post-condition, which the traversal keeps unreachable.
+    """`_verify`'s node post-condition, which the traversal keeps unreachable.
 
-    `_DOOMED` seeds on unprovenanced rows, so a real purge removes them and this
-    check never fires -- `test_a_node_derived_only_from_an_unprovenanced_node_
-    goes_with_it` proves the traversal converges. Disabling this check therefore
-    survives the whole suite: nothing reaches it.
+    Held at v3 by `test_verify_refuses_a_build_that_still_holds_an_
+    unprovenanced_derived_row`, over a `chunks.derived = 1` row. v4 moves the row
+    to `nodes`: `_DOOMED` seeds on unprovenanced nodes, so a real purge removes
+    them and this check never fires -- `test_a_node_derived_only_from_an_
+    unprovenanced_node_goes_with_it` proves the traversal converges. Disabling
+    this check therefore survives the whole suite: nothing reaches it.
 
     It is the runtime backstop for the day a future `_DOOMED` reconstruction, or
-    a RAPTOR builder writing derived rows, leaves an unprovenanced row the
-    traversal missed -- a row that cannot be shown to hold nothing withdrawn, and
-    so must not be published. This reaches it directly: a build with such a row
-    inserted past the traversal, verified as if a broken purge had handed it over.
+    a RAPTOR builder writing node rows, leaves an unprovenanced one the
+    traversal missed -- a node that cannot be shown to hold nothing withdrawn,
+    and so must not be published. This reaches it directly: a build with such a
+    node inserted past the traversal, verified as if a broken purge had handed
+    it over.
     """
     stale, _, _ = corpora
     build = tmp_path / "theurian-index-leaked.sqlite"
     build.write_bytes(stale.path.read_bytes())
     with closing(sqlite3.connect(build)) as connection, connection:
         connection.execute(
-            "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, heading, "
-            "text, token_estimate, status, sensitivity, trust_level, derived) "
-            "VALUES ('leaked#0', ?, 'architecture.leaked', 'leaked', 0, '', "
-            "'SECRET a summary whose sources cannot be named', 10, 'approved', 'internal', "
-            "'reviewed', 1)",
+            "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
+            "summary_model, summary_model_revision, summary_prompt_hash, embedding_model, "
+            "embedding_model_revision, embedding_dimension, source_revision_id, "
+            "index_build_id, project_id, sensitivity, status) "
+            "VALUES ('leaked#0', 'tree-abc', 1, 'document', "
+            "'SECRET a summary whose sources cannot be named', 'deadbeef', '', '', '', '', "
+            "'', 0, '', 'test-build', ?, 'internal', 'approved')",
             (PROJECT,),
         )
 
     with pytest.raises(IndexPurgeError, match="no provenance"):
+        _verify(build, [])
+
+
+def test_verify_refuses_a_build_whose_node_derivation_points_at_a_chunk_that_is_gone(
+    tmp_path: Path, corpora: tuple[SqliteIndexStore, SqliteIndexStore, list[str]]
+) -> None:
+    """`_verify`'s node post-condition for a dangling edge, which has no v3 analogue.
+
+    ADR-0024 decision 8's own rule, applied to the new table: "a derived node
+    whose derivation edges cannot be resolved is deleted, not kept." A dangling
+    `node_derivation` row -- one naming a `source_chunk_id` no longer in `chunks`
+    -- is exactly that state, distinct from the unprovenanced case above (that
+    node has *zero* edges; this one has an edge that points nowhere). It arises
+    the way `test_the_post_condition_also_refuses_an_orphaned_embedding`
+    constructs its own case: `PRAGMA foreign_keys` off, so `ON DELETE CASCADE`
+    never removes the edge when its source goes. `_verify` must refuse a build
+    holding a node whose claimed source cannot be checked, exactly as it refuses
+    one still holding an embedding whose chunk is gone.
+    """
+    stale, _, _ = corpora
+    build = tmp_path / "theurian-index-dangling.sqlite"
+    build.write_bytes(stale.path.read_bytes())
+    store = SqliteIndexStore(build)
+    _add_node(store, "dangling-node#0", sources=["keep-000#0"])
+    with closing(sqlite3.connect(build)) as connection, connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM chunks WHERE chunk_id = 'keep-000#0'")
+
+    with pytest.raises(IndexPurgeError):
         _verify(build, [])

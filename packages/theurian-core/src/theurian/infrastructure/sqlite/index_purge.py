@@ -43,32 +43,51 @@ from pathlib import Path
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
 
-#: Rows reachable from a withdrawn chunk through :data:`chunk_derivation`,
-#: transitively, plus the withdrawn chunks themselves.
+#: Chunks and nodes reachable from a withdrawn chunk through
+#: :data:`node_derivation`, transitively, plus the withdrawn chunks themselves.
 #:
-#: A recursive query rather than the foreign key's `ON DELETE CASCADE`, because
+#: **v4, not v3.** RAPTOR summaries now live in `nodes`, provenanced by
+#: `node_derivation`, rather than as `chunks` rows with `derived = 1` (ADR-0008
+#: decision 5's amendment, ADR-0024 decision 8's amendment). A chunk is never
+#: the *target* of a derivation edge -- only a node can be built from something
+#: -- so `doomed_chunks` needs no recursion: it is exactly the withdrawn set.
+#: `doomed_nodes` is the recursive half, seeded on the same two conditions v3
+#: seeded on (a withdrawn source, or no provenance at all) and then walked to
+#: the fixed point through both edge shapes: a node built from a doomed chunk,
+#: and a node built from a doomed node.
+#:
+#: A recursive query rather than the foreign keys' `ON DELETE CASCADE`, because
 #: the cascade removes the *edge* and leaves the node. A summary built from a
 #: retired incident note still contains the note; deleting the note and keeping
 #: the summary withdraws nothing (ADR-0024 decision 8).
+#:
+#: `kind` discriminates the two id spaces in one result set, so `_delete` can
+#: route each row to the table it actually lives in without a second query.
 _DOOMED = """
-WITH RECURSIVE doomed(chunk_id) AS (
+WITH RECURSIVE
+doomed_chunks(chunk_id) AS (
     SELECT chunk_id FROM chunks WHERE revision_id IN (%s)
+),
+doomed_nodes(node_id) AS (
+    SELECT node_id FROM nodes
+     WHERE node_id NOT IN (SELECT node_id FROM node_derivation)
     UNION
-    SELECT chunk_id FROM chunks
-     WHERE derived = 1
-       AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)
+    SELECT node_derivation.node_id
+      FROM node_derivation
+      JOIN doomed_chunks ON node_derivation.source_chunk_id = doomed_chunks.chunk_id
     UNION
-    SELECT chunk_derivation.node_chunk_id
-      FROM chunk_derivation
-      JOIN doomed ON chunk_derivation.source_chunk_id = doomed.chunk_id
+    SELECT node_derivation.node_id
+      FROM node_derivation
+      JOIN doomed_nodes ON node_derivation.source_node_id = doomed_nodes.node_id
 )
-SELECT chunk_id FROM doomed
+SELECT 'chunk' AS kind, chunk_id AS id FROM doomed_chunks
+UNION ALL
+SELECT 'node' AS kind, node_id AS id FROM doomed_nodes
 """
 
-#: A derived row whose provenance cannot be resolved: `derived = 1` with no edge
-#: naming what it was built from. Deleted rather than kept, because a node that
-#: cannot say where it came from cannot be shown to hold nothing withdrawn
-#: (ADR-0024 decision 8).
+#: A node whose provenance cannot be resolved at all: no `node_derivation` row
+#: names it. Deleted rather than kept, because a node that cannot say where it
+#: came from cannot be shown to hold nothing withdrawn (ADR-0024 decision 8).
 #:
 #: **It is a *seed* of the traversal above, not a separate sweep, and that
 #: distinction was a defect.** Deleting the two sets independently leaves the
@@ -81,10 +100,24 @@ SELECT chunk_id FROM doomed
 #: Kept as a constant because `_verify` reads it as a post-condition: after the
 #: purge this count must be zero, which is the check that fails if the seed above
 #: is ever removed from `_DOOMED`.
-_UNPROVENANCED = """
-SELECT chunk_id FROM chunks
- WHERE derived = 1
-   AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)
+_UNPROVENANCED_NODES = """
+SELECT node_id FROM nodes
+ WHERE node_id NOT IN (SELECT node_id FROM node_derivation)
+"""
+
+#: A `node_derivation` edge naming a source that is no longer there: a
+#: `source_chunk_id` absent from `chunks`, or a `source_node_id` absent from
+#: `nodes`. `ON DELETE CASCADE` on both source columns is meant to remove such
+#: an edge the moment its source goes -- this is what fires when a delete ran
+#: with `PRAGMA foreign_keys` off, which is per-connection and defaults off, so
+#: a purge that opened its own bare connection would leave the edge behind
+#: pointing at nothing. A node that still carries one cannot be shown to hold
+#: nothing withdrawn any more than an unprovenanced one can (ADR-0024
+#: decision 8), so `_verify` refuses a build holding either.
+_DANGLING_NODE_DERIVATION = """
+SELECT count(*) AS dangling FROM node_derivation
+ WHERE (source_chunk_id IS NOT NULL AND source_chunk_id NOT IN (SELECT chunk_id FROM chunks))
+    OR (source_node_id IS NOT NULL AND source_node_id NOT IN (SELECT node_id FROM nodes))
 """
 
 
@@ -224,20 +257,29 @@ def _delete(target: Path, revision_ids: Sequence[str]) -> int:
         # `NULL` when nothing was withdrawn: `IN ()` is a syntax error, and
         # `revision_id IN (NULL)` is never true, so the query still runs and still
         # reaches its other seed. A purge with an empty withdrawal list is not a
-        # no-op -- it still removes derived rows whose provenance is unresolvable.
+        # no-op -- it still removes nodes whose provenance is unresolvable.
         placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
         rows = connection.execute(_DOOMED % placeholders, tuple(revision_ids)).fetchall()
-        doomed = {str(row["chunk_id"]) for row in rows}
+        doomed_chunks = {str(row["id"]) for row in rows if row["kind"] == "chunk"}
+        doomed_nodes = {str(row["id"]) for row in rows if row["kind"] == "node"}
 
-        if not doomed:
+        if not doomed_chunks and not doomed_nodes:
             return 0
-        # Deleted by chunk id rather than by the predicates above, so that one
-        # statement removes ordinary and derived rows alike and the FTS5 delete
-        # triggers fire once per row whatever put it in the set.
-        connection.executemany(
-            "DELETE FROM chunks WHERE chunk_id = ?", [(chunk_id,) for chunk_id in sorted(doomed)]
-        )
-        return len(doomed)
+        # Two statements now, not one: chunks and nodes are separate tables at
+        # v4, each with its own FTS5 delete triggers (`chunks_fts`/
+        # `chunks_trigram` for the first, `nodes_fts` for the second) that fire
+        # once per row whatever seed put it in its set.
+        if doomed_chunks:
+            connection.executemany(
+                "DELETE FROM chunks WHERE chunk_id = ?",
+                [(chunk_id,) for chunk_id in sorted(doomed_chunks)],
+            )
+        if doomed_nodes:
+            connection.executemany(
+                "DELETE FROM nodes WHERE node_id = ?",
+                [(node_id,) for node_id in sorted(doomed_nodes)],
+            )
+        return len(doomed_chunks) + len(doomed_nodes)
 
 
 def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
@@ -264,12 +306,14 @@ def _verify(target: Path, revision_ids: Sequence[str]) -> None:
     this would still be worth running, because what publishes a build is a
     pointer swap and there is no later stage that looks.
 
-    **Three counts, each for a different way the delete can be incomplete**, and
-    the third is the one a review found missing: rows of the withdrawn revisions,
-    embeddings whose chunk is gone, and derived rows with no provenance. All
-    three must be zero. The first is an indexed count against
-    `chunks_by_revision`; the other two are small scans over tables the purge has
-    just shrunk.
+    **Four counts, each for a different way the delete can be incomplete**, and
+    the fourth is new at v4: rows of the withdrawn revisions, embeddings whose
+    chunk is gone, nodes with no provenance, and now node derivation edges whose
+    source is gone -- a class the v3 traversal, over one table, had no room for:
+    an unresolved edge and an unprovenanced row were the same state there, and
+    v4's separate tables make them different ones. All four must be zero. The
+    first is an indexed count against `chunks_by_revision`; the rest are small
+    scans over tables the purge has just shrunk.
     """
     with _writing(target) as connection:
         remaining = 0
@@ -281,20 +325,27 @@ def _verify(target: Path, revision_ids: Sequence[str]) -> None:
             ).fetchone()
             remaining = int(row["remaining"])
         # Checked whatever `revision_ids` held, and that is not symmetry. A purge
-        # with nothing withdrawn still deletes unprovenanced derived rows, so it
-        # can still orphan an embedding -- and an early return for the empty case
+        # with nothing withdrawn still deletes unprovenanced nodes, so it can
+        # still orphan an embedding -- and an early return for the empty case
         # skipped exactly that. Found by a test that passed `[]`.
         orphans = connection.execute(
             "SELECT count(*) AS orphans FROM embeddings "
             "WHERE chunk_id NOT IN (SELECT chunk_id FROM chunks)"
         ).fetchone()
-        # The third check, and the one that fails if `_UNPROVENANCED` is ever
-        # removed as a seed of `_DOOMED`. Deleting the two sets independently
-        # left the *children* of an unprovenanced node behind, text intact and
-        # retrievable, so this counts what should now be a fixed point.
+        # The third check, and the one that fails if `_UNPROVENANCED_NODES` is
+        # ever removed as a seed of `_DOOMED`. Deleting the two sets
+        # independently left the *children* of an unprovenanced node behind,
+        # text intact and retrievable, so this counts what should now be a
+        # fixed point.
         unprovenanced = connection.execute(
-            f"SELECT count(*) AS unprovenanced FROM ({_UNPROVENANCED})"  # noqa: S608 - module-owned literal
+            f"SELECT count(*) AS unprovenanced FROM ({_UNPROVENANCED_NODES})"  # noqa: S608 - module-owned literal
         ).fetchone()
+        # The fourth check, unreachable through a correct purge for the same
+        # reason the orphaned-embedding check is: `ON DELETE CASCADE` on
+        # `node_derivation`'s source columns removes the edge the moment its
+        # source goes, and only fires when the connection that deletes has
+        # `PRAGMA foreign_keys` on.
+        dangling = connection.execute(_DANGLING_NODE_DERIVATION).fetchone()
 
     if remaining:
         msg = (
@@ -315,11 +366,21 @@ def _verify(target: Path, revision_ids: Sequence[str]) -> None:
         raise IndexPurgeError(msg)
     if int(unprovenanced["unprovenanced"]):
         msg = (
-            f"The purged build holds {unprovenanced['unprovenanced']} derived row(s) with no "
+            f"The purged build holds {unprovenanced['unprovenanced']} node(s) with no "
             f"provenance, which cannot be shown to hold nothing withdrawn. Nothing was "
             f"published, so retrieval still uses the current index and the partial build has "
             f"been deleted. Run `theurian index build`; this is a defect in Theurian rather "
             f"than in your project, so please report it."
+        )
+        raise IndexPurgeError(msg)
+    if int(dangling["dangling"]):
+        msg = (
+            f"The purged build holds {dangling['dangling']} node derivation edge(s) whose "
+            f"source is gone. `PRAGMA foreign_keys` was off for the delete, so "
+            f"`ON DELETE CASCADE` did not run. Nothing was published, so retrieval still uses "
+            f"the current index and the partial build has been deleted. Run `theurian index "
+            f"build`; this is a defect in Theurian rather than in your project, so please "
+            f"report it."
         )
         raise IndexPurgeError(msg)
 

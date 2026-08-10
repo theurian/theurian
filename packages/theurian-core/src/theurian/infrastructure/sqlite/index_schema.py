@@ -18,18 +18,34 @@ The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
 
-**Version 3 adds `chunks.derived` and `chunk_derivation` for a feature that does
-not exist yet.** ADR-0024 decision 8: withdrawal is transitive over derived
-content, because a purge can delete a chunk and cannot delete a sentence out of a
-summary built from it. RAPTOR (ADR-0008) is what will write those rows; the
-columns and the purge's traversal land first, so that the day a summary node
-exists it inherits a purge that already carries it rather than one designed a
-second time under pressure.
+**Version 4 gives RAPTOR summary nodes their own tables, `nodes` and
+`node_derivation`, rather than storing them as `chunks` rows.** Version 3 added
+`chunks.derived` and `chunk_derivation` for a writer that did not exist yet
+(ADR-0024 decision 8); the amendment to ADR-0008 decision 5 revisits that once
+RAPTOR is the feature actually landing. `chunks_fts` and `chunks_trigram` are
+external-content FTS5 tables scored against collection statistics computed over
+*every* row in `chunks` — `N`, `avgdl`, and the per-term document frequencies —
+and a RAPTOR summary systematically repeats the terms of the children it was
+built from, so a derived row sharing either table would move all three under
+every ordinary leaf query the caller never asked a node about. `nodes` carries
+its own `nodes_fts`, a table neither leaf index reads, so a summary's text can
+never move a leaf's score. `chunks.derived` and `chunk_derivation` are dropped
+rather than kept beside the new tables: a column nothing will ever write serves
+nothing, and keeping it would leave two provenance mechanisms of which one is
+permanently dead.
 
-Bumping the version means every index built under 2 reports
+The purge's transitive walk (ADR-0024 decision 8) moves with the storage: it
+seeds on unprovenanced `nodes` rows now instead of `chunks` rows with
+`derived = 1`, and follows `node_derivation` edges instead of
+`chunk_derivation` ones. `IndexStore.holds_any_revision`'s pre-check moves with
+it too, because it names `node_derivation` as an executed SQL predicate on the
+withdrawal path (`application/withdrawal_purge.py`), not only on the purge path.
+
+Bumping the version means every index built under 3 reports
 `index-schema-mismatch` and falls back to the substring scan until
 `theurian index build` runs. That is ADR-0022 point 3 working as designed — an
-index schema change costs an index rebuild and nothing else — not a regression.
+index schema change costs an index rebuild and nothing else, never an in-place
+migration of the file — not a regression.
 """
 
 from __future__ import annotations
@@ -38,7 +54,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 3
+INDEX_SCHEMA_VERSION: Final = 4
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -83,38 +99,11 @@ CREATE TABLE chunks (
     status       TEXT    NOT NULL,
     sensitivity  TEXT    NOT NULL,
     trust_level  TEXT    NOT NULL,
-    namespace    TEXT    NOT NULL DEFAULT '',
-    -- Whether this row's text was *derived* from other rows rather than read
-    -- from a revision. Nothing writes 1 yet -- RAPTOR (ADR-0008) is the first
-    -- thing that will -- and the column exists ahead of it because withdrawal
-    -- has to be transitive from the first build that has anything to be
-    -- transitive over (ADR-0024 decision 8). A summary is not withdrawn by
-    -- deleting the chunk it summarises: the sentence is still in the summary.
-    derived      INTEGER NOT NULL DEFAULT 0 CHECK (derived IN (0, 1))
+    namespace    TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX chunks_by_project ON chunks (project_id, status);
 CREATE INDEX chunks_by_revision ON chunks (revision_id);
-
--- Provenance of derived rows -------------------------------------------------
--- One edge per (derived node, chunk it was built from). The purge walks this
--- transitively: a node built from a withdrawn chunk holds that chunk's content
--- and must go with it, and so must a node built from *that* node (ADR-0024
--- decision 8).
---
--- `ON DELETE CASCADE` on `source_chunk_id` removes the *edge* when a source
--- goes, which is not the same as removing the node -- that is why the purge
--- deletes through a recursive query rather than trusting the cascade. The
--- cascade is here so an edge can never outlive the row it points at, which is
--- what makes "a derived node with no surviving edges" a state worth testing for
--- rather than an artifact of bookkeeping.
-CREATE TABLE chunk_derivation (
-    node_chunk_id   TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
-    source_chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
-    PRIMARY KEY (node_chunk_id, source_chunk_id)
-);
-
-CREATE INDEX chunk_derivation_by_source ON chunk_derivation (source_chunk_id);
 
 -- Lexical index --------------------------------------------------------------
 -- `content=` makes this an external-content table: FTS5 stores only the index
@@ -197,4 +186,109 @@ CREATE TABLE embeddings (
     dimension  INTEGER NOT NULL,
     vector     BLOB    NOT NULL
 );
+
+-- RAPTOR summary nodes --------------------------------------------------------
+-- One row per summary, in its own table rather than in `chunks` (ADR-0008
+-- decision 5's amendment, ADR-0024 decision 8's amendment). The fourteen
+-- provenance columns are decision 5's own list -- a summary whose model or
+-- prompt hash differs from the current configuration is stale by definition and
+-- rebuilt, no guessing. `project_id`, `sensitivity` and `status` are carried
+-- denormalised for the same reason `chunks` carries its own copies: filtering
+-- has to happen in the same statement as the match, before ranking (FR-R1).
+-- `project_id` is the future single-point predicate #119 adds; `sensitivity` is
+-- today a published label and not a control (see the Context amendment to
+-- ADR-0008); `status` is the build-flavor column a node-table predicate will
+-- filter on once one exists. `tree_id` already encodes the full six-component
+-- scope tuple `(project, tenant, sensitivity, acl_group, namespace, status)`, so
+-- these three are read, not derived from it, at query time.
+--
+-- Nothing writes a row here yet: RAPTOR (`infrastructure/raptor/`) is an empty
+-- package and `SummarizationProvider` a port with no adapter. The table and the
+-- purge's traversal over it land first, so that the day a summary node exists
+-- it inherits a purge that already carries it rather than one designed a second
+-- time under pressure.
+CREATE TABLE nodes (
+    node_id                   TEXT PRIMARY KEY,
+    tree_id                   TEXT    NOT NULL,
+    level                     INTEGER NOT NULL,
+    node_type                 TEXT    NOT NULL,
+    text                      TEXT    NOT NULL,
+    content_hash              TEXT    NOT NULL,
+    summary_model             TEXT    NOT NULL,
+    summary_model_revision    TEXT    NOT NULL,
+    summary_prompt_hash       TEXT    NOT NULL,
+    embedding_model           TEXT    NOT NULL,
+    embedding_model_revision  TEXT    NOT NULL,
+    embedding_dimension       INTEGER NOT NULL,
+    source_revision_id        TEXT    NOT NULL,
+    index_build_id            TEXT    NOT NULL,
+    project_id                TEXT    NOT NULL,
+    sensitivity               TEXT    NOT NULL,
+    status                    TEXT    NOT NULL
+);
+
+CREATE INDEX nodes_by_project ON nodes (project_id, status);
+CREATE INDEX nodes_by_tree ON nodes (tree_id);
+
+-- Provenance of node rows -----------------------------------------------------
+-- One row per (node, thing it was built from). A Document-tree node is built
+-- from chunks; a Domain-tree node is built from Document-tree nodes (ADR-0008
+-- decision 2's three levels) -- so an edge names exactly one of a chunk or
+-- another node, never both, which the CHECK below enforces per row rather than
+-- trusting every writer to keep the two columns consistent.
+--
+-- The purge walks this transitively, exactly as it walked `chunk_derivation` at
+-- v3: a node built from a withdrawn chunk holds that chunk's content and must
+-- go with it, and so must a node built from *that* node (ADR-0024 decision 8).
+--
+-- `ON DELETE CASCADE` on both source columns removes the *edge* when the thing
+-- it points at goes, which is not the same as removing the node that has the
+-- edge -- that is why the purge deletes through a recursive query rather than
+-- trusting the cascade. The cascade is here so an edge can never outlive the row
+-- it points at, which is what makes "a node with no surviving edges" a state
+-- worth testing for rather than an artifact of bookkeeping.
+CREATE TABLE node_derivation (
+    node_id         TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+    source_chunk_id TEXT REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    source_node_id  TEXT REFERENCES nodes(node_id) ON DELETE CASCADE,
+    CHECK (
+        (source_chunk_id IS NOT NULL AND source_node_id IS NULL)
+        OR (source_chunk_id IS NULL AND source_node_id IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX node_derivation_edge
+    ON node_derivation (node_id, source_chunk_id, source_node_id);
+CREATE INDEX node_derivation_by_source_chunk ON node_derivation (source_chunk_id);
+CREATE INDEX node_derivation_by_source_node ON node_derivation (source_node_id);
+
+-- Lexical index over node text -------------------------------------------------
+-- External-content FTS5 over `nodes(text)`, deliberately its own table rather
+-- than sharing `chunks_fts`. `bm25` scores every visible row against collection
+-- statistics computed over *every* row in the table it is asked about -- `N`,
+-- `avgdl`, and the per-term document frequencies -- and a RAPTOR summary
+-- systematically repeats the terms of the children it summarises. A derived row
+-- sharing `chunks_fts` would move all three under every ordinary leaf query the
+-- caller never asked a node about, so a visible leaf's rank would become a
+-- function of the forest's shape. Keeping node text in its own FTS5 table makes
+-- that channel structurally absent rather than merely unexercised.
+CREATE VIRTUAL TABLE nodes_fts USING fts5(
+    text,
+    content='nodes',
+    content_rowid='rowid',
+    tokenize="unicode61 remove_diacritics 2"
+);
+
+CREATE TRIGGER nodes_fts_insert AFTER INSERT ON nodes BEGIN
+    INSERT INTO nodes_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER nodes_fts_delete AFTER DELETE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER nodes_fts_update AFTER UPDATE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO nodes_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
 """

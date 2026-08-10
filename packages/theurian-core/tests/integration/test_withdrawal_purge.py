@@ -559,36 +559,49 @@ def test_a_pointer_write_failure_after_a_good_copy_discards_the_orphan(
     assert builds == [paths.index_for(BUILD_ID)], "the unpublished purged copy must be discarded"
 
 
-def _insert_unprovenanced_derived(path: Path, chunk_id: str) -> None:
-    """Add a ``derived = 1`` chunk with no `chunk_derivation` edge -- unprovenanced.
+def _insert_unprovenanced_node(path: Path, node_id: str) -> None:
+    """Add a `nodes` row with no `node_derivation` edge -- unprovenanced.
 
-    The state a partial or migrated build leaves once RAPTOR (ADR-0008) writes
-    derived rows. `add_chunks` never sets ``derived``, so this goes in by hand.
+    Held at v3 by `_insert_unprovenanced_derived`, over a `chunks.derived = 1`
+    row. v4 moves the row to its own table (ADR-0008 decision 5's amendment),
+    which is the state a partial or migrated build leaves once RAPTOR writes
+    node rows. `add_chunks` never writes to `nodes` at all, so this goes in by
+    hand.
     """
     with closing(sqlite3.connect(path)) as connection:
         connection.execute(
-            "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, heading, "
-            "text, token_estimate, status, sensitivity, trust_level, namespace, derived) "
-            "VALUES (?, ?, ?, ?, 0, '', ?, 3, 'approved', 'internal', 'reviewed', '', 1)",
-            (chunk_id, PROJECT, "architecture.summary", "raptor-summary", "a derived summary"),
+            "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
+            "summary_model, summary_model_revision, summary_prompt_hash, embedding_model, "
+            "embedding_model_revision, embedding_dimension, source_revision_id, "
+            "index_build_id, project_id, sensitivity, status) "
+            "VALUES (?, 'tree-abc', 1, 'document', ?, 'deadbeef', '', '', '', '', '', 0, '', "
+            "'test-build', ?, 'internal', 'approved')",
+            (node_id, "a derived summary", PROJECT),
         )
         connection.commit()
 
 
-def test_an_unprovenanced_derived_row_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> None:
+def test_an_unprovenanced_node_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> None:
     """The second `_DOOMED` seed, driven end to end (MEDIUM-2).
 
-    `holds_any_revision` widened to cover both seeds of `index_purge._DOOMED`, so
-    it stays equivalent to ``derive_purged`` returning a non-zero count once
-    derived rows exist. This pins that: a build with an unprovenanced derived row
-    but **no** withdrawn-revision match must have the pre-check return ``True`` and
-    the purge remove the row -- so the ``derived = 1`` clause is actually
-    evaluated, not just present. It kills the ``derived = 1 -> derived = 99``
-    mutation, which the widening's own presence did not.
+    Held at v3 by `test_an_unprovenanced_derived_row_is_seen_by_the_pre_check_
+    and_purged`, over a `chunks.derived = 1` row and `holds_any_revision`'s
+    ``derived = 1 AND chunk_id NOT IN (...)`` clause -- a predicate that, at v4,
+    names a table (`chunk_derivation`) that no longer exists, and so raises
+    rather than answering (the #133-round reproduction this migration closes:
+    `no such table: chunk_derivation`).
+
+    `holds_any_revision`'s unprovenanced clause moves from `chunks`/`chunk_
+    derivation` to `nodes`/`node_derivation`, staying equivalent to
+    ``derive_purged`` returning a non-zero count once node rows exist. This
+    pins that: a build with an unprovenanced node but **no** withdrawn-revision
+    match must have the pre-check return ``True`` and the purge remove it --
+    against a schema where the old clause would have raised rather than merely
+    answered wrong.
     """
     paths = _paths(tmp_path)
     _build(paths.index_for(BUILD_ID), include_withdrawn=False)
-    _insert_unprovenanced_derived(paths.index_for(BUILD_ID), "raptor-summary#0")
+    _insert_unprovenanced_node(paths.index_for(BUILD_ID), "raptor-summary#0")
     write_active_index_pointer(
         paths,
         index_build_id=BUILD_ID,
@@ -597,9 +610,10 @@ def test_an_unprovenanced_derived_row_is_seen_by_the_pre_check_and_purged(tmp_pa
         indexes_unapproved=False,
     )
 
-    # The pre-check sees it even though the withdrawn revision matches no chunk.
+    # The pre-check sees it even though the withdrawn revision matches no chunk,
+    # and does so without raising -- the property the old table name broke.
     assert SqliteIndexStore(paths.index_for(BUILD_ID)).holds_any_revision(["no-such-revision"]), (
-        "the unprovenanced derived row is the second _DOOMED seed and must be detected"
+        "the unprovenanced node is the second _DOOMED seed and must be detected"
     )
 
     outcome = publish_purge_for_withdrawal(
@@ -610,7 +624,7 @@ def test_an_unprovenanced_derived_row_is_seen_by_the_pre_check_and_purged(tmp_pa
     )
 
     assert outcome.published is True, "a build with something to remove is purged and republished"
-    assert outcome.removed == 1, "the one unprovenanced derived row"
+    assert outcome.removed == 1, "the one unprovenanced node"
     assert not _published_store(paths).holds_any_revision(["no-such-revision"]), (
         "and it is gone from the published build"
     )

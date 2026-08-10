@@ -593,22 +593,33 @@ class SqliteIndexStore:
 
         **It tests both seeds of `index_purge._DOOMED`, not just the revision
         match**, so it stays equivalent to ``derive_purged`` returning a non-zero
-        count. The second is a derived row with no provenance edge -- ``derived =
-        1`` and absent from ``chunk_derivation`` -- which the purge deletes even
-        when nothing was withdrawn (a partial or migrated build leaves them). No
-        chunk carries ``derived = 1`` until RAPTOR writes one (ADR-0008), so the
-        clause is dormant today; without it, once one does, a build with an
-        unprovenanced row but no withdrawn-revision match would be skipped and its
-        residue would survive.
+        count. The second is a node with no provenance edge at all -- absent from
+        ``node_derivation`` -- which the purge deletes even when nothing was
+        withdrawn (a partial or migrated build leaves them). No node exists until
+        RAPTOR writes one (ADR-0008), so the clause is dormant today; without it,
+        once one does, a build with an unprovenanced node but no withdrawn-
+        revision match would be skipped and its residue would survive.
+
+        **v4, not v3.** The second clause moved from ``chunks``/``derived = 1``/
+        ``chunk_derivation`` to ``nodes``/``node_derivation`` when ADR-0008
+        decision 5's amendment gave RAPTOR summaries their own tables -- a
+        predicate still naming ``chunk_derivation`` would raise ``no such table``
+        against a v4 index rather than merely answering wrong, because this runs
+        on the withdrawal path (``application/withdrawal_purge.py`` calls it as
+        the pre-check on every ``migrate apply`` that withdraws anything), not
+        only on the purge path.
+
+        Two ``SELECT``s joined by ``UNION ALL`` rather than one ``OR``, because
+        the two clauses now read different tables and ``OR`` cannot span a
+        ``FROM``. Still one round trip: the second half only has to be evaluated
+        when the first finds nothing, and ``LIMIT 1`` over the union stops there.
         """
         placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
-        unprovenanced = (
-            "derived = 1 AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)"
-        )
+        unprovenanced = "node_id NOT IN (SELECT node_id FROM node_derivation)"
         with self._read() as connection:
             row = connection.execute(
-                f"SELECT 1 FROM chunks "  # noqa: S608 - placeholders generated, values bound
-                f"WHERE revision_id IN ({placeholders}) OR ({unprovenanced}) LIMIT 1",
+                f"SELECT 1 FROM chunks WHERE revision_id IN ({placeholders}) "  # noqa: S608 - placeholders generated, values bound
+                f"UNION ALL SELECT 1 FROM nodes WHERE {unprovenanced} LIMIT 1",
                 tuple(revision_ids),
             ).fetchone()
             return row is not None
