@@ -9,8 +9,7 @@ incremental and publish through an atomic swap, so that a partial build is
 never searchable.
 
 Every sentence above was in the present tense until this pass, in a package with
-no builder, no node tables, no traversal, no ``summary_prompt_hash`` column in
-``index_schema.py``, and no ``SummarizationProvider`` implementation to
+no builder, no traversal, and no ``SummarizationProvider`` implementation to
 summarise with. "Structurally impossible" is the kind of claim that is read
 once and relied on afterwards, so it says "would" here until something
 enforces it; ADR-0008's Compliance section carried the same reading and still
@@ -22,10 +21,34 @@ The scope tuple itself is real and tested, and so is tree identity: ``Scope``,
 is exhaustive over the 64 component combinations, and the domain value type
 ``theurian.domain.raptor.SummaryNode`` refuses to be built from children whose
 scope disagrees with its own, exposing a ``tree_id`` derived from
-``Scope.digest``. What is missing is everything downstream of that node type:
-no builder constructs one, no index table stores one, and no traversal reads
-one back; ``tenant`` and ``acl_group`` have no column in the index, and the
-scope filter that does exist covers project and status only (#63). A forest
-scoped by a tuple the store cannot express is the first thing Milestone 6 has
-to resolve.
+``Scope.digest``.
+
+**The storage is real too, as of index schema v4** — this paragraph said the
+opposite until that landed (ADR-0008 decision 5's Milestone 6 amendment).
+``index_schema.py`` declares ``nodes``, carrying decision 5's fourteen
+provenance columns — ``tree_id`` and ``summary_prompt_hash`` among them — plus
+``project_id``, ``sensitivity`` and ``status`` to filter on; ``node_derivation``
+for the provenance edges, each naming exactly one of a source chunk or a source
+node; and ``nodes_fts``, a separate external-content FTS5 table so that a
+summary's text cannot move a leaf chunk's BM25 score. ``index_purge`` already
+walks those edges transitively and ``_verify`` refuses to publish a build
+holding an unprovenanced node or an edge whose source is gone, so the day a
+summary node exists it inherits a purge that already carries it.
+
+What is missing is everything between the node type and those tables. No builder
+constructs a ``SummaryNode``, nothing maps one onto a ``nodes`` row in either
+direction, no row is ever written, and no traversal reads one back at query
+time — every test over these tables inserts its fixture with raw SQL. That is
+this package's work, and it is the next change.
+
+Two gaps the tables do not close, and only the second is this package's.
+``tenant`` and ``acl_group`` have no column anywhere in the index: ``tree_id``
+encodes the whole six-component tuple, so a node's tree is expressible, but no
+predicate can filter on those two axes, which are deferred along with
+sensitivity to #119. And nothing enforces project or status for node reads —
+``SqliteIndexStore._scope`` is the single point of enforcement for chunk reads
+and names ``chunks`` in its clauses, so a node traversal is a second enforcement
+point unless it is built through the same one. ADR-0008's Compliance section
+owes exactly that, with the mutation check that distinguishes one enforcement
+point from two that happen to agree.
 """

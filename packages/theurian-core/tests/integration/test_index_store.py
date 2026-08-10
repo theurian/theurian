@@ -1447,43 +1447,117 @@ def test_a_limit_of_exactly_one_is_allowed(
 def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStore) -> None:
     """The literal, so a DDL change that forgets to bump -- or bumps wrong -- fails.
 
-    Three at the time of writing: version 3 added `chunks.derived` and
-    `chunk_derivation`. Asserted directly rather than against
-    `INDEX_SCHEMA_VERSION - 1`, because a relative check moves with the constant
-    and pins nothing about what the constant *is*.
+    Four at the time of writing. Version 3 added `chunks.derived` and
+    `chunk_derivation` for a writer that did not exist yet; version 4 drops both
+    and adds `nodes`, `node_derivation` and `nodes_fts` in their place (ADR-0008
+    decision 5's amendment, ADR-0024 decision 8's amendment) -- a RAPTOR summary
+    repeats its children's terms, so a derived row sharing `chunks_fts` would move
+    `N`, `avgdl` and the per-term document frequencies under every ordinary leaf
+    query. Asserted directly rather than against `INDEX_SCHEMA_VERSION - 1`,
+    because a relative check moves with the constant and pins nothing about what
+    the constant *is*.
     """
     assert store.schema_version() == INDEX_SCHEMA_VERSION
-    assert store.schema_version() == 3, (
+    assert store.schema_version() == 4, (
         "the index schema version changed. If a DDL change intended it, update this literal "
         "and the CHANGELOG; if not, a bump slipped in without a schema change behind it"
     )
     assert store.is_searchable() is True
 
 
-def test_the_schema_carries_the_derivation_provenance_the_purge_walks(
+#: The 14 provenance columns ADR-0008 decision 5 names, plus the three queryable
+#: scope columns the amendment adds ahead of #119's predicate: `project_id`
+#: (the future single-point predicate, mirroring `chunks.project_id`),
+#: `sensitivity` (D6: node rows carry sensitivity, still a published label and
+#: not a control -- see the Context amendment) and `status` (the build-flavor
+#: column a node-table predicate will filter on, per decision 1's amendment).
+#: `tree_id` already encodes the full six-component scope tuple; these three are
+#: carried denormalised on the row for the same reason `chunks` carries them --
+#: filtering has to happen in the same statement as the match, before ranking.
+_NODE_COLUMNS = frozenset(
+    {
+        "node_id",
+        "tree_id",
+        "level",
+        "node_type",
+        "text",
+        "content_hash",
+        "summary_model",
+        "summary_model_revision",
+        "summary_prompt_hash",
+        "embedding_model",
+        "embedding_model_revision",
+        "embedding_dimension",
+        "source_revision_id",
+        "index_build_id",
+        "project_id",
+        "sensitivity",
+        "status",
+    }
+)
+
+#: The node_derivation edge: `node_id` to either a chunk or another node, never
+#: both -- a Domain node summarises Document-tree nodes, a Document node
+#: summarises chunks. `source_chunk_id` and `source_node_id` are nullable and
+#: mutually exclusive per row, unlike v3's `chunk_derivation` which only ever
+#: pointed at chunks.
+_NODE_DERIVATION_COLUMNS = frozenset({"node_id", "source_chunk_id", "source_node_id"})
+
+
+def test_the_schema_carries_the_node_tables_the_purge_traversal_will_walk(
     store: SqliteIndexStore,
 ) -> None:
-    """`chunks.derived` and `chunk_derivation`, which the transitive purge reads.
+    """`nodes`, `node_derivation` and `nodes_fts`, RAPTOR's own storage at v4.
 
-    Nothing writes them yet -- RAPTOR is an empty package -- so without this the
-    columns could be dropped and every purge test would still pass on a corpus
-    that has no derived rows. The purge's whole reason to exist before RAPTOR is
-    that these are here first.
+    Held at v3 by this test under the name
+    `test_the_schema_carries_the_derivation_provenance_the_purge_walks`, over
+    `chunks.derived` and `chunk_derivation`. ADR-0008's amendment moved the
+    storage out of `chunks` entirely -- a summary's text systematically repeats
+    the terms of the children it was built from, so a derived row sharing
+    `chunks_fts` would move that table's BM25 collection statistics under every
+    ordinary leaf query. `chunks.derived` and `chunk_derivation` are dropped
+    rather than kept beside the new tables: a column nothing will ever write
+    serves nothing, and keeping it would leave two provenance mechanisms of
+    which one is permanently dead. Nothing writes a node row yet -- RAPTOR is
+    still an empty package -- so without this the tables could be dropped and
+    every purge test over nodes would still pass on a corpus that never has one.
     """
     with closing(sqlite3.connect(store.path)) as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(chunks)")}
+        chunk_columns = {row[1] for row in connection.execute("PRAGMA table_info(chunks)")}
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
-        derivation_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(chunk_derivation)")
+        node_columns = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
+        node_derivation_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(node_derivation)")
         }
+        nodes_fts_ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'nodes_fts'"
+        ).fetchone()
 
-    assert "derived" in columns, "the `chunks.derived` flag is gone; the purge cannot find nodes"
-    assert "chunk_derivation" in tables, "the provenance table the transitive purge walks is gone"
-    assert derivation_columns == {"node_chunk_id", "source_chunk_id"}, (
-        f"the derivation edge changed shape: {sorted(derivation_columns)}"
+    assert "derived" not in chunk_columns, (
+        "`chunks.derived` survived the v4 cutover; RAPTOR now stores its own rows apart from chunks"
+    )
+    assert "chunk_derivation" not in tables, (
+        "`chunk_derivation` survived the v4 cutover; a table nothing will ever write serves nothing"
+    )
+    assert "nodes" in tables, "the node table RAPTOR summaries will live in is missing"
+    assert "node_derivation" in tables, (
+        "the node provenance table the transitive purge will walk is missing"
+    )
+    assert node_columns == _NODE_COLUMNS, (
+        f"`nodes` carries the wrong columns: {sorted(node_columns)}"
+    )
+    assert node_derivation_columns == _NODE_DERIVATION_COLUMNS, (
+        f"`node_derivation` carries the wrong columns: {sorted(node_derivation_columns)}"
+    )
+    assert nodes_fts_ddl is not None, (
+        "`nodes_fts` is missing -- node text must have its own FTS5 index, separate from "
+        "`chunks_fts`, or a summary's repeated terms move every leaf query's BM25 statistics"
+    )
+    assert "content='nodes'" in nodes_fts_ddl[0], (
+        f"`nodes_fts` is not external-content over `nodes`: {nodes_fts_ddl[0]}"
     )
 
 

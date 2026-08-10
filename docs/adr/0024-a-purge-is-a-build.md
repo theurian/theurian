@@ -333,12 +333,79 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > SQL predicate, not a comment, and which `application/withdrawal_purge.py`
    > calls as the pre-check on every withdrawing `migrate apply`. Against a v4
    > index that predicate raises `no such table: chunk_derivation`, so this drop
-   > reaches the withdrawal path and not only the purge. The five traversal tests
+   > reaches the withdrawal path and not only the purge. The traversal tests
    > listed in Compliance below migrate to the node-table counterpart rather than
-   > being deleted — what they hold is this rule, and this rule stands. The third bullet — an unresolvable derivation edge means
-   > delete, not keep — survives the switch to re-derivation unchanged: a node
-   > that cannot say what it was built from cannot be rebuilt from it either. The
-   > amendment to ADR-0008 decision 5 names the owed tests.
+   > being deleted — what they hold is this rule, and this rule stands. The
+   > third bullet — an unresolvable derivation edge means delete, not keep —
+   > survives the switch to re-derivation unchanged: a node that cannot say what
+   > it was built from cannot be rebuilt from it either. The amendment to
+   > ADR-0008 decision 5 names the owed tests.
+   >
+   > **Landed at index schema v4.** Everything above this note is the plan as it
+   > stood when the amendment was written; what follows is what the schema-v4 CL
+   > actually did, so that a later reader does not take the plan for the state.
+   > `nodes`, `node_derivation`, `nodes_fts`, `nodes_trigram` and
+   > `node_embeddings` are in `index_schema.py`; `chunks.derived` and
+   > `chunk_derivation` are gone; and all three predicates named above moved
+   > together. The failure this amendment predicted for the third of them is
+   > reproduced rather than reasoned about: against a v4 index the v3 clause
+   > gives `no such table: chunk_derivation`, and it gives it even where the
+   > revision clause alone would have answered.
+   >
+   > **They did not stay three predicates, and that is the correction to this
+   > note.** It said `holds_any_revision`'s clause was "now two `SELECT`s joined
+   > by `UNION ALL` because the two halves read different tables" — which is a
+   > second hand-written predicate, the arrangement v3 had and the one that let
+   > the pair disagree. `holds_any_revision` now runs `index_purge.ANY_DOOMED_ROW`,
+   > composed from the same withdrawn-chunk and unanchored-node literals `_DOOMED`
+   > is built from, so the pre-check is `_DOOMED` minus an upward closure over an
+   > empty seed and the two agree by construction rather than by being kept in
+   > step by hand. Ten hand-enumerated graph shapes pin the equivalence
+   > (`test_index_purge_nodes.py::test_holds_any_revision_agrees_with_whether_a_purge_removes_anything`),
+   > each carrying its own chunk corpus so that no case can agree for the wrong
+   > reason through the withdrawn-chunk arm. A first draft shared one corpus
+   > across all ten, which made that arm answer `True` whatever the node shape;
+   > the mutation that drops the node arm survived it, and mutating the test is
+   > what found that.
+   >
+   > **The disagreement was real, and closing it changed an outcome.** A build
+   > whose only damage was a pre-existing dangling edge answered "nothing to
+   > purge" on the pre-check, so `migrate apply` skipped it as clean without
+   > copying the file, while a purge run directly on that same build refused to
+   > publish over the one bad row: the pre-check called clean the very build a
+   > purge would not accept. Under the well-founded reading that node is exactly
+   > as ungrounded as one with no edges at all — it cannot be shown to hold
+   > nothing withdrawn — so it is removed and the build publishes.
+   > `test_withdrawal_purge.py::test_a_dangling_edge_is_seen_by_the_pre_check_and_purged`
+   > pins the pre-check half and
+   > `test_index_purge_nodes.py::test_a_dangling_only_build_is_purged_rather_than_refused`
+   > the direct-call half.
+   >
+   > **Those traversal tests are six, not five — the count this amendment took
+   > from Compliance below was that section's, and it was already wrong.**
+   > Compliance named five shapes while the suite held a sixth of the same
+   > family, `test_a_derived_row_that_cannot_say_where_it_came_from_is_deleted`,
+   > which it never listed. All six migrated; the corrected list is in Compliance
+   > below. The population is `rg "^def test.*deriv"` over
+   > `tests/integration/test_index_purge.py` at v3, which returns **seven** — the
+   > six traversal tests and `_verify`'s unprovenanced backstop, which migrated
+   > too and belongs to the post-condition family rather than this one.
+   >
+   > **`_verify` goes from three post-conditions to six, and one of the three it
+   > gains this point could not have named, because the v3 storage could not
+   > express the state it checks for**: a `node_derivation` edge whose source
+   > chunk or source node is gone. One table made a dangling edge and an
+   > unprovenanced row the same state; two tables make them different ones, so a
+   > node can now hold an edge that points at nothing while still having an edge
+   > — which the unprovenanced count does not see. The other two are a node
+   > standing on a provenance cycle and an orphaned node embedding; the withdrawn-
+   > rows count also widens, from chunks by `revision_id` to those plus nodes
+   > carrying a withdrawn `source_revision_id` stamp. The cycle count is computed
+   > independently rather than by asking `_DOOMED` a second time, for the reason
+   > `_verify` exists at all: a post-condition computed by the function it checks
+   > cannot catch that function being wrong, and what publishes a build is a
+   > pointer swap with no later stage that looks. Nothing writes a node row yet,
+   > so all of this is still pinned over rows inserted with raw SQL.
 
 ## Consequences
 
@@ -526,11 +593,41 @@ Landed by the change that implements this ADR:
   read surface, asserts each read of a missing file raises rather than creating
   one. A read method added later that forgets `_open_read` is a missing entry in
   that list.
-- **Derived nodes** — landed: five tests over synthetic derived rows —
-  direct, a three-level chain, mixed provenance, an unprovenanced node and its
-  children, and a control that an ordinary row is never treated as derived.
-  Nothing writes `derived = 1` yet (RAPTOR is empty), which is exactly why the
-  traversal is pinned now.
+- **Derived nodes** — landed, and at index schema v4 the traversal runs over the
+  node tables. **Six tests, not the five this bullet listed until then**: direct
+  (`test_a_node_derived_from_a_withdrawn_chunk_goes_with_it`), a Domain node
+  built from a Document node
+  (`test_withdrawal_is_transitive_through_a_document_and_a_domain_node`), mixed
+  provenance
+  (`test_a_node_derived_from_both_a_withdrawn_and_a_surviving_chunk_goes`), a
+  node that cannot say where it came from
+  (`test_a_node_that_cannot_say_where_it_came_from_is_deleted`), the fixed point
+  under an unprovenanced node
+  (`test_a_node_derived_only_from_an_unprovenanced_node_goes_with_it`), and a
+  control that an ordinary chunk is never swept in
+  (`test_an_ordinary_chunk_is_never_treated_as_an_unprovenanced_node`). The
+  fourth was in the suite from the start and was never listed here, so the count
+  is corrected rather than the test added; the amendment to decision 8 records
+  the population that settles it at six.
+
+  **The storage under them changed and the rule did not.** They were `chunks`
+  rows with `derived = 1`, provenanced by `chunk_derivation`, until the Milestone
+  6 amendment to [ADR-0008](0008-raptor-forest.md) decision 5 gave summary nodes
+  their own tables; each migrated rather than being deleted, and each names its
+  v3 predecessor in its own docstring. Two `_verify` post-condition tests sit
+  beside them: `test_verify_refuses_a_build_that_still_holds_an_unprovenanced_node`,
+  which migrated with the rest, and
+  `test_verify_refuses_a_build_whose_node_derivation_points_at_a_chunk_that_is_gone`,
+  which is new at v4 because one table could not express a dangling edge as a
+  state distinct from having no edge at all.
+
+  **The rationale this bullet gave — "nothing writes `derived = 1` yet (RAPTOR
+  is empty), which is exactly why the traversal is pinned now" — keeps its force
+  and loses its subject.** There is no `derived` column to write. What nothing
+  writes is a *node row*: `infrastructure/raptor/` is an empty package and
+  `SummarizationProvider` a port with no adapter, so every fixture above goes in
+  with raw SQL. That is still exactly why the traversal is pinned now, and it
+  stays pinned that way until the builder CL (Milestone 6).
 - **A purged build holds no orphaned row** — landed:
   `test_a_purged_build_holds_no_embedding_of_a_withdrawn_chunk`, plus a third
   post-condition inside `_verify` that refuses to publish a build with an

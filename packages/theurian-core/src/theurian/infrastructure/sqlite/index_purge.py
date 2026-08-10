@@ -19,12 +19,13 @@ must not do, and why each is a separate hazard:
   no table at all.
 - **not `VACUUM INTO`.** Correct on SQLite 3.47.1 and resting on something SQLite
   declines to promise: VACUUM "may change the ROWIDs of entries in any tables
-  that do not have an explicit INTEGER PRIMARY KEY". `chunks.chunk_id` is a TEXT
-  primary key, and `chunks_fts` and `chunks_trigram` are
-  `content='chunks', content_rowid='rowid'`, so a renumbering would silently
-  repoint every posting in both indexes. A design resting on
-  observed-but-unpromised behaviour becomes a silent corruption at the next
-  release.
+  that do not have an explicit INTEGER PRIMARY KEY". `chunks.chunk_id` and
+  `nodes.node_id` are both TEXT primary keys, and `chunks_fts`,
+  `chunks_trigram`, `nodes_fts` and `nodes_trigram` are all external-content
+  tables keyed on the rowid of one of them, so a renumbering would silently
+  repoint every posting in four indexes -- two at v3, four since v4 gave summary
+  nodes their own storage. A design resting on observed-but-unpromised behaviour
+  becomes a silent corruption at the next release.
 
 :meth:`sqlite3.Connection.backup` is the remaining primitive: page-level, so
 rowid stability is not a behaviour it could get wrong, and taken through a
@@ -39,53 +40,329 @@ from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final
 
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
 
-#: Rows reachable from a withdrawn chunk through :data:`chunk_derivation`,
-#: transitively, plus the withdrawn chunks themselves.
+#: The chunks a purge removes: exactly the withdrawn revisions. A chunk is never
+#: the *target* of a derivation edge -- only a node can be built from something
+#: -- so this half needs no recursion.
 #:
-#: A recursive query rather than the foreign key's `ON DELETE CASCADE`, because
+#: `%s` expands to one placeholder per withdrawn revision, or to `NULL` when
+#: nothing was withdrawn: `IN ()` is a syntax error and `IN (NULL)` is never
+#: true, which is the answer a purge with an empty withdrawal list needs.
+_DOOMED_CHUNKS = """\
+doomed_chunks(chunk_id) AS (
+    SELECT chunk_id FROM chunks WHERE revision_id IN (%s)
+)"""
+
+#: Nodes whose provenance closes into a cycle, and so is grounded in nothing.
+#:
+#: `reaches` is the transitive closure of "is built from", so a node that appears
+#: as its own descendant sits on a cycle. Detected explicitly rather than
+#: inferred, because a cycle is the one ungrounded shape no forward walk from a
+#: withdrawn chunk and no backward walk from a broken edge can reach: every
+#: member has provenance, every edge resolves, and no member is ever grounded.
+#: Measured before this existed, by purging a build of two chunks and three
+#: summaries with *both* revisions withdrawn: a two-cycle of summaries of the
+#: withdrawn incident survived, text intact, and `_verify` accepted the build
+#: as publishable.
+#:
+#: `UNION` and not `UNION ALL`, which is what makes it terminate: the closure is
+#: at most one row per ordered pair of nodes, and deduplication is what stops the
+#: walk going round the cycle forever. It costs that bound too -- O(nodes x
+#: edges) on a graph that is one long chain or one big cycle -- which is why the
+#: shape ADR-0008 decision 2 actually builds matters: three levels, so the
+#: closure is a few rows per node. Measured on a real build of 1,100 nodes and
+#: 11,000 edges: 0.55 ms; on 5,500 and 55,000: 3.0 ms.
+_CYCLIC_NODES = """\
+reaches(start, cur) AS (
+    SELECT node_id, source_node_id FROM node_derivation WHERE source_node_id IS NOT NULL
+    UNION
+    SELECT reaches.start, node_derivation.source_node_id
+      FROM reaches
+      JOIN node_derivation ON node_derivation.node_id = reaches.cur
+     WHERE node_derivation.source_node_id IS NOT NULL
+),
+cyclic(node_id) AS (
+    SELECT DISTINCT start FROM reaches WHERE start = cur
+)"""
+
+#: A node that no chain of derivations anchors in a surviving chunk, judged on
+#: its own edges. Five arms, and each is a way of *never* reaching one:
+#:
+#: 1. its own `source_revision_id` names a withdrawn revision -- the node's text
+#:    was built against state the caller may no longer read, whatever its edges
+#:    still point at;
+#: 2. it has no `node_derivation` row at all, so it cannot say what it holds;
+#: 3. an edge names a chunk that is withdrawn, or one that is not in the file;
+#: 4. an edge names a node that is not in the file;
+#: 5. it sits on a provenance cycle (:data:`_CYCLIC_NODES`).
+#:
+#: **The rule is universal, not existential: *every* declared source has to
+#: terminate at a surviving chunk, not merely one of them.** A summary cannot be
+#: partially grounded any more than it can be partially withdrawn, so a node with
+#: one good parent and one that leads nowhere goes.
+#:
+#: Measured by a differential over 400 random graphs against a well-founded
+#: reference, run three times and reported as three numbers because the
+#: population changed underneath it. The seeded traversal this replaces diverged
+#: on **91** of the 400 -- its smallest counterexample a node naming itself as
+#: its own source -- and every divergence was cycle-reachable. Once the schema's
+#: self-edge `CHECK` removes that shape from the population (142 of the
+#: generated edges), the same seeded traversal diverges on **11**, which is the
+#: part of the gap the `CHECK` alone does not close. The reading below diverges
+#: on **none**.
+#:
+#: `EXISTS`/`NOT EXISTS` rather than `IN`/`NOT IN` throughout, kept even now that
+#: both id columns are `NOT NULL`: `x NOT IN (SELECT ...)` answers NULL -- falsy,
+#: for every row -- as soon as one NULL is in the set, so the failure mode is a
+#: check that silently stops checking rather than one that reports.
+#:
+#: The outer `WHERE EXISTS` keeps the result to ids that name a real row: an
+#: edge whose *owner* node is gone (which `PRAGMA foreign_keys = OFF` can leave
+#: behind) would otherwise be counted as a doomed node and inflate the removed
+#: count by a row no `DELETE` can find.
+#:
+#: `UNION ALL` between the arms, so one node named by two of them appears twice.
+#: Harmless to both readers and load-bearing for one: `_DOOMED`'s recursive
+#: `UNION` collapses the duplicates, and the existence check needs to be able to
+#: stop at the first row. `UNION` here sorts every arm into a temp B-tree before
+#: yielding anything: measured 14.8 ms per pre-check against 3.8 ms, on a build
+#: of 60,000 unprovenanced nodes where the second arm already had the answer.
+_UNANCHORED_NODES = """\
+    SELECT unanchored_node.node_id FROM (
+        SELECT node_id FROM nodes WHERE source_revision_id IN (%s)
+        UNION ALL
+        SELECT nodes.node_id FROM nodes
+         WHERE NOT EXISTS (SELECT 1 FROM node_derivation e WHERE e.node_id = nodes.node_id)
+        UNION ALL
+        SELECT e.node_id FROM node_derivation e
+         WHERE e.source_chunk_id IS NOT NULL
+           AND (EXISTS (SELECT 1 FROM doomed_chunks d WHERE d.chunk_id = e.source_chunk_id)
+                OR NOT EXISTS (SELECT 1 FROM chunks c WHERE c.chunk_id = e.source_chunk_id))
+        UNION ALL
+        SELECT e.node_id FROM node_derivation e
+         WHERE e.source_node_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.node_id = e.source_node_id)
+        UNION ALL
+        SELECT node_id FROM cyclic
+    ) AS unanchored_node
+     WHERE EXISTS (SELECT 1 FROM nodes n WHERE n.node_id = unanchored_node.node_id)"""
+
+#: Everything a purge of the given revisions removes: the withdrawn chunks, and
+#: every node not well-founded in what survives them.
+#:
+#: **v4, not v3.** RAPTOR summaries now live in `nodes`, provenanced by
+#: `node_derivation`, rather than as `chunks` rows with `derived = 1` (ADR-0008
+#: decision 5's amendment, ADR-0024 decision 8's amendment).
+#:
+#: The node half is the complement of *grounded*: a node survives only if every
+#: derivation path below it terminates at a surviving chunk in finitely many
+#: steps. Written as its complement because that is the direction a recursive CTE
+#: can compute -- grounding is a least fixed point under a universal quantifier,
+#: which SQLite's row-at-a-time recursion cannot express, while "unanchored, and
+#: everything built on top of it" is ordinary forward chaining.
+#:
+#: The closure arm is what makes the reading transitive: a node built from a
+#: doomed node is doomed, to the fixed point. It joins `nodes` because an edge
+#: can outlive the row that owns it.
+#:
+#: A recursive query rather than the foreign keys' `ON DELETE CASCADE`, because
 #: the cascade removes the *edge* and leaves the node. A summary built from a
 #: retired incident note still contains the note; deleting the note and keeping
 #: the summary withdraws nothing (ADR-0024 decision 8).
-_DOOMED = """
-WITH RECURSIVE doomed(chunk_id) AS (
-    SELECT chunk_id FROM chunks WHERE revision_id IN (%s)
+#:
+#: `kind` discriminates the two id spaces in one result set, so `_delete` can
+#: route each row to the table it actually lives in without a second query.
+_DOOMED = f"""
+WITH RECURSIVE
+{_DOOMED_CHUNKS},
+{_CYCLIC_NODES},
+unanchored(node_id) AS (
+{_UNANCHORED_NODES}
+),
+doomed_nodes(node_id) AS (
+    SELECT node_id FROM unanchored
     UNION
-    SELECT chunk_id FROM chunks
-     WHERE derived = 1
-       AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)
-    UNION
-    SELECT chunk_derivation.node_chunk_id
-      FROM chunk_derivation
-      JOIN doomed ON chunk_derivation.source_chunk_id = doomed.chunk_id
+    SELECT e.node_id
+      FROM node_derivation e
+      JOIN doomed_nodes d ON e.source_node_id = d.node_id
+      JOIN nodes n ON n.node_id = e.node_id
 )
-SELECT chunk_id FROM doomed
+SELECT 'chunk' AS kind, chunk_id AS id FROM doomed_chunks
+UNION ALL
+SELECT 'node' AS kind, node_id AS id FROM doomed_nodes
+"""  # noqa: S608 - composed from module-owned literals; every value is bound
+
+#: Whether :data:`_DOOMED` would return anything at all, without building the
+#: set. Read by :meth:`SqliteIndexStore.holds_any_revision`, the pre-check that
+#: decides whether a withdrawal is worth copying a whole index for.
+#:
+#: **It is exactly `_DOOMED` non-empty, and shares the SQL that makes it so.**
+#: `doomed_chunks` and `_UNANCHORED_NODES` are the same literals `_DOOMED` is
+#: built from, and `_DOOMED`'s only other content is the upward closure -- which
+#: adds nothing to an empty seed. So `holds_any_revision` and a non-zero
+#: `derive_purged` agree by construction rather than by two predicates being kept
+#: in step by hand, which is what the v3 pair required and did not get: a build
+#: whose only damage was a dangling edge answered "nothing to purge" from this
+#: side and "refuse to publish" from the other.
+#:
+#: `UNION ALL` and `LIMIT 1`, so the withdrawn-chunk lookup answers on its own
+#: index and the node arms are never evaluated when it hits: 0.55 ms on a
+#: 10,000-chunk build against 7.7 ms for the same build's miss, and 0.56 ms
+#: against 41 ms at 50,000 chunks. The miss is the common answer, and it is still
+#: the cheaper half of the trade it exists for: the copy it avoids measured
+#: 51 ms on a 12.3 MB index and 579 ms on 150.3 MB, before the delete and the six
+#: post-conditions.
+ANY_DOOMED_ROW = f"""
+WITH RECURSIVE
+{_DOOMED_CHUNKS},
+{_CYCLIC_NODES}
+SELECT 1 FROM doomed_chunks
+UNION ALL
+SELECT 1 FROM (
+{_UNANCHORED_NODES}
+)
+LIMIT 1
+"""  # noqa: S608 - composed from module-owned literals; every value is bound
+
+
+#: Rows of the withdrawn revisions still in the build -- chunks by `revision_id`,
+#: and nodes by the `source_revision_id` stamp that says which revision their
+#: text was written against (ADR-0008 decision 5). Both, because a purge that
+#: removed the chunk and kept a summary built from that revision withdrew
+#: nothing. Answered from `chunks_by_revision`; `temp.withdrawn` is materialised
+#: by :func:`_verify` so that every post-condition below is a bare statement with
+#: nothing to bind.
+_WITHDRAWN_ROWS = """
+SELECT (SELECT count(*) FROM chunks
+         WHERE revision_id IN (SELECT revision_id FROM temp.withdrawn))
+     + (SELECT count(*) FROM nodes
+         WHERE source_revision_id IN (SELECT revision_id FROM temp.withdrawn))
 """
 
-#: A derived row whose provenance cannot be resolved: `derived = 1` with no edge
-#: naming what it was built from. Deleted rather than kept, because a node that
-#: cannot say where it came from cannot be shown to hold nothing withdrawn
-#: (ADR-0024 decision 8).
-#:
-#: **It is a *seed* of the traversal above, not a separate sweep, and that
-#: distinction was a defect.** Deleting the two sets independently leaves the
-#: children: a node whose only source is an unprovenanced node is reachable from
-#: nothing withdrawn, so the recursive walk never saw it, and the second sweep
-#: only removed its parent. Measured -- a summary of an unprovenanced summary
-#: survived a purge with its text intact and retrievable. Seeding both into one
-#: recursive query takes the traversal to its fixed point instead.
-#:
-#: Kept as a constant because `_verify` reads it as a post-condition: after the
-#: purge this count must be zero, which is the check that fails if the seed above
-#: is ever removed from `_DOOMED`.
-_UNPROVENANCED = """
-SELECT chunk_id FROM chunks
- WHERE derived = 1
-   AND chunk_id NOT IN (SELECT node_chunk_id FROM chunk_derivation)
+#: A vector whose chunk is gone. `ON DELETE CASCADE` removes it with the chunk,
+#: and :func:`_writing` turns `PRAGMA foreign_keys` on for every delete this
+#: module makes, so reaching this count means the build being verified arrived
+#: already holding it.
+_ORPHANED_EMBEDDINGS = """
+SELECT count(*) FROM embeddings
+ WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.chunk_id = embeddings.chunk_id)
 """
+
+#: A node whose provenance cannot be resolved at all: no `node_derivation` row
+#: names it. Deleted rather than kept, because a node that cannot say where it
+#: came from cannot be shown to hold nothing withdrawn (ADR-0024 decision 8).
+#:
+#: One of the five arms of :data:`_UNANCHORED_NODES`, checked again here as a
+#: post-condition: after the purge this count must be zero, which is what fails
+#: if that arm is ever lost.
+_UNPROVENANCED_NODES = """
+SELECT count(*) FROM nodes
+ WHERE NOT EXISTS (SELECT 1 FROM node_derivation e WHERE e.node_id = nodes.node_id)
+"""
+
+#: A `node_derivation` edge naming a source that is no longer there: a
+#: `source_chunk_id` absent from `chunks`, or a `source_node_id` absent from
+#: `nodes`. A node that carries one is unanchored and the purge deletes it, so
+#: what survives to be counted here is an edge whose own node is already gone --
+#: which `ON DELETE CASCADE` removes, and which therefore says the same thing the
+#: orphaned-embedding count says: the build arrived damaged.
+_DANGLING_NODE_DERIVATION = """
+SELECT count(*) FROM node_derivation e
+ WHERE (e.source_chunk_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.chunk_id = e.source_chunk_id))
+    OR (e.source_node_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.node_id = e.source_node_id))
+"""
+
+#: Nodes left standing on a provenance cycle. The one ungrounded shape the four
+#: counts above cannot see: every member has an edge, every edge resolves, and no
+#: member is grounded.
+_CYCLIC_NODE_COUNT = f"""
+WITH RECURSIVE
+{_CYCLIC_NODES}
+SELECT count(*) FROM cyclic
+"""  # noqa: S608 - composed from module-owned literals; every value is bound
+
+#: A summary's vector outliving the summary -- `_ORPHANED_EMBEDDINGS` over the
+#: node tables. Its own count rather than a second `OR` on that one, because the
+#: two name different remedies to whoever reads the message.
+_ORPHANED_NODE_EMBEDDINGS = """
+SELECT count(*) FROM node_embeddings
+ WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.node_id = node_embeddings.node_id)
+"""
+
+_UNPUBLISHED: Final = (
+    "Nothing was published, so retrieval still uses the current index and the partial build "
+    "has been deleted."
+)
+_REBUILD: Final = "Run `theurian index build` to produce a build from canonical state instead."
+_REPORT: Final = (
+    "Run `theurian index build`; this is a defect in Theurian rather than in your project, "
+    "so please report it."
+)
+_CASCADE_RAN: Final = (
+    "The purge deletes with `PRAGMA foreign_keys` on, so `ON DELETE CASCADE` did run and the "
+    "build this one was copied from already held them."
+)
+
+#: Every way the delete can be incomplete, in the order they are checked, each
+#: with the message its count raises. A sequence rather than a run of `if`s so
+#: that adding a condition is adding a row, and so that all six raise from one
+#: place -- the shape a fifth and sixth condition made worth having.
+#:
+#: **The six together are complete: a build that passes them holds nothing
+#: `_DOOMED` would remove.** Take one that passes. `_WITHDRAWN_ROWS` is zero, so
+#: no chunk of a withdrawn revision remains and no node carries a withdrawn
+#: stamp. `_UNPROVENANCED_NODES` is zero, so every node has at least one edge.
+#: `_DANGLING_NODE_DERIVATION` is zero, so every edge names a row that is there --
+#: and with the withdrawn chunks already gone, every chunk edge therefore names a
+#: surviving one. `_CYCLIC_NODE_COUNT` is zero, so the node-to-node graph is
+#: acyclic, hence finite and well ordered. Induct up that order: a node with only
+#: chunk edges is grounded in surviving chunks, and a node whose node edges all
+#: point lower is grounded by the ones below it. That is why the cycle count is
+#: here and not merely `_DOOMED` asked a second time -- a post-condition computed
+#: by the function being checked cannot catch that function being wrong, which is
+#: the whole reason `_verify` exists. ADR-0024's first decision is what leaves it
+#: no second chance: from the moment `active-index.json` names a build, that file
+#: is read-only for the rest of its life, so publishing is a pointer swap and
+#: nothing downstream ever looks inside.
+_POST_CONDITIONS: Final[tuple[tuple[str, str], ...]] = (
+    (
+        _WITHDRAWN_ROWS,
+        "The purged build still holds {count} row(s) of the revisions it was asked to remove. "
+        f"{_UNPUBLISHED} {_REBUILD}",
+    ),
+    (
+        _ORPHANED_EMBEDDINGS,
+        "The purged build holds {count} embedding(s) whose chunk is gone. "
+        f"{_CASCADE_RAN} {_UNPUBLISHED} {_REBUILD}",
+    ),
+    (
+        _UNPROVENANCED_NODES,
+        "The purged build holds {count} node(s) with no provenance, which cannot be shown to "
+        f"hold nothing withdrawn. {_UNPUBLISHED} {_REPORT}",
+    ),
+    (
+        _DANGLING_NODE_DERIVATION,
+        "The purged build holds {count} node derivation edge(s) whose source is gone. "
+        f"{_CASCADE_RAN} {_UNPUBLISHED} {_REBUILD}",
+    ),
+    (
+        _CYCLIC_NODE_COUNT,
+        "The purged build holds {count} node(s) whose provenance closes into a cycle, so no "
+        "chain of derivations shows them free of withdrawn content. "
+        f"{_UNPUBLISHED} {_REPORT}",
+    ),
+    (
+        _ORPHANED_NODE_EMBEDDINGS,
+        "The purged build holds {count} node embedding(s) whose node is gone. "
+        f"{_CASCADE_RAN} {_UNPUBLISHED} {_REBUILD}",
+    ),
+)
 
 
 class IndexPurgeError(TheurianError):
@@ -219,25 +496,51 @@ def _copy(source: Path, target: Path) -> None:
 
 
 def _delete(target: Path, revision_ids: Sequence[str]) -> int:
-    """Remove the withdrawn revisions and everything derived from them."""
+    """Remove the withdrawn revisions and everything they no longer ground."""
     with _writing(target) as connection, connection:
         # `NULL` when nothing was withdrawn: `IN ()` is a syntax error, and
-        # `revision_id IN (NULL)` is never true, so the query still runs and still
-        # reaches its other seed. A purge with an empty withdrawal list is not a
-        # no-op -- it still removes derived rows whose provenance is unresolvable.
+        # `IN (NULL)` is never true, so the query still runs and still reaches its
+        # other arms. A purge with an empty withdrawal list is not a no-op -- it
+        # still removes every node the surviving corpus cannot ground.
+        #
+        # Twice, because `_DOOMED` names the withdrawn set in two places: the
+        # chunks it removes, and the `source_revision_id` stamp that dooms a node
+        # whose edges all still resolve.
         placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
-        rows = connection.execute(_DOOMED % placeholders, tuple(revision_ids)).fetchall()
-        doomed = {str(row["chunk_id"]) for row in rows}
+        rows = connection.execute(
+            _DOOMED % (placeholders, placeholders), tuple(revision_ids) * 2
+        ).fetchall()
+        doomed_chunks: set[str] = set()
+        doomed_nodes: set[str] = set()
+        for row in rows:
+            identifier = row["id"]
+            if identifier is None:
+                # Unreachable while both primary keys are `NOT NULL`. Skipped
+                # rather than coerced, because `str(None)` deletes nothing under
+                # the id "None" while still counting a row as removed -- a purge
+                # reporting more progress than it made. Anything this leaves
+                # behind, `_verify` refuses the build over.
+                continue
+            bucket = doomed_chunks if row["kind"] == "chunk" else doomed_nodes
+            bucket.add(str(identifier))
 
-        if not doomed:
+        if not doomed_chunks and not doomed_nodes:
             return 0
-        # Deleted by chunk id rather than by the predicates above, so that one
-        # statement removes ordinary and derived rows alike and the FTS5 delete
-        # triggers fire once per row whatever put it in the set.
-        connection.executemany(
-            "DELETE FROM chunks WHERE chunk_id = ?", [(chunk_id,) for chunk_id in sorted(doomed)]
-        )
-        return len(doomed)
+        # Two statements now, not one: chunks and nodes are separate tables at
+        # v4, each with its own FTS5 delete triggers (`chunks_fts`/
+        # `chunks_trigram` for the first, `nodes_fts` for the second) that fire
+        # once per row whatever seed put it in its set.
+        if doomed_chunks:
+            connection.executemany(
+                "DELETE FROM chunks WHERE chunk_id = ?",
+                [(chunk_id,) for chunk_id in sorted(doomed_chunks)],
+            )
+        if doomed_nodes:
+            connection.executemany(
+                "DELETE FROM nodes WHERE node_id = ?",
+                [(node_id,) for node_id in sorted(doomed_nodes)],
+            )
+        return len(doomed_chunks) + len(doomed_nodes)
 
 
 def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
@@ -248,6 +551,14 @@ def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
     own record of itself disagrees with the pointer that names it. Nothing in
     `src/` reads `index_metadata.index_build_id` back today, which is what makes
     this cheap to get wrong and expensive to find later (ADR-0024 decision 2).
+
+    **`nodes` carries a second copy of that identity and needs the same
+    treatment.** `index_build_id` is one of ADR-0008 decision 5's fourteen
+    provenance columns, recording which build a summary belongs to. Measured by
+    purging a build with one node anchored in a surviving chunk and reading both
+    columns back: the surviving node named the build it was copied from while
+    `index_metadata` named the new one — the same disagreement one level down,
+    which is what `test_restamp_updates_survivors_index_build_id_too` now pins.
     """
     with _writing(target) as connection, connection:
         connection.execute(
@@ -255,6 +566,11 @@ def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:
             "WHERE id = 1",
             (index_build_id, state_hash, datetime.now(UTC).isoformat()),
         )
+        # Fires `nodes_fts_update` and `nodes_trigram_update` once per surviving
+        # node, which rewrites each one's postings with identical text. That cost
+        # is the price of the row's own record of itself being true; the
+        # alternative is a provenance column that lies about which build it is in.
+        connection.execute("UPDATE nodes SET index_build_id = ?", (index_build_id,))
 
 
 def _verify(target: Path, revision_ids: Sequence[str]) -> None:
@@ -264,64 +580,27 @@ def _verify(target: Path, revision_ids: Sequence[str]) -> None:
     this would still be worth running, because what publishes a build is a
     pointer swap and there is no later stage that looks.
 
-    **Three counts, each for a different way the delete can be incomplete**, and
-    the third is the one a review found missing: rows of the withdrawn revisions,
-    embeddings whose chunk is gone, and derived rows with no provenance. All
-    three must be zero. The first is an indexed count against
-    `chunks_by_revision`; the other two are small scans over tables the purge has
-    just shrunk.
+    :data:`_POST_CONDITIONS` holds the six counts and the message each one
+    raises, together with the argument that the six are jointly complete. Every
+    one of them is checked whatever `revision_ids` held, and that is not
+    symmetry: a purge with nothing withdrawn still removes every node the corpus
+    cannot ground, so it can still orphan an embedding — and an early return for
+    the empty case skipped exactly that. Found by a test that passed `[]`.
     """
     with _writing(target) as connection:
-        remaining = 0
-        if revision_ids:
-            placeholders = ", ".join("?" for _ in revision_ids)
-            row = connection.execute(
-                f"SELECT count(*) AS remaining FROM chunks WHERE revision_id IN ({placeholders})",  # noqa: S608 - placeholders are generated, values are bound
-                tuple(revision_ids),
-            ).fetchone()
-            remaining = int(row["remaining"])
-        # Checked whatever `revision_ids` held, and that is not symmetry. A purge
-        # with nothing withdrawn still deletes unprovenanced derived rows, so it
-        # can still orphan an embedding -- and an early return for the empty case
-        # skipped exactly that. Found by a test that passed `[]`.
-        orphans = connection.execute(
-            "SELECT count(*) AS orphans FROM embeddings "
-            "WHERE chunk_id NOT IN (SELECT chunk_id FROM chunks)"
-        ).fetchone()
-        # The third check, and the one that fails if `_UNPROVENANCED` is ever
-        # removed as a seed of `_DOOMED`. Deleting the two sets independently
-        # left the *children* of an unprovenanced node behind, text intact and
-        # retrievable, so this counts what should now be a fixed point.
-        unprovenanced = connection.execute(
-            f"SELECT count(*) AS unprovenanced FROM ({_UNPROVENANCED})"  # noqa: S608 - module-owned literal
-        ).fetchone()
-
-    if remaining:
-        msg = (
-            f"The purged build still holds {remaining} chunk(s) of the revisions it was "
-            f"asked to remove. Nothing was published, so retrieval still uses the current "
-            f"index and the partial build has been deleted. Run `theurian index build` to "
-            f"produce a build from canonical state instead."
-        )
-        raise IndexPurgeError(msg)
-    if int(orphans["orphans"]):
-        msg = (
-            f"The purged build holds {orphans['orphans']} embedding(s) whose chunk is gone. "
-            f"`PRAGMA foreign_keys` was off for the delete, so `ON DELETE CASCADE` did not run. "
-            f"Nothing was published, so retrieval still uses the current index and the partial "
-            f"build has been deleted. Run `theurian index build`; this is a defect in Theurian "
-            f"rather than in your project, so please report it."
-        )
-        raise IndexPurgeError(msg)
-    if int(unprovenanced["unprovenanced"]):
-        msg = (
-            f"The purged build holds {unprovenanced['unprovenanced']} derived row(s) with no "
-            f"provenance, which cannot be shown to hold nothing withdrawn. Nothing was "
-            f"published, so retrieval still uses the current index and the partial build has "
-            f"been deleted. Run `theurian index build`; this is a defect in Theurian rather "
-            f"than in your project, so please report it."
-        )
-        raise IndexPurgeError(msg)
+        # A table rather than bound parameters, so that every condition is a
+        # statement with nothing to bind and the sequence can stay a plain pair
+        # of strings. It lives on this connection only, and `_writing` closes it.
+        with connection:
+            connection.execute("CREATE TEMP TABLE withdrawn (revision_id TEXT PRIMARY KEY)")
+            connection.executemany(
+                "INSERT OR IGNORE INTO temp.withdrawn (revision_id) VALUES (?)",
+                [(revision_id,) for revision_id in revision_ids],
+            )
+        for condition, message in _POST_CONDITIONS:
+            count = int(connection.execute(condition).fetchone()[0])
+            if count:
+                raise IndexPurgeError(message.format(count=count))
 
 
-__all__ = ["IndexPurgeError", "purge_into"]
+__all__ = ["ANY_DOOMED_ROW", "IndexPurgeError", "purge_into"]

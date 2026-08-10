@@ -18,18 +18,42 @@ The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
 
-**Version 3 adds `chunks.derived` and `chunk_derivation` for a feature that does
-not exist yet.** ADR-0024 decision 8: withdrawal is transitive over derived
-content, because a purge can delete a chunk and cannot delete a sentence out of a
-summary built from it. RAPTOR (ADR-0008) is what will write those rows; the
-columns and the purge's traversal land first, so that the day a summary node
-exists it inherits a purge that already carries it rather than one designed a
-second time under pressure.
+**Version 4 gives RAPTOR summary nodes their own tables, `nodes` and
+`node_derivation`, rather than storing them as `chunks` rows.** Version 3 added
+`chunks.derived` and `chunk_derivation` for a writer that did not exist yet
+(ADR-0024 decision 8); the amendment to ADR-0008 decision 5 revisits that once
+RAPTOR is the feature actually landing. `chunks_fts` and `chunks_trigram` are
+external-content FTS5 tables scored against collection statistics computed over
+*every* row in `chunks` — `N`, `avgdl`, and the per-term document frequencies —
+and a RAPTOR summary systematically repeats the terms of the children it was
+built from, so a derived row sharing either table would move all three under
+every ordinary leaf query the caller never asked a node about. `nodes` carries
+its own `nodes_fts` and `nodes_trigram`, tables neither leaf retriever reads, so
+a summary's text can never move a leaf's score — and its own `node_embeddings`,
+because `embeddings` is keyed on `chunk_id REFERENCES chunks` and a node id is
+not a chunk id. `chunks.derived` and `chunk_derivation` are dropped
+rather than kept beside the new tables: a column nothing will ever write serves
+nothing, and keeping it would leave two provenance mechanisms of which one is
+permanently dead.
 
-Bumping the version means every index built under 2 reports
+The purge's reading of derived content (ADR-0024 decision 8) moves with the
+storage: it reads `nodes` and `node_derivation` instead of `chunks` rows with
+`derived = 1` and `chunk_derivation`. What it *does* with them — a node survives
+only if every derivation path below it terminates at a surviving chunk — is
+`_DOOMED`'s own docstring in `index_purge.py`, and is not restated here, because
+a second telling of a predicate is a second thing to keep true.
+`IndexStore.holds_any_revision`'s pre-check moves with it too, because it names
+`node_derivation` as an executed SQL predicate on the withdrawal path
+(`application/withdrawal_purge.py`), not only on the purge path.
+
+Bumping the version means every index built under an *earlier* version reports
 `index-schema-mismatch` and falls back to the substring scan until
-`theurian index build` runs. That is ADR-0022 point 3 working as designed — an
-index schema change costs an index rebuild and nothing else — not a regression.
+`theurian index build` runs. That is 2 and 3 alike, not 3 alone: 3 exists only
+on `main`, and 2 is what every released artifact ships — `core-v0.1.0.dev0` and
+`core-v0.1.0.dev1` both pin `INDEX_SCHEMA_VERSION = 2` — so an installed
+Theurian meets this bump from 2. That is ADR-0022 point 3 working as designed —
+an index schema change costs an index rebuild and nothing else, never an
+in-place migration of the file — not a regression.
 """
 
 from __future__ import annotations
@@ -38,7 +62,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 3
+INDEX_SCHEMA_VERSION: Final = 4
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -61,8 +85,27 @@ CREATE TABLE index_metadata (
 -- One row per retrievable passage. `revision_id` is what makes a hit resolvable
 -- back to the canonical store: the index is never authoritative, so every row
 -- has to point at something that is (FR-R5).
+--
+-- `NOT NULL` is spelled out because `PRIMARY KEY` does not imply it here. Only
+-- an INTEGER primary key is a rowid alias SQLite refuses NULL for; a TEXT one
+-- admits a single NULL row. That is not a tidiness point, and the reason is
+-- what this column was found to have broken: every orphan and dangling check in
+-- `index_purge` was then written `x NOT IN (SELECT ...)`, and SQL's `NOT IN`
+-- against a set holding one NULL answers NULL -- falsy -- for *every* row, so a
+-- single NULL id here silently disabled two of them rather than failing one.
+-- Measured on 3.51.2: the column took two NULLs, and
+-- `'a' NOT IN (SELECT id FROM t)` then answered NULL.
+--
+-- All four of those are `NOT EXISTS` today -- the orphaned embedding, the
+-- unprovenanced node, the dangling derivation edge, and the orphaned node
+-- embedding -- so the constraint is no longer the only thing standing between
+-- one NULL and a check that stops checking. (They are four of `_verify`'s six
+-- post-conditions; the withdrawn-row count and the cycle count are neither
+-- orphan nor dangling checks and ask no such subquery.) It stays because two
+-- defences against a state nothing should ever write is the right number when
+-- the failure is silent in the direction of keeping withdrawn content.
 CREATE TABLE chunks (
-    chunk_id     TEXT PRIMARY KEY,
+    chunk_id     TEXT PRIMARY KEY NOT NULL,
     project_id   TEXT    NOT NULL,
     item_id      TEXT    NOT NULL,
     revision_id  TEXT    NOT NULL,
@@ -83,38 +126,11 @@ CREATE TABLE chunks (
     status       TEXT    NOT NULL,
     sensitivity  TEXT    NOT NULL,
     trust_level  TEXT    NOT NULL,
-    namespace    TEXT    NOT NULL DEFAULT '',
-    -- Whether this row's text was *derived* from other rows rather than read
-    -- from a revision. Nothing writes 1 yet -- RAPTOR (ADR-0008) is the first
-    -- thing that will -- and the column exists ahead of it because withdrawal
-    -- has to be transitive from the first build that has anything to be
-    -- transitive over (ADR-0024 decision 8). A summary is not withdrawn by
-    -- deleting the chunk it summarises: the sentence is still in the summary.
-    derived      INTEGER NOT NULL DEFAULT 0 CHECK (derived IN (0, 1))
+    namespace    TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX chunks_by_project ON chunks (project_id, status);
 CREATE INDEX chunks_by_revision ON chunks (revision_id);
-
--- Provenance of derived rows -------------------------------------------------
--- One edge per (derived node, chunk it was built from). The purge walks this
--- transitively: a node built from a withdrawn chunk holds that chunk's content
--- and must go with it, and so must a node built from *that* node (ADR-0024
--- decision 8).
---
--- `ON DELETE CASCADE` on `source_chunk_id` removes the *edge* when a source
--- goes, which is not the same as removing the node -- that is why the purge
--- deletes through a recursive query rather than trusting the cascade. The
--- cascade is here so an edge can never outlive the row it points at, which is
--- what makes "a derived node with no surviving edges" a state worth testing for
--- rather than an artifact of bookkeeping.
-CREATE TABLE chunk_derivation (
-    node_chunk_id   TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
-    source_chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
-    PRIMARY KEY (node_chunk_id, source_chunk_id)
-);
-
-CREATE INDEX chunk_derivation_by_source ON chunk_derivation (source_chunk_id);
 
 -- Lexical index --------------------------------------------------------------
 -- `content=` makes this an external-content table: FTS5 stores only the index
@@ -192,8 +208,212 @@ END;
 -- thousands is both fast enough and exactly reproducible -- which an ANN index
 -- is not (FR-R7). Swapping in sqlite-vec or faiss later is a VectorStore
 -- adapter change and nothing more (ADR-0003, ADR-0009).
+--
+-- `NOT NULL` for the reason `chunks.chunk_id` carries it, one step removed: a
+-- foreign key constraint does not apply to a NULL value, so a NULL here is
+-- accepted by both the primary key and the reference, and nothing below this
+-- line would refuse it. It escaped `_verify`'s orphan count when that count was
+-- written `chunk_id NOT IN (SELECT chunk_id FROM chunks)`, because NULL is not
+-- "not in" anything; the count asks `NOT EXISTS` now and sees such a row, which
+-- makes this constraint the difference between a build that is refused and one
+-- that was never writable.
 CREATE TABLE embeddings (
-    chunk_id   TEXT PRIMARY KEY REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    chunk_id   TEXT PRIMARY KEY NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    dimension  INTEGER NOT NULL,
+    vector     BLOB    NOT NULL
+);
+
+-- RAPTOR summary nodes --------------------------------------------------------
+-- One row per summary, in its own table rather than in `chunks` (ADR-0008
+-- decision 5's amendment, ADR-0024 decision 8's amendment). The fourteen
+-- provenance columns are decision 5's own list -- a summary whose model or
+-- prompt hash differs from the current configuration is stale by definition and
+-- rebuilt, no guessing. `project_id`, `sensitivity` and `status` are carried
+-- denormalised for the same reason `chunks` carries its own copies: filtering
+-- has to happen in the same statement as the match, before ranking (FR-R1).
+-- `project_id` is the future single-point predicate #119 adds; `sensitivity` is
+-- today a published label and not a control (see the Context amendment to
+-- ADR-0008); `status` is the build-flavor column a node-table predicate will
+-- filter on once one exists. `tree_id` already encodes the full six-component
+-- scope tuple `(project, tenant, sensitivity, acl_group, namespace, status)`, so
+-- these three are read, not derived from it, at query time.
+--
+-- Nothing writes a row here yet: RAPTOR (`infrastructure/raptor/`) is an empty
+-- package and `SummarizationProvider` a port with no adapter. The table and the
+-- purge's traversal over it land first, so that the day a summary node exists
+-- it inherits a purge that already carries it rather than one designed a second
+-- time under pressure.
+--
+-- `node_id` is `NOT NULL` for the reason `chunks.chunk_id` is: a TEXT primary
+-- key admits one NULL. When the purge asked about nodes with `NOT IN`, one NULL
+-- here made that answer unconditionally NULL and the check inert; it asks
+-- `NOT EXISTS` now, so what this constraint buys today is that `_delete` cannot
+-- meet an id it has no `DELETE` for.
+--
+-- `level` is bounded because ADR-0008 decision 2 builds exactly three -- Document
+-- Tree, Domain Tree, Global Catalog Tree, numbered upward from the leaves; which
+-- name a number carries is `node_type`'s business, not this constraint's. A row
+-- claiming level 0 or 4 is a writer that has invented a tier the forest does not
+-- have, and it is cheaper to refuse it here than to meet it later as a `tree_id`
+-- whose depth nothing agrees on.
+--
+-- **It does not bound the depth of the derivation graph, and must not be read as
+-- doing so.** `level` is a label on a row; the closure in
+-- `index_purge._CYCLIC_NODES` walks `node_derivation`, and nothing ties an edge's
+-- endpoints to a level difference. Measured: 2,000 nodes all at level 1, chained
+-- 2,000 deep through `source_node_id`, satisfy this CHECK completely and take
+-- that closure 3.6 s. The shallow shape its cost argument rests on is a property
+-- of the builder ADR-0008 decision 2 describes -- which does not exist yet -- and
+-- no column here supplies it.
+CREATE TABLE nodes (
+    node_id                   TEXT PRIMARY KEY NOT NULL,
+    tree_id                   TEXT    NOT NULL,
+    level                     INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3),
+    node_type                 TEXT    NOT NULL,
+    text                      TEXT    NOT NULL,
+    content_hash              TEXT    NOT NULL,
+    summary_model             TEXT    NOT NULL,
+    summary_model_revision    TEXT    NOT NULL,
+    summary_prompt_hash       TEXT    NOT NULL,
+    embedding_model           TEXT    NOT NULL,
+    embedding_model_revision  TEXT    NOT NULL,
+    embedding_dimension       INTEGER NOT NULL,
+    source_revision_id        TEXT    NOT NULL,
+    index_build_id            TEXT    NOT NULL,
+    project_id                TEXT    NOT NULL,
+    sensitivity               TEXT    NOT NULL,
+    status                    TEXT    NOT NULL
+);
+
+CREATE INDEX nodes_by_project ON nodes (project_id, status);
+CREATE INDEX nodes_by_tree ON nodes (tree_id);
+
+-- Provenance of node rows -----------------------------------------------------
+-- One row per (node, thing it was built from). A Document-tree node is built
+-- from chunks; a Domain-tree node is built from Document-tree nodes (ADR-0008
+-- decision 2's three levels) -- so an edge names exactly one of a chunk or
+-- another node, never both, which the CHECK below enforces per row rather than
+-- trusting every writer to keep the two columns consistent.
+--
+-- The purge walks this transitively, exactly as it walked `chunk_derivation` at
+-- v3: a node built from a withdrawn chunk holds that chunk's content and must
+-- go with it, and so must a node built from *that* node (ADR-0024 decision 8).
+--
+-- `ON DELETE CASCADE` on both source columns removes the *edge* when the thing
+-- it points at goes, which is not the same as removing the node that has the
+-- edge -- that is why the purge deletes through a recursive query rather than
+-- trusting the cascade. The cascade is here so an edge can never outlive the row
+-- it points at, which is what makes "a node with no surviving edges" a state
+-- worth testing for rather than an artifact of bookkeeping.
+--
+-- The second CHECK refuses a node that names *itself* as a source. The first
+-- says an edge names exactly one kind of thing; it says nothing about which one,
+-- so `('n1', NULL, 'n1')` satisfied it. A self edge is the smallest provenance
+-- cycle, and a cycle is the shape the purge's well-founded reading has to treat
+-- as never-grounded -- refusing it here means the traversal meets one fewer
+-- shape it can only answer by giving up on.
+CREATE TABLE node_derivation (
+    node_id         TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+    source_chunk_id TEXT REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    source_node_id  TEXT REFERENCES nodes(node_id) ON DELETE CASCADE,
+    CHECK (
+        (source_chunk_id IS NOT NULL AND source_node_id IS NULL)
+        OR (source_chunk_id IS NULL AND source_node_id IS NOT NULL)
+    ),
+    CHECK (source_node_id IS NULL OR source_node_id <> node_id)
+);
+
+-- Two partial unique indexes, not one over all three columns. The three-column
+-- version never fired: the CHECK above guarantees one of the two source columns
+-- is NULL in every row, SQL's UNIQUE treats a NULL as distinct from every other
+-- NULL including itself, and so an index containing an always-NULL column
+-- compares equal to nothing. Measured: three byte-identical rows inserted
+-- through it. Each partial index is restricted to the rows where its own source
+-- column is populated, which is exactly where the comparison means something.
+CREATE UNIQUE INDEX node_derivation_chunk_edge
+    ON node_derivation (node_id, source_chunk_id) WHERE source_chunk_id IS NOT NULL;
+CREATE UNIQUE INDEX node_derivation_node_edge
+    ON node_derivation (node_id, source_node_id) WHERE source_node_id IS NOT NULL;
+-- A partial index cannot answer a lookup that does not imply its WHERE clause,
+-- so the two above do not serve `WHERE node_id = ?` -- which the three-column
+-- index they replace did, by accident of being its leftmost column. Without this
+-- one, "a node with no derivation edge at all" degrades to a scan of the whole
+-- edge table per node: measured on this schema at 227.8 ms over 1,100 nodes and
+-- 5.78 s over 5,500, against 0.29 ms and 1.42 ms with it on the same builds.
+CREATE INDEX node_derivation_by_node ON node_derivation (node_id);
+CREATE INDEX node_derivation_by_source_chunk ON node_derivation (source_chunk_id);
+CREATE INDEX node_derivation_by_source_node ON node_derivation (source_node_id);
+
+-- Lexical index over node text -------------------------------------------------
+-- External-content FTS5 over `nodes(text)`, deliberately its own table rather
+-- than sharing `chunks_fts`. `bm25` scores every visible row against collection
+-- statistics computed over *every* row in the table it is asked about -- `N`,
+-- `avgdl`, and the per-term document frequencies -- and a RAPTOR summary
+-- systematically repeats the terms of the children it summarises. A derived row
+-- sharing `chunks_fts` would move all three under every ordinary leaf query the
+-- caller never asked a node about, so a visible leaf's rank would become a
+-- function of the forest's shape. Keeping node text in its own FTS5 table makes
+-- that channel structurally absent rather than merely unexercised.
+CREATE VIRTUAL TABLE nodes_fts USING fts5(
+    text,
+    content='nodes',
+    content_rowid='rowid',
+    tokenize="unicode61 remove_diacritics 2"
+);
+
+CREATE TRIGGER nodes_fts_insert AFTER INSERT ON nodes BEGIN
+    INSERT INTO nodes_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER nodes_fts_delete AFTER DELETE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER nodes_fts_update AFTER UPDATE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO nodes_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+-- Substring index over node text ----------------------------------------------
+-- `chunks_trigram`'s counterpart, and it exists for the same reason: `unicode61`
+-- splits on whitespace and punctuation only, so a Japanese summary is one token
+-- and matches nothing short of itself. This project's own knowledge is written
+-- in Japanese, so a summary of it would be absent from substring search
+-- entirely without this table.
+--
+-- Its own table rather than a third and fourth column on `chunks_trigram`, for
+-- the reason `nodes_fts` is separate from `chunks_fts`: `bm25` scores a visible
+-- row against statistics computed over every row of the table it reads, and a
+-- summary repeats its children's terms by construction.
+CREATE VIRTUAL TABLE nodes_trigram USING fts5(
+    text,
+    content='nodes',
+    content_rowid='rowid',
+    tokenize="trigram"
+);
+
+CREATE TRIGGER nodes_trigram_insert AFTER INSERT ON nodes BEGIN
+    INSERT INTO nodes_trigram(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER nodes_trigram_delete AFTER DELETE ON nodes BEGIN
+    INSERT INTO nodes_trigram(nodes_trigram, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER nodes_trigram_update AFTER UPDATE ON nodes BEGIN
+    INSERT INTO nodes_trigram(nodes_trigram, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO nodes_trigram(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+-- Dense index over node text ---------------------------------------------------
+-- `embeddings`' counterpart. `embeddings` cannot hold a summary's vector: it is
+-- keyed on `chunk_id REFERENCES chunks`, and a node id is not a chunk id, so
+-- without this table a RAPTOR summary has nowhere to store one and dense search
+-- over the forest cannot exist. Same shape, same raw little-endian float32 blob,
+-- same `ON DELETE CASCADE` -- which is what keeps a purged node's vector from
+-- outliving the node, exactly as it does for a purged chunk's.
+CREATE TABLE node_embeddings (
+    node_id    TEXT PRIMARY KEY NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
     dimension  INTEGER NOT NULL,
     vector     BLOB    NOT NULL
 );

@@ -107,6 +107,167 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   behaviour changes — `infrastructure/vector/` is empty and nothing implements
   the protocol, so the narrowing lands on a contract with no adapter to break.
 
+- **BREAKING — `INDEX_SCHEMA_VERSION` 3 → 4: RAPTOR summary nodes get their own
+  tables, and `chunks.derived` and `chunk_derivation` are dropped** (the
+  Milestone 6 amendments to ADR-0008 decision 5 and ADR-0024 decision 8).
+  **Every existing index reports `index-schema-mismatch` and falls back to the
+  substring scan until `theurian index build` runs.** That is the designed
+  response to an index schema change and not a regression: the index is derived
+  and disposable, and ADR-0022 point 3 exists so that a schema change costs an
+  index rebuild and nothing else — never an in-place migration of the file, no
+  canonical `SCHEMA_VERSION` bump, no state hash change, no canonical database
+  invalidated. `theurian index status` reports `indexSchemaVersion` beside
+  `expectedIndexSchemaVersion`, counts the build as `stale`, and its `remedy`
+  names the command.
+
+  **Affects `0.1.0.dev0` and `0.1.0.dev1`**, both of which ship index schema
+  **2** — each tag pins `INDEX_SCHEMA_VERSION: Final = 2`. So a released
+  Theurian meets this as 2 → 4 in one step: schema 3 exists only on `main` and
+  was never in a release, even though the 2 → 3 entry below is filed under
+  `[0.1.0.dev0]`, which
+  [#138](https://github.com/theurian/theurian/issues/138) moves. Nothing
+  canonical needs migrating and no state hash moves; what is lost is the index
+  build itself, and rebuilding it is the whole remedy.
+
+  `nodes` carries the fourteen provenance columns ADR-0008 decision 5 names —
+  `node_id`, `tree_id`, `level`, `node_type`, `text`, `content_hash`, three
+  summary-model columns, three embedding columns, `source_revision_id` and
+  `index_build_id` — plus `project_id`, `sensitivity` and `status`. Those three
+  are denormalised for the same reason `chunks` carries its own copies:
+  filtering has to happen in the same statement as the match, before ranking
+  (FR-R1). `tree_id` already encodes the whole six-component scope tuple, so
+  they are read at query time rather than recovered from it. `node_derivation`
+  is the provenance edge, naming exactly one of a source chunk or a source node
+  — a `CHECK` per row, rather than two nullable columns every future writer is
+  trusted to keep consistent.
+
+  **`nodes_fts` is a separate external-content FTS5 table, and the separation is
+  the point.** `bm25` scores every row against collection statistics computed
+  over *every* row in the table it is asked about — `N`, `avgdl` and the
+  per-term document frequencies — and a summary systematically repeats the terms
+  of the children it was built from. A summary row sharing `chunks_fts` would
+  move all three under every ordinary leaf query the caller never asked a node
+  about, so a visible leaf's rank would become a function of the forest's shape.
+  `test_a_node_row_does_not_move_a_leaf_chunks_bm25_score` pins it: a leaf's
+  score is read through the real `search_lexical` path before and after
+  inserting a node whose text is nothing but the query's own terms, and must be
+  unchanged. It is a first, narrow instance of the whole-statistics test
+  ADR-0008 still owes, not that test.
+
+  **`node_embeddings` and `nodes_trigram` land at v4 as well, so node storage
+  costs one schema bump rather than three.** `embeddings` is keyed on
+  `chunk_id REFERENCES chunks`, so a summary's vector had nowhere to live;
+  `nodes_trigram` exists because `unicode61` splits on whitespace and
+  punctuation only, which makes a Japanese summary a single token, and this
+  project's own knowledge is written in Japanese. Both mirror their chunk
+  counterparts including `ON DELETE CASCADE`, and `_verify`'s orphan check for
+  node vectors exists from birth rather than arriving with whichever CL first
+  writes one.
+
+  **`chunks.derived` and `chunk_derivation` are dropped rather than kept beside
+  the new tables.** Nothing ever wrote either: v3 added them ahead of RAPTOR
+  (ADR-0024 decision 8) on the assumption that RAPTOR would be their writer, and
+  this is the feature they were waiting for deciding otherwise. Keeping a dead
+  provenance mechanism beside a live one is how the wrong one gets read. Their
+  **six** traversal tests migrate to node rows rather than being deleted — what
+  they hold is decision 8's rule, and the rule is unchanged: withdrawal is
+  transitive over derived content, and an unresolvable derivation edge means
+  delete, not keep. ADR-0024's Compliance section counted five of the six until
+  this change corrected it; the sixth had been in the suite from the start.
+
+  **The purge moves with the storage, and its rule for a node is universal
+  grounding: a node survives only if *every* derivation path below it terminates
+  at a surviving chunk in finitely many steps.** `index_purge._DOOMED` computes
+  the complement, because grounding is a least fixed point under a universal
+  quantifier and SQLite's row-at-a-time recursion cannot express one. *Unanchored*
+  is five arms — a `source_revision_id` naming a withdrawn revision, no
+  `node_derivation` row at all, an edge naming a withdrawn or absent chunk, an
+  edge naming an absent node, and a node standing on a provenance cycle — closed
+  upward over "is built from", so a node built on an unanchored node goes too. A
+  summary cannot be partially grounded any more than it can be partially
+  withdrawn, so one good parent and one that leads nowhere is still removed.
+  Every one of those shapes survived the reading this replaces, which seeded on
+  unprovenanced rows and walked forward from the withdrawn chunks: measured, a
+  two-cycle of summaries of a withdrawn incident survived a purge of the *entire*
+  corpus with its text intact, and `_verify` accepted the build. Against a
+  well-founded reference over 400 randomly generated graphs — self edges and
+  cycles allowed, one fixed seed — the shipped reading now diverges on none; the
+  reading it replaces still diverges on 11 of the same 400, and on 91 of them
+  before the self-edge `CHECK` below started refusing those graphs' self edges
+  outright.
+
+  **`_verify` is six post-conditions, not v3's three**: rows of the withdrawn
+  revisions (chunks by `revision_id` *and* nodes by the `source_revision_id`
+  stamp, where v3 counted chunks only), an orphaned chunk embedding, an
+  unprovenanced node, a `node_derivation` edge whose source chunk or source node
+  is gone, a node standing on a cycle, and an orphaned node embedding. The
+  dangling-edge check has no v3 analogue at all: two tables make a dangling edge
+  and an unprovenanced row different states where v3's single table made them
+  one, so a node can hold an edge that points at nothing while still having an
+  edge — which the unprovenanced count, then and now, does not see. The cycle
+  count is computed independently rather than by asking `_DOOMED` a second time,
+  because a post-condition computed by the function it checks cannot catch that
+  function being wrong. With it the six are jointly complete: no cycle makes the
+  node graph finite and well ordered, no dangling edge and no unprovenanced node
+  make every edge name a surviving row, and grounding follows by induction up
+  that order.
+
+  **`_restamp` reaches `nodes.index_build_id` too, not only `index_metadata`.**
+  That column is one of decision 5's fourteen provenance columns; measured, a
+  surviving node named the build it had been copied from while `index_metadata`
+  named the new one — the disagreement `_restamp` exists to prevent at the file
+  level, one level down inside it.
+
+  **Four schema hardenings, each closing a check that had stopped checking.**
+  `chunks.chunk_id`, `nodes.node_id`, `embeddings.chunk_id` and
+  `node_embeddings.node_id` gain `NOT NULL`: only an INTEGER primary key is a
+  rowid alias SQLite refuses NULL for, so a TEXT one admitted a single NULL row,
+  and one NULL in a `NOT IN` subquery answers NULL — falsy — for *every* row.
+  Measured against the `NOT IN` form those checks were first written in, one NULL
+  `chunk_id` turned two of the purge's post-conditions inert and `_verify` then
+  accepted a build holding both a dangling edge and an orphaned embedding — the
+  checks are `NOT EXISTS` now as well, so neither guard depends on the other.
+  `node_derivation` refuses a self edge,
+  the smallest provenance cycle. Its three-column `UNIQUE` index never fired,
+  because the exclusive-source `CHECK` leaves one of those columns NULL in every
+  row and no NULL equals another — three byte-identical edges went in through it
+  — so two partial unique indexes replace it, one per source column. A partial
+  index cannot answer `WHERE node_id = ?`, which the three-column one had been
+  serving by accident of being its leftmost column, so `node_derivation_by_node`
+  is declared explicitly: dropping it takes the no-provenance check from 0.29 ms
+  to 227.8 ms over 1,100 nodes and from 1.42 ms to 5.78 s over 5,500.
+
+  **`IndexStore.holds_any_revision` moves with them, and it is the one that
+  reaches past the purge.** Its second clause is an executed SQL predicate, not
+  a docstring, and `application/withdrawal_purge.py` runs it as the pre-check on
+  every `migrate apply` that withdraws anything. Left naming `chunk_derivation`,
+  it raises `no such table: chunk_derivation` against a v4 index — reproduced,
+  and it raises even where the revision clause alone would have answered,
+  because SQLite resolves the whole statement before evaluating any of it. So
+  the drop would have broken withdrawal and not only purging.
+
+  **It stops being a second hand-written predicate.** It runs
+  `index_purge.ANY_DOOMED_ROW`, composed from the same withdrawn-chunk and
+  unanchored-node literals `_DOOMED` is built from, so the pre-check is `_DOOMED`
+  minus an upward closure over an empty seed and the two agree by construction
+  rather than by being kept in step. Kept in step by hand, they did not agree: a
+  build whose only damage was a pre-existing dangling edge answered "nothing to
+  purge" on the pre-check — so `migrate apply` skipped it as clean without
+  copying the file — while a purge run directly on that same build refused to
+  publish over the one bad row. Under universal grounding that node is exactly as
+  ungrounded as one with no edges at all, so it is removed and the build
+  publishes. Ten hand-enumerated graph shapes pin the equivalence
+  (`test_holds_any_revision_agrees_with_whether_a_purge_removes_anything`), each
+  carrying its own chunk corpus so that no case can agree for the wrong reason
+  through the withdrawn-chunk arm.
+
+  **Nothing writes a node row.** `infrastructure/raptor/` is still an empty
+  package and `SummarizationProvider` still a port with no adapter, so every
+  test named above builds its fixture with raw SQL, exactly as the v3 suite did
+  for `chunks.derived = 1` rows. The tables and the traversal over them land
+  first so that the day a summary node exists it inherits a purge that already
+  carries it rather than one designed a second time under pressure.
+
 ### Fixed
 
 - **A withdrawal now publishes a purged index in the same `migrate apply`**
