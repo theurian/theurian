@@ -96,11 +96,14 @@ CREATE TABLE index_metadata (
 -- Measured on 3.51.2: the column took two NULLs, and
 -- `'a' NOT IN (SELECT id FROM t)` then answered NULL.
 --
--- Those checks are `NOT EXISTS` today, and all six of them, so the constraint is
--- no longer the only thing standing between one NULL and a post-condition that
--- stops checking. It stays because two defences against a state nothing should
--- ever write is the right number when the failure is silent in the direction of
--- keeping withdrawn content.
+-- All four of those are `NOT EXISTS` today -- the orphaned embedding, the
+-- unprovenanced node, the dangling derivation edge, and the orphaned node
+-- embedding -- so the constraint is no longer the only thing standing between
+-- one NULL and a check that stops checking. (They are four of `_verify`'s six
+-- post-conditions; the withdrawn-row count and the cycle count are neither
+-- orphan nor dangling checks and ask no such subquery.) It stays because two
+-- defences against a state nothing should ever write is the right number when
+-- the failure is silent in the direction of keeping withdrawn content.
 CREATE TABLE chunks (
     chunk_id     TEXT PRIMARY KEY NOT NULL,
     project_id   TEXT    NOT NULL,
@@ -207,10 +210,13 @@ END;
 -- adapter change and nothing more (ADR-0003, ADR-0009).
 --
 -- `NOT NULL` for the reason `chunks.chunk_id` carries it, one step removed: a
--- foreign key constraint does not apply to a NULL value, so a NULL here would be
--- accepted by both the primary key and the reference, and then escape
--- `_verify`'s orphan count -- which asks `chunk_id NOT IN (SELECT chunk_id FROM
--- chunks)`, and NULL is not "not in" anything.
+-- foreign key constraint does not apply to a NULL value, so a NULL here is
+-- accepted by both the primary key and the reference, and nothing below this
+-- line would refuse it. It escaped `_verify`'s orphan count when that count was
+-- written `chunk_id NOT IN (SELECT chunk_id FROM chunks)`, because NULL is not
+-- "not in" anything; the count asks `NOT EXISTS` now and sees such a row, which
+-- makes this constraint the difference between a build that is refused and one
+-- that was never writable.
 CREATE TABLE embeddings (
     chunk_id   TEXT PRIMARY KEY NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
     dimension  INTEGER NOT NULL,
@@ -239,12 +245,30 @@ CREATE TABLE embeddings (
 -- time under pressure.
 --
 -- `node_id` is `NOT NULL` for the reason `chunks.chunk_id` is: a TEXT primary
--- key admits one NULL, and one NULL in this column turns every `NOT IN` the
--- purge asks about nodes into an unconditional NULL.
+-- key admits one NULL. When the purge asked about nodes with `NOT IN`, one NULL
+-- here made that answer unconditionally NULL and the check inert; it asks
+-- `NOT EXISTS` now, so what this constraint buys today is that `_delete` cannot
+-- meet an id it has no `DELETE` for.
+--
+-- `level` is bounded because ADR-0008 decision 2 builds exactly three -- Document
+-- Tree, Domain Tree, Global Catalog Tree, numbered upward from the leaves; which
+-- name a number carries is `node_type`'s business, not this constraint's. A row
+-- claiming level 0 or 4 is a writer that has invented a tier the forest does not
+-- have, and it is cheaper to refuse it here than to meet it later as a `tree_id`
+-- whose depth nothing agrees on.
+--
+-- **It does not bound the depth of the derivation graph, and must not be read as
+-- doing so.** `level` is a label on a row; the closure in
+-- `index_purge._CYCLIC_NODES` walks `node_derivation`, and nothing ties an edge's
+-- endpoints to a level difference. Measured: 2,000 nodes all at level 1, chained
+-- 2,000 deep through `source_node_id`, satisfy this CHECK completely and take
+-- that closure 3.6 s. The shallow shape its cost argument rests on is a property
+-- of the builder ADR-0008 decision 2 describes -- which does not exist yet -- and
+-- no column here supplies it.
 CREATE TABLE nodes (
     node_id                   TEXT PRIMARY KEY NOT NULL,
     tree_id                   TEXT    NOT NULL,
-    level                     INTEGER NOT NULL,
+    level                     INTEGER NOT NULL CHECK (level BETWEEN 1 AND 3),
     node_type                 TEXT    NOT NULL,
     text                      TEXT    NOT NULL,
     content_hash              TEXT    NOT NULL,

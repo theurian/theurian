@@ -120,6 +120,23 @@ def _node_terms(path: Path) -> dict[str, int]:
         }
 
 
+def _node_trigrams(path: Path) -> dict[str, int]:
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.ntv "
+            "USING fts5vocab('main', 'nodes_trigram', 'row')"
+        )
+        return {
+            str(row[0]): int(row[1]) for row in connection.execute("SELECT term, cnt FROM temp.ntv")
+        }
+
+
+# The numbers in the section markers below ("-- N. ...") are round-2 review
+# finding ids, not sequence positions in this file: 2, 3, 4, 8 and 10 are real
+# findings from that round, closed without a fixture of their own here, so
+# their absence is deliberate and not a gap to fill.
+
+
 # -- 1. Cycles die like never-held --------------------------------------------
 
 
@@ -141,7 +158,7 @@ def _build_cycle_anchored_to_a_surviving_chunk(connection: sqlite3.Connection) -
 #: The smallest cycle -- a node naming itself as its own source -- is absent on
 #: purpose: `node_derivation`'s `CHECK (source_node_id IS NULL OR source_node_id
 #: <> node_id)` refuses that row outright, so the case cannot be constructed
-#: here. What the schema now forbids is pinned by `test_index_store.py::
+#: here. What the schema now forbids is pinned by `test_index_schema_v4.py::
 #: test_a_node_derivation_edge_naming_itself_is_refused` instead. The two shapes
 #: below name no node as its own source and are unaffected by that `CHECK`.
 _CYCLE_SHAPES: dict[str, tuple[Callable[[sqlite3.Connection], None], int]] = {
@@ -158,9 +175,9 @@ def test_a_cycle_is_purged_like_a_node_never_indexed(
 ) -> None:
     """A node reachable only through itself is grounded in nothing, however many steps a walk gets.
 
-    All three shapes withdraw *nothing* -- `revision_ids=[]` -- because being
+    Both shapes withdraw *nothing* -- `revision_ids=[]` -- because being
     ungrounded is not a consequence of any particular withdrawal; it is a
-    property of the graph. The third shape is the one that separates this from
+    property of the graph. The second shape is the one that separates this from
     a withdrawal-taint bug: `a#0` also derives from `keep#0`, a chunk that
     survives every purge in this file, and it must still go, because one of
     its declared sources (the cycle through `b#0`) can never be shown to
@@ -194,7 +211,9 @@ def test_a_cycle_is_purged_like_a_node_never_indexed(
 def test_a_node_stamped_with_a_withdrawn_revision_is_doomed_even_when_grounded(
     tmp_path: Path, store: SqliteIndexStore
 ) -> None:
-    """`nodes.source_revision_id` is stored and read by no purge predicate today.
+    """`nodes.source_revision_id` is read by two purge predicates now: `_UNANCHORED_NODES`'s
+    first arm, which dooms the node, and `_verify`'s `_WITHDRAWN_ROWS` post-condition, which
+    would refuse to publish a build that still held it.
 
     ADR-0008 decision 5's fourteen provenance columns exist so a summary whose
     build inputs have moved on is detectably stale; `source_revision_id` names
@@ -451,6 +470,63 @@ def test_a_purged_builds_nodes_fts_leaves_no_residue(tmp_path: Path) -> None:
     )
 
 
+def test_a_purged_builds_nodes_trigram_leaves_no_residue(tmp_path: Path) -> None:
+    """The `nodes_trigram` mirror of `test_a_purged_builds_nodes_fts_leaves_no_residue`.
+
+    `nodes_trigram` is a second external-content FTS5 table over `nodes`,
+    maintained by its own trigger set (`nodes_trigram_insert`/`_delete`/
+    `_update`, pinned to exist by `test_index_schema_v4.py::test_the_schema_
+    carries_nodes_trigram`) -- entirely separate from `nodes_fts`'s. A correct
+    `nodes_fts_delete` trigger says nothing about `nodes_trigram_delete`: they
+    fire on the same `DELETE FROM nodes` but are two independent pieces of DDL,
+    and nothing in `src/` queries `nodes_trigram` yet, so a broken delete
+    trigger there is invisible to every other assertion this suite makes.
+    Compared against a `fresh` build that never held the doomed node, trigram
+    by trigram, for the same reason the `nodes_fts` version compares term by
+    term: an FTS5 index can retain a deleted row's postings while the content
+    table it is external to is clean.
+    """
+    stale = SqliteIndexStore(tmp_path / "theurian-index-stale.sqlite")
+    stale.create(index_build_id="01K1STALE", state_hash="state-abc")
+    stale.add_chunks(
+        [
+            _indexable("keep#0", "an ordinary retention paragraph", revision="keep"),
+            _indexable("gone#0", "a paragraph about incident zeta", revision="gone"),
+        ]
+    )
+    with closing(sqlite3.connect(stale.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            _node(
+                connection,
+                "summary-of-gone#0",
+                text="a summary mentioning quarantine ledger incident zeta",
+            )
+            _edge(connection, "summary-of-gone#0", chunk="gone#0")
+            _node(connection, "summary-of-keep#0", text="a summary of the keeper")
+            _edge(connection, "summary-of-keep#0", chunk="keep#0")
+
+    fresh = SqliteIndexStore(tmp_path / "theurian-index-fresh.sqlite")
+    fresh.create(index_build_id="01K1FRESH", state_hash="state-abc")
+    fresh.add_chunks([_indexable("keep#0", "an ordinary retention paragraph", revision="keep")])
+    with closing(sqlite3.connect(fresh.path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            _node(connection, "summary-of-keep#0", text="a summary of the keeper")
+            _edge(connection, "summary-of-keep#0", chunk="keep#0")
+
+    purged_path = tmp_path / "theurian-index-purged.sqlite"
+    stale.derive_purged(
+        purged_path, revision_ids=["gone"], index_build_id="01K1PURGED", state_hash="state-abc"
+    )
+
+    purged_trigrams, fresh_trigrams = _node_trigrams(purged_path), _node_trigrams(fresh.path)
+    assert purged_trigrams == fresh_trigrams, (
+        f"nodes_trigram in the purged build disagrees with one that never held the doomed node: "
+        f"purged={purged_trigrams} fresh={fresh_trigrams}"
+    )
+
+
 # -- 13. holds_any_revision agrees with whether a purge removes anything -----
 #
 # A deterministic, hand-enumerated set of graphs rather than a random
@@ -533,8 +609,10 @@ def test_holds_any_revision_agrees_with_whether_a_purge_removes_anything(
 ) -> None:
     """`IndexStore.holds_any_revision`'s own docstring claim, pinned over ten graph shapes.
 
-    "stays equivalent to `derive_purged` returning a non-zero count" is the
-    property `holds_any_revision`'s own docstring states. None of these graphs
+    `holds_any_revision`'s own docstring states that it runs `ANY_DOOMED_ROW`,
+    built from the same `doomed_chunks` and `_UNANCHORED_NODES` literals
+    `_DOOMED` is, so "would a purge remove anything" and "did a purge remove
+    anything" cannot drift apart -- the property this test pins. None of these graphs
     contains a cycle or a dangling reference: those are the shapes the seeded
     traversal answered differently on the two sides, and each has its own test
     above (a dangling-only graph made `derive_purged` raise rather than answer at

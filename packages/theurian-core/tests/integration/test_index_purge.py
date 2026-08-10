@@ -642,11 +642,12 @@ def test_the_post_condition_also_refuses_an_orphaned_embedding(
 
     Constructed the way a pragma-less delete would leave the file: the chunk
     gone, the vector behind. Matched on "whose chunk is gone" rather than on
-    the `PRAGMA foreign_keys` explanation the message also carries today: that
-    clause names a cause that cannot be true on this path -- `_writing`'s
-    `CONNECTION_PRAGMAS` always turn foreign keys on -- and is expected to be
-    replaced by wording that says what actually happened (the source build
-    already held the damage), which this match must survive.
+    the `PRAGMA foreign_keys` explanation the message also carries: that clause
+    names a cause that cannot be true on this path -- `_writing`'s
+    `CONNECTION_PRAGMAS` always turn foreign keys on -- and now reads "the
+    build this one was copied from already held them" (`_CASCADE_RAN`), which
+    is what actually happened. The match on the first clause is what has to
+    survive that wording, not anticipate it.
     """
     stale, _, _ = corpora
     damaged = tmp_path / "theurian-index-damaged.sqlite"
