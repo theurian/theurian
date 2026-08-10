@@ -433,8 +433,8 @@ def test_a_short_backup_write_aborts_the_removal_and_leaves_no_partial_backup(
     real_write = os.write
     backup_descriptors: set[int] = set()
 
-    def tracking_open(path: Any, flags: int, mode: int = 0o777, *args: Any, **kwargs: Any) -> int:
-        descriptor = real_open(path, flags, mode, *args, **kwargs)
+    def tracking_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        descriptor = real_open(path, flags, *args, **kwargs)
         if str(path).endswith(".backup"):
             backup_descriptors.add(descriptor)
         return descriptor
