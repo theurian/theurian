@@ -254,6 +254,18 @@ nothing else.
 > the ranks arriving at RRF can be wrong even when the withheld documents share
 > no vocabulary with the query at all. The acceptance was re-taken on the
 > corrected text; T-17a carries the measurements and the terms.
+>
+> **Resolved in Milestone 6
+> ([#15](https://github.com/theurian/theurian/issues/15)).** The residual above
+> closes for the status axis: `theurian migrate apply` now publishes a purged
+> build the moment a withdrawal lands (ADR-0024 decision 5), so a published index
+> no longer holds the withdrawn rows the `bm25` statistics counted, and the ranks
+> arriving at RRF are again those an index without the withheld document would have
+> produced. The fix is that write-path purge, not a change to the fusion — RRF's
+> "ranks in, ranks out" contract held throughout. Two content-independent residuals
+> remain: a request in flight at the pointer swap, and a purge that fails (reported
+> through the apply's `indexPurge`, not silent). T-17a carries the closure and the
+> residuals.
 
 For the amendment to point 5 (dense off by default):
 

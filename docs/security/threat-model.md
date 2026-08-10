@@ -586,9 +586,10 @@ artifacts.
 repository secret scanner and SECURITY.md says so.
 
 Removing a secret once it is in is a different operation — superseding the
-revision or retiring the item — with its own window. See T-17: performing
-exactly that remediation is what re-opened a channel to read the secret back,
-through `knowledge.search` rather than through the revision itself.
+revision or retiring the item. See T-17: performing exactly that remediation is
+what re-opened a channel to read the secret back, through `knowledge.search`
+rather than through the revision itself — a window T-17a's withdrawal→purge
+trigger now closes in the same `migrate apply` (#15).
 
 #### T-16 — A compromised release artifact is installed (Tampering, **Critical** — publication ships, install-time verification does not)
 
@@ -1562,8 +1563,12 @@ so there is no cross-sensitivity summary to leak (#115).
 An unprivileged caller — no `includeUnapproved`, no elevated token — issues
 ordinary `knowledge.search` queries against a retrieval index that is older
 than the knowledge it serves: the normal gap between `migrate apply` and the
-next `theurian index build`, and in particular the gap opened by *performing*
-a redaction (superseding a revision) or a retirement (`deprecateItem`).
+next `theurian index build`. The narrower gap this once opened by *performing*
+a redaction (superseding a revision) or a retirement (`deprecateItem`) — the only
+case in which a published build held rows a caller may not read, since
+`index build` writes none (it filters on `may_surface`) — now closes in the same
+`migrate apply`, which publishes a purged build synchronously on any withdrawal
+(T-17a below, issue #15).
 `results` correctly withholds the matching content, so `count` reads 0 either
 way — and some other published value moves anyway, exactly when the query
 matched text the caller may not read. The trigram retriever (ADR-0023) matches
@@ -1655,15 +1660,19 @@ property, stated where it is held, is in
 `limit <= MAX_RESULTS`, every published value equals what the same query would
 return had the withheld documents never been indexed.
 
-That equality holds over every stage the gate controls. It does **not** hold over
-the corpus statistics BM25 scores against, which the gate does not reach — see
-T-17a below, which is accepted for this milestone with its root fix in Milestone
-6. Read the claim above as "no stage computes a number from a withheld *row*",
-which is what was verified, rather than as "the withheld document has no effect
-on any published number", which is not true. It is also a claim about two of the
-five tools rather than about all of them — `knowledge.status` publishes two
-values that move, one of them justified and one of them accepted; see *The
-equality is a claim about two tools, not three*, below.
+That equality holds over every stage the gate controls. The gate does not reach
+the corpus statistics BM25 scores against, so while a published build still held a
+withdrawn row those statistics carried content it should not — the residual
+tracked as T-17a below. That residual is now closed for the status axis: the
+withdrawal→purge trigger removes the withdrawn rows from the published build in
+the same `migrate apply` (issue #15), so no statistic counts a row the caller may
+not read. Read the gate's *own* guarantee as "no stage computes a number from a
+withheld *row*", which is what the gate verifies; the trigger is what makes the
+stronger "the withdrawn document has no effect on any published number" true, by
+taking the document out of the build. The claim is also about two of the five
+tools rather than all of them — `knowledge.status` publishes two values that move,
+one of them justified and one of them accepted; see *The equality is a claim about
+two tools, not three*, below.
 
 Three details of that control are load-bearing and easy to lose:
 
@@ -2498,7 +2507,66 @@ The *absolute* cost of a retriever is a separate concern from its timing
 separation, and it is recorded under T-6 rather than here — for the scan, and for
 the dense path, which T-6 enumerates as the second member of that class.
 
-#### T-17a — BM25 collection statistics count withheld documents (Information disclosure, High — accepted for M5, root fix in M6)
+#### T-17a — BM25 collection statistics count withheld documents (Information disclosure, High — closed for the status axis in M6 by the withdrawal→purge trigger, #15)
+
+> **Closed in Milestone 6 by the withdrawal→purge trigger
+> ([#15](https://github.com/theurian/theurian/issues/15)), for the status axis.**
+> The class this entry names — *the index still holds the withdrawn rows* — is now
+> removed at its root, not accepted. `theurian migrate apply` publishes a purged
+> build synchronously the moment a withdrawal lands
+> (`application/withdrawal_purge.py` `publish_purge_for_withdrawal`, wiring
+> ADR-0024 decision 5), so both faces of the class go: no `bm25` collection
+> statistic counts a withdrawn row (this entry), and no retriever pays an extra
+> pass to skip one (the duration face recorded under T-17). A published build only
+> ever held such a row because a status change or a redaction reached it *after*
+> the build — `index build` writes none, it filters on `may_surface` — and that is
+> exactly the transition the trigger now purges in the same command.
+>
+> The revisions removed are computed against the published index's **own build
+> flavor** (`revisions_to_purge` reads `indexesUnapproved` off the pointer): a
+> default index purges draft/proposed/deprecated/rejected/superseded and any
+> non-current revision, an `--include-unapproved` index keeps the drafts and
+> proposals it legitimately holds and purges only what is withheld under every
+> flag plus non-current revisions. All twelve status×flavor combinations were
+> verified to match the surfacing gate, and the closure is pinned end to end by
+> `test_a_withdrawal_purges_the_published_index_without_a_separate_build`
+> (`tests/integration/test_absence_proof.py`), parametrised over the four faces —
+> `deprecate`, `supersede`, `reject`, and an in-place `draft` (the flavor face) —
+> each RED on the pre-trigger wiring.
+>
+> **Scope: the status axis only.** `may_surface` — the rule the purge and the
+> surfacing gate share so they cannot disagree about what is withheld — reads
+> status and nothing else, and these `bm25` channels score the same rows. No
+> retrieval predicate filters on sensitivity, tenant or ACL group; those are
+> refused at write time and their enforcement as read controls is deferred to
+> [#119](https://github.com/theurian/theurian/issues/119). This closure does not
+> touch those axes and does not claim to.
+>
+> **Two residuals remain, both content-independent and measured, neither an
+> extraction channel:**
+>
+> 1. A request already in flight at the pointer swap finishes against the
+>    pre-purge build. Bounded to that one request — the swap protects the next
+>    window, not a response already served (ADR-0024 decision 5) — and independent
+>    of what was withdrawn.
+> 2. A purge that *fails* leaves the stale build serving until a manual `theurian
+>    index build`. This is **not silent**: `migrate apply` reports it in
+>    `indexPurge` (`published: false`, `failed: true`, and a `remedy` naming the
+>    rebuild), so an operator acting on the answer can see the withdrawn rows are
+>    still held.
+>
+> **A prediction this entry made was wrong, and is corrected rather than deleted.**
+> Condition 3 below expected `test_a_withheld_document_can_still_reorder_the_visible_ones`
+> and its sibling to go RED when the window closed. They do not: they build a stale
+> index directly, outside the `migrate apply` path the trigger guards, so they stay
+> green and now pin the FTS5 property the trigger *defends against* — that an index
+> holding withdrawn rows would leak — rather than a leak the shipped product still
+> has. The alarm that goes RED on the pre-trigger wiring is the closure test named
+> above.
+>
+> **Everything below is the record of why this was accepted for Milestone 5 and
+> what twice proved its bound wrong. It is kept because the reasoning is the
+> artifact; read it as history, not as an open finding.**
 
 Split out of T-17's residual list because it was accepted there on a premise that
 is false. The premise is corrected here rather than deleted, because what was
@@ -2782,9 +2850,13 @@ channel and are what condition 3 below extends.
    together they are the scope of this entry. Both go red when Milestone 6 closes
    the stale window, which is the intended alarm.
 
-Until Milestone 6 lands, the equality claims in `retrieval_service`'s module
-docstring, in ADR-0021's compliance section, in `SECURITY.md` and in the README
-carry the qualification stated above rather than being unqualified.
+Milestone 6 has landed the withdrawal→purge trigger, and the equality claims in
+`retrieval_service`'s module docstring, in ADR-0021, in `SECURITY.md` and in the
+README now record the closure at the top of this entry: after a shipped withdrawal
+the equality holds structurally for the status axis, with the in-flight residual
+named there. The qualification above applies to a build that still holds withdrawn
+rows — the pre-purge window, and the one request in flight across the swap — not
+to what a caller reads once the purge has published.
 
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
@@ -2823,7 +2895,7 @@ byte-for-byte.
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
-| T-17a | BM25 statistics count withheld documents | I | High | `index build`; root fix M6 (#15) |
+| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |
 
 ## Explicitly out of scope
 

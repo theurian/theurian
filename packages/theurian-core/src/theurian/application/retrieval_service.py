@@ -26,9 +26,9 @@ identity and order of every hit. Held by
 response compared — which goes red in twelve of its twenty parametrisations when
 :meth:`RetrievalService._visible_ranking`'s loop is replaced by a single
 :data:`CANDIDATE_DEPTH` fetch. It rests on one assumption this module does not
-own, and that assumption is measurably false in the two retrievers that score
-with ``bm25``: see *Where the equality is conditional* at the end of this
-docstring.
+own — false at the FTS5 level in the two retrievers that score with ``bm25``, and
+held instead by keeping withheld rows out of the published index: see *The second
+half of the equality is held outside this module* at the end of this docstring.
 
 It has to be equality because the trigram retriever matches any three-character
 substring, so any quantity that moves when withheld content matches does not
@@ -71,15 +71,18 @@ written, so their equality is structural rather than argued field by field — a
 what says so is the test named above, not this paragraph. There is nothing left
 to move to the far side of the gate, because nothing crosses it.
 
-**Where the equality is conditional (T-17a, issue #15).** The claim above is a
-composition of two things, and only the first belongs to this module: that no
-withheld row reaches a slot, a rank or a published number — which holds
-structurally, by the paragraph above — *and* that a retriever's ranking of the
-rows the caller may see does not itself depend on what else the index holds.
+**The second half of the equality is held outside this module (T-17a, issue
+#15).** The claim above is a composition of two things, and only the first
+belongs here: that no withheld row reaches a slot, a rank or a published number —
+which holds structurally, by the paragraph above — *and* that a retriever's
+ranking of the rows the caller may see does not itself depend on what else the
+index *physically holds*.
 
-FTS5 falsifies the second, through two channels that differ in what an attacker
-can do with them. Both are measured now; the second was recorded here as
-harmless, under two successive justifications, before anyone measured it.
+FTS5 does not give the second for free, through two channels that differ in what
+an attacker can do with them. Both are measured; the second was recorded here as
+harmless, under two successive justifications, before anyone measured it. What
+holds the second half is keeping withheld rows out of the published index in the
+first place — the withdrawal→purge trigger, at the close of this section.
 
 **The content channel — ``idf``, via ``nHit``.** ``bm25()`` derives each phrase's
 ``idf`` from ``nHit``, the number of rows in the index matching that phrase, so a
@@ -116,14 +119,18 @@ two into "collection statistics": one answers questions and the other only
 shuffles, and a reader who is told the harmless-sounding half is the whole thing
 concludes that a withheld document sharing no vocabulary is safe. It is not.
 
-**Both channels are pinned by tests that assert the leak is present**, so
-whoever closes the stale window meets a red suite rather than a section gone
-quietly wrong: ``test_a_withheld_document_can_still_reorder_the_visible_ones``
+**Both channels are pinned by tests that assert the leak is present on a
+manufactured stale index**: ``test_a_withheld_document_can_still_reorder_the_visible_ones``
 (content) and
 ``test_a_withheld_document_sharing_no_vocabulary_still_reorders_the_visible_ones``
 (order), both in ``tests/integration/test_retrieval_service.py``. Both go red
 with ``bm25()`` replaced by a constant, the only mutation available: the channels
-are SQLite's arithmetic, so what a test can hold is that the retrievers ask.
+are SQLite's arithmetic, so what a test can hold is that the retrievers ask. They
+build the stale index directly rather than through ``migrate apply``, so they
+stay *green* now that the trigger below closes the window — the trigger removes
+the withheld rows before a build is published rather than changing how FTS5
+scores, so it meets no red assertion here. They pin the property the trigger
+defends against, not a leak the shipped product still carries.
 
 Their reach, measured rather than reasoned about:
 
@@ -138,16 +145,23 @@ Their reach, measured rather than reasoned about:
   ``per_item=1`` rather than offering it, so a reordering inside one retriever
   decides which chunk of a document is published, on every call.
 
-Left open deliberately, and the acceptance was re-taken in review round five once
-the order channel was measured: what changed is the justification and the set of
-values that move, not what an attacker can read. The gate closes neither channel.
-The numbers that move are computed inside SQLite from rows the query never
-returns, so there is nothing for a :class:`Visibility` to intercept. What closes
-them is removing the stale window — an index that no longer holds withdrawn
-documents skews no statistic — and that means the read path writing to the
-derived index, which is the wrong order of work before Milestone 6 settles
-blue/green builds. Tracked as issue #15, and as T-17a in the threat model, which
-carries the measurements and the terms of the acceptance.
+The gate closes neither channel: the numbers that move are computed inside SQLite
+from rows the query never returns, so there is nothing for a :class:`Visibility`
+to intercept. What closes them is removing the stale window — an index that no
+longer holds withdrawn documents skews no statistic. Issue #15 does exactly that,
+and on the *write* path rather than the read path first proposed and rejected:
+``theurian migrate apply`` now derives and publishes a build with the withdrawn
+revisions removed, synchronously in the same command, the moment a withdrawal
+lands (:func:`theurian.application.withdrawal_purge.publish_purge_for_withdrawal`,
+wiring ADR-0024 decision 5). So after a withdrawal the published index holds no
+row either channel could score, and the equality holds over the whole response —
+for the **status** axis, the only one ``may_surface`` and these two channels
+read; the deferred sensitivity, tenant and ACL axes are issue #119. Two residuals
+remain, both content-independent: a request in flight at the pointer swap
+finishes against the pre-purge build, and a purge that fails leaves the stale
+build serving until a rebuild — reported through the apply's ``indexPurge``, not
+silently. T-17a in the threat model carries the closure, the measurements and the
+residuals.
 
 Both take their collaborators by injection. The ranking they depend on lives in
 :mod:`theurian.domain.ranking` and never touches a database, so the interesting
@@ -487,10 +501,13 @@ class RetrievalService:
         different one. What it is not is a closure, and the term it leaves is
         bounded by nothing on the scan branch: 3,000 visible rows and 5,999
         withheld stay at one pass while canonical reads go 3,000 to 8,999, about
-        +90 ms against the 0.64 s a healthy scan costs. T-17 in the threat model
-        carries the argument, the five conditions that would falsify it, and why
-        this goes away with the index purge (issue #15) rather than with a change
-        here.
+        +90 ms against the 0.64 s a healthy scan costs. That term is bounded by how
+        many withheld rows the published index holds, which the withdrawal→purge
+        trigger (issue #15) now drives to zero the moment a withdrawal lands: after
+        a shipped withdrawal a search reads canonical only for the rows it may
+        return, so this residual survives only for a request in flight at the
+        purge's pointer swap. T-17 in the threat model carries the argument and the
+        five conditions that would falsify it.
 
         The alternative to the loop entirely, asking the canonical store up front
         which revisions are surfaceable, cost 32 ms on every query including
