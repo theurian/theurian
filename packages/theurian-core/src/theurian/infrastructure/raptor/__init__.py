@@ -13,8 +13,8 @@ no builder, no node tables, no traversal, no ``summary_prompt_hash`` column in
 ``index_schema.py``, and no ``SummarizationProvider`` implementation to
 summarise with. "Structurally impossible" is the kind of claim that is read
 once and relied on afterwards, so it says "would" here until something
-enforces it; ADR-0008's Compliance section carried the same reading and now
-lists three tests as owed.
+enforces it; ADR-0008's Compliance section carried the same reading and still
+lists four tests as owed, the first of them half-discharged.
 
 The scope tuple itself is real and tested, and so is tree identity: ``Scope``,
 ``TenantId``, ``AclGroup`` and ``Sensitivity`` are domain values,

@@ -107,21 +107,17 @@ def test_scope_key_components_cannot_collide_by_concatenation() -> None:
     """Refusing the separator is what makes this collision impossible, not
     merely untested.
 
-    Before any component rejected ``\\x1f``, this exact pair rendered
-    identical keys: ``acl_group="a"`` + ``namespace="b\\x1fc"`` and
-    ``acl_group="a\\x1fb"`` + ``namespace="c"`` both produced
+    Before component construction rejected control characters, this exact
+    pair rendered identical keys: ``acl_group="a"`` + ``namespace="b\\x1fc"``
+    and ``acl_group="a\\x1fb"`` + ``namespace="c"`` both produced
     ``backend-service\\x1flocal\\x1finternal\\x1fa\\x1fb\\x1fc\\x1fapproved``
     (measured -- ``Scope.key``'s docstring claims the separator "cannot occur
     in any component", and this pair, built with the real separator rather
     than a stand-in like ``|``, was the counterexample). Comparing ``.key``
-    after construction is no longer the right shape for this test once the
-    components themselves refuse the separator: construction never reaches
-    ``.key`` to compare. What makes the collision impossible is that BUILDING
-    either half of this exact pair is refused, so that is what this test
-    asserts. RED today: no component rejects the separator yet, so neither
-    construction raises and the first ``pytest.raises`` block fails with "did
-    not raise". Green once the rejection tests above are satisfied by the
-    source.
+    after construction is not the right shape for this test: construction
+    itself now refuses BUILDING either half of this exact pair, which is what
+    makes the collision impossible rather than merely untested, so that is
+    what this test asserts.
     """
     with pytest.raises(DomainError, match="control"):
         _scope(acl_group=AclGroup("a"), namespace="b\x1fc")

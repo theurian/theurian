@@ -2,28 +2,24 @@
 
 This is the item ADR-0008's Compliance section names as owed: "constructing a
 node from children with differing scope tuples must raise, and the tree-id
-function must be total over the tuple." A structural guarantee with no test is
-a policy check with no policy -- this file is what turns "would have no tree
-to belong to" from an argument in the ADR's prose into something a broken
-build fails on.
-
-RED as of Milestone 6 CL2: ``theurian.domain.raptor`` does not exist yet
-(``infrastructure/raptor/`` has a module docstring and no code, and the domain
-layer has no node type at all). Every test below fails at collection with
-``ModuleNotFoundError`` until the module lands. The surface asserted against --
-a frozen ``SummaryNode`` taking a ``scope`` and a non-empty tuple of children's
-``scope``s, refusing construction with a plain ``DomainError`` when a child's
-scope disagrees with the node's own -- is proposed, not accepted. An
-implementation CL may rename ``SummaryNode`` or introduce a dedicated error
-type, but only together with these tests and a note explaining the rename.
+function must be total over the tuple." Both halves are discharged here.
+``SummaryNode.__post_init__`` refuses construction -- raising
+``InvariantViolationError``, the house type for construction invariants and a
+``DomainError`` subclass, so ``pytest.raises(DomainError, ...)`` below catches
+it without naming the concrete type -- the moment a child's six-component
+``Scope`` disagrees with the node's own. ``SummaryNode.tree_id`` returns
+``scope.digest``, total over the tuple because ``Scope.digest`` is. What
+ADR-0008's Compliance section still lists as owed beyond this item --
+the node table, builder and traversal in ``infrastructure/raptor/`` -- remains
+unbuilt and is out of scope for this file.
 
 Six components, not five: the Milestone 6 amendment to ADR-0008 decision 1 adds
 ``status`` to tree identity, because an ``index build --include-unapproved``
 run can otherwise mix a ``draft`` and an ``approved`` child into one summary
 node with no tree boundary to stop it. The exhaustive 64-combination proof
-that the tuple discriminates lives in ``test_scope_isolation.py``; this file is
-the boundary where that guarantee is supposed to be *enforced* at node
-construction, not merely provable of the tuple in isolation.
+that the tuple discriminates lives in ``test_scope_isolation.py``, not here;
+this file is the boundary where that guarantee is *enforced* at node
+construction, restated at the node rather than at the bare tuple.
 """
 
 from __future__ import annotations
