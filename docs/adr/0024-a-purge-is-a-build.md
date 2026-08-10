@@ -261,19 +261,19 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    the query raises `no such table: chunks_fts`, and a file exists at that path
    again afterwards.
 
-   Index connections are therefore **to be** opened `file:<path>?mode=ro` with
-   `uri=True`. Measured: the default `sqlite3.connect` creates a database at a
-   missing path; `mode=ro` raises `unable to open database file` and creates
+   Index connections are therefore opened `file:<path>?mode=ro` with `uri=True`
+   (`_open_read`). Measured: the default `sqlite3.connect` creates a database at
+   a missing path; `mode=ro` raises `unable to open database file` and creates
    nothing. That is what turns "the pointer outlived its file" back into the
    fallback ADR-0022 promised, instead of an empty index that reports itself
-   healthy.
+   healthy. The path is escaped into the URI rather than interpolated, because a
+   filename containing `?` would otherwise be read as a query parameter and
+   override the mode.
 
-   **Not yet implemented.** `infrastructure/sqlite/index_store.py:236` is still
-   `sqlite3.connect(path)`, and every other decision in this ADR is likewise a
-   decision rather than a description — see Compliance, which says so of the
-   whole section. Called out here as well because this is the one point stated
-   as a property of the code rather than as a rule for it, and a reader who
-   stops at the paragraph above would take it for shipped behaviour.
+   **Landed.** The whole read surface goes through `_open_read`, pinned by
+   `test_a_read_of_a_missing_index_creates_no_file` over every read method. The
+   pragmas it runs rest on index files being WAL, which
+   `test_a_built_index_is_always_in_wal_mode` pins.
 
 8. **Withdrawal is transitive over derived content.** A node whose text is
    *derived* from a chunk — a RAPTOR summary (ADR-0008) is the case this project
@@ -412,58 +412,66 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
 
 ## Compliance
 
-**Nothing below is landed. This ADR precedes its implementation deliberately —
-the decision is cheaper to get wrong on paper — and the section says so rather
-than listing tests that do not exist.** Each item names what must go RED when the
-decision is violated.
+**This ADR preceded its implementation, and most of it has now landed.** The
+Compliance section was written before any code, deliberately — the decision is
+cheaper to get wrong on paper — and it listed what must go RED when each decision
+is violated rather than tests that did not exist. Those tests now exist, across
+[#113](https://github.com/theurian/theurian/pull/113); each item below names the
+one that holds it.
 
-**Tracked as [#103](https://github.com/theurian/theurian/issues/103), as one
-issue rather than eight.** They are not independent debts that could land
-separately; they are the acceptance criteria of a single change — the step-3
-purge and blue/green publish — and filing them apart would assert that a purge
-could ship having satisfied some and not others. The one genuinely separable
-item, ADR-0018's single-writer interface for the index, is named as such there.
+**One decision is *not* wired: decision 5, the automatic withdrawal→purge
+trigger.** `IndexStore.derive_purged` is the mechanism, and it has no caller
+outside tests — nothing yet fires a purge when a revision is retired, superseded
+or rejected. That is the next slice, tracked as
+[#15](https://github.com/theurian/theurian/issues/15); #113 *advances* #15 by
+landing the mechanism and the schema, and does not close it. Everything below is
+the mechanism's own acceptance, which #113 discharges;
+[#103](https://github.com/theurian/theurian/issues/103) tracked these eight as
+one class, and all eight are green.
 
-Owed by the change that implements this ADR:
+Landed by the change that implements this ADR:
 
-- **The equality, as one query against two corpora.** An index built from a
-  corpus including the withdrawn documents and then purged, and an index built
-  from a corpus that never held them, must return byte-identical rankings —
-  chunk ids and scores — for both `search_lexical` and `search_substring`. With
-  a `stale`-index control in the same test that must be **different**, or the
-  assertion is vacuous. The withdrawn documents must be long relative to the
-  corpus mean, or the fixture exercises `nHit` and not `avgdl`.
-- **A purge does not tear a request.** A purge fired between two retrievers of
-  one `RetrievalService.search` must be impossible to construct against the
-  shipped composition root, because the file the request holds is not the file
-  the purge writes. The test is the wrapper above, asserting that the answer
-  equals the pre-purge corpus's exactly.
-- **Publishing does not delete.** After a purge, the previous build's file must
-  still exist and still be searchable.
-- **A search survives `gc`.** A held store must keep answering after its file is
-  unlinked, and a new store at that path must report `is_searchable() is False`
-  and leave no file behind.
-- **`sqlite3.connect` is not reachable for an index path without `mode=ro`.** The
-  measured failure is that it creates an empty database; a test that deletes an
-  index and asserts the fallback reason is what pins it.
-- **Derived nodes.** Once a summary node exists, purging a chunk it was derived
-  from must delete or recompute it. Until then, the schema's derivation table and
-  the purge's traversal are what carry point 8, and a test that inserts a
-  synthetic derived node is what stops the traversal from being written and never
-  run.
-- **A purged build holds no orphaned row of any kind.** `embeddings` is removed
-  by `ON DELETE CASCADE`, which SQLite enforces **per connection**, not per
-  database: `PRAGMA foreign_keys` defaults to *off*, and a purge that opens its
-  own connection without `CONNECTION_PRAGMAS` deletes the chunk and leaves the
-  vector. The failure is silent and one-directional — the dense retriever joins
-  `embeddings` to `chunks`, so an orphaned vector returns nothing rather than
-  returning a withdrawn row — which is why it needs a test rather than a review:
-  count `embeddings` after a purge and assert it fell by the same number as
-  `chunks`. The same test covers the FTS5 tables, whose removal rides on triggers
-  and needs no pragma.
-- **A purged build's `index_metadata` names itself.** Per decision 2: assert
-  `index_build_id` in the new file equals the id the pointer publishes, not the
-  parent's.
+- **The equality, as one query against two corpora** — landed:
+  `test_a_purged_build_answers_as_if_the_rows_were_never_indexed`, three queries
+  with a `stale`-index control asserted different in the same test, and the
+  withdrawn documents ten times the corpus mean so `avgdl` moves. An index built
+  from a corpus including the withdrawn documents and then purged returns
+  byte-identical rankings — chunk ids and scores — to one that never held them,
+  for both `search_lexical` and `search_substring`.
+- **A search does not tear on a `gc` unlink between its reads** — landed:
+  `test_a_gc_unlink_between_a_requests_reads_does_not_tear_it` drives the real
+  MCP path and forces the unlink between two of the request's index reads;
+  `hybrid_answer` holds one connection for the request (`SqliteIndexStore.session`)
+  so the held descriptor keeps the build readable. Mutating the session to a
+  no-op makes the request fall back.
+- **Publishing does not delete** — landed:
+  `test_publishing_a_build_no_longer_reclaims_the_one_it_replaced` and the
+  end-to-end CLI run; two builds in a row leave two files.
+- **A search survives `gc`** — landed:
+  `test_a_request_inside_a_session_finishes_against_the_build_it_started_on`
+  answers 4 of 4 reads after the unlink against 1 of 4 without, and the reaped
+  path stays reaped.
+- **No read of an index path uses a bare `sqlite3.connect`** — landed:
+  `test_a_read_of_a_missing_index_creates_no_file`, parametrised over the whole
+  read surface, asserts each read of a missing file raises rather than creating
+  one. A read method added later that forgets `_open_read` is a missing entry in
+  that list.
+- **Derived nodes** — landed: five tests over synthetic derived rows —
+  direct, a three-level chain, mixed provenance, an unprovenanced node and its
+  children, and a control that an ordinary row is never treated as derived.
+  Nothing writes `derived = 1` yet (RAPTOR is empty), which is exactly why the
+  traversal is pinned now.
+- **A purged build holds no orphaned row** — landed:
+  `test_a_purged_build_holds_no_embedding_of_a_withdrawn_chunk`, plus a third
+  post-condition inside `_verify` that refuses to publish a build with an
+  orphaned embedding. `ON DELETE CASCADE` is enforced per *connection* and
+  `PRAGMA foreign_keys` defaults off, so a purge opening its own connection
+  without `CONNECTION_PRAGMAS` would delete the chunk and keep the vector — a
+  silent, one-directional failure a review does not catch.
+- **A purged build's `index_metadata` names itself** — landed:
+  `test_a_purged_build_names_itself_in_its_own_metadata`, which also asserts the
+  source build is not restamped. `Connection.backup` copies pages, so without the
+  restamp the copy would carry the parent's id.
 
 Owed to ADR-0018, and satisfied by point 4 rather than by this ADR's own tests:
 its "the derived index has no single-writer contract at all" is discharged for

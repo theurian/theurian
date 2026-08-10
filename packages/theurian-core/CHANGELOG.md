@@ -267,12 +267,19 @@ error is the one reading the release notes to decide whether to upgrade.
 
 #### Added
 
-- **A purge produces a new index build** (`IndexStore.derive_purged`, ADR-0024).
-  On withdrawal, the published build is copied with
-  `sqlite3.Connection.backup`, the withdrawn revisions are deleted from the
-  copy, `index_metadata` is restamped for the new build, the result is verified,
-  and only then is it fit to publish. The published file is never written to, so
-  a search reading it is unaffected.
+- **An API to purge a build: `IndexStore.derive_purged`** (ADR-0024). Given a
+  published build and a set of withdrawn revisions, it copies the build with
+  `sqlite3.Connection.backup`, deletes those revisions from the copy, restamps
+  `index_metadata` for the new build, verifies the result, and produces a new
+  file fit to publish. The published file is never written to, so a search
+  reading it is unaffected.
+
+  **Not yet wired to withdrawal.** The automatic trigger — a purge fired whenever
+  a revision is retired, superseded or rejected — is ADR-0024 decision 5, and it
+  has no caller in this release: `derive_purged` is invoked by tests only. It is
+  the next slice and closes [#15](https://github.com/theurian/theurian/issues/15);
+  this release *advances* #15 by landing the mechanism and the schema the trigger
+  will use.
 
   Measured on a real 400-document index with embeddings: 2,732 chunks to 1,229,
   1,503 rows removed in 847 ms, and the purged build answers **identically** to
@@ -292,6 +299,33 @@ error is the one reading the release notes to decide whether to upgrade.
   provenance and the purge walks it transitively, so a summary, a summary of that
   summary, and a node with mixed provenance all go with the withdrawal. A derived
   row whose provenance cannot be resolved is deleted rather than kept.
+
+- **`theurian index gc` reclaims superseded index builds.** Named by ADR-0007,
+  ADR-0016 and ADR-0017 since Milestone 1 and never implemented until now. It
+  deletes builds the published pointer does not name, and refuses to touch four
+  things: the published build, any build whose id sorts above it (a build that
+  has not published yet), anything under a `.building` suffix (a writer still in
+  progress, or a crash's leftovers, which it reports as `strandedBuilding`), and
+  everything, when the pointer cannot be read. `--dry-run` reports the plan
+  without deleting.
+
+#### Changed
+
+- **Publishing an index build no longer reclaims the build it replaced**
+  (ADR-0024 point 6). The old file stays on disk until `theurian index gc` runs.
+  Reaping at publish is what made ADR-0022's "the previous build is not deleted"
+  false, and measured against a concurrent reader it cost 2,627 errors against 40
+  answered searches in 1.5 seconds. Builds now accumulate — ten publishes leave
+  ten files — which is the cost that makes `index gc` load-bearing rather than a
+  tidy-up.
+
+- **A search holds one read connection for the whole request** (ADR-0024 point
+  7), and index files are opened `mode=ro`. Together these let a request survive
+  a `theurian index gc` that unlinks its build mid-request: the held descriptor
+  keeps the file readable on POSIX, and `mode=ro` stops a read of a reaped path
+  from conjuring an empty database where the build was. Measured, one request of
+  four index reads with the unlink after the first: 4 of 4 answered with the
+  session held, against 1 of 4 without.
 
 #### Changed — BREAKING
 
