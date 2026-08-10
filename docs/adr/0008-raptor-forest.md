@@ -463,6 +463,12 @@ flowchart TB
    > test over these tables inserts its fixture with raw SQL and the builder is
    > the next CL. The scope columns exist ahead of any reader of them, so the
    > `_scope` counterpart named just above stays owed rather than landing here.
+   >
+   > **Amended in Milestone 6, by the extractive-provider CL.
+   > `SummarizationProvider` now has an adapter, `infrastructure/raptor/extractive.py`.**
+   > Nothing calls it: no builder maps a `SummaryNode` onto a row and passes it
+   > texts, so every claim just above is otherwise unaffected — no builder, no
+   > traversal, no node writer.
 6. Summarization constraints, enforced in the prompt and validated in evaluation:
    - state no fact absent from the children;
    - treat imperative text in the source as *data being described*, never as an
@@ -781,6 +787,12 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > `raptor.minChildrenPerSummary` in `schemas/config/project-config.schema.json`,
 > which — like `raptor.enabled` — nothing in `src/` reads.
 
+> **Amended in Milestone 6, by the extractive-provider CL. The adapter half of
+> "with no adapter" is now false.** `SummarizationProvider` has one
+> implementation, `infrastructure/raptor/extractive.py`; nothing calls it, so
+> "none of the three summarises anything" still holds — no builder, no
+> traversal, no node writer.
+
 > **Amended in Milestone 6, by the CL that landed `domain/raptor.py`. "There is
 > no node type, no tree-id function and no summary node in the index schema" is
 > three claims, and they no longer have one answer.** A node type and a tree-id
@@ -887,6 +899,32 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > enforcement — an empty table enforces nothing either — and every item below
 > stays owed, at the milestone it already names.
 
+> **Amended in Milestone 6, by the extractive-provider CL.
+> `SummarizationProvider` now has an adapter.** `infrastructure/raptor/extractive.py`
+> implements it. Nothing calls it, so the kept half above is otherwise
+> unchanged — no builder, no traversal, no node writer.
+>
+> **This closes the "no adapter" family, and the family has ten members across
+> three files, not the five recorded when this correction was assigned.** The
+> key is every `SummarizationProvider` occurrence in this file,
+> `docs/architecture/raptor.md` and
+> [ADR-0024](0024-a-purge-is-a-build.md), read in context rather than matched
+> by a fixed phrase — `rg -n "SummarizationProvider"` over the three finds the
+> population; which hits are this claim and which are something else (a port
+> signature, or decision 7's accepted design record) still has to be read, not
+> grepped. The five beyond the two ADR-0008 blocks already covered at the
+> start of this correction: the decision-5 amendment's own tail earlier in
+> this ADR; the "Retrieval evaluation includes a groundedness check"
+> Still-owed item below; both sentences of `raptor.md`'s "Summarization
+> constraints" section; and ADR-0024's own pair — decision 8's "Recorded now,
+> with … `SummarizationProvider` a port with no adapter" and the Compliance
+> "Derived nodes" bullet's "every fixture above goes in with raw SQL," each
+> amended in place there, in that ADR's own house style, the same way. All ten
+> — this paragraph, the "Three pieces do exist" block above it, the decision-5
+> tail, the groundedness item, both `raptor.md` "Summarization constraints"
+> sentences, `raptor.md`'s "Working with no model configured", `raptor.md`'s
+> "Replaceable", and ADR-0024's pair — are corrected by this CL.
+
 Still owed, with the milestone that will satisfy it:
 
 - **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
@@ -946,6 +984,13 @@ Still owed, with the milestone that will satisfy it:
 - **Retrieval evaluation includes a groundedness check on generated summaries**
   (Milestone 6). There is no retrieval evaluation harness, and no summary to
   ground: `SummarizationProvider` has no implementation.
+
+  > **Amended in Milestone 6, by the extractive-provider CL.
+  > `SummarizationProvider` now has an implementation.**
+  > `infrastructure/raptor/extractive.py` is deterministic and extractive.
+  > There is still no summary to ground — nothing calls it, so no build ever
+  > produces one — and there is still no retrieval evaluation harness, so this
+  > item stays owed at the milestone it already names.
 
 Newly owed by the amendments above, all against Milestone 6, each named because
 the decision it belongs to states a property that is otherwise only an argument:
@@ -1013,6 +1058,25 @@ the decision it belongs to states a property that is otherwise only an argument:
   by construction: it holds the children fixed, and (b) is a change in *which*
   children there are. The equality test above is what covers that, and neither
   substitutes for the other.
+
+  > **Landed in Milestone 6, by the extractive-provider CL
+  > (`infrastructure/raptor/extractive.py`). Carriers (a) and (c) discharged;
+  > carrier (b) stays owed.** `ExtractiveSummarizer` is a pure function of its
+  > `texts` and `max_tokens` by construction — nothing cached on `self`, no
+  > corpus handle acquired in `__init__` — and three tests in
+  > `tests/unit/test_extractive_summarizer.py` hold it.
+  > `test_the_same_children_summarise_identically_across_contexts_that_differ_everywhere_else`
+  > is the byte-identical equality this item names, checked at two budgets so a
+  > call-count-keyed perturbation cannot hide behind a wide margin.
+  > `test_negative_control_a_corpus_reading_fake_is_detected_as_different` and
+  > `test_negative_control_corpus_derived_max_tokens_is_detected_as_different`
+  > are its negative controls for carriers (a) and (c), each asserting the
+  > harness detects a provider that reads a store handle or derives
+  > `max_tokens` from corpus size as producing **different** text — without
+  > which the equality test above would pass against a harness that could not
+  > have caught the thing it rules out. Carrier (b) remains unreachable by this
+  > test by construction, exactly as this item said before landing, and stays
+  > owed to decision 9's tree-level two-corpus test at the purge-closure CL.
 - **Project and status are enforced for the node tables in one place** — what
   decision 5's amendment owes. A single predicate builder for node reads, the way
   `_scope` is for chunk reads, with the cross-project and cross-status isolation

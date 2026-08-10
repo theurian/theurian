@@ -406,6 +406,13 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > cannot catch that function being wrong, and what publishes a build is a
    > pointer swap with no later stage that looks. Nothing writes a node row yet,
    > so all of this is still pinned over rows inserted with raw SQL.
+   >
+   > **Amended in Milestone 6, by the extractive-provider CL. This point's
+   > opening sentence is the one that changes.** `SummarizationProvider` now has
+   > an adapter, `infrastructure/raptor/extractive.py`. Nothing calls it — no
+   > builder maps a `SummaryNode` onto a row — so this point's three rules and
+   > the raw-SQL-fixture state they were recorded against are otherwise
+   > unaffected.
 
 ## Consequences
 
@@ -628,6 +635,13 @@ Landed by the change that implements this ADR:
   `SummarizationProvider` a port with no adapter, so every fixture above goes in
   with raw SQL. That is still exactly why the traversal is pinned now, and it
   stays pinned that way until the builder CL (Milestone 6).
+
+  **Amended in Milestone 6, by the extractive-provider CL: the second half of
+  that sentence is false now too.** `infrastructure/raptor/extractive.py` is
+  `SummarizationProvider`'s first adapter. Nothing calls it — no builder maps a
+  `SummaryNode` onto a row — so "every fixture above goes in with raw SQL"
+  still holds, for the reason the corrected first half already gives: nothing
+  writes a node row.
 - **A purged build holds no orphaned row** — landed:
   `test_a_purged_build_holds_no_embedding_of_a_withdrawn_chunk`, plus a third
   post-condition inside `_verify` that refuses to publish a build with an

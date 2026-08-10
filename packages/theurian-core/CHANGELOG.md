@@ -39,6 +39,77 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for more, so a pinned moment cannot change how many times a request reads a
   retriever.
 
+- **`ExtractiveSummarizer` lands as the first `SummarizationProvider` adapter,
+  and the port's default** (ADR-0008 decision 6's Milestone 6 amendment and 7,
+  `infrastructure/raptor/extractive.py`). It splits each child text on Latin
+  `.!?` and the CJK ideographic full stop, exclamation and question mark
+  terminators, scores each sentence by the summed frequency of its lower-cased
+  character trigrams across the call's own sentences, and greedily adds
+  sentences in descending score order — ties broken by document position,
+  skipping a sentence that does not fit the *remaining* budget rather than
+  stopping at the first one that does not, so a cheap well-scored sentence
+  after a pricier one is never lost to it. Selected sentences are re-ordered to
+  document position before being joined, so a caller reads a summary top to
+  bottom regardless of the score order that chose it.
+
+  **Pure by construction, per decision 6's amended constraint**: "a summariser
+  is a pure function of its own children's texts, its scope tuple, and a
+  configuration-derived `max_tokens`. No corpus-wide statistic may enter ...
+  and `max_tokens` must never be a corpus-derived quantity." `summarize`
+  computes the split, the trigram frequencies and the selection fresh from the
+  `texts` and `max_tokens` of the one call in progress; nothing is cached on
+  `self` between calls, no corpus handle is acquired in `__init__`, and `scope`
+  is accepted only because the port's shape requires it of every
+  implementation, unread by this one. This discharges carriers (a) and (c) of
+  the three-carrier class decision 6 names, in ADR-0008's Compliance section:
+  `test_the_same_children_summarise_identically_across_contexts_that_differ_everywhere_else`
+  is the owed two-budget equality test for carrier (a) — the summariser's text
+  inputs — and `test_negative_control_a_corpus_reading_fake_is_detected_as_different`
+  and `test_negative_control_corpus_derived_max_tokens_is_detected_as_different`
+  are its negative controls for carriers (a) and (c) respectively, demonstrating
+  the harness can tell a corpus-reading provider and a corpus-derived budget
+  apart from this one. Carrier (b) — which children cluster into a node — stays
+  owed to decision 9's tree-level two-corpus test, unreachable here because this
+  test holds the child set fixed by construction.
+
+  **Fallback**: when no whole sentence fits `max_tokens`, the output is the
+  longest character prefix of the first sentence (by document position) whose
+  cost still fits — never silence, and never anything but a verbatim prefix.
+  `estimate_tokens` is non-decreasing in text length, so the longest fitting
+  prefix is well defined and a binary search finds it.
+
+  **`prompt_hash` is pinned to a versioned algorithm-description constant**,
+  not merely asserted to be some stable string:
+  `test_prompt_hash_is_pinned_to_the_versioned_algorithm_description` checks it
+  equals `ContentHash.of_text(ALGORITHM_DESCRIPTION).value`. Decision 5's
+  staleness rule — "a summary whose model or prompt hash differs from the
+  current configuration is stale by definition and rebuilt" — depends on
+  `prompt_hash` actually moving when selection semantics change; a change to
+  the algorithm that forgot to bump `ALGORITHM_DESCRIPTION`'s trailing version
+  would leave every stored node's staleness check unable to see it, and this
+  test is what turns that omission into a failing assertion instead of a
+  silent gap.
+
+  **Determinism** is pinned in-process against fresh string objects and
+  against unrelated calls on the same instance, and verified additionally
+  across two independent `uv run python` processes — `PYTHONHASHSEED` differs
+  between processes by default and is not testable within one — against the
+  suite's own Japanese and mixed-script fixtures across a spread of budgets:
+  byte-identical output and an identical SHA-256 digest over every
+  (budget, output) pair in both runs.
+
+  **Nothing calls it yet.** `infrastructure/raptor/` still has no builder and
+  no traversal, so this lands with no consumer; wiring it into a build is the
+  next CL. This discharges the present-tense claim in
+  `domain/ports/summarization.py`'s docstring — "The default is extractive" —
+  which described no adapter until now and needs no wording change to read
+  correctly as of this commit; flagged as exactly that gap in
+  [#141](https://github.com/theurian/theurian/pull/141)'s review round.
+  `infrastructure/raptor/__init__.py`'s own docstring is updated in the same
+  diff to say the package now holds a `SummarizationProvider` implementation —
+  the builder and traversal absences it also names stay open, since neither
+  exists yet.
+
 ### Changed
 
 - **`Scope` gains `status: KnowledgeStatus` as a required sixth component of
