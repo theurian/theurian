@@ -23,13 +23,19 @@ def test_an_unanticipated_exception_from_verdict_mode_exits_two_not_one(
     """A non-``HarnessError`` reaching ``main`` must still exit 2.
 
     Replaces ``_verdict_mode`` with something that raises a plain
-    ``ValueError`` -- unrelated to any of the exception types this PR
-    already converts to ``HarnessError`` upstream -- to prove the *last
-    resort* net catches it too, not just the two known causes.
+    ``TypeError`` -- unrelated to any of the exception types this PR already
+    converts to ``HarnessError`` upstream -- to prove the *last resort* net
+    catches it too, not just the two known causes.
+
+    Deliberately not ``ValueError``: narrowing ``except Exception`` to
+    ``except ValueError`` would still catch a ``ValueError`` here and this
+    test would stay green, silently reopening HIGH-2 for every other
+    exception type. ``TypeError`` (or a bare ``Exception``) is what actually
+    exercises the *unnarrowed* net.
     """
 
     def _boom(args: object, options: object) -> int:
-        raise ValueError("an exception the harness did not anticipate")
+        raise TypeError("an exception the harness did not anticipate")
 
     monkeypatch.setattr(mutate, "_verdict_mode", _boom)
 
