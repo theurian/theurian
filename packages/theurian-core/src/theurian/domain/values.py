@@ -22,6 +22,29 @@ MAX_SCOPE_COMPONENT_LENGTH: Final = 128
 #: Upper bound for a dotted namespace, matching the identifier limit.
 MAX_NAMESPACE_LENGTH: Final = 200
 
+#: C0 controls (0x00-0x1f) plus DEL (0x7f). ``Scope.key`` (below) joins its six
+#: components with ``\x1f``; a component that can itself carry that byte lets
+#: two DISTINCT scopes render the same key -- a scope with
+#: ``acl_group="a\x1fb"``, ``namespace="c"`` collides with one with
+#: ``acl_group="a"``, ``namespace="b\x1fc"`` (the collision reviewers
+#: demonstrated). Rejecting the whole control range, not just ``\x1f``, keeps
+#: the rule statable as one sentence rather than an allowlist that the next
+#: delimiter change would have to remember to extend.
+_CONTROL_CHAR_PATTERN: Final = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _reject_control_characters(value: str, *, label: str) -> None:
+    """Raise if ``value`` carries a C0 control character or DEL.
+
+    Shared by every ``Scope`` component that is free-form text: ``AclGroup``,
+    ``TenantId`` and ``Scope.namespace``. ``project_id`` needs no separate
+    check here -- ``ProjectId`` already restricts to a kebab-case slug -- and
+    ``sensitivity``/``status`` are enums, so neither can carry an arbitrary
+    byte.
+    """
+    if _CONTROL_CHAR_PATTERN.search(value):
+        raise DomainError(f"{label} must not contain control characters, got {value!r}")
+
 
 @dataclass(frozen=True, slots=True)
 class ContentHash:
@@ -158,6 +181,7 @@ class AclGroup:
                 f"AclGroup must be 1..{MAX_SCOPE_COMPONENT_LENGTH} characters, "
                 f"got {len(self.value)}"
             )
+        _reject_control_characters(self.value, label="AclGroup")
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +196,7 @@ class TenantId:
                 f"TenantId must be 1..{MAX_SCOPE_COMPONENT_LENGTH} characters, "
                 f"got {len(self.value)}"
             )
+        _reject_control_characters(self.value, label="TenantId")
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,13 +227,16 @@ class Scope:
                 f"namespace must be at most {MAX_NAMESPACE_LENGTH} characters, "
                 f"got {len(self.namespace)}"
             )
+        _reject_control_characters(self.namespace, label="namespace")
 
     @property
     def key(self) -> str:
         """A stable, collision-free textual key.
 
-        Components are separated by ``\\x1f`` (unit separator), which cannot occur
-        in any component, so ``a|b`` and ``a`` + ``|b`` cannot collide.
+        Components are separated by ``\\x1f`` (unit separator). The separator
+        cannot occur in any component because the components' own validation
+        rejects control characters, so ``a|b`` and ``a`` + ``|b`` cannot
+        collide.
         """
         return "\x1f".join(
             (

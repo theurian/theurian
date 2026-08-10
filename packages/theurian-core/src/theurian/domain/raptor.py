@@ -10,12 +10,28 @@ is where that refusal lives.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from typing import final
 
-from theurian.domain.errors import DomainError
-from theurian.domain.values import Scope
+from theurian.domain.errors import InvariantViolationError
+from theurian.domain.values import ContentHash, Scope
 
 
+def _differing_components(node_scope: Scope, child_scope: Scope) -> tuple[str, ...]:
+    """Names of the ``Scope`` fields where ``node_scope`` and ``child_scope`` disagree.
+
+    Named rather than the child's full repr in the raised message: a component
+    name diagnoses a scope mismatch without echoing the tenant, acl_group or
+    namespace value into operator-facing output.
+    """
+    return tuple(
+        f.name
+        for f in fields(node_scope)
+        if getattr(node_scope, f.name) != getattr(child_scope, f.name)
+    )
+
+
+@final
 @dataclass(frozen=True, slots=True)
 class SummaryNode:
     """A node in a RAPTOR tree, identified by the scope its children share.
@@ -25,22 +41,43 @@ class SummaryNode:
     sensitivity, acl_group, namespace, or status -- has no tree to belong to, so
     construction refuses it rather than producing a node an isolation check would
     later have to catch.
+
+    ``@final``: a subclass overriding ``__post_init__`` could mint a node whose
+    children were never checked against its scope, which would defeat the
+    guarantee above without touching this file.
     """
 
     scope: Scope
     children: tuple[Scope, ...]
 
     def __post_init__(self) -> None:
+        # Frozen freezes the binding, not what it points at: a list handed to
+        # the constructor is not automatically this dataclass's own storage, so
+        # a caller mutating that list afterward would mutate a node it was told
+        # is immutable (measured). Normalised first, before either check below,
+        # so nothing here can observe the caller's original list.
+        object.__setattr__(self, "children", tuple(self.children))
         if not self.children:
-            raise DomainError(
+            raise InvariantViolationError(
                 "SummaryNode must have at least one child -- a node with no "
                 "children summarises nothing and has no tree to belong to"
             )
         for child_scope in self.children:
             if child_scope != self.scope:
-                raise DomainError(
-                    f"SummaryNode child scope {child_scope!r} differs from the "
-                    f"node's own scope {self.scope!r} -- a node whose children "
-                    "disagree on scope has no tree to belong to (ADR-0008 "
-                    "decision 1)"
+                differing = ", ".join(_differing_components(self.scope, child_scope))
+                raise InvariantViolationError(
+                    f"SummaryNode child scope differs from the node's own scope "
+                    f"in {differing} -- a node whose children disagree on scope "
+                    "has no tree to belong to (ADR-0008 decision 1)"
                 )
+
+    @property
+    def tree_id(self) -> ContentHash:
+        """The tree this node belongs to.
+
+        This is the tree-id function ADR-0008's owed ``test_raptor_scope.py``
+        names: total over the six-component scope tuple, because ``Scope.key``
+        joins all six and component validation keeps the encoding unambiguous
+        (``values.py``), so two distinct scopes cannot produce one ``tree_id``.
+        """
+        return self.scope.digest
