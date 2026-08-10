@@ -58,18 +58,54 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   caller constructing `Scope` directly now fails at the call site. `key` and
   `digest` join all six components, so this changes every `Scope.digest` this
   tree can compute; that costs nothing today, because nothing in `src/`
-  persists a tree id yet.
+  persists a tree id yet — `Scope.digest`'s only reader is `SummaryNode.tree_id`
+  below.
 
-- **`domain/raptor.py` adds `SummaryNode`**, the node type ADR-0008's
-  Compliance section names as owed. A frozen node refuses construction from an
-  empty child tuple, and refuses construction from any child whose scope
-  differs from the node's own in any of the six components — comparing whole
-  `Scope` values, not an enumerated field list that could omit one. This
-  discharges the `tests/unit/test_raptor_scope.py` item, the first of
-  ADR-0008's "Still owed" Compliance entries, now landed with tests that hold
-  it over the six-component tuple. `test_scope_isolation.py`'s exhaustive
-  product moves with it, from 32 combinations over five components to 64 over
-  six.
+  **BREAKING — and the separator those six components are joined with is now
+  reserved.** `Scope.key`'s docstring said the unit separator "cannot occur in
+  any component" and nothing enforced it, so two *distinct* scopes could render
+  one key and therefore share one `digest`: `acl_group="a\x1fb"` with
+  `namespace="c"` produced the same key as `acl_group="a"` with
+  `namespace="b\x1fc"`, demonstrated in review rather than reasoned about.
+  `AclGroup`, `TenantId` and `Scope.namespace` now refuse C0 control characters
+  and DEL at construction — the whole range rather than `\x1f` alone, so the
+  rule survives a change of delimiter as one sentence instead of an allowlist.
+  `ProjectId` was already a kebab-case slug and `sensitivity`/`status` are
+  enums, so no component can carry the separator now. A value that carried a
+  control character used to construct and now raises `DomainError`; nothing in
+  this tree built one.
+
+  **Affects `0.1.0.dev0` and `0.1.0.dev1`.** Code written against either release
+  that constructs `Scope` directly, or that builds an `AclGroup`, a `TenantId`
+  or a namespace containing a control character, fails at the call site after
+  upgrading. Nothing persisted needs migrating: no `Scope.digest` is written to
+  any database or state file in this tree.
+
+- **`domain/raptor.py` adds `SummaryNode`**, the value-level node type holding
+  the scope-match rule; decision 5's provenanced node type — the one carrying
+  `text`, `summary_model` and `summary_prompt_hash` — is still owed. A frozen
+  node refuses construction from an empty child tuple, and refuses construction
+  from any child whose scope differs from the node's own in any of the six
+  components — comparing whole `Scope` values, not an enumerated field list that
+  could omit one. Its `tree_id` is the scope's `digest`, which is the tree-id
+  function ADR-0008 decision 1 describes, total over all six components; the
+  class is `@final`, so a subclass overriding `__post_init__` to mint a node
+  whose children were never checked fails type-checking rather than being a
+  supported extension. `children` is normalised to a tuple as the first step of
+  `__post_init__`, because a list handed to a frozen dataclass is not its own
+  storage and a caller that kept a reference could otherwise mutate a node it was
+  told is immutable (measured). This discharges the scope-match and tree-id
+  halves of ADR-0008's `tests/unit/test_raptor_scope.py` item; the item stays
+  open, because the claim it also carries — that no node's *text* spans two
+  sensitivities — needs the node type that has text.
+  `test_scope_isolation.py`'s exhaustive product moves with the tuple, from 32
+  combinations over five components to 64 over six.
+
+- `VectorStore.search`'s `scopes` filter narrows with the tuple: one `Scope` now
+  names exactly one status, so a caller wanting both drafts and approved rows
+  passes two scopes rather than one. The port's docstring is unchanged and no
+  behaviour changes — `infrastructure/vector/` is empty and nothing implements
+  the protocol, so the narrowing lands on a contract with no adapter to break.
 
 ### Fixed
 

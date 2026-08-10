@@ -108,6 +108,32 @@ flowchart TB
    > straddles the boundary, for the same reason ACL filtering cannot unmix a
    > summary — which is this ADR's own rejected alternative.
    >
+   > **`validity` is not a seventh component, and that is decided rather than
+   > overlooked.** It is the third axis retrieval enforces — `knowledge.search`'s
+   > caller-chosen `asOf` (FR-R1, #63 phase 2) — so the argument above applies
+   > to it, and comes out the other way, for two reasons. **Cardinality**:
+   > `KnowledgeStatus` has six values, so it partitions; a validity window is a
+   > pair of timestamps compared against a moment the caller picks per query
+   > (`ValidityPeriod.contains`), so a component built from it would mint a tree
+   > per distinct window and still name no tree for a given `asOf`. It would also
+   > go stale with no edit — `valid_to` passing moves an item out of the window
+   > while its content is unchanged — so a forest keyed on it would rebuild on a
+   > clock rather than on a change. **Harm**: a node summarising an expired child
+   > alongside a valid one costs routing and recall and nothing else, because the
+   > filter runs at the leaf. `CanonicalVisibility.at_moment` drops each ranked
+   > row whose item's window does not contain the moment, after `cleared` and
+   > before anything is returned, so an expired child's text cannot reach a
+   > caller through a node that mixed it in. With `asOf` omitted the filter does
+   > not run at all, so a mixed node discloses nothing a caller could not get by
+   > omitting the parameter — `asOf` is a refinement, not a withholding.
+   >
+   > That is the same shape as the `status` argument — routing and recall, no
+   > disclosure — resolved the other way. What decides it is not the harm but the
+   > axis: `status` is a build-time property with a small finite range, recorded
+   > on a column the builder fills, and a component can partition it. `validity`
+   > is a query-time comparison against a caller's moment, and no partition of it
+   > exists to build.
+   >
    > What has to move for this. `Scope.digest` is already total over five
    > components — it is `ContentHash.of_text` of `key`, which joins exactly those
    > five with a unit separator — so what is missing is the `status` component
@@ -119,6 +145,19 @@ flowchart TB
    > how it flows. `RevisionMetadata` carries `status`, and
    > `KnowledgeItem.with_revision` adopts it (`status=revision.metadata.status`),
    > so authority runs metadata → item.
+   >
+   > That separator's unambiguity is enforced now rather than asserted:
+   > `AclGroup`, `TenantId` and `namespace` reject C0 controls and DEL at
+   > construction, so no component can carry `\x1f` (`ProjectId` is a kebab-case
+   > slug, and `sensitivity` and `status` are enums). Until that landed, `key`'s
+   > docstring claimed the property and nothing held it — `acl_group="a\x1fb"`
+   > with `namespace="c"`, and `acl_group="a"` with `namespace="b\x1fc"`,
+   > rendered one key — so the discriminator this decision rests on is now
+   > pinned by the four tests in `test_scope_isolation.py` that assert a control
+   > character is refused, plus
+   > `test_raptor_scope.py::test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`,
+   > which pins the join order and the UTF-8/SHA-256 encoding against a literal
+   > digest that no discriminability test constrains.
    >
    > **Two families of statement go stale with this, and none is corrected
    > here.** Naming them so that a later reader does not take one as
@@ -600,6 +639,51 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > `raptor.minChildrenPerSummary` in `schemas/config/project-config.schema.json`,
 > which — like `raptor.enabled` — nothing in `src/` reads.
 
+> **Amended in Milestone 6, by the CL that landed `domain/raptor.py`. "There is
+> no node type, no tree-id function and no summary node in the index schema" is
+> three claims, and they no longer have one answer.** A node type and a tree-id
+> function exist, at the domain value level only:
+> `theurian.domain.raptor.SummaryNode` is a frozen value holding a `Scope` and
+> its children's scopes, and its `tree_id` is `Scope.digest`, total over all six
+> components. The index-schema half is unchanged, and it is the larger half:
+> `infrastructure/sqlite/index_schema.py` declares no node table, no `tree_id`
+> column and no `summary_prompt_hash`, and `infrastructure/raptor/` still holds
+> a module docstring and no code — nothing in `src/` constructs a `SummaryNode`
+> or reads one back. What landed is a value type that refuses to be built
+> wrong. What is owed is everything that would build, store or traverse one
+> (Milestone 6).
+
+> **Amended in Milestone 6, same CL. "No node exists, and nothing enforces the
+> scope rule at node-construction time" is false in its second half and narrow
+> in its first.** `SummaryNode.__post_init__` raises `InvariantViolationError`
+> when any child's scope differs from the node's own, so the scope rule *is*
+> enforced at node construction — for that value type, which is the only node
+> anything in this tree can build. It is enforced nowhere else because there is
+> nowhere else: no builder calls it, no table stores it, no traversal reads it.
+>
+> The half that still holds is the one this ADR's security argument rests on:
+> the value type carries scopes, not text. It has no summary, no provenance and
+> no `node_type`, so the claim in Context that no node's *text* spans two
+> sensitivities is neither enforced nor testable yet — the thing that would
+> carry the text is decision 5's node, and that is owed (Milestone 6).
+
+> **Amended in Milestone 6, same CL. "Exhaustive over the 32 component
+> combinations of the five-component key" is 64 over six.**
+> `test_all_scope_pairs_are_distinguishable` takes two values per component over
+> six and asserts `len(scopes) == 64` before comparing digests, so the product
+> itself is pinned and not only its result.
+>
+> **The population recorded in the amendment to decision 1 missed this
+> sentence.** That list names `SECURITY.md`, `docs/architecture/raptor.md`
+> (twice), `docs/security/threat-model.md` and
+> `infrastructure/raptor/__init__.py`; re-running its own search —
+> `rg "32 (component |scope |)combinations|32 distinct|all 32"` — also hits this
+> ADR, at the line above. The count was taken over the other files and not over
+> the file it was written in, which is the failure mode a recorded population
+> exists to prevent. Corrected here, in the same CL as `SECURITY.md` and
+> `docs/security/threat-model.md`; `docs/architecture/raptor.md` still says 32
+> in two places and is reconciled whole in its own CL.
+
 Still owed, with the milestone that will satisfy it:
 
 - **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
@@ -613,10 +697,22 @@ Still owed, with the milestone that will satisfy it:
   > over now has **six** components, not five: the amendment to decision 1 adds
   > `status`. A test exhaustive over the five-component key would pass while a
   > build mixed draft and approved children into one node, which is the case that
-  > amendment exists to prevent. `test_scope_isolation.py`'s 32 combinations are
-  > the five-component count and move to 64 with it.
+  > amendment exists to prevent. `test_scope_isolation.py`'s 32 combinations
+  > were the five-component count; they are 64 now, over six, with
+  > `assert len(scopes) == 64` pinning the product rather than only the digests
+  > it produces.
   >
-  > **Amended in Milestone 6.** The file exists now and holds this.
+  > **Amended in Milestone 6. The file exists now and discharges part of this
+  > item — not the part Context points here for.** What landed is the
+  > value-level scope-match refusal and a tree-id function total over the six
+  > components. Node text, the node tables, the builder and the traversal are
+  > untouched, so Context's "the claim about node text is owed a test, not
+  > asserted: it is the `test_raptor_scope.py` item in Compliance" is **not**
+  > discharged by this: `SummaryNode` holds scopes and no text, and nothing
+  > summarises. That claim is owed with decision 5's provenanced node
+  > (Milestone 6), and this item stays open until then.
+  >
+  > What the file holds today.
   > `test_a_node_refuses_a_child_that_differs_in_one_component` is parametrised
   > over all six components (`project_id`, `tenant_id`, `sensitivity`,
   > `acl_group`, `namespace`, `status`), one differing value at a time, with one
@@ -627,13 +723,16 @@ Still owed, with the milestone that will satisfy it:
   > `test_a_node_accepts_children_that_all_share_its_scope` is the positive
   > case, ruling out a constructor that raises unconditionally and would
   > otherwise pass every refusal test above for the wrong reason.
-  > `test_tree_identity_is_total_over_the_full_scope_tuple` pins that a node's
-  > tree comes from `Scope.digest` rather than a private encoding of the tuple,
-  > and defers the exhaustive proof that no two of the six-component
-  > combinations collide to
+  > `test_tree_identity_is_total_over_the_full_scope_tuple` asserts
+  > `SummaryNode.tree_id` — not `node.scope.digest`, which is the object the
+  > test itself passed in and would stay green against a node computing tree
+  > membership from a private encoding that had dropped a component. It reads
+  > `tree_id` once per varied scope, over all six, and defers the exhaustive
+  > proof that no two of the 64 combinations collide to
   > `test_scope_isolation.py::test_all_scope_pairs_are_distinguishable` rather
   > than repeating it. Total over **six** components, per the amendment to
-  > decision 1 above.
+  > decision 1 above. In review round 1 it compared `node.scope.digest` values
+  > instead, which pinned the tuple and not the node; that gap is closed.
 - **An in-progress `index_build` is never returned by search** (Milestone 6).
   The equivalent for the chunk index is
   `tests/integration/test_index_store.py::test_building_over_an_existing_file_is_refused`;
