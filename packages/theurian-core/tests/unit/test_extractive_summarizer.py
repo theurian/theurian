@@ -32,13 +32,17 @@ from __future__ import annotations
 
 import inspect
 import re
+import subprocess
+import sys
 
 import pytest
 
+from theurian.domain import chunking
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.summarization import SummarizationProvider
-from theurian.domain.ranking import estimate_tokens
+from theurian.domain.ranking import RankingError, estimate_tokens
 from theurian.domain.values import AclGroup, ContentHash, Scope, TenantId
 from theurian.infrastructure.raptor import extractive
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
@@ -96,6 +100,25 @@ _MIXED_CHILD = (
     "署名付きトークンを持つリクエストのみ許可される。"
     "Both concepts matter here."
 )
+
+# A fixture where trigram-frequency scoring and a plausible-looking substitute
+# that scores by sentence length instead rank two sentences oppositely.
+# _SHORT_REPETITIVE is barely half _LONG_UNIQUE's length but repeats its own
+# keyword, so real cross-sentence trigram frequency ranks it above the longer,
+# almost entirely unique sentence; a length-only scorer (more raw trigrams)
+# ranks them the other way around. Real prose, not gibberish, per this
+# project's convention that an adversarial fixture should look like content
+# someone actually wrote.
+_SHORT_REPETITIVE = "Cache cache cache cache invalidation matters."
+_LONG_UNIQUE = (
+    "The distributed system replicates configuration snapshots across every region nightly."
+)
+
+# Two sentences whose trigram-frequency scores are genuinely tied, not merely
+# close: the same three characters in reversed order, so each contributes
+# every trigram the other does, in equal count.
+_TIE_FIRST = "ab cd."
+_TIE_SECOND = "cd ab."
 
 # Splits on the same terminator families the ADR spec names for the
 # implementation: Latin .!? and CJK ideographic full stop / exclamation /
@@ -166,14 +189,20 @@ def test_it_satisfies_the_summarization_provider_port() -> None:
     assert isinstance(provider, SummarizationProvider)
 
 
-def test_model_id_is_extractive() -> None:
-    """Pinned to the literal the ADR's Milestone 6 amendment and raptor.md both
-    describe the default as: "extractive". A caller reading ``model_id`` off a
-    persisted node must be able to tell this apart from an abstractive model
-    without guessing."""
+def test_model_id_is_namespaced_and_names_the_algorithm() -> None:
+    """Pinned to a literal, and re-pinned in round 2 from the bare
+    ``"extractive"`` to the namespaced form the sibling default already uses
+    (``HashingEmbedding``'s ``theurian-hashed-char-ngram``). ``model_id`` is
+    persisted per node in ``nodes.summary_model``, so it has to survive being
+    read years later next to some other vendor's extractive summariser: a
+    caller reading ``"extractive"`` off a stored node could tell it apart from
+    an abstractive model but not from a second extractive implementation.
+    Changing this literal is a change to what that column means, which is why
+    it is pinned rather than pattern-matched.
+    """
     provider = ExtractiveSummarizer()
 
-    assert provider.model_id == "extractive"
+    assert provider.model_id == "theurian-extractive-sentences"
 
 
 def test_model_revision_is_a_non_empty_string() -> None:
@@ -193,26 +222,73 @@ def test_prompt_hash_is_stable_across_independently_constructed_instances() -> N
     assert first.prompt_hash == second.prompt_hash
 
 
-def test_prompt_hash_is_pinned_to_the_versioned_algorithm_description() -> None:
-    """Decision 5's staleness rule only works if ``prompt_hash`` actually moves
-    when selection semantics change. Asserting it equals
-    ``ContentHash.of_text`` of the module's own versioned description --
-    rather than merely asserting it is *some* stable string -- is what makes a
-    reviewer's job checking a future semantics change mechanical: if the
-    constant was not bumped, this assertion still holds and the review comment
-    writes itself.
-    """
-    provider = ExtractiveSummarizer()
-
-    assert provider.prompt_hash == ContentHash.of_text(extractive.ALGORITHM_DESCRIPTION).value
-
-
 def test_prompt_hash_is_a_valid_content_hash() -> None:
     provider = ExtractiveSummarizer()
 
     # ContentHash's own constructor is the format guard (64 lowercase hex);
     # constructing it here is the assertion.
     ContentHash(provider.prompt_hash)
+
+
+# -- Staleness key redesign (round 2: SEMANTICS_VERSION) --------------------
+#
+# ``prompt_hash`` moves from hashing all of ``ALGORITHM_DESCRIPTION``'s prose
+# to hashing a compact ``SEMANTICS_VERSION`` identifier instead, with
+# ``MODEL_REVISION`` derived from that same constant rather than kept as an
+# independent literal an editor can bump in one place and forget in the
+# other. Not implemented yet -- every test below is RED against the shipped
+# module, which has no ``SEMANTICS_VERSION`` attribute at all.
+
+
+def test_semantics_version_is_the_compact_identifier_the_algorithm_description_already_names() -> (
+    None
+):
+    """Pinned to the literal ``ALGORITHM_DESCRIPTION`` already opens with
+    ("extractive-sentence-selection/1: split each child text ..."), not
+    invented -- ``SEMANTICS_VERSION`` is that same leading identifier
+    promoted to its own constant, not a new value to guess at.
+    """
+    assert extractive.SEMANTICS_VERSION == "extractive-sentence-selection/1"
+
+
+def test_model_revision_is_derived_from_semantics_version_not_an_independent_literal() -> None:
+    """One constant, two surfaces: ``MODEL_REVISION`` must move automatically
+    when ``SEMANTICS_VERSION``'s trailing version does. Checked both as an
+    absolute value and as a structural relationship to ``SEMANTICS_VERSION``,
+    so neither a hard-coded ``MODEL_REVISION`` that happens to read "1" nor a
+    derivation from the wrong source passes both halves.
+    """
+    assert extractive.MODEL_REVISION == "1"
+    assert extractive.SEMANTICS_VERSION.endswith(f"/{extractive.MODEL_REVISION}")
+
+
+def test_prompt_hash_is_pinned_to_the_literal_sha256_of_semantics_version() -> None:
+    """Pinned to a hard-coded literal, not to ``ContentHash.of_text`` of
+    ``extractive.SEMANTICS_VERSION`` compared against itself -- that form can
+    never fail, because both sides of the comparison move together no matter
+    what the hashing mechanism does or stops doing (this repository's own
+    precedent against pinning a value by itself, 3c5bd6d). The literal below
+    is ``sha256("extractive-sentence-selection/1")``, computed independently
+    of this module. **A semantics change that bumps ``SEMANTICS_VERSION``'s
+    trailing digit must re-pin this literal** -- that re-pin, made by a human
+    reading the diff, is the staleness mechanism ADR-0008 decision 5 depends
+    on to invalidate every existing summary node.
+    """
+    provider = ExtractiveSummarizer()
+
+    assert (
+        provider.prompt_hash == "d2825b717d2c04374a3d19d6b94680344b5e0646ea0a01e2454d31587a5eade3"
+    )
+
+
+def test_semantics_version_appears_in_the_algorithm_description() -> None:
+    """``ALGORITHM_DESCRIPTION`` stays free-form review prose that a human
+    reads to judge whether a diff changes selection semantics; ``prompt_hash``
+    now hashes ``SEMANTICS_VERSION`` alone. Asserting the identifier appears
+    inside the prose is what keeps the two travelling together -- a reviewer
+    reading only the prose can still see which version it claims to describe.
+    """
+    assert extractive.SEMANTICS_VERSION in extractive.ALGORITHM_DESCRIPTION
 
 
 # -- Async -------------------------------------------------------------
@@ -418,6 +494,110 @@ async def test_a_latin_sentence_is_selected_whole_not_carved_from_its_unsplit_ch
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("texts", "max_tokens"),
+    [
+        (("abc. def. ghi. jkl.",), 4),
+        (("Same sentence text here.",) * 4, 12),
+        (("東京。京都。大阪。名古屋。",), 11),
+    ],
+)
+async def test_output_never_exceeds_the_token_budget_for_any_corpus(
+    texts: tuple[str, ...], max_tokens: int
+) -> None:
+    """FR-R4 again, on corpora ``test_output_never_exceeds_the_token_budget``'s
+    five sampled budgets cannot reach. Selection charges each *sentence's*
+    own ``estimate_tokens`` cost against the budget and never re-prices the
+    *joined* text it actually returns; a sentence-length distribution that
+    leaves no slack for ``estimate_tokens``'s ceiling rounding lets the join
+    separators push the final string's own cost past what was charged for
+    it. RED against the shipped implementation: all three corpora overshoot
+    today (e.g. the first costs 5 against a budget of 4).
+    """
+    provider = ExtractiveSummarizer()
+
+    result = await provider.summarize(texts, scope=_scope(), max_tokens=max_tokens)
+
+    assert estimate_tokens(result) <= max_tokens, (
+        f"output cost {estimate_tokens(result)} exceeds the {max_tokens}-token budget: {result!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_output_never_exceeds_the_token_budget_across_every_english_budget() -> None:
+    """The parametrized sweep above samples five budgets; every budget from 1
+    up to the corpus's own total cost is checked here and in the Japanese
+    counterpart below, so a charging bug is not free to hide between the
+    sampled points."""
+    provider = ExtractiveSummarizer()
+    total = sum(estimate_tokens(sentence) for sentence in _ENGLISH_SENTENCES)
+
+    for max_tokens in range(1, total + 1):
+        result = await provider.summarize(_ENGLISH_CHILDREN, scope=_scope(), max_tokens=max_tokens)
+        assert estimate_tokens(result) <= max_tokens, (
+            f"output cost {estimate_tokens(result)} exceeds the {max_tokens}-token "
+            f"budget: {result!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_output_never_exceeds_the_token_budget_across_every_japanese_budget() -> None:
+    """The CJK counterpart: dense-script costs round differently from Latin
+    ones, and the exhaustive sweep is what actually finds an overshoot on
+    this fixture (budgets 1, 65, 69 and 98 all exceed their own budget
+    against the shipped charging)."""
+    provider = ExtractiveSummarizer()
+    total = sum(estimate_tokens(sentence) for sentence in _JAPANESE_SENTENCES)
+
+    for max_tokens in range(1, total + 1):
+        result = await provider.summarize(_JAPANESE_CHILDREN, scope=_scope(), max_tokens=max_tokens)
+        assert estimate_tokens(result) <= max_tokens, (
+            f"output cost {estimate_tokens(result)} exceeds the {max_tokens}-token "
+            f"budget: {result!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_any_budget_that_fits_one_sentence_emits_at_least_one() -> None:
+    """Kills a stop-at-first-misfit selection: visiting candidates in
+    descending score order and breaking out of the loop the first time one
+    does not fit can reach the *most expensive* sentence first and stop
+    before ever trying a cheaper one that would fit alone. The order-
+    preservation sweeps above only assert ordering among whatever got
+    selected, so an empty selection passes them silently; this asserts
+    non-emptiness directly, at every budget from the cheapest sentence's own
+    cost up to the corpus total.
+    """
+    provider = ExtractiveSummarizer()
+    costs = [estimate_tokens(sentence) for sentence in _ENGLISH_SENTENCES]
+
+    for max_tokens in range(min(costs), sum(costs) + 1):
+        result = await provider.summarize(_ENGLISH_CHILDREN, scope=_scope(), max_tokens=max_tokens)
+        assert result != "", (
+            f"budget {max_tokens} fits the cheapest sentence ({min(costs)}) "
+            "but the summariser emitted nothing"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_tokens", [0, -1, -1000])
+async def test_a_budget_below_one_token_is_refused(max_tokens: int) -> None:
+    """Round-2 contract: no sentence, not even a one-character prefix, can
+    cost zero or fewer tokens, so ``max_tokens < 1`` has nothing legitimate
+    to return. ``domain.ranking.take_within_budget`` faces the identical
+    situation (FR-R4) and raises ``RankingError`` rather than silently
+    returning something that violates the very budget it was given -- which
+    is what the shipped fallback still does today, returning a single
+    character whose own cost already exceeds the requested budget. RED
+    against the shipped implementation.
+    """
+    provider = ExtractiveSummarizer()
+
+    with pytest.raises(RankingError):
+        await provider.summarize(_ENGLISH_CHILDREN, scope=_scope(), max_tokens=max_tokens)
+
+
 # -- CJK --------------------------------------------------------------------
 
 
@@ -521,6 +701,194 @@ async def test_mixed_latin_and_cjk_terminators_both_split_correctly() -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_restrictive_budget_selects_the_mixed_childs_first_sentence_whole() -> None:
+    """The Latin and CJK atomic-vs-split tests above each get a dedicated
+    restrictive-budget sweep because an ample budget cannot tell a correct
+    per-sentence splitter apart from one that treats a whole child as one
+    indivisible unit -- this file's own ``_split_sentences`` repairs the
+    atomic version's output by accident either way. ``_MIXED_CHILD`` has no
+    such companion in the original suite. Same technique: in the budget
+    range where the first (Latin) sentence alone fits but the CJK sentence
+    after it does not, a correctly-splitting implementation holds flat at
+    exactly the first sentence, while a never-splits implementation falls
+    into truncating the whole, unsplit child instead.
+    """
+    provider = ExtractiveSummarizer()
+    first_sentence = "Rotating tokens reduces exposure."
+    cjk_sentence = "署名付きトークンを持つリクエストのみ許可される。"
+    third_sentence = "Both concepts matter here."
+    lower = estimate_tokens(first_sentence)
+    upper = lower + min(estimate_tokens(cjk_sentence), estimate_tokens(third_sentence))
+    assert lower < upper, "fixture leaves no budget range to sweep"
+
+    for max_tokens in range(lower, upper):
+        result = await provider.summarize((_MIXED_CHILD,), scope=_scope(), max_tokens=max_tokens)
+        assert result == first_sentence, (
+            f"budget {max_tokens} produced {result!r} instead of the mixed "
+            "child's first sentence alone -- a summariser that never splits "
+            "a child containing both scripts would fall back to truncating "
+            "the unsplit blob instead"
+        )
+
+
+# -- Selection mechanism (skip-not-stop, scoring, ties, separator, splitting) -
+
+
+@pytest.mark.asyncio
+async def test_a_cheap_low_scoring_sentence_is_selected_when_an_expensive_high_scoring_one_does_not_fit() -> (  # noqa: E501
+    None
+):
+    """``_select``'s own docstring names the mechanism this pins: each
+    candidate is tried in descending score order and *skipped*, not treated
+    as a reason to stop, when it does not fit the remaining budget. Here one
+    sentence repeats a keyword and so scores far higher than a short,
+    unrelated one. At any budget that fits the cheap sentence alone but not
+    the expensive one, a stop-at-first-misfit selection tries the expensive
+    sentence first (it scores higher), fails to fit it, and stops -- emitting
+    nothing -- while skip-not-stop moves on and still selects the cheap one.
+    """
+    provider = ExtractiveSummarizer()
+    expensive = (
+        "Rotating tokens tokens tokens tokens reduces exposure across every hosted region nightly."
+    )
+    cheap = "Ok."
+    texts = (f"{expensive} {cheap}",)
+    lower = estimate_tokens(cheap)
+    upper = estimate_tokens(expensive)
+    assert lower < upper, "fixture leaves no budget range to sweep"
+
+    for max_tokens in range(lower, upper):
+        result = await provider.summarize(texts, scope=_scope(), max_tokens=max_tokens)
+        assert result == cheap, (
+            f"budget {max_tokens} fits {cheap!r} ({lower} tokens) but not "
+            f"{expensive!r} ({upper} tokens); got {result!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_trigram_frequency_scoring_prefers_a_short_repetitive_sentence_over_a_longer_unique_one() -> (  # noqa: E501
+    None
+):
+    """Distinguishes the documented scorer -- sum of cross-sentence trigram
+    frequency -- from a plausible-looking substitute that scores by sentence
+    length (number of trigrams) instead. ``_SHORT_REPETITIVE`` is barely half
+    ``_LONG_UNIQUE``'s length but repeats its own keyword, so it out-scores
+    the longer sentence under frequency and loses under length. At a budget
+    that fits only one of the two, which one gets selected tells the two
+    scorers apart.
+    """
+    provider = ExtractiveSummarizer()
+    texts = (f"{_SHORT_REPETITIVE} {_LONG_UNIQUE}",)
+    lower = estimate_tokens(_LONG_UNIQUE)
+    upper = lower + estimate_tokens(_SHORT_REPETITIVE)
+    assert lower < upper, "fixture leaves no budget range to sweep"
+
+    for max_tokens in range(lower, upper):
+        result = await provider.summarize(texts, scope=_scope(), max_tokens=max_tokens)
+        assert result == _SHORT_REPETITIVE, (
+            f"budget {max_tokens} selected {result!r}; a length-based scorer "
+            f"would have preferred {_LONG_UNIQUE!r} here instead"
+        )
+
+
+def test_scoring_credits_a_case_only_variant_of_the_same_sentence() -> None:
+    """The module docstring specifies scoring on *lower-cased* trigrams
+    precisely so a differently-cased repetition of the same content is still
+    recognised as a repetition. Comparing one sentence's score when it is
+    alone in the call against its score when an all-uppercase duplicate of
+    the exact same words also appears: under the documented lower-casing,
+    the duplicate's trigrams merge with the original's and the score moves;
+    without lower-casing, the two texts share no trigrams at all (every
+    character differs in case) and the score does not move.
+    """
+    normal = extractive._Sentence(
+        ordinal=0, text="Rotating tokens reduces exposure quickly today.", cost=1
+    )
+    shouting = extractive._Sentence(
+        ordinal=1, text="ROTATING TOKENS REDUCES EXPOSURE QUICKLY TODAY.", cost=1
+    )
+
+    (alone_score,) = extractive._score((normal,))
+    together_score, _ = extractive._score((normal, shouting))
+
+    assert together_score > alone_score, (
+        "score did not move when a same-content, differently-cased sentence "
+        f"joined the call: alone={alone_score} together={together_score}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_score_tie_breaks_toward_document_order() -> None:
+    """``ab cd.`` and ``cd ab.`` contain the same three trigrams in reverse,
+    so their trigram-frequency scores are genuinely equal -- not merely
+    close -- which is the one situation where the tie-break key, not the
+    score, decides what gets selected. At a budget that fits exactly one of
+    them, the tie must resolve toward document position (the earlier
+    sentence), not away from it.
+    """
+    provider = ExtractiveSummarizer()
+    texts = (f"{_TIE_FIRST} {_TIE_SECOND}",)
+
+    result = await provider.summarize(texts, scope=_scope(), max_tokens=estimate_tokens(_TIE_FIRST))
+
+    assert result == _TIE_FIRST, (
+        f"a genuine score tie resolved to {result!r} instead of the "
+        f"earlier-positioned sentence {_TIE_FIRST!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_selected_sentences_are_joined_by_a_single_space() -> None:
+    """This file's own ``_split_sentences`` matches on ``\\s+`` after a Latin
+    terminator, so it re-derives the same sentence list whether the real
+    implementation joins with a space, a newline, or several spaces -- every
+    order-preservation test above would pass regardless of which separator
+    was actually used. The separator's exact character only shows up in a
+    literal string comparison against the joined text.
+    """
+    provider = ExtractiveSummarizer()
+
+    result = await provider.summarize(
+        _ENGLISH_CHILDREN, scope=_scope(), max_tokens=_ample_budget(_ENGLISH_SENTENCES)
+    )
+
+    assert result == " ".join(_ENGLISH_SENTENCES)
+
+
+@pytest.mark.asyncio
+async def test_a_terminator_followed_by_a_space_does_not_leak_a_leading_space_into_the_next_sentence() -> (  # noqa: E501
+    None
+):
+    """A CJK terminator needs no trailing whitespace to end a sentence, but
+    prose sometimes has one anyway. If a split piece is not stripped, that
+    leading space becomes part of the "sentence" text and shows up as a
+    double space once the selection re-joins it with its own single-space
+    separator -- invisible to a ``_split_sentences``-based check (``\\s+``
+    absorbs both single and double spaces alike) and visible only in a
+    literal comparison.
+    """
+    provider = ExtractiveSummarizer()
+    text = "東京は都市。 京都も都市。 大阪も都市。"
+
+    result = await provider.summarize((text,), scope=_scope(), max_tokens=200)
+
+    assert result == text
+
+
+def test_the_sentence_terminator_pattern_currently_matches_chunkings() -> None:
+    """``extractive._SENTENCE_TERMINATOR`` is deliberately a private copy of
+    ``domain.chunking._SENTENCE_END`` (see both modules' own docstrings): a
+    token-budget splitter and a length-budget splitter that are free to
+    diverge without either import breaking the other. This does not assert
+    the two *must* stay equal forever -- it is the mechanism that notices if
+    they silently stop agreeing. A change to one pattern that was not a
+    deliberate divergence turns this red; a reviewer then either updates both
+    or edits this assertion to record why they now differ.
+    """
+    assert extractive._SENTENCE_TERMINATOR.pattern == chunking._SENTENCE_END.pattern
+
+
 # -- Determinism -------------------------------------------------------
 
 
@@ -554,6 +922,78 @@ async def test_repeated_calls_are_byte_identical_even_with_freshly_built_string_
         outputs.add(result)
 
     assert len(outputs) == 1, f"repeated calls diverged: {outputs!r}"
+
+
+def _run_summarize_in_a_fresh_process(children: tuple[str, ...], budget: int, seed: str) -> str:
+    """One ``summarize`` call in a brand-new interpreter with a fixed
+    ``PYTHONHASHSEED``, mirroring ``test_projection.py``'s cross-process
+    pattern (ADR-0020)."""
+    program = (
+        "import asyncio;"
+        "from theurian.domain.enums import KnowledgeStatus, Sensitivity;"
+        "from theurian.domain.identifiers import ProjectId;"
+        "from theurian.domain.values import AclGroup, Scope, TenantId;"
+        "from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer;"
+        "scope = Scope(project_id=ProjectId('backend-service'), tenant_id=TenantId('local'), "
+        "sensitivity=Sensitivity.INTERNAL, acl_group=AclGroup('default'), "
+        "namespace='architecture', status=KnowledgeStatus.APPROVED);"
+        f"children = {children!r};"
+        f"budget = {budget};"
+        "print(asyncio.run(ExtractiveSummarizer().summarize("
+        "children, scope=scope, max_tokens=budget)))"
+    )
+    return subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PYTHONHASHSEED": seed, "PATH": "/usr/bin:/bin"},
+    ).stdout
+
+
+#: The exact seeds ``test_projection.py`` cross-checks (ADR-0020). Two seeds
+#: agreeing is not enough to trust: a hash-seed-dependent tie-break was found,
+#: while drafting this test, to coincidentally order two fixture sentences
+#: the same way under seeds "0" and "1" and only differently under "999" --
+#: matching the cited file's own seed choice exactly is what makes this a
+#: reliable guard rather than a coin flip.
+_HASH_SEEDS = ("0", "1", "999")
+
+
+def test_summarize_is_stable_across_processes() -> None:
+    """``PYTHONHASHSEED`` varies by default across interpreter invocations, so
+    a selection or scoring step that iterates a ``set`` or a ``dict`` keyed by
+    something other than a stable value would be invisible within one process
+    and non-deterministic across machines -- exactly the gap
+    ``test_repeated_calls_are_byte_identical_...`` above, which never leaves
+    this process, cannot see.
+    """
+    budget = _partial_selection_budget(_ENGLISH_SENTENCES)
+
+    results = {
+        _run_summarize_in_a_fresh_process(_ENGLISH_CHILDREN, budget, seed) for seed in _HASH_SEEDS
+    }
+
+    assert len(results) == 1, f"output varies with PYTHONHASHSEED: {results}"
+
+
+def test_a_tied_selection_is_stable_across_processes() -> None:
+    """``_ENGLISH_CHILDREN`` above has no genuine score ties, so a tie-break
+    that accidentally started reading a hash-seed-dependent key (e.g.
+    ``hash(sentence.text)``) instead of ``ordinal`` would pass that check by
+    having nothing to disagree about. The tied fixture used to pin the
+    tie-break direction (``test_a_genuine_score_tie_breaks_toward_document_
+    order``) is exactly the corpus where such a regression would show up, so
+    it is what this test runs across process boundaries.
+    """
+    budget = estimate_tokens(_TIE_FIRST)
+
+    results = {
+        _run_summarize_in_a_fresh_process((f"{_TIE_FIRST} {_TIE_SECOND}",), budget, seed)
+        for seed in _HASH_SEEDS
+    }
+
+    assert len(results) == 1, f"output varies with PYTHONHASHSEED: {results}"
 
 
 # -- Purity (ADR-0008 decision 6's Milestone 6 amendment) ------------------
@@ -694,3 +1134,138 @@ async def test_negative_control_corpus_derived_max_tokens_is_detected_as_differe
     result_b = await provider.summarize(_ENGLISH_CHILDREN, scope=scope, max_tokens=max_tokens_b)
 
     assert result_a != result_b
+
+
+# -- Input cap (round 2) -----------------------------------------------------
+#
+# Nothing yet bounds how many characters ``summarize`` will scan, and the
+# trigram scorer's cost grows with corpus size for a single giant sentence.
+# ``MAX_TOTAL_INPUT_CHARS`` is the module's own recorded limit on the total
+# size of ``texts`` -- not implemented yet, so both tests below are RED
+# against the shipped module, which has no such attribute.
+
+
+@pytest.mark.asyncio
+async def test_input_above_the_recorded_cap_is_refused() -> None:
+    """Read from the module's own constant rather than duplicated as a
+    literal here, so this test moves automatically if the implementer
+    changes the recorded limit."""
+    provider = ExtractiveSummarizer()
+    cap = extractive.MAX_TOTAL_INPUT_CHARS
+    text = "a" * cap + "b"
+
+    with pytest.raises(InvariantViolationError):
+        await provider.summarize((text,), scope=_scope(), max_tokens=10_000)
+
+
+@pytest.mark.asyncio
+async def test_input_exactly_at_the_recorded_cap_still_summarizes() -> None:
+    """The boundary itself must still work -- a cap that rejected its own
+    limit would silently narrow the documented contract by one character.
+    """
+    provider = ExtractiveSummarizer()
+    cap = extractive.MAX_TOTAL_INPUT_CHARS
+    text = "a" * (cap - 1) + "."
+
+    result = await provider.summarize((text,), scope=_scope(), max_tokens=10_000)
+
+    assert result != ""
+
+
+# -- Whitespace-only input ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_children_summarize_to_the_empty_string() -> None:
+    """Every piece a whitespace-only child splits into strips to empty and is
+    dropped (see ``_split_sentences``'s own docstring), so there is nothing
+    to select from. Pinned explicitly as the contract, not left as an
+    accident of how splitting happens to behave, so it cannot silently
+    regress into raising or into echoing the whitespace back.
+    """
+    provider = ExtractiveSummarizer()
+
+    result = await provider.summarize(("   ", "\n\t  "), scope=_scope(), max_tokens=1000)
+
+    assert result == ""
+
+
+#: Every stdlib module that can open a socket, plus the two that reach one
+#: through a layer. ``asyncio`` is listed as a whole rather than by its
+#: ``asyncio.streams`` submodule because importing the package imports the
+#: submodule: a module that pulled in ``asyncio`` for its ``async def`` -- it
+#: does not need to -- would drag the socket transports in with it.
+_SOCKET_CAPABLE_MODULES = frozenset(
+    {
+        "asyncio",
+        "ftplib",
+        "http",
+        "http.client",
+        "imaplib",
+        "poplib",
+        "select",
+        "selectors",
+        "smtplib",
+        "socket",
+        "socketserver",
+        "ssl",
+        "telnetlib",
+        "urllib.request",
+        "webbrowser",
+        "xmlrpc.client",
+    }
+)
+
+
+def test_the_default_summarizer_reaches_no_socket_capable_module() -> None:
+    """The module's own claim that "nothing here calls out" (ADR-0009's
+    offline default, SEC-19) is a property of the whole import closure, not of
+    that one file: a module that reaches nothing over the network can still
+    import one that does, and the day someone adds a hosted fallback "just for
+    the abstractive case" the extractive default inherits its dependencies.
+
+    Checked in a fresh interpreter because ``sys.modules`` inside the test
+    process already holds most of the standard library, imported by pytest and
+    by the rest of the suite -- an in-process assertion would fail regardless
+    of what this module does, which is the same reason
+    ``_run_summarize_in_a_fresh_process`` above exists.
+    """
+    program = (
+        "import sys;"
+        "import theurian.infrastructure.raptor.extractive;"
+        "print(chr(10).join(sorted(sys.modules)))"
+    )
+
+    loaded = set(
+        subprocess.run(  # noqa: S603 - fixed argv
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"PATH": "/usr/bin:/bin"},
+        ).stdout.split()
+    )
+
+    assert "theurian.infrastructure.raptor.extractive" in loaded, (
+        "the subprocess did not import the module under test at all"
+    )
+    assert not (loaded & _SOCKET_CAPABLE_MODULES), (
+        "importing the default summariser loaded socket-capable modules: "
+        f"{sorted(loaded & _SOCKET_CAPABLE_MODULES)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_bearing_input_stays_non_empty_alongside_whitespace_only_children() -> None:
+    """Distinguishes "no sentences at all" from "a real sentence, plenty of
+    budget": the never-empty guarantee (decision 7 / the class docstring)
+    must still hold once genuine content is present, even mixed in with
+    children that are themselves whitespace-only.
+    """
+    provider = ExtractiveSummarizer()
+
+    result = await provider.summarize(
+        ("   ", "Real content here."), scope=_scope(), max_tokens=1000
+    )
+
+    assert result != ""

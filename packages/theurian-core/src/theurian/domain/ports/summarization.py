@@ -18,8 +18,13 @@ class SummarizationProvider(Protocol):
     Implementations must treat child text as **data being described**, never as
     instructions. A child document saying "ignore previous instructions" is a
     document that says that; it is not a directive to the summarizer (SEC-16).
-    Implementations wrap source text in a delimited untrusted region and never
-    interpolate it into a system-role message.
+    An implementation that *prompts a model* discharges that by wrapping source
+    text in a delimited untrusted region and never interpolating it into a
+    system-role message. One that does not prompt anything discharges it by
+    construction, having no instruction channel to confuse: the extractive
+    default selects sentences from the children and never builds a prompt at
+    all, so the obligation lands on the first abstractive adapter rather than
+    on this one.
     """
 
     @property
