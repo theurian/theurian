@@ -9,11 +9,19 @@ incremental and publish through an atomic swap, so that a partial build is
 never searchable.
 
 Every sentence above was in the present tense until this pass, in a package with
-no builder, no traversal, and no ``SummarizationProvider`` implementation to
-summarise with. "Structurally impossible" is the kind of claim that is read
-once and relied on afterwards, so it says "would" here until something
-enforces it; ADR-0008's Compliance section carried the same reading and still
-lists four tests as owed, the first of them half-discharged.
+no builder, no traversal, and -- at the time -- no ``SummarizationProvider``
+implementation to summarise with either. "Structurally impossible" is the kind
+of claim that is read once and relied on afterwards, so it says "would" here
+until something enforces it; ADR-0008's Compliance section carried the same
+reading and still lists four tests as owed, the first of them half-discharged.
+
+**The third absence is no longer current.** ``extractive.py`` in this package
+now implements ``SummarizationProvider``: deterministic, extractive, and reads
+nothing beyond the ``texts`` and ``max_tokens`` a given call passes it
+(ADR-0008 decision 6's Milestone 6 amendment). What it does not do is anything
+with a node -- there is still no builder to call it and no traversal to place
+its output, so the absences that keep this package's claims conditional are
+those two, not three.
 
 The scope tuple itself is real and tested, and so is tree identity: ``Scope``,
 ``TenantId``, ``AclGroup`` and ``Sensitivity`` are domain values,
