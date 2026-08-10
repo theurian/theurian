@@ -312,3 +312,46 @@ def test_digest_targets_reports_every_path_a_composite_mutation_touches() -> Non
 
     assert digests["tools/mutate.py"] == _sha256(target_a)
     assert digests["tools/mutate_edits.py"] == _sha256(target_b)
+
+
+def test_restore_raises_when_the_written_content_does_not_match_the_recorded_digest(
+    tmp_path: Path,
+) -> None:
+    """MEDIUM-4: ``_restore``'s "byte for byte" verify must actually fire.
+
+    Every other test's restore happens to succeed, so the ``if after !=
+    applied.before`` check inside ``_restore`` -- the thing the module
+    docstring calls proof that "the restore put it back byte for byte" --
+    has never been exercised failing. Constructs an ``Applied`` whose
+    recorded ``before`` digest does not match what ``original`` actually
+    hashes to, and confirms ``_restore`` refuses to report success.
+    """
+    target = tmp_path / "file.py"
+    target.write_text("ORIGINAL\n", encoding="utf-8")
+    applied = mutate_edits.Applied(
+        target=target,
+        original="ORIGINAL\n",
+        before="0" * 64,  # deliberately wrong: not sha256("ORIGINAL\n")
+        mutated="1" * 64,
+    )
+
+    with pytest.raises(mutate_edits.HarnessError, match="restore failed"):
+        mutate_edits._restore(applied, tmp_path)
+
+
+def test_apply_edit_raises_when_old_and_new_are_identical(tmp_path: Path) -> None:
+    """MEDIUM-4: ``_apply_edit``'s no-op-mutation detection must actually fire.
+
+    The module docstring's whole case for hashing before and after is that a
+    same-length or otherwise no-op write can look like it landed when it did
+    not -- and every other test's edit genuinely changes the file, so the
+    ``if mutated == before`` check has never been exercised failing. An edit
+    whose ``old`` and ``new`` are identical writes back byte-identical
+    content: a real, unmocked no-op, not a simulated one.
+    """
+    target = tmp_path / "file.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    edit = mutate_edits.Edit(path="file.py", old="VALUE = 1", new="VALUE = 1")
+
+    with pytest.raises(mutate_edits.HarnessError, match="unchanged"):
+        mutate_edits._apply_edit(tmp_path, "test-label", edit)
