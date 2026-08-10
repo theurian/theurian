@@ -806,6 +806,120 @@ def test_an_already_applied_foreign_tenant_gets_a_remedy_that_actually_works(
     assert recovered["applied"] == [MIGRATION_ID]
 
 
+def test_a_never_applied_tenant_gets_the_unapplied_remedy(project: Path) -> None:
+    """The other branch of `_unenforceable_scope_remedy`, pinned on its own.
+
+    Both remedy texts mention `tenantId`, `'local'`, and issue #63 -- a check
+    that only looks for those substrings cannot tell them apart, and cannot
+    catch a mutant that always returns the applied-case remedy. `"then
+    retry"` appears only in the unapplied text; `.theurian/state` and
+    `FR-K4` appear only in the applied one.
+    """
+    _invoke("init")
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+
+    code, error = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR
+    assert "then retry" in error["remedy"]
+    assert ".theurian/state" not in error["remedy"]
+    assert "FR-K4" not in error["remedy"]
+
+
+_SECOND_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
+_SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
+_SECOND_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.second-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.second-policy
+    revisionId: {_SECOND_REVISION_ID}
+    contentFile: ../knowledge/architecture/second-policy.md
+    metadata:
+      title: Second policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/second-policy.md
+"""
+
+
+def test_an_already_applied_foreign_tenant_survives_a_state_hash_shift(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #63's HIGH-1, recurred.
+
+    `_applied_migration_ids` used to check only `database_for(current_hash)`
+    -- correct only while the applied migration is the *entire* set. Adding
+    one clean, pending migration afterward (issue #63's actual upgrade path,
+    not an edge case) shifts the state hash (ADR-0016): the database that
+    recorded the foreign tenant sits at the *old* hash's filename, which a
+    current-hash-only lookup never finds. The migration then read as
+    unapplied, and the routine "edit the field, then retry" remedy was
+    printed -- following it edits an *applied* migration, which trips FR-K5's
+    checksum guard instead, whose own remedy says to restore the file. Back
+    to the scope refusal: the exact loop HIGH-1 was supposed to close.
+
+    `test_an_already_applied_foreign_tenant_gets_a_remedy_that_actually_works`
+    above did not catch this because its fixture has zero pending migrations,
+    so the current hash always equals the apply-time hash and
+    `database_for()` always finds the seeded database by luck.
+    """
+    _invoke("init")
+    _write_migration(project, migration=_migration_with_scope(tenant_id="acme-corp"))
+
+    with monkeypatch.context() as seed:
+        seed.setattr(
+            "theurian.application.migration_engine.refuse_unenforceable_scope", lambda _ms: None
+        )
+        seed.setattr("theurian.cli.commands.refuse_unenforceable_scope", lambda _ms: None)
+        seed_code, seeded = _invoke("migrate", "apply")
+    assert seed_code == 0, "fixture setup failed: the seeding apply itself was refused"
+    assert seeded["applied"] == [MIGRATION_ID]
+
+    # A clean, pending migration -- this shifts the state hash (ADR-0016), so
+    # `database_for(context.state_hash)` no longer names the database the
+    # seeding apply above just built.
+    (project / ".theurian/knowledge/architecture/second-policy.md").write_text("# Second\n")
+    (project / f".theurian/migrations/{_SECOND_MIGRATION_ID}-second.yaml").write_text(
+        _SECOND_MIGRATION
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["remedy"] == apply_error["remedy"]
+    # Must be the applied-case remedy (state-rebuild), not the unapplied one
+    # -- this exact selection is what regressed.
+    assert ".theurian/state" in validate_error["remedy"]
+    assert "FR-K4" in validate_error["remedy"]
+    assert "then retry" not in validate_error["remedy"]
+
+    # And the procedure it describes must still work end to end, with the
+    # second, clean migration also applying.
+    (project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(
+        _migration_with_scope(tenant_id="local")
+    )
+    shutil.rmtree(project / ".theurian/state")
+    recovered_code, recovered = _invoke("migrate", "apply")
+    assert recovered_code == 0
+    assert sorted(recovered["applied"]) == sorted([MIGRATION_ID, _SECOND_MIGRATION_ID])
+
+
 # ==========================================================================
 # ingest
 # ==========================================================================

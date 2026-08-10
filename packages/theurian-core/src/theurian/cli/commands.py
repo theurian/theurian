@@ -159,38 +159,60 @@ UNENFORCEABLE_SCOPE_REMEDY_APPLIED: Final = (
 )
 
 
-def _applied_migration_ids(database: Path, project_id: ProjectId) -> frozenset[MigrationId]:
-    """Migration ids already recorded as applied in ``database``.
+#: Every canonical-state database this project has ever built. Excludes
+#: `theurian-index-*.sqlite`, which lives in the same directory
+#: (`ProjectPaths.state`) but is a different schema entirely.
+_STATE_DATABASE_GLOB: Final = "theurian-state-*.sqlite"
+
+
+def _applied_migration_ids(paths: ProjectPaths, project_id: ProjectId) -> frozenset[MigrationId]:
+    """Migration ids recorded as applied in *any* canonical-state database on disk.
 
     Read-only, and never the authority for whether a migration is safe to
     apply -- that is :meth:`MigrationEngine.plan`'s job, inside a real write
-    transaction. Used only to choose which `UnenforceableScopeError` remedy to
-    print (issue #63's HIGH-1): editing a migration nobody has applied yet is
-    a routine fix; editing one this database already recorded trips FR-K5's
-    checksum guard instead, and needs a different, honest procedure.
+    transaction, against the one database currently being written to. Used
+    only to choose which `UnenforceableScopeError` remedy to print (issue
+    #63's HIGH-1): editing a migration nobody has ever applied is a routine
+    fix; editing one some database already recorded trips FR-K5's checksum
+    guard instead, and needs a different, honest procedure.
 
-    Any failure opening ``database`` is treated as "nothing recorded" rather
-    than surfaced: the caller is already reporting a different failure
-    (`UnenforceableScopeError`), and replacing it with an unrelated crash from
-    a code path whose only job is choosing a string would be worse than
-    picking the more common remedy.
+    **Checks every database in `paths.state`, not only the one for the
+    current state hash (HIGH-1, recurred).** A revision applied under an
+    earlier, unrefusing build was recorded in the database for the state hash
+    *at that time*. Adding any further migration afterward shifts the state
+    hash (ADR-0016) -- `database_for(current_hash)` then names a database
+    that has never been built, and checking only that one database made an
+    applied revision read as unapplied the moment anything else was added on
+    top of it: exactly the ordinary shape of issue #63's own upgrade path,
+    not an edge case. A migration id counts as applied here if *any*
+    still-on-disk database recorded it, which is the only definition
+    consistent with what the FR-K5 guard actually protects -- every database
+    this project has ever built, not only the one this command happens to be
+    about to touch.
+
+    Any failure opening one database is treated as "nothing recorded there"
+    rather than surfaced, and the remaining databases are still checked: the
+    caller is already reporting a different failure (`UnenforceableScopeError`),
+    and replacing it with an unrelated crash from a code path whose only job
+    is choosing a string would be worse than picking the more common remedy.
     """
-    if not database.exists():
+    if not paths.state.is_dir():
         return frozenset()
-    try:
-        with SqliteCanonicalStore(database) as store:
-            return frozenset(
-                migration_id for migration_id, _ in store.applied_migrations(project_id)
-            )
-    except (SchemaVersionMismatchError, StateDatabaseUnreadableError):
-        return frozenset()
+    ids: set[MigrationId] = set()
+    for database in sorted(paths.state.glob(_STATE_DATABASE_GLOB)):
+        try:
+            with SqliteCanonicalStore(database) as store:
+                ids.update(migration_id for migration_id, _ in store.applied_migrations(project_id))
+        except (SchemaVersionMismatchError, StateDatabaseUnreadableError):
+            continue
+    return frozenset(ids)
 
 
 def _unenforceable_scope_remedy(
-    exc: UnenforceableScopeError, database: Path, project_id: ProjectId
+    exc: UnenforceableScopeError, paths: ProjectPaths, project_id: ProjectId
 ) -> str:
     """Which of the two `UnenforceableScopeError` remedies applies (issue #63)."""
-    if exc.migration_id in _applied_migration_ids(database, project_id):
+    if exc.migration_id in _applied_migration_ids(paths, project_id):
         return UNENFORCEABLE_SCOPE_REMEDY_APPLIED
     return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
 
@@ -883,14 +905,14 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     `examples/sample-project/` demonstrates it validating a document `migrate
     apply` then rejects (issue #36).
     """
-    context, database = _require_project(as_json)
+    context, _ = _require_project(as_json)
 
     try:
         refuse_unenforceable_scope(context.loaded.migration_set)
     except UnenforceableScopeError as exc:
         _fail(
             str(exc),
-            remedy=_unenforceable_scope_remedy(exc, database, context.project_id),
+            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
@@ -926,7 +948,7 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         # would otherwise have created state.
         _fail(
             str(exc),
-            remedy=_unenforceable_scope_remedy(exc, database, context.project_id),
+            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
@@ -985,7 +1007,7 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         # generic `MigrationError` clause below, since it is one.
         _fail(
             str(exc),
-            remedy=_unenforceable_scope_remedy(exc, database, context.project_id),
+            remedy=_unenforceable_scope_remedy(exc, context.paths, context.project_id),
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
