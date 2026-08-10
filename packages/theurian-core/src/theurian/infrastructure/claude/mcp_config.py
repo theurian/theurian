@@ -1,8 +1,11 @@
 """Installing the MCP connection into Claude Code (ADR-0011, ADR-0012, SEC-5).
 
-**Theurian reads ``~/.claude.json``. It never writes it.** Every write is
-delegated to ``claude mcp add`` / ``claude mcp remove``, for three reasons that
-were each confirmed against the real CLI rather than assumed:
+**Theurian reads ``~/.claude.json``. It never writes it.** Every write to the
+config *itself* is delegated to ``claude mcp add`` / ``claude mcp remove``, for
+three reasons that were each confirmed against the real CLI rather than
+assumed. The one exception is the timestamped ``.backup`` sibling
+:meth:`ClaudeCodeMcpConfig.back_up` writes beside it before a destructive
+change (SEC-18) -- a copy sitting next to the config, never the config:
 
 1. That file is Claude Code's live state — model caches, project history,
    onboarding flags — not a configuration file Theurian has any business
@@ -33,6 +36,7 @@ back rather than by trusting an exit code, because "the command succeeded" and
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -55,6 +59,11 @@ CONFIG_FILENAME: Final = ".claude.json"
 
 #: The other MCP server Theurian expects to meet. Detected, never modified.
 SERENA: Final = "serena"
+
+#: A bound on `back_up`'s same-second disambiguation loop -- generous enough
+#: that no real run of `install` hits it, small enough that a bug forcing every
+#: attempt to collide fails fast instead of spinning.
+_MAX_BACKUP_ATTEMPTS: Final = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,11 +234,19 @@ class ClaudeCodeMcpConfig:
             # and this call, in which nobody has been shown a difference or asked
             # anything.
             #
-            # Backed up first (SEC-18), matching `LaunchAgentManager.install`:
-            # the alternative -- deleting this branch and letting a stale plan
-            # fail instead -- was considered and not taken, since a backup keeps
-            # the race recoverable without adding new failure semantics here.
-            self.back_up()
+            # Backed up first (SEC-18), matching `LaunchAgentManager.install`: the
+            # entry `mcp remove` is about to destroy is real user state, and a
+            # failed backup aborts the removal rather than risking it. The bytes
+            # surviving on disk next to the config is what "recoverable" means
+            # here -- no report yet names the backup's path to the caller (#126).
+            try:
+                self.back_up()
+            except OSError as exc:
+                return (
+                    f"Could not back up {self.path} before replacing the entry: "
+                    f"{exc}. Free space or fix permissions in your home "
+                    f"directory, then run setup again."
+                )
             removal = self._claude("mcp", "remove", SERVER_NAME, "--scope", "user")
             if not removal.ok:
                 return f"Could not remove the existing entry: {removal.output}"
@@ -278,14 +295,40 @@ class ClaudeCodeMcpConfig:
         Taken even though `claude` owns the write: the removal step is real
         destruction of whatever the user had, and it should stay recoverable
         (SEC-18).
+
+        Created via ``O_CREAT | O_EXCL`` at mode 0600 in the same call that
+        creates the file, not by writing and then `chmod`-ing: the config being
+        copied is Claude Code's live state, a bearer token included, and a
+        write-then-chmod leaves a window in which the copy is as readable as the
+        process umask allows.
+
+        The name carries a second-precision timestamp, so two calls landing in
+        the same UTC second collide on it; `O_EXCL` turns that collision into
+        `FileExistsError` instead of silently overwriting the first backup, and
+        a numeric suffix (``-1``, ``-2``, ...) is appended before ``.backup``
+        until a free name is found, so both copies survive.
         """
         if not self.path.is_file():
             return None
+        payload = self.path.read_bytes()
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        backup = self.path.with_name(f"{CONFIG_FILENAME}.{stamp}.backup")
-        backup.write_bytes(self.path.read_bytes())
-        backup.chmod(0o600)
-        return backup
+        for attempt in range(_MAX_BACKUP_ATTEMPTS):
+            suffix = f"-{attempt}" if attempt else ""
+            candidate = self.path.with_name(f"{CONFIG_FILENAME}.{stamp}{suffix}.backup")
+            try:
+                descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            try:
+                os.write(descriptor, payload)
+            finally:
+                os.close(descriptor)
+            return candidate
+        msg = (
+            f"Could not find a free backup name for {self.path} at {stamp} "
+            f"after {_MAX_BACKUP_ATTEMPTS} attempts."
+        )
+        raise OSError(msg)
 
 
 def _differing_names(installed: Mapping[str, Any], wanted: Mapping[str, Any]) -> tuple[str, ...]:

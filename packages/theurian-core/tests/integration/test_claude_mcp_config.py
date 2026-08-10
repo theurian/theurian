@@ -15,12 +15,14 @@ import os
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, override
 
 import pytest
 
 from theurian.domain.setup import DifferingFields
+from theurian.infrastructure.claude import mcp_config as mcp_config_module
 from theurian.infrastructure.claude.mcp_config import (
     CONFIG_FILENAME,
     SERVER_NAME,
@@ -227,6 +229,9 @@ def test_installing_adds_the_entry(home: Path) -> None:
 
     assert config.install(ConnectionSpec()) == ""
     assert config.installed_entry() == ConnectionSpec().as_entry()
+    assert list(home.glob(f"{CONFIG_FILENAME}.*.backup")) == [], (
+        "a fresh install has nothing to destroy and must not back anything up"
+    )
 
 
 def test_installing_preserves_every_other_server(home: Path) -> None:
@@ -264,6 +269,9 @@ def test_installing_twice_changes_nothing(home: Path) -> None:
     assert config.install(ConnectionSpec()) == ""
     assert (home / CONFIG_FILENAME).read_text() == first
     assert runner.commands == [], "a converged entry must not invoke claude at all"
+    assert list(home.glob(f"{CONFIG_FILENAME}.*.backup")) == [], (
+        "the second, idempotent run has nothing to destroy either"
+    )
 
 
 def test_replacing_a_conflicting_entry_removes_it_first(home: Path) -> None:
@@ -277,6 +285,30 @@ def test_replacing_a_conflicting_entry_removes_it_first(home: Path) -> None:
 
     assert any("remove" in " ".join(c) for c in runner.commands)
     assert config.installed_entry() == ConnectionSpec().as_entry()
+
+
+def test_a_failed_removal_is_reported_not_swallowed(home: Path) -> None:
+    """SEC-18, issue #27. `install`'s removal branch checks ``removal.ok`` and
+    returns a failure that names the removal -- but only if that check
+    actually reaches the caller. A mutation that turned the returned message
+    into an empty string survived the full suite, so this pins the outcome at
+    this port's level: the conflicting entry stays exactly as it was, `claude
+    mcp add` is never attempted on top of a failed removal, and the caller is
+    told why -- rather than being handed a `success` result for a run that
+    changed nothing it was trying to change.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    runner = FakeClaude(home / CONFIG_FILENAME, fail="mcp remove")
+    config = ClaudeCodeMcpConfig(home=home, runner=runner)
+
+    failure = config.install(ConnectionSpec())
+
+    assert failure != ""
+    assert "remov" in failure.lower()
+    assert not any(command[1:3] == ["mcp", "add"] for command in runner.commands), (
+        "add must never be attempted on top of a removal that failed"
+    )
+    assert config.installed_entry() == {"type": "http", "url": "http://old/mcp"}
 
 
 def test_a_backup_exists_before_the_destructive_remove_runs(home: Path) -> None:
@@ -318,10 +350,11 @@ def test_a_backup_exists_before_the_destructive_remove_runs(home: Path) -> None:
     runner = BackupOrderingClaude(home / CONFIG_FILENAME)
     config = ClaudeCodeMcpConfig(home=home, runner=runner)
 
-    config.install(ConnectionSpec())
+    assert config.install(ConnectionSpec()) == ""
 
     assert runner.backups_seen_at_removal, "no backup existed at the moment `mcp remove` ran"
     assert runner.backups_seen_at_removal[0].read_bytes() == original_bytes
+    assert config.installed_entry() == ConnectionSpec().as_entry()
 
 
 def test_a_failed_add_is_reported_rather_than_assumed(home: Path) -> None:
@@ -373,6 +406,100 @@ def test_a_backup_is_taken_before_a_destructive_change(home: Path) -> None:
 
 def test_backing_up_a_missing_config_yields_nothing(home: Path) -> None:
     assert _config(home).back_up() is None
+
+
+def test_a_backup_is_born_0600_never_briefly_wider(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. `back_up` used to `write_bytes` and only then
+    `chmod(0o600)`, leaving a window between creation and the mode change
+    during which the backup -- a copy of the user's live Claude Code state,
+    a bearer token included -- is as readable as the process umask allows.
+    Measured: 0644 under the common umask 022.
+
+    Neutralising `chmod` to a no-op isolates the claim to *creation*: with
+    `chmod` doing nothing, the only way the file can end up 0600 is if the
+    mode came from the call that created it, so it was never briefly wider.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    config = _config(home)
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: None)  # noqa: ARG005
+    previous_umask = os.umask(0o000)
+
+    try:
+        backup = config.back_up()
+    finally:
+        os.umask(previous_umask)
+
+    assert backup is not None
+    assert backup.stat().st_mode & 0o777 == 0o600, "the backup was wider than 0600 at some point"
+
+
+def test_two_backups_in_the_same_second_do_not_collide(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. The stamp `back_up` names its file with is
+    second-precision; two calls landing in the same UTC second must not let
+    the second overwrite the first, which would destroy the very artefact the
+    backup exists to preserve. Measured: a full-suite mutation that hard-coded
+    a fixed stamp survived all 2037 tests, so this pins the *property* -- two
+    distinct files, the first one's content intact -- rather than the stamp's
+    own format, which a fix is free to change.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://first/mcp"}})
+    config = _config(home)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        @override
+        def now(cls, tz: Any = None) -> _FrozenDatetime:
+            return cls(2024, 1, 1, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(mcp_config_module, "datetime", _FrozenDatetime)
+
+    first_backup = config.back_up()
+    assert first_backup is not None
+    first_bytes = first_backup.read_bytes()
+
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://second/mcp"}})
+    second_backup = config.back_up()
+
+    assert second_backup is not None
+    assert first_backup != second_backup, (
+        "the same UTC second must not make the second call reuse the first's name"
+    )
+    backups = sorted(home.glob(f"{CONFIG_FILENAME}.*.backup"))
+    assert len(backups) == 2
+    assert first_backup.read_bytes() == first_bytes, (
+        "the first backup's content must survive the second call"
+    )
+
+
+def test_a_failing_backup_is_installs_own_failure_not_an_exception(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-18, issue #27. `install`'s port contract (`McpClientConfig`) is
+    "returns a failure message, or empty" -- it never raises. Reproduced
+    directly: a `PermissionError` out of `back_up` (an unwritable home, a full
+    disk, a symlink race) used to propagate straight out of `install`, which
+    the removal branch is not allowed to do -- origin/main's `install` was
+    total.
+    """
+    _write_servers(home, {SERVER_NAME: {"type": "http", "url": "http://old/mcp"}})
+    runner = FakeClaude(home / CONFIG_FILENAME)
+    config = ClaudeCodeMcpConfig(home=home, runner=runner)
+
+    def _raise(self: ClaudeCodeMcpConfig) -> Path | None:
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(ClaudeCodeMcpConfig, "back_up", _raise)
+
+    failure = config.install(ConnectionSpec())
+
+    assert failure != ""
+    assert "back" in failure.lower(), "the failure must name the backup, not just fail generically"
+    assert runner.commands == [], "claude must never be invoked once the backup itself failed"
+    assert config.installed_entry() == {"type": "http", "url": "http://old/mcp"}
 
 
 # -- Removing --------------------------------------------------------------
