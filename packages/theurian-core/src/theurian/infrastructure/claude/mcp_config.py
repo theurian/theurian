@@ -1,8 +1,11 @@
 """Installing the MCP connection into Claude Code (ADR-0011, ADR-0012, SEC-5).
 
-**Theurian reads ``~/.claude.json``. It never writes it.** Every write is
-delegated to ``claude mcp add`` / ``claude mcp remove``, for three reasons that
-were each confirmed against the real CLI rather than assumed:
+**Theurian reads ``~/.claude.json``. It never writes it.** Every write to the
+config *itself* is delegated to ``claude mcp add`` / ``claude mcp remove``, for
+three reasons that were each confirmed against the real CLI rather than
+assumed. The one exception is the timestamped ``.backup`` sibling
+:meth:`ClaudeCodeMcpConfig.back_up` writes beside it before a destructive
+change (SEC-18) -- a copy sitting next to the config, never the config:
 
 1. That file is Claude Code's live state — model caches, project history,
    onboarding flags — not a configuration file Theurian has any business
@@ -33,6 +36,7 @@ back rather than by trusting an exit code, because "the command succeeded" and
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -55,6 +59,11 @@ CONFIG_FILENAME: Final = ".claude.json"
 
 #: The other MCP server Theurian expects to meet. Detected, never modified.
 SERENA: Final = "serena"
+
+#: A bound on `back_up`'s same-second disambiguation loop -- generous enough
+#: that no real run of `install` hits it, small enough that a bug forcing every
+#: attempt to collide fails fast instead of spinning.
+_MAX_BACKUP_ATTEMPTS: Final = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,17 +232,21 @@ class ClaudeCodeMcpConfig:
             # setup calls `install` only when there is nothing installed, and the
             # sole route here is a race -- an entry appearing between the probe
             # and this call, in which nobody has been shown a difference or asked
-            # anything. The comment this replaces said "the caller has already
-            # shown the difference and asked", which described a workflow that
-            # does not exist.
+            # anything.
             #
-            # Kept rather than deleted: whether a branch only a race can reach
-            # should exist at all is a decision for review, not a cleanup. If it
-            # stays, note that it destroys the user's entry with no backup taken
-            # here -- `back_up` is a separate call this path does not make, where
-            # `LaunchAgentManager.install` calls its own before overwriting.
-            # That decision is filed for Milestone 6 as
-            # https://github.com/theurian/theurian/issues/27 (SEC-18).
+            # Backed up first (SEC-18), matching `LaunchAgentManager.install`: the
+            # entry `mcp remove` is about to destroy is real user state, and a
+            # failed backup aborts the removal rather than risking it. The bytes
+            # surviving on disk next to the config is what "recoverable" means
+            # here -- no report yet names the backup's path to the caller (#126).
+            try:
+                self.back_up()
+            except OSError as exc:
+                return (
+                    f"Could not back up {self.path} before replacing the entry: "
+                    f"{exc}. Free space or fix permissions in your home "
+                    f"directory, then run setup again."
+                )
             removal = self._claude("mcp", "remove", SERVER_NAME, "--scope", "user")
             if not removal.ok:
                 return f"Could not remove the existing entry: {removal.output}"
@@ -282,14 +295,78 @@ class ClaudeCodeMcpConfig:
         Taken even though `claude` owns the write: the removal step is real
         destruction of whatever the user had, and it should stay recoverable
         (SEC-18).
+
+        Created via ``O_CREAT | O_EXCL`` at mode 0600 in the same call that
+        creates the file, not by writing and then `chmod`-ing: the config being
+        copied is Claude Code's live state, a bearer token included, and a
+        write-then-chmod leaves a window in which the copy is as readable as the
+        process umask allows. That mode argument is itself ANDed with the
+        process umask the same as any `creat()` call, so it is re-asserted with
+        `os.fchmod` on the descriptor immediately after `os.open` returns and
+        before any byte is written, keeping the file's mode at 0600 -- never
+        wider -- from before it has content.
+
+        The name carries a second-precision timestamp, so two calls landing in
+        the same UTC second collide on it; `O_EXCL` turns that collision into
+        `FileExistsError` instead of silently overwriting the first backup, and
+        a numeric suffix (``-1``, ``-2``, ...) is appended before ``.backup``
+        until a free name is found, so both copies survive.
+
+        The write is checked for completeness rather than trusted: `os.write`
+        may report having written fewer bytes than given without that being an
+        error condition of its own, and a short write here is treated as
+        unrecoverable rather than retried. Any failure along that path --
+        including an incomplete write -- unlinks the partial candidate before
+        propagating `OSError`, because a truncated file under a `.backup` name
+        is not a backup for `install` to fall back on.
         """
         if not self.path.is_file():
             return None
+        payload = self.path.read_bytes()
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        backup = self.path.with_name(f"{CONFIG_FILENAME}.{stamp}.backup")
-        backup.write_bytes(self.path.read_bytes())
-        backup.chmod(0o600)
-        return backup
+        for attempt in range(_MAX_BACKUP_ATTEMPTS):
+            suffix = f"-{attempt}" if attempt else ""
+            candidate = self.path.with_name(f"{CONFIG_FILENAME}.{stamp}{suffix}.backup")
+            try:
+                descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            try:
+                # Re-assert 0600 before any content exists: `os.open`'s mode
+                # argument is itself ANDed with the process umask, so an
+                # unusual umask (e.g. 0400) can leave the file wider or
+                # narrower than what was asked for.
+                os.fchmod(descriptor, 0o600)
+                _write_all(descriptor, payload)
+            except OSError:
+                os.close(descriptor)
+                candidate.unlink(missing_ok=True)
+                raise
+            os.close(descriptor)
+            return candidate
+        msg = (
+            f"Could not find a free backup name for {self.path} at {stamp} "
+            f"after {_MAX_BACKUP_ATTEMPTS} attempts."
+        )
+        raise OSError(msg)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    """Write every byte of *payload* to *descriptor*, or fail without retrying.
+
+    POSIX permits `write()` to write fewer bytes than requested and still
+    return normally -- that is not an error condition the OS reports on its
+    own, so an unchecked call can silently leave a truncated file behind. A
+    backup this small has no legitimate reason to be accepted only partially,
+    so a short write is treated as unrecoverable rather than retried:
+    retrying into the resource condition that caused it (a full disk,
+    `RLIMIT_FSIZE`) either spins for no benefit or hits the same wall on the
+    very next call.
+    """
+    sent = os.write(descriptor, payload)
+    if sent != len(payload):
+        msg = f"short write to {descriptor}: wrote {sent} of {len(payload)} bytes"
+        raise OSError(msg)
 
 
 def _differing_names(installed: Mapping[str, Any], wanted: Mapping[str, Any]) -> tuple[str, ...]:

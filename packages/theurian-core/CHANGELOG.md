@@ -99,6 +99,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   this fix — it closes the write side only; nothing here rewrites canonical
   state or changes what `knowledge.search`/`knowledge.get` return.
 
+- **`ClaudeCodeMcpConfig.install` now backs up `~/.claude.json` before the
+  race-only removal branch destroys the user's entry** (SEC-18, closes
+  [#27](https://github.com/theurian/theurian/issues/27)), matching the two
+  sibling installers, `LaunchAgentManager` and `SystemdUserManager`, which
+  already back up before overwriting their own files. The backup file is
+  created 0600 from birth, via `O_CREAT | O_EXCL` rather than write-then-
+  `chmod`, and two backups landing in the same UTC second get distinct names
+  instead of overwriting each other. A backup that cannot be written aborts
+  the removal and is reported as `install`'s own failure string, not raised
+  as an uncaught `OSError`.
+
 ### Documentation
 
 - **FR-R1 per-axis disposition register**
