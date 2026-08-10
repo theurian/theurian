@@ -115,17 +115,21 @@ flowchart TB
    > `KnowledgeStatus` has six values, so it partitions; a validity window is a
    > pair of timestamps compared against a moment the caller picks per query
    > (`ValidityPeriod.contains`), so a component built from it would mint a tree
-   > per distinct window and still name no tree for a given `asOf`. It would also
-   > go stale with no edit — `valid_to` passing moves an item out of the window
-   > while its content is unchanged — so a forest keyed on it would rebuild on a
-   > clock rather than on a change. **Harm**: a node summarising an expired child
-   > alongside a valid one costs routing and recall and nothing else, because the
-   > filter runs at the leaf. `CanonicalVisibility.at_moment` drops each ranked
-   > row whose item's window does not contain the moment, after `cleared` and
-   > before anything is returned, so an expired child's text cannot reach a
-   > caller through a node that mixed it in. With `asOf` omitted the filter does
-   > not run at all, so a mixed node discloses nothing a caller could not get by
-   > omitting the parameter — `asOf` is a refinement, not a withholding.
+   > per distinct window and still name no tree for a given `asOf`. A component
+   > derived from the window instead — a "currently valid" boolean — would also
+   > go stale with no edit, because `valid_to` passing moves an item out of the
+   > window while its content is unchanged, so a forest keyed on *that* would
+   > rebuild on a clock rather than on a change. The window pair itself is
+   > clock-stable, so this second objection reaches only the derived form; what
+   > rules out the pair is the cardinality argument alone. **Harm**: a node
+   > summarising an expired child alongside a valid one costs routing and recall
+   > and nothing else, because the filter runs at the leaf.
+   > `CanonicalVisibility.at_moment` drops each ranked row whose item's window
+   > does not contain the moment, after `cleared` and before anything is
+   > returned, so an expired child's text cannot reach a caller through a node
+   > that mixed it in. With `asOf` omitted the filter does not run at all, so a
+   > mixed node discloses nothing a caller could not get by omitting the
+   > parameter — `asOf` is a refinement, not a withholding.
    >
    > That is the same shape as the `status` argument — routing and recall, no
    > disclosure — resolved the other way. What decides it is not the harm but the
@@ -133,6 +137,20 @@ flowchart TB
    > on a column the builder fills, and a component can partition it. `validity`
    > is a query-time comparison against a caller's moment, and no partition of it
    > exists to build.
+   >
+   > **The residual this leaves, recorded so the acceptance is a decision and not
+   > an oversight.** The harm argument above holds while a node carries scopes and
+   > no text. Once decision 5's node carries text, a summary built from a child
+   > outside the window reaches a caller who pinned `asOf`: `at_moment` compares
+   > the window of the one item a ranked row belongs to
+   > (`item.validity.contains`), and a summary of several items has no single
+   > window to compare — filtering the node does not unmix its content, which is
+   > this ADR's own rejected alternative on a different axis. It is accepted, on
+   > narrower ground than "no disclosure": the same caller reads that child's own
+   > chunks by omitting `asOf`, so nothing is withheld from anyone — `asOf` is a
+   > caller-chosen refinement, not an access boundary — and, per the paragraph
+   > above, there is no partition of a window to build a component out of
+   > instead. The cost is accuracy at a pinned moment, not disclosure.
    >
    > What has to move for this. `Scope.digest` is already total over five
    > components — it is `ContentHash.of_text` of `key`, which joins exactly those
@@ -181,6 +199,22 @@ flowchart TB
    >
    > The owed test named in Compliance now has to be total over six components,
    > not five.
+   >
+   > **Landed in Milestone 6, by the CL that added `domain/raptor.py`.**
+   > Everything above this note is the plan as it stood when the amendment was
+   > written; the statements below are the ones that have since become history
+   > rather than open work, marked here so a later reader does not take the
+   > paragraphs above for the current state.
+   > `Scope.key` joins six components, `status` last (`domain/values.py`). The
+   > node constructor that refuses children which disagree on any component
+   > exists: `SummaryNode.__post_init__` in `domain/raptor.py`, raising
+   > `InvariantViolationError`. The five-component population listed above is
+   > corrected in every file it names except `docs/architecture/raptor.md`, which
+   > is reconciled whole in its own CL; `packages/theurian-core/CHANGELOG.md` is
+   > history and stays as written, as that list said. What is *not* landed is
+   > everything downstream of the value type — no builder constructs a node, no
+   > table stores one, no traversal reads one — so the routing-and-recall cost
+   > argued above is still argued about work that has not been built.
 2. Three levels: Document Tree (within one knowledge item), Domain Tree (within
    one namespace/kind), Global Catalog Tree (within one scope tuple).
 3. Incremental rebuild: changed item → its Document Tree → the affected part of
@@ -715,9 +749,9 @@ Still owed, with the milestone that will satisfy it:
   > What the file holds today.
   > `test_a_node_refuses_a_child_that_differs_in_one_component` is parametrised
   > over all six components (`project_id`, `tenant_id`, `sensitivity`,
-  > `acl_group`, `namespace`, `status`), one differing value at a time, with one
-  > matching child alongside the mismatched one so a constructor checking only
-  > the first or last child cannot pass it.
+  > `acl_group`, `namespace`, `status`), one differing value at a time, with a
+  > matching child on each side of the mismatched one, so neither a
+  > first-child-only nor a last-child-only check can pass it.
   > `test_a_node_with_no_children_is_refused` is the empty-child-tuple case,
   > distinct because there is no scope to compare.
   > `test_a_node_accepts_children_that_all_share_its_scope` is the positive
@@ -772,6 +806,15 @@ the decision it belongs to states a property that is otherwise only an argument:
   and the pressure is to weaken it. Forest side asserted non-empty, for the
   reason above. This is the test that goes RED if summary rows ever land in
   `chunks`, and it is why that effect is left unmeasured.
+- **Each declared child scope is derived from the child it summarises** — the
+  half of decision 1's structural guarantee `SummaryNode` cannot hold, owed with
+  the builder CL. `SummaryNode.children` are *declarations*: a builder that
+  passes the parent's own scope n times satisfies the type without consulting a
+  single child, and the construction-time refusal never fires because there is
+  nothing for it to disagree with. The obligation is stated in
+  `domain/raptor.py`'s module docstring; what discharges it is a test over a real
+  build, comparing each declared scope against the scope of the node or leaf it
+  was summarised from (Milestone 6).
 - **A summary's text is a function of its children and its scope, and of nothing
   else** — what decision 6's added constraint claims, and **carrier (a) only**.
   Summarise the same children under the same scope in two corpora that differ
