@@ -334,6 +334,12 @@ def names_a_remedy(text: str, *, commands: frozenset[str], tools: frozenset[str]
 #: :func:`test_exactly_these_commands_notice_a_single_damaged_cell`.
 CLI_SWEEP: Final = (
     ("index", "build"),
+    # Swept rather than excluded, though it never opens the canonical store: it
+    # resolves the project through the registry and prints *filenames*, and the
+    # sweep's question is what reaches a caller's output, not which file the
+    # damage was in. A `gc` that echoed a resolved path or a pointer fragment
+    # would be caught here and nowhere else.
+    ("index", "gc"),
     ("index", "status"),
     ("migrate", "status"),
     ("migrate", "validate"),

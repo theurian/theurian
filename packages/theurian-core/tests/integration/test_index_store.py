@@ -7,7 +7,7 @@ external-content triggers are exactly the things a fake would paper over.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -16,11 +16,13 @@ import pytest
 
 from theurian.domain.chunking import Chunk
 from theurian.infrastructure.sqlite.index_scan import SCAN_TERMS, scan_statement
+from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import (
     MAX_QUERY_CHARS,
     MAX_QUERY_TERMS,
     IndexableChunk,
     IndexBuildError,
+    IndexUnreadableError,
     SqliteIndexStore,
     fts5_available,
 )
@@ -1431,3 +1433,143 @@ def test_a_limit_of_exactly_one_is_allowed(
 
     assert len(page.rows) == 1
     assert page.exhausted is False
+
+
+# -- The schema, pinned by version and by content (ADR-0024 decision 8) -------
+#
+# `INDEX_SCHEMA_VERSION - 1` is what most of the suite uses, and it cannot catch
+# a bump to the wrong number or a bump made without a matching DDL change. These
+# pin the literal and the two structures the M6 bump added, so a change to one
+# without the other fails here rather than shipping an index whose version and
+# shape disagree.
+
+
+def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStore) -> None:
+    """The literal, so a DDL change that forgets to bump -- or bumps wrong -- fails.
+
+    Three at the time of writing: version 3 added `chunks.derived` and
+    `chunk_derivation`. Asserted directly rather than against
+    `INDEX_SCHEMA_VERSION - 1`, because a relative check moves with the constant
+    and pins nothing about what the constant *is*.
+    """
+    assert store.schema_version() == INDEX_SCHEMA_VERSION
+    assert store.schema_version() == 3, (
+        "the index schema version changed. If a DDL change intended it, update this literal "
+        "and the CHANGELOG; if not, a bump slipped in without a schema change behind it"
+    )
+    assert store.is_searchable() is True
+
+
+def test_the_schema_carries_the_derivation_provenance_the_purge_walks(
+    store: SqliteIndexStore,
+) -> None:
+    """`chunks.derived` and `chunk_derivation`, which the transitive purge reads.
+
+    Nothing writes them yet -- RAPTOR is an empty package -- so without this the
+    columns could be dropped and every purge test would still pass on a corpus
+    that has no derived rows. The purge's whole reason to exist before RAPTOR is
+    that these are here first.
+    """
+    with closing(sqlite3.connect(store.path)) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(chunks)")}
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        derivation_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(chunk_derivation)")
+        }
+
+    assert "derived" in columns, "the `chunks.derived` flag is gone; the purge cannot find nodes"
+    assert "chunk_derivation" in tables, "the provenance table the transitive purge walks is gone"
+    assert derivation_columns == {"node_chunk_id", "source_chunk_id"}, (
+        f"the derivation edge changed shape: {sorted(derivation_columns)}"
+    )
+
+
+def test_a_built_index_is_always_in_wal_mode(store: SqliteIndexStore) -> None:
+    """The premise `_open_read`'s pragmas rest on (ADR-0024 decision 7, M-5).
+
+    `_open_read` runs `PRAGMA journal_mode = WAL` on a *read-only* connection.
+    That only reports the mode when the file is already WAL; on a DELETE-mode
+    file it tries to set it and raises `attempt to write a readonly database`.
+    Every index is created WAL, so the pragma is harmless -- but that is a
+    property of `create`, not of SQLite, and this is what keeps it true.
+    """
+    store.add_chunks([_indexable("c1", "retention and isolation per namespace")])
+
+    with closing(sqlite3.connect(store.path)) as connection:
+        mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+
+    assert mode == "wal", (
+        f"a built index is in {mode!r} mode, not WAL. `_open_read` runs "
+        f"`PRAGMA journal_mode = WAL` on a read-only connection, which raises on a "
+        f"non-WAL file -- so every read of this build would fail as unreadable"
+    )
+
+
+# -- Every read refuses a missing file rather than creating one (#103 item 5) --
+
+#: The read surface of the store. Each opens a connection, and each must open it
+#: `mode=ro`, or a bare `sqlite3.connect` conjures an empty database at a path
+#: that is not there -- which is how a reaped build turned "fall back to the
+#: substring scan" into "every later request fails with `no such table`". A list
+#: so a read method added later that forgets `_open_read` is a missing entry
+#: here, not a silent hole. Queries are long enough to reach the SQL: a
+#: single-character substring query short-circuits before opening anything.
+_READS_THAT_MUST_NOT_CONJURE_A_FILE: tuple[
+    tuple[str, Callable[[SqliteIndexStore], object]], ...
+] = (
+    ("metadata", lambda store: store.metadata()),
+    ("chunk_count", lambda store: store.chunk_count()),
+    ("chunk_texts", lambda store: store.chunk_texts(["r0#0"], project_id="demo")),
+    ("texts", lambda store: store.texts(["r0#0"], project_id="demo")),
+    ("search_lexical", lambda store: store.search_lexical("token", project_id="demo", limit=10)),
+    (
+        "search_substring",
+        lambda store: store.search_substring("token", project_id="demo", limit=10),
+    ),
+    ("search_dense", lambda store: store.search_dense([0.1, 0.2, 0.3], project_id="demo")),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "read"),
+    _READS_THAT_MUST_NOT_CONJURE_A_FILE,
+    ids=[name for name, _ in _READS_THAT_MUST_NOT_CONJURE_A_FILE],
+)
+def test_a_read_of_a_missing_index_creates_no_file(
+    tmp_path: Path, name: str, read: Callable[[SqliteIndexStore], object]
+) -> None:
+    """ADR-0024 decision 7, over the whole read surface rather than one method.
+
+    A `theurian index gc` unlink can leave a pointer aimed at a file that is
+    gone. `sqlite3.connect` on that path *creates* an empty database there, so
+    every read must open `mode=ro`, which raises instead. The failure is uniform
+    -- `IndexUnreadableError` -- and what is asserted here is the invariant behind
+    it: no read leaves a file where there was none.
+    """
+    missing = tmp_path / "theurian-index-gone.sqlite"
+    store = SqliteIndexStore(missing)
+
+    with pytest.raises(IndexUnreadableError):
+        read(store)
+
+    assert not missing.exists(), (
+        f"a read of a missing index created a file: {name} opened its connection without `mode=ro`"
+    )
+
+
+def test_the_answering_reads_report_a_safe_value_for_a_missing_index(tmp_path: Path) -> None:
+    """`schema_version` and `is_searchable` answer rather than raise, and create nothing.
+
+    The two reads a caller uses to *decide* whether a file is usable must never
+    raise -- `theurian index status` promises so -- and must not create the file
+    they are asked about either.
+    """
+    missing = tmp_path / "theurian-index-gone.sqlite"
+    store = SqliteIndexStore(missing)
+
+    assert store.schema_version() == 0
+    assert store.is_searchable() is False
+    assert not missing.exists(), "deciding whether a missing index is usable created it"

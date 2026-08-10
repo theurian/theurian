@@ -22,6 +22,7 @@ here is re-opening that, so the reason is recorded where the method was.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.chunking import IndexableChunk
@@ -60,6 +61,34 @@ class IndexStore(Protocol):
 
     def add_chunks(self, chunks: Sequence[IndexableChunk]) -> int:
         """Insert chunks. Returns how many were written."""
+        ...
+
+    def derive_purged(
+        self,
+        target: Path,
+        *,
+        revision_ids: Sequence[str],
+        index_build_id: str,
+        state_hash: str,
+    ) -> int:
+        """Write this build minus `revision_ids` to `target`. Returns rows removed.
+
+        **A purge is a build** (ADR-0024). It produces a new file and a pointer
+        swap, exactly as :meth:`create` does, and never writes to the file this
+        store already names — which is what lets a search keep reading the
+        published build while a purge runs.
+
+        The count returned may exceed the chunks of `revision_ids` alone, and
+        that is the contract rather than a surprise: withdrawal is transitive.
+        A row derived from a withdrawn chunk holds its content — a summary is not
+        withdrawn by deleting the passage it summarises — so everything reachable
+        from a withdrawn chunk goes with it, and so does any derived row whose
+        provenance cannot be resolved.
+
+        All-or-nothing. An implementation that cannot produce a build fit to
+        publish must leave no file behind, because what publishes a build is a
+        pointer swap and no later stage inspects it.
+        """
         ...
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:

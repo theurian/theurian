@@ -3759,3 +3759,129 @@ async def test_a_stale_index_still_names_the_canonical_state_that_answered(
 
     assert search["retrieval"]["stale"] is True, "an index that is not behind cannot show this"
     assert search["retrieval"]["snapshotId"] == status["stateHash"]
+
+
+@pytest.mark.asyncio
+async def test_a_gc_unlink_between_a_requests_reads_does_not_tear_it(
+    indexed: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#103 item 4, pinned through `hybrid_answer` rather than through the store.
+
+    A search makes several index reads -- `embedding_model`, the retrieval, then
+    `chunk_texts`. `hybrid_answer` opens one read connection for the request
+    (`SqliteIndexStore.session`), so a `theurian index gc` that unlinks the build
+    between two of those reads does not tear the request: on POSIX the held
+    descriptor keeps the inode readable after the name is gone.
+
+    **This is the last load-bearing line of the PR that nothing pinned.** Making
+    `session()` a no-op -- each read opening its own connection again -- left the
+    whole suite green, because every other test constructs a store and reads it
+    once. Here the second read, after the unlink, opens a path that is gone and
+    the whole request degrades to the substring-scan fallback.
+
+    The unlink is deterministic rather than timed: `metadata()` is the first
+    index read inside the session, reached through `embedding_model` -- which is
+    why `useDense=True`, the parameter that makes `embedding_model` consult the
+    stored model. Wrapping it to unlink after it returns puts the unlink between
+    the first read and every one that follows.
+    """
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(indexed.load()["demo"]["rootPath"])
+    build = next((root / ".theurian/state").glob("theurian-index-*.sqlite"))
+
+    real_metadata = SqliteIndexStore.metadata
+    fired = 0
+
+    def unlink_after_the_first_read(self: SqliteIndexStore) -> dict[str, object]:
+        nonlocal fired
+        result = real_metadata(self)
+        if fired == 0:
+            build.unlink()
+        fired += 1
+        return result
+
+    monkeypatch.setattr(SqliteIndexStore, "metadata", unlink_after_the_first_read)
+
+    result = await _call(
+        indexed, "knowledge.search", projectId="demo", query="token", useDense=True
+    )
+
+    assert fired >= 1, (
+        "the hook never fired, so the unlink did not land mid-request and this test proved "
+        "nothing -- `embedding_model` no longer reads `metadata()`, or `useDense` stopped "
+        "reaching it"
+    )
+    assert result["retrieval"]["indexed"] is True, (
+        "the request tore on a `gc` unlink between two of its reads. Without the held session "
+        "connection the second read opened a path that was gone, and the whole request fell "
+        "back to the substring scan -- `retrieval.fallbackReason` is "
+        f"{result['retrieval'].get('fallbackReason')!r}"
+    )
+    assert result["count"] >= 1, "the index answered, so it must have returned the matching hit"
+    assert not build.exists(), (
+        "a read recreated the reaped build: `mode=ro` is what stops `sqlite3.connect` from "
+        "conjuring an empty database at the deleted path"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_gc_unlink_in_the_acquisition_window_degrades_rather_than_raising(
+    indexed: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-1's fix, which no other test holds (ADR-0024 point 7).
+
+    There are two windows a `theurian index gc` unlink can land in, and they
+    need different code and different tests:
+
+    - *between two reads inside the session* -- the held descriptor survives it,
+      pinned by `test_a_gc_unlink_between_a_requests_reads_does_not_tear_it`;
+    - *before the session is acquired* -- between `_searchable_file`'s
+      `is_searchable()` returning True and `hybrid_answer` opening the session.
+      Acquiring the session opens the file, which is now gone, so acquisition
+      itself raises `IndexUnreadableError`.
+
+    The fix is that the `with index.session()` sits **inside** the `try`, so an
+    acquisition failure is caught by `except IndexBuildError` and the request
+    degrades to the substring scan. Move the `with` outside the `try` and that
+    error escapes to the agent as a tool error -- and no test noticed, which is
+    what this closes.
+
+    The unlink is placed in the window deterministically: `is_searchable()` is
+    the last thing that touches the file before acquisition, so this wraps it to
+    unlink the build after it returns True.
+    """
+    from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
+
+    root = Path(indexed.load()["demo"]["rootPath"])
+    build = next((root / ".theurian/state").glob("theurian-index-*.sqlite"))
+
+    real_is_searchable = SqliteIndexStore.is_searchable
+    fired = False
+
+    def unlink_in_the_acquisition_window(self: SqliteIndexStore) -> bool:
+        nonlocal fired
+        usable = real_is_searchable(self)
+        if usable and not fired:
+            build.unlink()
+            fired = True
+        return usable
+
+    monkeypatch.setattr(SqliteIndexStore, "is_searchable", unlink_in_the_acquisition_window)
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="token")
+
+    assert fired, (
+        "the hook never fired, so the unlink did not land in the acquisition window -- "
+        "`_searchable_file` no longer gates on `is_searchable()` before the session opens"
+    )
+    retrieval = result["retrieval"]
+    assert retrieval["indexed"] is False, (
+        "a `gc` unlink between the searchability check and session acquisition must degrade "
+        "to the substring scan, not raise: with `with index.session()` outside the `try`, the "
+        "acquisition `IndexUnreadableError` reaches the agent as a tool error"
+    )
+    assert retrieval["mode"] == "substring"
+    assert retrieval["fallbackReason"] == "index-unreadable"
+    assert result["count"] >= 1, "the substring scan still answers from the canonical store"
+    assert not build.exists(), "a read recreated the reaped build; `mode=ro` must prevent it"

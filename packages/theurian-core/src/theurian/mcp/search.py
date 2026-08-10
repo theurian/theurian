@@ -417,7 +417,21 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     current_state_hash = str(state.state_hash)
     stale = published.state_hash != current_state_hash
 
-    service = RetrievalService(SqliteIndexStore(published.path), HashingEmbedding())
+    # One store per request, and one *connection* per request inside it.
+    #
+    # The fresh-instance rule used to exist for `SqliteIndexStore._scan_cache`,
+    # which would otherwise have leaked one caller's withheld-row count into
+    # another caller's latency. That cache is gone (#16) and its reason with it;
+    # `session()` below is what replaces the *reason* rather than only the rule.
+    # It holds one read connection for the whole request, so the several index
+    # reads a search makes cannot straddle a `theurian index gc` that unlinks the
+    # build between them (ADR-0024 decision 7). Measured, one request of four
+    # index reads with the unlink after the first: 1 of 4 answered with a
+    # connection per call, 4 of 4 inside a session -- and the per-call path left
+    # an empty database recreated at the reaped path, which is what made the
+    # failure permanent rather than transient.
+    index = SqliteIndexStore(published.path)
+    service = RetrievalService(index, HashingEmbedding())
     search = SearchRequest(
         query=query,
         project_id=project_id,
@@ -455,31 +469,45 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
         """
         return service.search(search, visible)
 
+    # The session covers every index read in the block below. It does **not**
+    # cover `_searchable_file`'s `is_searchable()`, which ran earlier on its own
+    # connection -- so a request opens the index twice, once to decide whether it
+    # is usable and once to read it, and only the second is held. That first open
+    # is what leaves the window this nesting exists to survive.
     try:
-        # Built before the results exist, because `limit` and the budget are
-        # charged against it and the caller pays for it whether or not anything
-        # matched. `mode` and the two token counts are filled in below; nothing
-        # else here depends on what was found — `embeddingModel` included, which
-        # is why it is asked of the service rather than read off an outcome.
-        provisional = _index_report(
-            published,
-            embedding_model=service.embedding_model(use_dense=use_dense),
-            stale=stale,
-            snapshot_id=current_state_hash,
-        )
-        resolved = ResultGate(
-            store_factory=SqliteCanonicalStore, shape=_shaper(datetime.now(UTC))
-        ).admit(
-            ResultRequest(
-                database=database,
-                project_id=project_id,
-                include_unapproved=include_unapproved,
-                limit=limit,
-                budget_tokens=budget_tokens,
-                reserved_tokens=_envelope_tokens(project_id, query, provisional),
-            ),
-            candidates,
-        )
+        # Acquired *inside* the `try`, and the nesting is the whole of it.
+        # Acquiring the session opens the file, which can fail: `theurian index
+        # gc` may have unlinked the build between the check above and this line,
+        # a window measured at 3-18 us. With the `with` outside, that
+        # `IndexUnreadableError` escaped `except IndexBuildError` and reached the
+        # agent as a tool error -- where the same window on the previous design
+        # degraded cleanly to the substring scan. A change made for resilience
+        # must not remove a fallback.
+        with index.session():
+            # Built before the results exist, because `limit` and the budget are
+            # charged against it and the caller pays for it whether or not anything
+            # matched. `mode` and the two token counts are filled in below; nothing
+            # else here depends on what was found — `embeddingModel` included, which
+            # is why it is asked of the service rather than read off an outcome.
+            provisional = _index_report(
+                published,
+                embedding_model=service.embedding_model(use_dense=use_dense),
+                stale=stale,
+                snapshot_id=current_state_hash,
+            )
+            resolved = ResultGate(
+                store_factory=SqliteCanonicalStore, shape=_shaper(datetime.now(UTC))
+            ).admit(
+                ResultRequest(
+                    database=database,
+                    project_id=project_id,
+                    include_unapproved=include_unapproved,
+                    limit=limit,
+                    budget_tokens=budget_tokens,
+                    reserved_tokens=_envelope_tokens(project_id, query, provisional),
+                ),
+                candidates,
+            )
     except IndexBuildError:
         # The file passed the version check and then could not answer: a
         # truncated copy, a dropped table, a metadata row that outlived the

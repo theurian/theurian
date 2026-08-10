@@ -3,10 +3,23 @@
 A composition root: this is where the abstract builder meets the SQLite store,
 the SQLite index, and the default embedder (ADR-0003).
 
-Building writes a *new* file and then swaps a pointer. The old build stays on
-disk until the next build replaces it, so a search running while a rebuild
-happens keeps reading a consistent index rather than one being written
-underneath it.
+Building writes a *new* file and then swaps a pointer, and the old build stays on
+disk until `theurian index gc` reclaims it.
+
+**That sentence was false from Milestone 5 until now, and it is worth saying
+which part.** It claimed a search running across a rebuild "keeps reading a
+consistent index rather than one being written underneath it". Publishing reaped
+every build the pointer did not name, so the old file was gone before the command
+returned; and `SqliteIndexStore` opened a connection per call, so there was no
+reader for the old file to stay consistent *for*. The prose described a guarantee
+before the mechanism existed to make it true, which is how it survived the
+amendment that withdrew it (ADR-0022 point 6).
+
+Both halves now exist. Publishing no longer deletes, and reclaiming is
+`theurian index gc`; a search holds one read connection for the duration of a
+request (`SqliteIndexStore.session`, ADR-0024 point 7), so a request already in
+flight finishes against the build it started on even if `gc` unlinks it
+underneath.
 """
 
 from __future__ import annotations
@@ -15,7 +28,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 import typer
 
@@ -23,7 +36,6 @@ from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     ProjectPaths,
-    read_active_index,
     read_active_index_pointer,
 )
 from theurian.domain.context import RequestContext
@@ -86,9 +98,16 @@ def index_build(
         index_factory=SqliteIndexStore,
         embedder=None if no_embeddings else HashingEmbedding(),
     )
+    # Built under a name `theurian index gc` does not reap, then renamed into
+    # place. `gc` reclaims every build the pointer does not name, and a build in
+    # progress is not yet named by it, so without this the two race -- and the
+    # loser is the build, silently, mid-write. `os.replace` is atomic on POSIX,
+    # so a file under the completed name is complete by construction. The purge
+    # writes under the same discipline (`index_purge.purge_into`).
+    final_path = paths.index_for(index_build_id)
     request = IndexRequest(
         database=paths.state / active.database_filename,
-        index_path=paths.index_for(index_build_id),
+        index_path=Path(f"{final_path}.building"),
         project_id=context.project_id.value,
         state_hash=str(active.state_hash),
         index_build_id=index_build_id,
@@ -100,6 +119,8 @@ def index_build(
         report, request, context.project_id.value, as_json=as_json
     ):
         return
+    os.replace(request.index_path, final_path)  # noqa: PTH105 - the atomic primitive
+    report = {**report, "indexPath": str(final_path)}
 
     _publish(
         paths,
@@ -108,7 +129,10 @@ def index_build(
         project_id=context.project_id.value,
         indexes_unapproved=include_unapproved,
     )
-    _reclaim(paths, keep=index_build_id)
+    # Publishing does not reclaim (ADR-0024 point 6). Reaping the previous build
+    # here is what made ADR-0022's "the previous build is not deleted" false, and
+    # measured against a reader it cost 2,627 errors against 40 answered searches
+    # in 1.5 seconds. `theurian index gc` reclaims, explicitly.
     _emit({**report, "published": True}, as_json=as_json)
 
 
@@ -366,41 +390,200 @@ def _remedy(*, stale: bool, needs_apply: bool, orphaned: bool, pointer_corrupt: 
     return ""
 
 
-def _reclaim(paths: ProjectPaths, *, keep: str) -> None:
-    """Delete superseded index builds — only those the pointer does not name.
+#: Filenames `theurian index gc` will consider at all.
+#:
+#: **The prefix is the whole safety property, not a tidiness convention.**
+#: `theurian-state-<hash>.sqlite` -- the canonical store, which is *not* derived
+#: and *not* disposable -- lives in the same directory. A glob that lost this
+#: prefix would reclaim it, and the suite stayed green when exactly that mutation
+#: was applied. ADR-0022 point 2 says the prefix is load-bearing for the same
+#: reason, one layer up: "a glob that could not tell them apart would hand a
+#: retrieval index to the canonical store".
+INDEX_FILENAME_PREFIX: Final = "theurian-index-"
 
-    The first version kept whatever id *this* process had built and claimed
-    POSIX would keep an in-use file readable until its last handle closed. Both
-    were wrong:
 
-    - ``SqliteIndexStore`` holds no handle. It opens and closes per call, and one
-      search opens several connections, so every gap between them is a window in
-      which the file can vanish. Worse, ``sqlite3.connect`` then *creates* an
-      empty database at the deleted path, which defeats the "no index file, fall
-      back" branch and surfaces a raw `no such table` to the agent.
-    - Two concurrent builds would each delete the other's file, leaving whichever
-      published first pointing at nothing.
-    - A build that had finished writing its file but not yet published lost it to
-      whichever build published first, and then published a pointer to nothing.
-      So only builds *older* than the published one are reclaimed. Index build
-      ids are ULIDs, so lexical order is creation order: a greater id can only
-      belong to a build that started later and has not published yet, and a file
-      left behind by a crash is reclaimed by the next build to publish, whose id
-      is greater still.
+@index_app.command("gc")
+def index_gc(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report what would be reclaimed, and reclaim nothing."),
+    ] = False,
+    as_json: JsonOption = False,
+) -> None:
+    """Delete index builds the published pointer does not name.
 
-    So this reads the pointer and measures against what it names, rather than
-    against what this process happens to have produced — and parses the whole id
-    out of the filename first, because a substring comparison would treat a build
-    whose id merely contains another as related to it.
+    Publishing a build no longer deletes the one it replaced (ADR-0024 point 6),
+    so builds accumulate: measured on an 800-document corpus, ten publishes leave
+    ten files and 246.0 MB where one build is 24.5 MB. This is what reclaims
+    them, and it is explicit for the reason ADR-0007 and ADR-0017 already give
+    for state databases -- automatic deletion of a file something may still be
+    reading is the failure this command exists to avoid, not the service it
+    provides.
+
+    **What a search in flight is guaranteed, and from when.** A request that has
+    already entered `SqliteIndexStore.session` holds an open descriptor, and on
+    POSIX that keeps the file readable after its name is gone: measured, one
+    request of four index reads with the unlink landing after the first answered
+    4 of 4 inside a session against 1 of 4 with a connection per call. The
+    guarantee starts at session acquisition, not at the moment the request
+    arrived -- a request reaped between resolving the pointer and acquiring its
+    connection has no descriptor to protect, and degrades to the substring-scan
+    fallback rather than failing. A request that *starts* after the reap resolves
+    the pointer to the published build, which is never reclaimed here.
+
+    Four things are never reclaimed:
+
+    - the build the pointer names, and a `gc` run at all is refused when that
+      build's file is missing -- a pointer aimed at nothing is a broken project,
+      and treating every real build as unreferenced is the worst possible reading
+      of it;
+    - any build whose id sorts **above** the published one, which is a build that
+      started later and has not published yet;
+    - anything under a `.building` suffix, which is a writer that has not renamed
+      into place -- or the leftovers of one that crashed, which this cannot tell
+      apart and so reports rather than deletes;
+    - everything, when the pointer cannot be read at all, because a pointer this
+      command cannot parse is not evidence that any particular build is
+      unreferenced.
     """
-    published = read_active_index(paths)
-    current = str(published.get("indexBuildId", "")) if published else keep
+    from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
 
-    for stale in paths.state.glob("theurian-index-*.sqlite*"):
-        # `theurian-index-<id>.sqlite`, plus any `-wal` / `-shm` beside it.
-        build_id = stale.name[len("theurian-index-") :].split(".", 1)[0]
-        if build_id < current:
-            stale.unlink(missing_ok=True)
+    context, _ = _require_project(as_json)
+    paths = context.paths
+    pointer = read_active_index_pointer(paths)
+    if pointer.unreadable:
+        _fail(
+            "This project's active index pointer cannot be read, so nothing can be shown to "
+            "be unreferenced.",
+            remedy=INDEX_POINTER_REMEDY,
+            as_json=as_json,
+            code=1,
+        )
+        return
+
+    published = str((pointer.payload or {}).get("indexBuildId", ""))
+    if published and not paths.index_for(published).is_file():
+        _fail(
+            f"The published index pointer names build {published}, and that build's file is "
+            f"not there. Nothing was reclaimed.",
+            remedy=(
+                "Run `theurian index build` to publish a build that exists. Reclaiming now "
+                "would delete every build on disk, because none of them is the published one."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
+
+    reclaimable = _reclaimable(paths, published=published)
+    stranded = sorted(path.name for path in paths.state.glob(f"{INDEX_FILENAME_PREFIX}*.building"))
+    freed = sum(path.stat().st_size for path in reclaimable if path.is_file())
+    if not dry_run and not _reclaim(reclaimable, as_json=as_json):
+        return
+
+    _emit(
+        {
+            "publishedIndexBuildId": published or None,
+            "reclaimed": sorted(path.name for path in reclaimable),
+            "bytesReclaimed": freed,
+            # Reported, never deleted. A `.building` file is a live writer or a
+            # crash's leftovers and this cannot tell them apart, so telling the
+            # operator what is stranded is the honest half of the job; reclaiming
+            # it needs an age or liveness heuristic that does not exist yet.
+            "strandedBuilding": stranded,
+            "dryRun": dry_run,
+        },
+        as_json=as_json,
+    )
+
+
+def _reclaim(paths_to_remove: list[Path], *, as_json: bool) -> bool:
+    """Unlink each file, converting an OS refusal into this command's contract.
+
+    Returns whether the run may report success.
+
+    An unguarded loop is the CP-2 escape `_refuse_if_empty` was built for: a
+    read-only state directory raised a bare `PermissionError` through Typer as a
+    Rich traceback, exit 1, and **empty stdout under `--json`** -- for a
+    condition whose remedy is one `chmod`. `IsADirectoryError` did the same for a
+    directory named like a build.
+    """
+    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+
+    for path in paths_to_remove:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            _fail(
+                f"Reclaiming {path.name} failed: {exc.strerror or exc}.",
+                remedy=(
+                    "Check that .theurian/state/ is writable and holds no directory named "
+                    "like an index build, then run `theurian index gc` again. Nothing else "
+                    "was reclaimed."
+                ),
+                as_json=as_json,
+                code=1,
+            )
+            return False
+    return True
+
+
+def _reclaimable(paths: ProjectPaths, *, published: str) -> list[Path]:
+    """Index files the pointer does not name, and their sidecars.
+
+    **Two mechanisms, because neither covers the other's window**, and keeping
+    only the second is what a review caught:
+
+    - the `.building` suffix covers a writer that has not finished. Both the
+      builder and the purge write there and `os.replace` into position, so a file
+      under the completed name is complete by construction. The glob is
+      `*.sqlite` and not `*.sqlite*` for exactly this reason.
+    - **ULID ordering covers a writer that has finished and not yet published.**
+      `index_build` renames into place and *then* writes the pointer, and a `gc`
+      landing between those two reclaimed the file, after which the pointer named
+      nothing. Reproduced against the real CLI: 8 of 12 runs published a pointer
+      to a reclaimed build. `.building` cannot see this window -- the file is
+      already under its final name -- so the rule the old `_reclaim` carried is
+      restored beside it.
+
+    **Neither is complete alone, and in the shipped default there is no residual
+    at all.** The daemon serialises every write through one lock (ADR-0018), so
+    only one build or purge runs at a time and the ULID rule is exact: a finished
+    build's id is strictly above the published one until it publishes. A residual
+    appears only under the *unsupported* configuration of concurrent direct-CLI
+    builds against one project, and even then it is narrow -- a build reclaimed in
+    the write-to-publish window must have an id sorting **below** the published
+    one, which means another build minted a later id and published first while
+    this one was between its `os.replace` and its `_publish`. The only writers are
+    `index build` and the purge, both of which take the `.building` path, so an
+    unfinished build is never a candidate regardless. Recorded rather than closed
+    because the supported deployment does not reach it, and closing it for the
+    unsupported one is the single-writer interface ADR-0018 still owes the index.
+
+    Sidecars are matched explicitly rather than by widening the glob, because
+    `-wal` and `-shm` are the only two that exist and `*` would take `.building`
+    with them.
+
+    An empty `published` reclaims nothing. A project with no pointer has no
+    build that is *known* to be unreferenced -- every file on disk might be the
+    one a rebuild is about to name -- and deleting on that basis is how a `gc`
+    turns "you have not built an index yet" into "your index is gone".
+    """
+    if not published:
+        return []
+
+    reclaimable: list[Path] = []
+    for build in sorted(paths.state.glob(f"{INDEX_FILENAME_PREFIX}*.sqlite")):
+        build_id = build.name[len(INDEX_FILENAME_PREFIX) : -len(".sqlite")]
+        if build_id >= published:
+            # `>=` rather than `!=`: equal is the published build, and greater is
+            # a build that started later and may be about to publish.
+            continue
+        reclaimable.append(build)
+        reclaimable.extend(
+            sidecar for sidecar in (Path(f"{build}-wal"), Path(f"{build}-shm")) if sidecar.exists()
+        )
+    return reclaimable
 
 
 def _publish(

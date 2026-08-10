@@ -834,26 +834,33 @@ def test_a_failed_build_leaves_no_index_file_behind(project: Path) -> None:
 
 
 # -- Reclaiming superseded builds ---------------------------------------------
+#
+# Publishing no longer reaps (ADR-0024 point 6); `theurian index gc` does, and
+# what protects a build in progress changed with it. `_reclaim` kept builds whose
+# ULID sorted above the published one, which holds within a process --
+# `SeededIdGenerator` serialises on a lock -- and degrades to the ULID
+# timestamp's millisecond resolution across processes. `gc` needs no such
+# argument: a build in progress is written under a `.building` name and renamed
+# with `os.replace` once its bytes are final, so a file under the completed name
+# is complete by construction.
 
 
-def test_reclaim_keeps_a_build_that_has_not_published_yet(tmp_path: Path) -> None:
-    """A concurrent build must not lose the file it has just finished writing.
+def test_gc_keeps_a_build_that_is_still_being_written(tmp_path: Path) -> None:
+    """A concurrent build must not lose the file it is part-way through writing.
 
-    Index build ids are ULIDs, so lexical order is creation order: an id greater
-    than the published one can only belong to a build that started later and has
-    not published yet. Reclaiming it would leave that build publishing a pointer
-    to nothing.
-
-    The first version of this deleted everything except the id *this process*
-    built, which is the same bug seen from the other side — two concurrent
-    builds each deleting the other's file.
+    The failure this replaces is the one the old ULID rule was written for, and
+    the mechanism is stronger rather than merely different: ordering was an
+    argument about ids, and this is a property of the filename. `gc` globs
+    `*.sqlite`, not `*.sqlite*`, so nothing under `.building` is a candidate at
+    all.
     """
-    from theurian.cli.index_commands import _publish, _reclaim
+    from theurian.cli.index_commands import _publish, _reclaimable
 
     paths = ProjectPaths.of(tmp_path)
     paths.state.mkdir(parents=True)
-    for build_id in ("01K1AAAAAA", "01K1BBBBBB", "01K1CCCCCC"):
-        paths.index_for(build_id).touch()
+    paths.index_for("01K1BBBBBB").touch()
+    in_progress = Path(f"{paths.index_for('01K1CCCCCC')}.building")
+    in_progress.touch()
     _publish(
         paths,
         index_build_id="01K1BBBBBB",
@@ -862,72 +869,87 @@ def test_reclaim_keeps_a_build_that_has_not_published_yet(tmp_path: Path) -> Non
         indexes_unapproved=False,
     )
 
-    _reclaim(paths, keep="01K1BBBBBB")
+    reclaimable = _reclaimable(paths, published="01K1BBBBBB")
 
-    remaining = sorted(p.name for p in paths.state.glob("theurian-index-*.sqlite"))
-    assert remaining == [
-        "theurian-index-01K1BBBBBB.sqlite",
-        "theurian-index-01K1CCCCCC.sqlite",
-    ], "the published build and the one still in flight both survive"
+    assert reclaimable == [], "neither the published build nor a build in progress is a candidate"
+    assert in_progress.is_file()
 
 
-def test_reclaim_measures_against_the_pointer_not_against_this_process(
-    tmp_path: Path,
-) -> None:
-    """`keep` is what this process built; the pointer is what retrieval reads.
+def test_gc_reclaims_a_superseded_build_but_never_the_published_one(tmp_path: Path) -> None:
+    """The pointer decides which build survives; the id decides which may be reclaimed.
 
-    When they disagree -- another build published while this one ran -- the
-    pointer wins, or this process deletes the file every search is about to
-    open. `SqliteIndexStore` holds no handle between calls, and `sqlite3.connect`
-    *creates* an empty database at a deleted path, so the loss surfaces as a raw
-    `no such table` at the agent rather than as the missing-file fallback.
+    **This test pinned the wrong behaviour and a review caught it.** It published
+    `01K1AAAAAA` and expected `01K1DDDDDD` -- an id sorting *above* the published
+    one -- to be reclaimed. That is precisely the finished-but-unpublished build
+    the ULID rule protects: `index build` renames into place and *then* writes
+    the pointer, so a `gc` in that window reclaimed a file the pointer was about
+    to name. Reproduced against the real CLI at 8 of 12 runs.
+
+    So a superseded build is one whose id sorts *below* the published one, and
+    that is what this now asserts. `_reclaim`'s `keep` argument is still gone --
+    it named what *this process* built, which disagreed with the pointer exactly
+    when another build had published while this one ran.
     """
-    from theurian.cli.index_commands import _publish, _reclaim
+    from theurian.cli.index_commands import _publish, _reclaimable
 
     paths = ProjectPaths.of(tmp_path)
     paths.state.mkdir(parents=True)
-    for build_id in ("01K1AAAAAA", "01K1DDDDDD"):
+    for build_id in ("01K1AAAAAA", "01K1DDDDDD", "01K1ZZZZZZ"):
         paths.index_for(build_id).touch()
     _publish(
         paths,
-        index_build_id="01K1AAAAAA",
+        index_build_id="01K1DDDDDD",
         state_hash="s",
         project_id="demo",
         indexes_unapproved=False,
     )
 
-    _reclaim(paths, keep="01K1DDDDDD")
+    reclaimable = _reclaimable(paths, published="01K1DDDDDD")
 
-    assert paths.index_for("01K1AAAAAA").is_file(), "the published build survives a later `keep`"
+    assert [p.name for p in reclaimable] == ["theurian-index-01K1AAAAAA.sqlite"], (
+        "only the build older than the published one may be reclaimed: the published build "
+        "survives, and so does the one whose id sorts above it, which has not published yet"
+    )
 
 
-def test_reclaim_takes_the_write_ahead_files_with_the_build(tmp_path: Path) -> None:
+def test_gc_takes_the_write_ahead_files_with_the_build(tmp_path: Path) -> None:
     """`-wal` and `-shm` sit beside the database and are meaningless without it.
 
-    The whole id is parsed out of the filename first, because a substring
-    comparison would treat a build whose id merely contains another as related
-    to it.
+    Matched explicitly rather than by widening the glob to `*.sqlite*`, which
+    would take `.building` with them -- the one file `gc` must never touch.
     """
-    from theurian.cli.index_commands import _publish, _reclaim
+    from theurian.cli.index_commands import _reclaimable
 
     paths = ProjectPaths.of(tmp_path)
     paths.state.mkdir(parents=True)
     for suffix in ("", "-wal", "-shm"):
         (paths.state / f"theurian-index-01K1AAAAAA.sqlite{suffix}").touch()
     paths.index_for("01K1BBBBBB").touch()
-    _publish(
-        paths,
-        index_build_id="01K1BBBBBB",
-        state_hash="s",
-        project_id="demo",
-        indexes_unapproved=False,
-    )
 
-    _reclaim(paths, keep="01K1BBBBBB")
+    reclaimable = _reclaimable(paths, published="01K1BBBBBB")
 
-    assert sorted(p.name for p in paths.state.glob("theurian-index-*")) == [
-        "theurian-index-01K1BBBBBB.sqlite"
+    assert sorted(p.name for p in reclaimable) == [
+        "theurian-index-01K1AAAAAA.sqlite",
+        "theurian-index-01K1AAAAAA.sqlite-shm",
+        "theurian-index-01K1AAAAAA.sqlite-wal",
     ]
+
+
+def test_gc_reclaims_nothing_when_no_build_is_published(tmp_path: Path) -> None:
+    """A project with no pointer has no build *known* to be unreferenced.
+
+    Every file on disk might be the one a rebuild is about to name, and deleting
+    on that basis turns "you have not built an index yet" into "your index is
+    gone". The empty case is the one a `gc` written as "delete what is not
+    published" gets wrong.
+    """
+    from theurian.cli.index_commands import _reclaimable
+
+    paths = ProjectPaths.of(tmp_path)
+    paths.state.mkdir(parents=True)
+    paths.index_for("01K1AAAAAA").touch()
+
+    assert _reclaimable(paths, published="") == []
 
 
 def test_retired_knowledge_is_never_indexed_even_when_asked_for(project: Path) -> None:
@@ -1305,6 +1327,16 @@ class _ScriptedIndex:
         self._substring = substring
 
     def create(self, *, index_build_id: str, state_hash: str) -> None:
+        raise NotImplementedError
+
+    def derive_purged(
+        self,
+        target: Path,
+        *,
+        revision_ids: Sequence[str],
+        index_build_id: str,
+        state_hash: str,
+    ) -> int:
         raise NotImplementedError
 
     def add_chunks(self, chunks: Sequence[IndexableChunk]) -> int:

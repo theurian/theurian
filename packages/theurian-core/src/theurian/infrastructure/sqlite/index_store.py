@@ -33,6 +33,7 @@ from theurian.domain.chunking import IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
+from theurian.infrastructure.sqlite.index_purge import purge_into
 from theurian.infrastructure.sqlite.index_query import (
     MAX_QUERY_CHARS,
     MAX_QUERY_TERMS,
@@ -46,7 +47,7 @@ from theurian.infrastructure.sqlite.index_schema import (
     INDEX_DDL,
     INDEX_SCHEMA_VERSION,
 )
-from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS
+from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
 
 #: Little-endian float32. Fixed rather than native so an index built on one
 #: machine reads correctly on another -- the file is derived, but it is also
@@ -119,7 +120,7 @@ class _QueryExpressionError(IndexUnreadableError):
     two retrievers that hand caller text to FTS5 catch this and answer ``()``;
     anywhere else it stays the loud, remedy-carrying refusal. A carve-out with
     its own unrelated base would escape an uninterested caller as a bare
-    traceback at an agent — the failure :func:`_reading` exists to prevent,
+    traceback at an agent — the failure :func:`_mapping_read_failures` exists to prevent,
     reintroduced by the mechanism meant to soften it.
     """
 
@@ -159,7 +160,7 @@ def _is_query_expression_error(exc: sqlite3.Error) -> bool:
     """Whether FTS5 rejected the *expression* — a case that can no longer happen.
 
     **The carve-out from a file-shaped default, which is the reverse of what the
-    predicate beside it used to be.** :func:`_reading` treats every
+    predicate beside it used to be.** :func:`_mapping_read_failures` treats every
     `sqlite3.Error` as the index's fault until this says otherwise, and asks this
     of nothing else: a decode, an unpack or a numeric conversion cannot be the
     caller's expression, so :data:`_UNREADABLE_VALUES` gets no carve-out at all.
@@ -227,11 +228,14 @@ def fts5_available() -> bool:
 
 @contextmanager
 def _connect(path: Path) -> Iterator[sqlite3.Connection]:
-    """A configured connection that is always closed.
+    """A configured *writable* connection that is always closed.
 
     ``sqlite3.connect`` as a context manager commits or rolls back but does not
     close, which leaks a handle per call -- caught in Milestone 1 and worth not
     repeating.
+
+    Used by the build paths only. Reads go through :func:`_open_read`, which
+    refuses to create the file it was asked to open.
     """
     connection = sqlite3.connect(path)
     try:
@@ -241,6 +245,41 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
         yield connection
     finally:
         connection.close()
+
+
+def _open_read(path: Path) -> sqlite3.Connection:
+    """A read-only connection that will not conjure the file it cannot find.
+
+    **`mode=ro` is the whole point, and it closes a defect rather than tightening
+    a permission** (ADR-0024 decision 7). ``sqlite3.connect`` on a path that does
+    not exist *creates an empty database there*, so a pointer that outlived its
+    file -- which `theurian index gc` makes an ordinary state -- turned the "no
+    index, fall back to the substring scan" branch into a raw ``no such table:
+    chunks_fts`` at the agent, and left a file behind that made every later
+    attempt fail identically. Measured: the default connect recreates the path;
+    `mode=ro` raises ``unable to open database file`` and creates nothing.
+
+    All four ``CONNECTION_PRAGMAS`` are accepted on a read-only connection, and
+    the read and write paths stay configured the same way -- **but that rests on
+    a premise: every index file is created in WAL mode.** ``PRAGMA journal_mode =
+    WAL`` on a read-only connection only *reports* the mode when the file is
+    already WAL; on a DELETE-mode file it tries to *set* it and raises ``attempt
+    to write a readonly database`` (measured on SQLite 3.47.1). Index files are
+    always created WAL -- `create` runs `CONNECTION_PRAGMAS`, and
+    ``test_a_built_index_is_always_in_wal_mode`` pins it -- so the premise holds
+    for every file this opens. If it were ever violated the failure would be a
+    mapped ``IndexUnreadableError`` naming a rebuild, not a corruption, which is
+    the right shape for a malformed index; but the premise is what makes these
+    pragmas harmless rather than the read-only mode alone.
+
+    A write through this connection is refused by SQLite rather than by
+    convention.
+    """
+    connection = sqlite3.connect(read_only_uri(path), uri=True)
+    connection.row_factory = sqlite3.Row
+    for pragma in CONNECTION_PRAGMAS:
+        connection.execute(pragma)
+    return connection
 
 
 #: What *interpreting this file* can raise, other than through `sqlite3` itself.
@@ -284,7 +323,7 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 #:   which is the method that promises never to raise.
 #:
 #: **The cost of this width, stated rather than discovered later.** A genuine
-#: programming error inside a :func:`_reading` block is now reported as an
+#: programming error inside a :meth:`SqliteIndexStore._read` block is now reported as an
 #: unreadable index. Two things bound it: nothing goes inside such a block except
 #: executing a statement and converting its rows — which is a convention this
 #: module holds and the next reader must keep — and ``raise ... from exc``, so
@@ -327,16 +366,20 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 #:   the sweep's corpus can reach.
 #:
 #: What is claimed here, and no more: **in this file**, all nine reads enter
-#: through :func:`_reading` and convert inside the block. Both counts need a
-#: command anchored to code, because a grep whose subject is a grep matches its
-#: own quotation: the first version of this paragraph offered
-#: ``grep -c 'with _reading(' index_store.py`` as the evidence for nine, and
-#: that command prints 13 — the quotation on this line, three docstrings that
-#: name the block, and the nine. Anchored, at `c7d59b4`:
+#: through :meth:`SqliteIndexStore._read` and convert inside the block. Both
+#: counts need a command anchored to code, because a grep whose subject is a grep
+#: matches its own quotation. `_read` replaced the free `_reading` function when
+#: reads moved to a session-scoped connection (ADR-0024 point 7), so the anchor
+#: moved with it:
 #:
-#: - ``grep -cE '^[[:space:]]+with _reading\(' index_store.py`` is 9;
+#: - ``grep -cE '^[[:space:]]+with self\._read\(\)' index_store.py`` is 9;
 #: - ``grep -cE '^[^#]*\.fetch(all|one)\(\)' index_store.py`` is 9, over the
 #:   same nine method bodies.
+#:
+#: The mapping those nine blocks share is :func:`_mapping_read_failures`, which
+#: `_read` enters whether it opens a fresh connection or reuses the session's --
+#: so a held connection and a per-call one cannot answer differently for the same
+#: broken file.
 #:
 #: Nothing enforces that a tenth read joins them; this is a count, not a
 #: guarantee, and the same shape of sentence written one file over was the one
@@ -348,39 +391,16 @@ _UNREADABLE_VALUES: Final = (UnicodeDecodeError, struct.error, TypeError, ValueE
 
 
 @contextmanager
-def _reading(path: Path) -> Iterator[sqlite3.Connection]:
-    """A read of this index, with every way it can fail already mapped.
+def _mapping_read_failures() -> Iterator[None]:
+    """Everything a read of this file can fail with, mapped to one type.
 
-    **One mapping over every read, because the exceptions to it were the
-    defect.** What this replaced was a per-retriever ``except
-    sqlite3.OperationalError`` consulting a list of message fragments. It could
-    not see SQLITE_CORRUPT or SQLITE_NOTADB — both arrive as plain
-    `sqlite3.DatabaseError` — and it covered ``execute`` only, leaving
-    :func:`_connect` and its PRAGMAs outside the ``try`` at all thirteen sites
-    while four reads had no guard at all.
-
-    So the default inverts twice over. Anything `sqlite3` raises out of a read is
-    this file's fault unless :func:`_is_query_expression_error` says the caller's
-    text was; and anything :data:`_UNREADABLE_VALUES` covers is this file's fault
-    without exception, because a decode, an unpack or a numeric conversion is
-    never something the caller's query can be blamed for. That constant carries
-    the population and why it is the one that closes.
-
-    **The guard spans the caller's block, and that is what makes it cover the
-    conversion.** An exception raised inside a ``with _reading(...)`` body is
-    thrown into this generator at the ``yield``, so a `float()` over a corrupt
-    cell is mapped exactly like the `execute` that fetched it — but only while
-    the conversion stays inside the block. It did not: `_unpack`, `float(...)`
-    and every `Ranked` were built after the connection had closed, which is why
-    widening the ``except`` alone closed nothing on that side.
-
-    **Reads only, and the asymmetry is deliberate.** A write that fails is a
-    build failing, and a build reports its own failure; telling someone their
-    index cannot be *read* while they are writing it names the wrong remedy.
+    Separated from the connection's lifetime so that a held connection gets the
+    same treatment as a per-call one. Opening and mapping were one function until
+    reads moved to a session-scoped connection (ADR-0024 point 7), which needs a
+    mapping that wraps a read without opening it.
     """
     try:
-        with _connect(path) as connection:
-            yield connection
+        yield
     except sqlite3.Error as exc:
         if _is_query_expression_error(exc):
             raise _QueryExpressionError(str(exc)) from exc
@@ -410,14 +430,76 @@ class SqliteIndexStore:
         # carries the account: what now holds the property the memo held, and
         # what became of the fresh-instance-per-search rule it imposed.
         #
-        # **No per-instance state at all** is the shape to keep. It is what makes
-        # "one caller's query leaves nothing behind for another's" checkable by
-        # reading this method rather than by trusting a paragraph.
+        # A path, and a connection only while a `session()` is open. `_reader`
+        # is `None` at rest, which is what keeps "one caller's query leaves
+        # nothing behind for another's" checkable by reading this method: a cache
+        # would leak a withheld-row count into the next caller's latency, and a
+        # connection cannot, because it carries no result.
         self._path = path
+        self._reader: sqlite3.Connection | None = None
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @contextmanager
+    def session(self) -> Iterator[SqliteIndexStore]:
+        """Hold one read connection for the duration of a request (ADR-0024 point 7).
+
+        **Opt-in, and scoped to a request rather than to this object's
+        lifetime.** Every read outside a session opens and closes its own
+        connection, which is what a one-shot caller like ``theurian index
+        status`` wants and what every construction site in the suite already
+        does. Inside a session the reads share one connection, which is what a
+        *search* needs -- and the difference is not an optimisation.
+
+        `RetrievalService.search` reads this port several times: two retrievers
+        through the depth loop, then `chunk_texts`. Each gap between those reads
+        used to be a window in which `theurian index gc` could unlink the file,
+        and `sqlite3.connect` on the deleted path then created an empty database
+        there, so the fallback never ran and the agent got `no such table:
+        chunks_fts`.
+
+        Measured, one request of four index calls with the unlink landing after
+        the first: **1 of 4 answered** with a connection per call, leaving a file
+        recreated at the reaped path, against **4 of 4** inside a session,
+        recreating nothing. On POSIX an open descriptor keeps the inode readable
+        after the name is gone -- in all three WAL configurations, sidecars kept
+        or unlinked -- so the request finishes against the build it started on.
+
+        A session is not a transaction and holds no snapshot: reads inside one
+        still see another connection's commits. What it holds is the *file*.
+        """
+        if self._reader is not None:  # pragma: no cover - nesting is not a use here
+            yield self
+            return
+        with _mapping_read_failures():
+            self._reader = _open_read(self._path)
+        try:
+            yield self
+        finally:
+            self._reader.close()
+            self._reader = None
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """A read, through the session's connection when there is one.
+
+        The error mapping is `_mapping_read_failures`, entered whether this opens
+        a fresh connection or reuses the session's, so a held connection and a
+        per-call one cannot answer differently for the same broken file. Opening
+        happens inside it, because opening interprets the file exactly as a query
+        does.
+        """
+        with _mapping_read_failures():
+            if self._reader is not None:
+                yield self._reader
+                return
+            connection = _open_read(self._path)
+            try:
+                yield connection
+            finally:
+                connection.close()
 
     # -- Building ---------------------------------------------------------
 
@@ -475,6 +557,30 @@ class SqliteIndexStore:
             connection.commit()
         return len(chunks)
 
+    def derive_purged(
+        self,
+        target: Path,
+        *,
+        revision_ids: Sequence[str],
+        index_build_id: str,
+        state_hash: str,
+    ) -> int:
+        """Write this build minus `revision_ids` to `target` (ADR-0024).
+
+        The one write on this store that does not write to `self._path`, and the
+        asymmetry is the decision: a published build is immutable, so the purge
+        reads here and writes there. `index_purge` owns the SQL for the same
+        reason `index_scan` owns the scan's — this file is already the largest in
+        the package, and a purge is a distinct concern from a query.
+        """
+        return purge_into(
+            self._path,
+            target,
+            revision_ids=revision_ids,
+            index_build_id=index_build_id,
+            state_hash=state_hash,
+        )
+
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         """Store one vector per chunk.
 
@@ -511,7 +617,7 @@ class SqliteIndexStore:
     # -- Reading ----------------------------------------------------------
 
     def metadata(self) -> dict[str, object]:
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             row = connection.execute("SELECT * FROM index_metadata WHERE id = 1").fetchone()
             # Converted inside the block, like every other read here. `dict()`
             # over a `sqlite3.Row` cannot fail today; the rule is uniform so that
@@ -534,13 +640,13 @@ class SqliteIndexStore:
         together. The index is derived (ADR-0004), so a caller asking whether it
         is usable must get an answer rather than an exception.
 
-        Reads through :func:`_reading` like every other read and then converts
+        Reads through :meth:`_read` like every other read and then converts
         its refusal, rather than naming an exception type here. One place decides
         what a broken index looks like; this is the one caller that answers with
         a value instead of propagating it.
         """
         try:
-            with _reading(self._path) as connection:
+            with self._read() as connection:
                 row = connection.execute(
                     "SELECT index_schema_version FROM index_metadata WHERE id = 1"
                 ).fetchone()
@@ -567,7 +673,7 @@ class SqliteIndexStore:
         return self.schema_version() == INDEX_SCHEMA_VERSION
 
     def chunk_count(self) -> int:
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             return int(connection.execute("SELECT count(*) FROM chunks").fetchone()[0])
 
     def chunk_texts(self, chunk_ids: Sequence[str], *, project_id: str) -> dict[str, str]:
@@ -590,7 +696,7 @@ class SqliteIndexStore:
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(
                 "SELECT chunk_id, text FROM chunks "  # noqa: S608 - placeholders only
                 f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
@@ -619,7 +725,7 @@ class SqliteIndexStore:
         if not chunk_ids:
             return {}
         placeholders = ",".join("?" * len(chunk_ids))
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(
                 "SELECT * FROM chunks "  # noqa: S608 - placeholders only
                 f"WHERE project_id = ? AND chunk_id IN ({placeholders})",
@@ -684,14 +790,14 @@ class SqliteIndexStore:
         # filed for Milestone 6 as
         # https://github.com/theurian/theurian/issues/21.
         try:
-            with _reading(self._path) as connection:
+            with self._read() as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit + 1)).fetchall()
                 return _page(_ranked(rows, _bm25), limit)
         except _QueryExpressionError:
             # Unreachable: sanitising cannot produce a malformed expression any
             # more. Kept as the guard that catches it again if sanitising is ever
             # relaxed -- `_is_query_expression_error` documents why, and names the
-            # tests that hold the invariant in its place. Everything else `_reading`
+            # tests that hold the invariant in its place. Everything else `_read`
             # raises is the file's problem and must not be answered with an empty
             # page, which is indistinguishable from "nothing matched".
             return RetrieverPage(rows=(), exhausted=True)
@@ -747,12 +853,12 @@ class SqliteIndexStore:
             "ORDER BY rank_score, chunks.chunk_id LIMIT ?"
         )
         try:
-            with _reading(self._path) as connection:
+            with self._read() as connection:
                 rows = connection.execute(sql, (expression, *parameters, limit + 1)).fetchall()
                 return _page(_ranked(rows, _bm25), limit)
         except _QueryExpressionError:
             # Unreachable, and kept for the same reason as in `search_lexical`.
-            # What must *not* be caught here is anything else `_reading` raises:
+            # What must *not* be caught here is anything else `_read` raises:
             # swallowing it is how a v1 index -- one with no `chunks_trigram` at
             # all -- reported zero hits for every Japanese query while the
             # response still claimed to be answering from an index. `unicode61`
@@ -873,7 +979,7 @@ class SqliteIndexStore:
         # parameters, so no caller text is ever parsed as an expression and every
         # complaint SQLite can make here is about the file -- `chunks` absent, a
         # truncated copy, something that is not an index at all.
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(sql, arguments).fetchall()
             return RetrieverPage(rows=_ranked(rows, _scan_score), exhausted=True)
 
@@ -964,7 +1070,7 @@ class SqliteIndexStore:
         # interpretation of this file's bytes exactly as `execute` is, and it ran
         # outside the connection's lifetime while the guard that answers for such
         # bytes ended with the connection -- see `_UNREADABLE_VALUES`.
-        with _reading(self._path) as connection:
+        with self._read() as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
             return RetrieverPage(rows=_dense_ranking(rows, query_vector), exhausted=True)
 
@@ -975,7 +1081,7 @@ def _dense_ranking(
     """Cosine-rank fetched rows against a query vector.
 
     Split out of :meth:`SqliteIndexStore.search_dense` so the whole of it fits
-    inside one ``with _reading(...)`` block without nesting the scan loop under a
+    inside one ``with self._read()`` block without nesting the scan loop under a
     connection by hand.
     """
     query_norm = math.sqrt(sum(value * value for value in query_vector))
@@ -1023,7 +1129,7 @@ def _stored_vector(blob: object, width: int) -> tuple[float, ...] | None:
     recorded by `add_embeddings` and read by nothing.
 
     So the same rows are skipped the same way, and one more class joins them: a
-    blob that cannot be a float32 vector of this width at all. `_reading` still
+    blob that cannot be a float32 vector of this width at all. `_read` still
     covers what is left, because a guard that depends on this function staying
     exhaustive is the enumeration that failed twice already.
     """
@@ -1044,7 +1150,7 @@ def _ranked(
 ) -> tuple[Ranked, ...]:
     """Retriever rows as :class:`Ranked`, converted where the guard still reaches.
 
-    Called from inside a ``with _reading(...)`` block by every retriever, which is
+    Called from inside a ``with self._read()`` block by every retriever, which is
     what it exists for: this is the conversion that used to happen after the
     connection had closed, so a NULL where a score belongs reached an agent as
     ``float() argument must be a string or a real number, not 'NoneType'``.

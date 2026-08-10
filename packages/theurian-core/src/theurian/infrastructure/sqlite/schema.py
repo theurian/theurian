@@ -10,7 +10,9 @@ every existing state database. Bump it for any change to the DDL below.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final
+from urllib.parse import quote
 
 #: Bump for ANY change to the DDL. See ADR-0017.
 SCHEMA_VERSION: Final = 1
@@ -24,6 +26,26 @@ CONNECTION_PRAGMAS: Final = (
     "PRAGMA busy_timeout = 5000",
     "PRAGMA synchronous = NORMAL",
 )
+
+
+def read_only_uri(path: Path) -> str:
+    """``file:`` URI for a path opened `mode=ro`, with the path escaped.
+
+    **A filename is not a URI, and the difference is the access mode.** SQLite
+    parses everything after ``?`` as query parameters, so a path that happens to
+    contain one is read as a mode the caller did not ask for -- measured on
+    SQLite 3.47.1, a path ending ``?mode=rwc`` turns ``?mode=ro`` into
+    ``no such access mode: rwc?mode=ro``, and on other builds it wins outright
+    and opens read-write. Either way the `mode=ro` guarantee stops holding for a
+    filename the operator chose.
+
+    Shared by both readers -- `index_store._open_read` and `index_purge._copy`'s
+    source -- so a path a purge copies from is escaped the same way a query
+    reads one. `quote` with no safe characters but `/`, because `?`, `#` and `%`
+    are all legal in a POSIX filename and each changes how the URI parses.
+    """
+    return f"file:{quote(str(path), safe='/')}?mode=ro"
+
 
 DDL: Final = """
 -- Schema identity -----------------------------------------------------------

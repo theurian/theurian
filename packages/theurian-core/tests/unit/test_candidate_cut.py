@@ -44,6 +44,7 @@ corpus shape is a fake's business — what is real is
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, final
 
 import pytest
@@ -179,6 +180,16 @@ class _TwoRankings:
         return {chunk_id: f"passage of {chunk_id}" for chunk_id in chunk_ids}
 
     def create(self, *, index_build_id: str, state_hash: str) -> None:
+        raise NotImplementedError
+
+    def derive_purged(
+        self,
+        target: Path,
+        *,
+        revision_ids: Sequence[str],
+        index_build_id: str,
+        state_hash: str,
+    ) -> int:
         raise NotImplementedError
 
     def add_chunks(self, chunks: Sequence[IndexableChunk]) -> int:
