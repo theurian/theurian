@@ -65,6 +65,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   this fix — it closes the write side only; nothing here rewrites canonical
   state or changes what `knowledge.search`/`knowledge.get` return.
 
+### Documentation
+
+- **FR-R1 per-axis disposition register**
+  ([#63](https://github.com/theurian/theurian/issues/63) phase 0, which closes
+  the issue). `docs/architecture/requirements-analysis.md` gains one row per
+  axis — Project, status, tenant, ACL group, sensitivity, validity window —
+  recording what the pre-1.0 product does about each: enforced through `_scope`
+  (Project, status), refused at write time
+  ([#110](https://github.com/theurian/theurian/pull/110)), a caller-chosen
+  `asOf` refinement ([#112](https://github.com/theurian/theurian/pull/112)), or
+  a published label deferred as a control to the `AuthorizationProvider`
+  milestone (sensitivity), with the landing PR per row. Two tests keep the
+  enforced set from drifting from the documents: `test_gate_call_sites.py` now
+  enumerates every `may_surface` call site and pins SECURITY.md's published
+  axis list to the `chunks.<column>` predicates `_scope` actually emits.
+- **`may_surface`'s caller count corrected from four to five** in its `enums.py`
+  and `mcp/results.py` docstrings
+  ([#63](https://github.com/theurian/theurian/issues/63)). An AST scan of the
+  shipped tree finds five call sites, not "four callers in three layers"; the
+  fifth (`mcp/tools.py::_relation_is_visible`, which gates each relation
+  endpoint on `knowledge.get`) landed after the count was written. The count is
+  now pinned by a test rather than restated in prose.
+- **Security-document claims naming a control whose component does not exist**,
+  corrected together so the class does not survive the sweep
+  ([#115](https://github.com/theurian/theurian/issues/115)). The threat model's
+  T-11 no longer asserts "an `AuthorizationProvider` check precedes every read"
+  — that port is a `Protocol` with no implementation — and names the mechanisms
+  that do isolate projects (`projectId` validation and `_scope`'s WHERE
+  predicate). T-10, SECURITY.md's RAPTOR sensitivity-boundary bullet, and the
+  requirements-analysis R-14 risk row switch the RAPTOR tree-identity guarantee
+  to the subjunctive the raptor package's own docstring uses, name Milestone 6
+  as when it takes effect, and state the interim residual: no RAPTOR summary is
+  generated, so there is none to leak.
+
 ## [0.1.0.dev1] - 2026-08-09
 
 **If you installed `theurian` before today, upgrade.** `0.1.0.dev0` was the only
