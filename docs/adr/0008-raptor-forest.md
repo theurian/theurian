@@ -1762,6 +1762,22 @@ the decision it belongs to states a property that is otherwise only an argument:
   > rather than answering the equality wrong. Decision 9's amendment records the
   > fix; `tests/integration/test_forest_purge_recompute.py` pins the equality at
   > that boundary specifically, which the test named above does not reach.
+  >
+  > **Landed in Milestone 6, by the retrieval CL. The "extends to every published
+  > field when `raptorPath` lands" clause above is now discharged at the wire.**
+  > `raptorPath` reaches a caller, so the equality this item holds over the node
+  > tables extends to the one node-derived field a response now carries. Two
+  > independent `--raptor` builds of one corpus publish the *same* `raptorPath`
+  > for the same leaf — same node ids, same titles, same order — held by
+  > `tests/integration/test_forest_retrieval.py::test_raptor_path_is_identical_across_two_independent_builds`,
+  > which reads the field off the response through `build_server(...).call_tool`
+  > and asserts it non-empty so "identical" is not vacuous. It holds because
+  > `raptorPath.nodeId` is content-addressed (decision 9) and a `title` is a pure
+  > function of a node's children (decision 6), so the published path cannot move
+  > between the purged and never-held forests — which is exactly the
+  > field-exclusion trap decision 9 names, closed rather than dodged. The
+  > node-table comparison stays as written; this adds the wire field it said it
+  > would extend to.
 - **A forest does not move leaf ranking** — what decision 5's "equal by
   construction" claims. Same query, same corpus, two builds: one with the forest
   derived and one without, with traversal off on the forest side, or else
