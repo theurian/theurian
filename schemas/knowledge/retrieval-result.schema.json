@@ -92,8 +92,33 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "enum": ["lexical", "substring", "dense"] },
-      "description": "Which retrievers ranked this hit, sorted. Ranked path only — the unranked scan has no retrievers to name. `lexical` is the FTS5 word index. `dense` is vector similarity, and runs only when the caller passes `useDense`.\n\n`substring` names one retriever with two strategies, chosen by the query rather than by the caller. When the query has a term of three or more characters, it answers by a trigram-index lookup — a second *lexical* strategy, present because word segmentation cannot split scripts written without spaces. When it does not — every term shorter than three characters, the common case for a CJK noun — no trigram can be formed at all, and the retriever instead runs a scoped scan of the index's chunk text and heading, ordered by a matched-character relevance measure (occurrences weighted by term length) with `chunk_id` as the tie-break that keeps the order total (FR-R7). Both strategies rank: a hit found by the scan carries a `fusedScore` computed the same way as one found by lookup, never a placeholder or a constant.\n\n`foundBy` does not say which of the two strategies answered — both report `substring` — because a caller's next action is the same either way; the query alone tells the two apart for a reader auditing a transcript: three characters or more selects the lookup, fewer selects the scan.\n\n`substring` also appears as a value of `retrieval.mode`, where it names something else entirely: the unranked scan of the *canonical store* performed when no index can answer at all, needing no trigram floor and no index file. Two different things share this word, both already on the wire; renaming either would be a contract change rather than a tidy-up, so both are described precisely instead."
+      "items": { "enum": ["lexical", "substring", "dense", "summary"] },
+      "description": "Which retrievers ranked this hit, sorted. Ranked path only — the unranked scan has no retrievers to name. `lexical` is the FTS5 word index. `dense` is vector similarity, and runs only when the caller passes `useDense`.\n\n`substring` names one retriever with two strategies, chosen by the query rather than by the caller. When the query has a term of three or more characters, it answers by a trigram-index lookup — a second *lexical* strategy, present because word segmentation cannot split scripts written without spaces. When it does not — every term shorter than three characters, the common case for a CJK noun — no trigram can be formed at all, and the retriever instead runs a scoped scan of the index's chunk text and heading, ordered by a matched-character relevance measure (occurrences weighted by term length) with `chunk_id` as the tie-break that keeps the order total (FR-R7). Both strategies rank: a hit found by the scan carries a `fusedScore` computed the same way as one found by lookup, never a placeholder or a constant.\n\n`foundBy` does not say which of the two strategies answered — both report `substring` — because a caller's next action is the same either way; the query alone tells the two apart for a reader auditing a transcript: three characters or more selects the lookup, fewer selects the scan.\n\n`summary` is the RAPTOR forest retriever (ADR-0008 decision 8): the hit's leaf was reached by matching a summary node's text — a summariser's paraphrase of the documents beneath it — and descending to the leaf, not by matching the leaf's own text. It appears only over a `--raptor` index and always alongside `raptorPath`. A hit found both directly and through the forest carries `summary` beside the leaf retriever that also found it. Named as its own value rather than folded under a leaf retriever's because that would be a false claim about how the hit was found.\n\n`substring` also appears as a value of `retrieval.mode`, where it names something else entirely: the unranked scan of the *canonical store* performed when no index can answer at all, needing no trigram floor and no index file. Two different things share this word, both already on the wire; renaming either would be a contract change rather than a tidy-up, so both are described precisely instead."
+    },
+    "raptorPath": {
+      "type": "array",
+      "description": "The hit's ancestry in the RAPTOR summary forest, ordered from the catalog root down to the leaf (ADR-0008 decision 8, FR-R5). Present only over a `--raptor` index; absent — not empty — when the index has no forest, so a client tells \"no forest here\" from \"here is the path\". Each segment names one summary node above the leaf and its single-line `title` (the node's text, `excerpt`-bounded like every other body on the wire). A node's children share its six-component scope by construction, and this is built only for a leaf that cleared the gate, so a title carries no content from a scope the caller's leaf is not in; its build-time staleness is the same residual every excerpt carries (T-17a).",
+      "items": {
+        "type": "object",
+        "required": ["nodeId", "level", "title"],
+        "additionalProperties": false,
+        "properties": {
+          "nodeId": {
+            "type": "string",
+            "description": "Content-addressed identity of the summary node (ADR-0008 decision 9): stable across two independent builds of one corpus, so it is comparable but not a handle any tool dereferences."
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3,
+            "description": "The tier this segment summarises, numbered upward from the leaves: 1 Document, 2 Domain, 3 Catalog. Root-to-leaf order means `level` descends along the array, ending at the tier directly above the hit."
+          },
+          "title": {
+            "type": "string",
+            "description": "The summary node's text as a single bounded line — the summariser's output, so untrusted content under the same `mayContainInstructions` caveat as the body, not a curated label."
+          }
+        }
+      }
     },
     "contentClassification": {
       "enum": ["untrusted-knowledge", "system-metadata"],

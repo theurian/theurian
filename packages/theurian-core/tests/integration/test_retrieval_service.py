@@ -42,6 +42,7 @@ from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import DENSE, Ranked, RetrievalMode, RetrieverPage, mode_of
 from theurian.domain.raptor import IndexableNode
+from theurian.domain.retrieval import RaptorPathSegment
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -1455,6 +1456,24 @@ class _ScriptedIndex:
         include_unapproved: bool,  # noqa: ARG002
     ) -> RetrieverPage:
         return whole(())
+
+    def search_summaries(
+        self,
+        query: str,  # noqa: ARG002 - this fake models no forest
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+        limit: int,  # noqa: ARG002 - no leaves to bound
+        include_unapproved: bool,  # noqa: ARG002 - as above
+    ) -> RetrieverPage:
+        return RetrieverPage(rows=(), exhausted=True)
+
+    def raptor_path(
+        self,
+        revision_id: str,  # noqa: ARG002 - this fake models no forest
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+    ) -> tuple[RaptorPathSegment, ...]:
+        return ()
 
     def chunk_texts(
         self,

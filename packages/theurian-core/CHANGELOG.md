@@ -39,6 +39,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for more, so a pinned moment cannot change how many times a request reads a
   retriever.
 
+- **`knowledge.search` retrieves *through* the RAPTOR forest, and a hit carries
+  its `raptorPath`** (ADR-0008 decision 8, FR-R3, FR-R5). A summary retriever
+  matches the forest's summary nodes and descends to the leaf chunks beneath a
+  matched node, so a query about a theme reaches a document that clusters under
+  it without containing the words — fused with the leaf retrievers by reciprocal
+  rank fusion. **Additive wire-contract change**, pre-1.0 and with no external
+  consumers: `foundBy` gains the value `summary`, naming a leaf reached through
+  the forest (a hit found both directly and through it carries `summary` beside
+  the leaf retriever), and every hit over a `--raptor` index carries a
+  `raptorPath` — the leaf's summary ancestry, catalog root to leaf, one
+  `{nodeId, level, title}` per node, `title` the node text bounded by the same
+  `excerpt` as every body on the wire. Absent, not empty, over a chunk-only
+  index, so a client tells "no forest here" from "here is the path".
+  `system.capabilities.raptor` flips to `true`: this build reads the forest, and
+  a project's own forest is discovered per response through `raptorPath`'s
+  presence, exactly as `hybridRetrieval` is. Naming `summary` as its own value
+  rather than folding it under a leaf retriever is deliberate — hiding a distinct
+  retrieval mode would be a false published claim about how a hit was found.
+
+  **The disclosure gate is unchanged, and doubled at the forest.** Routing
+  decides which leaves are *candidates*; it never decides whether a gated row may
+  surface (SEC-13, T-15). The summary node match is filtered on the same scope
+  the leaf retrievers apply — Project, and status unless the caller asked for
+  drafts — so a draft-scope summary is not even traversed on a default query; the
+  descended leaves are filtered again and then re-cleared against the canonical
+  store, as every candidate is. A `raptorPath` is built only for a leaf that
+  cleared that gate, and a summary node's children share its six-component scope
+  by construction (ADR-0008 decision 1), so a title carries no content from a
+  scope the caller's leaf is not in, and a withheld leaf contributes no result
+  and no path — its ancestors' titles never reach the wire. A title's build-time
+  staleness is the same residual every excerpt carries (T-17a), not a new
+  channel.
+
 - **`theurian index build --raptor` derives and stores the RAPTOR forest**
   (ADR-0008, `application/forest_builder.py`). The three tiers decision 2 names,
   deepest last: a Document node per item revision over that revision's chunks, a

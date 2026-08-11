@@ -866,11 +866,15 @@ def test_every_retrieval_mode_the_code_can_emit_is_published() -> None:
 
 
 def test_every_retriever_a_hit_can_name_is_published() -> None:
-    from theurian.domain.ranking import DENSE, LEXICAL, SUBSTRING
+    """``summary`` joined the three leaf retrievers when forest routing landed
+    (ADR-0008 decision 8): a leaf reached by matching a summary node carries it in
+    ``foundBy``, so the published vocabulary has to name it or a client switching
+    on the field meets a value the schema forbade."""
+    from theurian.domain.ranking import DENSE, LEXICAL, SUBSTRING, SUMMARY
 
     published = set(_load(RETRIEVAL_RESULT)["properties"]["foundBy"]["items"]["enum"])
 
-    assert published == {LEXICAL, SUBSTRING, DENSE}
+    assert published == {LEXICAL, SUBSTRING, DENSE, SUMMARY}
 
 
 def test_only_surfaceable_statuses_are_published() -> None:

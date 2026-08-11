@@ -74,6 +74,12 @@ LEXICAL: Final = "lexical"
 #: it exists because `unicode61` cannot segment scripts without word boundaries.
 SUBSTRING: Final = "substring"
 DENSE: Final = "dense"
+#: Forest routing (ADR-0008 decision 8). A leaf reached by matching a summary
+#: node's text and descending `node_derivation` to the chunks beneath it, rather
+#: than by matching the leaf's own text. Named as its own retriever so a leaf
+#: found only through the forest is attributed honestly: hiding it under a leaf
+#: retriever's name would be a false published claim about how the hit was found.
+SUMMARY: Final = "summary"
 
 
 class RetrievalMode(StrEnum):

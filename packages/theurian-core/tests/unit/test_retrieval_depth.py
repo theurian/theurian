@@ -66,6 +66,7 @@ from theurian.domain.knowledge import KnowledgeItem, KnowledgeRevision
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
+from theurian.domain.retrieval import RaptorPathSegment
 from theurian.domain.values import ValidityPeriod
 
 pytestmark = pytest.mark.unit
@@ -200,6 +201,26 @@ class _CountingIndex:
         # is asked for -- so it has no passes to count. `RetrievalService` is
         # built below without an embedder, so this is never reached.
         return whole(())
+
+    def search_summaries(
+        self,
+        query: str,  # noqa: ARG002 - this fake models no forest
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+        limit: int,  # noqa: ARG002 - no leaves to bound
+        include_unapproved: bool,  # noqa: ARG002 - as above
+    ) -> RetrieverPage:
+        # No forest, so the summary retriever contributes nothing and is not
+        # counted -- the depth this file measures is the leaf retrievers'.
+        return RetrieverPage(rows=(), exhausted=True)
+
+    def raptor_path(
+        self,
+        revision_id: str,  # noqa: ARG002 - this fake models no forest
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+    ) -> tuple[RaptorPathSegment, ...]:
+        return ()
 
     def chunk_texts(
         self,
@@ -781,6 +802,24 @@ class _NeverFinished:
         include_unapproved: bool,  # noqa: ARG002 - as above
     ) -> RetrieverPage:
         return whole(())
+
+    def search_summaries(
+        self,
+        query: str,  # noqa: ARG002 - this fake models no forest
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+        limit: int,  # noqa: ARG002 - no leaves to bound
+        include_unapproved: bool,  # noqa: ARG002 - as above
+    ) -> RetrieverPage:
+        return RetrieverPage(rows=(), exhausted=True)
+
+    def raptor_path(
+        self,
+        revision_id: str,  # noqa: ARG002 - this fake models no forest
+        *,
+        project_id: str,  # noqa: ARG002 - single-project fake
+    ) -> tuple[RaptorPathSegment, ...]:
+        return ()
 
     def chunk_texts(
         self,

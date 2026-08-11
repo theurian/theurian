@@ -35,6 +35,8 @@ from theurian.domain.errors import TheurianError
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
 from theurian.domain.raptor import IndexableNode
+from theurian.domain.retrieval import RaptorPathSegment
+from theurian.infrastructure.sqlite.index_forest import summary_statement, walk_raptor_path
 from theurian.infrastructure.sqlite.index_purge import ANY_DOOMED_ROW, purge_into
 from theurian.infrastructure.sqlite.index_query import (
     MAX_QUERY_CHARS,
@@ -1304,6 +1306,96 @@ class SqliteIndexStore:
             clauses.append("chunks.status = ?")
             parameters.append(KnowledgeStatus.APPROVED.value)
         return clauses, parameters
+
+    def _node_scope(
+        self, project_id: str, include_unapproved: bool
+    ) -> tuple[list[str], list[object]]:
+        """:meth:`_scope`, over the `nodes` table -- the forest's first gate.
+
+        The same Project and status predicates the leaf retrievers apply, but on
+        the summary rows a query matches before it descends to any leaf (ADR-0008
+        decision 8). A draft-scope summary node is therefore not even traversed on
+        a default query, so routing cannot make a withheld document a candidate in
+        the first place -- the descended leaves are gated a second time by
+        :meth:`_scope`, and a third by the canonical store. Separate from
+        :meth:`_scope` because `nodes` and `chunks` are different tables with the
+        same two columns, and a single point of change per table is what SEC-13
+        asks for.
+        """
+        clauses = ["nodes.project_id = ?"]
+        parameters: list[object] = [project_id]
+        if not include_unapproved:
+            clauses.append("nodes.status = ?")
+            parameters.append(KnowledgeStatus.APPROVED.value)
+        return clauses, parameters
+
+    def search_summaries(
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int = 50,
+        include_unapproved: bool = False,
+    ) -> RetrieverPage:
+        """Route a query through the forest to the leaves beneath a matched summary.
+
+        Matches summary nodes in `nodes_fts` and `nodes_trigram`, descends
+        `node_derivation` to the leaf chunks under them, and ranks those leaves by
+        the score of the summary that reached them -- the whole of what "search may
+        traverse a summary node" buys over leaf-only retrieval (FR-R3, ADR-0008
+        decision 8). The SQL, the double scope gate and the tie-break live in
+        :func:`~theurian.infrastructure.sqlite.index_forest.summary_statement`.
+
+        Empty and exhausted over a build with no forest: `nodes` is empty, so
+        `matched` is empty and nothing descends. A query that forms neither an FTS
+        term nor a trigram (every term below the trigram floor and unsegmentable)
+        routes through nothing and returns the same -- a recall residual mirroring
+        `to_trigram_expression`'s, not a gate any leaf passes through here.
+
+        `limit` is a true ceiling: `summary_statement` orders leaves best-first and
+        this fetches one past it (`_page`) so the caller learns whether more
+        remains, exactly as `search_lexical` does.
+        """
+        _require_a_positive_limit(limit)
+        fts = to_match_expression(query)
+        trigram = to_trigram_expression(query)
+        if not fts and not trigram:
+            return RetrieverPage(rows=(), exhausted=True)
+
+        node_clauses, node_scope = self._node_scope(project_id, include_unapproved)
+        leaf_clauses, leaf_scope = self._scope(project_id, include_unapproved)
+        sql, arguments = summary_statement(
+            fts_expression=fts,
+            trigram_expression=trigram,
+            node_clauses=node_clauses,
+            node_scope=node_scope,
+            leaf_clauses=leaf_clauses,
+            leaf_scope=leaf_scope,
+        )
+        try:
+            with self._read() as connection:
+                rows = connection.execute(sql, (*arguments, limit + 1)).fetchall()
+                return _page(_ranked(rows, _bm25), limit)
+        except _QueryExpressionError:
+            # Unreachable, and kept for the reason `search_lexical` keeps it: the
+            # sanitising in `index_query` cannot produce a malformed expression, so
+            # this catches nothing today and guards against a future relaxation of
+            # it. Everything else `_read` raises is the file's problem and must not
+            # be answered with an empty page.
+            return RetrieverPage(rows=(), exhausted=True)
+
+    def raptor_path(self, revision_id: str, *, project_id: str) -> tuple[RaptorPathSegment, ...]:
+        """The forest ancestry of a surfaced leaf, catalog root to leaf (FR-R5).
+
+        The upward walk lives in
+        :func:`~theurian.infrastructure.sqlite.index_forest.walk_raptor_path`;
+        this opens the read and lets `_read`'s corruption mapping cover the
+        conversions it does. Called only for a gate-cleared leaf, so a title it
+        publishes carries no content from a scope that leaf is not in -- the
+        closure is stated in `index_forest`'s module docstring.
+        """
+        with self._read() as connection:
+            return walk_raptor_path(connection, revision_id, project_id)
 
     def search_dense(
         self,

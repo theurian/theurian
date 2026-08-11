@@ -28,6 +28,7 @@ from typing import Protocol, runtime_checkable
 from theurian.domain.chunking import ChunkScope, IndexableChunk
 from theurian.domain.ranking import RetrieverPage
 from theurian.domain.raptor import IndexableNode
+from theurian.domain.retrieval import RaptorPathSegment
 
 #: Re-derive the summary forest of each affected scope over a purged build's
 #: surviving rows, in place, before the build is verified and published.
@@ -231,6 +232,66 @@ class IndexStore(Protocol):
         corpus and whatever the canonical store has since withdrawn. That is a
         structural property now rather than a memoised one: there is no second
         call left to make cheap.
+        """
+        ...
+
+    def search_summaries(
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int,
+        include_unapproved: bool,
+    ) -> RetrieverPage:
+        """Rank *leaves* by matching the RAPTOR summary above them (ADR-0008 dec. 8).
+
+        The forest retriever, and the reason a query about "backend architecture"
+        reaches a document that never contains that phrase: it matches the summary
+        node's text -- the summariser's paraphrase of its children -- and descends
+        ``node_derivation`` to the leaf chunks beneath the matched node, returning
+        *those leaves*, ranked best-first by the score of the summary that reached
+        them. A summary node is a routing device; it is never itself a result row,
+        because it has no ``(item, current revision)`` pair the canonical gate
+        could clear.
+
+        **The double gate is the disclosure spine (SEC-13, T-15).** The *node*
+        match is scoped exactly as the leaf retrievers are -- Project, and status
+        unless the caller asked for drafts -- so a draft-scope summary is not even
+        traversed on a default query; and the *descended leaves* are scoped again,
+        so a leaf whose build-time status is withheld never leaves this method.
+        The caller then re-clears every leaf through the canonical store in
+        :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`,
+        as it does every retriever's rows. Routing changes which leaves are
+        candidates; it never changes whether a gated row may surface.
+
+        **``limit`` is a true ceiling**, like :meth:`search_lexical`'s and for the
+        same reason: leaves are ranked best-first and counted from the top, so
+        fetching one past the ceiling is how the caller learns whether more
+        remain. Returns nothing over a build with no forest -- a chunk-only index
+        holds no summary nodes to match.
+        """
+        ...
+
+    def raptor_path(self, revision_id: str, *, project_id: str) -> tuple[RaptorPathSegment, ...]:
+        """A surfaced leaf's forest ancestry, catalog root to leaf (FR-R5, dec. 8).
+
+        Walks ``node_derivation`` *upward* from the revision's chunks to their
+        Document node, then to its Domain parent, then to the Catalog -- returning
+        one segment per ancestor, root first, each ``{node_id, level, title}``
+        with ``title`` the node text bounded by
+        :func:`~theurian.domain.retrieval.excerpt`. Empty over a build with no
+        forest, or for a revision no summary was derived from, so a caller can
+        tell "no forest here" from "here is the path".
+
+        **Only ever called for a leaf that already cleared the gate**
+        (:meth:`~theurian.application.retrieval_service.ResultGate._surfaced`). A
+        node's children share its six-component scope by construction (ADR-0008
+        decision 1), so every ancestor of a cleared leaf is in that leaf's own
+        scope, and a title carries no content from a scope the leaf is not in. A
+        withheld leaf surfaces nothing and so has no path; its ancestors' titles
+        never reach the wire. ``project_id``-scoped like every by-id read here
+        (SEC-13): a build is single-project, and requiring the id keeps this from
+        becoming an unscoped read the day a second caller wants it.
         """
         ...
 

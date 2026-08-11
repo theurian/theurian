@@ -191,6 +191,7 @@ from theurian.domain.ranking import (
     DENSE,
     LEXICAL,
     SUBSTRING,
+    SUMMARY,
     Fused,
     Ranked,
     RetrieverPage,
@@ -199,6 +200,7 @@ from theurian.domain.ranking import (
     reciprocal_rank_fusion,
     take_within_budget,
 )
+from theurian.domain.retrieval import RaptorPathSegment
 
 #: How many candidates each retriever contributes to the fusion. Generous: RRF
 #: rewards a document both retrievers found, and a document the dense retriever
@@ -383,6 +385,11 @@ class SearchOutcome:
     #: candidates. Fetched here rather than by the caller because the caller no
     #: longer knows which round of retrieval was the last one.
     passages: Mapping[str, str] = field(default_factory=dict)
+    #: Revision id to its forest ancestry, catalog root to leaf (ADR-0008 dec. 8).
+    #: Fetched here for the same reason as ``passages`` and gated the same way --
+    #: only cleared candidates are walked -- so a withheld leaf's ancestor titles
+    #: never enter this map. Empty over a chunk-only build.
+    raptor_paths: Mapping[str, tuple[RaptorPathSegment, ...]] = field(default_factory=dict)
 
 
 @final
@@ -437,9 +444,26 @@ class RetrievalService:
             ),
             visible,
         )
+        # The forest retriever, read through the gate like every other. It matches
+        # summary nodes and hands back the *leaves* beneath them, so a leaf reached
+        # only through a summary is a candidate fused with the leaf retrievers under
+        # its own name (ADR-0008 decision 8). A build with no forest returns an
+        # empty exhausted page here, so this contributes nothing rather than
+        # failing -- forest routing is always on when a forest exists and silent
+        # when one does not.
+        summary = self._visible_ranking(
+            lambda depth: self._index.search_summaries(
+                request.query,
+                project_id=request.project_id,
+                limit=depth,
+                include_unapproved=request.include_unapproved,
+            ),
+            visible,
+        )
         rankings: dict[str, Sequence[Ranked]] = {
             LEXICAL: lexical,
             SUBSTRING: substring,
+            SUMMARY: summary,
             DENSE: self._dense(request, visible),
         }
         candidates = diversify(reciprocal_rank_fusion(rankings), per_item=request.per_item)
@@ -449,7 +473,31 @@ class RetrievalService:
             passages=self._index.chunk_texts(
                 [candidate.chunk_id for candidate in candidates], project_id=request.project_id
             ),
+            raptor_paths=self._raptor_paths(candidates, project_id=request.project_id),
         )
+
+    def _raptor_paths(
+        self, candidates: Sequence[Fused], *, project_id: str
+    ) -> dict[str, tuple[RaptorPathSegment, ...]]:
+        """The forest ancestry of each candidate's revision, catalog root to leaf.
+
+        Fetched here beside :meth:`~theurian.domain.ports.index_store.IndexStore.chunk_texts`,
+        and for the same reason: both are per-candidate index reads the shaper
+        would otherwise have to make after it has stopped knowing which retrieval
+        round was the last. Every candidate here has already cleared the visibility
+        gate in :meth:`_visible_ranking`, so a path is built only for a leaf the
+        caller may read -- a withheld leaf never reaches this list, so its
+        ancestors' titles are never walked (SEC-13, T-15). Keyed by revision so a
+        document contributing two chunks pays for one walk, and empty over a
+        chunk-only build where every revision has no forest above it.
+        """
+        paths: dict[str, tuple[RaptorPathSegment, ...]] = {}
+        for candidate in candidates:
+            if candidate.revision_id not in paths:
+                paths[candidate.revision_id] = self._index.raptor_path(
+                    candidate.revision_id, project_id=project_id
+                )
+        return paths
 
     @staticmethod
     def _visible_ranking(
@@ -694,6 +742,12 @@ class Surfaced:
     #: The chunk text that matched. Empty when the index no longer holds it, in
     #: which case the shaper falls back to the head of the document.
     passage: str
+    #: This leaf's forest ancestry, catalog root to leaf, or empty over a
+    #: chunk-only build (ADR-0008 decision 8). Filled only here, for a leaf that
+    #: has already cleared the gate, from the paths the retrieval fetched for the
+    #: candidates it cleared -- so a withheld leaf's ancestor titles reach neither
+    #: this field nor the wire (SEC-13, T-15).
+    raptor_path: tuple[RaptorPathSegment, ...] = ()
 
 
 #: How a cleared candidate becomes the payload the caller receives.
@@ -916,6 +970,7 @@ class ResultGate:
                     status=item.status,
                     sensitivity=item.sensitivity,
                     passage=outcome.passages.get(candidate.chunk_id, ""),
+                    raptor_path=outcome.raptor_paths.get(candidate.revision_id, ()),
                 )
             )
         return tuple(surfaced)

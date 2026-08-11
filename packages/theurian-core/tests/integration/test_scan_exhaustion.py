@@ -77,6 +77,7 @@ from theurian.domain.chunking import Chunk, IndexableChunk
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
+from theurian.domain.retrieval import RaptorPathSegment
 from theurian.infrastructure.sqlite import index_store as index_store_module
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
@@ -220,6 +221,16 @@ class _CountedStore:
         return self._inner.search_dense(
             query_vector, project_id=project_id, include_unapproved=include_unapproved
         )
+
+    def search_summaries(
+        self, query: str, *, project_id: str, limit: int, include_unapproved: bool
+    ) -> RetrieverPage:
+        return self._inner.search_summaries(
+            query, project_id=project_id, limit=limit, include_unapproved=include_unapproved
+        )
+
+    def raptor_path(self, revision_id: str, *, project_id: str) -> tuple[RaptorPathSegment, ...]:
+        return self._inner.raptor_path(revision_id, project_id=project_id)
 
     def chunk_texts(self, chunk_ids: Sequence[str], *, project_id: str) -> Mapping[str, str]:
         return self._inner.chunk_texts(chunk_ids, project_id=project_id)
