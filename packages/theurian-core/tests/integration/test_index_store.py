@@ -1447,18 +1447,21 @@ def test_a_limit_of_exactly_one_is_allowed(
 def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStore) -> None:
     """The literal, so a DDL change that forgets to bump -- or bumps wrong -- fails.
 
-    Four at the time of writing. Version 3 added `chunks.derived` and
+    Five at the time of writing. Version 3 added `chunks.derived` and
     `chunk_derivation` for a writer that did not exist yet; version 4 drops both
     and adds `nodes`, `node_derivation` and `nodes_fts` in their place (ADR-0008
     decision 5's amendment, ADR-0024 decision 8's amendment) -- a RAPTOR summary
     repeats its children's terms, so a derived row sharing `chunks_fts` would move
     `N`, `avgdl` and the per-term document frequencies under every ordinary leaf
-    query. Asserted directly rather than against `INDEX_SCHEMA_VERSION - 1`,
-    because a relative check moves with the constant and pins nothing about what
-    the constant *is*.
+    query. Version 5 adds `chunks.kind`, so the withdrawal purge can re-derive the
+    forest from the index's own surviving rows (ADR-0008 decision 9): a Domain
+    tree is keyed on `kind`, which lived only on the in-memory chunk until now.
+    Asserted directly rather than against `INDEX_SCHEMA_VERSION - 1`, because a
+    relative check moves with the constant and pins nothing about what the
+    constant *is*.
     """
     assert store.schema_version() == INDEX_SCHEMA_VERSION
-    assert store.schema_version() == 4, (
+    assert store.schema_version() == 5, (
         "the index schema version changed. If a DDL change intended it, update this literal "
         "and the CHANGELOG; if not, a bump slipped in without a schema change behind it"
     )

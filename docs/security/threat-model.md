@@ -1610,16 +1610,24 @@ result payload and has no such key, and no schema in `schemas/` names it. This
 control stops being latent and starts being load-bearing at the retrieval CL,
 which is where a node's text can first reach a caller.
 
-Withdrawal already reaches the forest, and Milestone 6's builder is the first
+Withdrawal already reaches the forest, and Milestone 6's builder was the first
 thing to hand that traversal a graph it did not write itself: a purge deletes
 every node not universally grounded in surviving chunks
 (`test_withdrawing_an_item_takes_its_document_node_and_the_domain_node_above_it`),
 leaving no residue in either node text index
 (`test_a_purged_forest_leaves_no_residue_in_a_node_text_index`, over `nodes_fts`
-and `nodes_trigram`). What is **not** claimed is ADR-0008 decision 9's equality:
-the interim is delete-only, no test yet asserts that a purged build's forest
-equals one built from a corpus that never held the withdrawn rows, and that
-acceptance test is owed with the purge-closure CL (#115).
+and `nodes_trigram`). ADR-0008 decision 9's equality now holds for the forest: the
+purge no longer stops at the delete but re-derives each affected scope over the
+surviving rows, so a purged build's forest equals one built from a corpus that
+never held the withdrawn rows —
+`test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows` asserts a
+purged build identical to a never-held one across node rows, derivation edges and
+node vectors, with a stale control asserted different. That closes the forest
+counterpart of the chunk-level T-17a residual for deterministic pure providers
+(the extractive default); a non-deterministic provider's delete-and-mark-stale
+fallback is recorded and built by nothing. This does not publish any node —
+nothing node-derived reaches a response, per the paragraph above — so it withdraws
+a stale forest's influence rather than opening a read path.
 
 #### T-17 — Search accounting is a truth oracle for withheld content (Information disclosure, **Critical**)
 

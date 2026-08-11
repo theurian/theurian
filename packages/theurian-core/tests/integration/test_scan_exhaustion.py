@@ -74,6 +74,7 @@ from theurian.application.retrieval_service import (
     SearchRequest,
 )
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.sqlite import index_store as index_store_module
@@ -236,6 +237,7 @@ class _CountedStore:
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int:
         raise NotImplementedError
 

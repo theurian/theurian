@@ -18,6 +18,21 @@ The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
 
+**Version 5 gives `chunks` a `kind` column, so a purge can re-derive the forest
+from the index's own surviving rows.** The withdrawal purge re-derives each
+affected scope's trees from the published build rather than from canonical state
+(ADR-0008 decision 9, ADR-0024) -- it reads the surviving chunks back and hands
+them to `ForestBuilder`, which forms Domain trees by `kind` within a scope
+(ADR-0008 decision 2). Version 4 kept `kind` only on the in-memory
+`IndexableChunk`, so a re-derivation reading the index had no way to reconstruct
+it; a `nodes`-only read cannot recover it either, since a node records its scope
+and provenance but not the leaf `kind` its tree was keyed on. `DEFAULT ''` so a
+chunk written before a builder set it, or by a caller that omits it, is a
+buildable row rather than a failed insert -- and so the manual `INSERT`s in the
+purge suite, which name the columns explicitly, do not each have to grow one.
+A build under version 4 reports `index-schema-mismatch` and is rebuilt (ADR-0022
+point 3), which is what puts the column under every forest a purge will read.
+
 **Version 4 gives RAPTOR summary nodes their own tables, `nodes` and
 `node_derivation`, rather than storing them as `chunks` rows.** Version 3 added
 `chunks.derived` and `chunk_derivation` for a writer that did not exist yet
@@ -62,7 +77,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 4
+INDEX_SCHEMA_VERSION: Final = 5
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -125,10 +140,18 @@ CREATE TABLE chunks (
     -- it is already handled. `namespace` is populated as of the RAPTOR builder,
     -- which partitions the forest by the scope tuple this column is a component
     -- of; it is still read by no query.
+    --
+    -- `kind` is the one exception to "read by no query": no *retrieval* reads it,
+    -- but the withdrawal purge's re-derivation does (v5). A Domain tree is keyed
+    -- by `kind` within a scope (ADR-0008 decision 2), and re-deriving from the
+    -- index's surviving rows means reconstructing each chunk's `kind` -- which
+    -- lives nowhere else in the file once a build has finished, since a summary
+    -- node records its scope but not the leaf kind its tree was clustered on.
     status       TEXT    NOT NULL,
     sensitivity  TEXT    NOT NULL,
     trust_level  TEXT    NOT NULL,
-    namespace    TEXT    NOT NULL DEFAULT ''
+    namespace    TEXT    NOT NULL DEFAULT '',
+    kind         TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX chunks_by_project ON chunks (project_id, status);

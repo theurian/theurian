@@ -39,6 +39,7 @@ from theurian.domain.chunking import IndexableChunk
 from theurian.domain.context import RequestContext
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.embedding import EmbeddingProvider
+from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import DENSE, Ranked, RetrievalMode, RetrieverPage, mode_of
 from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.embedding import HashingEmbedding
@@ -1390,6 +1391,7 @@ class _ScriptedIndex:
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int:
         raise NotImplementedError
 

@@ -38,11 +38,14 @@ import os
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from theurian.domain.chunking import ChunkScope
 from theurian.domain.errors import TheurianError
+from theurian.domain.ports.index_store import ForestRecompute
 from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
 
 #: The chunks a purge removes: exactly the withdrawn revisions. A chunk is never
@@ -398,13 +401,33 @@ def _writing(path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def purge_into(
+@dataclass(frozen=True, slots=True)
+class _PurgeDelta:
+    """What :func:`_delete` did, and what the re-derivation needs to know next.
+
+    ``removed`` is the purge's returned count. ``affected_scopes`` are the scopes
+    whose leaf chunks the delete removed -- the ones whose trees a re-derivation
+    must rebuild, read before the delete so the rows that name them still exist.
+    ``has_surviving_nodes`` is what keeps a chunk-only build (no forest) from
+    taking the re-derivation path and a fully-withdrawn build from being
+    re-derived out of nothing: both leave zero nodes, and re-deriving either would
+    either invent a forest that was never asked for or add one identical to the
+    empty forest a never-held corpus produces.
+    """
+
+    removed: int
+    affected_scopes: frozenset[ChunkScope]
+    has_surviving_nodes: bool
+
+
+def purge_into(  # noqa: PLR0913 - a build's identity (id, state hash), its input, and its outputs
     source: Path,
     target: Path,
     *,
     revision_ids: Sequence[str],
     index_build_id: str,
     state_hash: str,
+    recompute_forest: ForestRecompute | None = None,
 ) -> int:
     """Write `source` minus `revision_ids` to `target`. Returns rows removed.
 
@@ -416,6 +439,17 @@ def purge_into(
     an index build is a whole artifact, and writing into someone else's is how
     the published index gets destroyed by a build that was refused permission to
     touch it.
+
+    `recompute_forest` re-derives each affected scope's summary trees over the
+    surviving rows (ADR-0008 decision 9), so a purged forest equals one built from
+    a corpus that never held the withdrawn rows. It runs **after** the delete --
+    on the file the delete left, whose surviving chunks it reads back -- and
+    **before** `_restamp` and `_verify`, so a re-derivation that produces an
+    ungrounded node is caught by the same post-conditions a bad delete is, and the
+    fresh nodes are stamped with this build's id along with the survivors. It is
+    injected, not imported: `index_purge` may not name the application-layer
+    forest builder the callback closes over (ADR-0003). It is skipped over a build
+    with no surviving forest, so today's delete-only chunk purge is untouched.
     """
     if target.exists():
         # The name only. This message reaches a user through the index CLI, and
@@ -454,7 +488,13 @@ def purge_into(
         raise IndexPurgeError(msg)
     try:
         _copy(source, building)
-        removed = _delete(building, revision_ids)
+        delta = _delete(building, revision_ids)
+        # Only when a withdrawal touched a scope that still has a forest to
+        # rebuild: a chunk-only build leaves `has_surviving_nodes` false and takes
+        # the delete-only path it always has, and a purge with no withdrawal
+        # (residue cleanup) has no affected scope to re-derive.
+        if recompute_forest is not None and delta.affected_scopes and delta.has_surviving_nodes:
+            recompute_forest(building, tuple(sorted(delta.affected_scopes)))
         _restamp(building, index_build_id=index_build_id, state_hash=state_hash)
         _verify(building, revision_ids)
         os.replace(building, target)  # noqa: PTH105 - os.replace is the atomic primitive
@@ -464,7 +504,7 @@ def purge_into(
             for suffix in ("-wal", "-shm"):
                 Path(str(path) + suffix).unlink(missing_ok=True)
         raise
-    return removed
+    return delta.removed
 
 
 def _copy(source: Path, target: Path) -> None:
@@ -495,8 +535,13 @@ def _copy(source: Path, target: Path) -> None:
         raise IndexPurgeError(msg) from exc
 
 
-def _delete(target: Path, revision_ids: Sequence[str]) -> int:
-    """Remove the withdrawn revisions and everything they no longer ground."""
+def _delete(target: Path, revision_ids: Sequence[str]) -> _PurgeDelta:
+    """Remove the withdrawn revisions and everything they no longer ground.
+
+    Returns a :class:`_PurgeDelta`: the count, the scopes the withdrawal reached,
+    and whether any node survives. The scopes are read before the delete removes
+    the chunks that name them, and the surviving-node flag after it.
+    """
     with _writing(target) as connection, connection:
         # `NULL` when nothing was withdrawn: `IN ()` is a syntax error, and
         # `IN (NULL)` is never true, so the query still runs and still reaches its
@@ -507,6 +552,11 @@ def _delete(target: Path, revision_ids: Sequence[str]) -> int:
         # chunks it removes, and the `source_revision_id` stamp that dooms a node
         # whose edges all still resolve.
         placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
+        # Before the delete, while the withdrawn chunks are still there to be read:
+        # a scope is affected -- its trees need re-deriving -- exactly when it
+        # loses a leaf chunk, and the delete below is about to remove the rows
+        # that say which scope that was.
+        affected = _affected_scopes(connection, revision_ids)
         rows = connection.execute(
             _DOOMED % (placeholders, placeholders), tuple(revision_ids) * 2
         ).fetchall()
@@ -525,7 +575,11 @@ def _delete(target: Path, revision_ids: Sequence[str]) -> int:
             bucket.add(str(identifier))
 
         if not doomed_chunks and not doomed_nodes:
-            return 0
+            return _PurgeDelta(
+                removed=0,
+                affected_scopes=affected,
+                has_surviving_nodes=_has_surviving_nodes(connection),
+            )
         # Two statements now, not one: chunks and nodes are separate tables at
         # v4, each with its own FTS5 delete triggers (`chunks_fts`/
         # `chunks_trigram` for the first, `nodes_fts` for the second) that fire
@@ -540,7 +594,49 @@ def _delete(target: Path, revision_ids: Sequence[str]) -> int:
                 "DELETE FROM nodes WHERE node_id = ?",
                 [(node_id,) for node_id in sorted(doomed_nodes)],
             )
-        return len(doomed_chunks) + len(doomed_nodes)
+        return _PurgeDelta(
+            removed=len(doomed_chunks) + len(doomed_nodes),
+            affected_scopes=affected,
+            # After the delete: a re-derivation runs only where a forest survives.
+            # A --raptor build with survivors keeps at least one node here (a
+            # surviving item's Document node grounds only on its own chunks and so
+            # is never doomed); a chunk-only build has none, and neither does one
+            # whose every item was withdrawn -- both of which re-derive to nothing.
+            has_surviving_nodes=_has_surviving_nodes(connection),
+        )
+
+
+def _affected_scopes(
+    connection: sqlite3.Connection, revision_ids: Sequence[str]
+) -> frozenset[ChunkScope]:
+    """The distinct scopes of the chunks the withdrawn revisions own.
+
+    Read off the four denormalised columns a chunk carries -- the ones a forest
+    partitions on (:class:`~theurian.domain.chunking.ChunkScope`) -- so a
+    re-derivation can rebuild exactly the scopes that lost a row and leave every
+    other scope's copied nodes byte-identical. Must be called before the delete,
+    while the withdrawn chunks are still present.
+    """
+    placeholders = ", ".join("?" for _ in revision_ids) or "NULL"
+    rows = connection.execute(
+        "SELECT DISTINCT project_id, namespace, sensitivity, status "  # noqa: S608 - placeholders only
+        f"FROM chunks WHERE revision_id IN ({placeholders})",
+        tuple(revision_ids),
+    ).fetchall()
+    return frozenset(
+        ChunkScope(
+            project_id=str(row["project_id"]),
+            namespace=str(row["namespace"]),
+            sensitivity=str(row["sensitivity"]),
+            status=str(row["status"]),
+        )
+        for row in rows
+    )
+
+
+def _has_surviving_nodes(connection: sqlite3.Connection) -> bool:
+    """Whether any summary node remains -- the signal a forest is there to rebuild."""
+    return connection.execute("SELECT 1 FROM nodes LIMIT 1").fetchone() is not None
 
 
 def _restamp(target: Path, *, index_build_id: str, state_hash: str) -> None:

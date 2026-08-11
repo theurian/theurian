@@ -29,9 +29,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
 
-from theurian.domain.chunking import IndexableChunk
+from theurian.domain.chunking import Chunk, IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
+from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
 from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.sqlite.index_purge import ANY_DOOMED_ROW, purge_into
@@ -71,6 +72,27 @@ _FLOAT32_BYTES: Final = 4
 #: A real embedding model separates these distributions far better and would
 #: want its own floor; it arrives with its own adapter.
 DENSE_SIMILARITY_FLOOR: Final = 0.25
+
+#: Delete every node upward-reachable from the seed chunks in `temp.recompute_seed`
+#: -- the affected scope's whole current node set (see
+#: :meth:`SqliteIndexStore.delete_nodes_grounded_in_chunks`).
+#:
+#: Only Document nodes carry a `source_chunk_id`, so the base arm names exactly the
+#: leaf tier over the seed; the recursive arm walks `source_node_id` up through the
+#: Domain and Catalog tiers. `UNION` and not `UNION ALL` so a Catalog reached
+#: through two Domain nodes is not enqueued twice, and so the walk terminates.
+#: Every value is a column of a module-owned temp table -- no interpolation, no
+#: bound user input.
+_DELETE_SCOPE_NODES: Final = """
+WITH RECURSIVE grounded(node_id) AS (
+    SELECT node_id FROM node_derivation
+     WHERE source_chunk_id IN (SELECT chunk_id FROM temp.recompute_seed)
+    UNION
+    SELECT e.node_id FROM node_derivation e
+      JOIN grounded g ON e.source_node_id = g.node_id
+)
+DELETE FROM nodes WHERE node_id IN (SELECT node_id FROM grounded)
+"""
 
 
 class IndexBuildError(TheurianError):
@@ -535,8 +557,9 @@ class SqliteIndexStore:
         with _connect(self._path) as connection:
             connection.executemany(
                 "INSERT INTO chunks (chunk_id, project_id, item_id, revision_id, ordinal, "
-                "heading, text, token_estimate, status, sensitivity, trust_level, namespace) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "heading, text, token_estimate, status, sensitivity, trust_level, namespace, "
+                "kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         c.chunk.chunk_id,
@@ -551,6 +574,10 @@ class SqliteIndexStore:
                         c.sensitivity,
                         c.trust_level,
                         c.namespace,
+                        # Read by no retriever, only by the purge's re-derivation
+                        # (v5): a Domain tree is keyed on `kind`, and re-deriving
+                        # from the index means reading it back here.
+                        c.kind,
                     )
                     for c in chunks
                 ],
@@ -665,6 +692,7 @@ class SqliteIndexStore:
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int:
         """Write this build minus `revision_ids` to `target` (ADR-0024).
 
@@ -673,6 +701,13 @@ class SqliteIndexStore:
         reads here and writes there. `index_purge` owns the SQL for the same
         reason `index_scan` owns the scan's — this file is already the largest in
         the package, and a purge is a distinct concern from a query.
+
+        `recompute_forest` re-derives each affected scope's summary trees over the
+        surviving rows, so a purged forest equals one built from a corpus that
+        never held the withdrawn rows (ADR-0008 decision 9). It is injected rather
+        than imported because it closes over the application-layer `ForestBuilder`
+        and `index_purge` may not name it; passed straight through to `purge_into`,
+        which calls it after the delete and before the verify.
         """
         return purge_into(
             self._path,
@@ -680,7 +715,113 @@ class SqliteIndexStore:
             revision_ids=revision_ids,
             index_build_id=index_build_id,
             state_hash=state_hash,
+            recompute_forest=recompute_forest,
         )
+
+    def surviving_chunks(self, *, project_id: str) -> tuple[IndexableChunk, ...]:
+        """Every chunk row of `project_id`, read back as an `IndexableChunk`.
+
+        The purge's re-derivation reads the *published build's* surviving rows,
+        not canonical state (ADR-0024: a purge is a function of the index), and
+        hands them to `ForestBuilder`. The reconstruction is faithful because a
+        chunk row stores everything the derivation reads: the passage text and
+        heading `chunk_document` produced, and the four scope columns plus `kind`
+        the forest partitions on (v5). So a chunk read back here and the same
+        chunk in a build that never held the withdrawn rows are equal, which is
+        what the two-corpus equality rests on.
+
+        `project_id`-scoped like every by-id read on this store (SEC-13): a build
+        is single-project, so this returns the whole corpus, and requiring the id
+        keeps the read from becoming an unscoped one the day a second caller wants
+        it.
+        """
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT chunk_id, item_id, revision_id, ordinal, heading, text, "
+                "status, sensitivity, trust_level, namespace, kind "
+                "FROM chunks WHERE project_id = ? ORDER BY chunk_id",
+                (project_id,),
+            ).fetchall()
+            # Converted inside the block, like every read here: an `int()` over a
+            # corrupt `ordinal` is a `ValueError` the guard maps to an unreadable
+            # index rather than a bare traceback (see `_UNREADABLE_VALUES`).
+            return tuple(
+                IndexableChunk(
+                    chunk=Chunk(
+                        chunk_id=str(row["chunk_id"]),
+                        ordinal=int(row["ordinal"]),
+                        text=str(row["text"]),
+                        heading=str(row["heading"]),
+                    ),
+                    project_id=project_id,
+                    item_id=str(row["item_id"]),
+                    revision_id=str(row["revision_id"]),
+                    status=str(row["status"]),
+                    sensitivity=str(row["sensitivity"]),
+                    trust_level=str(row["trust_level"]),
+                    namespace=str(row["namespace"]),
+                    kind=str(row["kind"]),
+                )
+                for row in rows
+            )
+
+    def delete_nodes_grounded_in_chunks(self, chunk_ids: Sequence[str]) -> None:
+        """Remove every node upward-reachable from the given chunks.
+
+        No count is returned: a ``WITH RECURSIVE ... DELETE`` reports
+        ``cursor.rowcount == -1`` in ``sqlite3`` whatever it deleted (the module
+        recognises DML only when the statement text begins with the verb), so a
+        count here would be a lie. The sole caller (``_recompute_forest``) needs
+        none -- it clears the scope and re-inserts unconditionally.
+
+        The re-derivation's scope-clearing step: before re-inserting an affected
+        scope's fresh trees it deletes that scope's *entire* current node set,
+        because clustering changes the member set of a Domain node and
+        content-addressing then moves its id (ADR-0008 decision 9) -- so a survivor
+        is a different node, not the old one minus a child, and re-inserting over it
+        would collide on the primary key.
+
+        **Seeded on all the scope's surviving chunks, not on the fresh trees, and
+        that is the fan-out fix.** A withdrawal that collapses a Domain fan-out
+        ``b -> b-1`` leaves a *surviving* top batch ``kind#(b-1)`` whose members
+        were all kept, so `_delete` never dooms it, yet the re-derivation over the
+        survivors mints only ``kind#0`` -- so its tree id is absent from the fresh
+        set. Deleting by the fresh tree ids missed that stale batch; the cascade
+        then stripped its edges when the survivors' Document nodes were re-derived,
+        leaving it unprovenanced, and `_verify` refused the whole purge closed. The
+        upward closure from the scope's surviving chunks reaches it, because it
+        still grounds on those chunks through its surviving Document children.
+
+        **Exact over the affected scope and reaching no other.** Every surviving
+        node is well-founded in surviving chunks (`_delete` removed the rest), and a
+        `SummaryNode` refuses cross-scope children, so a node's downward closure
+        lands entirely in one scope: the upward closure from a scope's chunks is
+        exactly that scope's current nodes, stale re-batched discriminators
+        included, and touches no node whose chunks are elsewhere. A plain
+        scope-column delete cannot do this -- `nodes` has no `namespace` column, so
+        two scopes differing only in namespace would over-match.
+
+        The seed is a temp table rather than bound `IN (...)` placeholders because
+        an affected scope can hold hundreds of thousands of chunks (the fan-out's
+        own design point), past SQLite's host-parameter ceiling -- the same reason
+        `index_purge._verify` materialises `temp.withdrawn`.
+
+        `ON DELETE CASCADE` carries `node_derivation` and `node_embeddings` with
+        each node, and `_connect` runs with `PRAGMA foreign_keys = ON`, so the
+        cascade fires rather than leaving a dangling edge the purge's `_verify`
+        would then refuse the build over.
+        """
+        if not chunk_ids:
+            return
+
+        with _connect(self._path) as connection:
+            connection.execute("CREATE TEMP TABLE recompute_seed (chunk_id TEXT PRIMARY KEY)")
+            connection.executemany(
+                "INSERT OR IGNORE INTO temp.recompute_seed (chunk_id) VALUES (?)",
+                [(chunk_id,) for chunk_id in chunk_ids],
+            )
+            connection.execute(_DELETE_SCOPE_NODES)
+            connection.commit()
 
     def holds_any_revision(self, revision_ids: Sequence[str]) -> bool:
         """Whether a purge of ``revision_ids`` would remove anything from this build.

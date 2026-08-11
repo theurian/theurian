@@ -296,6 +296,18 @@ flowchart TB
    > buildable corpus by about 500× rather than making it unbounded; recorded here,
    > not removed, because the Catalog tier has no fan-out and this ADR should not
    > read as though it does.
+   >
+   > **Amended in Milestone 6, by the purge-recompute CL. "No `chunks` column,
+   > because no query reads it and the build that produced the chunk consumes it in
+   > memory" is false: index schema v5 adds `chunks.kind`.** No *retrieval* reads
+   > it, so the first half stands — but the withdrawal purge re-derives each
+   > affected scope's Domain trees from the *published index's* surviving rows
+   > (decision 9, [ADR-0024](0024-a-purge-is-a-build.md)), not from canonical
+   > state, and a Domain tree is keyed by `kind` within a scope. A summary node
+   > records its scope but not the leaf `kind` its tree clustered on, so at v4 the
+   > `kind` a re-derivation needs lived nowhere the index could be read for it. v5
+   > persists it (`NOT NULL DEFAULT ''`), so the build no longer merely consumes
+   > `kind` in memory. `index_schema.py`'s `chunks` comment records the exception.
 3. Incremental rebuild: changed item → its Document Tree → the affected part of
    its Domain Tree → the affected part of the Catalog Tree. Never a full forest
    rebuild for a single edit.
@@ -886,6 +898,84 @@ flowchart TB
 >    > while it was RED: two byte-identical files with different titles are not
 >    > duplicate content once indexed, because the builder prepends the title
 >    > before chunking, and measured, the two summaries differed by the one word.
+>    >
+>    > **Amended in Milestone 6, by the purge-recompute CL. The interim is over:
+>    > the withdrawal purge re-derives the forest, and this decision's two-corpus
+>    > equality now holds for the derived layer.** `theurian migrate apply` no
+>    > longer deletes and stops. After the delete of every ungrounded node it
+>    > re-derives each *scope that lost a row* whole — every tree in it, from the
+>    > surviving chunks it reads back out of the building file — and writes the
+>    > fresh Domain and Catalog nodes in their place
+>    > (`application/withdrawal_purge.py`, `infrastructure/sqlite/index_purge.py`).
+>    > Whole-scope re-derivation is coarser than this decision's per-tree ancestor
+>    > closure and subsumes it: the unaffected Domain trees in an affected scope are
+>    > re-derived too, byte-for-byte, because derivation is deterministic, while a
+>    > scope that lost nothing is never read.
+>    > A purged forest — node rows, derivation edges and node vectors — then equals
+>    > one built over a corpus that never held the withdrawn rows, held by
+>    > `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
+>    > with a stale pre-purge control asserted *different* in the same test. This is
+>    > re-derivation of each affected scope, not delete-only and not the node-local
+>    > recompute this decision also rejects. It is scoped to deterministic pure
+>    > providers, which is what the extractive default is.
+>    >
+>    > **Which of the two boundaries above actually separates delete-only from
+>    > re-derivation — the sharpened spec the RED phase found.** This decision names
+>    > *thresholds* and *clustering* as the two places a naive purge diverges from a
+>    > never-held corpus (against node-local recompute directly). Implementation
+>    > found only the **clustering** boundary distinguishes delete-only from
+>    > re-derivation. At the *threshold* boundary — a Domain tree of three loses one,
+>    > two survive below `minChildrenPerSummary` — the never-held corpus skips the
+>    > level and delete-only *also* leaves no node there, because `_DOOMED`'s upward
+>    > closure already dooms the parent whose child was withdrawn: the two agree, so
+>    > that boundary is subsumed by the purge this decision already performs.
+>    > `test_a_withdrawal_below_threshold_leaves_no_domain_node` is therefore the
+>    > guard against *node-local recompute* (which would keep a two-child node), not
+>    > the case that makes delete-only RED. At the **clustering** boundary — a Domain
+>    > tree of four loses one, three survive and still meet `minChildrenPerSummary`
+>    > — a never-held corpus *builds* a three-child node while delete-only *deletes*
+>    > the four-child node
+>    > and rebuilds nothing, so the purged forest is missing a node the never-held
+>    > one has. That is the discriminating fixture in the equality test
+>    > (`test_a_withdrawal_rebuilds_a_domain_node_over_its_surviving_children`).
+>    > This decision's argument stands; the RED phase only named which of its two
+>    > boundaries the equality test turns on.
+>    >
+>    > **The non-deterministic-provider fallback is recorded, not built.** This
+>    > decision's delete-and-mark-stale branch for a provider without the
+>    > determinism property is described in `make_forest_recompute`'s docstring and
+>    > exercised by nothing: the extractive default is deterministic, so the branch
+>    > is a later CL's rather than a dead one carried here. Index schema v5 adds
+>    > `chunks.kind`, which the re-derivation reads to key a Domain tree; see
+>    > decision 2's amendment.
+>    >
+>    > **Amended in Milestone 6, by the fan-out re-batch fix (HIGH, reproduced by
+>    > all three reviewers). The scope-clearing delete underneath "re-derives each
+>    > scope that lost a row whole" was keyed on the fresh trees, not on the
+>    > scope, and a Domain fan-out re-batch (decision 2's amendment) reached that
+>    > gap.** Above `MAX_CHILDREN_PER_DOMAIN` a kind splits into batches
+>    > `kind#0 .. kind#(b-1)`; a withdrawal that drops the batch count to `b-1`
+>    > re-derives only `kind#0 .. kind#(b-2)`, but a *surviving* top batch
+>    > `kind#(b-1)` — none of whose members was withdrawn, so the
+>    > universal-grounding delete never dooms it — keeps a `tree_id` the fresh set
+>    > does not name. The purge deleted only that fresh set, missed the stale
+>    > batch, and the `ON DELETE CASCADE` then stripped its edges when the
+>    > survivors' Document nodes were re-derived, leaving it unprovenanced;
+>    > `_verify` refused the whole purge over that remnant. A legitimate
+>    > withdrawal therefore published no purge at all, leaving the stale build
+>    > serving the withdrawn rows' statistics (T-17a).
+>    >
+>    > `SqliteIndexStore.delete_nodes_of_trees` is now
+>    > `delete_nodes_grounded_in_chunks`: seeded on the scope's surviving chunks
+>    > rather than the fresh trees, it walks `node_derivation` upward and deletes
+>    > the scope's *entire* current node set — stale re-batched batches included
+>    > — by construction rather than by naming the trees the derivation happens
+>    > to reproduce. The equality this decision names now holds at the fan-out
+>    > boundary too, for deterministic pure providers:
+>    > `tests/integration/test_forest_purge_recompute.py` asserts a re-batching
+>    > withdrawal — at the exact boundary, from the final batch, as a bulk
+>    > withdrawal, and across two scopes withdrawn from at once — publishes a
+>    > forest identical to a never-held build, with the orphaned batch gone.
 >
 
 > 10. **`raptor.enabled` defaults to `false` in the first release that ships the
@@ -1563,6 +1653,37 @@ the decision it belongs to states a property that is otherwise only an argument:
   > missing a node the never-held corpus would have built from the survivors.
   > Recorded in decision 9's own landed note. It costs recall in a forest nothing
   > reads, and it ends with the purge-closure CL that owes this test.
+  >
+  > **Landed in Milestone 6, by the purge-recompute CL (the purge-closure CL this
+  > item was owed to).** The withdrawal purge now re-derives each affected scope's
+  > trees over the surviving rows, and the equality holds:
+  > `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
+  > builds a corpus holding the withdrawn rows, purges it, and asserts the result
+  > **identical** — node rows (`node_id`, scope columns and all provenance
+  > included, `index_build_id` excepted), derivation edges and node vectors — to a
+  > build over a corpus that never held them. The mechanism is re-derivation of
+  > each affected scope from the surviving chunks (not delete-only, not node-local
+  > recompute). The **stale** control this item requires is the pre-purge build,
+  > asserted *different* from the never-held one in the same test. The fixture
+  > reaches the Catalog tier and asserts the clustered Domain node is rebuilt over
+  > exactly its three survivors, so the equality is not vacuous over a shallow
+  > forest. The comparison is over the node tables' full contents because decision
+  > 8 publishes no node; it extends to every published field when `raptorPath`
+  > lands. Scoped to deterministic pure providers — under any other, decision 9's
+  > fallback applies and this equality is not available, as this item always said.
+  > This also closes decision 6's carrier (b): the test is the one that lets the
+  > child set vary, and a re-derivation over the survivors is where a withheld
+  > document's influence on *which* children cluster is removed.
+  >
+  > **Amended in Milestone 6, by the fan-out re-batch fix. "The mechanism is
+  > re-derivation of each affected scope from the surviving chunks" was true of
+  > the fresh insert and not yet of the delete that made room for it.** The
+  > delete cleared only the fresh trees, so a re-batched Domain fan-out's
+  > surviving top batch — a `tree_id` the fresh set does not name — was left
+  > standing and then unprovenanced by the cascade, failing the purge closed
+  > rather than answering the equality wrong. Decision 9's amendment records the
+  > fix; `tests/integration/test_forest_purge_recompute.py` pins the equality at
+  > that boundary specifically, which the test named above does not reach.
 - **A forest does not move leaf ranking** — what decision 5's "equal by
   construction" claims. Same query, same corpus, two builds: one with the forest
   derived and one without, with traversal off on the forest side, or else
@@ -1680,6 +1801,22 @@ the decision it belongs to states a property that is otherwise only an argument:
   > two corpora whose node cluster sizes differ, since a corpus in which a Domain
   > node's cluster equals a Document node's cannot tell a scaled budget from a
   > constant.
+  >
+  > **Landed in Milestone 6, by the purge-recompute CL: carrier (b) is now
+  > closed.** It was owed to decision 9's tree-level two-corpus test, and that test
+  > exists —
+  > `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
+  > the item above. It is the first test that varies *which* children a node
+  > clusters, which is what carrier (b) is, and the re-derivation over the
+  > survivors is where a withheld document's influence on that membership is
+  > removed. Carriers (a) and (c) here plus (b) there close the three the class
+  > has.
+  >
+  > **Amended in Milestone 6, by the fan-out re-batch fix.**
+  > `tests/integration/test_forest_purge_recompute.py` joins it as a second test
+  > that varies membership, at the one boundary the first did not reach — a
+  > withdrawal that re-batches a fanned-out Domain tier — closed for the reason
+  > the item above's amendment records.
 - **Project and status are enforced for the node tables in one place** — what
   decision 5's amendment owes. A single predicate builder for node reads, the way
   `_scope` is for chunk reads, with the cross-project and cross-status isolation

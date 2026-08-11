@@ -144,10 +144,13 @@ deepest tier last.
 
 Decision 2 says "one namespace **or** kind" for the Domain tier, and inside a
 scope that reduces to `kind`, because the scope has already fixed the namespace.
-`IndexableChunk` carries `kind` for that reason and for no other — nothing
-queries it, and it is consumed in memory by the build that produced the chunk.
-Without it a scope holds exactly one Domain tree, the Catalog tier always has a
-single child, and three levels are structurally unreachable.
+`IndexableChunk` carries `kind` for that reason. No *retrieval* reads it, but the
+withdrawal purge does: it re-derives each affected scope's Domain trees from the
+published index's surviving rows, so `kind` is persisted on `chunks.kind` at index
+schema v5 rather than only consumed in memory by the build that produced the
+chunk. Without the discriminator a scope holds exactly one Domain tree, the
+Catalog tier always has a single child, and three levels are structurally
+unreachable.
 
 A level is skipped when it has fewer than `minChildrenPerSummary` children:
 summarizing one document produces a paraphrase, which costs tokens and adds
@@ -237,24 +240,46 @@ above it to go while the other two survive, and
 and `nodes_trigram` through `fts5vocab` to check that no term of the withdrawn
 document is still indexed.
 
-**Withdrawal is delete-only in the interim, and that is not what ADR-0008
-decision 9 settles for.** Decision 9 rejects delete-only: it wants each affected
-tree *re-derived* from its surviving rows, so that a purged build's forest equals
-one built from a corpus that never held the withdrawn rows — deleting a node
-outright breaks that equality in the other direction, because the never-held
-corpus would have built a node from the children that survived. Re-derivation and
-that equality both arrive with the purge-closure change. The property it will
-rest on is already held here:
-`test_rebuilding_the_same_state_produces_a_byte_identical_forest`, because an id
-or a text that moved between two derivations of one state would make the equality
-test unwritable rather than merely red. The equality itself is owed against
-`packages/theurian-core/tests/integration/test_index_purge.py::test_a_purged_build_answers_as_if_the_rows_were_never_indexed`,
-which is the two-corpus shape it extends, over the node tables' full contents.
+**Withdrawal re-derives each affected tree, which is what ADR-0008 decision 9
+settles for.** After the delete of every ungrounded node, the purge re-derives
+each *scope that lost a row* whole — every tree in it, over the surviving chunks
+it reads back from the building file. Clearing the way for the fresh trees is
+`SqliteIndexStore.delete_nodes_grounded_in_chunks`, seeded on the scope's
+surviving chunks and walking `node_derivation` upward: it deletes the scope's
+*entire* current node set, not only the trees the fresh derivation happens to
+reproduce. That distinction is what a Domain fan-out re-batch needs — collapsing
+`kind#0 .. kind#(b-1)` to one fewer batch on a withdrawal leaves a surviving top
+batch the fresh set never names, and a delete keyed on the fresh trees alone
+misses it, so the purge fails closed rather than publishing. Whole-scope
+re-derivation is coarser than decision 9's per-tree ancestor closure and subsumes
+it: an affected scope's unaffected trees re-derive byte-for-byte because
+derivation is deterministic, and a scope that lost nothing is never read. A
+purged build's forest then equals one built from a corpus that never held the
+withdrawn rows, at the fan-out boundary included. Delete-only did not: deleting a
+node outright breaks that equality in the other direction, because the
+never-held corpus would have built a node from the children that survived, and
+content-addressing makes that node a different one than the old node minus a
+child.
+`tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
+holds the equality over the node tables' full contents — node rows, derivation
+edges and node vectors — with a stale pre-purge control asserted different, and
+`tests/integration/test_forest_purge_recompute.py` holds it at the fan-out
+boundary specifically — a re-batching withdrawal at the exact boundary, from the
+final batch, as a bulk withdrawal, and across two scopes withdrawn from at once.
+It is the two-corpus shape that
+`test_index_purge.py::test_a_purged_build_answers_as_if_the_rows_were_never_indexed`
+holds for chunks, extended to the derived layer. The re-derivation is application
+policy (`ForestBuilder` and the summariser and embedder) injected into the
+infrastructure purge as a callback, not imported up into it, so ADR-0003's
+layering holds. It is scoped to deterministic pure providers — the extractive
+default; a non-deterministic provider's delete-and-mark-stale fallback (decision
+9) is recorded in `make_forest_recompute`'s docstring and built by nothing.
 
 ## Node provenance
 
 Every node row carries the provenance below — `nodes` in
-`infrastructure/sqlite/index_schema.py`, index schema v4, written by
+`infrastructure/sqlite/index_schema.py`, added at index schema v4 (the schema is
+v5 today, which adds `chunks.kind` for the purge's re-derivation), written by
 `IndexStore.add_nodes` in the same transaction as its derivation edges, because a
 node without its edges cannot say what it holds and is a state `_verify` refuses
 to publish:
@@ -362,8 +387,15 @@ size or a document count, and it is the one `ForestOptions` field with no config
 key, so no configuration can turn it into a corpus-derived quantity either.
 `tests/unit/test_forest_derivation.py::test_the_summary_budget_is_a_constant_and_not_a_share_of_the_corpus`
 holds it with a recorder that sees what each call was charged. Carrier (b) —
-which children cluster together — is still owed to the two-corpus equality test,
-which is the only owed test that can vary the child set.
+which children cluster together — is closed by the withdrawal purge's tree-level
+re-derivation and held by
+`tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
+which varies the child set by removing a withheld document and regrouping the
+visible ones, and by
+`tests/integration/test_forest_purge_recompute.py`, which varies it at the one
+boundary the first does not reach — a withdrawal that re-batches a fanned-out
+Domain tier. Re-deriving each affected scope over the survivors is where that
+influence is removed, at both boundaries.
 
 ## Working with no model configured
 
@@ -393,13 +425,14 @@ Two things ride on that choice. It is what lets Theurian produce a usable
 forest offline with no API key
 ([ADR-0009](../adr/0009-no-llm-vendor-lock-in.md)), so abstractive
 summarization is an upgrade and not a prerequisite. And its determinism is what
-makes the purge's equality target reachable: a purged build's forest can equal a
-never-held one only if tree derivation — the clusterer as much as the summarizer
-— is a pure function of surviving rows, scope and configuration. A provider
-without that property forfeits the equality, and ADR-0008 decision 9 records
-what a purge does instead (delete the affected trees' nodes and record the
-forest stale for them, which retains no withheld influence and restores no
-equality).
+makes the purge's equality hold: a purged build's forest equals a never-held one
+(`test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`)
+only because tree derivation — the clusterer as much as the summarizer — is a
+pure function of surviving rows, scope and configuration. A provider without that
+property forfeits the equality, and ADR-0008 decision 9 records what a purge does
+instead (delete the affected trees' nodes and record the forest stale for them,
+which retains no withheld influence and restores no equality) — a fallback
+recorded in `make_forest_recompute`'s docstring and built by nothing today.
 
 ## Retrieval through the forest
 
