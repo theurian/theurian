@@ -39,6 +39,115 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for more, so a pinned moment cannot change how many times a request reads a
   retriever.
 
+- **`theurian index build --raptor` derives and stores the RAPTOR forest**
+  (ADR-0008, `application/forest_builder.py`). The three tiers decision 2 names,
+  deepest last: a Document node per item revision over that revision's chunks, a
+  Domain node per `kind` within a scope over those, and a Catalog node per scope
+  over those. **Without the flag a build writes zero node rows** — decision 10's
+  opt-in as a hard guarantee rather than a filter someone has to remember, the
+  shape `--include-unapproved` already has for drafts, and held by
+  `test_a_build_without_the_raptor_flag_writes_no_summary_nodes`. A level with
+  fewer than `minChildrenPerSummary` children is skipped, because a summary of
+  one document is a paraphrase; `maxLevels` caps the tiers rather than refusing a
+  larger value, so a valid config stays buildable.
+
+  **`kind` is the Domain-tree discriminator, and `namespace` is written for the
+  first time.** A tree's scope already fixes the namespace, so decision 2's "one
+  namespace or kind" reduces to `kind` inside one — without it a scope holds
+  exactly one Domain tree, the Catalog tier always has a single child, and three
+  levels are structurally unreachable. `IndexableChunk` carries `kind` and
+  `chunks` gains no column: nothing queries it, and the build that produced the
+  chunk consumes it in memory. `chunks.namespace` existed as `NOT NULL DEFAULT
+  ''` and was never populated; a forest derived from those rows would have
+  partitioned on five components while claiming six, so it is populated now and
+  pinned on a *default* build by
+  `test_a_chunks_namespace_carries_the_value_its_item_was_registered_with`.
+
+  **Two new store writes.** `IndexStore.add_nodes` inserts the forest and its
+  `node_derivation` edges in **one transaction, nodes first** — the foreign keys
+  are immediate, so an edge before its node is refused rather than resolved at
+  commit, and a commit between the two statements would expose the exact
+  unprovenanced state `_verify` refuses to publish. `add_node_embeddings` is
+  separate from `add_embeddings` because `embeddings.chunk_id REFERENCES chunks`
+  and a node id is not a chunk id. Every node is embedded or none, for the reason
+  chunks are: dense retrieval would rank the embedded half and silently never
+  surface the rest. `--no-embeddings` reaches the forest too, or the flag would
+  mean half of what it says.
+
+  **`SUMMARY_MAX_TOKENS` is a constant and never a share of the corpus**
+  (decision 6's amendment). A builder dividing a shared budget by document count
+  would move a visible node's text when a withheld document was added or removed,
+  while the summariser itself read nothing it should not — a property only the
+  caller can hold, since a summariser is handed the number and never the recipe.
+  It is one chunk's worth, the chunker's target passage priced at the estimator's
+  characters-per-token, and it is the one `ForestOptions` field with no config
+  key. `test_the_summary_budget_is_a_constant_and_not_a_share_of_the_corpus`
+  holds it with a recorder that sees what each call was charged.
+
+  **Node identity is content-addressed.** `node_identity(tree_id, level, the
+  children's content hashes sorted)` in `domain/raptor.py`, pinned against a
+  literal by `test_a_node_id_is_pinned_to_its_exact_join_order_sort_and_encoding`
+  — a literal rather than a recomputation, because the forest tests recompute the
+  recipe from the function they are checking and would pass together with a
+  builder that agreed on a *different* one. `tree_id` adds the tier and the
+  within-scope partition on top of the scope key, without which two items holding
+  duplicate content mint one id for two nodes. `IndexableNode` refuses a node
+  whose declared child scopes do not stand one per source, which is the half
+  `SummaryNode` cannot see, and the builder derives each declaration from the
+  chunk or node it summarises — together discharging ADR-0008's "each declared
+  child scope is derived from the child it summarises".
+
+  **Default off in both config surfaces** (decision 10):
+  `schemas/config/project-config.schema.json` declares `raptor.enabled` as
+  `default: false` with the reason on the property, and
+  `examples/sample-project/.theurian/config.yaml` sets it `false`. Each is pinned
+  by its own test, because validating the example against the schema cannot catch
+  a disagreement — both values are valid booleans. Nothing in `src/` reads
+  `.theurian/config.yaml`, so **the CLI flag is the switch and the config key is
+  not**; `ForestOptions` carries the schema's own defaults for `maxLevels` and
+  `minChildrenPerSummary`, pinned against that file so the two cannot drift
+  before a loader exists. `system.capabilities` still reports `raptor: false`,
+  which ADR-0008 decision 10 predicted would flip here and should not: that flag
+  answers what a *caller* can get, and nothing node-derived reaches a response.
+
+  **The withdrawal purge is exercised over rows the builder wrote**, for the
+  first time — every node row the suite had purged until now was inserted with
+  raw SQL by the test that purged it. Withdrawing one item of three takes its
+  Document node and, by the upward closure, the Domain node standing on it, while
+  the two unaffected Document nodes survive; `nodes_fts` and `nodes_trigram` are
+  read back through `fts5vocab` and hold no term of the withdrawn document. The
+  interim is **delete-only**: ADR-0008 decision 9's re-derivation of each affected
+  tree, and the two-corpus equality that is the only thing able to check it,
+  belong to the purge-closure CL. `test_rebuilding_the_same_state_produces_a_byte_identical_forest`
+  holds the precondition that equality rests on.
+
+  **Reported, both fields.** `index build --json` gains `raptor` and `nodes`,
+  because the count alone cannot tell a forest-free build apart from one whose
+  corpus fell below every threshold — the confusion `indexesUnapproved` exists to
+  prevent for drafts.
+
+  **What this does not do, said plainly.** Nothing reads a node back: every
+  retriever names `chunks`, no traversal exists, and `raptorPath` is emitted by
+  nothing, so a forest is written, purged, and never returned to a caller. The
+  build cost is unmeasured — one `summarize` call per node, on top of a build
+  ADR-0024 measured at 2,614 ms over 400 documents for chunks alone — which is
+  why the capability ships opt-in. Rebuilds are whole, not incremental. And the
+  purge tests over builder-written rows reach only the unanchored arms a builder
+  can produce: an unprovenanced node, an edge naming an absent node, and a
+  provenance cycle stay covered by the raw-SQL fixtures in
+  `test_index_purge_nodes.py`, because this builder writes every node before any
+  edge in one transaction, gives each node at least one source, and builds each
+  tier only from the one below.
+
+  **The "no builder / nothing writes a node / no summary is generated" family is
+  closed across the tree**, at 58 assertion sites in 16 files: ADR-0008 and
+  ADR-0024, `docs/architecture/raptor.md`, `overview.md`,
+  `requirements-analysis.md`'s R-3, R-4, R-7 and R-14, the threat model's T-3 and
+  T-10, `SECURITY.md`, `README.md`, and six test files. ADR-0008's Compliance
+  section records the key, the counts against both trees, and the two classes no
+  keyword search can reach — including the four sites this CL planted in its own
+  RED-phase test docstrings.
+
 - **`ExtractiveSummarizer` lands as the first `SummarizationProvider` adapter,
   and the port's default** (ADR-0008 decision 6's Milestone 6 amendment and 7,
   `infrastructure/raptor/extractive.py`). It splits each child text on Latin

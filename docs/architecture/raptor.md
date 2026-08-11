@@ -4,13 +4,14 @@ Decision record: [ADR-0008](../adr/0008-raptor-forest.md), as amended in
 Milestone 6. Where this page and that ADR would both state a mechanism, this one
 points at it — a second telling is a second thing to keep true.
 
-**Nothing summarizes yet.** What exists today is the scope tuple, a
-`SummaryNode` value type that refuses children whose scope disagrees with its
-own, the index tables a node will live in (index schema v4), and a purge that
-already walks them. No builder constructs a node, nothing maps a `SummaryNode`
-onto a `nodes` row in either direction, and no retrieval path traverses one;
-`system.capabilities` reports `"raptor": false`. Below, the present tense marks
-what runs today and "will" marks the design Milestone 6 is building toward.
+**The forest is built and never read.** `theurian index build --raptor` derives
+the three tiers below and writes them into the index — a build without the flag
+writes zero node rows — and a withdrawal purges them transitively. What does not
+exist is the other direction: no retrieval path traverses a node,
+`system.capabilities` reports `"raptor": false`, and no result carries a
+`raptorPath`. So a summary node is written, purged, and never returned to
+anyone. Below, the present tense marks what runs today and "will" marks the
+design the retrieval change is building toward.
 
 ## What RAPTOR does
 
@@ -41,9 +42,9 @@ retrieval path reads `chunks.sensitivity`: sensitivity is a **published label,
 not a control**, with the control deferred to
 [#119](https://github.com/theurian/theurian/issues/119) — the per-axis register
 in [requirements-analysis.md](requirements-analysis.md) records that disposition
-axis by axis. What partitioning *would* stop is a summary mixing two
-sensitivities into one text. Even then it would make no serving decision, so the
-forest neither waits for #119 nor advances it.
+axis by axis. What partitioning stops is a summary mixing two sensitivities into
+one text — and it makes no serving decision even so, which is why the forest
+neither waits for #119 nor advances it.
 
 ## The structure
 
@@ -66,18 +67,17 @@ flowchart TB
         DOC3 --> L3["Leaf chunks"]
     end
 
-    Scope1 -. "no node will span these" .-x Scope2
+    Scope1 -. "no node spans these" .-x Scope2
 
     style Scope2 fill:#5a3a7a,color:#fff
 ```
 
 Tree identity is
 `(project, tenant, sensitivity, acl_group, namespace, status)` — `Scope` in
-`domain/values.py`. A node whose children differed in any component **would have
-no tree it could belong to**, which is what would make the isolation structural
-rather than a check somebody has to remember to write. That distinction is the
-whole point: a forgotten check produces exactly the undetectable leak described
-above.
+`domain/values.py`. A node whose children differ in any component **has no tree
+it could belong to**, which is what makes the isolation structural rather than a
+check somebody has to remember to write. That distinction is the whole point: a
+forgotten check produces exactly the undetectable leak described above.
 
 `status` is the sixth component, added by the Milestone 6 amendment to ADR-0008
 decision 1. The reason is that a build has a
@@ -88,15 +88,33 @@ then traverses it is decided by a column the builder happened to fill. The
 amendment states what that costs — routing and recall, not disclosure — and why
 `validity` is deliberately *not* a seventh component.
 
-What holds the rule today, and what does not.
+What holds the rule, in three places, because no one of them can hold it alone.
 `SummaryNode.__post_init__` (`domain/raptor.py`) raises
-`InvariantViolationError` when a child's scope differs from the node's own, and
-`SummaryNode.tree_id` is `Scope.digest`, total over all six components. That is
-the whole of the enforcement, because that value type is the only node anything
-here can build. Its children are *declared* scopes: a builder passing its own
-scope n times satisfies the type without consulting a single child, so the other
-half of the guarantee — each declared scope derived from the child it summarizes
-— is owed with the builder, and ADR-0008's Compliance section names it.
+`InvariantViolationError` when a declared child scope differs from the node's
+own. Those children are *declarations*, so a builder passing its own scope n
+times would satisfy that type without consulting a single child: `IndexableNode`
+closes that half by refusing a node whose declarations do not stand one per
+source, and `application/forest_builder.py` supplies each declaration from the
+chunk or node it summarizes. `SummaryNode.tree_id` is `Scope.digest`, total over
+all six components; what a stored row carries is `tree_identity`, which adds the
+tier and the within-scope partition on top of it, or two items with duplicate
+content would mint one id for two nodes.
+
+The result is asserted over a real build rather than at the value level alone:
+`tests/integration/test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`
+walks `node_derivation` transitively and requires every leaf chunk a node stands
+on to agree on all six components, parametrized over the three axes a corpus can
+vary — namespace, sensitivity and status. Tenant and ACL group are not among them
+and cannot be: the migration engine refuses a revision naming any value but the
+default, so no corpus can carry a second one to mix.
+
+**One limit, stated because it decides whether the assertion may ever be
+relaxed.** A declaration equal to the parent's scope cannot be told apart from
+one copied off the parent — for a correctly clustered node the two are the same
+value. What the refusal catches is a declaration standing for no source, which is
+the shape a clusterer crossing a scope boundary produces; the grouping itself is
+attacked directly by
+`tests/unit/test_forest_derivation.py::test_a_node_never_mixes_two_statuses_under_one_namespace_and_kind`.
 
 The scope key joins the six components with a unit separator (`\x1f`), which no
 component can carry: `AclGroup`, `TenantId` and `namespace` reject C0 controls
@@ -115,31 +133,45 @@ colliding pair can be constructed at all.
 
 ## Three levels
 
-Design (ADR-0008 decision 2). Nothing builds these levels yet.
+ADR-0008 decision 2, and `application/forest_builder.py` builds exactly these,
+deepest tier last.
 
-| Level | Scope | Summarizes |
-| :-- | :-- | :-- |
-| Document Tree | one knowledge item | that item's chunks |
-| Domain Tree | one namespace or kind | its document trees |
-| Global Catalog Tree | one scope tuple | its domain trees |
+| Level | Scope | Summarizes | One node per |
+| :-- | :-- | :-- | :-- |
+| 1 Document Tree | one knowledge item | that item's chunks | item revision, in scope |
+| 2 Domain Tree | one kind, inside a scope | its document nodes | kind, in scope |
+| 3 Global Catalog Tree | one scope tuple | its domain nodes | scope |
 
-A level will be skipped when it has fewer than `minChildrenPerSummary`
-children: summarizing one document produces a paraphrase, which costs tokens and
-adds nothing. Today that threshold is a number in a schema and nothing else —
-`raptor.minChildrenPerSummary` (default 3) is declared in
-`schemas/config/project-config.schema.json`, and nothing in `src/` reads it, or
-reads `.theurian/config.yaml` at all. The same holds for `raptor.enabled`, which
-ADR-0008 decision 10 flips to `false` with the builder change so that turning
-the forest on is somebody's decision rather than the side effect of an upgrade.
-That flip is **two** places, both still saying `true`: the schema default, and
-`examples/sample-project/.theurian/config.yaml`, which sets it explicitly and is
-what a reader copies.
+Decision 2 says "one namespace **or** kind" for the Domain tier, and inside a
+scope that reduces to `kind`, because the scope has already fixed the namespace.
+`IndexableChunk` carries `kind` for that reason and for no other — nothing
+queries it, and it is consumed in memory by the build that produced the chunk.
+Without it a scope holds exactly one Domain tree, the Catalog tier always has a
+single child, and three levels are structurally unreachable.
+
+A level is skipped when it has fewer than `minChildrenPerSummary` children:
+summarizing one document produces a paraphrase, which costs tokens and adds
+nothing. **The threshold is real now and the config file is still unread.**
+`ForestOptions` carries `max_levels` and `min_children_per_summary` with the
+defaults `schemas/config/project-config.schema.json` declares, and
+`tests/unit/test_forest_derivation.py::test_the_option_defaults_are_the_config_schemas_own`
+pins the two against that file so they cannot drift before a loader exists.
+Nothing in `src/` reads `.theurian/config.yaml`, so **the CLI flag is the switch
+and the config key is not** — `raptor.enabled` is declared `false` in the schema
+and set `false` in `examples/sample-project/.theurian/config.yaml` (ADR-0008
+decision 10's two places, both flipped by the builder change), and `theurian
+index build --raptor` is what actually turns a forest on, for one build.
+
+`summary_max_tokens` is the third option and deliberately has no config key: it
+is a constant, never a share of anything the corpus decides, because a budget
+divided by document count would move a visible node's text when a withheld
+document was added or removed. See the sixth summarization constraint below.
 
 ## Building and publication
 
 ```mermaid
 flowchart TD
-    A["Knowledge changed"] --> B["Write a new file under a .building name<br/>chunks today — the forest will join here"]
+    A["Knowledge changed"] --> B["Write a new file under a .building name<br/>chunks, then the forest over them with --raptor"]
     B --> F["A build: refuse one that indexed nothing<br/>A purge: six post-conditions"]
     F -->|refused| G["Discard the build.<br/>The published index is untouched."]
     F -->|passes| R["os.replace into the final name"]
@@ -174,13 +206,18 @@ underneath (point 7). The window is narrow and named: a request reaped between
 resolving the pointer and acquiring that connection has no descriptor to
 protect, so it answers from the substring-scan fallback instead of the index.
 
-**Incremental subtree rebuild is deferred; Milestone 6 will re-derive the forest
-in full inside the existing build path.** A full re-derivation is one code path
-whose output is a function of canonical state alone, while an incremental one is
-a second path that has to agree with the first on every input and fails
-invisibly — a node left standing that no longer matches its children. The
-argument, the deferral, and what the milestone that lifts it owes are in
-ADR-0008 decision 3's amendment.
+**Incremental subtree rebuild is deferred; the forest is re-derived in full
+inside the existing build path.** `IndexBuilder` derives it from the chunks it
+has just written, in memory, rather than by reading the index back — which is
+what keeps the derivation a pure function of that build's own output — and
+nothing is reused across builds. A full re-derivation is one code path whose
+output is a function of canonical state alone, while an incremental one is a
+second path that has to agree with the first on every input and fails invisibly:
+a node left standing that no longer matches its children. The argument, the
+deferral, and what the milestone that lifts it owes are in ADR-0008 decision 3's
+amendment. What the full path buys is checkable:
+`test_rebuilding_the_same_state_produces_a_byte_identical_forest` rebuilds an
+unchanged state and requires every node row to match, `index_build_id` excepted.
 
 Withdrawal is the one traversal over node rows that exists today, and it is a
 build rather than an edit: a purge copies the previous build, deletes from the
@@ -190,20 +227,37 @@ at a surviving chunk in finitely many steps, so one good parent and one that
 leads nowhere is still removed — and `_verify` refuses to publish a build
 holding an unprovenanced node, an edge whose source is gone, a node on a
 provenance cycle, or an orphaned node embedding. The predicate is `_DOOMED` in
-`infrastructure/sqlite/index_purge.py`, stated there and not restated here. Once
-nodes are actually built, withdrawal will *re-derive* each affected tree from
-its surviving rows rather than delete or patch a node in place, so that a purged
-build's forest equals one built from a corpus that never held the withdrawn rows
-(ADR-0008 decision 9, which also records why node-local recompute cannot reach
-that target). That equality is owed a test:
-`packages/theurian-core/tests/integration/test_index_purge.py::test_a_purged_build_answers_as_if_the_rows_were_never_indexed`
-is the two-corpus shape it extends, over the node tables' full contents.
+`infrastructure/sqlite/index_purge.py`, stated there and not restated here. That
+traversal now meets forests a builder shaped rather than only fixtures written in
+raw SQL:
+`tests/integration/test_forest_builder.py::test_withdrawing_an_item_takes_its_document_node_and_the_domain_node_above_it`
+withdraws one item of three and requires its Document node and the Domain node
+above it to go while the other two survive, and
+`test_a_purged_forest_leaves_no_residue_in_a_node_text_index` reads `nodes_fts`
+and `nodes_trigram` through `fts5vocab` to check that no term of the withdrawn
+document is still indexed.
+
+**Withdrawal is delete-only in the interim, and that is not what ADR-0008
+decision 9 settles for.** Decision 9 rejects delete-only: it wants each affected
+tree *re-derived* from its surviving rows, so that a purged build's forest equals
+one built from a corpus that never held the withdrawn rows — deleting a node
+outright breaks that equality in the other direction, because the never-held
+corpus would have built a node from the children that survived. Re-derivation and
+that equality both arrive with the purge-closure change. The property it will
+rest on is already held here:
+`test_rebuilding_the_same_state_produces_a_byte_identical_forest`, because an id
+or a text that moved between two derivations of one state would make the equality
+test unwritable rather than merely red. The equality itself is owed against
+`packages/theurian-core/tests/integration/test_index_purge.py::test_a_purged_build_answers_as_if_the_rows_were_never_indexed`,
+which is the two-corpus shape it extends, over the node tables' full contents.
 
 ## Node provenance
 
-Every node row will carry the provenance below. The columns exist — `nodes` in
-`infrastructure/sqlite/index_schema.py`, index schema v4 — and nothing writes
-one:
+Every node row carries the provenance below — `nodes` in
+`infrastructure/sqlite/index_schema.py`, index schema v4, written by
+`IndexStore.add_nodes` in the same transaction as its derivation edges, because a
+node without its edges cannot say what it holds and is a state `_verify` refuses
+to publish:
 
 ```text
 node_id, tree_id, level, node_type, text, content_hash,
@@ -214,15 +268,22 @@ source_revision_id, index_build_id
 
 plus `project_id`, `sensitivity` and `status` to filter on. Provenance edges
 live in `node_derivation`, one row per (node, the chunk or node it was built
-from), which is what the purge above walks.
+from), which is what the purge above walks. `node_id` is content-addressed —
+`node_identity(tree_id, level, the children's content hashes sorted)`, pinned
+against a literal by
+`tests/unit/test_raptor_scope.py::test_a_node_id_is_pinned_to_its_exact_join_order_sort_and_encoding`
+— and `source_revision_id` names the one revision a Document node was built from,
+empty above that tier, because a node built from other nodes has no single
+revision to name and the purge reaches it through its edges instead.
 
-Model and prompt identity will be persisted so that staleness is exact rather
-than heuristic: a node whose `summary_prompt_hash` differed from the active
-configuration would be stale by definition and rebuilt. Without that, changing a
-prompt would leave an index silently mixing two prompt generations with nothing
-reporting it. The column exists; nothing compares it against a configuration,
-because nothing writes a node and nothing reads one back (ADR-0008 Compliance,
-Milestone 6).
+Model and prompt identity **are** persisted: a node carries the `model_id`,
+`model_revision` and `prompt_hash` of the provider that summarized it. What is
+missing is the comparison — nothing checks a stored `summary_prompt_hash`
+against the active configuration, so a node summarized under an older provider is
+not detected as stale and not rebuilt. Changing a prompt therefore still leaves
+an index silently mixing two generations with nothing reporting it. That item
+stays owed in ADR-0008's Compliance section, on the half that was always the
+point.
 
 **Their own tables, not `chunks` rows with a `derived` flag.** `chunks_fts` and
 `chunks_trigram` are external-content FTS5 tables, and `bm25` scores every row
@@ -260,6 +321,13 @@ and there is no retrieval evaluation harness to validate against.
 | Mark uncertainty rather than resolving it | A confident wrong summary is the expensive failure |
 | Inherit sensitivity and ACL | Uniform by construction, given the scope rule |
 
+**Two of the five are held by the builder rather than by any prompt, and are
+therefore true of the extractive default as well.** Child references: every node
+written names its sources in `node_derivation`, one edge per source, and
+`IndexableNode` refuses a node whose declared child scopes do not stand one per
+source. Sensitivity and ACL: a node's row carries the scope its children share,
+because the scope is what decided which tree it belongs to.
+
 Implementations must wrap source content in a delimited untrusted region and
 never interpolate it into a system-role message. The port docstring states that
 requirement; the one adapter that exists sends no prompt anywhere, so the
@@ -275,10 +343,22 @@ over documents the caller may not read, so a summarizer using one would write a
 withheld document's influence into the text of a *visible* node, where no purge
 reaches it: deleting a row cannot delete from a sentence the reason that
 sentence was chosen. ADR-0008 decision 6's amendment names the three carriers of
-that class, which two this constraint closes, and the test owed for it;
+that class, and which two this constraint closes;
 `SummarizationProvider.summarize` takes `texts`, `scope` and `max_tokens` and is
 handed no corpus handle, so the port is shaped for the constraint without
 enforcing it.
+
+**The `max_tokens` half is the caller's to hold, and the builder holds it.** A
+summarizer is handed the number and never the recipe, so no adapter can tell a
+constant budget from a corpus-derived one. `forest_builder.SUMMARY_MAX_TOKENS` is
+one chunk's worth — the chunker's target passage priced at the estimator's
+characters-per-token — passed verbatim to every call, never divided by a cluster
+size or a document count, and it is the one `ForestOptions` field with no config
+key, so no configuration can turn it into a corpus-derived quantity either.
+`tests/unit/test_forest_derivation.py::test_the_summary_budget_is_a_constant_and_not_a_share_of_the_corpus`
+holds it with a recorder that sees what each call was charged. Carrier (b) —
+which children cluster together — is still owed to the two-corpus equality test,
+which is the only owed test that can vary the child set.
 
 ## Working with no model configured
 
@@ -298,12 +378,13 @@ output. That seed variance is what cannot be tested within a single process,
 and the tied fixture is run separately because a corpus with no score ties
 cannot see a tie-break that started reading a hash-seed-dependent key.
 
-**Nothing calls it yet.** The port is declared in
-`domain/ports/summarization.py` and now has one implementation, but no builder
-exists to call `summarize` with real child texts, so today there is still
-nothing to summarize with in a running build.
+**It is what a build calls.** `theurian index build --raptor` composes an
+`ExtractiveSummarizer` and hands it each node's children — one call per node, and
+the summary it returns is what the `nodes` row stores. It is composed whether or
+not the flag was passed, because it holds no state, opens nothing and reaches no
+network, so "was a summarizer configured" is not a second thing the flag means.
 
-Two things ride on that choice. It is what will let Theurian produce a usable
+Two things ride on that choice. It is what lets Theurian produce a usable
 forest offline with no API key
 ([ADR-0009](../adr/0009-no-llm-vendor-lock-in.md)), so abstractive
 summarization is an upgrade and not a prerequisite. And its determinism is what
@@ -331,7 +412,10 @@ flowchart LR
 `SqliteIndexStore._scope` builds the pre-filter every leaf retriever uses, and
 leaf results with provenance are what `knowledge.search` returns today. What
 does not exist is everything between them — the traversal — and the
-`raptorPath` the last box carries.
+`raptorPath` the last box carries. The nodes those middle boxes would search are
+in the index now; nothing looks at them. `search_lexical`, `search_substring` and
+`search_dense` each name `chunks` in their SQL, which is why a forest can be
+built without changing a single answer.
 
 Retrieval performs no authorization-scope determination, which is what the first
 box would otherwise be read as doing. Two axes are enforced: project, and status
@@ -360,17 +444,23 @@ merely the field's presence.
 Summarization sits behind a port: `SummarizationProvider`, which is the port
 ADR-0008 decision 7 names. The intent is that swapping extractive for
 abstractive, or a hosted model for a local one, touches no domain, application,
-or retrieval orchestration code. One adapter exists now — the extractive
-default above — but nothing demonstrates the swap property yet: there is no
-second adapter to swap it for and no consumer to swap it under, so the
-property is still the shape of the contract rather than something a swap has
-been run against. It stays unexercised until a second adapter or the builder
-exists.
+or retrieval orchestration code. There is a consumer now — `ForestBuilder` takes
+the summarizer by injection and `cli/index_commands.py` is the one place that
+names a concrete adapter, so an abstractive provider is a wiring change there and
+nowhere else. What is still missing is the *swap*: one adapter exists, there is
+no second to exchange it for, so the property remains the shape of the contract
+rather than something a swap has been run against.
 
-The hierarchy itself has no port. The port set is closed and adding one takes an
-ADR ([ADR-0003](../adr/0003-ports-and-adapters.md)), so a team wanting a
-different hierarchical strategy would be changing the builder rather than
-configuring it.
+The hierarchy itself has no port, and the builder that implements it —
+`application/forest_builder.py` — is application-layer policy for a reason that
+is checkable rather than stylistic: `application/index_builder.py` is where the
+forest pass has to mount, and
+`tests/unit/test_layering.py::test_application_does_not_import_infrastructure`
+walks the real import graph, so a builder under `infrastructure/` could not be
+called from the one place that must call it. The port set is closed and adding
+one takes an ADR ([ADR-0003](../adr/0003-ports-and-adapters.md)), so a team
+wanting a different hierarchical strategy would be changing that module rather
+than configuring it.
 
 The scope-partitioning rule is optional for neither: any implementation must
 honour it, because it is a security boundary rather than a performance choice.

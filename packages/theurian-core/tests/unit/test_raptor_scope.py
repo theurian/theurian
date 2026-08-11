@@ -33,7 +33,7 @@ import pytest
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import DomainError
 from theurian.domain.identifiers import ProjectId
-from theurian.domain.raptor import SummaryNode
+from theurian.domain.raptor import SummaryNode, node_identity
 from theurian.domain.values import AclGroup, ContentHash, Scope, TenantId
 
 
@@ -238,14 +238,7 @@ def test_a_node_id_is_pinned_to_its_exact_join_order_sort_and_encoding() -> None
     `test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`
     pins above, so the two literals are one chain rather than two unrelated
     magic numbers: a change to the scope key moves that test first.
-
-    Imported inside the test rather than at the top of the file: this function
-    does not exist yet, and a module-level import would turn the five tests
-    above from green into collection errors, hiding whether the guarantee they
-    hold still holds.
     """
-    from theurian.domain.raptor import node_identity
-
     tree_id = ContentHash("ba11c1ad6c4db1fd166a46e98dfc5455511ae1130efb0b86c5ba51a6c2270a6d")
     alpha, beta = ContentHash.of_text("alpha"), ContentHash.of_text("beta")
     assert alpha.value < beta.value, "the fixture must hand them over out of sorted order"

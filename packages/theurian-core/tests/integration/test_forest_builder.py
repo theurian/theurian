@@ -1,11 +1,11 @@
 """The RAPTOR forest builder: what a build writes into the node tables (ADR-0008).
 
-**Written RED, ahead of the builder.** Every test here fails today because
-nothing derives a forest: `application/forest_builder.py` does not exist, `index
-build` has no `--raptor` flag, and `IndexStore` has no node-write method. The
-API each test names is the surface this CL proposes, stated here rather than in
-prose so that the first thing the implementation has to satisfy is an executable
-description.
+**Written RED, ahead of the builder**, against an API that did not exist:
+`application/forest_builder.py`, `index build --raptor` and `IndexStore`'s
+node-write methods all arrived to satisfy this file. That is history now — the
+builder is in the tree and these tests are green against it — and it is recorded
+because the shape of the file follows from it: each test names the surface it
+wanted rather than describing it in prose.
 
 What these tests hold, and why each one is not already held elsewhere:
 
@@ -427,10 +427,11 @@ def test_every_node_gets_a_vector_from_the_same_embedder_the_chunks_did(
     """`node_embeddings` exists so a summary's vector has somewhere to live.
 
     `embeddings` is keyed on `chunk_id REFERENCES chunks` and a node id is not a
-    chunk id, so v4 added the table "ahead of any reader of them"
-    (`index_schema.py`). Nothing has written a row yet, and a forest with no
-    vectors is a forest dense retrieval can never reach -- the capability would
-    exist, be reported, and answer nothing.
+    chunk id, so v4 added the table ahead of any writer of it
+    (`index_schema.py`). This is that writer, and embedding is not optional the
+    moment a forest exists: a forest with no vectors is a forest dense retrieval
+    can never reach -- the capability would exist, be reported, and answer
+    nothing.
 
     A partial embedding is what `IndexBuilder._embed` already refuses for
     chunks, for the reason it gives: the dense retriever ranks the embedded half

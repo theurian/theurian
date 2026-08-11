@@ -682,7 +682,11 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     assert result["capabilities"]["writeTools"] is False
     assert result["capabilities"]["hybridRetrieval"] is True
     assert result["capabilities"]["knowledgeGet"] is True
-    assert result["capabilities"]["raptor"] is False, "not built yet, and says so"
+    assert result["capabilities"]["raptor"] is False, (
+        "a forest is built by `index build --raptor`, but no answer path reads one: "
+        "this flag says what a caller can get, and a client reading `true` would ask "
+        "for a `raptorPath` no response carries. It flips with the retrieval CL."
+    )
     assert result["schemaVersion"]
 
 

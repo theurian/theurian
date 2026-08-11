@@ -53,6 +53,16 @@ fact.
 > whose content straddles it. That is the whole reason for carrying it. The
 > claim about node text is owed a test, not asserted: it is the
 > `test_raptor_scope.py` item in Compliance.
+>
+> **Landed in Milestone 6, by the forest-builder CL.** Node rows exist and carry
+> text, the scope tuple's `sensitivity` among their columns, and the claim about
+> node text is asserted rather than owed: the builder groups by the full
+> six-component scope before summarising and hands a node only its own group's
+> texts, and
+> `tests/integration/test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`
+> holds it over rows a build wrote. The `test_raptor_scope.py` item in Compliance
+> closes with that note; the rest of this paragraph is unchanged, because #119
+> still gives sensitivity no predicate to filter on.
 
 ## Decision
 
@@ -219,8 +229,44 @@ flowchart TB
    > That last exception is discharged by
    > [#136](https://github.com/theurian/theurian/issues/136); see the Compliance
    > note below.
+   >
+   > **Amended in Milestone 6, by the forest-builder CL. "No builder constructs a
+   > node, no table stores one, no traversal reads one" is now one claim, not
+   > three.** `application/forest_builder.py` constructs them and `theurian index
+   > build --raptor` stores them in `nodes` and `node_derivation`. **No traversal
+   > reads one**, and that is what keeps this amendment's cost argument recorded
+   > rather than observed: a node's `status` column is filled from the scope its
+   > children share, so the mixed node the sixth component exists to prevent
+   > cannot be built at all, but no query reads that column, so *which* query
+   > flavour would route through *which* node is still a claim about work that has
+   > not been built.
 2. Three levels: Document Tree (within one knowledge item), Domain Tree (within
    one namespace/kind), Global Catalog Tree (within one scope tuple).
+
+   > **Amended in Milestone 6, by the forest-builder CL. "One namespace/kind" had
+   > two readings, and inside a scope only one of them builds three levels.** A
+   > tree's scope already fixes the namespace (decision 1), so a Domain tier keyed
+   > on namespace would put every document of a scope under one Domain tree, leave
+   > the Catalog tier with a single child forever, and make the third level
+   > structurally unreachable. The reading taken is therefore **`kind`
+   > discriminates within a scope**, and `IndexableChunk` carries `kind` for that
+   > and nothing else — no `chunks` column, because no query reads it and the
+   > build that produced the chunk consumes it in memory.
+   >
+   > `namespace` is populated on `chunks` for the first time in the same change.
+   > It was `NOT NULL DEFAULT ''` and never written, so a forest derived from
+   > those rows would have partitioned on five components while claiming six, and
+   > every isolation test would have passed over a corpus that had silently
+   > collapsed into one scope.
+   > `tests/integration/test_forest_builder.py::test_a_chunks_namespace_carries_the_value_its_item_was_registered_with`
+   > holds it, on a *default* build, because the column belongs to the chunk and
+   > not to the forest.
+   >
+   > What a stored `tree_id` is, in consequence: `tree_identity(scope, tier,
+   > discriminator)` — the item for a Document tree, the kind for a Domain tree,
+   > and the empty string for the Catalog, which *is* the scope. Not
+   > `Scope.digest`, which is what `SummaryNode.tree_id` exposes and which cannot
+   > tell two Document trees in one scope apart.
 3. Incremental rebuild: changed item → its Document Tree → the affected part of
    its Domain Tree → the affected part of the Catalog Tree. Never a full forest
    rebuild for a single edit.
@@ -255,6 +301,26 @@ flowchart TB
    > that claim. A build-path incremental rebuild has no such test, because the
    > thing it would have to hold is that a tree whose inputs *did* change was
    > updated correctly, which no equality against a never-held corpus states.
+   >
+   > **Landed in Milestone 6, by the forest-builder CL: the full re-derivation
+   > this note describes is what `index build --raptor` does.** It derives every
+   > node from the chunks the same build has just written, in memory, rather than
+   > by reading the index back — which is also what keeps the derivation a pure
+   > function of that build's own output — and reuses nothing across builds.
+   > `tests/integration/test_forest_builder.py::test_rebuilding_the_same_state_produces_a_byte_identical_forest`
+   > holds the property that makes it checkable: two builds of one unchanged state
+   > agree on every node column, `index_build_id` excepted, and on every
+   > derivation edge.
+   >
+   > **The cost is still unmeasured, and now it is a cost somebody pays.** This
+   > note said "the forest adds summarisation on top of that and nothing has
+   > measured it" while nothing built a forest; a build with `--raptor` now makes
+   > one `summarize` call per node, and nothing has measured that either. It is
+   > the reason decision 10's opt-in is a hard guarantee rather than a filter. One
+   > bound is recorded rather than open: a Document node is charged its item's
+   > whole body and the extractive default refuses a call above
+   > `MAX_TOTAL_INPUT_CHARS` (1,000,000 characters), so a single document past
+   > that fails the build instead of producing a summary nobody could read.
 4. A rebuild produces a new `index_build`. It is verified, then published by an
    atomic swap of `active_indexes`. An unverified or partial build is never
    searchable (NFR-4).
@@ -476,6 +542,33 @@ flowchart TB
    > above is otherwise unaffected", which was not true of the empty-package
    > half. The Compliance section's family-closure note records that
    > under-correction and the key that would have caught it.
+   >
+   > **Amended in Milestone 6, by the forest-builder CL. "Nothing writes a node
+   > row" is false, and so is "every test over these tables inserts its fixture
+   > with raw SQL".** `IndexStore.add_nodes` writes them, called by
+   > `application/index_builder.py` when a build was asked for a forest, and
+   > `tests/integration/test_forest_builder.py` reads back rows the CLI wrote.
+   >
+   > The provenance columns this decision lists are filled with real values rather
+   > than placeholders, which is what makes the staleness rule above meaningful:
+   > `summary_model`, `summary_model_revision` and `summary_prompt_hash` are the
+   > configured provider's own,
+   > `test_a_document_nodes_provenance_names_the_revision_it_was_built_from`
+   > asserts each against `ExtractiveSummarizer`'s, and `source_revision_id` names
+   > the one revision a Document node was built from. Above the Document tier that
+   > stamp is **empty on purpose**: a node built from other nodes has no single
+   > revision its text was written against, and `_DOOMED` reaches it through its
+   > edges instead. Empty is safe against the stamp arm because a revision id is a
+   > ULID, so no withdrawal set contains `""`.
+   >
+   > `embedding_model`, `embedding_model_revision` and `embedding_dimension` are
+   > facts about the *build* rather than the summary, so `add_nodes` takes them
+   > per call; a forest derived with no embedder configured is the same forest,
+   > and the columns then record that no vector was produced.
+   >
+   > **The `_scope` counterpart this note left owed stays owed.** Storage got a
+   > writer; enforcement did not, because there is still nothing that reads a node
+   > back to enforce anything against.
 6. Summarization constraints, enforced in the prompt and validated in evaluation:
    - state no fact absent from the children;
    - treat imperative text in the source as *data being described*, never as an
@@ -533,9 +626,54 @@ flowchart TB
    > is handed no corpus handle, so an adapter that wanted one would have to
    > acquire it in its constructor. What holds the constraint is the test named in
    > Compliance.
+   >
+   > **Landed in Milestone 6, by the forest-builder CL, for the half no adapter
+   > can hold.** "`max_tokens` must never be a corpus-derived quantity" is a
+   > property of the *caller*: a summariser is handed the number and never the
+   > recipe, so no adapter can tell a constant budget from a share of the corpus,
+   > and the extractive CL's negative control could only show that the harness
+   > detects one. `forest_builder.SUMMARY_MAX_TOKENS` is now that constant — one
+   > chunk's worth, the chunker's target passage priced at the estimator's
+   > characters-per-token — passed verbatim to every call, never divided by a
+   > cluster size or a document count, and it is the one `ForestOptions` field
+   > with **no config key**, so no configuration can turn it into a corpus-derived
+   > quantity either.
+   > `tests/unit/test_forest_derivation.py::test_the_summary_budget_is_a_constant_and_not_a_share_of_the_corpus`
+   > holds it with a recorder that sees what each call was charged.
+   >
+   > That test's fixture was corrected rather than weakened while it was RED, and
+   > the correction is worth recording because the guard reported its own
+   > inadequacy: a corpus of three items of three chunks makes a Domain node's
+   > cluster size equal a Document node's, so a cluster-size-scaled budget is
+   > indistinguishable from a constant. Four items separates them.
+   >
+   > Carrier (b) — which children cluster together — is untouched by this and
+   > stays owed to decision 9's two-corpus test, as this amendment already said.
 7. RAPTOR sits behind a port. The default `SummarizationProvider` is extractive
    and deterministic, so Core produces a usable forest offline with no LLM
    (OSS-15, ADR-0009).
+
+   > **Amended in Milestone 6, by the forest-builder CL. "RAPTOR sits behind a
+   > port" is true of *summarization* and of nothing else, and where the rest of
+   > it sits is a layering fact rather than a filing preference.** This decision
+   > puts summarization behind a port and `docs/architecture/raptor.md` says the
+   > hierarchy itself has none, which leaves the builder to be written somewhere
+   > with no port to hide behind. `infrastructure/raptor/` is the obvious home and
+   > is the wrong one: `application/index_builder.py` is where the forest pass has
+   > to mount, and
+   > `tests/unit/test_layering.py::test_application_does_not_import_infrastructure`
+   > walks the real import graph, so a builder under `infrastructure/` could not be
+   > called from the one place that must call it. It is
+   > `application/forest_builder.py` — application policy over a port that already
+   > exists — and `infrastructure/raptor/` holds summarization adapters only.
+   >
+   > The offline claim is now exercised rather than asserted: `theurian index
+   > build --raptor` composes `ExtractiveSummarizer` and produces a forest with no
+   > model configured and no socket opened
+   > (`test_the_default_summarizer_reaches_no_socket_capable_module` holds the
+   > import closure). The CLI composes one whether or not the flag was passed —
+   > the adapter holds no state, opens nothing and reaches no network — so "was a
+   > summariser configured" is not a second thing `--raptor` means.
 
 > **Amended in Milestone 6: three decisions this ADR left open,
 > taken now.** They are numbered 8 to 10 rather than folded into the points
@@ -687,6 +825,40 @@ flowchart TB
 >    The acceptance test is owed with that same purge-closure CL, and is named in
 >    Compliance rather than pointed at a CL number.
 >
+>    > **Amended in Milestone 6, by the forest-builder CL. The identity function
+>    > landed; the withdrawal behaviour this decision rejects is what ships in the
+>    > interim, and that is a deferral rather than a reversal.** `theurian migrate
+>    > apply` purges a forest by **deleting** every node the surviving corpus
+>    > cannot ground — exactly the delete-only branch this decision argues against
+>    > — because re-derivation belongs to the purge-closure CL and lands with the
+>    > two-corpus test that is the only thing able to check it. Deferring it costs
+>    > what this decision says it costs: after a withdrawal the purged forest is
+>    > missing a node the never-held corpus would have built from the children that
+>    > survived. Nothing node-derived reaches a caller (decision 8), so the cost is
+>    > recall in a forest nobody reads, and it ends when re-derivation lands.
+>    >
+>    > `domain/raptor.py::node_identity` is this decision's function, verbatim:
+>    > `(tree_id, level, the children's content hashes sorted lexicographically)`,
+>    > joined with `Scope.key`'s own unit separator and hashed, refusing an empty
+>    > child set — an id over no children is a function of `(tree_id, level)` alone
+>    > and every childless node in a tree would collide.
+>    > `tests/unit/test_raptor_scope.py::test_a_node_id_is_pinned_to_its_exact_join_order_sort_and_encoding`
+>    > pins it against a literal, with the children handed over in reverse sorted
+>    > order so an implementation that kept the caller's order produces a different
+>    > digest. It is pinned against a literal rather than against a recomputation
+>    > because the forest tests recompute the recipe from the same function they
+>    > check, so a builder and a recomputation agreeing on a *different* recipe
+>    > would pass together.
+>    >
+>    > `tree_id` carries the tier and the within-scope partition this decision
+>    > names — the item for a Document tree, the kind for a Domain tree — and
+>    > `test_two_items_with_identical_content_get_different_document_node_ids` is
+>    > the case it exists for. That fixture was corrected rather than weakened
+>    > while it was RED: two byte-identical files with different titles are not
+>    > duplicate content once indexed, because the builder prepends the title
+>    > before chunking, and measured, the two summaries differed by the one word.
+>
+
 > 10. **`raptor.enabled` defaults to `false` in the first release that ships the
 >     forest.** `schemas/config/project-config.schema.json` declares
 >     `"enabled": { "type": "boolean", "default": true }` today. That is not a
@@ -710,6 +882,37 @@ flowchart TB
 >     and flipped by the same CL for a different reason: `mcp/tools.py`'s
 >     capabilities block reports `"raptor": False`, which is true today and
 >     becomes false the moment a forest can be built at all.
+>
+>     > **Landed in Milestone 6, by the forest-builder CL — both places, and a
+>     > third that was predicted here and deliberately not taken.**
+>     > `schemas/config/project-config.schema.json` declares `"default": false`
+>     > with the reason on the property, and
+>     > `examples/sample-project/.theurian/config.yaml` sets `enabled: false`.
+>     > Each is pinned by a test of its own, because validating the example
+>     > against the schema cannot catch a disagreement — both values are valid
+>     > booleans: `tests/unit/test_schemas.py::test_the_raptor_forest_is_declared_off_by_default`
+>     > and `tests/unit/test_examples.py::test_the_example_does_not_switch_the_raptor_forest_on`.
+>     >
+>     > **The switch is the CLI flag, not the config key, and that is worth
+>     > stating because this decision is phrased in terms of a key nothing reads.**
+>     > Nothing in `src/` reads `.theurian/config.yaml`, so flipping the default
+>     > changes no behaviour; what turns a forest on is `theurian index build
+>     > --raptor`, one build at a time. The guarantee that buys is *hard* rather
+>     > than filtered — a build without the flag writes zero node rows, held by
+>     > `test_a_build_without_the_raptor_flag_writes_no_summary_nodes` — which is
+>     > the same shape `--include-unapproved` has for drafts. When a config loader
+>     > lands, `raptor.enabled` becomes the persistent form of the same switch and
+>     > this decision is what it must default to.
+>     >
+>     > **The third place was predicted wrong and is left as it is.**
+>     > `mcp/tools.py`'s `"raptor": False` does not become false "the moment a
+>     > forest can be built at all", because what that block answers is what a
+>     > *caller* can get: `system.capabilities` sits beside `hybridRetrieval` and
+>     > `knowledgeGet`, and a client reading `raptor: true` would ask for a
+>     > `raptorPath` that no response carries. Nothing node-derived reaches the
+>     > wire (decision 8), so the honest value is still `false`, and it flips with
+>     > the retrieval CL rather than with this one. The prediction was made from
+>     > the builder's side of the boundary; the flag lives on the caller's.
 
 ## Consequences
 
@@ -743,6 +946,24 @@ flowchart TB
   > so nothing here is enforced" is the Compliance section's headline and is read
   > there as narrowed — to everything that would build, populate or traverse the
   > forest, which is still nothing.
+
+  > **Amended in Milestone 6, by the forest-builder CL. The consequence above is
+  > true in the present indicative for the first time, and the two notes under it
+  > are now history.** Summaries are generated: `index build --raptor` writes
+  > them. A node mixing two sensitivities has no tree to belong to, and three
+  > refusals make that structural rather than checked — `SummaryNode` on the
+  > declared scopes, `IndexableNode` on declarations that stand for no source, and
+  > the builder deriving each declaration from the source it summarises.
+  > `tests/integration/test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`
+  > asserts it over rows a real build wrote, transitively through
+  > `node_derivation`, on the three axes a corpus can vary.
+  >
+  > **Two qualifications, so the sentence is not read wider than it is.** It is a
+  > statement about *mixing*, not about serving: nothing reads a node back, so no
+  > principal receives a summary at all, correctly or otherwise. And tenant and
+  > acl_group are not exercised by any corpus, because the write path refuses a
+  > revision naming a non-default value — those two axes are structural in the
+  > same sense the others are, and untested in a way the others are not.
 - Rebuild cost is proportional to the change, not to the corpus.
 
   > **Amended in Milestone 6.** Not what Milestone 6 ships. See the
@@ -761,6 +982,26 @@ flowchart TB
 - Very small scopes produce shallow trees with little summarization benefit. The
   builder skips levels below a configurable size threshold rather than creating
   a summary of one document.
+
+  > **Amended in Milestone 6, by the forest-builder CL. The skip is real; the
+  > word "configurable" is still ahead of the code.** `ForestBuilder` returns no
+  > node for a tier with fewer than `min_children_per_summary` children, held in
+  > both directions —
+  > `tests/integration/test_forest_builder.py::test_two_document_nodes_do_not_earn_a_domain_node`
+  > for the skip and `test_three_document_nodes_earn_one_domain_node_over_exactly_those_three`
+  > for the positive case, without which the first passes against a builder that
+  > never builds a Domain node at all. The threshold is a `ForestOptions` field
+  > defaulting to the schema's own value, pinned against
+  > `schemas/config/project-config.schema.json` by
+  > `test_the_option_defaults_are_the_config_schemas_own`; nothing reads
+  > `.theurian/config.yaml`, so an operator cannot yet move it.
+  >
+  > Shallow is now a property of this builder rather than of any column, which
+  > matters outside this ADR: `index_schema.py` records that `CHECK (level BETWEEN
+  > 1 AND 3)` bounds the *column* and not the derivation graph — 2,000 nodes all
+  > at level 1 chained 2,000 deep satisfy it and cost the purge's cycle closure
+  > 3.6 s — and the shape the purge's cost argument assumes is supplied by
+  > `application/forest_builder.py` building each tier only from the one below it.
 
 ### Neutral
 
@@ -1027,6 +1268,108 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > 4 completed here where that pass fixed one half of a compound sentence, and 17
 > found by this key and corrected here, each in its own file's house style.
 
+> **Amended in Milestone 6, by the forest-builder CL. The headline and every
+> note above it are history: `theurian index build --raptor` derives a forest and
+> writes it into the node tables.** "Nothing here is built, so nothing here is
+> enforced" no longer narrows to anything. A builder exists
+> (`application/forest_builder.py`), a writer exists (`IndexStore.add_nodes`),
+> summaries are generated, node rows carry them, and tests over the node tables
+> read back rows the CLI wrote rather than fixtures inserted with raw SQL. **What
+> survives is one clause and it is worth saying alone: no traversal reads a node
+> back.** Every retriever names `chunks`, `system.capabilities` reports `"raptor":
+> false`, and `raptorPath` is emitted by nothing — so the forest is written,
+> purged, and never returned to any caller.
+>
+> **The family this closes is a different proposition from the one above, and
+> naming them apart matters because they share every file.** That one was *the
+> package is empty / the port has no adapter*. This one is:
+>
+> **nothing derives or stores a summary node — no builder, no node writer, no
+> generated summary, the forest unbuilt.**
+>
+> Seven vocabularies carry it: "no builder", "nothing writes a node row" / "no
+> node writer", "no summary is generated" / "nothing summarises", "nothing calls
+> it", "not started" / "not built at all" / "unbuilt", "does not exist yet", and
+> the future-tense promise — "will carry", "will re-derive", "when Milestone 6
+> builds them". The recorded key, repo-wide, `--hidden`, `.git` excluded,
+> case-insensitive:
+>
+> ```
+> rg --hidden --glob '!.git' -n -i \
+>   -e 'no builder' -e 'no node writer' -e 'no traversal' \
+>   -e 'nothing (builds|writes|calls|summari|maps|reads)' \
+>   -e 'no summary is generated' -e 'nothing to (leak|mix)' \
+>   -e 'RAPTOR[^.]{0,80}(unbuilt|not built|not started|does not exist)' \
+>   -e 'forest[^.]{0,80}(unbuilt|not built|not started|Milestone 6)' \
+>   -e 'does not exist yet' -e 'no writer'
+> ```
+>
+> Against `main` (`56582b2`), the tree this CL branched from, it matches **85
+> lines in 27 files**; against `1cc2fa8`, the tree this documentation pass started
+> from, **81 lines in 29 files** — the CL having already corrected some members
+> and added new files that match without asserting anything. Neither number is the
+> population: a line can match two patterns and a site can span several lines.
+>
+> **The population is 58 assertion sites in 16 files, every hit read in the
+> section it sits in.** One site is one sentence or bullet asserting the
+> proposition; a compound sentence counts once and is corrected in both halves; a
+> superseded amendment note that asserts it in the present tense counts as one,
+> which is why this ADR carries the largest share.
+>
+> | File | Sites |
+> | :-- | --: |
+> | this ADR | 18 |
+> | [`docs/architecture/raptor.md`](../architecture/raptor.md) | 15 |
+> | [ADR-0024](0024-a-purge-is-a-build.md) | 5 |
+> | [`docs/architecture/requirements-analysis.md`](../architecture/requirements-analysis.md) (R-3, R-4, R-7, R-14) | 4 |
+> | `README.md` | 3 |
+> | [`docs/security/threat-model.md`](../security/threat-model.md) (T-3, T-10) | 2 |
+> | `tests/integration/test_forest_builder.py` | 2 |
+> | `SECURITY.md` | 1 |
+> | [`docs/architecture/overview.md`](../architecture/overview.md) | 1 |
+> | `tests/integration/test_index_purge.py` | 1 |
+> | `tests/integration/test_index_store.py` | 1 |
+> | `tests/integration/test_index_schema_v4.py` | 1 |
+> | `tests/integration/test_mcp_tools.py` | 1 |
+> | `tests/unit/test_forest_derivation.py` | 1 |
+> | `tests/unit/test_raptor_scope.py` | 1 |
+> | `tests/unit/test_scope_isolation.py` | 1 |
+>
+> `packages/theurian-core/CHANGELOG.md` matches five times and is excluded, as it
+> always is: it is history and stays as written, including the schema-v4 and
+> extractive entries, which were true of the CLs they describe. The other matching
+> files are unrelated — `setup_steps.py`, `setup_commands.py`,
+> `test_setup_report_withholding.py`, `test_index_gc_cli.py`, `project_service.py`,
+> `test_parsers.py`, `test_gate_call_sites.py`, `docs/contributing/release.md`,
+> ADR-0018's `active-index.json` point, and `.claude/agents/theurian-python.md`'s
+> rule about stdout.
+>
+> **The key found none of the four sites in the CL's own two new test files, and
+> that is the finding rather than a footnote.**
+> `tests/integration/test_forest_builder.py` and
+> `tests/unit/test_forest_derivation.py` open with "**Written RED, ahead of the
+> builder** … `application/forest_builder.py` does not exist", which is the same
+> proposition in a vocabulary no member elsewhere uses — a TDD note about the file
+> it sits in. `tests/unit/test_raptor_scope.py`'s local import of `node_identity`
+> is justified in its docstring by the function "not existing yet". A CL that
+> writes its tests RED plants members of its own family, in prose that reads as
+> methodology rather than as a claim, and the same class was found in the two
+> preceding CLs.
+>
+> **Five more sites are invisible to any keyword search, listed so the next
+> reader does not trust the count to a `rg` invocation.** The future-tense
+> promise: `raptor.md`'s "Every node row **will** carry the provenance below" and
+> "Milestone 6 **will** re-derive the forest in full". The parenthetical:
+> `README.md`'s "SQLite, embeddings, and — when Milestone 6 builds them — RAPTOR
+> trees". The diagram label: `raptor.md`'s "chunks today — the forest will join
+> here" and "no node **will** span these", which no prose search reaches because
+> they are inside a Mermaid block. The claim about a *consumer* rather than a
+> builder: `raptor.md`'s "no consumer to swap it under". And the claim about a
+> *third file*: decision 10's prediction that `mcp/tools.py`'s `"raptor": False`
+> would flip with this CL, which is not a statement about the builder at all and
+> is answered in that decision's own landed note — it did not flip, and should
+> not have.
+
 Still owed, with the milestone that will satisfy it:
 
 - **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
@@ -1076,13 +1419,64 @@ Still owed, with the milestone that will satisfy it:
   > than repeating it. Total over **six** components, per the amendment to
   > decision 1 above. In review round 1 it compared `node.scope.digest` values
   > instead, which pinned the tuple and not the node; that gap is closed.
+  >
+  > **Landed in Milestone 6, by the forest-builder CL. The node-text half — the
+  > part Context points here for — is discharged, so this item closes.** A node
+  > carries text now, and the structural argument is real rather than owed: the
+  > builder groups chunks by the *full* six-component scope before summarising,
+  > and hands a node only the texts of the children in its own group
+  > (`ForestBuilder._summarize` is passed those and nothing else), so no node's
+  > text can span two sensitivities whatever the summariser does with it.
+  >
+  > What holds it over a real build, rather than at the value type:
+  > `tests/integration/test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`
+  > walks `node_derivation` transitively to every leaf chunk a node was
+  > synthesized from and requires all six components to agree, parametrised over
+  > namespace, sensitivity and status — the three axes a corpus can vary — with
+  > three documents per value so both sides clear `minChildrenPerSummary` and a
+  > scope-blind clusterer would actually have a level-2 node to get wrong.
+  > `test_nodes_in_different_scopes_never_share_a_tree` is its other half: uniform
+  > children are not enough on their own, because two internally uniform nodes can
+  > still share a `tree_id` derived from something coarser than the tuple.
+  > `test_a_nodes_text_comes_from_its_own_children_and_no_others` pins the call
+  > site with a per-document marker, so a builder summarising the whole corpus per
+  > node would be caught while satisfying every provenance and scope column.
+  >
+  > **Two residues, named because the item is closing.** Tenant and `acl_group`
+  > are not exercised by any corpus and cannot be: the migration engine refuses a
+  > revision naming a non-default value, so those two axes are held structurally
+  > and by no test over a build. And a declared child scope equal to the parent's
+  > is indistinguishable from one copied off the parent — for a valid node the two
+  > are the same value — so what the declaration check catches is a declaration
+  > standing for no source, with the grouping itself attacked separately by
+  > `tests/unit/test_forest_derivation.py::test_a_node_never_mixes_two_statuses_under_one_namespace_and_kind`.
 - **An in-progress `index_build` is never returned by search** (Milestone 6).
   The equivalent for the chunk index is
   `tests/integration/test_index_store.py::test_building_over_an_existing_file_is_refused`;
   a summary node has no counterpart yet, and the wider concurrent-rebuild
   guarantee is ADR-0022's Still-owed blue/green item.
+
+  > **Amended in Milestone 6, by the forest-builder CL. Still owed, and now for a
+  > narrower reason.** Nodes are written into the same `.building` file as the
+  > chunks, by the same build, so the file-level refusal named above already
+  > covers them and there is no second window to close on the write side. What has
+  > no counterpart is the read side, and it is empty: nothing searches a node at
+  > all, so "never returned by search" is true of the forest for a reason that
+  > will expire the moment traversal lands. The item is therefore owed *to the
+  > retrieval CL* rather than to this one.
 - **A node whose `summary_prompt_hash` differs from the active configuration is
   treated as stale** (Milestone 6). No column holds a `summary_prompt_hash`.
+
+  > **Amended in Milestone 6, by the forest-builder CL. The column exists and is
+  > now *written with a real value*; the comparison is what stays owed.** Every
+  > node carries the `model_id`, `model_revision` and `prompt_hash` of the
+  > provider that summarised it, asserted against `ExtractiveSummarizer`'s own by
+  > `test_a_document_nodes_provenance_names_the_revision_it_was_built_from` —
+  > which matters because a placeholder there would make every node permanently
+  > fresh. Nothing compares a stored hash against the active configuration, so a
+  > node summarised under an older provider is neither detected nor rebuilt. That
+  > is the half this item was always about, and it comes due with the CL that
+  > gives a build something to compare against.
 - **Retrieval evaluation includes a groundedness check on generated summaries**
   (Milestone 6). There is no retrieval evaluation harness, and no summary to
   ground: `SummarizationProvider` has no implementation.
@@ -1093,6 +1487,15 @@ Still owed, with the milestone that will satisfy it:
   > There is still no summary to ground — nothing calls it, so no build ever
   > produces one — and there is still no retrieval evaluation harness, so this
   > item stays owed at the milestone it already names.
+
+  > **Amended in Milestone 6, by the forest-builder CL. There are summaries to
+  > ground now, and still no harness.** `index build --raptor` produces them, so
+  > the reason this item gave for being unreachable has expired. It stays owed on
+  > the half that never moved: no retrieval evaluation harness exists anywhere in
+  > the tree. The extractive default makes the check cheap when it is written — a
+  > summary is selected source sentences, so groundedness is string containment
+  > against the children — and that is exactly why it must not be skipped for the
+  > first abstractive adapter, which is where the property stops being structural.
 
 Newly owed by the amendments above, all against Milestone 6, each named because
 the decision it belongs to states a property that is otherwise only an argument:
@@ -1112,6 +1515,25 @@ the decision it belongs to states a property that is otherwise only an argument:
   the only owed test that can, since it is the one that lets the child set vary.
   It is scoped to deterministic pure providers; under any other, decision 9's
   fallback branch applies and this equality is not available at all.
+
+  > **Amended in Milestone 6, by the forest-builder CL. Still owed, and writable
+  > for the first time — the fixture requirement above is now satisfiable.** A
+  > corpus can be built with `--raptor` and its forest read back, so "the forest
+  > side must be asserted to hold at least one node" stops being a condition
+  > nothing could meet. The precondition the equality rests on is held here rather
+  > than assumed there:
+  > `tests/integration/test_forest_builder.py::test_rebuilding_the_same_state_produces_a_byte_identical_forest`
+  > requires two derivations of one unchanged state to agree on every node column
+  > but `index_build_id`, and on every edge — because an id or a text that moved
+  > between two derivations would make this equality *unwritable* rather than
+  > merely red.
+  >
+  > **What the interim ships is the branch decision 9 rejects**, so the gap this
+  > item names is live rather than theoretical: a purge deletes ungrounded nodes
+  > instead of re-deriving the affected trees, which leaves the purged forest
+  > missing a node the never-held corpus would have built from the survivors.
+  > Recorded in decision 9's own landed note. It costs recall in a forest nothing
+  > reads, and it ends with the purge-closure CL that owes this test.
 - **A forest does not move leaf ranking** — what decision 5's "equal by
   construction" claims. Same query, same corpus, two builds: one with the forest
   derived and one without, with traversal off on the forest side, or else
@@ -1135,6 +1557,16 @@ the decision it belongs to states a property that is otherwise only an argument:
   > asserted non-empty, and neither half is reachable while nothing builds one.
   > That test's docstring names `fts5vocab` as how to read those statistics out;
   > this item leaves the mechanism open, saying only "out of the FTS5 tables".
+
+  > **Amended in Milestone 6, by the forest-builder CL. Still owed, and now
+  > reachable: "neither half is reachable while nothing builds one" has expired.**
+  > A derived forest asserted non-empty is one `--raptor` build away, so the full
+  > form — `N`, `avgdl` and the per-term document frequencies compared between a
+  > forest build and a forest-free one — can be written now. The mechanism is also
+  > no longer hypothetical: `test_a_purged_forest_leaves_no_residue_in_a_node_text_index`
+  > already reads terms out of `nodes_fts` and `nodes_trigram` through `fts5vocab`
+  > over rows a build wrote, which is the same instrument this item needs pointed
+  > at `chunks_fts` instead.
 - **Each declared child scope is derived from the child it summarises** — the
   half of decision 1's structural guarantee `SummaryNode` cannot hold, owed with
   the builder CL. `SummaryNode.children` are *declarations*: a builder that
@@ -1144,6 +1576,34 @@ the decision it belongs to states a property that is otherwise only an argument:
   `domain/raptor.py`'s module docstring; what discharges it is a test over a real
   build, comparing each declared scope against the scope of the node or leaf it
   was summarised from (Milestone 6).
+
+  > **Landed in Milestone 6, by the forest-builder CL, in two places rather than
+  > one — because the obligation as written cannot be discharged by a test
+  > alone.** `ForestBuilder` supplies each declaration from the source it
+  > summarises: a chunk's own six-component scope at the Document tier, the child
+  > node's scope above it. `IndexableNode` then refuses a node whose declarations
+  > do not stand **one per source**, and names no source twice, so a declaration
+  > corresponding to nothing is unconstructible rather than merely untested — the
+  > structural half `SummaryNode` could not see.
+  > `tests/unit/test_forest_derivation.py::test_each_declared_child_scope_is_the_scope_of_the_source_it_summarises`
+  > holds the result: one declaration per source, and every source's *own* scope
+  > equal to it, over a corpus that mixes two statuses under one namespace and
+  > kind — precisely the grouping a builder keyed on `(namespace, kind)` alone
+  > would merge.
+  >
+  > **The limit is recorded rather than papered over, and it is by design.** A
+  > correct grouping declared from the parent and one declared from the children
+  > are the same value, by the type's own invariant, so no test can separate them.
+  > What is caught is a declaration that does not correspond to the source the
+  > provenance names — which is the shape the harm takes, since a clusterer
+  > reaching across a scope boundary produces one however it filled `children`.
+  > The grouping is attacked from the other side by
+  > `test_a_node_never_mixes_two_statuses_under_one_namespace_and_kind`, and over
+  > a real build by
+  > `tests/integration/test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`.
+  > The two go red for different reasons, which is why they are separate tests: a
+  > builder keyed on `(namespace, kind)` alone fails both; one that groups
+  > correctly and declares `(parent,) * n` fails neither.
 - **A summary's text is a function of its children and its scope, and of nothing
   else** — what decision 6's added constraint claims, and **carrier (a) only**.
   Summarise the same children under the same scope in two corpora that differ
@@ -1179,6 +1639,18 @@ the decision it belongs to states a property that is otherwise only an argument:
   > have caught the thing it rules out. Carrier (b) remains unreachable by this
   > test by construction, exactly as this item said before landing, and stays
   > owed to decision 9's tree-level two-corpus test at the purge-closure CL.
+
+  > **Amended in Milestone 6, by the forest-builder CL. Carrier (c) had a second
+  > half that no adapter could hold, and the caller now holds it.** The negative
+  > control above shows the *harness* detects a corpus-derived budget; it says
+  > nothing about what the real caller passes, because a summariser is handed the
+  > number and never the recipe. `forest_builder.SUMMARY_MAX_TOKENS` is a
+  > constant with no config key, passed verbatim to every call, and
+  > `tests/unit/test_forest_derivation.py::test_the_summary_budget_is_a_constant_and_not_a_share_of_the_corpus`
+  > holds it with a recorder that sees the recipe rather than the result — over
+  > two corpora whose node cluster sizes differ, since a corpus in which a Domain
+  > node's cluster equals a Document node's cannot tell a scaled budget from a
+  > constant.
 - **Project and status are enforced for the node tables in one place** — what
   decision 5's amendment owes. A single predicate builder for node reads, the way
   `_scope` is for chunk reads, with the cross-project and cross-status isolation
@@ -1188,3 +1660,12 @@ the decision it belongs to states a property that is otherwise only an argument:
   So the owed item includes the mutation — **deleting the node traversal's
   predicate must turn the isolation test RED** — which is the check that
   distinguishes one enforcement point from two that agree today.
+
+  > **Amended in Milestone 6, by the forest-builder CL. Untouched, and the reason
+  > is worth stating so it is not read as discharged by the node rows now
+  > existing.** A build writes `project_id`, `sensitivity` and `status` onto every
+  > node from the scope its children share — so the columns hold true values
+  > instead of fixture ones — and nothing reads them. There is no node traversal,
+  > so there is no second enforcement point yet, and no isolation test over one to
+  > mutate. This item comes due with the retrieval CL, in the same review that
+  > covers `raptorPath`.

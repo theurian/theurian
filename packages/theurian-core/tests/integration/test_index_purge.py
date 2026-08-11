@@ -308,13 +308,14 @@ def test_purging_nothing_is_a_faithful_copy(
 
 # -- Node rows (ADR-0008 decision 5's amendment, ADR-0024 decision 8) --------
 #
-# Nothing writes a node row yet: RAPTOR (ADR-0008) has its first
-# `SummarizationProvider` adapter, `infrastructure/raptor/extractive.py`, and no
-# builder to call it. The rows below are inserted with raw SQL for exactly that
-# reason, and the seam is deliberate -- the
-# *traversal* is what is under test and it runs through the interface. Writing
-# the purge's transitive path after RAPTOR lands would mean designing it twice,
-# and the second time under pressure from a feature that already ships.
+# The rows below are inserted with raw SQL, and stay that way now that
+# `theurian index build --raptor` writes real ones. The *traversal* is what is
+# under test and it runs through the interface, so the seam is deliberate: a
+# hand-written fixture reaches states a builder cannot produce -- an
+# unprovenanced node, an edge naming an absent node, a provenance cycle -- which
+# are the states a migration or a partial build leaves, and they are exactly what
+# this section exists to purge. A forest a builder shaped is covered instead by
+# `tests/integration/test_forest_builder.py`, over the arms it can reach.
 #
 # **v4, not v3.** Until ADR-0008's amendment these rows lived in `chunks` with
 # `derived = 1`, and their provenance in `chunk_derivation`. The amendment moves

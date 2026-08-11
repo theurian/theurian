@@ -171,7 +171,9 @@ rows. Tenant and ACL groups exist as domain values (`Scope`, `TenantId`,
 `AclGroup`, pinned by `tests/unit/test_scope_isolation.py`) and default to the
 single-tenant case; the index carries `sensitivity`, `trust_level` and
 `namespace` as columns no query reads. Steps 3, 4 and 6 are likewise Milestone 6
-— dense retrieval is built but off by default, and RAPTOR is not built at all.
+— dense retrieval is built but off by default, and the RAPTOR forest is *built*
+but never *read*: `theurian index build --raptor` derives and stores it, and no
+retriever names the node tables, so steps 4 and 6 run against nothing.
 The remaining pre-filter gap — enforcing tenant, ACL and sensitivity — is
 [#119](https://github.com/theurian/theurian/issues/119); #63 phase 0 recorded
 the per-axis disposition and closed.

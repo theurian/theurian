@@ -1,7 +1,9 @@
 """Deriving a RAPTOR forest from leaf chunks (ADR-0008 decisions 2, 6, 9).
 
-**Written RED, ahead of `theurian.application.forest_builder`.** The module does
-not exist; every test here fails on the import until it does.
+**Written RED, ahead of `theurian.application.forest_builder`**, which did not
+exist when these were written and failed every test on the import. It exists now;
+the note stays because it is why this file describes an API rather than a
+behaviour it found.
 
 Unit rather than integration, and that is a claim about the thing being tested
 rather than about speed. ADR-0008 decision 9 is reachable only if tree

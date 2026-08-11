@@ -3,13 +3,15 @@
 The highest-severity failure this system can have is a RAPTOR summary built from
 a `restricted` incident report and a `public` API guide: the restricted facts end
 up inside generated text that carries the wrong label, with no anchor back to the
-restricted source. These tests establish the foundation that would make that
+restricted source. These tests establish the foundation that makes that
 impossible by construction rather than by remembering to check -- they prove
-every distinct scope renders to a distinct key, so no RAPTOR forest could place
-two different scopes in one tree. The forest that would rely on it is Milestone 6
-(`infrastructure/raptor/` holds the default summariser and nothing that builds or
-traverses a tree, #115); the scope-key distinguishability it needs is what exists
-and is asserted here.
+every distinct scope renders to a distinct key, so no RAPTOR forest can place two
+different scopes in one tree. The forest relying on it is built:
+`application/forest_builder.py` partitions on this key, and
+`tests/integration/test_forest_builder.py` asserts the isolation over rows a real
+build wrote. What is asserted *here* is the narrower thing that has to hold
+underneath it -- scope-key distinguishability, exhaustively, which no test over a
+corpus could establish because no corpus varies every component.
 """
 
 from __future__ import annotations

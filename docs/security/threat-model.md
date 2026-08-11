@@ -1502,12 +1502,19 @@ against a *real* tool response by
 with `::test_the_conformance_check_can_fail` asserting that a response carrying
 `executable: true` is rejected. The summarization step that *would* additionally
 wrap source content in a delimited untrusted region, and never interpolate it
-into a system-role message, is Milestone 6 and unbuilt: the one
-`SummarizationProvider` adapter `infrastructure/raptor/` now holds is extractive
-and builds no prompt at all, and nothing calls it — no builder, no traversal —
-so no generated summary text exists on any answer path today. The interim
+into a system-role message, is still unbuilt, and now for one reason rather than
+two: the one `SummarizationProvider` adapter `infrastructure/raptor/` holds is
+extractive and builds no prompt at all, so there is no prompt to delimit
+anything in. It is no longer uncalled — `theurian index build --raptor` runs it
+over every node, and its output is stored in the `nodes` table. That output
+reaches no answer path: every retriever names `chunks`, nothing traverses a node,
+and a summary's text is therefore indexed and never returned. The interim
 residual is that the only untrusted content a result carries is the source
-excerpt, already labelled by the triple above (#115).
+excerpt, already labelled by the triple above. What comes due with the retrieval
+CL is that a summary is *selected source sentences* — the extractive default
+copies them verbatim — so "ignore previous instructions" survives summarization
+unchanged, and node-derived text has to carry the same triple as a leaf excerpt
+the moment any of it is published (#115).
 
 > **Corrected in Milestone 5, review round 8. This entry named the wrong
 > enforcement mechanism.** It said "`executable` cannot be set true — the type
@@ -1546,7 +1553,7 @@ contains restricted facts in generated text, carrying whichever ACL the
 implementation assigned, with no anchor to the restricted source. Nearly
 undetectable after the fact.
 
-**Controls:** the scope key that *would* identify a tree is `(project, tenant,
+**Controls:** the scope key that identifies a tree is `(project, tenant,
 sensitivity, acl_group, namespace, status)`, joined with a unit separator that no
 component can contain — `AclGroup`, `TenantId` and `namespace` reject C0 control
 characters and DEL at construction, `ProjectId` is a kebab-case slug, and
@@ -1561,22 +1568,58 @@ exhaustively over all 64 component combinations
 refusal pinned by the four tests in that file that assert it and the join order
 and encoding pinned against a literal digest in
 `test_raptor_scope.py::test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`.
-A RAPTOR node whose children differed in any component *would* have no tree to
-belong to, which is what *would* make mixing structurally impossible rather than
-policy-checked. The subjunctive is deliberate: `infrastructure/raptor/` holds a
-default extractive summariser and nothing that builds or traverses a tree (its
-own text: "one summariser and no forest"), and nothing calls the summariser, so
-no summary node exists to mix. `domain/raptor.py`'s `SummaryNode` refuses
-children whose scope disagrees with its own, which is that refusal written down
-at the value level — it carries scopes and no text, nothing in `src/`
-constructs one, and the `nodes` table that index schema v4 adds to store one has
-no writer, so it withholds nothing today. That table does enforce its own
-integrity conditions — `NOT NULL` ids, one source per provenance edge, no self
-edge — but against rows that only tests insert, and enforcing scope is not among
-them: `sensitivity` is a stored label there, as it is on `chunks`. This
-control takes effect when Milestone 6 builds the forest; the interim residual is
-that no RAPTOR summary is generated at all, so there is no cross-sensitivity
-summary to leak (#115).
+
+A node whose children differ in any component has no tree to belong to, and as of
+Milestone 6's forest builder that is enforced at construction rather than argued
+in the subjunctive. Two refusals and the behaviour that gives them something to
+refuse stand between a corpus and a mixed node: `domain/raptor.py`'s
+`SummaryNode` rejects a node whose declared child scopes differ from its own;
+`IndexableNode` rejects one whose declarations do not stand one per source, so a
+declaration corresponding to nothing cannot be constructed at all; and
+`application/forest_builder.py` derives each declaration from the chunk or node
+it summarises rather than from the parent, which is what makes those declarations
+evidence about the sources instead of a restatement of the node's own scope.
+`tests/integration/test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`
+holds the result over rows a real build wrote — every leaf chunk a node's text
+was synthesized from, reached transitively through `node_derivation`, agreeing on
+all six components — parametrised over the three axes a corpus can vary:
+namespace, sensitivity and status. Tenant and ACL group are not exercised there
+and cannot be, because `migrate validate` and `migrate apply` refuse an
+`upsertRevision` naming any value but the default
+(`migration_engine._scope_violations`) until [#119](https://github.com/theurian/theurian/issues/119),
+so no corpus can carry a second one to mix.
+
+**One limit, by design.** A declared child scope equal to the parent's is
+indistinguishable from one copied off the parent, because for a correctly
+clustered node the two are the same value, and no test can separate them. What
+the refusal catches is a declaration that stands for no source — the shape a
+clusterer reaching across a scope boundary produces — which is why the grouping
+itself is attacked directly by
+`tests/unit/test_forest_derivation.py::test_a_node_never_mixes_two_statuses_under_one_namespace_and_kind`.
+
+**Summaries exist now, so the interim residual is restated rather than kept.**
+`theurian index build --raptor` derives the forest and writes node rows carrying
+summary text; a build without the flag writes zero node rows, and both config
+surfaces ship the forest off (ADR-0008 decision 10). The residual is no longer
+"no summary is generated, so there is nothing to leak". It is that a summary node
+exists in the index and **no path reads one into a response**: `search_lexical`,
+`search_substring` and `search_dense` each name `chunks` in their SQL,
+`system.capabilities` reports `raptor: false`, and `raptorPath` is emitted by
+nothing — `domain/retrieval.py` declares the field, `mcp/results.py` builds every
+result payload and has no such key, and no schema in `schemas/` names it. This
+control stops being latent and starts being load-bearing at the retrieval CL,
+which is where a node's text can first reach a caller.
+
+Withdrawal already reaches the forest, and Milestone 6's builder is the first
+thing to hand that traversal a graph it did not write itself: a purge deletes
+every node not universally grounded in surviving chunks
+(`test_withdrawing_an_item_takes_its_document_node_and_the_domain_node_above_it`),
+leaving no residue in either node text index
+(`test_a_purged_forest_leaves_no_residue_in_a_node_text_index`, over `nodes_fts`
+and `nodes_trigram`). What is **not** claimed is ADR-0008 decision 9's equality:
+the interim is delete-only, no test yet asserts that a purged build's forest
+equals one built from a corpus that never held the withdrawn rows, and that
+acceptance test is owed with the purge-closure CL (#115).
 
 #### T-17 — Search accounting is a truth oracle for withheld content (Information disclosure, **Critical**)
 
