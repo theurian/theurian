@@ -4,14 +4,17 @@ Decision record: [ADR-0008](../adr/0008-raptor-forest.md), as amended in
 Milestone 6. Where this page and that ADR would both state a mechanism, this one
 points at it — a second telling is a second thing to keep true.
 
-**The forest is built and never read.** `theurian index build --raptor` derives
-the three tiers below and writes them into the index — a build without the flag
-writes zero node rows — and a withdrawal purges them transitively. What does not
-exist is the other direction: no retrieval path traverses a node,
-`system.capabilities` reports `"raptor": false`, and no result carries a
-`raptorPath`. So a summary node is written, purged, and never returned to
-anyone. Below, the present tense marks what runs today and "will" marks the
-design the retrieval change is building toward.
+**The forest is built, purged, and retrieved through.** `theurian index build
+--raptor` derives the three tiers below and writes them into the index — a build
+without the flag writes zero node rows — a withdrawal purges them transitively
+and re-derives what survives, and retrieval routes a query through summary nodes
+to the leaves beneath them. `system.capabilities` reports `"raptor": true`, and a
+surfaced leaf carries a `raptorPath`: its forest ancestry, catalog root to leaf.
+A summary node is a router and is never itself a result row (ADR-0008 decision
+8). This page is present-tense throughout; the work still ahead — incremental
+subtree rebuild (deferred, decision 3), an abstractive adapter, and the
+prompt-constraint, staleness and groundedness checks that come with one — is
+marked *deferred* or *owed* where it appears, not "will".
 
 ## What RAPTOR does
 
@@ -19,8 +22,10 @@ RAPTOR builds a tree of recursive summaries over a corpus, so a broad query can
 match a high-level summary and retrieval can descend from it to the specifics.
 It is aimed at "what is our approach to authentication?" — a question flat chunk
 retrieval handles badly, because no single chunk contains the answer. Theurian
-answers that question from leaf chunks alone today, which is the gap the forest
-is meant to close.
+answered that question from leaf chunks alone until the forest was retrieved
+through: a `--raptor` index now matches a high-level summary and descends from it
+to the specifics, reaching sibling leaves a leaf-only search for the same term
+misses (`test_a_summary_match_routes_to_sibling_leaves_a_leaf_search_misses`).
 
 ## Why a forest and not a tree
 
@@ -222,9 +227,9 @@ amendment. What the full path buys is checkable:
 `test_rebuilding_the_same_state_produces_a_byte_identical_forest` rebuilds an
 unchanged state and requires every node row to match, `index_build_id` excepted.
 
-Withdrawal is the one traversal over node rows that exists today, and it is a
-build rather than an edit: a purge copies the previous build, deletes from the
-copy, verifies, and republishes (ADR-0024). Its rule for derived rows is
+Withdrawal is the one traversal that *rewrites* node rows — retrieval reads them
+— and it is a build rather than an edit: a purge copies the previous build,
+deletes from the copy, verifies, and republishes (ADR-0024). Its rule for derived rows is
 universal grounding — a node survives only if *every* declared source terminates
 at a surviving chunk in finitely many steps, so one good parent and one that
 leads nowhere is still removed — and `_verify` refuses to publish a build
@@ -322,14 +327,21 @@ become a function of the forest's shape. `nodes` therefore has its own
 writer that turned out to want different storage (ADR-0008 decision 5's
 amendment).
 
-Two gaps the tables leave open. Tenant, ACL group and namespace have no node
-column — `tree_id` encodes the whole six-component tuple, so a node's tree is
-expressible, but no predicate can filter on those axes. And project and status
-have no single enforcement point for node reads: `SqliteIndexStore._scope` is
-that point for chunk reads, and a node traversal would be a second one unless it
-is built through the same. ADR-0008 owes exactly that, together with the
-mutation check that distinguishes one enforcement point from two that happen to
-agree today.
+One gap the tables leave open, and one now closed. Tenant, ACL group and
+namespace have no node column — `tree_id` encodes the whole six-component tuple,
+so a node's tree is expressible, but no predicate can filter on those axes. What
+is closed is project and status for node reads: `SqliteIndexStore._node_scope` is
+the single enforcement point, the counterpart of `_scope` for chunk reads,
+filtering `nodes.project_id` and `nodes.status`. It is load-bearing rather than
+agreeing with the leaf gate by accident:
+`tests/integration/test_forest_node_scope.py` neutralises each clause in turn
+over a node whose scope disagrees with its one leaf's — so the leaf gate has
+nothing to withhold and only `_node_scope` decides — and requires the matching
+isolation test to go RED (ADR-0008 decision 5's amendment, discharged). The
+upward walk carries its own gate too: `walk_raptor_path` filters its `nodes`
+lookup on the surfaced leaf's own project and status, so a scope-disagreeing
+ancestor cannot ride out on a `raptorPath` even were the construction-time
+invariant ever violated.
 
 ## Summarization constraints
 
@@ -446,14 +458,17 @@ flowchart LR
     E --> R["Leaf results, with raptorPath"]
 ```
 
-**The first box runs, and so does the last one minus its `raptorPath`.**
-`SqliteIndexStore._scope` builds the pre-filter every leaf retriever uses, and
-leaf results with provenance are what `knowledge.search` returns today. What
-does not exist is everything between them — the traversal — and the
-`raptorPath` the last box carries. The nodes those middle boxes would search are
-in the index now; nothing looks at them. `search_lexical`, `search_substring` and
-`search_dense` each name `chunks` in their SQL, which is why a forest can be
-built without changing a single answer.
+**Every box now runs.** `SqliteIndexStore._scope` builds the pre-filter every
+leaf retriever uses, and `SqliteIndexStore._node_scope` builds the same filter
+for the summary match. `search_summaries` matches summary nodes in `nodes_fts`
+and `nodes_trigram`, descends `node_derivation` to the leaf chunks beneath a
+matched node, and hands those leaves to `RetrievalService.search`, fused with the
+leaf retrievers by RRF under the ranking name `summary` (`ranking.SUMMARY`);
+`foundBy` gains that value. `search_lexical`, `search_substring` and
+`search_dense` still each name `chunks` in their SQL — the forest is a fourth
+retriever beside them, not a rewrite of them, so a leaf a direct query already
+finds keeps its rank and one only a summary match reaches is what the forest adds
+(`test_a_summary_match_routes_to_sibling_leaves_a_leaf_search_misses`).
 
 Retrieval performs no authorization-scope determination, which is what the first
 box would otherwise be read as doing. Two axes are enforced: project, and status
@@ -461,21 +476,37 @@ as a pre-ranking predicate when the caller has not passed `includeUnapproved`
 and as `may_surface` at the canonical gate when they have. Tenant and ACL group
 are refused at write time, and sensitivity is a published label
 ([requirements-analysis.md](requirements-analysis.md),
-[#119](https://github.com/theurian/theurian/issues/119)).
+[#119](https://github.com/theurian/theurian/issues/119)). The summary match is
+gated the same way and then again: `_node_scope` filters the node on project and
+status, so a draft-scope summary is not even traversed on a default query; the
+descended leaves are re-filtered by `_scope` and re-cleared by `may_surface`, so
+a withheld leaf reached through the forest still does not surface
+(`test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf`).
 
 Filtering happens **before** ranking, and that is worth keeping whatever the
 forest does: a post-filter returns fewer results than requested and leaks the
 existence of hidden content through result-count differences.
 
-Summary nodes will be **routing-only**: traversal may reach them, and only leaf
-chunks will be published as results (ADR-0008 decision 8). `raptorPath` is what
-would make a traversal visible to a caller — the summary context a hit sits in,
-followed back down to the source text. It is declared on the domain result type
-(`domain/retrieval.py`) and emitted by nothing: `mcp/results.py` builds every
-result payload and has no such key, and no schema in `schemas/` names it. It
-reaches the wire with the retrieval change and its own review, which has to
-cover the routing effect and the node-derived `title` each segment carries, not
-merely the field's presence.
+Summary nodes are **routing-only**: traversal reaches them, and only leaf chunks
+are published as results — a summary node is never itself a result row (ADR-0008
+decision 8). `raptorPath` is what makes a traversal visible to a caller — the
+summary context a hit sits in, followed back down to the source text. It is
+declared on the domain result type (`domain/retrieval.py`), walked by
+`walk_raptor_path` lazily over only the surfaced leaves, emitted by
+`mcp/results.py` as one `{nodeId, level, title}` segment per ancestor from the
+catalog root down to the leaf, and declared optional in
+`schemas/knowledge/retrieval-result.schema.json` (with `foundBy`'s `summary`
+value and `additionalProperties: false` kept). Each `title` is node-derived free
+text — a summariser's output on the wire — carried only above a gate-cleared leaf
+whose ancestors share its six-component scope, so it discloses nothing from a
+scope the leaf is not in
+(`test_a_surfaced_leaf_carries_its_forest_ancestry_as_raptor_path`,
+`test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path`).
+That guarantee is about scope, not freshness: a `title`, like any `excerpt`, is
+index text and can lag the canonical store between builds — the build-time
+staleness residual (T-17a, [#130](https://github.com/theurian/theurian/issues/130))
+that `retrieval-result.schema.json` and `index_forest.py` already attach to every
+title.
 
 ## Replaceable
 
