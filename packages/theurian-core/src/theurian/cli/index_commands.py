@@ -31,6 +31,7 @@ from typing import Annotated, Any, Final
 
 import typer
 
+from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
@@ -43,6 +44,7 @@ from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
 from theurian.domain.errors import TheurianError
 from theurian.domain.state import ActiveState
 from theurian.infrastructure.embedding import HashingEmbedding
+from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -65,12 +67,26 @@ def index_build(
         bool,
         typer.Option("--no-embeddings", help="Build lexical search only."),
     ] = False,
+    raptor: Annotated[
+        bool,
+        typer.Option(
+            "--raptor",
+            help="Also derive a RAPTOR summary forest over what was indexed.",
+        ),
+    ] = False,
     as_json: JsonOption = False,
 ) -> None:
     """Build a retrieval index from this project's canonical state.
 
     The index is derived and disposable (ADR-0004). Deleting it costs a rebuild,
     never data — which is why it is a separate file from the canonical store.
+
+    ``--raptor`` derives the summary forest ADR-0008 describes: one node per
+    document, per kind, and per scope, each built from the chunks or nodes below
+    it. It is opt-in because decision 10 says so — a capability whose acceptance
+    tests are owed and whose build cost is unmeasured must not arrive as the side
+    effect of an upgrade — and the guarantee that buys is hard rather than
+    filtered: without the flag the build writes zero node rows.
 
     A build that finds nothing to index while the canonical state holds knowledge
     is refused rather than published. Publishing it would put a *correct-looking*
@@ -97,6 +113,12 @@ def index_build(
         store_factory=SqliteCanonicalStore,
         index_factory=SqliteIndexStore,
         embedder=None if no_embeddings else HashingEmbedding(),
+        # Composed whether or not `--raptor` was passed, and the request decides
+        # whether it runs. `ExtractiveSummarizer` holds no state, opens nothing
+        # and reaches no network (ADR-0008 decision 7, OSS-15), so constructing
+        # one costs nothing -- while a builder wired only on the flag would make
+        # "was a summariser configured" a second thing the flag means.
+        forest_builder=ForestBuilder(summarizer=ExtractiveSummarizer()),
     )
     # Built under a name `theurian index gc` does not reap, then renamed into
     # place. `gc` reclaims every build the pointer does not name, and a build in
@@ -112,6 +134,7 @@ def index_build(
         state_hash=str(active.state_hash),
         index_build_id=index_build_id,
         include_unapproved=include_unapproved,
+        raptor=raptor,
     )
 
     report = _run_build(builder, request, active, as_json=as_json)

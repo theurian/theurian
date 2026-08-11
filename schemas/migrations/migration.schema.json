@@ -314,7 +314,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 2000,
-          "description": "Required. Reclassification changes who can see the content and forces affected RAPTOR trees to rebuild, so the rationale is part of the record."
+          "description": "Required. Reclassification changes who may read the content, so the rationale is part of the record. The live response reflects the new label immediately because a result reads the item's current sensitivity, like its status; the built index reflects it after the next `index build`, which re-derives affected scopes. It does not force a rebuild."
         }
       }
     },

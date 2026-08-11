@@ -368,8 +368,8 @@ flowchart LR
     MCP --> ANY
 ```
 
-Git holds the record of truth. SQLite, embeddings, and — when Milestone 6 builds
-them — RAPTOR trees are derived artifacts, rebuilt on demand and never committed
+Git holds the record of truth. SQLite, embeddings and RAPTOR trees are derived
+artifacts, rebuilt on demand and never committed
 ([ADR-0004](docs/adr/0004-sqlite-is-a-derived-artifact.md)).
 
 **An applied migration cannot change.** Its checksum is recorded when it is
@@ -495,7 +495,7 @@ found beside the version it expects.
 | **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. |
 | **Apache-2.0, DCO, no CLA** | Core cannot be relicensed away from Apache-2.0 without every contributor's agreement. ([ADR-0015](docs/adr/0015-dco-over-cla.md)) |
 | **Artifact verification is not implemented** | `SHA256SUMS` and a CycloneDX SBOM are published with every release, so the record a verifier would check against exists on every release — and **nothing in Theurian checks it**. Setup has no artifact to hash and no point in its flow where a check would run: it does not obtain Core, and cannot even report Core missing, because setup *is* Core. `artifact-integrity` reports `not-applicable` rather than claiming a check it did not make — `theurian setup --dry-run` prints it, and installs nothing. Checking a download against the `SHA256SUMS` on [its release](https://github.com/theurian/theurian/releases) is a manual step, and a narrow one: the checksums are unsigned and published by the pipeline that built the artifact, so they catch a substituted download, not a compromised release. ([#39](https://github.com/theurian/theurian/issues/39), T-16) |
-| **Cross-sensitivity summaries are prevented by design, and nothing summarizes yet** | A RAPTOR node's tree identity includes project, tenant, sensitivity, ACL group, namespace, and status, so a node combining two levels has no tree to belong to — structural rather than a check someone could forget. No summary is built today: `system.capabilities` reports `raptor: false`, and the forest is Milestone 6. ([ADR-0008](docs/adr/0008-raptor-forest.md)) |
+| **Cross-sensitivity summaries are prevented by construction, and no summary is ever returned** | A RAPTOR node's tree identity includes project, tenant, sensitivity, ACL group, namespace, and status, so a node combining two levels has no tree to belong to — structural rather than a check someone could forget. The sensitivity there is the item's current label, captured when the forest is built, so a reclassification moves it on the next build; it is a build-time boundary, not a live access control. `theurian index build --raptor` builds that forest, off unless you ask for it. Nothing reads a node back: no retriever touches the node tables, `system.capabilities` reports `raptor: false`, and no result carries a `raptorPath`. ([ADR-0008](docs/adr/0008-raptor-forest.md)) |
 
 The full [threat model](docs/security/threat-model.md) names what is *not* solved
 yet, and grades it.
@@ -509,7 +509,7 @@ stable enough to promise upgrade paths.
 | :-- | :-- | :-- |
 | 0–4 | Architecture and ADRs · canonical store and migrations · source ingestion · single MCP daemon · Claude Code plugin | **done** |
 | 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
-| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) · RAPTOR forest not started | in progress |
+| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) · RAPTOR forest: `index build --raptor` derives and stores it (opt-in, three tiers, transitively purged); retrieval through it and `raptorPath` still to come | in progress |
 | 7 | GitHub review ingestion and knowledge candidates | planned |
 | 8 | Specification and traceability tooling, drift detection | planned |
 

@@ -40,6 +40,7 @@ from theurian.domain.context import RequestContext
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ranking import DENSE, Ranked, RetrievalMode, RetrieverPage, mode_of
+from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -1396,6 +1397,19 @@ class _ScriptedIndex:
         raise NotImplementedError
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        raise NotImplementedError
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        raise NotImplementedError
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         raise NotImplementedError
 
     def record_embedding_model(self, *, model_id: str, dimension: int) -> None:

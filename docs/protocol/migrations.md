@@ -84,9 +84,17 @@ The set is closed. Adding one is a protocol change and bumps `apiVersion`.
 | `supersedeSpecification` | Point a spec at its replacement |
 | `addEvidence` / `removeEvidence` | Attach or detach supporting artifacts |
 
-`changeSensitivity` requires a `reason` because reclassification changes who can
-read the content and forces every affected RAPTOR tree to rebuild. That is not a
-change anyone should be able to make without saying why.
+`changeSensitivity` requires a `reason` because reclassification changes who may
+read the content. It updates the canonical record and every live response at
+once: a search reports the new label the instant the migration commits, because a
+result reads the item's current sensitivity the way it already reads the item's
+current status, not the immutable revision's. It does **not** force a rebuild —
+the built index keeps the label it derived until the next `index build`, which
+re-derives every affected chunk and node scope at the item's current
+classification. That lag reaches no reader, because no query filters on a chunk's
+or node's sensitivity yet
+([#119](https://github.com/theurian/theurian/issues/119)). Reclassification is
+still not a change anyone should be able to make without saying why.
 
 ## Engine guarantees
 

@@ -31,10 +31,16 @@ import dataclasses
 import pytest
 
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
-from theurian.domain.errors import DomainError
+from theurian.domain.errors import DomainError, InvariantViolationError
 from theurian.domain.identifiers import ProjectId
-from theurian.domain.raptor import SummaryNode
-from theurian.domain.values import AclGroup, Scope, TenantId
+from theurian.domain.raptor import (
+    IndexableNode,
+    NodeType,
+    SummaryNode,
+    node_identity,
+    tree_identity,
+)
+from theurian.domain.values import AclGroup, ContentHash, Scope, TenantId
 
 
 def _scope(**overrides: object) -> Scope:
@@ -214,3 +220,138 @@ def test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding() ->
     assert scope.digest.value == (
         "ba11c1ad6c4db1fd166a46e98dfc5455511ae1130efb0b86c5ba51a6c2270a6d"
     )
+
+
+def test_a_node_id_is_pinned_to_its_exact_join_order_sort_and_encoding() -> None:
+    """ADR-0008 decision 9's identity function, against a literal.
+
+    "A deterministic function of (`tree_id`, level, the children's content
+    hashes sorted lexicographically), joined with the same unit separator
+    `Scope.key` uses and hashed." Every clause of that sentence is a degree of
+    freedom somebody could resolve differently, and no other test constrains
+    them: the forest tests recompute the recipe from the same function they are
+    checking, so a builder and a recomputation that agreed on a *different*
+    recipe would pass together.
+
+    The children are handed over in the order (beta, alpha), which is the
+    reverse of their sorted order, so an implementation that preserved the
+    caller's order produces a different digest than the literal below. The
+    literal was computed once by running `sha256` over the UTF-8 of
+    `tree_id + \\x1f + "1" + \\x1f + <alpha hash> + \\x1f + <beta hash>` and
+    pasted here.
+
+    `tree_id` is the digest
+    `test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`
+    pins above, so the two literals are one chain rather than two unrelated
+    magic numbers: a change to the scope key moves that test first.
+    """
+    tree_id = ContentHash("ba11c1ad6c4db1fd166a46e98dfc5455511ae1130efb0b86c5ba51a6c2270a6d")
+    alpha, beta = ContentHash.of_text("alpha"), ContentHash.of_text("beta")
+    assert alpha.value < beta.value, "the fixture must hand them over out of sorted order"
+
+    node_id = node_identity(tree_id=tree_id, level=1, child_hashes=[beta, alpha])
+
+    assert node_id.value == ("75c37c121eec8ac102d71db3828436ddef0013054669925db10e30e1da5208c9")
+
+
+def test_a_document_tree_and_a_domain_tree_named_alike_get_different_tree_ids() -> None:
+    """`tree_identity` joins the node_type, so a document tree over an item named
+    ``x`` and a domain tree over a kind named ``x`` in one scope cannot render
+    one key.
+
+    The function's own docstring names this case: "a Document tree over an item
+    named ``x`` and a Domain tree over a kind named ``x`` cannot render one
+    key." ``architecture`` is at once a legal ``itemId`` (it matches the
+    migration schema's ``itemId`` pattern) and a ``KnowledgeKind`` value, so a
+    document tree keyed on that item and a domain tree keyed on that kind share
+    a scope *and* a discriminator -- the tier is the only thing left to
+    distinguish them. Drop it from the join and the two trees mint one id, which
+    is a silently merged forest or a primary-key collision at write time,
+    depending on which insert runs second.
+
+    No forest test builds a corpus where an item id equals a kind, and
+    ``test_scope_isolation.py`` varies only the scope tuple, so nothing else
+    exercises the ``node_type`` join. Pinned on the function directly.
+    """
+    scope = _scope()
+    shared = "architecture"
+
+    document_tree = tree_identity(scope=scope, node_type=NodeType.DOCUMENT, discriminator=shared)
+    domain_tree = tree_identity(scope=scope, node_type=NodeType.DOMAIN, discriminator=shared)
+
+    assert document_tree != domain_tree, (
+        "a document tree and a domain tree that share a scope and a name collided -- "
+        "the node_type is not part of the tree identity (ADR-0008 decision 9)"
+    )
+
+
+# -- IndexableNode: a declaration must stand for a real source ----------------
+
+
+def _valid_hash(seed: str) -> str:
+    """A syntactically valid `ContentHash` value for an `IndexableNode` field.
+
+    ``IndexableNode`` validates ``node_id`` and ``tree_id`` as content hashes at
+    construction; the refusals under test fire *after* that check, so the id
+    fields have to be well formed for the fixture to reach them.
+    """
+    return ContentHash.of_text(seed).value
+
+
+def test_an_indexable_node_refuses_more_declared_children_than_sources() -> None:
+    """A node declaring two child scopes for one source has a declaration that
+    stands for nothing, and construction must refuse it.
+
+    This is the half of ADR-0008 decision 1 that ``SummaryNode`` cannot hold:
+    it is handed scopes, not children, so ``(parent,) * n`` satisfies it without
+    a single real source. ``IndexableNode`` closes that half by counting the
+    declarations against the named sources -- which is what makes
+    ``node.children`` evidence about the sources rather than a restatement of
+    the node's own scope. A guard weakened so the count is never compared (a
+    clusterer reaching across a scope boundary caught by nothing) leaves the
+    forest's whole scope-isolation argument resting on a check that does not run.
+    """
+    scope = _scope()
+
+    with pytest.raises(InvariantViolationError, match="declares"):
+        IndexableNode(
+            node=SummaryNode(scope=scope, children=(scope, scope)),
+            node_id=_valid_hash("node"),
+            tree_id=_valid_hash("tree"),
+            level=1,
+            text="a summary",
+            summary_model="test-model",
+            summary_model_revision="1",
+            summary_prompt_hash="0" * 64,
+            source_revision_id="rev-1",
+            source_chunk_ids=("rev-1#0",),
+        )
+
+
+def test_an_indexable_node_refuses_a_source_named_twice() -> None:
+    """A node naming one source chunk twice would write a duplicate
+    ``node_derivation`` edge, and construction must refuse it here.
+
+    The schema's partial unique indexes on ``node_derivation`` refuse the
+    duplicate at insert time; catching it at construction turns an
+    ``IntegrityError`` from the middle of a batch into a sentence that names the
+    node. The declaration count matches (two children for two sources), so this
+    reaches the *duplicate* check specifically rather than the count check
+    above -- a guard weakened so duplicates are never detected lets a node stand
+    twice on the same chunk, over-counting the content it summarises.
+    """
+    scope = _scope()
+
+    with pytest.raises(InvariantViolationError, match="twice"):
+        IndexableNode(
+            node=SummaryNode(scope=scope, children=(scope, scope)),
+            node_id=_valid_hash("node"),
+            tree_id=_valid_hash("tree"),
+            level=1,
+            text="a summary",
+            summary_model="test-model",
+            summary_model_revision="1",
+            summary_prompt_hash="0" * 64,
+            source_revision_id="rev-1",
+            source_chunk_ids=("rev-1#0", "rev-1#0"),
+        )

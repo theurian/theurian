@@ -688,6 +688,58 @@ def test_changing_owner_and_sensitivity_updates_the_item() -> None:
     assert item.sensitivity is Sensitivity.CONFIDENTIAL
 
 
+def test_a_reclassification_is_not_a_withdrawal() -> None:
+    """A ``changeSensitivity`` withdraws nothing, so it reaches no purge candidate.
+
+    ``withdrawn_candidates`` feeds exactly one consumer -- the withdrawal purge
+    (``publish_purge_for_withdrawal``), which copies the published build and
+    deletes withheld rows. A reclassification withholds none of the item's
+    revisions: its status and current revision are unchanged, so the purge would
+    gather the item and then discard it, doing nothing. Routing it there anyway is
+    inert plumbing under a name that implies a rebuild that never fires, so the
+    engine leaves ``changeSensitivity`` out of the affected set.
+
+    That is not a gap. The reclassified label reaches a caller immediately through
+    the item-authoritative response (``result_payload``,
+    ``test_result_payload.py``) with no rebuild, and the built index's scope
+    columns match canonical again after the next ``index build`` re-derives at the
+    item's current label (``test_forest_builder_scale.py``). This pins the
+    contract those two hold up: the apply of a pure reclassification produces no
+    withdrawal candidate. Re-adding ``changeSensitivity`` to
+    ``_withdrawal_affected_item`` turns it red.
+    """
+    from theurian.domain.migration import ChangeSensitivity
+
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    report = engine.apply(
+        writer,
+        PROJECT,
+        MigrationSet.ordered(
+            (
+                _migration(
+                    MIG_2,
+                    ChangeSensitivity(
+                        item_id=ITEM,
+                        sensitivity=Sensitivity.CONFIDENTIAL,
+                        reason="Contains incident detail",
+                    ),
+                ),
+            )
+        ),
+    )
+
+    assert report.applied == [MigrationId(MIG_2)], "the reclassification must have applied"
+    assert report.withdrawn_candidates == [], (
+        "a pure reclassification reached a withdrawal candidate -- the purge would "
+        "discard it, so this is inert plumbing implying a rebuild that never fires"
+    )
+
+
 def test_operations_on_an_unknown_item_are_rejected() -> None:
     writer = InMemoryWriter()
     with pytest.raises(MigrationError, match="unknown item"):

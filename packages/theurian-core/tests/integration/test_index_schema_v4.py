@@ -164,7 +164,9 @@ def test_a_node_level_outside_the_three_tree_levels_is_refused(store: SqliteInde
     graph, and `level` does not supply one: nothing ties an edge's endpoints to a
     level difference, so 2,000 nodes all at level 1 chained 2,000 deep satisfy
     this `CHECK` and take that closure 3.6 s (measured). The shallow shape is a
-    property of the builder decision 2 describes, which does not exist yet.
+    property of `application/forest_builder.py`, which builds each tier only from
+    the one below it -- not of this column, and not of any row written by
+    something else.
     """
     with closing(sqlite3.connect(store.path)) as connection:
         connection.execute("PRAGMA foreign_keys = ON")

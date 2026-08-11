@@ -180,7 +180,7 @@ from typing import Any, Final, final
 
 from theurian.application.visibility import CanonicalVisibility, Visibility
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeRevision
@@ -683,6 +683,14 @@ class Surfaced:
     revision: KnowledgeRevision
     #: The item's status **now**, not the one the index recorded at build time.
     status: KnowledgeStatus
+    #: The item's sensitivity **now**, for the same reason as ``status`` and to
+    #: the same effect: a ``changeSensitivity`` moves the classification on the
+    #: item without writing a new revision, so a payload reading
+    #: ``revision.metadata.sensitivity`` would report the label the content was
+    #: authored under rather than the one that now decides who may read it
+    #: (SEC-14). The shaper threads this into
+    #: :func:`~theurian.mcp.results.result_payload`.
+    sensitivity: Sensitivity
     #: The chunk text that matched. Empty when the index no longer holds it, in
     #: which case the shaper falls back to the head of the document.
     passage: str
@@ -906,6 +914,7 @@ class ResultGate:
                     candidate=candidate,
                     revision=revision,
                     status=item.status,
+                    sensitivity=item.sensitivity,
                     passage=outcome.passages.get(candidate.chunk_id, ""),
                 )
             )

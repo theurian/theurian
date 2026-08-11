@@ -75,6 +75,7 @@ from theurian.application.retrieval_service import (
 )
 from theurian.domain.chunking import Chunk, IndexableChunk
 from theurian.domain.ranking import Ranked, RetrieverPage
+from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.sqlite import index_store as index_store_module
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
@@ -242,6 +243,19 @@ class _CountedStore:
         raise NotImplementedError
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        raise NotImplementedError
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        raise NotImplementedError
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         raise NotImplementedError
 
     def record_embedding_model(self, *, model_id: str, dimension: int) -> None:

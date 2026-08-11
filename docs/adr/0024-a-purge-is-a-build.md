@@ -418,6 +418,32 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    >
    > Written first as "this point's opening sentence is the one that changes",
    > which corrected the adapter half and left the empty-package half standing.
+   >
+   > **Amended in Milestone 6, by the forest-builder CL. "Nothing writes a node
+   > row yet, so all of this is still pinned over rows inserted with raw SQL" is
+   > false, and so is "closed before the thing that opens it is written".**
+   > `theurian index build --raptor` writes them, and this traversal now meets a
+   > graph a builder shaped rather than only fixtures the test that purges them
+   > wrote.
+   > `tests/integration/test_forest_builder.py::test_withdrawing_an_item_takes_its_document_node_and_the_domain_node_above_it`
+   > withdraws one item of three: its Document node is ungrounded and dies, and
+   > the Domain node standing on that one dies with it by the upward closure,
+   > while the two unaffected Document nodes survive — a purge that took the whole
+   > forest would satisfy every assertion about the withdrawn item and destroy
+   > the property this ADR was accepted on.
+   > `test_a_purged_forest_leaves_no_residue_in_a_node_text_index` reads
+   > `nodes_fts` and `nodes_trigram` through `fts5vocab`, which is the check a
+   > corpus that never held a node row could not make.
+   >
+   > **The hand-written fixtures in `test_index_purge_nodes.py` are not made
+   > redundant by this, and that is a property of the builder rather than of the
+   > tests.** A builder-written forest cannot reach three of the five unanchored
+   > arms: it writes every node before any edge in one transaction, and each node
+   > carries at least one source, so an unprovenanced node and an edge naming an
+   > absent node cannot occur; and it builds each tier only from the one below,
+   > so a provenance cycle cannot occur either. Those arms stay covered only by
+   > raw SQL, deliberately — they describe states a *migration or a partial build*
+   > leaves, not states this builder produces.
    > ADR-0008's family-closure note records that under-correction and its cause.
 
 ## Consequences
@@ -575,6 +601,24 @@ plus non-current revisions. The closure is held by
 each of which is RED on the pre-trigger wiring. With this, every decision in this
 ADR is wired.
 
+**A reclassification triggers no purge, and needs none.** A `changeSensitivity`
+moves a scope component (SEC-14, [ADR-0008](0008-raptor-forest.md) decision 1),
+but `migration_engine._withdrawal_affected_item` — the set that feeds
+`publish_purge_for_withdrawal` — deliberately excludes it. A purge copies the
+published build and deletes withheld rows; it deletes rows, it does not rewrite a
+scope column, and a pure reclassification withholds nothing (its status and
+current revision are unchanged), so the purge would gather the item only to
+discard it. Nothing rebuilds for it, and nothing has to: the live response is
+already correct, because a result reads the item's current sensitivity
+(`mcp/results.py`), and the built index's stale `sensitivity` column is read by no
+gate before [#119](https://github.com/theurian/theurian/issues/119) — an unsigned
+local index row nothing reads is not a disclosure (SEC-7). That column matches
+canonical again on the next `index build`, which re-derives at the item's current
+label. `test_a_reclassification_is_not_a_withdrawal` pins that the engine produces
+no purge candidate for it, and
+`test_a_reclassification_shows_in_the_response_before_any_rebuild` pins the live
+response and the harmless index lag end to end.
+
 Everything below is the mechanism's own acceptance, which #113 discharges;
 [#103](https://github.com/theurian/theurian/issues/103) tracked these eight as
 one class, and all eight are green.
@@ -654,6 +698,18 @@ Landed by the change that implements this ADR:
   paragraph's — the subject correction from `derived = 1` to a node row. The
   empty-package half was left standing by that reading; ADR-0008's
   family-closure note records the class it belongs to.
+
+  **Amended in Milestone 6, by the forest-builder CL. "Nothing writes a node row"
+  is false and "it stays pinned that way until the builder CL" has arrived.**
+  `index build --raptor` writes them. The raw-SQL fixtures above stay, and not
+  out of inertia: they reach three unanchored arms a builder-written forest
+  cannot produce — an unprovenanced node, an edge naming an absent node, and a
+  provenance cycle — because the builder writes every node before any edge in one
+  transaction, gives each node at least one source, and builds each tier only
+  from the one below. What the builder adds is the arms it *can* reach, over a
+  graph it shaped:
+  `tests/integration/test_forest_builder.py::test_withdrawing_an_item_takes_its_document_node_and_the_domain_node_above_it`
+  and `test_a_purged_forest_leaves_no_residue_in_a_node_text_index`.
 - **A purged build holds no orphaned row** — landed:
   `test_a_purged_build_holds_no_embedding_of_a_withdrawn_chunk`, plus a third
   post-condition inside `_verify` that refuses to publish a build with an

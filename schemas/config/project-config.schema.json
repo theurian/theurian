@@ -102,7 +102,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether `theurian index build` derives a summary forest. Off by default (ADR-0008 decision 10): a capability whose acceptance tests are owed and whose build cost is unmeasured is turned on by a decision, not by an upgrade. `theurian index build --raptor` is the same switch on one build."
+        },
         "maxLevels": { "type": "integer", "minimum": 1, "maximum": 8, "default": 3 },
         "minChildrenPerSummary": {
           "type": "integer",

@@ -382,19 +382,28 @@ published artifact were what would settle it. Both have now happened: the tag is
 - **Parser input.** Size, depth, and expansion-ratio limits, with safe loaders
   only (`yaml.safe_load`). External `$ref` targets are recorded as unresolved,
   never fetched.
-- **Sensitivity boundaries (Milestone 6, not yet shipped).** The scope key that
-  *would* identify a RAPTOR summary node's tree includes project, tenant,
+- **Sensitivity boundaries (enforced on the build, not yet on any answer).** The
+  scope key identifying a RAPTOR summary node's tree includes project, tenant,
   sensitivity, ACL group, namespace, and status, and a node combining two
-  sensitivity levels *would* have no tree it could belong to — mixing impossible
-  by construction rather than prevented by a check. That refusal is written down
-  at the value level — `domain/raptor.py`'s `SummaryNode` raises when a child's
-  scope disagrees with its own — and stops there: no builder constructs a node,
-  nothing writes one into the `nodes` table index schema v4 adds to hold one, no
-  traversal reads one, and the default summariser `infrastructure/raptor/` now
-  holds is called by nothing. So the control is not live yet; it takes effect
-  when Milestone 6 builds the forest. Until then no RAPTOR summary is generated,
-  so the interim residual is that there is no cross-sensitivity summary to leak. The scope key itself is real and tested over
-  all 64 component combinations (#115).
+  sensitivity levels has no tree it could belong to — mixing impossible by
+  construction rather than prevented by a check. Three refusals hold that:
+  `domain/raptor.py`'s `SummaryNode` raises when a declared child scope disagrees
+  with the node's own, `IndexableNode` raises when a declaration stands for no
+  source, and `application/forest_builder.py` derives each declaration from the
+  chunk or node it summarises. The sensitivity that key partitions on is the
+  item's current classification, stamped at build time the way `status` is, so a
+  `changeSensitivity` moves it on the next build; until then the built row keeps
+  the label it was derived under, which no gate reads (SEC-7). `theurian index
+  build --raptor` writes the forest those refusals guard, and a test over a real
+  build asserts that every leaf chunk a node was synthesized from agrees on all
+  six components. **What this does not
+  do is make a serving decision.** No retrieval path reads `chunks.sensitivity`
+  or any node row at all: sensitivity is a published label, with the control
+  deferred to [#119](https://github.com/theurian/theurian/issues/119). So the
+  residual is no longer "no summary exists" — one does, in the index — but that
+  nothing reads it back: `system.capabilities` reports `raptor: false`, no
+  retriever names the node tables, and `raptorPath` is emitted by nothing. The
+  scope key itself is real and tested over all 64 component combinations (#115).
 - **Approved knowledge.** No MCP tool can write it. Write-intent tools emit
   proposal files that a human reviews and merges.
 
