@@ -637,6 +637,19 @@ def _withdrawal_affected_item(operation: Operation) -> ItemId | None:
     item some *other* apply withdrew and this one does not touch is left to the
     apply that did, and a replay that re-touches all of them recomputes the same
     answer.
+
+    A ``changeSensitivity`` is deliberately *not* here, even though it moves a
+    scope component (SEC-14, ADR-0008 decision 1). This set feeds only the
+    withdrawal purge, which copies the published build and deletes withheld rows
+    (`index_purge`) -- and a reclassification withholds none (its status and
+    current revision are unchanged), so the purge would gather the item and then
+    discard it. Nothing auto-rebuilds the index for it, and nothing needs to: the
+    live response is item-authoritative (`result_payload` reads the item's current
+    sensitivity, so a search reports the new label the instant the migration
+    commits, before any rebuild), and the built index's stale ``sensitivity``
+    column is read by no gate before #119 -- an unsigned local index row nothing
+    reads is not a disclosure (SEC-7). That column matches canonical again after
+    the next ``index build``, which re-derives at the item's current label.
     """
     match operation:
         case DeprecateItem() | RestoreItem() | UpsertRevision():

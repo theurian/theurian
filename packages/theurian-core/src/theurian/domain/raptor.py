@@ -15,9 +15,18 @@ something this type can check: a builder that passes ``(parent,) * n`` for
 every node satisfies this type without ever consulting a real child.
 :class:`IndexableNode` is what closes that half: it refuses a node whose
 declared children do not stand one-per-source, so a declaration that
-corresponds to no source cannot be constructed. The builder
+corresponds to no source cannot be constructed. That is the part a test can
+hold, and does -- ``test_an_indexable_node_refuses_more_declared_children_than_
+sources`` pins the constructible defect. The other part is not testable, and the
+honesty matters: for a *valid* node, a declaration copied from the parent and
+one derived from the child are equal by this type's own scope invariant, so no
+test separates a builder that consulted its children from one that passed
+``(parent,) * n``. The builder
 (:mod:`theurian.application.forest_builder`) supplies each declaration from the
-child it summarises, and ``tests/unit/test_forest_derivation.py`` holds it.
+child it summarises; the guarantee that it corresponds to a real source is
+structural, and the guarantee that a *correct* one was chosen rests on the
+builder's grouping being right (``tests/unit/test_forest_derivation.py``'s
+scope-boundary tests), not on distinguishing the two indistinguishable forms.
 
 The identity functions live here rather than in the builder because they are
 what ADR-0008 decision 9 is *about*: two derivations of one state must produce

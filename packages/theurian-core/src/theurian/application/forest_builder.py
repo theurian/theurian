@@ -34,8 +34,12 @@ characters in one call. A Document node is charged its item's whole body, so a
 single document past a million characters -- a thousand chunks at the chunker's
 target -- fails the build rather than producing a summary nobody could read.
 Every tier above is charged its children's *summaries*, each bounded by
-:attr:`ForestOptions.summary_max_tokens`, so the input to a Catalog node grows
-with the number of kinds and not with the corpus.
+:attr:`ForestOptions.summary_max_tokens`. A Catalog node's input therefore grows
+with the number of kinds and not with the corpus -- but a Domain node's input
+grows with the number of *documents of its kind*, which is linear in the corpus,
+so it alone among the tiers needs an explicit bound. :data:`MAX_CHILDREN_PER_DOMAIN`
+is that bound: a kind past it fans out into several Domain nodes rather than one
+whose input would eventually cross the character limit above.
 """
 
 from __future__ import annotations
@@ -84,6 +88,20 @@ SUMMARY_MAX_TOKENS: Final = TARGET_CHARS // CHARS_PER_TOKEN
 #: The smallest threshold that still means something, and the config schema's
 #: own ``minimum``. At one child a "summary" is a paraphrase of a single node.
 MIN_CHILDREN_FLOOR: Final = 2
+
+#: The most Document nodes one Domain node may summarise before the tier fans out
+#: into several. **A safety margin under the summariser's input limit, not a
+#: tuning knob.** A Domain node is charged its children's *summaries*, each at
+#: most :data:`SUMMARY_MAX_TOKENS` tokens and so at most that many times
+#: :data:`~theurian.domain.ranking.CHARS_PER_TOKEN` characters, so a full batch's
+#: input is ``MAX_CHILDREN_PER_DOMAIN * SUMMARY_MAX_TOKENS * CHARS_PER_TOKEN`` --
+#: 500 x 250 x 4 = 500k against the extractive default's
+#: :data:`~theurian.infrastructure.raptor.extractive.MAX_TOTAL_INPUT_CHARS` of
+#: 1M, half of it, so even a full batch never drives the refusal the fan-out
+#: exists to remove. Above this many documents of one kind in one scope the tier
+#: splits into deterministic batches (:func:`_domain_batches`) rather than
+#: minting a single Domain node whose input grows without bound with the corpus.
+MAX_CHILDREN_PER_DOMAIN: Final = 500
 
 #: The level each tier carries, derived from :data:`~theurian.domain.raptor.TIERS`
 #: so the mapping is declared once. Named so that a comparison below reads as a
@@ -200,12 +218,13 @@ class ForestBuilder:
 
         domains: list[IndexableNode] = []
         for kind in sorted(by_kind):
-            node = self._node_over_nodes(
-                scope, level=_DOMAIN_LEVEL, discriminator=kind, children=by_kind[kind]
-            )
-            if node is not None:
-                built.append(node)
-                domains.append(node)
+            for discriminator, batch in _domain_batches(kind, by_kind[kind]):
+                node = self._node_over_nodes(
+                    scope, level=_DOMAIN_LEVEL, discriminator=discriminator, children=batch
+                )
+                if node is not None:
+                    built.append(node)
+                    domains.append(node)
         if tiers < _CATALOG_LEVEL:
             return built
 
@@ -334,6 +353,35 @@ def _scope_of(chunk: IndexableChunk) -> Scope:
     )
 
 
+def _domain_batches(
+    kind: str, documents: Sequence[IndexableNode]
+) -> list[tuple[str, list[IndexableNode]]]:
+    """One Domain node's children per batch, split when a kind exceeds the cap.
+
+    Below :data:`MAX_CHILDREN_PER_DOMAIN` the whole kind is one batch keyed on
+    the bare ``kind``, so a corpus small enough to need no fan-out mints exactly
+    the tree id it did before this existed. Above it, the documents -- sorted by
+    ``node_id`` so the slice does not depend on the order they were derived in
+    (ADR-0008 decision 9) -- are cut into contiguous batches of at most
+    ``MAX_CHILDREN_PER_DOMAIN``, each keyed on ``kind`` joined with its partition
+    index so the batches mint distinct tree ids rather than colliding on the
+    kind. A :class:`~theurian.domain.enums.KnowledgeKind` value cannot contain
+    ``#``, so a partitioned discriminator can never equal a bare kind, and the
+    partition of a corpus is a function of its content alone -- deterministic
+    across rebuilds.
+    """
+    ordered = sorted(documents, key=lambda node: node.node_id)
+    if len(ordered) <= MAX_CHILDREN_PER_DOMAIN:
+        return [(kind, ordered)]
+    return [
+        (
+            f"{kind}#{start // MAX_CHILDREN_PER_DOMAIN}",
+            ordered[start : start + MAX_CHILDREN_PER_DOMAIN],
+        )
+        for start in range(0, len(ordered), MAX_CHILDREN_PER_DOMAIN)
+    ]
+
+
 def _by_scope(chunks: Iterable[IndexableChunk]) -> list[tuple[Scope, list[IndexableChunk]]]:
     """Chunks partitioned by scope, in a total order over the scope key.
 
@@ -369,4 +417,4 @@ def _by_item(chunks: Iterable[IndexableChunk]) -> list[tuple[str, str, list[Inde
     ]
 
 
-__all__ = ["SUMMARY_MAX_TOKENS", "ForestBuilder", "ForestOptions"]
+__all__ = ["MAX_CHILDREN_PER_DOMAIN", "SUMMARY_MAX_TOKENS", "ForestBuilder", "ForestOptions"]

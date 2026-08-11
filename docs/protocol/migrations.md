@@ -84,6 +84,11 @@ The set is closed. Adding one is a protocol change and bumps `apiVersion`.
 | `supersedeSpecification` | Point a spec at its replacement |
 | `addEvidence` / `removeEvidence` | Attach or detach supporting artifacts |
 
+<!-- DOCS-PASS-TODO: "forces every affected RAPTOR tree to rebuild" is false as of
+the CL5 resolution -- a reclassification does not auto-rebuild the index. Correct to:
+it updates canonical and the live response immediately (item-authoritative), and the
+built index reflects the new label after the next `index build`. Same claim in
+schemas/migrations/migration.schema.json changeSensitivity.reason description. -->
 `changeSensitivity` requires a `reason` because reclassification changes who can
 read the content and forces every affected RAPTOR tree to rebuild. That is not a
 change anyone should be able to make without saying why.

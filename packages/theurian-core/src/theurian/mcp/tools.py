@@ -555,7 +555,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 )
             )
 
-        payload = result_payload(revision, item.status, datetime.now(UTC))
+        payload = result_payload(revision, item.status, item.sensitivity, datetime.now(UTC))
         payload["body"] = revision.body
         payload["relations"] = [
             {

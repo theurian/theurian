@@ -163,7 +163,19 @@ class IndexBuilder:
                             item_id=item.item_id.value,
                             revision_id=revision.revision_id.value,
                             status=item.status.value,
-                            sensitivity=revision.metadata.sensitivity.value,
+                            # The item's, not the revision's, and for the same
+                            # reason `status` is: a `changeSensitivity` moves the
+                            # classification on the item without writing a new
+                            # revision (ADR-0005), so the immutable revision keeps
+                            # the label it was authored under. Sensitivity is a
+                            # component of the scope tuple a RAPTOR tree *is*
+                            # (ADR-0008 decision 1) and decides who may read the
+                            # content (SEC-14), so a build reading the revision's
+                            # would stamp every chunk and node with a stale label.
+                            # `namespace` and `kind` below need no such treatment:
+                            # no operation moves them after creation, so the item
+                            # always carries its current revision's values for them.
+                            sensitivity=item.sensitivity.value,
                             trust_level=revision.metadata.trust_level.value,
                             # The scope tuple's namespace, and the kind that
                             # selects a Domain tree inside it (ADR-0008

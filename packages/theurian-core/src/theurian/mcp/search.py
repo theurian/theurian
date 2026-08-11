@@ -558,7 +558,7 @@ def _shaper(now: datetime) -> ResultShaper:
     """
 
     def shape(surfaced: Surfaced) -> dict[str, Any]:
-        result = result_payload(surfaced.revision, surfaced.status, now)
+        result = result_payload(surfaced.revision, surfaced.status, surfaced.sensitivity, now)
         # The excerpt is the passage that actually matched, not the head of the
         # document. Chunking buys ranking precision; without this the caller
         # never sees the paragraph it bought.
@@ -840,7 +840,7 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
             if needle not in f"{revision.title}\n{revision.body}".lower():
                 continue
 
-            matches.append(result_payload(revision, item.status, now))
+            matches.append(result_payload(revision, item.status, item.sensitivity, now))
             if len(matches) >= limit:
                 break
 

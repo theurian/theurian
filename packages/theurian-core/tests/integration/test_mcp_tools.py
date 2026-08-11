@@ -21,7 +21,12 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
-from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
+from theurian.application.project_service import (
+    ProjectPaths,
+    ProjectRegistry,
+    read_active_index_pointer,
+    read_active_state,
+)
 from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_DEPTH
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
@@ -933,6 +938,83 @@ def indexed(registry: ProjectRegistry) -> ProjectRegistry:
     finally:
         monkey.undo()
     return registry
+
+
+RECLASSIFY_ID = "01K1RRRRRR01234567890ABCDE"
+RECLASSIFY_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RECLASSIFY_ID}
+createdAt: 2026-08-02T13:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: changeSensitivity
+    itemId: architecture.auth-policy
+    sensitivity: restricted
+    reason: Reclassified after review
+"""
+
+
+def _published_index_chunk_sensitivity(root: Path) -> set[str]:
+    """The sensitivity the currently published index stamped on the item's chunks."""
+    payload = read_active_index_pointer(ProjectPaths.of(root)).payload
+    assert payload is not None, "the project must have a published index"
+    index = ProjectPaths.of(root).index_for(str(payload["indexBuildId"]))
+    with contextlib.closing(sqlite3.connect(index)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT sensitivity FROM chunks WHERE revision_id = ?", (REVISION_ID,)
+        ).fetchall()
+    return {row["sensitivity"] for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
+    indexed: ProjectRegistry,
+) -> None:
+    """After a ``changeSensitivity`` and a ``migrate apply`` -- with NO rebuild --
+    a search reports the item's new sensitivity, while the still-published index
+    keeps the old label on its chunk rows.
+
+    This is the whole contract for a reclassification, and why it needs no
+    auto-rebuild. ``result_payload`` reads the item's current sensitivity, not the
+    immutable revision's (SEC-14), so the label a caller sees is correct the
+    instant the migration commits -- the assertion on the response's
+    ``sensitivity`` holds it. The index column *does* lag: nothing rebuilt it, so
+    its chunk still says ``internal``. That lag is asserted to be *present*, not
+    absent, because it is harmless: no gate reads a chunk's ``sensitivity`` before
+    #119, and an unsigned local index row nothing reads is not a disclosure
+    (SEC-7). The column matches canonical again after ``index build`` re-derives
+    (``test_forest_builder_scale.py``); until then the response is already right,
+    which is what makes the auto-rebuild the migration engine deliberately does
+    not do (``test_migration_engine.py``) unnecessary.
+    """
+    root = Path(indexed.load()["demo"]["rootPath"])
+    assert _published_index_chunk_sensitivity(root) == {"internal"}, (
+        "the fixture's index must be built at the original sensitivity, or the lag below "
+        "is not the one this test is about"
+    )
+
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / f".theurian/migrations/{RECLASSIFY_ID}-reclassify.yaml").write_text(
+            RECLASSIFY_MIGRATION
+        )
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+
+    hits = [hit for hit in result["results"] if hit["itemId"] == "architecture.auth-policy"]
+    assert hits, "the reclassified item must still be found -- it was not withdrawn"
+    assert hits[0]["sensitivity"] == "restricted", (
+        "the search reported the revision's stale sensitivity, not the item's current "
+        "one -- the label decides who may read the content (SEC-14)"
+    )
+    assert _published_index_chunk_sensitivity(root) == {"internal"}, (
+        "the reclassification rebuilt or purged the index -- the point of this test is "
+        "that it does neither, and that the response is right anyway"
+    )
 
 
 @pytest.fixture(params=["indexed", "registry"], ids=["ranked", "fallback"])

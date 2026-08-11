@@ -25,6 +25,7 @@ over ports that already exist.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import pathlib
 from dataclasses import dataclass, replace
@@ -32,8 +33,9 @@ from typing import Any, Final, final
 
 import pytest
 
-from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.chunking import TARGET_CHARS, Chunk, IndexableChunk
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.summarization import SummarizationProvider
 from theurian.domain.ranking import estimate_tokens
@@ -525,3 +527,237 @@ def test_a_nodes_text_stays_within_the_configured_budget() -> None:
         assert estimate_tokens(node.text) <= budget, (
             f"node {node.node_id} costs more than the budget it was built under"
         )
+
+
+def test_the_summary_budget_is_one_target_passage_measured_against_the_estimator() -> None:
+    """`SUMMARY_MAX_TOKENS` is one chunk's worth, pinned externally rather than to itself.
+
+    The forest-wide budget test above asserts every recorded budget equals
+    `options.summary_max_tokens`, which is self-referential: halving the constant
+    halves both sides and the equality still holds, so a mutation that quietly
+    shrinks the budget survives it. The docstring's meaning is external -- "the
+    chunker's target passage priced at the estimator's characters-per-token" --
+    so this pins the constant against `TARGET_CHARS` and `estimate_tokens`, the
+    two quantities that define it, and against neither the option nor itself.
+
+    A passage of exactly `TARGET_CHARS` characters must fit one budget, and a
+    passage of materially more (twice the target) must not. Halving
+    `SUMMARY_MAX_TOKENS` drops the ceiling below one target passage, so the
+    lower bound turns red -- which is the disclosure the constant exists to
+    close (a node that cost less would say less than the passage it stands
+    beside), stated where a self-comparison cannot see it.
+    """
+    from theurian.application.forest_builder import SUMMARY_MAX_TOKENS
+
+    one_passage = "a" * TARGET_CHARS
+    materially_more = "a" * (2 * TARGET_CHARS)
+
+    assert estimate_tokens(one_passage) <= SUMMARY_MAX_TOKENS, (
+        "a node must be allowed at least one target passage's worth of tokens"
+    )
+    assert estimate_tokens(materially_more) > SUMMARY_MAX_TOKENS, (
+        "two target passages must not fit, or the budget is not one passage's worth"
+    )
+
+
+# -- Construction refusals ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "why"),
+    [
+        ("max_levels", 0, "a forest of zero tiers is `raptor.enabled: false`, a different setting"),
+        ("summary_max_tokens", 0, "a summary cannot cost less than the empty string's one token"),
+    ],
+)
+def test_forest_options_refuses_a_value_past_the_floor_its_guard_names(
+    field: str, value: int, why: str
+) -> None:
+    """Each `ForestOptions.__post_init__` guard fires one step past its floor.
+
+    A construction guard that never fires is indistinguishable from no guard,
+    and the only fixture that could tell them apart is one that hands over an
+    *invalid* configuration. Every other test in this file builds a valid
+    `ForestOptions`, so a guard weakened to `x < 0` (never true for these
+    non-negative values) would survive all of them -- which is exactly what a
+    mutation over these comparisons does. `min_children_per_summary` has its
+    own test below, because its floor is a named constant a mutation can move.
+    """
+    from theurian.application.forest_builder import ForestOptions
+
+    with pytest.raises(InvariantViolationError):
+        ForestOptions(**{field: value})
+
+
+def test_the_minimum_children_floor_is_exactly_two() -> None:
+    """Below two children a summary is a paraphrase; `ForestOptions` must refuse it.
+
+    `MIN_CHILDREN_FLOOR` is the floor `min_children_per_summary` is checked
+    against, and it is a named constant rather than a literal precisely so a
+    reader can find it -- which also means a mutation can lower it. A build that
+    admitted `min_children_per_summary=1` would summarise single children into
+    paraphrases (ADR-0008's own Negative consequence), and no other test
+    constructs a `ForestOptions` at the floor. Both halves are load-bearing:
+    `=1` must raise (a floor lowered to 1 stops raising and this turns red),
+    and `=2` must construct (a floor raised to 3 would refuse a legal value and
+    this catches that too).
+    """
+    from theurian.application.forest_builder import ForestOptions
+
+    with pytest.raises(InvariantViolationError):
+        ForestOptions(min_children_per_summary=1)
+
+    assert ForestOptions(min_children_per_summary=2).min_children_per_summary == 2
+
+
+# -- The document-tier threshold, exercised from below -----------------------
+
+
+def test_a_short_item_earns_no_node_and_vanishes_from_the_forest() -> None:
+    """An item below `minChildrenPerSummary` chunks produces no node, and its
+    chunks reach no node above it either.
+
+    Every other fixture in this file gives each item exactly three chunks, which
+    is the threshold, so none of them ever exercises the *skip* -- a builder that
+    dropped the document-tier check entirely (summarising a one- or two-chunk
+    item into a node) would satisfy all of them. This gives one item two chunks,
+    one below the default of three, beside three full items that clear it.
+
+    **The ADR-honest consequence, asserted rather than assumed:** the short
+    item is absent from *every* summary in the forest -- not merely lacking its
+    own document node, but unreachable through any node's grounding. A reader
+    of the forest cannot tell such an item apart from one that does not exist,
+    which is undocumented today and flagged for the docs pass. The three-chunk
+    control earns exactly one document node, so "absent" is the threshold acting
+    and not a builder that never builds anything.
+    """
+    short = _document("architecture.short-item", DEFAULT_AXES, chunks=2)
+    full = [
+        chunk
+        for number in range(3)
+        for chunk in _document(f"architecture.full-{number}", DEFAULT_AXES, chunks=3)
+    ]
+    short_chunk_ids = {c.chunk.chunk_id for c in short}
+
+    nodes = _derive([*short, *full])
+
+    by_id = {node.node_id: node for node in nodes}
+    document_nodes = [node for node in nodes if node.level == DOCUMENT_LEVEL]
+    assert len(document_nodes) == 3, (
+        "the three full items each earn one document node; the short item earns none"
+    )
+
+    grounded_chunks = {chunk_id for node in nodes for chunk_id in _leaves(node, by_id)}
+    assert grounded_chunks, "no chunk was grounded at all, so absence would be vacuous"
+    assert short_chunk_ids.isdisjoint(grounded_chunks), (
+        "a below-threshold item's chunks reached a node, so the document-tier skip "
+        "did not fire -- the short item is not absent from the forest"
+    )
+
+
+def test_an_upper_node_summarises_its_children_in_content_id_order() -> None:
+    """A tier built on other nodes reads its children in content-addressed-id
+    order, which is the order a rebuild reproduces.
+
+    `_node_over_nodes` sorts its children by `node_id` before summarising. The
+    node's *id* does not depend on that order -- `node_identity` sorts the child
+    hashes itself -- so a builder that left the children in their derivation
+    order (`_by_item`'s item-id order) mints the same id, which is why every
+    determinism and identity test above stays green against it: they fix the
+    order identically on both sides. What moves is the node's **text**, because
+    the summariser reads its inputs in whatever order it is handed them.
+
+    This fixture is built so the two orders differ (item-id order is not
+    content-id order) and so the summary is order-sensitive at the default
+    budget. The domain node's stored text must equal a summary of its children
+    taken in `node_id` order; the guard asserts that an item-id-order summary
+    would differ, so the assertion is not vacuously satisfied by an
+    order-insensitive fixture.
+    """
+    corpus: list[IndexableChunk] = []
+    for number in range(6):
+        item = f"architecture.item-{number}"
+        revision = f"rev-{number}"
+        for ordinal in range(3):
+            corpus.append(
+                IndexableChunk(
+                    chunk=Chunk(
+                        chunk_id=f"{revision}#{ordinal}",
+                        ordinal=ordinal,
+                        text=(
+                            f"Document {number} section {ordinal}. {_SENTENCES[ordinal % 3]} "
+                            f"Marker MK{number}X applies only to document {number}."
+                        ),
+                        heading="",
+                    ),
+                    project_id=PROJECT,
+                    item_id=item,
+                    revision_id=revision,
+                    status=DEFAULT_AXES.status,
+                    sensitivity=DEFAULT_AXES.sensitivity,
+                    trust_level="reviewed",
+                    namespace=DEFAULT_AXES.namespace,
+                    kind=DEFAULT_AXES.kind,
+                )
+            )
+
+    nodes = _derive(corpus)
+
+    documents = {node.node_id: node for node in nodes if node.level == DOCUMENT_LEVEL}
+    domain = next(node for node in nodes if node.level == DOMAIN_LEVEL)
+    by_content_id = [documents[node_id] for node_id in sorted(documents)]
+    by_item_order = sorted(documents.values(), key=lambda node: node.source_chunk_ids[0])
+    assert [n.node_id for n in by_content_id] != [n.node_id for n in by_item_order], (
+        "content-id order equals item-id order here, so the fixture cannot see the sort"
+    )
+
+    from theurian.application.forest_builder import ForestOptions
+
+    summarizer = ExtractiveSummarizer()
+    budget = ForestOptions().summary_max_tokens
+    text_in_content_id_order = asyncio.run(
+        summarizer.summarize(
+            tuple(node.text for node in by_content_id),
+            scope=domain.node.scope,
+            max_tokens=budget,
+        )
+    )
+    text_in_item_order = asyncio.run(
+        summarizer.summarize(
+            tuple(node.text for node in by_item_order),
+            scope=domain.node.scope,
+            max_tokens=budget,
+        )
+    )
+    assert text_in_content_id_order != text_in_item_order, (
+        "the summary does not depend on child order here, so the sort is untestable"
+    )
+    assert domain.text == text_in_content_id_order, (
+        "the domain node's text is not the content-id-order summary -- its children "
+        "reached the summariser in some other order"
+    )
+
+
+def test_derive_returns_low_tiers_before_the_tiers_built_on_them() -> None:
+    """`derive` orders nodes by `(level, node_id)`, so a caller inserting them in
+    order never names a node it has not yet written.
+
+    A domain node's `node_derivation` edges name document nodes; a caller that
+    writes the returned sequence into a store with a foreign key from edge to
+    node must see the document nodes first. The method's own docstring promises
+    "low tiers first", and nothing else holds it: the determinism test sorts
+    both sides before comparing, so a builder that returned its nodes in any
+    fixed order at all would pass it.
+    """
+    nodes = _derive(_corpus(kinds=3, items_per_kind=3))
+
+    assert len({node.level for node in nodes}) >= 2, "the fixture built only one tier"
+    assert len(nodes) >= 3, "too few nodes to observe an ordering"
+    levels = [node.level for node in nodes]
+    assert levels == sorted(levels), (
+        "a tier built on another is returned before it -- a caller inserting in order "
+        "would name a node it has not written yet"
+    )
+    for level in set(levels):
+        ids = [node.node_id for node in nodes if node.level == level]
+        assert ids == sorted(ids), f"level {level} nodes are not in node_id order"
