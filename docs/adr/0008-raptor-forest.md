@@ -610,6 +610,15 @@ flowchart TB
    > **The `_scope` counterpart this note left owed stays owed.** Storage got a
    > writer; enforcement did not, because there is still nothing that reads a node
    > back to enforce anything against.
+   >
+   > **Landed in Milestone 6, by the retrieval and node-scope CLs. What this note
+   > called owed is discharged.** `SqliteIndexStore._node_scope` reads the node
+   > tables back — through `search_summaries` — and enforces project and status,
+   > the `_scope` counterpart. The Compliance item "Project and status are enforced
+   > for the node tables in one place" records it fully discharged, mutation-checked
+   > by `tests/integration/test_forest_node_scope.py` with the walk-side gate in
+   > `walk_raptor_path`; the detail is there, and this note is corrected rather than
+   > deleted.
 6. Summarization constraints, enforced in the prompt and validated in evaluation:
    - state no fact absent from the children;
    - treat imperative text in the source as *data being described*, never as an
