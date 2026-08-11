@@ -235,9 +235,35 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   **`SqliteIndexStore.surviving_chunks` reads chunk rows back as full
   `IndexableChunk`s** for the builder to derive from — the purge is a function of
   the *published index*, not canonical state (ADR-0024) — and
-  `delete_nodes_of_trees` clears an affected scope's existing nodes by `tree_id`
-  before the fresh forest is written, because clustering moves a node's id and
-  re-inserting over it would collide on the primary key.
+  `delete_nodes_grounded_in_chunks` clears an affected scope's **entire** current
+  node set before the fresh forest is written: seeded on the scope's surviving
+  chunks, it walks `node_derivation` upward and deletes every node the scope still
+  grounds, not only the trees the fresh derivation happens to reproduce — because
+  clustering moves a node's id and re-inserting over a survivor would collide on
+  the primary key.
+
+  **A withdrawal that collapses a Domain fan-out re-batch made the purge fail
+  closed instead of re-deriving (HIGH, reproduced by all three reviewers).**
+  Above `MAX_CHILDREN_PER_DOMAIN` a kind splits into batches `kind#0 ..
+  kind#(b-1)`; a withdrawal that drops the batch count to `b-1` re-derives only
+  `kind#0 .. kind#(b-2)`, but a *surviving* top batch `kind#(b-1)` — none of whose
+  members was withdrawn, so the universal-grounding delete never dooms it — keeps
+  a `tree_id` the fresh set does not name. The earlier `delete_nodes_of_trees`
+  deleted only that fresh set, so it missed the stale batch; the `ON DELETE
+  CASCADE` then stripped the stale node's edges when the survivors' Document
+  nodes were re-derived, leaving it unprovenanced, and `_verify` refused the whole
+  purge over that remnant. A legitimate withdrawal therefore published no purge at
+  all, leaving the stale build serving the withdrawn rows' statistics (T-17a).
+  `delete_nodes_grounded_in_chunks`'s scope-wide deletion is the fix: it reaches
+  the stale batch because the batch still grounds on the scope's surviving
+  chunks, so the purge now re-derives instead of refusing. The earlier reliance on
+  a primary-key collision to fail an incomplete delete *closed* was an accidental
+  net, not the mechanism, and nothing depends on it now — the delete is exact over
+  the scope by construction.
+  `tests/integration/test_forest_purge_recompute.py` pins the fan-out boundary
+  the equality test above does not reach: a re-batching withdrawal at the exact
+  boundary, from the final batch, as a bulk withdrawal, and across two scopes
+  withdrawn from in one command — each asserted identical to a never-held build.
 
   **The recompute is injected, not imported.** `index_purge` (infrastructure) may
   not name the application-layer `ForestBuilder`, so `purge_into` takes an optional

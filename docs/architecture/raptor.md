@@ -243,19 +243,30 @@ document is still indexed.
 **Withdrawal re-derives each affected tree, which is what ADR-0008 decision 9
 settles for.** After the delete of every ungrounded node, the purge re-derives
 each *scope that lost a row* whole — every tree in it, over the surviving chunks
-it reads back from the building file — and writes the fresh Domain and Catalog
-nodes in their place. Whole-scope re-derivation is coarser than decision 9's
-per-tree ancestor closure and subsumes it: an affected scope's unaffected trees
-re-derive byte-for-byte because derivation is deterministic, and a scope that lost
-nothing is never read. A purged build's forest then equals one built from a corpus that
-never held the withdrawn rows. Delete-only did not: deleting a node outright
-breaks that equality in the other direction, because the never-held corpus would
-have built a node from the children that survived, and content-addressing makes
-that node a different one than the old node minus a child.
+it reads back from the building file. Clearing the way for the fresh trees is
+`SqliteIndexStore.delete_nodes_grounded_in_chunks`, seeded on the scope's
+surviving chunks and walking `node_derivation` upward: it deletes the scope's
+*entire* current node set, not only the trees the fresh derivation happens to
+reproduce. That distinction is what a Domain fan-out re-batch needs — collapsing
+`kind#0 .. kind#(b-1)` to one fewer batch on a withdrawal leaves a surviving top
+batch the fresh set never names, and a delete keyed on the fresh trees alone
+misses it, so the purge fails closed rather than publishing. Whole-scope
+re-derivation is coarser than decision 9's per-tree ancestor closure and subsumes
+it: an affected scope's unaffected trees re-derive byte-for-byte because
+derivation is deterministic, and a scope that lost nothing is never read. A
+purged build's forest then equals one built from a corpus that never held the
+withdrawn rows, at the fan-out boundary included. Delete-only did not: deleting a
+node outright breaks that equality in the other direction, because the
+never-held corpus would have built a node from the children that survived, and
+content-addressing makes that node a different one than the old node minus a
+child.
 `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
 holds the equality over the node tables' full contents — node rows, derivation
-edges and node vectors — with a stale pre-purge control asserted different. It is
-the two-corpus shape that
+edges and node vectors — with a stale pre-purge control asserted different, and
+`tests/integration/test_forest_purge_recompute.py` holds it at the fan-out
+boundary specifically — a re-batching withdrawal at the exact boundary, from the
+final batch, as a bulk withdrawal, and across two scopes withdrawn from at once.
+It is the two-corpus shape that
 `test_index_purge.py::test_a_purged_build_answers_as_if_the_rows_were_never_indexed`
 holds for chunks, extended to the derived layer. The re-derivation is application
 policy (`ForestBuilder` and the summariser and embedder) injected into the
@@ -379,9 +390,12 @@ holds it with a recorder that sees what each call was charged. Carrier (b) —
 which children cluster together — is closed by the withdrawal purge's tree-level
 re-derivation and held by
 `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
-the only test that can vary the child set: removing a withheld document regroups
-the visible ones, and re-deriving each affected scope over the survivors is where
-that influence is removed.
+which varies the child set by removing a withheld document and regrouping the
+visible ones, and by
+`tests/integration/test_forest_purge_recompute.py`, which varies it at the one
+boundary the first does not reach — a withdrawal that re-batches a fanned-out
+Domain tier. Re-deriving each affected scope over the survivors is where that
+influence is removed, at both boundaries.
 
 ## Working with no model configured
 

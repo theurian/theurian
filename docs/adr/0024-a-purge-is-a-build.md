@@ -483,6 +483,31 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > are the *chunk* index and are untouched. Index schema v5 adds `chunks.kind`,
    > which the re-derivation reads to key a Domain tree; the schema-mismatch rebuild
    > (ADR-0022 point 3) is the whole migration, as at v4.
+   >
+   > **Amended in Milestone 6, by the fan-out re-batch fix. The scope-clearing
+   > delete this note describes was, until this fix, keyed on the fresh trees
+   > rather than on the scope, and a re-batched Domain fan-out (ADR-0008 decision
+   > 2's amendment) reached that gap.** A withdrawal that collapses a fan-out's
+   > batch count leaves a *surviving* top batch none of whose members was
+   > withdrawn, so the universal-grounding delete never dooms it, while the fresh
+   > derivation mints one fewer batch and never names that batch's `tree_id`.
+   > Deleting by the fresh tree ids missed it; the cascade then stripped its edges
+   > when the survivors' Document nodes were re-derived, and `_verify` refused the
+   > whole purge over the unprovenanced remnant. A legitimate withdrawal thus
+   > published no purge at all — not a doubled forest, but the residual this ADR
+   > already names above: nothing published, the stale build keeps serving, and
+   > `migrate apply` reports the failure. All three reviewers reproduced it.
+   >
+   > `SqliteIndexStore.delete_nodes_of_trees` is now
+   > `delete_nodes_grounded_in_chunks`, seeded on the scope's *surviving chunks*
+   > rather than the fresh trees and walking `node_derivation` upward, so it
+   > deletes the scope's entire current node set — stale re-batched batches
+   > included — rather than only the trees the fresh derivation happens to
+   > reproduce. The equality this ADR rests on now holds at the fan-out boundary
+   > too, for deterministic pure providers:
+   > `tests/integration/test_forest_purge_recompute.py` asserts a re-batching
+   > withdrawal, at the exact boundary and as a bulk withdrawal, publishes a
+   > forest identical to a never-held build, with the orphaned batch gone.
 
 ## Consequences
 
@@ -673,7 +698,11 @@ Landed by the change that implements this ADR:
   same equality as of the purge-recompute CL** (Milestone 6):
   `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
   extends it to the forest — node rows, derivation edges and node vectors — for
-  deterministic pure providers, per decision 8's amendment above.
+  deterministic pure providers, per decision 8's amendment above. That amendment's
+  fan-out re-batch follow-up closes the one boundary the equality did not reach at
+  first: `tests/integration/test_forest_purge_recompute.py` pins the same equality
+  where a withdrawal re-batches a fanned-out Domain tier, unqualified for
+  deterministic providers.
 - **A search does not tear on a `gc` unlink between its reads** — landed:
   `test_a_gc_unlink_between_a_requests_reads_does_not_tear_it` drives the real
   MCP path and forces the unlink between two of the request's index reads;

@@ -948,6 +948,34 @@ flowchart TB
 >    > is a later CL's rather than a dead one carried here. Index schema v5 adds
 >    > `chunks.kind`, which the re-derivation reads to key a Domain tree; see
 >    > decision 2's amendment.
+>    >
+>    > **Amended in Milestone 6, by the fan-out re-batch fix (HIGH, reproduced by
+>    > all three reviewers). The scope-clearing delete underneath "re-derives each
+>    > scope that lost a row whole" was keyed on the fresh trees, not on the
+>    > scope, and a Domain fan-out re-batch (decision 2's amendment) reached that
+>    > gap.** Above `MAX_CHILDREN_PER_DOMAIN` a kind splits into batches
+>    > `kind#0 .. kind#(b-1)`; a withdrawal that drops the batch count to `b-1`
+>    > re-derives only `kind#0 .. kind#(b-2)`, but a *surviving* top batch
+>    > `kind#(b-1)` — none of whose members was withdrawn, so the
+>    > universal-grounding delete never dooms it — keeps a `tree_id` the fresh set
+>    > does not name. The purge deleted only that fresh set, missed the stale
+>    > batch, and the `ON DELETE CASCADE` then stripped its edges when the
+>    > survivors' Document nodes were re-derived, leaving it unprovenanced;
+>    > `_verify` refused the whole purge over that remnant. A legitimate
+>    > withdrawal therefore published no purge at all, leaving the stale build
+>    > serving the withdrawn rows' statistics (T-17a).
+>    >
+>    > `SqliteIndexStore.delete_nodes_of_trees` is now
+>    > `delete_nodes_grounded_in_chunks`: seeded on the scope's surviving chunks
+>    > rather than the fresh trees, it walks `node_derivation` upward and deletes
+>    > the scope's *entire* current node set — stale re-batched batches included
+>    > — by construction rather than by naming the trees the derivation happens
+>    > to reproduce. The equality this decision names now holds at the fan-out
+>    > boundary too, for deterministic pure providers:
+>    > `tests/integration/test_forest_purge_recompute.py` asserts a re-batching
+>    > withdrawal — at the exact boundary, from the final batch, as a bulk
+>    > withdrawal, and across two scopes withdrawn from at once — publishes a
+>    > forest identical to a never-held build, with the orphaned batch gone.
 >
 
 > 10. **`raptor.enabled` defaults to `false` in the first release that ships the
@@ -1646,6 +1674,16 @@ the decision it belongs to states a property that is otherwise only an argument:
   > This also closes decision 6's carrier (b): the test is the one that lets the
   > child set vary, and a re-derivation over the survivors is where a withheld
   > document's influence on *which* children cluster is removed.
+  >
+  > **Amended in Milestone 6, by the fan-out re-batch fix. "The mechanism is
+  > re-derivation of each affected scope from the surviving chunks" was true of
+  > the fresh insert and not yet of the delete that made room for it.** The
+  > delete cleared only the fresh trees, so a re-batched Domain fan-out's
+  > surviving top batch — a `tree_id` the fresh set does not name — was left
+  > standing and then unprovenanced by the cascade, failing the purge closed
+  > rather than answering the equality wrong. Decision 9's amendment records the
+  > fix; `tests/integration/test_forest_purge_recompute.py` pins the equality at
+  > that boundary specifically, which the test named above does not reach.
 - **A forest does not move leaf ranking** — what decision 5's "equal by
   construction" claims. Same query, same corpus, two builds: one with the forest
   derived and one without, with traversal off on the forest side, or else
@@ -1768,11 +1806,17 @@ the decision it belongs to states a property that is otherwise only an argument:
   > closed.** It was owed to decision 9's tree-level two-corpus test, and that test
   > exists —
   > `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
-  > the item above. It is the only test that varies *which* children a node
+  > the item above. It is the first test that varies *which* children a node
   > clusters, which is what carrier (b) is, and the re-derivation over the
   > survivors is where a withheld document's influence on that membership is
   > removed. Carriers (a) and (c) here plus (b) there close the three the class
   > has.
+  >
+  > **Amended in Milestone 6, by the fan-out re-batch fix.**
+  > `tests/integration/test_forest_purge_recompute.py` joins it as a second test
+  > that varies membership, at the one boundary the first did not reach — a
+  > withdrawal that re-batches a fanned-out Domain tier — closed for the reason
+  > the item above's amendment records.
 - **Project and status are enforced for the node tables in one place** — what
   decision 5's amendment owes. A single predicate builder for node reads, the way
   `_scope` is for chunk reads, with the cross-project and cross-status isolation
