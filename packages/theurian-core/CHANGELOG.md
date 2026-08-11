@@ -84,7 +84,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   could cost more than the caller allowed — four four-character sentences at a
   budget of four came back costing five, and an exhaustive sweep found Japanese
   overshoots at budgets 1, 65, 69 and 98. Every sentence after the first is now
-  charged `estimate_tokens(" " + text)`, which by
+  charged the single space followed by the sentence, **priced as one string
+  rather than as a separately-rounded separator** — which by
   `ceil(a) + ceil(b) >= ceil(a + b)` is never less than what appending it adds,
   and `k` sentences carry `k - 1` separators however they are ordered — so
   charging in score order and joining in document order price the same string.
@@ -107,8 +108,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **The fallback floor changed.** When no whole sentence fits `max_tokens`, the
   output is the longest character prefix of the first sentence (by document
-  position) whose cost still fits — never anything but a verbatim prefix, and
-  no longer a character costing more than the budget.
+  position) whose cost still fits, with trailing whitespace removed — never
+  anything but a verbatim prefix, and no longer a character costing more than
+  the budget.
   `estimate_tokens` is non-decreasing in text length, so the longest fitting
   prefix is well defined and a binary search finds it, over a range bounded by
   the budget rather than by the input. That makes the output **empty** in
@@ -123,14 +125,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **The staleness key hashes a version, and is pinned by a literal.**
   `prompt_hash` is `sha256(SEMANTICS_VERSION)`, over the compact constant
-  `extractive-sentence-selection/1`, rather than over `ALGORITHM_DESCRIPTION`'s
+  `extractive-sentence-selection/2`, rather than over `ALGORITHM_DESCRIPTION`'s
   prose. Rewording the review-facing description no longer invalidates every
   stored summary node; a change that would pick different sentences for the same
   children still must bump the version, and `MODEL_REVISION` is derived from
   that same constant rather than kept as a second literal to forget.
   `test_prompt_hash_is_pinned_to_the_literal_sha256_of_semantics_version` pins
   it to a hard-coded digest, following 3c5bd6d: a value compared against its own
-  derivation can never fail.
+  derivation can never fail. The port's contract moved with it:
+  `SummarizationProvider.prompt_hash` said "hash of the summarization prompt",
+  which is false for the only implementation that exists, and now splits by
+  whether an implementation prompts at all — the prompt for one that does, the
+  identifier of its selection semantics for one that does not.
+
+  **The version ships at `/2`, and the mechanism has been run once already.**
+  The truncation fallback cuts wherever the budget runs out, which is as often
+  mid-space as mid-word, so it could hand back a prefix ending in a space: a
+  character that renders as nothing, breaks equality against the same prefix
+  produced any other way, and was paid for out of the caller's budget. It
+  right-strips now, which changes what the same children summarise to and is
+  therefore a semantics change, so it took the whole mechanism with it —
+  `SEMANTICS_VERSION` to `/2`, `MODEL_REVISION` to `"2"` by derivation, and the
+  pinned digest re-pinned by hand. Measured over the suite's own sweeps: the
+  strip moves the output at **1 of 56 English budgets** (`"S1 sentence "` →
+  `"S1 sentence"` at budget 3) and **none of the 116 Japanese ones**, since CJK
+  sentences carry no spaces to strip. It is deliberately run now rather than
+  deferred: nothing is persisted yet, so this bump costs a re-pin and no
+  rebuild, and every later one invalidates a forest.
 
   **Retracted from this entry as first written**, because it claimed a guarantee
   no test held: "a change to the algorithm that forgot to bump
@@ -144,6 +165,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   that forgets to bump the constant is still invisible to the suite, and is
   recorded that way rather than papered over, because no test distinguishes a
   deliberate scoring change from an accidental one.
+
+  **The blind spot reaches past this module, and two of its three carriers are
+  closed here.** Selection is priced by `estimate_tokens`, so
+  `domain.ranking`'s charging model decides which sentences survive a budget as
+  directly as the selection code does — and none of it is hashed. Measured over
+  the same sweeps with `prompt_hash` unmoved throughout: raising
+  characters-per-token from 4 to 5 changes the output at **41 of 56 English
+  budgets** and none of the 116 Japanese ones; raising the dense-script rate
+  from 1.5 to 2.0 changes it at **101 of 116 Japanese budgets** and none of the
+  56 English ones. A node summarised under either would be silently unrebuilt,
+  because nothing in its `summary_prompt_hash` moved. Both rates are pinned now
+  by `test_the_charging_model_selection_depends_on_is_pinned_too`, whose
+  docstring says in as many words that changing them is a `SEMANTICS_VERSION`
+  bump here; the constant's own note names the charging model as
+  bump-triggering, and `domain.ranking` carries the cross-reference back.
+
+  **The third carrier is deliberately unpinned, and named rather than left
+  silent.** `_DENSE_SCRIPT_RANGES` decides *which* characters are charged at
+  the dense rate, so adding a script to it moves selection exactly as changing
+  the rates does. Pinning a tuple of seven ranges would go red on every
+  legitimate script addition as loudly as on a semantics-changing one, so it is
+  left to the note beside the constant and to that test's own docstring — both
+  of which state that this carrier is uncovered.
 
   **`model_id` is `theurian-extractive-sentences`**, namespaced the way
   `HashingEmbedding`'s `theurian-hashed-char-ngram` is and for the same reason:
@@ -163,7 +207,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Japanese. Scoring makes two passes and re-derives each sentence's trigrams
   rather than holding every sentence's at once, which is what keeps those heap
   figures small — 53.9 MB and 78.0 MB respectively for the one-pass variant —
-  for about 7% more CPU on the whole call.
+  for about 7% more CPU on the whole call. The whole-call figure hides where it
+  lands: inside the scoring function itself the second pass costs 41% to 51%
+  more, depending on the corpus.
 
   **Determinism** is pinned in-process against freshly built string objects at
   a restrictive budget, and **across processes by the suite itself**:
