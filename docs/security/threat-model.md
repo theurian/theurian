@@ -2744,11 +2744,36 @@ value equals what the same query would return had the withheld documents never
 been indexed. That is true of everything the gate controls and false of what the
 statistics control.
 
-**Confined to the two `bm25` retrievers.** `search_lexical` and
-`search_substring`'s trigram-lookup branch both `ORDER BY bm25(...)`, so both
-carry it. The scan below the trigram floor ranks by `matched_characters` —
-occurrences counted inside each row — and the dense retriever ranks by cosine
-against one vector. Neither reads a collection statistic, so neither is affected.
+**Not confined to the two leaf `bm25` retrievers any more — the retrieval CL
+added two node surfaces, four in all.**
+`rg -n "bm25\(" packages/theurian-core/src/theurian/infrastructure/sqlite/*.py`
+returns six lines, four of them scoring surfaces: `bm25(chunks_fts)`
+(`index_store.py:1060`, `search_lexical`) and `bm25(chunks_trigram)`
+(`index_store.py:1142`, `search_substring`'s trigram-lookup branch) over the leaf
+tables, and `bm25(nodes_fts)` and `bm25(nodes_trigram)`
+(`index_forest.py:103-104`, `summary_statement`), which score summary *nodes* so a
+routed leaf inherits the best node score that reached it. The other two lines are
+`_bm25` (`index_store.py:1607` and its docstring at `:1610`), a Python parser of
+the returned score, not a scoring surface. The demonstrated flip above is
+over the two leaf surfaces; the two node surfaces are the **same T-17a class by
+the same FTS5 mechanism** — a withheld node in `nodes_fts` reweights the `idf` of
+the visible nodes it is scored against, moving which node routes and the score a
+leaf inherits — reasoned from the mechanism, not separately measured. They are
+closed by the **same change**: the withdrawal→purge trigger re-derives the forest
+over the surviving rows, so neither node index holds a withdrawn node to skew a
+statistic
+(`test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
+and `test_forest_builder.py::test_a_purged_forest_leaves_no_residue_in_a_node_text_index`
+over both node indexes through `fts5vocab`). And they carry the **same recorded
+residual, not a new shipped-default channel**: a default `theurian index build
+--raptor` derives the forest over `may_surface` rows and writes only approved
+nodes, so a *draft* node reaches `nodes_fts` at all only under an
+`--include-unapproved` build — an operator build-time flag — or the in-flight
+window this entry already records.
+
+The scan below the trigram floor ranks by `matched_characters` — occurrences
+counted inside each row — and the dense retriever ranks by cosine against one
+vector. Neither reads a collection statistic, so neither is affected.
 
 **The suite was green on this, and that was a fact about the fixtures rather than
 about the property.** `test_a_withheld_document_changes_nothing_a_caller_can_see`

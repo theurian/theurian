@@ -1933,3 +1933,37 @@ the decision it belongs to states a property that is otherwise only an argument:
   > is now writable against the shipped traversal, and stays owed with the CL that
   > gives that traversal its own single-enforcement-point review (Milestone 6
   > close-out).
+  >
+  > **Landed in Milestone 6, by the node-scope isolation CL. The mutation-checked
+  > isolation test this item was owed to now exists, so it is discharged.** Two
+  > direct-`INSERT` tests build the shape the real builder cannot — a summary node
+  > whose own `status`/`project_id` disagrees with the one leaf its
+  > `node_derivation` edge names, so `_scope` has nothing to withhold on that leaf
+  > and only `_node_scope`'s own predicate decides whether the query reaches it:
+  > `tests/integration/test_forest_node_scope.py::test_search_summaries_does_not_descend_a_draft_status_node_by_default`
+  > and `::test_search_summaries_does_not_descend_a_node_from_another_project`. The
+  > mutation is load-bearing, one clause per axis: neutralising `_node_scope`'s
+  > status clause reddens the draft test alone (the leaked leaf surfaces:
+  > `['approved-leaf#0', 'leaked-leaf#0']`), and neutralising its project clause
+  > reddens the cross-project test alone. **The amendment above got the reasoning
+  > wrong, and it is corrected rather than deleted.** "It would not, as things
+  > stand" held only of the `test_forest_retrieval.py` fixtures, which the real
+  > builder produces with a node's scope equal to its children's — there `_scope`
+  > withholds the draft whatever the node match does, so `_node_scope` cannot be
+  > isolated. These two tests break that equality on purpose, which is exactly what
+  > isolates the node gate from the leaf gate and lets a `_node_scope` mutation go
+  > RED.
+  >
+  > **The walk-side gate landed with it, by the walk scope-gate CL.**
+  > `walk_raptor_path` now filters its own final `nodes` lookup on the surfaced
+  > leaf's `project_id` and `status` — read off the leaf's own chunk row, not
+  > hardcoded `approved`, so an `include_unapproved` query keeps its draft leaf's
+  > draft ancestors — a second, independent gate that drops a scope-disagreeing
+  > ancestor from a `raptorPath` even were decision 1's construction-time invariant
+  > ever violated (defense in depth, not a reliance on it).
+  > `tests/integration/test_forest_store_retrieval.py::test_an_approved_leafs_raptor_path_excludes_a_draft_scope_ancestor`
+  > builds an approved leaf under a *draft* Domain node holding a secret and asserts
+  > that the draft ancestor's title, and the secret in it, never ride out on the
+  > path. Both enforcement points the forest reads through — the node match in
+  > `search_summaries` and the walk in `walk_raptor_path` — now carry their own
+  > mutation-checked isolation test, so this item is fully discharged.
