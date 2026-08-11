@@ -172,11 +172,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final, final
+from typing import Any, Final, final, override
 
 from theurian.application.visibility import CanonicalVisibility, Visibility
 from theurian.domain.context import RequestContext
@@ -386,10 +386,62 @@ class SearchOutcome:
     #: longer knows which round of retrieval was the last one.
     passages: Mapping[str, str] = field(default_factory=dict)
     #: Revision id to its forest ancestry, catalog root to leaf (ADR-0008 dec. 8).
-    #: Fetched here for the same reason as ``passages`` and gated the same way --
-    #: only cleared candidates are walked -- so a withheld leaf's ancestor titles
-    #: never enter this map. Empty over a chunk-only build.
+    #: Gated the same way as ``passages`` -- only a cleared candidate's revision
+    #: is ever a key here, so a withheld leaf's ancestor titles never enter this
+    #: map -- but not eagerly walked: :class:`_LazyRaptorPaths` walks a revision
+    #: only the first time it is read, so it can be built over every candidate
+    #: here, though :meth:`ResultGate._surfaced` -- the only reader -- asks for
+    #: at most ``limit`` of them. Empty over a chunk-only build.
     raptor_paths: Mapping[str, tuple[RaptorPathSegment, ...]] = field(default_factory=dict)
+
+
+@final
+class _LazyRaptorPaths(Mapping[str, tuple[RaptorPathSegment, ...]]):
+    """A fused candidate's forest ancestry, walked only the first time it is read.
+
+    :meth:`RetrievalService.search` has no ``limit`` to truncate its candidates
+    by -- that bound belongs to :class:`ResultRequest`, built later, over in
+    :class:`ResultGate` (:class:`SearchOutcome`'s own docstring) -- so it cannot
+    restrict *which* candidates' ancestry it walks the way
+    :meth:`ResultGate._surfaced` restricts which candidates' revisions it fetches
+    from the canonical store. Deferring the walk to first read gets the same
+    restriction without the bound: :meth:`ResultGate._surfaced` only ever calls
+    ``.get(candidate.revision_id, ())`` for ``outcome.candidates[:limit]``, so a
+    revision ranked below ``limit`` is never asked for and its ancestry, five
+    unbatched queries a walk, is never run. Every key this can answer already
+    cleared :class:`~theurian.application.visibility.Visibility` before this was
+    built (:meth:`RetrievalService._raptor_paths`), so laziness changes nothing
+    about which revisions this may walk, only how many of the visible ones it
+    actually does. Memoized, so a document contributing two chunks still pays
+    for one walk.
+    """
+
+    def __init__(self, index: IndexStore, revision_ids: Sequence[str], *, project_id: str) -> None:
+        self._index = index
+        self._project_id = project_id
+        # De-duplicated, order-preserving: a document contributing two candidate
+        # chunks names its revision twice, and `Mapping.__len__`/`__iter__` must
+        # report the same key once for both, not walk it twice either.
+        self._revision_ids: tuple[str, ...] = tuple(dict.fromkeys(revision_ids))
+        self._cache: dict[str, tuple[RaptorPathSegment, ...]] = {}
+
+    @override
+    def __getitem__(self, revision_id: str) -> tuple[RaptorPathSegment, ...]:
+        if revision_id not in self._cache:
+            if revision_id not in self._revision_ids:
+                raise KeyError(revision_id)
+            self._cache[revision_id] = self._index.raptor_path(
+                revision_id, project_id=self._project_id
+            )
+        return self._cache[revision_id]
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._revision_ids)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._revision_ids)
 
 
 @final
@@ -478,26 +530,33 @@ class RetrievalService:
 
     def _raptor_paths(
         self, candidates: Sequence[Fused], *, project_id: str
-    ) -> dict[str, tuple[RaptorPathSegment, ...]]:
+    ) -> Mapping[str, tuple[RaptorPathSegment, ...]]:
         """The forest ancestry of each candidate's revision, catalog root to leaf.
 
-        Fetched here beside :meth:`~theurian.domain.ports.index_store.IndexStore.chunk_texts`,
-        and for the same reason: both are per-candidate index reads the shaper
-        would otherwise have to make after it has stopped knowing which retrieval
-        round was the last. Every candidate here has already cleared the visibility
-        gate in :meth:`_visible_ranking`, so a path is built only for a leaf the
-        caller may read -- a withheld leaf never reaches this list, so its
-        ancestors' titles are never walked (SEC-13, T-15). Keyed by revision so a
-        document contributing two chunks pays for one walk, and empty over a
-        chunk-only build where every revision has no forest above it.
+        Named beside :meth:`~theurian.domain.ports.index_store.IndexStore.chunk_texts`
+        for the same reason -- both are per-candidate index reads the shaper would
+        otherwise have to make after it has stopped knowing which retrieval round
+        was the last -- but not fetched the way that one is. ``chunk_texts`` is one
+        batched read over every candidate; a walk is five unbatched queries per
+        revision (:mod:`~theurian.infrastructure.sqlite.index_forest`), and
+        :meth:`ResultGate._surfaced` -- the only reader of the map this returns --
+        cuts ``candidates`` to ``limit`` before it reads a single entry. This has
+        no ``limit`` to cut by (:class:`SearchOutcome`'s docstring), so
+        :class:`_LazyRaptorPaths` defers each walk to that first read instead,
+        which restricts it to the same revisions truncation would have.
+
+        Every candidate here has already cleared the visibility gate in
+        :meth:`_visible_ranking`, so a path is built only for a leaf the caller may
+        read -- a withheld leaf never reaches this list, so its ancestors' titles
+        are never walked (SEC-13, T-15) -- and that holds independently of the
+        deferral above, which only changes when a cleared revision's walk runs,
+        never which revisions are cleared to walk at all.
         """
-        paths: dict[str, tuple[RaptorPathSegment, ...]] = {}
-        for candidate in candidates:
-            if candidate.revision_id not in paths:
-                paths[candidate.revision_id] = self._index.raptor_path(
-                    candidate.revision_id, project_id=project_id
-                )
-        return paths
+        return _LazyRaptorPaths(
+            self._index,
+            [candidate.revision_id for candidate in candidates],
+            project_id=project_id,
+        )
 
     @staticmethod
     def _visible_ranking(

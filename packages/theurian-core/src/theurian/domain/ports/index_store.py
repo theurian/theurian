@@ -289,9 +289,13 @@ class IndexStore(Protocol):
         decision 1), so every ancestor of a cleared leaf is in that leaf's own
         scope, and a title carries no content from a scope the leaf is not in. A
         withheld leaf surfaces nothing and so has no path; its ancestors' titles
-        never reach the wire. ``project_id``-scoped like every by-id read here
-        (SEC-13): a build is single-project, and requiring the id keeps this from
-        becoming an unscoped read the day a second caller wants it.
+        never reach the wire. The walk genuinely filters on the leaf's own
+        ``project_id`` and ``status`` too (SEC-13) -- not only the parameter this
+        signature takes, but a predicate the ancestor-node reads themselves apply
+        (:func:`~theurian.infrastructure.sqlite.index_forest.walk_raptor_path`),
+        so a scope-disagreeing ancestor is dropped even were the construction-time
+        invariant above ever violated, a defense in depth this docstring
+        previously did not claim.
         """
         ...
 

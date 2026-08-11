@@ -27,11 +27,16 @@ title, must never widen what a caller may read:
   (:meth:`~theurian.application.retrieval_service.ResultGate._surfaced`), and a
   node's children share its six-component scope by construction (ADR-0008
   decision 1, :class:`~theurian.domain.raptor.SummaryNode`), so every ancestor of
-  a cleared leaf is in that leaf's own scope. An ancestor title therefore carries
-  no content from a scope the leaf is not in, and a *withheld* leaf contributes
-  no result and so no path -- its ancestors' titles never reach the wire. The
-  title's build-time staleness is the recorded T-17a/#130 residual, the same one
-  every excerpt carries, not a new channel.
+  a cleared leaf is in that leaf's own scope. That invariant is what the domain
+  layer enforces at construction, not a promise this file could rely on alone
+  against a hand-edited or corrupted file, so the walk's own ``nodes`` lookup
+  filters on the leaf's project and status too -- a second, independent gate a
+  scope-disagreeing ancestor cannot clear even if the invariant above were ever
+  violated. An ancestor title therefore carries no content from a scope the leaf
+  is not in, and a *withheld* leaf contributes no result and so no path -- its
+  ancestors' titles never reach the wire. The title's build-time staleness is the
+  recorded T-17a/#130 residual, the same one every excerpt carries, not a new
+  channel.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Final
 
+from theurian.domain.raptor import MAX_LEVEL
 from theurian.domain.retrieval import RaptorPathSegment, excerpt
 
 #: Route a query to leaves through the forest, in one statement.
@@ -142,22 +148,39 @@ def walk_raptor_path(
 
     A revision's chunks all belong to one Document node in a well-formed forest;
     the walk anchors there and climbs ``source_node_id`` until a node has no
-    parent. A revision no forest was derived from -- a chunk-only build, or a leaf
-    whose scope never cleared a tier's ``min_children`` floor -- has no Document
-    node, so this returns ``()`` and the caller emits no ``raptorPath``. A node id
-    read from ``node_derivation`` references ``nodes`` under a foreign key, so the
-    final lookup finds every id; the membership guard drops one only if the file
-    is inconsistent, which fails towards a shorter path rather than a crash.
+    parent, capped at :data:`~theurian.domain.raptor.MAX_LEVEL` steps -- the
+    deepest a well-formed forest goes, so a cycle in a tampered file cannot spin
+    this loop forever; it just stops climbing, which is the same "fails towards a
+    shorter path" the membership guard below already promises for a different
+    kind of inconsistency. A revision no forest was derived from -- a chunk-only
+    build, or a leaf whose scope never cleared a tier's ``min_children`` floor --
+    has no Document node, so this returns ``()`` and the caller emits no
+    ``raptorPath``.
+
+    The final ``nodes`` lookup is scoped to the leaf's own ``project_id`` and
+    ``status`` -- read off the same chunk row the walk anchors from, never a
+    hardcoded ``approved``, so an ``include_unapproved`` caller's draft leaf keeps
+    its (also draft) ancestors. A node id read from ``node_derivation``
+    references ``nodes`` under a foreign key, so *finding* the row is never in
+    doubt; the membership guard drops one whose scope disagrees with the leaf's,
+    the defense in depth the module docstring describes, or whose file is simply
+    inconsistent -- both fail towards a shorter path rather than a crash or a
+    leaked title.
     """
-    chunk_ids = [
-        str(row["chunk_id"])
-        for row in connection.execute(
-            "SELECT chunk_id FROM chunks WHERE project_id = ? AND revision_id = ?",
+    leaf_rows = list(
+        connection.execute(
+            "SELECT chunk_id, status FROM chunks WHERE project_id = ? AND revision_id = ?",
             (project_id, revision_id),
         )
-    ]
-    if not chunk_ids:
+    )
+    if not leaf_rows:
         return ()
+    # Every chunk of one revision is indexed from the same `IndexableChunk` call
+    # and so carries the same `status` (`SqliteIndexStore.add_chunks`) -- reading
+    # it off the first row is not an assumption this query makes, only one it
+    # does not need to re-derive.
+    leaf_status = str(leaf_rows[0]["status"])
+    chunk_ids = [str(row["chunk_id"]) for row in leaf_rows]
     placeholders = ",".join("?" * len(chunk_ids))
     document = connection.execute(
         f"SELECT DISTINCT node_id FROM node_derivation "  # noqa: S608 - placeholders only
@@ -168,7 +191,7 @@ def walk_raptor_path(
         return ()
 
     leaf_to_root: list[str] = [str(document["node_id"])]
-    while True:
+    for _ in range(MAX_LEVEL - 1):
         parent = connection.execute(
             "SELECT node_id FROM node_derivation WHERE source_node_id = ? ORDER BY node_id",
             (leaf_to_root[-1],),
@@ -182,8 +205,8 @@ def walk_raptor_path(
         str(row["node_id"]): row
         for row in connection.execute(
             f"SELECT node_id, level, text FROM nodes "  # noqa: S608 - placeholders only
-            f"WHERE node_id IN ({node_placeholders})",
-            leaf_to_root,
+            f"WHERE node_id IN ({node_placeholders}) AND project_id = ? AND status = ?",
+            [*leaf_to_root, project_id, leaf_status],
         )
     }
     return tuple(
