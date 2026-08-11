@@ -1506,15 +1506,21 @@ into a system-role message, is still unbuilt, and now for one reason rather than
 two: the one `SummarizationProvider` adapter `infrastructure/raptor/` holds is
 extractive and builds no prompt at all, so there is no prompt to delimit
 anything in. It is no longer uncalled — `theurian index build --raptor` runs it
-over every node, and its output is stored in the `nodes` table. That output
-reaches no answer path: every retriever names `chunks`, nothing traverses a node,
-and a summary's text is therefore indexed and never returned. The interim
-residual is that the only untrusted content a result carries is the source
-excerpt, already labelled by the triple above. What comes due with the retrieval
-CL is that a summary is *selected source sentences* — the extractive default
-copies them verbatim — so "ignore previous instructions" survives summarization
-unchanged, and node-derived text has to carry the same triple as a leaf excerpt
-the moment any of it is published (#115).
+over every node, and its output is stored in the `nodes` table. As of the
+retrieval CL that output does reach an answer path: `search_summaries` traverses
+summary nodes, and a surfaced leaf's `raptorPath.title` is a summary's text on the
+wire. Because the extractive default copies source sentences verbatim, "ignore
+previous instructions" survives summarization unchanged and can appear in a
+`title` — so the requirement this entry states is met the way it is for a leaf
+excerpt: node-derived text rides inside a result that carries the trust triple.
+`mcp.results.result_payload` splats `contentClassification: untrusted-knowledge`,
+`mayContainInstructions: true`, `executable: false` onto every result — the
+`raptorPath` among its fields — and `retrieval-result.schema.json` documents each
+segment's `title` as the summariser's output, untrusted content under the same
+`mayContainInstructions` caveat as the body, not a curated label. What is still
+unbuilt is the delimited-untrusted-region step above: the extractive adapter
+builds no prompt, so there is nothing to delimit, and that step comes due with the
+first abstractive adapter (#115).
 
 > **Corrected in Milestone 5, review round 8. This entry named the wrong
 > enforcement mechanism.** It said "`executable` cannot be set true — the type
@@ -1597,18 +1603,33 @@ clusterer reaching across a scope boundary produces — which is why the groupin
 itself is attacked directly by
 `tests/unit/test_forest_derivation.py::test_a_node_never_mixes_two_statuses_under_one_namespace_and_kind`.
 
-**Summaries exist now, so the interim residual is restated rather than kept.**
-`theurian index build --raptor` derives the forest and writes node rows carrying
-summary text; a build without the flag writes zero node rows, and both config
-surfaces ship the forest off (ADR-0008 decision 10). The residual is no longer
-"no summary is generated, so there is nothing to leak". It is that a summary node
-exists in the index and **no path reads one into a response**: `search_lexical`,
-`search_substring` and `search_dense` each name `chunks` in their SQL,
-`system.capabilities` reports `raptor: false`, and `raptorPath` is emitted by
-nothing — `domain/retrieval.py` declares the field, `mcp/results.py` builds every
-result payload and has no such key, and no schema in `schemas/` names it. This
-control stops being latent and starts being load-bearing at the retrieval CL,
-which is where a node's text can first reach a caller.
+**A node's text reaches a caller now, so the interim residual is restated rather
+than kept.** `theurian index build --raptor` derives the forest and writes node
+rows carrying summary text; a build without the flag writes zero node rows, and
+both config surfaces ship the forest off (ADR-0008 decision 10). The residual is
+no longer "a summary node exists in the index and no path reads one into a
+response" — the retrieval CL made that path (ADR-0008 decision 8's landed note).
+A node's text now reaches a caller in exactly one shape: `raptorPath.title`, a
+surfaced leaf's summary ancestry, `excerpt`-bounded, catalog root to leaf. It is
+emitted **only for a leaf that cleared the same two-layer gate every result
+clears** — the `_scope` Project/status filter in the retriever and `_may_surface`
+re-clearance against the canonical store — and the node match that routes to that
+leaf is itself pre-filtered by `_node_scope`, so a draft-scope summary is not even
+traversed on a default query. A surfaced leaf's ancestor summary nodes share its
+six-component scope by construction (uniform status and sensitivity within a tree,
+ADR-0008 decision 1), so a `title` carries no content from a scope the caller's
+leaf is not in; and a withheld leaf contributes no result and no `raptorPath`, so
+its ancestor titles never reach the wire. Verified end to end: a draft reachable
+through its own summary node by `rotationx` is absent from a default query, and
+neither that routing token nor its body-only `zephyrsecret` appears in any
+response, and its summary's title appears in no approved leaf's `raptorPath`
+(`test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf`,
+`test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path`,
+`test_the_same_query_with_and_without_drafts_differs_only_by_the_draft`). What
+remains is the residual every excerpt already carries: a `title` is build-time
+index text, stale against the canonical store between builds — the T-17a/#130
+residual (T-17a's order and excerpt movement, #130's same-revision content
+drift) — not a new channel.
 
 Withdrawal already reaches the forest, and Milestone 6's builder was the first
 thing to hand that traversal a graph it did not write itself: a purge deletes
@@ -1625,9 +1646,11 @@ purged build identical to a never-held one across node rows, derivation edges an
 node vectors, with a stale control asserted different. That closes the forest
 counterpart of the chunk-level T-17a residual for deterministic pure providers
 (the extractive default); a non-deterministic provider's delete-and-mark-stale
-fallback is recorded and built by nothing. This does not publish any node —
-nothing node-derived reaches a response, per the paragraph above — so it withdraws
-a stale forest's influence rather than opening a read path.
+fallback is recorded and built by nothing. The purge itself opens no read path —
+the retrieval CL does that, above — but it is what keeps that path honest across a
+withdrawal: a `raptorPath.title` is drawn from a `nodes` row, and re-deriving the
+forest over the surviving rows removes a withdrawn row's influence from the node
+text a later title could quote.
 
 #### T-17 — Search accounting is a truth oracle for withheld content (Information disclosure, **Critical**)
 
