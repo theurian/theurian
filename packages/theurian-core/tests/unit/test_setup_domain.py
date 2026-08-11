@@ -163,7 +163,7 @@ def test_a_satisfied_step_contributes_no_paths() -> None:
     [
         (SetupState.CONVERGED, True),
         (SetupState.DEGRADED, True),
-        (SetupState.ROLLED_BACK, False),
+        (SetupState.HALTED, False),
         (SetupState.ABORTED, False),
     ],
 )

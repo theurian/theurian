@@ -220,13 +220,13 @@ class SetupService:
 
         if failed_critically:
             # Nothing is undone. Every apply here is a create-or-tighten, and the
-            # journal records what was done -- so the honest report is "this is
-            # where it stopped", not a rollback that deletes a token another
-            # session may already be using (§6.4).
+            # journal records what was done -- so the honest report is HALTED,
+            # "this is where it stopped", not a rollback that deletes a token
+            # another session may already be using (§6.4).
             return SetupReport(
-                state=SetupState.ROLLED_BACK,
+                state=SetupState.HALTED,
                 steps=tuple(applied),
-                changed_paths=tuple(changed),
+                changed_paths=_unique(changed),
                 warnings=tuple(warnings),
                 serena_detected=self._context.mcp_config.serena_detected(),
             )
@@ -259,7 +259,7 @@ class SetupService:
         return SetupReport(
             state=state,
             steps=final_steps,
-            changed_paths=tuple(changed),
+            changed_paths=_unique(changed),
             warnings=tuple(warnings),
             serena_detected=self._context.mcp_config.serena_detected(),
         )
@@ -275,6 +275,17 @@ class SetupService:
                 handle.write(json.dumps(entry, sort_keys=True) + "\n")
         except OSError:  # pragma: no cover - defensive
             return
+
+
+def _unique(paths: Iterable[str]) -> tuple[str, ...]:
+    """Order-preserving de-duplication for a report's ``changed_paths``.
+
+    The TOKEN and TOKEN_STORAGE steps both name ``auth/mcp-token``, so accumulating
+    each applied step's ``paths`` lists it twice in what an operator reads after a
+    run. A ``dict`` collapses repeats while keeping first-seen order -- the same
+    mechanism :attr:`SetupPlan.paths` uses for the analogous aggregate.
+    """
+    return tuple(dict.fromkeys(paths))
 
 
 def _blocking_conflicts(plan: SetupPlan) -> tuple[SetupStep, ...]:

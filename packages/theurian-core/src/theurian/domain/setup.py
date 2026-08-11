@@ -93,7 +93,12 @@ class SetupState(StrEnum):
     #: Success with warnings, not a failure. A missing optional integration must
     #: not stop local knowledge from working.
     DEGRADED = "degraded"
-    ROLLED_BACK = "rolled-back"
+    #: A critical step failed and the run stopped where it was. Nothing is
+    #: undone: every apply is a create-or-tighten and the journal is append-only
+    #: with no inverse action to replay (§6.4). ``changed_paths`` lists what was
+    #: written, **including any credential minted before the failure**, so the
+    #: operator can act on it. Terminal, and not a success.
+    HALTED = "halted"
     ABORTED = "aborted"
 
     @property
@@ -101,7 +106,7 @@ class SetupState(StrEnum):
         return self in {
             SetupState.CONVERGED,
             SetupState.DEGRADED,
-            SetupState.ROLLED_BACK,
+            SetupState.HALTED,
             SetupState.ABORTED,
         }
 
