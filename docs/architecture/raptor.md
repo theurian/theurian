@@ -326,7 +326,12 @@ therefore true of the extractive default as well.** Child references: every node
 written names its sources in `node_derivation`, one edge per source, and
 `IndexableNode` refuses a node whose declared child scopes do not stand one per
 source. Sensitivity and ACL: a node's row carries the scope its children share,
-because the scope is what decided which tree it belongs to.
+because the scope is what decided which tree it belongs to. The sensitivity in
+that scope is the item's current classification — the value `index_builder`
+stamps on a chunk, carrying the same authority `status` does — captured at build
+time, not the immutable revision's authored label; a `changeSensitivity` moves it
+on the next build. Uniform by construction is a build-time property, and
+sensitivity is still a published label rather than a retrieval control (#119).
 
 Implementations must wrap source content in a delimited untrusted region and
 never interpolate it into a system-role message. The port docstring states that

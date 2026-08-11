@@ -34,12 +34,18 @@ characters in one call. A Document node is charged its item's whole body, so a
 single document past a million characters -- a thousand chunks at the chunker's
 target -- fails the build rather than producing a summary nobody could read.
 Every tier above is charged its children's *summaries*, each bounded by
-:attr:`ForestOptions.summary_max_tokens`. A Catalog node's input therefore grows
-with the number of kinds and not with the corpus -- but a Domain node's input
-grows with the number of *documents of its kind*, which is linear in the corpus,
-so it alone among the tiers needs an explicit bound. :data:`MAX_CHILDREN_PER_DOMAIN`
-is that bound: a kind past it fans out into several Domain nodes rather than one
-whose input would eventually cross the character limit above.
+:attr:`ForestOptions.summary_max_tokens`. A Domain node's input grows with the
+number of *documents of its kind*, which is linear in the corpus, so it is the
+tier a growing corpus overruns first and the one that gets an explicit per-node
+bound. :data:`MAX_CHILDREN_PER_DOMAIN` is that bound: a kind past it fans out into
+several Domain nodes rather than one whose input would cross the character limit
+above. Fanning out moves the growth up a tier -- a Catalog node is charged one
+summary per Domain node, so its input grows with the number of kinds until a kind
+fans out and then with the corpus too, at 1/500 the rate. The Catalog is not
+itself fanned out, so a single scope holding one kind at hundreds of thousands of
+documents (a thousand Domain batches) is the corpus that would finally cross the
+same limit at the Catalog node -- a ceiling this fan-out raises far above the
+Domain tier's rather than removing.
 """
 
 from __future__ import annotations

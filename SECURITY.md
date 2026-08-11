@@ -390,9 +390,13 @@ published artifact were what would settle it. Both have now happened: the tag is
   `domain/raptor.py`'s `SummaryNode` raises when a declared child scope disagrees
   with the node's own, `IndexableNode` raises when a declaration stands for no
   source, and `application/forest_builder.py` derives each declaration from the
-  chunk or node it summarises. `theurian index build --raptor` writes the forest
-  those refusals guard, and a test over a real build asserts that every leaf chunk
-  a node was synthesized from agrees on all six components. **What this does not
+  chunk or node it summarises. The sensitivity that key partitions on is the
+  item's current classification, stamped at build time the way `status` is, so a
+  `changeSensitivity` moves it on the next build; until then the built row keeps
+  the label it was derived under, which no gate reads (SEC-7). `theurian index
+  build --raptor` writes the forest those refusals guard, and a test over a real
+  build asserts that every leaf chunk a node was synthesized from agrees on all
+  six components. **What this does not
   do is make a serving decision.** No retrieval path reads `chunks.sensitivity`
   or any node row at all: sensitivity is a published label, with the control
   deferred to [#119](https://github.com/theurian/theurian/issues/119). So the

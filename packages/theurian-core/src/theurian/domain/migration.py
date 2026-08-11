@@ -207,8 +207,10 @@ class RemoveAlias(Operation):
 class ChangeSensitivity(Operation):
     item_id: ItemId
     sensitivity: Sensitivity
-    #: Required by the schema. Reclassification changes who can read the content
-    #: and forces affected RAPTOR trees to rebuild, so the rationale is recorded.
+    #: Required by the schema. Reclassification changes who may read the content,
+    #: so the rationale is recorded. It does not force a rebuild: a result reads
+    #: the item's current sensitivity, so the response reflects the new label at
+    #: once, and the built index re-derives the label on the next ``index build``.
     reason: str
 
     @override

@@ -601,6 +601,24 @@ plus non-current revisions. The closure is held by
 each of which is RED on the pre-trigger wiring. With this, every decision in this
 ADR is wired.
 
+**A reclassification triggers no purge, and needs none.** A `changeSensitivity`
+moves a scope component (SEC-14, [ADR-0008](0008-raptor-forest.md) decision 1),
+but `migration_engine._withdrawal_affected_item` — the set that feeds
+`publish_purge_for_withdrawal` — deliberately excludes it. A purge copies the
+published build and deletes withheld rows; it deletes rows, it does not rewrite a
+scope column, and a pure reclassification withholds nothing (its status and
+current revision are unchanged), so the purge would gather the item only to
+discard it. Nothing rebuilds for it, and nothing has to: the live response is
+already correct, because a result reads the item's current sensitivity
+(`mcp/results.py`), and the built index's stale `sensitivity` column is read by no
+gate before [#119](https://github.com/theurian/theurian/issues/119) — an unsigned
+local index row nothing reads is not a disclosure (SEC-7). That column matches
+canonical again on the next `index build`, which re-derives at the item's current
+label. `test_a_reclassification_is_not_a_withdrawal` pins that the engine produces
+no purge candidate for it, and
+`test_a_reclassification_shows_in_the_response_before_any_rebuild` pins the live
+response and the harmless index lag end to end.
+
 Everything below is the mechanism's own acceptance, which #113 discharges;
 [#103](https://github.com/theurian/theurian/issues/103) tracked these eight as
 one class, and all eight are green.

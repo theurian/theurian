@@ -267,6 +267,35 @@ flowchart TB
    > and the empty string for the Catalog, which *is* the scope. Not
    > `Scope.digest`, which is what `SummaryNode.tree_id` exposes and which cannot
    > tell two Document trees in one scope apart.
+   >
+   > **Amended in Milestone 6, by the Domain fan-out CL. The Domain
+   > discriminator is `kind` only until a kind grows too large to summarise in one
+   > call.** A Domain node summarises one node per document of its kind, so its
+   > input is the one tier's that grows with the corpus rather than with the number
+   > of kinds — a same-kind corpus past roughly a thousand documents drove one
+   > Domain node's input over the extractive default's
+   > `MAX_TOTAL_INPUT_CHARS` (1,000,000) and refused the build.
+   > `forest_builder.MAX_CHILDREN_PER_DOMAIN` (500) bounds it: a full batch's input
+   > is `500 × SUMMARY_MAX_TOKENS × CHARS_PER_TOKEN` = 500 × 250 × 4 = 500k
+   > characters, half that limit. Above the cap a kind's Document nodes, sorted by
+   > `node_id` (decision 9's canonical order, not the order they were derived in),
+   > slice into contiguous batches of at most 500, each its own Domain node whose
+   > discriminator is `kind` joined with the partition index — `#`. A
+   > `KnowledgeKind` value cannot contain `#`, so a partitioned discriminator can
+   > never collide with a bare kind, and the partition is a function of the corpus
+   > alone, so it is deterministic across rebuilds. Every Document node stays under
+   > exactly one Domain node and the Catalog summarises the batches. The
+   > `~1050`-document Domain wall is therefore gone.
+   >
+   > **The Catalog tier is not itself fanned out, so a ceiling remains, far above
+   > the one removed.** A Catalog node is charged one summary per Domain node, so
+   > its input grows with the number of kinds until a kind fans out and then with
+   > the corpus too, at 1/500 the rate. A single scope holding one kind at roughly
+   > half a million documents — a thousand Domain batches — would finally meet the
+   > same `MAX_TOTAL_INPUT_CHARS` limit at the Catalog node. The fan-out raises the
+   > buildable corpus by about 500× rather than making it unbounded; recorded here,
+   > not removed, because the Catalog tier has no fan-out and this ADR should not
+   > read as though it does.
 3. Incremental rebuild: changed item → its Document Tree → the affected part of
    its Domain Tree → the affected part of the Catalog Tree. Never a full forest
    rebuild for a single edit.

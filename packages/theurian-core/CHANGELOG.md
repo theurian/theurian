@@ -42,8 +42,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - **`theurian index build --raptor` derives and stores the RAPTOR forest**
   (ADR-0008, `application/forest_builder.py`). The three tiers decision 2 names,
   deepest last: a Document node per item revision over that revision's chunks, a
-  Domain node per `kind` within a scope over those, and a Catalog node per scope
-  over those. **Without the flag a build writes zero node rows** — decision 10's
+  Domain node per `kind` within a scope over those (or several, once a kind is
+  large enough to fan out — below), and a Catalog node per scope over those. **Without the flag a build writes zero node rows** — decision 10's
   opt-in as a hard guarantee rather than a filter someone has to remember, the
   shape `--include-unapproved` already has for drafts, and held by
   `test_a_build_without_the_raptor_flag_writes_no_summary_nodes`. A level with
@@ -120,6 +120,66 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   tree, and the two-corpus equality that is the only thing able to check it,
   belong to the purge-closure CL. `test_rebuilding_the_same_state_produces_a_byte_identical_forest`
   holds the precondition that equality rests on.
+
+  **The Domain tier fans out above a per-node bound.** A Domain node summarises
+  one node per document of its kind, so its input is the one tier's that grows
+  with the corpus rather than with the number of kinds — a same-kind corpus past
+  roughly a thousand documents drove one Domain node over the extractive default's
+  `MAX_TOTAL_INPUT_CHARS` and refused the build. `MAX_CHILDREN_PER_DOMAIN` (500)
+  caps it: above it a kind's Document nodes, sorted by `node_id`, split into
+  contiguous batches of at most 500 — a full batch is 500 × 250 × 4 = 500k
+  characters, half the limit — each its own Domain node whose discriminator is
+  `kind` joined by `#` with the partition index, which a `KnowledgeKind` value
+  cannot contain, so a partitioned discriminator never collides with a bare kind.
+  Every Document node stays under exactly one Domain node and the Catalog
+  summarises the batches;
+  `test_a_domain_tier_over_many_documents_fans_out_into_bounded_batches` holds it.
+  The Catalog tier is not itself fanned out, so a scope holding one kind at
+  hundreds of thousands of documents would still meet the limit at the Catalog
+  node — a ceiling raised about 500×, not removed (ADR-0008 decision 2's fan-out
+  amendment).
+
+  **Sensitivity on a result and a chunk is the item's, not the revision's.** A
+  revision is immutable, so `revision.metadata.sensitivity` is the label the
+  content was authored under; a `changeSensitivity` moves the classification on
+  the item without writing a new revision. `result_payload` now takes
+  `sensitivity` as an item-authoritative parameter the way it already took
+  `status`, and every call site threads the item's current value (`Surfaced` gains
+  the field for the ranked path), so a search reports the new label the instant a
+  reclassification commits. `index_builder` stamps a chunk with `item.sensitivity`,
+  which flows to node scopes, so the built forest partitions on the item's current
+  label rather than the revision's.
+  `test_the_payload_reports_the_items_sensitivity_not_the_revisions` and
+  `test_a_reclassified_item_is_reindexed_at_its_new_sensitivity` hold the two
+  halves.
+
+  **A reclassification forces no rebuild, and the engine does not fake one.**
+  `migration_engine._withdrawal_affected_item` deliberately excludes
+  `changeSensitivity`: a purge deletes rows and cannot rewrite a scope column, and
+  a pure reclassification withholds nothing, so no purge fires. The response is
+  already correct without one, and the built index's stale `sensitivity` column is
+  read by no gate before #119 (SEC-7), matching canonical again on the next
+  `index build`. The `docs/protocol/migrations.md`, `migration.schema.json` and
+  `domain/migration.py` claim that a reclassification "forces every affected RAPTOR
+  tree to rebuild" was false and is corrected in all three.
+  `test_a_reclassification_is_not_a_withdrawal` and
+  `test_a_reclassification_shows_in_the_response_before_any_rebuild` pin it.
+
+  **Mutation-kill pins, and one softened docstring.** New tests hold the
+  properties a mutation could flip silently: `SUMMARY_MAX_TOKENS`'s external
+  definition, the `ForestOptions` floors and the `minChildrenPerSummary` minimum
+  of exactly two, the document-tier skip, an upper node summarising its children
+  in content-id order, `derive` returning low tiers before the tiers built on
+  them, and the `node_type` join in `tree_identity` that keeps a Document tree and
+  a Domain tree named alike apart. `IndexableNode`'s two refusals — more declared
+  children than sources, and a source named twice — get their own tests. The
+  declaration docstring in `domain/raptor.py` is softened to what it can hold:
+  `IndexableNode`'s count check makes a declaration standing for no source
+  unconstructible and a test pins that, but for a *valid* node a declaration
+  copied from the parent and one derived from the child are equal by the type's
+  own scope invariant, so no test separates the two forms — only the
+  count-mismatch defect is pinned, and the earlier "derived from the child it
+  summarises" claim is narrowed accordingly.
 
   **Reported, both fields.** `index build --json` gains `raptor` and `nodes`,
   because the count alone cannot tell a forest-free build apart from one whose
