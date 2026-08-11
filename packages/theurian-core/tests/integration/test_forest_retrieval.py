@@ -422,12 +422,11 @@ def test_a_summary_match_routes_to_sibling_leaves_a_leaf_search_misses(raptor: B
     summary, including siblings that never contain the term -- which is the whole
     of what "search may traverse a summary node" buys over leaf-only retrieval.
 
-    RED until a summary retriever exists: today ``gatewayx`` matches only the
-    ``auth-policy`` leaf directly, and its two Domain siblings -- ``caching-policy``
-    and ``queue-policy``, neither of which contains the term -- are never returned.
-    The precondition is asserted from the forest itself so this cannot pass because
-    the leaves happened to match some substring: the Domain node holds the term and
-    the siblings' leaves do not.
+    The precondition is asserted from the forest itself, not assumed: the Domain
+    node holds the term and neither sibling leaf -- ``caching-policy`` nor
+    ``queue-policy`` -- contains it, so this cannot pass because a leaf happened to
+    match some substring. Only a summary retriever that actually descends from the
+    matched Domain node can route ``gatewayx`` to leaves that never contain it.
     """
     nodes = _nodes(raptor.index_path)
     domain = next(n for n in nodes.values() if n.level == 2 and n.status == "approved")
@@ -457,10 +456,10 @@ def test_a_summary_node_is_never_itself_a_result_row(raptor: Built) -> None:
     *shaped by* a traversed node, but a node id must never occupy the ``itemId`` or
     ``revisionId`` of a result -- only a gate-cleared leaf revision may.
 
-    Green today (nothing reads the forest), and it must stay green once traversal
-    lands: a node has no ``(item, current revision)`` pair for
+    A node has no ``(item, current revision)`` pair for
     ``CanonicalVisibility._may_surface`` to clear, so publishing one would mean a
-    second clearance rule beside the one every result goes through.
+    second clearance rule beside the one every result goes through -- the standing
+    invariant this test guards now that traversal reads the forest.
     """
     node_ids = set(_nodes(raptor.index_path))
     assert node_ids, "precondition: the forest must hold summary nodes for this to mean anything"
@@ -488,9 +487,9 @@ def test_a_surfaced_leaf_carries_its_forest_ancestry_as_raptor_path(raptor: Buil
     node's text as a single bounded line (``excerpt``), the summariser's output on
     the wire.
 
-    RED until the payload carries the key. The expected path is reconstructed from
-    the published forest, so this pins the ids, the levels, the titles *and* their
-    order, not merely that a key is present.
+    The expected path is reconstructed from the published forest, so this pins the
+    ids, the levels, the titles *and* their order, not merely that a key is
+    present.
     """
     expected = _expected_raptor_path(raptor.index_path, AUTH_REVISION)
     assert [seg["level"] for seg in expected] == [2, 1], (
@@ -505,11 +504,9 @@ def test_a_surfaced_leaf_carries_its_forest_ancestry_as_raptor_path(raptor: Buil
 def test_a_surfaced_leaf_with_a_path_still_validates_against_the_published_schema(
     raptor: Built,
 ) -> None:
-    """The result schema is ``additionalProperties: false`` and today declares no
-    ``raptorPath``, so a hit that carries one is rejected by the published contract
-    (#123). This CL adds the property; the guard is that the *real* emitted hit and
-    its *published* schema stay in step -- a payload emitting ``raptorPath`` while
-    the schema forbids it, or the reverse, fails here.
+    """The result schema is ``additionalProperties: false`` (#123), so the real
+    emitted hit and its published schema must stay in step: a payload emitting
+    ``raptorPath`` while the schema forbids it, or the reverse, fails here.
     """
     hit = _hit(raptor.search(FOREST_TERM), AUTH_ITEM)
     assert "raptorPath" in hit, "the ranked forest hit must carry the field the schema now declares"
@@ -541,10 +538,9 @@ def test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path(
     component, so a draft sibling can never be an ancestor of an approved leaf. Its
     summary's title therefore cannot ride out on an approved item's path.
 
-    RED until the path exists (the presence assertion), and a standing guard after:
-    were the forest ever built ignoring the status-scope boundary -- a draft and an
+    Were the forest ever built ignoring the status-scope boundary -- a draft and an
     approved item sharing one Domain tree -- the approved Domain summary would hold
-    the draft's ``rotationx``/``zephyrsecret`` and this would redden.
+    the draft's ``rotationx``/``zephyrsecret`` and this would fail.
     """
     hit = _hit(raptor.search(FOREST_TERM), AUTH_ITEM)
     assert hit["raptorPath"], "an approved forest hit must carry a path for the closure to bind"
@@ -568,11 +564,9 @@ def test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf(
     still be gated out. Routing changes which leaves are candidates, never whether
     a gated row surfaces.
 
-    Green today (leaf retrievers already withhold the draft), and it must stay
-    green once the summary retriever can descend to that leaf. The precondition
-    reads the forest to prove the scenario is real -- the draft's summary node
-    holds the routing term and the secret, so a descent that skipped the gate would
-    surface them.
+    The precondition reads the forest to prove the scenario is real -- the draft's
+    summary node holds the routing term and the secret, so a descent that skipped
+    the gate would surface them.
     """
     nodes = _nodes(raptor.index_path)
     draft_node = next(
@@ -615,7 +609,8 @@ def test_capabilities_reports_raptor_supported(raptor: Built) -> None:
     the forest, ``system.capabilities.raptor`` must be ``True`` -- otherwise a
     client reading ``False`` never asks for a ``raptorPath`` the server now emits.
 
-    RED: the flag is ``False`` today, held there precisely until this CL.
+    The capability and the retrieval behaviour it advertises must never drift
+    apart -- a stale ``True`` or ``False`` here is a lie a client trusts.
     """
     assert raptor.capabilities()["capabilities"]["raptor"] is True
 
@@ -644,7 +639,8 @@ def test_raptor_path_is_identical_across_two_independent_builds(
     for the same leaf -- same ids, same titles, same order. A path that varied per
     build would be one more thing a caller has to watch move (SEC-13).
 
-    RED until the field exists; a standing determinism guard after.
+    Determinism holds across two independently-built indexes, not just within one,
+    which is what rules out an accidental agreement from reading a single file.
     """
     here = _hit(raptor.search(FOREST_TERM), AUTH_ITEM)["raptorPath"]
     there = _hit(raptor_twin.search(FOREST_TERM), AUTH_ITEM)["raptorPath"]
