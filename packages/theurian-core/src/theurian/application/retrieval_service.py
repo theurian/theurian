@@ -134,10 +134,18 @@ defends against, not a leak the shipped product still carries.
 
 Their reach, measured rather than reasoned about:
 
-- **Two retrievers**, the two that score with ``bm25``: ``search_lexical`` and
-  the trigram lookup. Not the scan below the trigram floor, whose
-  ``matched_characters`` is computed from the row's own text, and not
-  ``search_dense``, whose cosine similarity is a function of one vector pair.
+- **Two surfaces measured; a third retriever carries the same class.**
+  ``search_lexical`` (``bm25(chunks_fts)``) and ``search_substring``'s trigram
+  lookup (``bm25(chunks_trigram)``) are the two measured above.
+  ``search_summaries`` adds two more, ``bm25(nodes_fts)`` and
+  ``bm25(nodes_trigram)`` (:mod:`theurian.infrastructure.sqlite.index_forest`),
+  scoring summary nodes rather than leaves -- the same T-17a class by the same
+  FTS5 mechanism, reasoned rather than separately measured, closed by the same
+  withdrawal-purge re-derivation, and populated only under
+  ``--include-unapproved`` or the in-flight window (``docs/security/threat-model.md``
+  T-17a). Not the scan below the trigram floor, whose ``matched_characters`` is
+  computed from the row's own text, and not ``search_dense``, whose cosine
+  similarity is a function of one vector pair.
 - **No separation is safe.** Flips were observed with the two visible rows both
   one and two chunks apart, and nothing out to forty was immune — so there is no
   "results this far apart cannot swap" qualifier to write here.

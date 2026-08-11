@@ -369,27 +369,27 @@ def test_a_leaf_reached_by_two_summaries_takes_the_better_score(tmp_path: Path) 
 
 
 # -- 5. The walk's own scope gate: an approved leaf's path drops a draft ------
-#      ancestor (defense in depth; RED until walk_raptor_path filters).
+#      ancestor (defense in depth beyond the builder invariant).
 
 
 def test_an_approved_leafs_raptor_path_excludes_a_draft_scope_ancestor(tmp_path: Path) -> None:
     """SEC-13, T-15. `walk_raptor_path` publishes a summary node's title for every
-    ancestor of a surfaced leaf. Today it applies *no* scope predicate: disclosure
-    safety rests entirely on the builder's invariant that a node's children share
-    its six-component scope, so an approved leaf's ancestors are all approved.
+    ancestor of a surfaced leaf. Its `nodes` lookup filters on the surfaced leaf's
+    own project_id and status -- a second, independent gate, not a reliance on the
+    builder's invariant that a node's children share its six-component scope,
+    which is what makes an approved leaf's ancestors approved in every build the
+    real builder can produce.
 
     This builds the shape that invariant forbids and no shipped build produces --
     an approved leaf whose Domain ancestor is a *draft* node holding a secret -- and
     asks for the approved leaf's path. The draft ancestor's title, and the secret
     in it, must not appear. With the leaf gate and node gate both cleared upstream,
-    the walk is the only thing that can drop this ancestor, and it currently does
-    not: this is a second, independent gate (defense in depth), not a reliance on
-    the builder alone.
+    the walk's own scope predicate is the only thing standing between the query
+    and this ancestor, and it drops it: defense in depth that holds even where the
+    builder invariant does not, not a reliance on the builder alone.
 
-    **RED until `walk_raptor_path` gains a node-scope predicate** filtering its
-    `nodes` lookup to the surfaced leaf's own scope, the way the descendants query
-    already filters. The approved ancestor must survive that filter, so the path is
-    shortened rather than emptied.
+    The approved intermediate ancestor must survive that same filter, so the path
+    is shortened rather than emptied.
     """
     path = tmp_path / "theurian-index-walk-scope.sqlite"
     secret = "zephyrsecret"  # noqa: S105 - fixture text, not a credential
