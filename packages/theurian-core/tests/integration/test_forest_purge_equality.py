@@ -8,7 +8,7 @@ tree from its surviving rows**, so a purged build's forest equals one built over
 corpus that never held the withdrawn rows -- the two-corpus equality
 [ADR-0024](../../docs/adr/0024-a-purge-is-a-build.md) was accepted on, extended
 from chunks to derived rows. ``test_a_purged_build_answers_as_if_the_rows_were_
-never_indexed`` in ``test_withdrawal_purge.py`` holds that equality at the chunk
+never_indexed`` in ``test_index_purge.py`` holds that equality at the chunk
 level; this file holds it for the forest.
 
 Why delete-only is not the same thing, and why the failure is invisible without a

@@ -765,8 +765,14 @@ class SqliteIndexStore:
                 for row in rows
             )
 
-    def delete_nodes_grounded_in_chunks(self, chunk_ids: Sequence[str]) -> int:
-        """Remove every node upward-reachable from the given chunks. Returns the count.
+    def delete_nodes_grounded_in_chunks(self, chunk_ids: Sequence[str]) -> None:
+        """Remove every node upward-reachable from the given chunks.
+
+        No count is returned: a ``WITH RECURSIVE ... DELETE`` reports
+        ``cursor.rowcount == -1`` in ``sqlite3`` whatever it deleted (the module
+        recognises DML only when the statement text begins with the verb), so a
+        count here would be a lie. The sole caller (``_recompute_forest``) needs
+        none -- it clears the scope and re-inserts unconditionally.
 
         The re-derivation's scope-clearing step: before re-inserting an affected
         scope's fresh trees it deletes that scope's *entire* current node set,
@@ -806,7 +812,7 @@ class SqliteIndexStore:
         would then refuse the build over.
         """
         if not chunk_ids:
-            return 0
+            return
 
         with _connect(self._path) as connection:
             connection.execute("CREATE TEMP TABLE recompute_seed (chunk_id TEXT PRIMARY KEY)")
@@ -814,9 +820,8 @@ class SqliteIndexStore:
                 "INSERT OR IGNORE INTO temp.recompute_seed (chunk_id) VALUES (?)",
                 [(chunk_id,) for chunk_id in chunk_ids],
             )
-            cursor = connection.execute(_DELETE_SCOPE_NODES)
+            connection.execute(_DELETE_SCOPE_NODES)
             connection.commit()
-            return cursor.rowcount
 
     def holds_any_revision(self, revision_ids: Sequence[str]) -> bool:
         """Whether a purge of ``revision_ids`` would remove anything from this build.
