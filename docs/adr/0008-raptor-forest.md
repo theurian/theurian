@@ -240,6 +240,18 @@ flowchart TB
    > cannot be built at all, but no query reads that column, so *which* query
    > flavour would route through *which* node is still a claim about work that has
    > not been built.
+   >
+   > **Landed in Milestone 6, by the retrieval CL. All three of the claims this
+   > thread ends on are now false, so the routing-and-recall cost is observable
+   > rather than argued.** `search_summaries` traverses the summary nodes — so "No
+   > traversal reads one" no longer holds — `SqliteIndexStore._node_scope` reads
+   > `nodes.status` in its WHERE clause to gate the match — so "no query reads that
+   > column" no longer holds — and routing through the forest is implemented — so
+   > "work that has not been built" no longer holds. Which query flavour routes
+   > through which node is now decided by that gate rather than being a claim about
+   > unbuilt work. The Compliance item "Project and status are enforced for the node
+   > tables in one place" records this fully discharged and mutation-checked; the
+   > detail is there, and these claims are corrected here rather than deleted.
 2. Three levels: Document Tree (within one knowledge item), Domain Tree (within
    one namespace/kind), Global Catalog Tree (within one scope tuple).
 
