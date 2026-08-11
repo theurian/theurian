@@ -134,10 +134,18 @@ defends against, not a leak the shipped product still carries.
 
 Their reach, measured rather than reasoned about:
 
-- **Two retrievers**, the two that score with ``bm25``: ``search_lexical`` and
-  the trigram lookup. Not the scan below the trigram floor, whose
-  ``matched_characters`` is computed from the row's own text, and not
-  ``search_dense``, whose cosine similarity is a function of one vector pair.
+- **Two surfaces measured; a third retriever carries the same class.**
+  ``search_lexical`` (``bm25(chunks_fts)``) and ``search_substring``'s trigram
+  lookup (``bm25(chunks_trigram)``) are the two measured above.
+  ``search_summaries`` adds two more, ``bm25(nodes_fts)`` and
+  ``bm25(nodes_trigram)`` (:mod:`theurian.infrastructure.sqlite.index_forest`),
+  scoring summary nodes rather than leaves -- the same T-17a class by the same
+  FTS5 mechanism, reasoned rather than separately measured, closed by the same
+  withdrawal-purge re-derivation, and populated only under
+  ``--include-unapproved`` or the in-flight window (``docs/security/threat-model.md``
+  T-17a). Not the scan below the trigram floor, whose ``matched_characters`` is
+  computed from the row's own text, and not ``search_dense``, whose cosine
+  similarity is a function of one vector pair.
 - **No separation is safe.** Flips were observed with the two visible rows both
   one and two chunks apart, and nothing out to forty was immune — so there is no
   "results this far apart cannot swap" qualifier to write here.
@@ -172,11 +180,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final, final
+from typing import Any, Final, final, override
 
 from theurian.application.visibility import CanonicalVisibility, Visibility
 from theurian.domain.context import RequestContext
@@ -191,6 +199,7 @@ from theurian.domain.ranking import (
     DENSE,
     LEXICAL,
     SUBSTRING,
+    SUMMARY,
     Fused,
     Ranked,
     RetrieverPage,
@@ -199,6 +208,7 @@ from theurian.domain.ranking import (
     reciprocal_rank_fusion,
     take_within_budget,
 )
+from theurian.domain.retrieval import RaptorPathSegment
 
 #: How many candidates each retriever contributes to the fusion. Generous: RRF
 #: rewards a document both retrievers found, and a document the dense retriever
@@ -383,6 +393,63 @@ class SearchOutcome:
     #: candidates. Fetched here rather than by the caller because the caller no
     #: longer knows which round of retrieval was the last one.
     passages: Mapping[str, str] = field(default_factory=dict)
+    #: Revision id to its forest ancestry, catalog root to leaf (ADR-0008 dec. 8).
+    #: Gated the same way as ``passages`` -- only a cleared candidate's revision
+    #: is ever a key here, so a withheld leaf's ancestor titles never enter this
+    #: map -- but not eagerly walked: :class:`_LazyRaptorPaths` walks a revision
+    #: only the first time it is read, so it can be built over every candidate
+    #: here, though :meth:`ResultGate._surfaced` -- the only reader -- asks for
+    #: at most ``limit`` of them. Empty over a chunk-only build.
+    raptor_paths: Mapping[str, tuple[RaptorPathSegment, ...]] = field(default_factory=dict)
+
+
+@final
+class _LazyRaptorPaths(Mapping[str, tuple[RaptorPathSegment, ...]]):
+    """A fused candidate's forest ancestry, walked only the first time it is read.
+
+    :meth:`RetrievalService.search` has no ``limit`` to truncate its candidates
+    by -- that bound belongs to :class:`ResultRequest`, built later, over in
+    :class:`ResultGate` (:class:`SearchOutcome`'s own docstring) -- so it cannot
+    restrict *which* candidates' ancestry it walks the way
+    :meth:`ResultGate._surfaced` restricts which candidates' revisions it fetches
+    from the canonical store. Deferring the walk to first read gets the same
+    restriction without the bound: :meth:`ResultGate._surfaced` only ever calls
+    ``.get(candidate.revision_id, ())`` for ``outcome.candidates[:limit]``, so a
+    revision ranked below ``limit`` is never asked for and its ancestry, five
+    unbatched queries a walk, is never run. Every key this can answer already
+    cleared :class:`~theurian.application.visibility.Visibility` before this was
+    built (:meth:`RetrievalService._raptor_paths`), so laziness changes nothing
+    about which revisions this may walk, only how many of the visible ones it
+    actually does. Memoized, so a document contributing two chunks still pays
+    for one walk.
+    """
+
+    def __init__(self, index: IndexStore, revision_ids: Sequence[str], *, project_id: str) -> None:
+        self._index = index
+        self._project_id = project_id
+        # De-duplicated, order-preserving: a document contributing two candidate
+        # chunks names its revision twice, and `Mapping.__len__`/`__iter__` must
+        # report the same key once for both, not walk it twice either.
+        self._revision_ids: tuple[str, ...] = tuple(dict.fromkeys(revision_ids))
+        self._cache: dict[str, tuple[RaptorPathSegment, ...]] = {}
+
+    @override
+    def __getitem__(self, revision_id: str) -> tuple[RaptorPathSegment, ...]:
+        if revision_id not in self._cache:
+            if revision_id not in self._revision_ids:
+                raise KeyError(revision_id)
+            self._cache[revision_id] = self._index.raptor_path(
+                revision_id, project_id=self._project_id
+            )
+        return self._cache[revision_id]
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._revision_ids)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._revision_ids)
 
 
 @final
@@ -437,9 +504,26 @@ class RetrievalService:
             ),
             visible,
         )
+        # The forest retriever, read through the gate like every other. It matches
+        # summary nodes and hands back the *leaves* beneath them, so a leaf reached
+        # only through a summary is a candidate fused with the leaf retrievers under
+        # its own name (ADR-0008 decision 8). A build with no forest returns an
+        # empty exhausted page here, so this contributes nothing rather than
+        # failing -- forest routing is always on when a forest exists and silent
+        # when one does not.
+        summary = self._visible_ranking(
+            lambda depth: self._index.search_summaries(
+                request.query,
+                project_id=request.project_id,
+                limit=depth,
+                include_unapproved=request.include_unapproved,
+            ),
+            visible,
+        )
         rankings: dict[str, Sequence[Ranked]] = {
             LEXICAL: lexical,
             SUBSTRING: substring,
+            SUMMARY: summary,
             DENSE: self._dense(request, visible),
         }
         candidates = diversify(reciprocal_rank_fusion(rankings), per_item=request.per_item)
@@ -449,6 +533,37 @@ class RetrievalService:
             passages=self._index.chunk_texts(
                 [candidate.chunk_id for candidate in candidates], project_id=request.project_id
             ),
+            raptor_paths=self._raptor_paths(candidates, project_id=request.project_id),
+        )
+
+    def _raptor_paths(
+        self, candidates: Sequence[Fused], *, project_id: str
+    ) -> Mapping[str, tuple[RaptorPathSegment, ...]]:
+        """The forest ancestry of each candidate's revision, catalog root to leaf.
+
+        Named beside :meth:`~theurian.domain.ports.index_store.IndexStore.chunk_texts`
+        for the same reason -- both are per-candidate index reads the shaper would
+        otherwise have to make after it has stopped knowing which retrieval round
+        was the last -- but not fetched the way that one is. ``chunk_texts`` is one
+        batched read over every candidate; a walk is five unbatched queries per
+        revision (:mod:`~theurian.infrastructure.sqlite.index_forest`), and
+        :meth:`ResultGate._surfaced` -- the only reader of the map this returns --
+        cuts ``candidates`` to ``limit`` before it reads a single entry. This has
+        no ``limit`` to cut by (:class:`SearchOutcome`'s docstring), so
+        :class:`_LazyRaptorPaths` defers each walk to that first read instead,
+        which restricts it to the same revisions truncation would have.
+
+        Every candidate here has already cleared the visibility gate in
+        :meth:`_visible_ranking`, so a path is built only for a leaf the caller may
+        read -- a withheld leaf never reaches this list, so its ancestors' titles
+        are never walked (SEC-13, T-15) -- and that holds independently of the
+        deferral above, which only changes when a cleared revision's walk runs,
+        never which revisions are cleared to walk at all.
+        """
+        return _LazyRaptorPaths(
+            self._index,
+            [candidate.revision_id for candidate in candidates],
+            project_id=project_id,
         )
 
     @staticmethod
@@ -694,6 +809,12 @@ class Surfaced:
     #: The chunk text that matched. Empty when the index no longer holds it, in
     #: which case the shaper falls back to the head of the document.
     passage: str
+    #: This leaf's forest ancestry, catalog root to leaf, or empty over a
+    #: chunk-only build (ADR-0008 decision 8). Filled only here, for a leaf that
+    #: has already cleared the gate, from the paths the retrieval fetched for the
+    #: candidates it cleared -- so a withheld leaf's ancestor titles reach neither
+    #: this field nor the wire (SEC-13, T-15).
+    raptor_path: tuple[RaptorPathSegment, ...] = ()
 
 
 #: How a cleared candidate becomes the payload the caller receives.
@@ -916,6 +1037,7 @@ class ResultGate:
                     status=item.status,
                     sensitivity=item.sensitivity,
                     passage=outcome.passages.get(candidate.chunk_id, ""),
+                    raptor_path=outcome.raptor_paths.get(candidate.revision_id, ()),
                 )
             )
         return tuple(surfaced)

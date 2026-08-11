@@ -558,7 +558,13 @@ def _shaper(now: datetime) -> ResultShaper:
     """
 
     def shape(surfaced: Surfaced) -> dict[str, Any]:
-        result = result_payload(surfaced.revision, surfaced.status, surfaced.sensitivity, now)
+        result = result_payload(
+            surfaced.revision,
+            surfaced.status,
+            surfaced.sensitivity,
+            now,
+            raptor_path=surfaced.raptor_path,
+        )
         # The excerpt is the passage that actually matched, not the head of the
         # document. Chunking buys ranking precision; without this the caller
         # never sees the paragraph it bought.

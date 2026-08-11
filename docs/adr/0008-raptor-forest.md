@@ -762,6 +762,40 @@ flowchart TB
 >    FR-R3's value is kept: descending from a summary to the specifics under it
 >    is traversal, not publication.
 >
+>    > **Landed in Milestone 6, by the retrieval CL. `raptorPath` crosses the
+>    > boundary this decision drew, and the routing-only invariant holds.**
+>    > `IndexStore.search_summaries` matches summary nodes in `nodes_fts`/`nodes_trigram`
+>    > and descends `node_derivation` to the leaf chunks beneath a matched node,
+>    > fused into `RetrievalService.search` under the ranking name `summary`
+>    > (`domain/ranking.py`). A summary node is a router and never a result row —
+>    > it has no `(item, current revision)` pair for `_may_surface` to clear —
+>    > held by `test_a_summary_node_is_never_itself_a_result_row`, and
+>    > `test_a_summary_match_routes_to_sibling_leaves_a_leaf_search_misses` is FR-R3
+>    > itself: a Domain-summary match reaches two sibling leaves no leaf retriever
+>    > for the term can. `IndexStore.raptor_path` walks upward from a surfaced leaf
+>    > to its Document, Domain and Catalog ancestors, and `result_payload` emits
+>    > `raptorPath` — root-to-leaf `{nodeId, level, title}`, `title` the node text
+>    > bounded by `excerpt` — only when non-empty
+>    > (`test_a_surfaced_leaf_carries_its_forest_ancestry_as_raptor_path`,
+>    > `test_a_chunk_only_index_carries_no_raptor_path`). `system.capabilities.raptor`
+>    > is `true`.
+>    >
+>    > **Both disclosure surfaces this decision named are covered, not just the
+>    > field's presence.** The *routing* is gated exactly as every retriever is —
+>    > `_node_scope` filters the node match on Project and status, `_scope` filters
+>    > the descended leaves again, and `_may_surface` re-clears every candidate at
+>    > the canonical store — so a draft-scope summary is not even traversed on a
+>    > default query and a withheld leaf reached through the forest still does not
+>    > surface (`test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf`,
+>    > `test_the_same_query_with_and_without_drafts_differs_only_by_the_draft`). The
+>    > node-derived `title` is emitted only for a leaf that cleared that gate, whose
+>    > ancestors share its six-component scope (decision 1), so a title carries no
+>    > content from a scope the leaf is not in
+>    > (`test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path`).
+>    > `retrieval-result.schema.json` now declares `raptorPath` and the `summary`
+>    > `foundBy` value. The full suite is `tests/integration/test_forest_retrieval.py`;
+>    > the threat model's T-10 and T-3 restate the closure.
+>
 > 9. **Withdrawal re-derives each affected tree from its surviving rows.
 >    Node-local recompute is rejected, and so is delete-only.**
 >
@@ -1083,6 +1117,17 @@ flowchart TB
   > acl_group are not exercised by any corpus, because the write path refuses a
   > revision naming a non-default value — those two axes are structural in the
   > same sense the others are, and untested in a way the others are not.
+  >
+  > **Amended in Milestone 6, by the retrieval CL. The first qualification's
+  > "nothing reads a node back" no longer holds, and the consequence is stronger
+  > for it, not weaker.** A surfaced leaf's `raptorPath.title` is a node's text on
+  > the wire, so the mixing this bullet prevents is now what keeps that title from
+  > carrying content across a scope boundary: a title is emitted only above a
+  > gate-cleared leaf, whose ancestors share its six-component scope, so a mixed
+  > node — the thing this consequence makes unbuildable — is what a cross-scope
+  > leak would have required. The serving path that reads a node is the double gate
+  > in decision 8's landed note; this construction is what makes that gate safe to
+  > publish through.
 - Rebuild cost is proportional to the change, not to the corpus.
 
   > **Amended in Milestone 6.** Not what Milestone 6 ships. See the
@@ -1489,6 +1534,25 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > is answered in that decision's own landed note — it did not flip, and should
 > not have.
 
+> **Landed in Milestone 6, by the retrieval CL. The one clause the forest-builder
+> note kept — "no traversal reads a node back" — is now false, and the headline no
+> longer narrows to anything.** `IndexStore.search_summaries` traverses summary
+> nodes and descends to the leaves beneath them (fused as the ranking `summary`),
+> `IndexStore.raptor_path` reconstructs a surfaced leaf's ancestry,
+> `result_payload` emits `raptorPath`, and `system.capabilities.raptor` is `true`.
+> A node is read back — but only as a *router*, and for its `title` only above a
+> gate-cleared leaf: a summary node is never a result row
+> (`test_a_summary_node_is_never_itself_a_result_row`), and a withheld leaf
+> contributes no result and no path
+> (`test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf`,
+> `test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path`). The
+> forest is now derived, stored, purged **and** retrieved. Held by
+> `tests/integration/test_forest_retrieval.py`. Two Still-owed items below were
+> owed *to this CL* and are amended in place rather than closed: the in-progress
+> read guarantee, and the single mutation-checked enforcement point for node
+> reads — the CL brought the node traversal but not the isolation test that pins
+> its predicate.
+
 Still owed, with the milestone that will satisfy it:
 
 - **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
@@ -1583,6 +1647,20 @@ Still owed, with the milestone that will satisfy it:
   > all, so "never returned by search" is true of the forest for a reason that
   > will expire the moment traversal lands. The item is therefore owed *to the
   > retrieval CL* rather than to this one.
+  >
+  > **Amended in Milestone 6, by the retrieval CL. Traversal landed, and the read
+  > side is now covered the way the chunk retrievers are — not by a node-specific
+  > guard.** `search_summaries` and `raptor_path` read through
+  > `SqliteIndexStore._read`, which opens the *published* index the active pointer
+  > names and never a `.building` file, exactly as `search_lexical` does; and a
+  > summary node is never a result row
+  > (`test_a_summary_node_is_never_itself_a_result_row`). So an in-progress forest
+  > build is unsearchable for the same two reasons an in-progress chunk build is —
+  > the file-level refusal on the write side, the active-pointer read on the read
+  > side — the "nothing searches a node" reason having expired as predicted. What
+  > has no node-specific test is the concurrent case, a search racing a rebuild,
+  > which is ADR-0022's Still-owed blue/green item; this now folds into that rather
+  > than standing alone.
 - **A node whose `summary_prompt_hash` differs from the active configuration is
   treated as stale** (Milestone 6). No column holds a `summary_prompt_hash`.
 
@@ -1835,3 +1913,57 @@ the decision it belongs to states a property that is otherwise only an argument:
   > so there is no second enforcement point yet, and no isolation test over one to
   > mutate. This item comes due with the retrieval CL, in the same review that
   > covers `raptorPath`.
+  >
+  > **Amended in Milestone 6, by the retrieval CL. The second enforcement point
+  > this item anticipated now exists, and the item stays owed: the CL brought the
+  > node traversal but not the mutation-checked isolation test it was owed to.**
+  > `search_summaries` reads the node tables, and `SqliteIndexStore._node_scope` is
+  > the single predicate builder for those reads the item asks for — the `_scope`
+  > counterpart, filtering `nodes.project_id` and `nodes.status`. What is not
+  > discharged is the check that it is load-bearing. There is no cross-project or
+  > cross-status isolation test over the node traversal, and no mutation asserting
+  > that deleting `_node_scope`'s predicate turns one RED. It would not, as things
+  > stand: the descended leaves are re-gated by `_scope` and re-cleared by
+  > `_may_surface`, so `_node_scope` is defense-in-depth that backstops routing
+  > recall rather than serving. Measured — `_node_scope`'s status clause neutralised
+  > and `tests/integration/test_forest_retrieval.py`'s three disclosure tests
+  > (`test_routing_over_an_unapproved_forest_cannot_resurrect_a_withheld_leaf` among
+  > them) re-run — all three stay green, because the leaf gate withholds the draft
+  > whatever the node match does. The isolation-plus-mutation test this item names
+  > is now writable against the shipped traversal, and stays owed with the CL that
+  > gives that traversal its own single-enforcement-point review (Milestone 6
+  > close-out).
+  >
+  > **Landed in Milestone 6, by the node-scope isolation CL. The mutation-checked
+  > isolation test this item was owed to now exists, so it is discharged.** Two
+  > direct-`INSERT` tests build the shape the real builder cannot — a summary node
+  > whose own `status`/`project_id` disagrees with the one leaf its
+  > `node_derivation` edge names, so `_scope` has nothing to withhold on that leaf
+  > and only `_node_scope`'s own predicate decides whether the query reaches it:
+  > `tests/integration/test_forest_node_scope.py::test_search_summaries_does_not_descend_a_draft_status_node_by_default`
+  > and `::test_search_summaries_does_not_descend_a_node_from_another_project`. The
+  > mutation is load-bearing, one clause per axis: neutralising `_node_scope`'s
+  > status clause reddens the draft test alone (the leaked leaf surfaces:
+  > `['approved-leaf#0', 'leaked-leaf#0']`), and neutralising its project clause
+  > reddens the cross-project test alone. **The amendment above got the reasoning
+  > wrong, and it is corrected rather than deleted.** "It would not, as things
+  > stand" held only of the `test_forest_retrieval.py` fixtures, which the real
+  > builder produces with a node's scope equal to its children's — there `_scope`
+  > withholds the draft whatever the node match does, so `_node_scope` cannot be
+  > isolated. These two tests break that equality on purpose, which is exactly what
+  > isolates the node gate from the leaf gate and lets a `_node_scope` mutation go
+  > RED.
+  >
+  > **The walk-side gate landed with it, by the walk scope-gate CL.**
+  > `walk_raptor_path` now filters its own final `nodes` lookup on the surfaced
+  > leaf's `project_id` and `status` — read off the leaf's own chunk row, not
+  > hardcoded `approved`, so an `include_unapproved` query keeps its draft leaf's
+  > draft ancestors — a second, independent gate that drops a scope-disagreeing
+  > ancestor from a `raptorPath` even were decision 1's construction-time invariant
+  > ever violated (defense in depth, not a reliance on it).
+  > `tests/integration/test_forest_store_retrieval.py::test_an_approved_leafs_raptor_path_excludes_a_draft_scope_ancestor`
+  > builds an approved leaf under a *draft* Domain node holding a secret and asserts
+  > that the draft ancestor's title, and the secret in it, never ride out on the
+  > path. Both enforcement points the forest reads through — the node match in
+  > `search_summaries` and the walk in `walk_raptor_path` — now carry their own
+  > mutation-checked isolation test, so this item is fully discharged.

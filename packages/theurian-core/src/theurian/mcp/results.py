@@ -21,6 +21,13 @@ from typing import Any, Final
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.knowledge import KnowledgeRevision
 
+# `excerpt` and `EXCERPT_CHARS` now live in the domain, because the RAPTOR forest
+# port bounds each `raptorPath` title with the same function and infrastructure
+# may not import this wire layer (ADR-0003). Re-exported here so the callers that
+# think of it as this module's -- `theurian.mcp.search`, and the tests -- keep
+# reaching it at the same name.
+from theurian.domain.retrieval import EXCERPT_CHARS, RaptorPathSegment, excerpt
+
 #: Attached to every knowledge-bearing result (SEC-15). Theurian labels; the
 #: calling agent enforces. That split is stated in SECURITY.md rather than left
 #: for a reader to infer.
@@ -30,15 +37,7 @@ SAFETY: Final[dict[str, object]] = {
     "executable": False,
 }
 
-#: Excerpt length. Long enough to judge relevance, short enough that ten hits do
-#: not become the whole answer.
-EXCERPT_CHARS: Final = 280
-
-
-def excerpt(text: str) -> str:
-    """One line of a passage, for a caller deciding whether to fetch the rest."""
-    flattened = text.strip().replace("\n", " ")
-    return flattened[:EXCERPT_CHARS] + ("..." if len(flattened) > EXCERPT_CHARS else "")
+__all__ = ["EXCERPT_CHARS", "SAFETY", "excerpt", "result_payload"]
 
 
 def result_payload(
@@ -46,6 +45,8 @@ def result_payload(
     status: KnowledgeStatus,
     sensitivity: Sensitivity,
     now: datetime,
+    *,
+    raptor_path: tuple[RaptorPathSegment, ...] = (),
 ) -> dict[str, Any]:
     """Shape one result, always with provenance and the trust triple.
 
@@ -60,10 +61,19 @@ def result_payload(
     was authored under rather than the one that now decides who may read it
     (SEC-14). The caller threads the item's current values in, the way it already
     did for ``status``.
+
+    ``raptor_path`` is the forest ancestry of a surfaced leaf, catalog root to
+    leaf, and is emitted as ``raptorPath`` **only when non-empty** (ADR-0008
+    decision 8). An empty tuple -- a chunk-only index, or the unranked canonical
+    scan, which has no forest to walk -- omits the key rather than publishing an
+    empty array: a field a client learns to ignore would say a forest was
+    consulted when none was. Each segment's ``title`` is already the node text
+    bounded by :func:`~theurian.domain.retrieval.excerpt`, applied in the index
+    adapter so the full summary text never travels; this only serialises it.
     """
     age = (now - revision.created_at).days
 
-    return {
+    payload: dict[str, Any] = {
         "itemId": revision.item_id.value,
         "revisionId": revision.revision_id.value,
         "title": revision.title,
@@ -91,3 +101,9 @@ def result_payload(
         ],
         **SAFETY,
     }
+    if raptor_path:
+        payload["raptorPath"] = [
+            {"nodeId": segment.node_id, "level": segment.level, "title": segment.title}
+            for segment in raptor_path
+        ]
+    return payload

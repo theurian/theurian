@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Final
 
 from theurian.domain.context import SnapshotId
 from theurian.domain.enums import ContentClassification, Sensitivity, TrustLevel
@@ -16,6 +17,25 @@ from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import IndexBuildId, ItemId, RevisionId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.values import MediaType
+
+#: Excerpt length. Long enough to judge relevance, short enough that ten hits do
+#: not become the whole answer.
+EXCERPT_CHARS: Final = 280
+
+
+def excerpt(text: str) -> str:
+    """One line of a passage, for a caller deciding whether to fetch the rest.
+
+    Lives in the domain rather than beside the wire shaper because two layers
+    now need it: :mod:`theurian.mcp.results` bounds a hit's own passage with it,
+    and the RAPTOR forest port bounds every ``raptorPath`` segment's title with
+    it before the title leaves the index adapter -- so a summary node's text is
+    already disclosure-minimised where it is read, not only where it is sent.
+    Infrastructure may import the domain; it may not import the wire layer, which
+    is why the shared function moved down rather than the adapter reaching up.
+    """
+    flattened = text.strip().replace("\n", " ")
+    return flattened[:EXCERPT_CHARS] + ("..." if len(flattened) > EXCERPT_CHARS else "")
 
 
 @dataclass(frozen=True, slots=True)

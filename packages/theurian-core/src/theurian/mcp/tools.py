@@ -716,7 +716,12 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 "knowledgeSearch": "hybrid",
                 "knowledgeGet": True,
                 "hybridRetrieval": True,
-                "raptor": False,
+                # A server property, not a per-index one: this build reads the
+                # forest -- a summary retriever routes to leaves and a surfaced
+                # leaf carries `raptorPath` (ADR-0008 decision 8). Whether a given
+                # project actually has a forest is discovered per response, through
+                # `raptorPath`'s presence, exactly as `hybridRetrieval` is.
+                "raptor": True,
                 "reviewIngestion": False,
                 "traceability": False,
                 "writeTools": False,

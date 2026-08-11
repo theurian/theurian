@@ -70,26 +70,45 @@ enumerates every registered tool and asserts none reaches a canonical write
   "itemId": "architecture.auth-policy",
   "revisionId": "01K1DEFREV1234567890ABCDEF",
   "title": "Authentication and authorization policy",
-  "excerpt": "...",
+  "excerpt": "The gateway verifies the request signature before any handler runs ...",
   "contentType": "text/markdown",
-  "score": 0.87,
+  "status": "approved",
   "trustLevel": "reviewed",
-  "freshness": { "isWithinValidity": true, "ageDays": 12, "...": "..." },
-  "snapshotId": "a1b2c3...",
-  "indexBuildId": "01K1DEFDX01234567890ABCDEF",
+  "sensitivity": "internal",
+  "freshness": { "revisionCreatedAt": "2026-08-01T09:00:00+09:00", "isWithinValidity": true, "ageDays": 12 },
   "sourceAnchors": [
-    { "provider": "git", "commitSha": "a1b2c3", "filePath": "...", "lineStart": 1, "lineEnd": 42 }
+    {
+      "provider": "git",
+      "sourceUri": "git://backend/architecture/auth-policy.md",
+      "repository": "backend",
+      "commitSha": "a1b2c3",
+      "filePath": "architecture/auth-policy.md",
+      "lineStart": 1,
+      "lineEnd": 42
+    }
   ],
-  "raptorPath": [{ "nodeId": "...", "level": 2, "title": "Backend architecture" }],
   "contentClassification": "untrusted-knowledge",
   "mayContainInstructions": true,
-  "executable": false
+  "executable": false,
+  "fusedScore": 0.87,
+  "foundBy": ["lexical", "summary"],
+  "raptorPath": [
+    { "nodeId": "3f9a1c...", "level": 2, "title": "Backend architecture — gateway, caching, and queueing policies" },
+    { "nodeId": "7c1b04...", "level": 1, "title": "Authentication and authorization policy" }
+  ]
 }
 ```
 
-`sourceAnchors` has `minItems: 1`. A result with no route back to its origin is
-an unverifiable assertion, and returning one would undermine every other
-guarantee here.
+`sourceAnchors` is always present and occasionally empty: an empty array means the
+revision declares it originates in Theurian rather than in a repository — the one
+case the domain's INV-8 allows — and a result with no route back to its origin
+cannot be constructed at all. `fusedScore` and `foundBy` appear together, on the
+ranked path only. `raptorPath` appears only over a `--raptor` index — the hit's
+summary ancestry, catalog root to leaf, one `{nodeId, level, title}` per node,
+`level` descending 3→1 (ADR-0008 decision 8). `snapshotId` and `indexBuildId` are
+provenance too, but they belong to the response's `retrieval` envelope, not to a
+hit: one query is answered from one canonical state and one index build, so a
+per-hit copy could never differ between hits (FR-R5).
 
 Schema: [`retrieval-result.schema.json`](../../schemas/knowledge/retrieval-result.schema.json).
 
