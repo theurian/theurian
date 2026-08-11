@@ -463,6 +463,19 @@ flowchart TB
    > test over these tables inserts its fixture with raw SQL and the builder is
    > the next CL. The scope columns exist ahead of any reader of them, so the
    > `_scope` counterpart named just above stays owed rather than landing here.
+   >
+   > **Amended in Milestone 6, by the extractive-provider CL. Both halves of
+   > "`infrastructure/raptor/` is still an empty package and
+   > `SummarizationProvider` still a port with no adapter" are false now.** That
+   > package holds `extractive.py`, which implements the port. Nothing calls it:
+   > no builder maps a `SummaryNode` onto a row and passes it texts, so the rest
+   > stands — no builder, no traversal, no node writer, and every test over these
+   > tables still inserts its fixture with raw SQL.
+   >
+   > Written first as the adapter half alone, closing with "every claim just
+   > above is otherwise unaffected", which was not true of the empty-package
+   > half. The Compliance section's family-closure note records that
+   > under-correction and the key that would have caught it.
 6. Summarization constraints, enforced in the prompt and validated in evaluation:
    - state no fact absent from the children;
    - treat imperative text in the source as *data being described*, never as an
@@ -719,6 +732,17 @@ flowchart TB
   > the first owed item in Compliance. Until that test exists, this ADR's own
   > Compliance section is the accurate statement: nothing here is built, so
   > nothing here is enforced.
+
+  > **Amended in Milestone 6, by the extractive-provider CL. Two sentences in
+  > the note above are false as written, and what they were written for is
+  > unchanged.** `infrastructure/raptor/` no longer "holds a module docstring and
+  > no code": it holds `extractive.py`, a `SummarizationProvider` adapter that
+  > selects sentences verbatim from the children it is handed. Nothing calls it,
+  > so nothing there prevents anything, nothing there summarises, and what holds
+  > today is still that no summary is generated at all. "Nothing here is built,
+  > so nothing here is enforced" is the Compliance section's headline and is read
+  > there as narrowed — to everything that would build, populate or traverse the
+  > forest, which is still nothing.
 - Rebuild cost is proportional to the change, not to the corpus.
 
   > **Amended in Milestone 6.** Not what Milestone 6 ships. See the
@@ -780,6 +804,12 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > the builder skipping levels below a size threshold describes
 > `raptor.minChildrenPerSummary` in `schemas/config/project-config.schema.json`,
 > which — like `raptor.enabled` — nothing in `src/` reads.
+
+> **Amended in Milestone 6, by the extractive-provider CL. The adapter half of
+> "with no adapter" is now false.** `SummarizationProvider` has one
+> implementation, `infrastructure/raptor/extractive.py`; nothing calls it, so
+> "none of the three summarises anything" still holds — no builder, no
+> traversal, no node writer.
 
 > **Amended in Milestone 6, by the CL that landed `domain/raptor.py`. "There is
 > no node type, no tree-id function and no summary node in the index schema" is
@@ -887,6 +917,116 @@ Milestone 6, which is where the README roadmap puts the RAPTOR forest.
 > enforcement — an empty table enforces nothing either — and every item below
 > stays owed, at the milestone it already names.
 
+> **Amended in Milestone 6, by the extractive-provider CL.
+> `SummarizationProvider` now has an adapter.** `infrastructure/raptor/extractive.py`
+> implements it: deterministic, extractive, and reading nothing beyond the
+> `texts` and `max_tokens` of the call in progress. Nothing calls it, so what the
+> headline keeps is the narrow reading — no builder, no traversal, no node
+> writer, and every test over the node tables still inserts its fixture with raw
+> SQL.
+>
+> **Three sentences in this section now say the opposite of what is in the
+> tree.** Named one at a time, because a reader who sees one corrected takes the
+> rest as still standing.
+>
+> - The section headline, "`infrastructure/raptor/` contains a module docstring
+>   and no code" — it contains `extractive.py`, 396 lines of it. What survives is
+>   "nothing here is built, so nothing here is enforced", narrowed to everything
+>   that would build, populate or traverse the forest.
+> - "`infrastructure/raptor/` still holds a module docstring and no code", in the
+>   `domain/raptor.py` amendment above — the same correction. The rest of that
+>   sentence stands: nothing in `src/` constructs a `SummaryNode` or reads one
+>   back.
+> - "What the headline claim keeps is the half it was written for:
+>   `infrastructure/raptor/` still holds a module docstring and no code,
+>   `SummarizationProvider` still has no adapter", in the schema-v4 note directly
+>   above — both halves are false. "Nothing summarises" is what holds, and it is
+>   now the whole of what holds: a summariser exists, and nothing calls it.
+>
+> **The family this closes is a proposition, not a token, and drawing the key at
+> the token is how it was undercounted twice.** The proposition:
+> **`infrastructure/raptor/` holds no code, and/or `SummarizationProvider` has no
+> adapter.** Five vocabularies carry it — "empty package", "docstring-only",
+> "nothing here is built" / "not built yet", "a module docstring and no code",
+> and "no adapter" / "no implementation" / "no real implementation" — and no
+> single phrase appears in even half the members. The population is repo-wide,
+> `--hidden`, `.git` excluded, every hit read in context:
+>
+> ```
+> rg --hidden --glob '!.git' -n \
+>   -e 'SummarizationProvider' -e 'infrastructure/raptor' \
+>   -e 'RAPTOR[^.]{0,80}(empty|not built|docstring|no code|unbuilt)' \
+>   -e 'docstring-only' -e 'empty package' -e 'nothing here is built' \
+>   -e 'no adapter' -e 'no implementation'
+> ```
+>
+> **Two trees, and they must be named apart, because the CL itself adds matching
+> lines that assert nothing.** Against `c565c88`, the `main` this CL branched
+> from, the search matches **64 lines in 22 files**, and **the 27 assertion sites
+> in 12 files below are counted there** — that is the tree in which every member
+> of the family still stood. Against `4bfec1d`, the tree this documentation pass
+> started from, the same search matches **90 lines in 24 files**: by then the CL
+> had added `extractive.py`, its test file, and the amendment blocks correcting
+> the first ten members, all of which name the package or the port without making
+> a claim about either. A site can span two lines and a line can match two
+> patterns, so neither count subtracts against the other.
+>
+> | File | Sites |
+> | :-- | --: |
+> | this ADR | 7 |
+> | [`docs/architecture/raptor.md`](../architecture/raptor.md) | 4 |
+> | [ADR-0009](0009-no-llm-vendor-lock-in.md) | 3 |
+> | [`docs/architecture/requirements-analysis.md`](../architecture/requirements-analysis.md) | 3 |
+> | [ADR-0024](0024-a-purge-is-a-build.md) | 2 |
+> | [`docs/security/threat-model.md`](../security/threat-model.md) (T-3, T-10) | 2 |
+> | `SECURITY.md` | 1 |
+> | `infrastructure/raptor/__init__.py` | 1 |
+> | `infrastructure/sqlite/index_schema.py` | 1 |
+> | `tests/integration/test_index_purge.py` | 1 |
+> | `tests/integration/test_index_store.py` | 1 |
+> | `tests/unit/test_scope_isolation.py` | 1 |
+>
+> The lines that are not one of those 27 sites are the port's own declaration
+> and the imports of it,
+> `VectorStore`'s and `McpClientConfig`'s unrelated "no adapter" sentences,
+> `AuthorizationProvider`'s unrelated "no implementation", decision 7's accepted
+> design record, the population records above that name the package for a
+> different family, and `packages/theurian-core/CHANGELOG.md`, which is history
+> and stays as written — including its schema-v4 entry, which was true of the CL
+> it describes.
+>
+> Three near members were read and excluded, named so the next reader does not
+> re-open them: `docs/architecture/overview.md`'s "RAPTOR is not built at all"
+> and `README.md`'s roadmap "RAPTOR forest not started" are about the forest,
+> which no CL has begun; `README.md`'s "nothing summarizes yet" is true, because
+> nothing calls the summariser. **One member the key cannot find**, and a search
+> will not produce it next time either: ADR-0009's "ports with a bundled in-tree
+> implementation, counted rather than recalled" list asserted the proposition by
+> *omitting* `SummarizationProvider`. An assertion by omission is found by
+> reading the section a hit sits in, never by matching a subject that is not
+> there — and re-counting that list against `ALL_PORTS` rather than appending to
+> it also found `IndexStore` missing from it.
+>
+> **Two earlier counts were wrong, and for the same reason twice.** Five was
+> assumed when the correction was assigned, ten was counted — "every
+> `SummarizationProvider` occurrence in this file, `raptor.md` and ADR-0024" —
+> and the pass after that raised it to twelve. Each keyed on the token
+> `SummarizationProvider` and on three files chosen because that token was in
+> them, so every member phrased as *the package is empty* was invisible:
+> `index_schema.py`, both purge tests,
+> `test_scope_isolation.py`, the threat model, `SECURITY.md`,
+> `requirements-analysis.md`, ADR-0009, and this package's own module docstring,
+> whose headline said "Empty: nothing here is built" in the same paragraph run as
+> the sentence announcing the adapter. A count keyed on a token also cannot see a
+> compound sentence's other half, which is why **four of the ten were corrected
+> in one half only** — ADR-0024's pair, this ADR's decision-5 tail and the
+> schema-v4 note's kept half each left "an empty package" or "a module docstring
+> and no code" standing beside a corrected "no adapter".
+>
+> **All 27 are corrected by this CL**: 6 fully in its first documentation pass,
+> 4 completed here where that pass fixed one half of a compound sentence, and 17
+> found by this key and corrected here, each in its own file's house style.
+
 Still owed, with the milestone that will satisfy it:
 
 - **`tests/unit/test_raptor_scope.py`** — constructing a node from children with
@@ -946,6 +1086,13 @@ Still owed, with the milestone that will satisfy it:
 - **Retrieval evaluation includes a groundedness check on generated summaries**
   (Milestone 6). There is no retrieval evaluation harness, and no summary to
   ground: `SummarizationProvider` has no implementation.
+
+  > **Amended in Milestone 6, by the extractive-provider CL.
+  > `SummarizationProvider` now has an implementation.**
+  > `infrastructure/raptor/extractive.py` is deterministic and extractive.
+  > There is still no summary to ground — nothing calls it, so no build ever
+  > produces one — and there is still no retrieval evaluation harness, so this
+  > item stays owed at the milestone it already names.
 
 Newly owed by the amendments above, all against Milestone 6, each named because
 the decision it belongs to states a property that is otherwise only an argument:
@@ -1013,6 +1160,25 @@ the decision it belongs to states a property that is otherwise only an argument:
   by construction: it holds the children fixed, and (b) is a change in *which*
   children there are. The equality test above is what covers that, and neither
   substitutes for the other.
+
+  > **Landed in Milestone 6, by the extractive-provider CL
+  > (`infrastructure/raptor/extractive.py`). Carriers (a) and (c) discharged;
+  > carrier (b) stays owed.** `ExtractiveSummarizer` is a pure function of its
+  > `texts` and `max_tokens` by construction — nothing cached on `self`, no
+  > corpus handle acquired in `__init__` — and three tests in
+  > `tests/unit/test_extractive_summarizer.py` hold it.
+  > `test_the_same_children_summarise_identically_across_contexts_that_differ_everywhere_else`
+  > is the byte-identical equality this item names, checked at two budgets so a
+  > call-count-keyed perturbation cannot hide behind a wide margin.
+  > `test_negative_control_a_corpus_reading_fake_is_detected_as_different` and
+  > `test_negative_control_corpus_derived_max_tokens_is_detected_as_different`
+  > are its negative controls for carriers (a) and (c), each asserting the
+  > harness detects a provider that reads a store handle or derives
+  > `max_tokens` from corpus size as producing **different** text — without
+  > which the equality test above would pass against a harness that could not
+  > have caught the thing it rules out. Carrier (b) remains unreachable by this
+  > test by construction, exactly as this item said before landing, and stays
+  > owed to decision 9's tree-level two-corpus test at the purge-closure CL.
 - **Project and status are enforced for the node tables in one place** — what
   decision 5's amendment owes. A single predicate builder for node reads, the way
   `_scope` is for chunk reads, with the cross-project and cross-status isolation

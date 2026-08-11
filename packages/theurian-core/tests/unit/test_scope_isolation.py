@@ -7,8 +7,9 @@ restricted source. These tests establish the foundation that would make that
 impossible by construction rather than by remembering to check -- they prove
 every distinct scope renders to a distinct key, so no RAPTOR forest could place
 two different scopes in one tree. The forest that would rely on it is Milestone 6
-(`infrastructure/raptor/` is not built yet, #115); the scope-key distinguishability
-it needs is what exists and is asserted here.
+(`infrastructure/raptor/` holds the default summariser and nothing that builds or
+traverses a tree, #115); the scope-key distinguishability it needs is what exists
+and is asserted here.
 """
 
 from __future__ import annotations

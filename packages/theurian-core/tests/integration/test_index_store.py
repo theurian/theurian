@@ -1518,9 +1518,10 @@ def test_the_schema_carries_the_node_tables_the_purge_traversal_will_walk(
     ordinary leaf query. `chunks.derived` and `chunk_derivation` are dropped
     rather than kept beside the new tables: a column nothing will ever write
     serves nothing, and keeping it would leave two provenance mechanisms of
-    which one is permanently dead. Nothing writes a node row yet -- RAPTOR is
-    still an empty package -- so without this the tables could be dropped and
-    every purge test over nodes would still pass on a corpus that never has one.
+    which one is permanently dead. Nothing writes a node row yet -- RAPTOR has a
+    default summariser and no builder to call it -- so without this the tables
+    could be dropped and every purge test over nodes would still pass on a
+    corpus that never has one.
     """
     with closing(sqlite3.connect(store.path)) as connection:
         chunk_columns = {row[1] for row in connection.execute("PRAGMA table_info(chunks)")}

@@ -308,9 +308,10 @@ def test_purging_nothing_is_a_faithful_copy(
 
 # -- Node rows (ADR-0008 decision 5's amendment, ADR-0024 decision 8) --------
 #
-# Nothing writes a node row yet: RAPTOR (ADR-0008) is an empty package, and
-# `SummarizationProvider` a port with no adapter. The rows below are inserted
-# with raw SQL for exactly that reason, and the seam is deliberate -- the
+# Nothing writes a node row yet: RAPTOR (ADR-0008) has its first
+# `SummarizationProvider` adapter, `infrastructure/raptor/extractive.py`, and no
+# builder to call it. The rows below are inserted with raw SQL for exactly that
+# reason, and the seam is deliberate -- the
 # *traversal* is what is under test and it runs through the interface. Writing
 # the purge's transitive path after RAPTOR lands would mean designing it twice,
 # and the second time under pressure from a feature that already ships.

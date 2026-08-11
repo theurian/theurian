@@ -18,8 +18,13 @@ class SummarizationProvider(Protocol):
     Implementations must treat child text as **data being described**, never as
     instructions. A child document saying "ignore previous instructions" is a
     document that says that; it is not a directive to the summarizer (SEC-16).
-    Implementations wrap source text in a delimited untrusted region and never
-    interpolate it into a system-role message.
+    An implementation that *prompts a model* discharges that by wrapping source
+    text in a delimited untrusted region and never interpolating it into a
+    system-role message. One that does not prompt anything discharges it by
+    construction, having no instruction channel to confuse: the extractive
+    default selects sentences from the children and never builds a prompt at
+    all, so the obligation lands on the first abstractive adapter rather than
+    on this one.
     """
 
     @property
@@ -30,10 +35,16 @@ class SummarizationProvider(Protocol):
 
     @property
     def prompt_hash(self) -> str:
-        """Hash of the summarization prompt.
+        """Hash of whatever decides what this implementation produces.
 
-        Persisted per node so a prompt change marks existing summaries stale
-        deterministically rather than leaving an index that mixes two prompt
+        For an implementation that prompts a model, that is the prompt. For one
+        that builds no prompt, it is the identifier of its selection semantics:
+        ``ExtractiveSummarizer`` hashes its ``SEMANTICS_VERSION``, because it
+        has no prompt to hash and a summary node still has to know when the
+        thing that produced it changed.
+
+        Persisted per node so a change to either marks existing summaries stale
+        deterministically rather than leaving an index that mixes two
         generations (ADR-0008).
         """
         ...

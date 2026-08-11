@@ -48,6 +48,13 @@ CHARS_PER_TOKEN: Final = 4
 #: English heuristic — misses by roughly fivefold.
 _DENSE_TOKENS_PER_CHAR: Final = 1.5
 
+# Either rate, and the ranges below, also decide which sentences the RAPTOR
+# summarizer keeps, and that choice is persisted per node and staled against its
+# `SEMANTICS_VERSION` (ADR-0008 decision 5) — so a change here is a bump there.
+# `test_extractive_summarizer.py` pins the two rates to put that in front of
+# review; the ranges are not pinned, so adding one needs the same judgement
+# without a red test to prompt it.
+
 #: Ranges whose characters are counted at the dense rate above.
 _DENSE_SCRIPT_RANGES: Final = (
     (0x3000, 0x30FF),  # CJK punctuation, hiragana, katakana

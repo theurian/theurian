@@ -1502,11 +1502,12 @@ against a *real* tool response by
 with `::test_the_conformance_check_can_fail` asserting that a response carrying
 `executable: true` is rejected. The summarization step that *would* additionally
 wrap source content in a delimited untrusted region, and never interpolate it
-into a system-role message, is Milestone 6 and unbuilt: `infrastructure/raptor/`
-is docstring-only and there is no `SummarizationProvider` implementation, so no
-generated summary text exists on any answer path today. The interim residual is
-that the only untrusted content a result carries is the source excerpt, already
-labelled by the triple above (#115).
+into a system-role message, is Milestone 6 and unbuilt: the one
+`SummarizationProvider` adapter `infrastructure/raptor/` now holds is extractive
+and builds no prompt at all, and nothing calls it — no builder, no traversal —
+so no generated summary text exists on any answer path today. The interim
+residual is that the only untrusted content a result carries is the source
+excerpt, already labelled by the triple above (#115).
 
 > **Corrected in Milestone 5, review round 8. This entry named the wrong
 > enforcement mechanism.** It said "`executable` cannot be set true — the type
@@ -1562,8 +1563,9 @@ and encoding pinned against a literal digest in
 `test_raptor_scope.py::test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`.
 A RAPTOR node whose children differed in any component *would* have no tree to
 belong to, which is what *would* make mixing structurally impossible rather than
-policy-checked. The subjunctive is deliberate: `infrastructure/raptor/` is a
-docstring-only package (its own text: "nothing here is built (Milestone 6)"), so
+policy-checked. The subjunctive is deliberate: `infrastructure/raptor/` holds a
+default extractive summariser and nothing that builds or traverses a tree (its
+own text: "one summariser and no forest"), and nothing calls the summariser, so
 no summary node exists to mix. `domain/raptor.py`'s `SummaryNode` refuses
 children whose scope disagrees with its own, which is that refusal written down
 at the value level — it carries scopes and no text, nothing in `src/`

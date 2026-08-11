@@ -248,9 +248,9 @@ agree today.
 ## Summarization constraints
 
 Five constraints on the summary itself, to be enforced in the prompt and
-validated during evaluation — neither of which exists yet: there is no
-`SummarizationProvider` adapter to carry a prompt, and no retrieval evaluation
-harness to validate against.
+validated during evaluation — for a prompted adapter, neither exists yet: the
+one adapter that exists (below) is extractive and carries no prompt at all,
+and there is no retrieval evaluation harness to validate against.
 
 | Constraint | Why |
 | :-- | :-- |
@@ -262,7 +262,9 @@ harness to validate against.
 
 Implementations must wrap source content in a delimited untrusted region and
 never interpolate it into a system-role message. The port docstring states that
-requirement; no adapter exists to hold it.
+requirement; the one adapter that exists sends no prompt anywhere, so the
+requirement is unexercised rather than unenforceable — it binds a future
+prompted adapter, not this one.
 
 A sixth constraint was added in Milestone 6, and no prompt can carry it because
 it constrains the adapter rather than the model: **a summarizer is a pure
@@ -280,13 +282,26 @@ enforcing it.
 
 ## Working with no model configured
 
-The default `SummarizationProvider` will be **extractive**: it would select
-sentences rather than generate them, so it could not state a fact its children
-do not contain. Quality would be lower than an abstractive summary; in exchange
-every sentence would be one the children already hold.
-The port is declared in `domain/ports/summarization.py` and has no
-implementation — extractive or otherwise — so today there is nothing to
-summarize with at all.
+The default `SummarizationProvider` is **extractive**:
+`infrastructure/raptor/extractive.py`'s `ExtractiveSummarizer` selects
+sentences rather than generating them, so it cannot state a fact its children
+do not contain. Quality is lower than an abstractive summary; in exchange every
+sentence is one the children already hold. It is deterministic and, per
+ADR-0008 decision 6's Milestone 6 amendment, pure — a function of only the
+`texts`, `scope` and `max_tokens` one call passes it, nothing cached on the
+instance and no corpus handle held — pinned by
+`tests/unit/test_extractive_summarizer.py`, in-process and across process
+boundaries: `test_summarize_is_stable_across_processes` and
+`test_a_tied_selection_is_stable_across_processes` run `summarize` in three
+fresh interpreters at `PYTHONHASHSEED` 0, 1 and 999 and require one distinct
+output. That seed variance is what cannot be tested within a single process,
+and the tied fixture is run separately because a corpus with no score ties
+cannot see a tie-break that started reading a hash-seed-dependent key.
+
+**Nothing calls it yet.** The port is declared in
+`domain/ports/summarization.py` and now has one implementation, but no builder
+exists to call `summarize` with real child texts, so today there is still
+nothing to summarize with in a running build.
 
 Two things ride on that choice. It is what will let Theurian produce a usable
 forest offline with no API key
@@ -345,9 +360,12 @@ merely the field's presence.
 Summarization sits behind a port: `SummarizationProvider`, which is the port
 ADR-0008 decision 7 names. The intent is that swapping extractive for
 abstractive, or a hosted model for a local one, touches no domain, application,
-or retrieval orchestration code. Nothing demonstrates that yet — the port has no
-adapter and no consumer, so the property is the shape of the contract rather
-than something a swap has been run against.
+or retrieval orchestration code. One adapter exists now — the extractive
+default above — but nothing demonstrates the swap property yet: there is no
+second adapter to swap it for and no consumer to swap it under, so the
+property is still the shape of the contract rather than something a swap has
+been run against. It stays unexercised until a second adapter or the builder
+exists.
 
 The hierarchy itself has no port. The port set is closed and adding one takes an
 ADR ([ADR-0003](../adr/0003-ports-and-adapters.md)), so a team wanting a
