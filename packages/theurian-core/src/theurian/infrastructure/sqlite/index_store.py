@@ -73,6 +73,27 @@ _FLOAT32_BYTES: Final = 4
 #: want its own floor; it arrives with its own adapter.
 DENSE_SIMILARITY_FLOOR: Final = 0.25
 
+#: Delete every node upward-reachable from the seed chunks in `temp.recompute_seed`
+#: -- the affected scope's whole current node set (see
+#: :meth:`SqliteIndexStore.delete_nodes_grounded_in_chunks`).
+#:
+#: Only Document nodes carry a `source_chunk_id`, so the base arm names exactly the
+#: leaf tier over the seed; the recursive arm walks `source_node_id` up through the
+#: Domain and Catalog tiers. `UNION` and not `UNION ALL` so a Catalog reached
+#: through two Domain nodes is not enqueued twice, and so the walk terminates.
+#: Every value is a column of a module-owned temp table -- no interpolation, no
+#: bound user input.
+_DELETE_SCOPE_NODES: Final = """
+WITH RECURSIVE grounded(node_id) AS (
+    SELECT node_id FROM node_derivation
+     WHERE source_chunk_id IN (SELECT chunk_id FROM temp.recompute_seed)
+    UNION
+    SELECT e.node_id FROM node_derivation e
+      JOIN grounded g ON e.source_node_id = g.node_id
+)
+DELETE FROM nodes WHERE node_id IN (SELECT node_id FROM grounded)
+"""
+
 
 class IndexBuildError(TheurianError):
     """The index could not be built or queried."""
@@ -744,32 +765,56 @@ class SqliteIndexStore:
                 for row in rows
             )
 
-    def delete_nodes_of_trees(self, tree_ids: Sequence[str]) -> int:
-        """Remove every node in the given trees, and its edges and vectors with it.
+    def delete_nodes_grounded_in_chunks(self, chunk_ids: Sequence[str]) -> int:
+        """Remove every node upward-reachable from the given chunks. Returns the count.
 
-        The re-derivation's scope-clearing step: before re-deriving an affected
-        scope it deletes that scope's existing nodes, because clustering changes
-        the *member set* of a Domain node and content-addressing then moves its id
-        (ADR-0008 decision 9) -- so a survivor is a different node, not the old one
-        minus a child, and re-inserting over it would collide on the primary key.
-        Deleting by `tree_id` is exact: a tree id is a hash of the scope, so the
-        ids re-derivation produces for one scope name only that scope's trees and
-        never reach across a scope boundary.
+        The re-derivation's scope-clearing step: before re-inserting an affected
+        scope's fresh trees it deletes that scope's *entire* current node set,
+        because clustering changes the member set of a Domain node and
+        content-addressing then moves its id (ADR-0008 decision 9) -- so a survivor
+        is a different node, not the old one minus a child, and re-inserting over it
+        would collide on the primary key.
+
+        **Seeded on all the scope's surviving chunks, not on the fresh trees, and
+        that is the fan-out fix.** A withdrawal that collapses a Domain fan-out
+        ``b -> b-1`` leaves a *surviving* top batch ``kind#(b-1)`` whose members
+        were all kept, so `_delete` never dooms it, yet the re-derivation over the
+        survivors mints only ``kind#0`` -- so its tree id is absent from the fresh
+        set. Deleting by the fresh tree ids missed that stale batch; the cascade
+        then stripped its edges when the survivors' Document nodes were re-derived,
+        leaving it unprovenanced, and `_verify` refused the whole purge closed. The
+        upward closure from the scope's surviving chunks reaches it, because it
+        still grounds on those chunks through its surviving Document children.
+
+        **Exact over the affected scope and reaching no other.** Every surviving
+        node is well-founded in surviving chunks (`_delete` removed the rest), and a
+        `SummaryNode` refuses cross-scope children, so a node's downward closure
+        lands entirely in one scope: the upward closure from a scope's chunks is
+        exactly that scope's current nodes, stale re-batched discriminators
+        included, and touches no node whose chunks are elsewhere. A plain
+        scope-column delete cannot do this -- `nodes` has no `namespace` column, so
+        two scopes differing only in namespace would over-match.
+
+        The seed is a temp table rather than bound `IN (...)` placeholders because
+        an affected scope can hold hundreds of thousands of chunks (the fan-out's
+        own design point), past SQLite's host-parameter ceiling -- the same reason
+        `index_purge._verify` materialises `temp.withdrawn`.
 
         `ON DELETE CASCADE` carries `node_derivation` and `node_embeddings` with
         each node, and `_connect` runs with `PRAGMA foreign_keys = ON`, so the
         cascade fires rather than leaving a dangling edge the purge's `_verify`
         would then refuse the build over.
         """
-        if not tree_ids:
+        if not chunk_ids:
             return 0
 
-        placeholders = ",".join("?" * len(tree_ids))
         with _connect(self._path) as connection:
-            cursor = connection.execute(
-                f"DELETE FROM nodes WHERE tree_id IN ({placeholders})",  # noqa: S608 - placeholders only
-                tuple(tree_ids),
+            connection.execute("CREATE TEMP TABLE recompute_seed (chunk_id TEXT PRIMARY KEY)")
+            connection.executemany(
+                "INSERT OR IGNORE INTO temp.recompute_seed (chunk_id) VALUES (?)",
+                [(chunk_id,) for chunk_id in chunk_ids],
             )
+            cursor = connection.execute(_DELETE_SCOPE_NODES)
             connection.commit()
             return cursor.rowcount
 

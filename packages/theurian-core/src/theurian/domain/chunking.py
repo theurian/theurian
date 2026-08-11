@@ -280,10 +280,12 @@ class IndexableChunk:
     catalog tier always has a single child, and the three levels ADR-0008 names
     are structurally unreachable.
 
-    ``kind`` has no column on ``chunks`` and is not meant to get one: nothing
-    queries it, and it is consumed in memory by
-    :mod:`theurian.application.forest_builder` during the same build that
-    produced the chunk.
+    ``kind`` is a column on ``chunks`` as of index schema v5, written by
+    ``add_chunks`` and read back by ``surviving_chunks``: no *retrieval* queries
+    it, but the withdrawal purge's re-derivation must reconstruct each chunk's
+    ``kind`` from the index's own surviving rows, and it lives nowhere else in the
+    file once a build finishes -- a summary node records its scope but not the leaf
+    ``kind`` its Domain tree was clustered on (``index_schema.py``'s v5 note).
     """
 
     chunk: Chunk

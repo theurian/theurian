@@ -94,19 +94,19 @@ class ForestRecomputeStore(Protocol):
     this holds it as a protocol and the CLI passes ``SqliteIndexStore``.
 
     ``surviving_chunks`` reads the copy's rows back as the builder's own input,
-    ``delete_nodes_of_trees`` clears an affected scope's existing nodes, and
-    ``add_nodes``/``add_node_embeddings`` write the re-derived forest -- the same
-    two writes a fresh build makes, so a re-derived scope and a never-built one
-    take identical paths. ``metadata`` is read to tell a build that carried chunk
-    embeddings from one built ``--no-embeddings``, so the re-derived nodes are
-    vectorised exactly when a never-held build's would be.
+    ``delete_nodes_grounded_in_chunks`` clears an affected scope's *entire* current
+    node set, and ``add_nodes``/``add_node_embeddings`` write the re-derived forest
+    -- the same two writes a fresh build makes, so a re-derived scope and a
+    never-built one take identical paths. ``metadata`` is read to tell a build that
+    carried chunk embeddings from one built ``--no-embeddings``, so the re-derived
+    nodes are vectorised exactly when a never-held build's would be.
     """
 
     def metadata(self) -> Mapping[str, object]: ...
 
     def surviving_chunks(self, *, project_id: str) -> Sequence[IndexableChunk]: ...
 
-    def delete_nodes_of_trees(self, tree_ids: Sequence[str]) -> int: ...
+    def delete_nodes_grounded_in_chunks(self, chunk_ids: Sequence[str]) -> int: ...
 
     def add_nodes(
         self,
@@ -389,13 +389,18 @@ def _recompute_forest(
     over whichever Domain nodes remain. Unaffected scopes are never read, so their
     copied nodes stay byte-identical.
 
-    Deletion is by the *fresh* tree ids, and that is exact rather than a
-    convenience. Every node an affected scope still holds after the delete stands
-    on surviving chunks, so its tree is one the derivation below reproduces -- its
-    id is in ``tree_ids``. A tree id is a hash of the scope, so the set names only
-    this scope's trees and reaches no other. And if the deletion were ever
-    incomplete, the re-insert would collide on a survivor's unchanged primary key
-    and fail the whole purge closed, rather than publish a doubled forest.
+    Deletion removes the affected scope's **entire** current node set -- every node
+    upward-reachable from its surviving chunks, not just the ones the fresh trees
+    name (``delete_nodes_grounded_in_chunks``). A withdrawal that collapses a Domain
+    fan-out ``b -> b-1`` leaves a surviving top batch ``kind#(b-1)`` whose members
+    were all kept and which the fresh derivation, minting only ``kind#0``, does not
+    reproduce: a delete by fresh tree ids would miss it, the cascade would strip its
+    edges when the survivors' Document nodes were re-derived, and ``_verify`` would
+    refuse the purge over the unprovenanced remnant. Clearing the whole scope
+    reaches that stale batch, because it still grounds on the scope's surviving
+    chunks. The earlier reliance on a primary-key collision to fail closed was an
+    accidental net over an incomplete delete, not the mechanism, and is no longer
+    relied on: the delete is now exact over the scope by construction.
     """
     affected = frozenset(affected_scopes)
     if not affected:
@@ -416,14 +421,15 @@ def _recompute_forest(
 
     nodes = forest_builder.derive(scoped)
     if not nodes:
-        # The survivors fall below every tier's threshold. A surviving node would
-        # need a surviving tree, which this derivation would have produced, so its
-        # absence means no old node lingers to delete either.
+        # The survivors fall below every tier's threshold, so no fresh node is
+        # produced. A withdrawal never changes an item's chunk count -- a revision
+        # is withheld whole or not at all -- so every surviving Document node's
+        # chunks are all present and this derivation would have reproduced it. Its
+        # absence therefore means no old node lingers in the scope to delete either.
         return
 
-    tree_ids = sorted({node.tree_id for node in nodes})
     active = _embedder_for(store, embedder)
-    store.delete_nodes_of_trees(tree_ids)
+    store.delete_nodes_grounded_in_chunks([chunk.chunk.chunk_id for chunk in scoped])
     store.add_nodes(
         nodes,
         embedding_model=active.model_id if active is not None else "",
