@@ -1087,6 +1087,14 @@ flowchart TB
 >     > wire (decision 8), so the honest value is still `false`, and it flips with
 >     > the retrieval CL rather than with this one. The prediction was made from
 >     > the builder's side of the boundary; the flag lives on the caller's.
+>     >
+>     > **Landed in Milestone 6, by the retrieval CL — the prediction above came
+>     > true.** #147 landed `raptorPath` on the wire, so node-derived data now
+>     > reaches a caller (decision 8's landed note), and "the third place" flipped
+>     > exactly as this note said it would: `mcp/tools.py`'s capabilities block now
+>     > reports `"raptor": true`. The honest value is no longer `false`, because a
+>     > client reading `raptor: true` now does get a `raptorPath`. Pinned by
+>     > `tests/integration/test_forest_retrieval.py::test_capabilities_reports_raptor_supported`.
 
 ## Consequences
 
