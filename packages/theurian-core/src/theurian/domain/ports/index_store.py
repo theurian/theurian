@@ -21,13 +21,25 @@ here is re-opening that, so the reason is recorded where the method was.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from theurian.domain.chunking import IndexableChunk
+from theurian.domain.chunking import ChunkScope, IndexableChunk
 from theurian.domain.ranking import RetrieverPage
 from theurian.domain.raptor import IndexableNode
+
+#: Re-derive the summary forest of each affected scope over a purged build's
+#: surviving rows, in place, before the build is verified and published.
+#:
+#: Called by :func:`~theurian.infrastructure.sqlite.index_purge.purge_into` with
+#: the building file's path and the scopes whose rows the purge removed. It is a
+#: `Callable` and not a method on this port because it closes over the
+#: application-layer forest builder and the embedder, which the infrastructure
+#: purge may not name (ADR-0003); the composition root builds it (see
+#: :func:`~theurian.application.withdrawal_purge.make_forest_recompute`) and it
+#: rides through :meth:`IndexStore.derive_purged` as data.
+ForestRecompute = Callable[[Path, Sequence[ChunkScope]], None]
 
 
 @runtime_checkable
@@ -116,6 +128,7 @@ class IndexStore(Protocol):
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int:
         """Write this build minus `revision_ids` to `target`. Returns rows removed.
 
@@ -130,6 +143,13 @@ class IndexStore(Protocol):
         withdrawn by deleting the passage it summarises — so everything reachable
         from a withdrawn chunk goes with it, and so does any derived row whose
         provenance cannot be resolved.
+
+        `recompute_forest`, when given, re-derives each affected scope's summary
+        trees over the surviving rows so the purged forest equals one built from a
+        corpus that never held the withdrawn rows (ADR-0008 decision 9). Absent
+        it, or over a build with no forest, the purge is delete-only. The count is
+        unchanged either way: it is the withdrawn rows removed, not the survivors
+        a re-derivation deletes and re-writes identically.
 
         All-or-nothing. An implementation that cannot produce a build fit to
         publish must leave no file behind, because what publishes a build is a

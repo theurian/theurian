@@ -63,6 +63,7 @@ from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
 from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeItem, KnowledgeRevision
+from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
 from theurian.domain.values import ValidityPeriod
@@ -218,6 +219,7 @@ class _CountingIndex:
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int:
         raise NotImplementedError
 
@@ -798,6 +800,7 @@ class _NeverFinished:
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int:
         raise NotImplementedError
 

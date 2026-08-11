@@ -14,6 +14,7 @@ from typing import Annotated, Any, Final
 
 import typer
 
+from theurian.application.forest_builder import ForestBuilder
 from theurian.application.ingestion_service import (
     IngestionRequest,
     IngestionService,
@@ -36,6 +37,7 @@ from theurian.application.project_service import (
 )
 from theurian.application.withdrawal_purge import (
     WithdrawalPurge,
+    make_forest_recompute,
     publish_purge_for_withdrawal,
 )
 from theurian.cli.context import (
@@ -66,7 +68,9 @@ from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
 from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
+from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
+from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
@@ -1056,6 +1060,20 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         withdrawal_candidates=report.withdrawn_candidates,
         ids=context.ids,
         index_factory=SqliteIndexStore,
+        # Re-derive each affected scope's forest over the surviving rows, so a
+        # purged build's trees equal a never-held corpus's (ADR-0008 decision 9).
+        # Composed here, the composition root, because the callback closes over
+        # the extractive summariser and the hashing embedder -- adapters the
+        # application-layer purge may not name (ADR-0003). Over a chunk-only index
+        # it is a no-op, so a build without `--raptor` keeps today's delete-only
+        # purge. The embedder is passed whatever the build's flavor; the purge
+        # embeds re-derived nodes only when the build being purged already carried
+        # chunk embeddings, so a `--no-embeddings` forest stays vector-free.
+        recompute=make_forest_recompute(
+            store_factory=SqliteIndexStore,
+            forest_builder=ForestBuilder(summarizer=ExtractiveSummarizer()),
+            embedder=HashingEmbedding(),
+        ),
     )
 
     _emit(

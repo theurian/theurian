@@ -36,18 +36,25 @@ chunk ids and scores).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import asyncio
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from theurian.application.forest_builder import ForestBuilder
+from theurian.application.index_builder import EMBED_BATCH
 from theurian.application.migration_engine import WithdrawalCandidate, revisions_to_purge
 from theurian.application.project_service import (
     ProjectPaths,
     read_active_index_pointer,
     write_active_index_pointer,
 )
+from theurian.domain.chunking import ChunkScope, IndexableChunk
 from theurian.domain.ports.determinism import IdGenerator
+from theurian.domain.ports.embedding import EmbeddingProvider
+from theurian.domain.ports.index_store import ForestRecompute
+from theurian.domain.raptor import IndexableNode
 
 
 class PurgeableIndex(Protocol):
@@ -72,7 +79,45 @@ class PurgeableIndex(Protocol):
         revision_ids: Sequence[str],
         index_build_id: str,
         state_hash: str,
+        recompute_forest: ForestRecompute | None = None,
     ) -> int: ...
+
+
+class ForestRecomputeStore(Protocol):
+    """What the re-derivation asks of a store bound to the *building* file.
+
+    Narrower than :class:`~theurian.domain.ports.index_store.IndexStore`, and a
+    different object than :class:`PurgeableIndex`: that one reads the published
+    build the purge copies *from*, this one reads and writes the copy the purge is
+    assembling. The concrete adapter is the same class, bound to a different path,
+    and named only at the composition root (ADR-0003) -- so the callback that uses
+    this holds it as a protocol and the CLI passes ``SqliteIndexStore``.
+
+    ``surviving_chunks`` reads the copy's rows back as the builder's own input,
+    ``delete_nodes_of_trees`` clears an affected scope's existing nodes, and
+    ``add_nodes``/``add_node_embeddings`` write the re-derived forest -- the same
+    two writes a fresh build makes, so a re-derived scope and a never-built one
+    take identical paths. ``metadata`` is read to tell a build that carried chunk
+    embeddings from one built ``--no-embeddings``, so the re-derived nodes are
+    vectorised exactly when a never-held build's would be.
+    """
+
+    def metadata(self) -> Mapping[str, object]: ...
+
+    def surviving_chunks(self, *, project_id: str) -> Sequence[IndexableChunk]: ...
+
+    def delete_nodes_of_trees(self, tree_ids: Sequence[str]) -> int: ...
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int: ...
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int: ...
 
 
 #: A purge did not run, and the reason, in the vocabulary a command reports.
@@ -135,6 +180,7 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
     withdrawal_candidates: Sequence[WithdrawalCandidate],
     ids: IdGenerator,
     index_factory: Callable[[Path], PurgeableIndex],
+    recompute: ForestRecompute | None = None,
 ) -> WithdrawalPurge:
     """Publish a copy of the current index with the withdrawn revisions removed.
 
@@ -229,6 +275,7 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             revision_ids=deduped,
             index_build_id=new_id,
             state_hash=source_state_hash,
+            recompute_forest=recompute,
         )
         if removed == 0:
             # A race the widened pre-check could not see (the rows left between the
@@ -287,13 +334,149 @@ def _discard(build: Path) -> None:
         Path(str(build) + suffix).unlink(missing_ok=True)
 
 
+def make_forest_recompute(
+    *,
+    store_factory: Callable[[Path], ForestRecomputeStore],
+    forest_builder: ForestBuilder,
+    embedder: EmbeddingProvider | None,
+) -> ForestRecompute:
+    """The re-derivation callback the purge runs, closing over its collaborators.
+
+    Built at the composition root so the application layer names no adapter: the
+    CLI constructs the ``ForestBuilder`` (over the extractive default) and the
+    embedder and hands them here, and the returned callable is passed to
+    ``publish_purge_for_withdrawal`` and rides through to
+    :func:`~theurian.infrastructure.sqlite.index_purge.purge_into`, which calls it
+    on the building file (ADR-0003).
+
+    **The default extractive summariser is deterministic, which is what makes the
+    re-derivation reproduce a never-held build rather than merely resemble it**
+    (ADR-0008 decision 9). A non-deterministic provider -- none exists today --
+    could not, and its correct behaviour is a *different* path: delete the
+    affected trees' nodes and record the forest stale, forfeiting the equality
+    rather than faking it (ADR-0008 decision 9's final paragraphs). This callback
+    assumes determinism and does not branch on it; the day such a provider is
+    configured, that is the CL that adds the delete-and-mark-stale branch, not a
+    dead one carried here in the meantime.
+    """
+
+    def recompute(building: Path, affected_scopes: Sequence[ChunkScope]) -> None:
+        _recompute_forest(
+            building,
+            affected_scopes,
+            store_factory=store_factory,
+            forest_builder=forest_builder,
+            embedder=embedder,
+        )
+
+    return recompute
+
+
+def _recompute_forest(
+    building: Path,
+    affected_scopes: Sequence[ChunkScope],
+    *,
+    store_factory: Callable[[Path], ForestRecomputeStore],
+    forest_builder: ForestBuilder,
+    embedder: EmbeddingProvider | None,
+) -> None:
+    """Rebuild each affected scope's trees over the building file's surviving rows.
+
+    The whole scope re-derives, not just the doomed nodes: a withdrawal changes a
+    Domain node's *member set*, and content-addressing then moves the survivor's
+    id and text with it (ADR-0008 decision 9), so a survivor is a different node
+    rather than the old one minus a child -- and the Catalog above it is rebuilt
+    over whichever Domain nodes remain. Unaffected scopes are never read, so their
+    copied nodes stay byte-identical.
+
+    Deletion is by the *fresh* tree ids, and that is exact rather than a
+    convenience. Every node an affected scope still holds after the delete stands
+    on surviving chunks, so its tree is one the derivation below reproduces -- its
+    id is in ``tree_ids``. A tree id is a hash of the scope, so the set names only
+    this scope's trees and reaches no other. And if the deletion were ever
+    incomplete, the re-insert would collide on a survivor's unchanged primary key
+    and fail the whole purge closed, rather than publish a doubled forest.
+    """
+    affected = frozenset(affected_scopes)
+    if not affected:
+        return
+    store = store_factory(building)
+    project_id = next(iter(affected)).project_id
+    scoped = [
+        chunk
+        for chunk in store.surviving_chunks(project_id=project_id)
+        if chunk.scope_key in affected
+    ]
+    if not scoped:
+        # Every affected scope lost all of its chunks. The nodes that stood on
+        # them were doomed and already deleted, so there is nothing left to
+        # rebuild -- and a never-held corpus of the (empty) survivors has no forest
+        # either.
+        return
+
+    nodes = forest_builder.derive(scoped)
+    if not nodes:
+        # The survivors fall below every tier's threshold. A surviving node would
+        # need a surviving tree, which this derivation would have produced, so its
+        # absence means no old node lingers to delete either.
+        return
+
+    tree_ids = sorted({node.tree_id for node in nodes})
+    active = _embedder_for(store, embedder)
+    store.delete_nodes_of_trees(tree_ids)
+    store.add_nodes(
+        nodes,
+        embedding_model=active.model_id if active is not None else "",
+        embedding_model_revision=active.model_revision if active is not None else "",
+        embedding_dimension=active.dimension if active is not None else 0,
+    )
+    if active is not None:
+        _embed_nodes(store, nodes, active)
+
+
+def _embedder_for(
+    store: ForestRecomputeStore, embedder: EmbeddingProvider | None
+) -> EmbeddingProvider | None:
+    """The embedder to re-vectorise nodes with, or ``None`` for an unembedded build.
+
+    A purge must reproduce the build it copies, embeddings included: a build made
+    ``--no-embeddings`` carries no vector and no embedding identity on its nodes,
+    and a re-derivation that added them would make the purged forest differ from a
+    never-held one for a reason the withdrawal did not cause. The building file's
+    ``index_metadata`` names a model exactly when chunk embeddings were written
+    (``record_embedding_model``), so it is the signal -- and the injected embedder
+    is the one that wrote them, since a single embedder is configured per run.
+    """
+    if embedder is None:
+        return None
+    return embedder if store.metadata().get("embedding_model") else None
+
+
+def _embed_nodes(
+    store: ForestRecomputeStore, nodes: Sequence[IndexableNode], embedder: EmbeddingProvider
+) -> None:
+    """Vectorise the re-derived nodes, batched as :meth:`IndexBuilder._embed_nodes` is.
+
+    Deterministic per node text, so the vectors equal a never-held build's; the
+    batch bound is memory, not correctness (``EMBED_BATCH``).
+    """
+    for start in range(0, len(nodes), EMBED_BATCH):
+        batch = nodes[start : start + EMBED_BATCH]
+        vectors = asyncio.run(embedder.embed(tuple(node.text for node in batch)))
+        store.add_node_embeddings(
+            [(node.node_id, vector) for node, vector in zip(batch, vectors, strict=True)]
+        )
+
+
 __all__ = [
     "INDEX_UNUSABLE",
     "NOTHING_TO_PURGE",
     "NO_PUBLISHED_INDEX",
     "NO_WITHDRAWAL",
     "PURGE_FAILED_REMEDY",
+    "ForestRecomputeStore",
     "PurgeableIndex",
     "WithdrawalPurge",
+    "make_forest_recompute",
     "publish_purge_for_withdrawal",
 ]

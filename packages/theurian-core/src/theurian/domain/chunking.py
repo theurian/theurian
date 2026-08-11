@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, NamedTuple
 
 from theurian.domain.errors import TheurianError
 
@@ -238,6 +238,28 @@ def _merge_runts(passages: list[tuple[str, str]], target: int) -> list[tuple[str
     return merged
 
 
+class ChunkScope(NamedTuple):
+    """The scope a chunk's RAPTOR trees belong to, as its four stored columns.
+
+    A tree's isolation boundary is the six-component :class:`~theurian.domain.
+    values.Scope`, but ``tenant_id`` and ``acl_group`` are deployment-fixed
+    defaults enforced at the write path (``migration_engine._scope_violations``,
+    #119) and have no column on ``chunks``. So the four columns a chunk *does*
+    denormalise -- project, namespace, sensitivity, status -- determine which
+    scope its forest partitions into exactly, and two chunks share a scope iff
+    they share this tuple. It is what the withdrawal purge's re-derivation matches
+    a surviving chunk against to decide whether its scope was the one that lost a
+    row (``application/withdrawal_purge.py``); ``forest_builder._scope_of`` builds
+    the full ``Scope`` from the same four plus those defaults, so the two agree by
+    construction and will grow ``tenant``/``acl`` together when #119 lands.
+    """
+
+    project_id: str
+    namespace: str
+    sensitivity: str
+    status: str
+
+
 @dataclass(frozen=True, slots=True)
 class IndexableChunk:
     """A chunk together with the canonical facts retrieval filters on (FR-R1).
@@ -273,3 +295,13 @@ class IndexableChunk:
     trust_level: str
     namespace: str = ""
     kind: str = ""
+
+    @property
+    def scope_key(self) -> ChunkScope:
+        """The four columns that decide which forest scope this chunk belongs to.
+
+        Read off the same fields ``forest_builder._scope_of`` builds a ``Scope``
+        from, so a chunk grouped into a scope there and a chunk matched against an
+        affected scope here cannot disagree about which scope it is in.
+        """
+        return ChunkScope(self.project_id, self.namespace, self.sensitivity, self.status)
