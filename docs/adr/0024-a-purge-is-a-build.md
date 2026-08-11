@@ -445,6 +445,44 @@ the pointer, exactly as ADR-0022 points 5 and 6 describe.**
    > raw SQL, deliberately — they describe states a *migration or a partial build*
    > leaves, not states this builder produces.
    > ADR-0008's family-closure note records that under-correction and its cause.
+   >
+   > **Amended in Milestone 6, by the purge-recompute CL. "Deletes or recomputes"
+   > is now *re-derives*, and the two-corpus equality this ADR rests on holds for
+   > the derived layer too.** Until this CL a purge over nodes was delete-only:
+   > it removed every node the surviving corpus could no longer ground and stopped,
+   > which left the purged index missing a node a never-held corpus would have
+   > built from the survivors — this ADR's own equality, broken in the other
+   > direction. The purge now re-derives each *scope that lost a row* whole — every
+   > tree in it, over the surviving rows it reads back from the building file,
+   > coarser than decision 9's per-tree ancestor closure and subsuming it since the
+   > unaffected trees re-derive byte-for-byte — after the delete and before
+   > `_verify` and the swap,
+   > so an ungrounded re-derived node is refused by the same post-conditions a bad
+   > delete is. A purged forest then equals one built over a corpus that never held
+   > the withdrawn rows — node rows, derivation edges and node vectors alike, held
+   > by
+   > `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
+   > with a stale control asserted different. This is the derived-layer counterpart
+   > of the chunk equality in the Compliance section's first bullet, and it is
+   > scoped to deterministic pure providers (the extractive default); a
+   > non-deterministic provider's delete-and-mark-stale fallback is recorded in
+   > `make_forest_recompute`'s docstring and built by nothing.
+   >
+   > **The re-derivation is application-layer policy injected into this
+   > infrastructure purge, so ADR-0003's layering holds.** `index_purge`
+   > (infrastructure) may not name the `ForestBuilder`, summariser and embedder the
+   > recompute needs, so `purge_into` takes an optional `recompute_forest` callback
+   > and calls it; the composition root builds that callback
+   > (`make_forest_recompute` in `application/withdrawal_purge.py`) closing over
+   > those collaborators. A passed-down callable, not an import up —
+   > `test_layering` still passes.
+   >
+   > **Cost, still owed.** The re-derivation term this ADR's decision-8 note left
+   > unmeasured — the derived layer of the affected scopes, never the corpus — is
+   > now code that runs and is still unmeasured; the 51×–65× copy-not-derive figures
+   > are the *chunk* index and are untouched. Index schema v5 adds `chunks.kind`,
+   > which the re-derivation reads to key a Domain tree; the schema-mismatch rebuild
+   > (ADR-0022 point 3) is the whole migration, as at v4.
 
 ## Consequences
 
@@ -631,7 +669,11 @@ Landed by the change that implements this ADR:
   withdrawn documents ten times the corpus mean so `avgdl` moves. An index built
   from a corpus including the withdrawn documents and then purged returns
   byte-identical rankings — chunk ids and scores — to one that never held them,
-  for both `search_lexical` and `search_substring`.
+  for both `search_lexical` and `search_substring`. **The derived layer holds the
+  same equality as of the purge-recompute CL** (Milestone 6):
+  `tests/integration/test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`
+  extends it to the forest — node rows, derivation edges and node vectors — for
+  deterministic pure providers, per decision 8's amendment above.
 - **A search does not tear on a `gc` unlink between its reads** — landed:
   `test_a_gc_unlink_between_a_requests_reads_does_not_tear_it` drives the real
   MCP path and forces the unlink between two of the request's index reads;

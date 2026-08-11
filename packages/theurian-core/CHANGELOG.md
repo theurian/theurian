@@ -55,9 +55,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   first time.** A tree's scope already fixes the namespace, so decision 2's "one
   namespace or kind" reduces to `kind` inside one — without it a scope holds
   exactly one Domain tree, the Catalog tier always has a single child, and three
-  levels are structurally unreachable. `IndexableChunk` carries `kind` and
-  `chunks` gains no column: nothing queries it, and the build that produced the
-  chunk consumes it in memory. `chunks.namespace` existed as `NOT NULL DEFAULT
+  levels are structurally unreachable. `IndexableChunk` carries `kind`, and at v4
+  `chunks` gained no column for it — nothing queries it, and the build that
+  produced the chunk consumed it in memory. (The purge-recompute change below adds
+  `chunks.kind` at v5, because a purge re-derives from the published index and has
+  to read `kind` back.) `chunks.namespace` existed as `NOT NULL DEFAULT
   ''` and was never populated; a forest derived from those rows would have
   partitioned on five components while claiming six, so it is populated now and
   pinned on a *default* build by
@@ -115,11 +117,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   raw SQL by the test that purged it. Withdrawing one item of three takes its
   Document node and, by the upward closure, the Domain node standing on it, while
   the two unaffected Document nodes survive; `nodes_fts` and `nodes_trigram` are
-  read back through `fts5vocab` and hold no term of the withdrawn document. The
-  interim is **delete-only**: ADR-0008 decision 9's re-derivation of each affected
-  tree, and the two-corpus equality that is the only thing able to check it,
-  belong to the purge-closure CL. `test_rebuilding_the_same_state_produces_a_byte_identical_forest`
-  holds the precondition that equality rests on.
+  read back through `fts5vocab` and hold no term of the withdrawn document. This
+  CL's purge was **delete-only**; ADR-0008 decision 9's re-derivation of each
+  affected tree, and the two-corpus equality that is the only thing able to check
+  it, land in the purge-recompute change below.
+  `test_rebuilding_the_same_state_produces_a_byte_identical_forest` holds the
+  precondition that equality rests on.
 
   **The Domain tier fans out above a per-node bound.** A Domain node summarises
   one node per document of its kind, so its input is the one tier's that grows
@@ -210,6 +213,50 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   keyword search can reach — including the four sites this CL planted in its own
   RED-phase test docstrings.
 
+- **The withdrawal purge re-derives the forest from the surviving rows, landing
+  ADR-0008 decision 9's two-corpus equality for the derived layer**
+  (`application/withdrawal_purge.py`, `infrastructure/sqlite/index_purge.py`). The
+  purge was delete-only for the forest: it removed the withdrawn chunks and every
+  node the survivors could no longer ground, but never rebuilt the trees the
+  withdrawal reshaped. A Domain tree of four documents that loses one to a
+  withdrawal must end up with the three-child node a corpus that never held the
+  fourth would build — content-addressing makes the survivor a *different* node
+  than the old one minus a child — not with no node at all, which delete-only
+  leaves. After the delete, the purge now re-derives each **scope that lost a
+  row** whole — every tree in it, coarser than ADR-0008 decision 9's per-tree
+  ancestor closure and subsuming it, since a scope's unaffected trees re-derive
+  byte-for-byte — and leaves every scope that lost nothing untouched. It runs
+  before `_verify`, so a re-derived node that is not grounded is refused by the
+  same post-conditions a bad delete is.
+  `test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows` asserts a
+  purged build **identical** — node rows, derivation edges and node vectors — to a
+  never-held build, with a stale pre-purge control asserted different.
+
+  **`SqliteIndexStore.surviving_chunks` reads chunk rows back as full
+  `IndexableChunk`s** for the builder to derive from — the purge is a function of
+  the *published index*, not canonical state (ADR-0024) — and
+  `delete_nodes_of_trees` clears an affected scope's existing nodes by `tree_id`
+  before the fresh forest is written, because clustering moves a node's id and
+  re-inserting over it would collide on the primary key.
+
+  **The recompute is injected, not imported.** `index_purge` (infrastructure) may
+  not name the application-layer `ForestBuilder`, so `purge_into` takes an optional
+  `recompute_forest` callback; `make_forest_recompute` builds it at the composition
+  root, closing over the extractive summariser and the hashing embedder
+  (`cli/commands.py`). A passed-down callable keeps ADR-0003's layering — `test_layering`
+  still passes. The re-derived nodes are embedded exactly when the build being
+  purged already carried chunk embeddings, so a `--no-embeddings` forest stays
+  vector-free.
+
+  **A chunk-only build and a fully-withdrawn one keep today's delete-only path:**
+  both leave zero surviving nodes, and there is nothing to re-derive.
+
+  **The non-deterministic-provider fallback is recorded, not built.** ADR-0008
+  decision 9's delete-and-mark-stale branch — for a provider that cannot reproduce
+  a never-held build — is documented in `make_forest_recompute`'s docstring and
+  exercised by nothing: the extractive default is deterministic, and a dead branch
+  is a later change's. See the schema v5 breaking entry under Changed.
+
 - **`ExtractiveSummarizer` lands as the first `SummarizationProvider` adapter,
   and the port's default** (ADR-0008 decision 6's Milestone 6 amendment and 7,
   `infrastructure/raptor/extractive.py`). It splits each child text on Latin
@@ -244,9 +291,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and `test_negative_control_corpus_derived_max_tokens_is_detected_as_different`
   are its negative controls for carriers (a) and (c) respectively, demonstrating
   the harness can tell a corpus-reading provider and a corpus-derived budget
-  apart from this one. Carrier (b) — which children cluster into a node — stays
-  owed to decision 9's tree-level two-corpus test, unreachable here because this
-  test holds the child set fixed by construction.
+  apart from this one. Carrier (b) — which children cluster into a node — is
+  unreachable here because this test holds the child set fixed by construction; it
+  is closed by decision 9's tree-level two-corpus test, which lands with the
+  purge-recompute change above.
 
   **The budget is charged for the string that is returned, separators
   included.** Charging each sentence its own `estimate_tokens` cost and joining
@@ -429,6 +477,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   also name stay open, since neither exists yet.
 
 ### Changed
+
+- **BREAKING — `INDEX_SCHEMA_VERSION` 4 → 5: `chunks` gains a `kind` column**
+  (the purge-recompute change under Added; ADR-0008 decision 2's and ADR-0024
+  decision 8's Milestone 6 amendments). The withdrawal purge re-derives each
+  affected scope's Domain trees from the *published index's* surviving rows, and a
+  Domain tree is keyed by `kind` within a scope — but v4 kept `kind` only on the
+  in-memory `IndexableChunk`, and a summary node records its scope and not the
+  leaf `kind` its tree clustered on, so `kind` lived nowhere a re-derivation
+  reading the index could recover it. v5 persists it, `NOT NULL DEFAULT ''` so a
+  v4 build mismatches and rebuilds and the purge suite's column-naming `INSERT`s
+  need no edit. No *retrieval* reads the column.
+
+  **Every existing index reports `index-schema-mismatch` and falls back to the
+  substring scan until `theurian index build` runs.** That is the designed
+  response to an index schema change and not a regression: the index is derived
+  and disposable, so this costs an index rebuild and nothing else — no in-place
+  migration of the file, no data migration, no canonical `SCHEMA_VERSION` bump, no
+  state hash change (ADR-0022 point 3). `theurian index status` reports
+  `indexSchemaVersion` beside `expectedIndexSchemaVersion`, counts the build
+  `stale`, and its `remedy` names the command.
+
+  **Affects `0.1.0.dev0` and `0.1.0.dev1`**, both of which ship index schema **2**
+  (each pins `INDEX_SCHEMA_VERSION: Final = 2`), so a released Theurian meets this
+  as 2 → 5 in one rebuild — schemas 3 and 4 exist only on `main`. Nothing
+  canonical needs migrating; what is lost is the index build itself, and
+  rebuilding it is the whole remedy.
 
 - **`Scope` gains `status: KnowledgeStatus` as a required sixth component of
   RAPTOR tree identity** (ADR-0008 decision 1's Milestone 6 amendment, SEC-14,
