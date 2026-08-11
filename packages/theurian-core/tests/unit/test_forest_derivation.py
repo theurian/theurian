@@ -39,6 +39,7 @@ from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.summarization import SummarizationProvider
 from theurian.domain.ranking import estimate_tokens
+from theurian.domain.raptor import NodeType, tree_identity
 from theurian.domain.values import AclGroup, ContentHash, Scope, TenantId
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 
@@ -673,6 +674,19 @@ def test_an_upper_node_summarises_its_children_in_content_id_order() -> None:
     taken in `node_id` order; the guard asserts that an item-id-order summary
     would differ, so the assertion is not vacuously satisfied by an
     order-insensitive fixture.
+
+    **What this fixture cannot tell apart, because `_node_over_nodes` is one
+    function called from two places.** The children handed to it here are
+    Document nodes drawn from `by_kind[kind]`, which `_domain_batches` has
+    already sorted by `node_id` before this test's Domain node ever sees them
+    (`_forest_for_scope`'s single-kind path) -- so `_node_over_nodes`'s *own*
+    sort runs on an already-sorted sequence, and a mutant that replaced it with
+    `list(children)` would leave this assertion untouched: the order was fixed
+    upstream regardless. `test_a_catalog_node_summarises_its_domain_children_
+    in_content_id_order` below is the one call site with no such upstream
+    sort -- `domains` there is appended in kind order, not node_id order -- so
+    it is the only test that can tell `_node_over_nodes`'s sort apart from a
+    no-op.
     """
     corpus: list[IndexableChunk] = []
     for number in range(6):
@@ -735,6 +749,112 @@ def test_an_upper_node_summarises_its_children_in_content_id_order() -> None:
     assert domain.text == text_in_content_id_order, (
         "the domain node's text is not the content-id-order summary -- its children "
         "reached the summariser in some other order"
+    )
+
+
+def test_a_catalog_node_summarises_its_domain_children_in_content_id_order() -> None:
+    """The Catalog tier's own call into `_node_over_nodes` -- the one call site
+    the Domain-tier test above cannot reach, because a sort upstream of it
+    (`_domain_batches`) makes the function's own sort redundant there.
+
+    `_forest_for_scope` appends each kind's Domain node to `domains` by
+    iterating `sorted(by_kind)` -- kind-alphabetical order, not node_id order
+    -- so nothing upstream of the Catalog's `_node_over_nodes` call has already
+    sorted its children. Whether that call's own `sorted(children, key=...
+    node_id)` actually runs is therefore visible here in a way it is not at the
+    Domain tier. Three kinds, each with content distinctive enough that
+    reordering the Domain summaries changes what the Catalog's extractive
+    summary keeps, and chosen so kind-alphabetical order and node_id order
+    disagree (asserted below, not assumed) -- the same shape as the sibling
+    test above, aimed at the tier that test cannot see.
+    """
+    unique_sentences = {
+        "architecture": (
+            "Alpha gateway signs every request with a rotating key.",
+            "Alpha topology places the mesh proxy beside each pod.",
+            "Alpha registry pins image digests for reproducible deploys.",
+        ),
+        "operations": (
+            "Bravo runbook restarts the queue drainer on backpressure.",
+            "Bravo pager escalates after five minutes of silence.",
+            "Bravo backup snapshots the ledger every fifteen minutes.",
+        ),
+        "security": (
+            "Charlie policy quarantines any token failing attestation.",
+            "Charlie audit streams every deny to the tamper log.",
+            "Charlie rotation revokes leaked keys within one minute.",
+        ),
+    }
+    corpus: list[IndexableChunk] = []
+    for kind, sentences in unique_sentences.items():
+        for number, sentence in enumerate(sentences):
+            item = f"{kind}.item-{number}"
+            revision = f"rev-{kind}-{number}"
+            for ordinal in range(3):
+                corpus.append(
+                    IndexableChunk(
+                        chunk=Chunk(
+                            chunk_id=f"{revision}#{ordinal}",
+                            ordinal=ordinal,
+                            text=f"{sentence} Part {ordinal} of {kind} item {number}.",
+                            heading="",
+                        ),
+                        project_id=PROJECT,
+                        item_id=item,
+                        revision_id=revision,
+                        status=DEFAULT_AXES.status,
+                        sensitivity=DEFAULT_AXES.sensitivity,
+                        trust_level="reviewed",
+                        namespace=DEFAULT_AXES.namespace,
+                        kind=kind,
+                    )
+                )
+
+    nodes = _derive(corpus)
+
+    catalog = next(node for node in nodes if node.level == CATALOG_LEVEL)
+    domains = [node for node in nodes if node.level == DOMAIN_LEVEL]
+    assert len(domains) == 3, (
+        "the fixture must earn one Domain node per kind, or the Catalog has fewer than "
+        "three children and the ordering it is charged with cannot be observed"
+    )
+    scope = domains[0].node.scope
+
+    by_node_id = sorted(domains, key=lambda node: node.node_id)
+    by_kind_order = [
+        next(
+            node
+            for node in domains
+            if node.tree_id
+            == tree_identity(scope=scope, node_type=NodeType.DOMAIN, discriminator=kind).value
+        )
+        for kind in sorted(unique_sentences)
+    ]
+    assert [n.node_id for n in by_node_id] != [n.node_id for n in by_kind_order], (
+        "node_id order coincides with kind-alphabetical order here, so the fixture cannot "
+        "see the Catalog-tier sort"
+    )
+
+    from theurian.application.forest_builder import ForestOptions
+
+    summarizer = ExtractiveSummarizer()
+    budget = ForestOptions().summary_max_tokens
+    text_in_node_id_order = asyncio.run(
+        summarizer.summarize(
+            tuple(node.text for node in by_node_id), scope=scope, max_tokens=budget
+        )
+    )
+    text_in_kind_order = asyncio.run(
+        summarizer.summarize(
+            tuple(node.text for node in by_kind_order), scope=scope, max_tokens=budget
+        )
+    )
+    assert text_in_node_id_order != text_in_kind_order, (
+        "the summary does not depend on child order here, so the Catalog-tier sort is untestable"
+    )
+    assert catalog.text == text_in_node_id_order, (
+        "the Catalog node's text is not the node_id-order summary of its Domain children "
+        "-- _node_over_nodes's own sort did not run, or ran on some other order"
     )
 
 

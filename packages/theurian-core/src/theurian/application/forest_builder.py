@@ -37,9 +37,14 @@ Every tier above is charged its children's *summaries*, each bounded by
 :attr:`ForestOptions.summary_max_tokens`. A Domain node's input grows with the
 number of *documents of its kind*, which is linear in the corpus, so it is the
 tier a growing corpus overruns first and the one that gets an explicit per-node
-bound. :data:`MAX_CHILDREN_PER_DOMAIN` is that bound: a kind past it fans out into
-several Domain nodes rather than one whose input would cross the character limit
-above. Fanning out moves the growth up a tier -- a Catalog node is charged one
+bound. :data:`MAX_CHILDREN_PER_DOMAIN` is that bound: a kind past it splits into
+deterministic batches of at most that many documents, each its own Domain node,
+rather than one whose input would cross the character limit above -- except a
+trailing batch too small to clear the Domain tier's own floor
+(:attr:`ForestOptions.min_children_per_summary`), which merges into the batch
+before it instead of minting a node with too few children to summarise, or being
+silently dropped (see :func:`_domain_batches`). Fanning out moves the growth up a
+tier -- a Catalog node is charged one
 summary per Domain node, so its input grows with the number of kinds until a kind
 fans out and then with the corpus too, at 1/500 the rate. The Catalog is not
 itself fanned out, so a single scope holding one kind at hundreds of thousands of
@@ -224,7 +229,10 @@ class ForestBuilder:
 
         domains: list[IndexableNode] = []
         for kind in sorted(by_kind):
-            for discriminator, batch in _domain_batches(kind, by_kind[kind]):
+            batches = _domain_batches(
+                kind, by_kind[kind], min_children=self._options.min_children_per_summary
+            )
+            for discriminator, batch in batches:
                 node = self._node_over_nodes(
                     scope, level=_DOMAIN_LEVEL, discriminator=discriminator, children=batch
                 )
@@ -360,7 +368,7 @@ def _scope_of(chunk: IndexableChunk) -> Scope:
 
 
 def _domain_batches(
-    kind: str, documents: Sequence[IndexableNode]
+    kind: str, documents: Sequence[IndexableNode], *, min_children: int
 ) -> list[tuple[str, list[IndexableNode]]]:
     """One Domain node's children per batch, split when a kind exceeds the cap.
 
@@ -375,16 +383,36 @@ def _domain_batches(
     ``#``, so a partitioned discriminator can never equal a bare kind, and the
     partition of a corpus is a function of its content alone -- deterministic
     across rebuilds.
+
+    **The tail batch is merged rather than left to fall below the next tier's
+    own floor.** A fixed-size cut leaves a final batch of ``len(documents) %
+    MAX_CHILDREN_PER_DOMAIN`` documents, and nothing about that remainder is
+    bounded below: at 501, 502 and 1001 documents of one kind the naive cut's
+    last batch would hold 1, 2 and 1 document respectively -- short of
+    ``min_children`` (``ForestOptions.min_children_per_summary``, floor 3 by
+    default) -- and :meth:`ForestBuilder._node_over_nodes` refuses to build a
+    node under that floor, so those documents would be present in the Document
+    tier and unreachable from every Domain node: orphaned rather than summarised.
+    A tail short of the floor is folded into the batch before it instead, which
+    is always exactly ``MAX_CHILDREN_PER_DOMAIN`` (only the last cut can be
+    short), so a merge can push a batch up to at most
+    ``MAX_CHILDREN_PER_DOMAIN + min_children - 1`` documents -- 502 at the
+    defaults, still far under the character budget
+    :data:`MAX_CHILDREN_PER_DOMAIN`'s own margin is sized against. The merge
+    only ever touches the last batch boundary; every earlier batch, and the
+    ``node_id`` order the whole partition is sliced from, is unchanged.
     """
     ordered = sorted(documents, key=lambda node: node.node_id)
     if len(ordered) <= MAX_CHILDREN_PER_DOMAIN:
         return [(kind, ordered)]
+
+    starts = list(range(0, len(ordered), MAX_CHILDREN_PER_DOMAIN))
+    if len(ordered) - starts[-1] < min_children:
+        starts.pop()
+    ends = [*starts[1:], len(ordered)]
     return [
-        (
-            f"{kind}#{start // MAX_CHILDREN_PER_DOMAIN}",
-            ordered[start : start + MAX_CHILDREN_PER_DOMAIN],
-        )
-        for start in range(0, len(ordered), MAX_CHILDREN_PER_DOMAIN)
+        (f"{kind}#{index}", ordered[start:end])
+        for index, (start, end) in enumerate(zip(starts, ends, strict=True))
     ]
 
 

@@ -1017,6 +1017,101 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
     )
 
 
+@pytest.mark.asyncio
+async def test_knowledge_get_reports_the_items_current_sensitivity_not_the_revisions(
+    registry: ProjectRegistry,
+) -> None:
+    """SEC-14 on the one call path the ranked-search test above does not reach.
+
+    ``result_payload`` is shared by three call sites, and each threads
+    ``item.sensitivity`` -- never ``revision.metadata.sensitivity`` -- into it
+    independently: the ranked path (``search.py``'s ``_response``, pinned
+    above), ``knowledge.get`` (``tools.py``), and the substring-scan fallback
+    (``search.py``'s ``_scan``, pinned below). The test above proves the
+    ranked path is item-authoritative; nothing before this one proved
+    ``knowledge.get`` is too, so a caller reading back the revision's stale
+    label there would have satisfied every test that ran before it. No index
+    is needed: ``knowledge.get`` reads the canonical store directly.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    before = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+    assert before["sensitivity"] == "internal", (
+        "the fixture's item must start at the default sensitivity, or the reclassification "
+        "below proves nothing"
+    )
+
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / f".theurian/migrations/{RECLASSIFY_ID}-reclassify.yaml").write_text(
+            RECLASSIFY_MIGRATION
+        )
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    after = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert after["sensitivity"] == "restricted", (
+        "knowledge.get reported the revision's stale sensitivity, not the item's current "
+        "one -- SEC-14's authority does not hold on this call path"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_substring_scan_reports_the_items_current_sensitivity_not_the_revisions(
+    registry: ProjectRegistry,
+) -> None:
+    """SEC-14 on the unranked fallback, the other call path the ranked-search
+    test above does not reach.
+
+    ``registry`` has no index built, so ``knowledge.search`` answers through
+    ``substring_answer`` -> ``_scan`` (``search.py``) -- the same fallback
+    ``test_search_without_an_index_says_so_rather_than_returning_nothing``
+    proves this fixture takes. ``_scan`` threads ``item.sensitivity`` into
+    ``result_payload`` independently of the ranked path and of
+    ``knowledge.get``; nothing before this test proved it, so a caller reading
+    back the revision's stale label there would have satisfied every test that
+    ran before it too.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    before = await _call(registry, "knowledge.search", projectId="demo", query="signed token")
+    assert before["retrieval"]["mode"] == "substring", (
+        "the fixture must answer through the unranked scan, or the reclassification below "
+        "does not exercise `_scan`'s call site"
+    )
+    before_hit = next(
+        hit for hit in before["results"] if hit["itemId"] == "architecture.auth-policy"
+    )
+    assert before_hit["sensitivity"] == "internal", (
+        "the fixture's item must start at the default sensitivity, or the reclassification "
+        "below proves nothing"
+    )
+
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / f".theurian/migrations/{RECLASSIFY_ID}-reclassify.yaml").write_text(
+            RECLASSIFY_MIGRATION
+        )
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    after = await _call(registry, "knowledge.search", projectId="demo", query="signed token")
+
+    assert after["retrieval"]["mode"] == "substring"
+    hit = next(hit for hit in after["results"] if hit["itemId"] == "architecture.auth-policy")
+    assert hit["sensitivity"] == "restricted", (
+        "the substring scan reported the revision's stale sensitivity, not the item's "
+        "current one -- SEC-14's authority does not hold on this call path"
+    )
+
+
 @pytest.fixture(params=["indexed", "registry"], ids=["ranked", "fallback"])
 def either_answer_path(request: pytest.FixtureRequest) -> tuple[ProjectRegistry, bool]:
     """A project with an index, and one without, and which of the two it is.
