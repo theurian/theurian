@@ -781,6 +781,30 @@ def test_a_media_type_with_a_trailing_newline_is_refused_like_the_identifiers() 
     ), "schema and domain disagree about 'application/json\\n'"
 
 
+# -- Project config schema --------------------------------------------------
+
+
+def test_the_raptor_forest_is_declared_off_by_default() -> None:
+    """ADR-0008 decision 10, one of the two places it names.
+
+    "A capability whose acceptance tests are owed and whose build cost is
+    unmeasured ships opt-in, so that turning it on is somebody's decision and
+    not the side effect of an upgrade." The schema declared `default: true`
+    from the day the block was written, which was not a decision anyone took --
+    nothing in `src/` reads it, or reads `.theurian/config.yaml` at all, so the
+    value has never taken effect anywhere and had never been examined either.
+
+    Pinned here rather than left to the loader that will one day read it,
+    because a default is a published claim the moment it is in a schema a third
+    party validates against. The other place is
+    `examples/sample-project/.theurian/config.yaml`, which sets it explicitly
+    and is what a reader copies; `tests/unit/test_examples.py` holds that one.
+    """
+    raptor = _load("config/project-config.schema.json")["properties"]["raptor"]
+
+    assert raptor["properties"]["enabled"]["default"] is False
+
+
 # -- CLI contract ----------------------------------------------------------
 
 

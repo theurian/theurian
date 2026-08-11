@@ -39,6 +39,26 @@ def test_config_matches_its_schema() -> None:
     )
 
 
+def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
+    """ADR-0008 decision 10's second place, and the one a reader actually copies.
+
+    The schema default is the first (`tests/unit/test_schemas.py`), and it is
+    the weaker of the two: this file sets `enabled` explicitly, so a reader who
+    starts from the example gets whatever it says regardless of any default.
+    Validating against the schema cannot catch a disagreement -- both values are
+    valid booleans -- which is why it is asserted rather than left to
+    `test_config_matches_its_schema` above.
+
+    An example that teaches the wrong shape is worse than no example, and this
+    module's own docstring says so; a forest switched on by the example is a
+    build cost nobody measured and a capability whose acceptance tests are still
+    owed, arriving to somebody who was following the documentation.
+    """
+    config = load_yaml_mapping((THEURIAN_DIR / "config.yaml").read_text(encoding="utf-8"))
+
+    assert config["raptor"]["enabled"] is False
+
+
 @pytest.mark.parametrize("path", MIGRATIONS, ids=lambda p: p.name)
 def test_migration_matches_its_schema(path: pathlib.Path) -> None:
     _validator("migrations/migration.schema.json").validate(

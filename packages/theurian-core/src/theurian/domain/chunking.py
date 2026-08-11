@@ -249,6 +249,19 @@ class IndexableChunk:
     the match, before ranking. Only ``status`` is filtered on today;
     ``sensitivity`` and ``trust_level`` are carried for the scope filtering
     Milestone 6 adds.
+
+    ``namespace`` and ``kind`` are what a RAPTOR forest is partitioned by, and
+    they do different jobs. ``namespace`` is one of the six components of the
+    scope tuple a tree *is* (ADR-0008 decision 1); ``kind`` is what selects the
+    Domain tree *within* a scope (decision 2), because a scope has already fixed
+    the namespace. Without ``kind`` a scope holds exactly one domain tree, the
+    catalog tier always has a single child, and the three levels ADR-0008 names
+    are structurally unreachable.
+
+    ``kind`` has no column on ``chunks`` and is not meant to get one: nothing
+    queries it, and it is consumed in memory by
+    :mod:`theurian.application.forest_builder` during the same build that
+    produced the chunk.
     """
 
     chunk: Chunk
@@ -259,3 +272,4 @@ class IndexableChunk:
     sensitivity: str
     trust_level: str
     namespace: str = ""
+    kind: str = ""

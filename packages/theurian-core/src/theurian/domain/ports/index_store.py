@@ -27,6 +27,7 @@ from typing import Protocol, runtime_checkable
 
 from theurian.domain.chunking import IndexableChunk
 from theurian.domain.ranking import RetrieverPage
+from theurian.domain.raptor import IndexableNode
 
 
 @runtime_checkable
@@ -61,6 +62,51 @@ class IndexStore(Protocol):
 
     def add_chunks(self, chunks: Sequence[IndexableChunk]) -> int:
         """Insert chunks. Returns how many were written."""
+        ...
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        """Insert a derived RAPTOR forest and its provenance. Returns nodes written.
+
+        **The nodes and their derivation edges are one write.** A node without
+        its edges cannot say what it holds, which is the exact shape
+        :data:`~theurian.infrastructure.sqlite.index_purge._UNANCHORED_NODES`
+        deletes and :func:`~theurian.infrastructure.sqlite.index_purge._verify`
+        refuses to publish. Two calls would make that state reachable between
+        them for any implementation that commits eagerly.
+
+        ``nodes`` must be ordered so that a node's sources are written no later
+        than the node itself is *readable*; an implementation that writes every
+        node before any edge satisfies that for free, which is what the SQLite
+        adapter does.
+
+        The embedder is named per call rather than per node because it is a fact
+        about the build, not about the summary: the same forest derived with no
+        embedding provider configured is the same forest, and the columns then
+        record that no vector was produced. Passing an empty ``embedding_model``
+        with a non-empty ``add_node_embeddings`` is a row that lies about its own
+        vector; the caller holds that pairing.
+        """
+        ...
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        """Store one vector per summary node. Returns how many were written.
+
+        Separate from :meth:`add_embeddings` because ``embeddings`` is keyed on
+        ``chunk_id REFERENCES chunks`` and a node id is not a chunk id -- the
+        reason index schema v4 added a second table rather than widening the
+        first.
+
+        Partial is worse than absent, exactly as it is for chunks: dense
+        retrieval would rank the embedded summaries and silently never surface
+        the rest, which reads as a relevance problem rather than a build one.
+        """
         ...
 
     def derive_purged(

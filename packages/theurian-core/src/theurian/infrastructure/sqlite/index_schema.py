@@ -122,7 +122,9 @@ CREATE TABLE chunks (
     -- `namespace` are carried for the scope filtering #119 adds (Milestone 6)
     -- and are read by no query yet -- said plainly here because a comment that implies
     -- an access control which does not exist is how the next person concludes
-    -- it is already handled. `namespace` is not even populated by the builder.
+    -- it is already handled. `namespace` is populated as of the RAPTOR builder,
+    -- which partitions the forest by the scope tuple this column is a component
+    -- of; it is still read by no query.
     status       TEXT    NOT NULL,
     sensitivity  TEXT    NOT NULL,
     trust_level  TEXT    NOT NULL,
@@ -238,12 +240,13 @@ CREATE TABLE embeddings (
 -- scope tuple `(project, tenant, sensitivity, acl_group, namespace, status)`, so
 -- these three are read, not derived from it, at query time.
 --
--- Nothing writes a row here yet: `infrastructure/raptor/` holds one
--- `SummarizationProvider` adapter (`extractive.py`) and no builder to call it,
--- so no code turns a summary into a row in either direction. The table and the
--- purge's traversal over it land first, so that the day a summary node exists
--- it inherits a purge that already carries it rather than one designed a second
--- time under pressure.
+-- `theurian index build --raptor` writes these rows, through
+-- `IndexStore.add_nodes`; a build without the flag writes none (ADR-0008
+-- decision 10). Nothing reads one back at query time yet -- every retriever
+-- names `chunks` -- so a forest is written, purged, and not yet retrieved from.
+-- The table and the purge's traversal over it landed before the writer did, so
+-- that the day a summary node existed it inherited a purge that already carried
+-- it rather than one designed a second time under pressure.
 --
 -- `node_id` is `NOT NULL` for the reason `chunks.chunk_id` is: a TEXT primary
 -- key admits one NULL. When the purge asked about nodes with `NOT IN`, one NULL
@@ -264,8 +267,9 @@ CREATE TABLE embeddings (
 -- endpoints to a level difference. Measured: 2,000 nodes all at level 1, chained
 -- 2,000 deep through `source_node_id`, satisfy this CHECK completely and take
 -- that closure 3.6 s. The shallow shape its cost argument rests on is a property
--- of the builder ADR-0008 decision 2 describes -- which does not exist yet -- and
--- no column here supplies it.
+-- of `application/forest_builder.py`, which builds each tier from the one below
+-- it and nothing else -- not of any column here. A row written by anything else
+-- is bounded by this CHECK and by nothing deeper.
 CREATE TABLE nodes (
     node_id                   TEXT PRIMARY KEY NOT NULL,
     tree_id                   TEXT    NOT NULL,

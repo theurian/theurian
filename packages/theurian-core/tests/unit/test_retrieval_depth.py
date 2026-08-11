@@ -64,6 +64,7 @@ from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, T
 from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
 from theurian.domain.knowledge import KnowledgeItem, KnowledgeRevision
 from theurian.domain.ranking import Ranked, RetrieverPage
+from theurian.domain.raptor import IndexableNode
 from theurian.domain.values import ValidityPeriod
 
 pytestmark = pytest.mark.unit
@@ -224,6 +225,19 @@ class _CountingIndex:
         raise NotImplementedError
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        raise NotImplementedError
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        raise NotImplementedError
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         raise NotImplementedError
 
     def record_embedding_model(self, *, model_id: str, dimension: int) -> None:
@@ -791,6 +805,19 @@ class _NeverFinished:
         raise NotImplementedError
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        raise NotImplementedError
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        raise NotImplementedError
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         raise NotImplementedError
 
     def record_embedding_model(self, *, model_id: str, dimension: int) -> None:

@@ -59,6 +59,7 @@ from theurian.application.retrieval_service import (
 )
 from theurian.domain.chunking import IndexableChunk
 from theurian.domain.ranking import Ranked, RetrieverPage
+from theurian.domain.raptor import IndexableNode
 
 pytestmark = pytest.mark.unit
 
@@ -196,6 +197,19 @@ class _TwoRankings:
         raise NotImplementedError
 
     def add_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        raise NotImplementedError
+
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        raise NotImplementedError
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
         raise NotImplementedError
 
     def record_embedding_model(self, *, model_id: str, dimension: int) -> None:

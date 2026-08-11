@@ -33,6 +33,7 @@ from theurian.domain.chunking import IndexableChunk
 from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.errors import TheurianError
 from theurian.domain.ranking import Ranked, RetrieverPage, estimate_tokens
+from theurian.domain.raptor import IndexableNode
 from theurian.infrastructure.sqlite.index_purge import ANY_DOOMED_ROW, purge_into
 from theurian.infrastructure.sqlite.index_query import (
     MAX_QUERY_CHARS,
@@ -557,6 +558,106 @@ class SqliteIndexStore:
             connection.commit()
         return len(chunks)
 
+    def add_nodes(
+        self,
+        nodes: Sequence[IndexableNode],
+        *,
+        embedding_model: str,
+        embedding_model_revision: str,
+        embedding_dimension: int,
+    ) -> int:
+        """Insert a derived forest and its provenance edges, in one transaction.
+
+        **Nodes first, edges second, one commit.** `node_derivation`'s foreign
+        keys are immediate rather than deferred and `PRAGMA foreign_keys` is on
+        for this connection, so an edge inserted before the node it names is
+        refused rather than resolved at commit -- measured: `FOREIGN KEY
+        constraint failed` for an edge, then accepted once both nodes existed.
+        Every node therefore goes in one statement before any edge does, which
+        also means a level-2 node may name a level-1 node from the same batch.
+
+        And one commit, because a commit between the two statements would leave
+        a window in which every node is unprovenanced -- visible to any other
+        connection, and the exact state `index_purge._verify` refuses to publish
+        a build over.
+
+        `index_build_id` is read out of this file's own `index_metadata` rather
+        than taken as an argument, because that column *is* the answer to "which
+        build is this node in" and a caller passing it separately could disagree
+        with the file it is writing into. The purge keeps the two in step from
+        the other direction (`index_purge._restamp`).
+        """
+        if not nodes:
+            return 0
+
+        with _connect(self._path) as connection:
+            row = connection.execute(
+                "SELECT index_build_id FROM index_metadata WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                msg = (
+                    f"{self._path.name} has no index_metadata row, so a node cannot record "
+                    f"which build it belongs to. Run `theurian index build` to produce a "
+                    f"complete build."
+                )
+                raise IndexBuildError(msg)
+            index_build_id = str(row["index_build_id"])
+            connection.executemany(
+                "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
+                "summary_model, summary_model_revision, summary_prompt_hash, embedding_model, "
+                "embedding_model_revision, embedding_dimension, source_revision_id, "
+                "index_build_id, project_id, sensitivity, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        node.node_id,
+                        node.tree_id,
+                        node.level,
+                        node.node_type,
+                        node.text,
+                        node.content_hash,
+                        node.summary_model,
+                        node.summary_model_revision,
+                        node.summary_prompt_hash,
+                        embedding_model,
+                        embedding_model_revision,
+                        embedding_dimension,
+                        node.source_revision_id,
+                        index_build_id,
+                        node.scope.project_id.value,
+                        node.scope.sensitivity.value,
+                        node.scope.status.value,
+                    )
+                    for node in nodes
+                ],
+            )
+            connection.executemany(
+                "INSERT INTO node_derivation (node_id, source_chunk_id, source_node_id) "
+                "VALUES (?, ?, ?)",
+                [edge for node in nodes for edge in node.edges()],
+            )
+            connection.commit()
+        return len(nodes)
+
+    def add_node_embeddings(self, vectors: Sequence[tuple[str, Sequence[float]]]) -> int:
+        """Store one vector per summary node.
+
+        `add_embeddings` over the node tables, and separate for the reason the
+        table is: `embeddings.chunk_id REFERENCES chunks`, so a node id has
+        nowhere to go there.
+        """
+        if not vectors:
+            return 0
+
+        with _connect(self._path) as connection:
+            connection.executemany(
+                "INSERT OR REPLACE INTO node_embeddings (node_id, dimension, vector) "
+                "VALUES (?, ?, ?)",
+                [(node_id, len(vector), _pack(vector)) for node_id, vector in vectors],
+            )
+            connection.commit()
+        return len(vectors)
+
     def derive_purged(
         self,
         target: Path,
@@ -603,8 +704,10 @@ class SqliteIndexStore:
         A node the surviving corpus cannot ground is removed even when nothing
         was withdrawn — a partial build, a migrated one, or a forest whose
         provenance closes into a cycle — so this is not merely a revision lookup.
-        No node exists until RAPTOR writes one (ADR-0008), so those arms are
-        dormant today; without them, once one does, a build with residue but no
+        Those arms stopped being dormant when `index build --raptor` gained a
+        forest to write (ADR-0008): a build made without the flag still holds no
+        node, but one made with it is now the ordinary case this pre-check has to
+        answer for, and without them a build with residue but no
         withdrawn-revision match would be skipped and the residue would survive.
 
         **v4, not v3.** The node arms moved from ``chunks``/``derived = 1``/
@@ -1311,6 +1414,7 @@ __all__ = [
     "IndexBuildError",
     "IndexUnreadableError",
     "IndexableChunk",
+    "IndexableNode",
     "SqliteIndexStore",
     "fts5_available",
 ]

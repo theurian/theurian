@@ -34,7 +34,7 @@ from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.errors import DomainError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.raptor import SummaryNode
-from theurian.domain.values import AclGroup, Scope, TenantId
+from theurian.domain.values import AclGroup, ContentHash, Scope, TenantId
 
 
 def _scope(**overrides: object) -> Scope:
@@ -214,3 +214,42 @@ def test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding() ->
     assert scope.digest.value == (
         "ba11c1ad6c4db1fd166a46e98dfc5455511ae1130efb0b86c5ba51a6c2270a6d"
     )
+
+
+def test_a_node_id_is_pinned_to_its_exact_join_order_sort_and_encoding() -> None:
+    """ADR-0008 decision 9's identity function, against a literal.
+
+    "A deterministic function of (`tree_id`, level, the children's content
+    hashes sorted lexicographically), joined with the same unit separator
+    `Scope.key` uses and hashed." Every clause of that sentence is a degree of
+    freedom somebody could resolve differently, and no other test constrains
+    them: the forest tests recompute the recipe from the same function they are
+    checking, so a builder and a recomputation that agreed on a *different*
+    recipe would pass together.
+
+    The children are handed over in the order (beta, alpha), which is the
+    reverse of their sorted order, so an implementation that preserved the
+    caller's order produces a different digest than the literal below. The
+    literal was computed once by running `sha256` over the UTF-8 of
+    `tree_id + \\x1f + "1" + \\x1f + <alpha hash> + \\x1f + <beta hash>` and
+    pasted here.
+
+    `tree_id` is the digest
+    `test_a_scope_digest_is_pinned_to_its_exact_component_order_and_encoding`
+    pins above, so the two literals are one chain rather than two unrelated
+    magic numbers: a change to the scope key moves that test first.
+
+    Imported inside the test rather than at the top of the file: this function
+    does not exist yet, and a module-level import would turn the five tests
+    above from green into collection errors, hiding whether the guarantee they
+    hold still holds.
+    """
+    from theurian.domain.raptor import node_identity
+
+    tree_id = ContentHash("ba11c1ad6c4db1fd166a46e98dfc5455511ae1130efb0b86c5ba51a6c2270a6d")
+    alpha, beta = ContentHash.of_text("alpha"), ContentHash.of_text("beta")
+    assert alpha.value < beta.value, "the fixture must hand them over out of sorted order"
+
+    node_id = node_identity(tree_id=tree_id, level=1, child_hashes=[beta, alpha])
+
+    assert node_id.value == ("75c37c121eec8ac102d71db3828436ddef0013054669925db10e30e1da5208c9")
