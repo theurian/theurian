@@ -502,6 +502,11 @@ whose ancestors share its six-component scope, so it discloses nothing from a
 scope the leaf is not in
 (`test_a_surfaced_leaf_carries_its_forest_ancestry_as_raptor_path`,
 `test_a_withheld_documents_text_never_enters_a_surfaced_items_raptor_path`).
+That guarantee is about scope, not freshness: a `title`, like any `excerpt`, is
+index text and can lag the canonical store between builds — the build-time
+staleness residual (T-17a, [#130](https://github.com/theurian/theurian/issues/130))
+that `retrieval-result.schema.json` and `index_forest.py` already attach to every
+title.
 
 ## Replaceable
 
