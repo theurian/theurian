@@ -50,7 +50,7 @@ fans out and then with the corpus too, at 1/500 the rate. The Catalog is not
 itself fanned out, so a single scope holding one kind at hundreds of thousands of
 documents (a thousand Domain batches) is the corpus that would finally cross the
 same limit at the Catalog node -- a ceiling this fan-out raises far above the
-Domain tier's rather than removing.
+Domain tier's rather than removing (#144).
 """
 
 from __future__ import annotations
@@ -143,6 +143,22 @@ class ForestOptions:
     #: Below this, a level is skipped. The threshold exists because a summary of
     #: one or two children is a paraphrase: it costs tokens and adds nothing,
     #: which is ADR-0008's own Negative consequence.
+    #:
+    #: Bounded above by :data:`MAX_CHILDREN_PER_DOMAIN` too, and that bound is
+    #: enforced in :meth:`__post_init__` rather than published as this field's
+    #: own :attr:`summary_max_tokens`-style constant: :func:`_domain_batches`'s
+    #: "only the last cut can be short" holds only while a full batch
+    #: (``MAX_CHILDREN_PER_DOMAIN`` documents) cannot itself fall short of this
+    #: floor. A caller raising this floor past the cap would put every
+    #: non-final batch below it, and the merge that saves the *tail* batch does
+    #: not run on the ones before it -- the orphaning :func:`_domain_batches`
+    #: exists to close, reopened from the body instead of the tail. Not mirrored
+    #: as a schema `maximum` on `raptor.minChildrenPerSummary`
+    #: (`project-config.schema.json`): that key bounds every tier, while
+    #: `MAX_CHILDREN_PER_DOMAIN` is a Domain-tier-only fan-out constant nothing
+    #: in `src/` reads the schema against yet (see :data:`SUMMARY_MAX_TOKENS`),
+    #: so a `maximum` there would publish a coupling the schema does not
+    #: otherwise express.
     min_children_per_summary: int = 3
     #: What one summary may cost. A constant on purpose and never a share of
     #: anything the corpus decides -- see :data:`SUMMARY_MAX_TOKENS` for the
@@ -161,6 +177,15 @@ class ForestOptions:
                 f"min_children_per_summary must be at least {MIN_CHILDREN_FLOOR}, got "
                 f"{self.min_children_per_summary} -- a summary of one child is a "
                 f"paraphrase of it (ADR-0008)"
+            )
+        if self.min_children_per_summary > MAX_CHILDREN_PER_DOMAIN:
+            raise InvariantViolationError(
+                f"min_children_per_summary must be at most {MAX_CHILDREN_PER_DOMAIN}, got "
+                f"{self.min_children_per_summary} -- _domain_batches's tail-merge proof "
+                f"('only the last cut can be short') holds only below this cap; above it, "
+                f"every non-final batch is exactly {MAX_CHILDREN_PER_DOMAIN} documents, "
+                f"short of the floor, and the merge that saves the tail does not reach them "
+                f"-- orphaning documents the way _domain_batches exists to prevent"
             )
         if self.summary_max_tokens < 1:
             raise InvariantViolationError(

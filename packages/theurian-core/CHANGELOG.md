@@ -137,7 +137,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   The Catalog tier is not itself fanned out, so a scope holding one kind at
   hundreds of thousands of documents would still meet the limit at the Catalog
   node — a ceiling raised about 500×, not removed (ADR-0008 decision 2's fan-out
-  amendment).
+  amendment; tracked by
+  [#144](https://github.com/theurian/theurian/issues/144), which the ADR
+  amendment above does not yet link — a docs follow-up owes it).
 
   **Sensitivity on a result and a chunk is the item's, not the revision's.** A
   revision is immutable, so `revision.metadata.sensitivity` is the label the

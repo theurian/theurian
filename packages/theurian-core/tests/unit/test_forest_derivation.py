@@ -611,6 +611,33 @@ def test_the_minimum_children_floor_is_exactly_two() -> None:
     assert ForestOptions(min_children_per_summary=2).min_children_per_summary == 2
 
 
+def test_min_children_per_summary_is_capped_at_the_domain_fan_out_bound() -> None:
+    """Above `MAX_CHILDREN_PER_DOMAIN`, `_domain_batches`'s own proof inverts.
+
+    `_domain_batches` proves its tail-merge safe by "only the last cut can be
+    short" -- true only because a full batch is exactly `MAX_CHILDREN_PER_DOMAIN`
+    documents, which is at least `min_children` at every default. Raise
+    `min_children_per_summary` past that cap and every *non-final* batch is
+    `MAX_CHILDREN_PER_DOMAIN` documents, short of the new floor, while the
+    tail-merge that saves the last batch never runs on the ones before it --
+    `ForestBuilder._node_over_nodes` refuses each of them, orphaning their
+    documents the same way `_domain_batches` exists to prevent, just moved from
+    the tail to the body. `ForestOptions` must refuse the value that causes it
+    rather than let a caller discover the orphan in a built forest. Both halves
+    are load-bearing: `MAX_CHILDREN_PER_DOMAIN + 1` must raise (a guard weakened
+    to `>` a larger constant, or removed, stops raising and this turns red), and
+    `MAX_CHILDREN_PER_DOMAIN` itself must still construct (a guard tightened by
+    one would refuse a legal value and this catches that too).
+    """
+    from theurian.application.forest_builder import MAX_CHILDREN_PER_DOMAIN, ForestOptions
+
+    with pytest.raises(InvariantViolationError):
+        ForestOptions(min_children_per_summary=MAX_CHILDREN_PER_DOMAIN + 1)
+
+    at_cap = ForestOptions(min_children_per_summary=MAX_CHILDREN_PER_DOMAIN)
+    assert at_cap.min_children_per_summary == MAX_CHILDREN_PER_DOMAIN
+
+
 # -- The document-tier threshold, exercised from below -----------------------
 
 
