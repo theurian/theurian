@@ -385,13 +385,21 @@ show it was built for this project. Eight `Fallback` constants in
 the entry for two milestones because it is the *fallback*, and a fallback reads
 as the cheap path.
 
-`list_items` is the same unbounded shape one level down, and `knowledge.status`
-calls it too: it materialises every `KnowledgeItem` in the project with no
+`list_items` is the same unbounded shape one level down, behind the `_scan`
+fallback: it materialises every `KnowledgeItem` in the project with no
 `limit` anywhere in the signature. Measured at 1.26 kB per item over 1,000 items
 and 1.22 kB over 4,000 — so 4.89 MB at 4,000 items, and of the order of 120 MB at
 a hundred thousand, held per concurrent caller. Recorded, not bounded: adding a
-page bound is a change to two published tool surfaces and belongs with the
-Milestone 6 retrieval work, not with a documentation round.
+page bound is a change to the search fallback's published surface and belongs with
+the Milestone 6 retrieval work, not with a documentation round.
+`knowledge.status` shared this shape until Milestone 6's T-17 timing fix
+([#19](https://github.com/theurian/theurian/issues/19)) replaced its `list_items`
+call with `count_surfaceable_by_status`, a SQL `COUNT … GROUP BY status` over the
+`idx_items_status` covering index that reads neither the withheld rows nor the
+whole store — so it no longer materialises the corpus, and its read cost no longer
+scales with the withheld count (the disclosure face of that channel, closed for
+status under T-17; the surviving `search._scan` sibling is
+[#158](https://github.com/theurian/theurian/issues/158)).
 
 **Per member, what one call costs:**
 
@@ -537,7 +545,7 @@ with its own review:
 | peak memory on the dense path | streaming the cursor and keeping a top-*k* heap instead of `fetchall` + sort, or pushing the scoring into SQL |
 | GIL-held time on the dense path | the same, or moving the cosine into a released-GIL extension |
 | concurrent occupancy, any of the three members | a semaphore or concurrency cap on the retrieval path, or a per-query timeout at the transport layer |
-| rows and memory on the fallback path | a page bound on `list_items`, which is a change to the `knowledge.status` and search fallback surfaces rather than a retrieval tuning |
+| rows and memory on the fallback path | a page bound on `list_items`, which is a change to the search fallback's published surface rather than a retrieval tuning |
 
 A per-query bound is a daemon-level control on the transport layer rather than a
 retrieval change, and is filed for a later milestone on that basis:
@@ -2001,6 +2009,47 @@ content is reported here, not even a total" — true of the counts it sits over,
 false of the response — and was narrowed to what holds rather than deleted. It
 now states the counts' own property and points at the schema for the response's,
 so the decision has one home rather than two that drift apart.
+
+**The response *values* are one axis; the read *cost* is another, and it is now
+independent of the withheld count too.** The field equality above compares two
+responses and says nothing about how long producing one takes. Until Milestone 6
+that gap was a live channel: `knowledge.status` ran `list_items` — a `SELECT` with
+no status predicate — and filtered `SURFACEABLE_STATUSES` in Python, so its work
+scaled with the total row count, retired and withheld rows included. Subtracting
+the published `itemCount` from the response time recovered the withheld count,
+measured at 97.5% single-call classification with fifty withheld rows — the same
+order of oracle T-17 exists to close. The fix
+([#19](https://github.com/theurian/theurian/issues/19), commit `2793d7b`) counts
+the surfaceable statuses in SQL — `CanonicalStore.count_surfaceable_by_status`, a
+`status IN (SURFACEABLE_STATUSES) GROUP BY status` over the
+`idx_items_status(project_id, status)` covering index — so the query never reads a
+withheld row. Cost is now proportional to what is published: SQLite VM steps stay
+flat at 103 as the withheld count grows from 50 to 300, where the old scan went
+1,130 to 5,380. The response dict is byte-identical on both paths; only the path
+that produces it changes.
+`tests/integration/test_mcp_tools.py::test_status_materializes_the_same_rows_however_many_are_withheld`
+pins it at the row rather than the clock — reverting to the `list_items` path makes
+the store fetch the twenty-five extra rows a store of twenty-five withheld items
+holds — so it goes RED deterministically while every response-value test stays
+green through the same regression.
+
+**Two residuals, neither closed, both recorded — do not read this as the whole
+observable surface closing.** The read-cost fix is for `knowledge.status` alone.
+The sibling channel on the search fallback — `mcp/search.py::_scan`, whose
+`list_items` call carries the same withheld-count-shaped cost — is filed as
+[#158](https://github.com/theurian/theurian/issues/158), likely already bounded by
+Milestone 5's scan-exhaustion analysis, which the issue exists to verify rather
+than assume. And the SQL count cannot parse the status enum, so a corrupt `status`
+cell now makes `knowledge.status` under-report — `itemCount` drops rather than the
+tool refusing — where the O(total-rows) parse the fix removes used to detect it.
+That trade is the fifth member of `SILENTLY_EMPTIED` in
+`tests/integration/test_canonical_store_corruption.py`, an exact set carried to
+Milestone 6 with the rest of that integrity class
+([#30](https://github.com/theurian/theurian/issues/30)); the silent `0` is also
+the confidentiality-correct answer, and holding the set exact is what keeps its
+reach from growing without a recorded reason. What is closed for status is the
+field equality and the read-cost dependence on the withheld count; what stays open
+is #158 and #30.
 
 **How it is held.** `tests/integration/test_mcp_tools.py`:
 
