@@ -12,7 +12,7 @@ import contextlib
 import json
 import sqlite3
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1109,6 +1109,107 @@ async def test_status_materializes_the_same_rows_however_many_are_withheld(
         f"{READ_COST_WITHHELD} withheld items and {baseline_rows} against one holding none. The "
         f"read cost is carrying the withheld count: the store is fetching rows it then discards, "
         f"so latency reports by subtraction what the counts refuse to (SEC-13, T-17)."
+    )
+
+
+@contextlib.contextmanager
+def _statement_the_store_runs() -> Iterator[dict[str, Any]]:
+    """Capture the exact SQL a store method hands to its reader, read at runtime.
+
+    The plan assertion below must be checked against the statement the tool
+    truly runs. A SQL string copied into the test would drift from
+    ``count_surfaceable_by_status`` the first time its predicate changed, and go
+    on asserting a covering-index plan for a query nothing runs -- so the
+    statement is read off ``_read_all`` as the method builds it, never restated.
+    ``count_surfaceable_by_status`` makes exactly one ``_read_all`` call, so the
+    captured dict holds that one statement.
+    """
+    captured: dict[str, Any] = {}
+    real_read_all = SqliteCanonicalStore._read_all
+
+    def spy(
+        store: SqliteCanonicalStore,
+        sql: str,
+        parameters: tuple[str, ...],
+        mapper: Callable[[sqlite3.Row], Any],
+    ) -> tuple[Any, ...]:
+        captured["sql"] = sql
+        captured["params"] = parameters
+        return real_read_all(store, sql, parameters, mapper)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SqliteCanonicalStore, "_read_all", spy)
+        yield captured
+
+
+def _query_plan(db_path: Path, sql: str, params: tuple[str, ...]) -> str:
+    """The ``EXPLAIN QUERY PLAN`` detail lines for ``sql``, joined for matching.
+
+    Read against a fresh read-only connection to the same file the store used,
+    so the plan is the one SQLite forms over the shipped schema -- indexes and
+    all -- not over a hand-built copy of it.
+    """
+    with contextlib.closing(open_read_connection(db_path)) as conn:
+        rows = conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+    return "\n".join(str(row["detail"]) for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_status_count_is_answered_by_a_covering_index(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """SEC-13, T-17, #19. The withheld-count independence rests on this index.
+
+    The row-count pin above proves ``knowledge.status`` no longer materialises
+    the withheld rows -- but only against the ``list_items`` path it replaced.
+    ``count_surfaceable_by_status`` aggregates in SQL, so its ``GROUP BY`` hands
+    back one row per surfaceable status whatever the store holds; the row meter
+    therefore *cannot* see SQLite walk every row of the project to build that
+    aggregate. That walk is exactly what losing the covering index
+    ``idx_items_status(project_id, status)`` restores: the planner falls to the
+    namespace index, filters on ``project_id`` alone, and reads each withheld row
+    to group it -- reopening the O(withheld) timing channel T-17 closed, while
+    the response and the meter stay byte-identical.
+
+    So this pins the mechanism the row meter only proxies: the count is served by
+    a covering index that reads none of the withheld rows. Deleting or renaming
+    the index, or changing the predicate so the index can no longer cover the
+    query, drops the plan to a scan and turns this RED where the row-count pin
+    above stays green -- the two catch different regressions, so both are kept.
+    """
+    corpora = read_cost_corpora
+
+    # Arrange: the same heavy store the row-count pin measures, so the plan is
+    # read over a corpus that really holds withheld rows the covering index must
+    # not read -- built by the real CLI, so it is the shipped schema under test.
+    paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    db_path = paths.state / active.database_filename
+    context = RequestContext(project_id=ProjectId(READ_COST_HEAVY_ID))
+
+    # Act: run the real count and capture the statement it built, then plan it.
+    # The store is entered first so its connection opens before the capture is
+    # installed -- that open does not go through `_read_all`, so the one call the
+    # capture sees is the count's own statement.
+    with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
+        store.count_surfaceable_by_status(context)
+
+    assert captured, (
+        "count_surfaceable_by_status ran no statement through the store reader, so the plan "
+        "below would describe a query the tool never runs -- the capture watches the wrong method"
+    )
+    plan = _query_plan(db_path, captured["sql"], captured["params"])
+
+    # Assert: SQLite answers the count from the covering index alone. The phrase
+    # `USING COVERING INDEX idx_items_status` is stable across SQLite versions for
+    # this shape; a scan or a fall-back to another index drops it and fails here.
+    assert "USING COVERING INDEX idx_items_status" in plan, (
+        "knowledge.status is no longer answered by the covering index "
+        f"idx_items_status(project_id, status). SQLite planned:\n{plan}\n"
+        "Without it the count reads every row of the project, withheld ones included, and the "
+        "response time carries the withheld count again -- the O(withheld) channel T-17 closed "
+        "and #19 must keep shut (SEC-13)."
     )
 
 
