@@ -1230,8 +1230,15 @@ async def test_status_count_is_answered_by_a_covering_index(
 
 
 @pytest.mark.asyncio
-async def test_the_substring_scan_reads_items_through_the_covering_index(
+@pytest.mark.parametrize(
+    ("include_unapproved", "expected_status_count"),
+    [(False, 1), (True, 3)],
+    ids=["default-approved-only", "include-unapproved-three-statuses"],
+)
+async def test_the_substring_scan_reads_items_through_idx_items_status(
     read_cost_corpora: _ReadCostCorpora,
+    include_unapproved: bool,
+    expected_status_count: int,
 ) -> None:
     """SEC-13, T-17, #158. The scan's withheld-count independence rests on this index.
 
@@ -1245,30 +1252,49 @@ async def test_the_substring_scan_reads_items_through_the_covering_index(
     timing channel #158 closed. Delete `CREATE INDEX idx_items_status` and the
     hinted statement raises `no such index` rather than silently scanning.
 
+    Named `USING INDEX`, not `COVERING`: these are `SELECT *` reads, so SQLite
+    seeks the index and then fetches each matched row from the table -- the plan is
+    `SEARCH ... USING INDEX idx_items_status`, never the `USING COVERING INDEX` that
+    `knowledge.status`'s aggregate earns.
+
+    Both gate widths are pinned. `includeUnapproved` unset resolves a one-status
+    set (`approved`) and the widened gate resolves three (`approved`, `draft`,
+    `proposed`), so the planned statement is `IN (?)` or `IN (?, ?, ?)`
+    respectively -- and the widened read must seek through the same index, or a
+    caller who opts in pays O(withheld) even though the withheld set is unchanged.
+
     The row-cost pin below proves the scan no longer materialises the withheld
     rows, but only against the `list_items` path it replaced. This pins the
-    mechanism that pin only proxies: the read is *planned* through the covering
-    index, so it can never touch a withheld row. Dropping or renaming the index
-    turns this RED where the row-cost pin could still pass on a plan that happened
-    to read the same rows, so the two catch different regressions and both are kept.
+    mechanism that pin only proxies: the read is *planned* through
+    `idx_items_status`, so it can never touch a withheld row. Dropping or renaming
+    the index turns this RED where the row-cost pin could still pass on a plan that
+    happened to read the same rows, so the two catch different regressions and both
+    are kept.
     """
     corpora = read_cost_corpora
 
     # Arrange: the heavy store the row-cost pin measures, built by the real CLI so
     # the plan is read over the shipped schema and a corpus that truly holds the
-    # withheld rows the covering index must not read.
+    # withheld rows the index must not read.
     paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
     active = read_active_state(paths)
     assert active is not None, "the fixture must have built a canonical state"
     db_path = paths.state / active.database_filename
     context = RequestContext(project_id=ProjectId(READ_COST_HEAVY_ID))
 
-    # The status set `_scan` resolves for a default (`includeUnapproved` unset)
-    # search, built the same way here -- so the statement planned below is the one
-    # the shipped fallback runs, never a hand-copied stand-in that would drift the
-    # first time the surfaceable set changed.
-    surfaceable = frozenset(s for s in KnowledgeStatus if may_surface(s, include_unapproved=False))
-    assert surfaceable, "a default search must surface at least the approved status"
+    # The status set `_scan` resolves for this `includeUnapproved`, built the same
+    # way here -- so the statement planned below is the one the shipped fallback
+    # runs, never a hand-copied stand-in that would drift the first time the
+    # surfaceable set changed.
+    surfaceable = frozenset(
+        s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
+    )
+    assert len(surfaceable) == expected_status_count, (
+        f"the {'widened' if include_unapproved else 'default'} gate must resolve "
+        f"{expected_status_count} surfaceable status(es), so the statement planned below is the "
+        f"`IN ({', '.join('?' * expected_status_count)})` the tool runs; it resolved "
+        f"{len(surfaceable)}. A drift here would pin the plan of a query the tool never issues."
+    )
 
     # Act: run the real read and capture the statement it built, then plan it. The
     # store is entered first so its connection opens before the capture is
@@ -1281,6 +1307,12 @@ async def test_the_substring_scan_reads_items_through_the_covering_index(
         "list_items_by_status ran no statement through the store reader, so the plan below "
         "would describe a query the tool never runs -- the capture watches the wrong method"
     )
+    assert captured["sql"].count("?") == 1 + expected_status_count, (
+        "the captured statement binds one `project_id` plus one placeholder per surfaceable "
+        f"status, so a {expected_status_count}-status gate must show {1 + expected_status_count} "
+        f"placeholders; it showed {captured['sql'].count('?')}. The capture watched the wrong "
+        "statement, so the plan below would not describe this gate width."
+    )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
     # Assert: SQLite seeks through `idx_items_status`. `SEARCH ... USING INDEX
@@ -1289,10 +1321,10 @@ async def test_the_substring_scan_reads_items_through_the_covering_index(
     # instead and fails here.
     assert "USING INDEX idx_items_status" in plan, (
         "the substring scan's item read is no longer served by idx_items_status(project_id, "
-        f"status). SQLite planned:\n{plan}\nWithout the covering index the read seeks on "
-        "project_id alone and reads every withheld row to post-filter status, so the scan's "
-        "response time carries the withheld count again -- the O(withheld) channel T-17 closed "
-        "and #158 must keep shut (SEC-13)."
+        f"status) for a {expected_status_count}-status gate. SQLite planned:\n{plan}\nWithout the "
+        "hint the read seeks on project_id alone and reads every withheld row to post-filter "
+        "status, so the scan's response time carries the withheld count again -- the O(withheld) "
+        "channel T-17 closed and #158 must keep shut (SEC-13)."
     )
 
 
@@ -1302,7 +1334,7 @@ async def test_the_substring_scan_materializes_the_same_rows_however_many_are_wi
 ) -> None:
     """SEC-13, T-17, #158. The scan's read cost may not carry the withheld count.
 
-    The plan pin above proves the read *is planned* through the covering index;
+    The plan pin above proves the read *is planned* through `idx_items_status`;
     this proves the effect it exists for, against the `list_items` path #158
     replaced. A project holding twenty-five items a caller may not read must be
     answered by the same number of materialised rows as one holding none, or the
