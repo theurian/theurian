@@ -69,11 +69,10 @@ def test_a_path_two_steps_wrote_is_kept_where_it_was_first_written() -> None:
     assert _unique(accumulated) == (_DATA_DIR, _CREDENTIAL, _ENV)
 
 
-def test_nothing_written_is_published_as_nothing() -> None:
-    """The empty case is the idempotence contract of §6.3.
-
-    A second run applies no step and journals nothing, so the accumulator it
-    hands over is empty -- and ``()`` is what several tests assert a converged
-    second run reports.
-    """
-    assert _unique(()) == ()
+# There is deliberately no test here that ``_unique(()) == ()``. It was written
+# and then removed: ``dict.fromkeys``, ``sorted(set(...))``, ``set(...)`` and a
+# bare pass-through all answer ``()`` for empty input, so no mutation of this
+# function can make it fail. What it looked like it was holding -- a second run
+# publishing no changed paths at all (§6.3) -- is held observably, and killably,
+# by `test_a_second_run_changes_nothing` in
+# ``tests/integration/test_setup_service.py``.
