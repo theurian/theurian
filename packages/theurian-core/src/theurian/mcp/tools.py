@@ -570,7 +570,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
     @server.tool(
         name="knowledge.status",
-        description="Report a project's knowledge state: counts, state hash, freshness.",
+        description=(
+            "Report a project's knowledge state: item counts by status, the "
+            "canonical state hash, applied-migration count, and schema version."
+        ),
     )
     def knowledge_status(projectId: str) -> dict[str, Any]:  # noqa: N803
         # The same pointer that chose `database`, not a second read of it. The
