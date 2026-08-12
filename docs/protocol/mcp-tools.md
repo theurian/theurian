@@ -142,6 +142,52 @@ computed against real time, exactly as before this parameter existed.
 
 An unparseable `asOf` is a clean `ToolError` naming the fix, never a traceback.
 
+### `knowledge.status`
+
+Six keys, all six always present. The contract is
+[`knowledge-status-response.schema.json`](../../schemas/mcp/knowledge-status-response.schema.json),
+which also records why two of them are what they are.
+
+```json
+{
+  "projectId": "demo",
+  "stateHash": "ee3ab796ab22f93691584839e376a00f23aa981ee10d27925586d53a62010f8f",
+  "itemCount": 1,
+  "itemsByStatus": { "approved": 1 },
+  "appliedMigrations": 1,
+  "schemaVersion": 1
+}
+```
+
+| Key | Meaning |
+| :-- | :-- |
+| `projectId` | Echoed from the request. Required, like every project-scoped tool |
+| `stateHash` | Which canonical state the counts were read from. Byte-identical to the `retrieval.snapshotId` a `knowledge.search` answered from that state publishes, so the two can be compared without a second call (FR-R5) |
+| `itemCount` | The sum of `itemsByStatus`, and deliberately not the number of items in the store |
+| `itemsByStatus` | How many items hold each status a caller may see. A status with no items is absent rather than present with a zero, so `{}` is valid and expected |
+| `appliedMigrations` | How many migration files this project has applied. Files, never items |
+| `schemaVersion` | The canonical store's SQLite schema version — not `protocolVersion`, and not the retrieval index's schema version |
+
+**The counts report nothing about withheld content, not even a total.**
+`itemsByStatus` covers `approved`, `draft` and `proposed` only, and `itemCount`
+is the sum of that breakdown rather than the size of the store, so a project
+whose items are all retired answers `{}` and `0` — the same answer a project
+holding nothing gives. Publishing the true total beside a filtered breakdown
+would hand the withheld count back by subtraction, which is the question
+`knowledge.get` refuses to answer when it declines to distinguish a withheld id
+from an absent one (SEC-13, and T-17 in
+[the threat model](../security/threat-model.md)).
+
+That is a claim about the counts and not about the whole response.
+`stateHash` and `appliedMigrations` both move when a migration creating only
+withheld items lands; neither can be made to name a status, an id or a body, and
+this tool takes only `projectId`, so no request parameter reaches either. The
+per-field reasoning is in the schema.
+
+**Index state and proposal ages are not in this response.** The table above
+describes the tool this page is a contract for; what ships today is the six keys
+here.
+
 ## Review
 
 | Tool | Purpose |
