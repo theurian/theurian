@@ -205,7 +205,14 @@ never the token value. The `open` that creates it asks for 0600 rather than
 leaving it to the umask, because the arm that fails to tighten `~/.theurian` is
 the arm that leaves this file's parent 0755 — both modes asserted together in
 `…test_setup_journal.py::test_the_journal_is_created_private_inside_a_directory_that_is_not`
-(SEC-6).
+(SEC-6). The creation mode does not reach a journal that already exists, so
+every append re-asserts it with an `os.fchmod` on the open descriptor before
+writing: a file that `0.1.0.dev0` or `0.1.0.dev1` created through `Path.open("a")`
+is 0644 under the usual umask, and the next append repairs it rather than the
+installation carrying it for life. That the pointer in `changedPaths` is honest
+is a separate property with its own pin — an append that could not complete does
+not put the journal in that list
+(`…test_setup_journal.py::test_an_append_that_could_not_complete_leaves_the_journal_undisclosed`).
 
 `doctor --report` redacts two ways, and only the first was ever asserted. Path
 substitution is pinned by

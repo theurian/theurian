@@ -412,13 +412,37 @@ reads it back — `uninstall_command` builds its list from the service path and 
 MCP config alone. Enumerating created paths so `uninstall` can delete them is a
 separate requirement, NFR-12, and it is not wired (R-10).
 
+An append either **completes or answers `False`**, and never anything between the
+two. The record is written through an `io.BufferedWriter`, which loops until the
+buffer is empty and raises whatever the flush or the close hit; a bare `os.write`
+is permitted to write fewer bytes than it was handed and return that count
+without raising, which under a file-size limit or a full disk left a truncated
+record and reported success. The bytes that did reach the disk stay there — the
+file is `O_APPEND`, so truncating back to a remembered length would discard a
+concurrent writer's record rather than this one's — but the run does not then
+claim the journal among the files it wrote
+(`test_an_append_that_could_not_complete_leaves_the_journal_undisclosed`). This
+is per append and not per run: a line an earlier append landed stays on disk and
+stays disclosed when a later one fails, on both the applied and the failed arm
+(`test_a_step_that_applied_and_could_not_be_journalled_keeps_the_earlier_line_disclosed`,
+`test_a_failure_that_could_not_be_journalled_keeps_the_earlier_line_disclosed`).
+
 The file is created 0600 rather than at whatever the process umask allows,
 because those lines are local absolute paths and raw exception text, and `changed_paths`
 now points every reader of a halted report straight at them. The arm that fails
 to tighten the data directory is precisely the arm that leaves this file's parent
 0755 — a refused `chmod` is what put the run there — so the directory around it
 is not what keeps it private
-(`test_the_journal_is_created_private_inside_a_directory_that_is_not`). It
+(`test_the_journal_is_created_private_inside_a_directory_that_is_not`). The mode
+is re-asserted on every append too, by an `os.fchmod` on the open descriptor
+before the write, which the creation mode cannot reach on its own in either
+direction: a journal that `0.1.0.dev0` or `0.1.0.dev1` created through
+`Path.open("a")` is 0644 under the usual umask and is **repaired** by the next
+append rather than carried for the installation's life, and a umask that can only
+take bits away — 0277 creates the file 0400 — would otherwise leave every later
+run's `O_WRONLY` open failing EACCES and the journal silently never written
+again. A refused `fchmod`, a journal owned by another account, skips the append
+and answers `False`, which is the same trade the 0600 creation already makes. It
 records the token *step* and never the token value
 (`test_the_journal_never_records_the_token_it_watched_being_minted`; T-9 in
 [the threat model](../security/threat-model.md)).
@@ -427,12 +451,26 @@ A critical step failing during apply **halts** the run at that step. The report'
 `state` is `halted`, and `changed_paths` lists:
 
 - the declared `paths` of every step whose apply **finished** — declared, not
-  re-measured. A step that returned is taken at its word, which is exact for
-  what ships today: every apply here writes or raises. On a run that does not
-  halt, `_verify` re-probes each step and degrades the run when one is still
-  missing; a halted run returns before that pass, so nothing re-checks the
-  trust there. The residual either way is an *external* tool that exits
-  successfully without writing what it said it would, recorded as
+  re-measured. A step that returned is taken at its word, and the rule that
+  makes that safe is that every apply here writes or raises. **One shipped step
+  is an exception to it.** `apply_token_storage` *is* `apply_token`, which mints
+  only when there is no token, so on every fresh install the token step ahead of
+  it has already written the file and this apply returns having done neither.
+  Its declared path is truthful only because its predecessor wrote it, and the
+  order is therefore pinned rather than incidental
+  (`test_the_token_is_minted_before_the_step_that_stores_it`). What swapping the
+  two moves was measured, and it is not `changed_paths`: both steps declare the
+  same artefact and whichever runs first writes it, so `state`, `changed_paths`
+  and both outcomes come back identical under either order. It is the **journal**
+  that goes wrong — an applied record carries the step's own `action`, and under
+  the swap the second entry reads "Generate a 256-bit token with the system
+  CSPRNG." for a step that generated nothing, an event claim about work that did
+  not happen in the file an operator reads to repair a machine. On a run that
+  does not halt, `_verify` re-probes each step and degrades the run when one is
+  still missing; a halted run returns before that pass, so nothing re-checks the
+  trust there. The class an apply that finishes without writing belongs to —
+  this one, and an *external* tool that exits successfully without writing what
+  it said it would — is recorded as
   [#153](https://github.com/theurian/theurian/issues/153);
 - for the step that failed partway, those of its declared `paths` that this run
   **moved** — provenance, not existence, described below;
@@ -457,32 +495,58 @@ are different answers, and when the run cannot tell, it says so. Whether a
 declared path predated the run does not change any of this, which is what the
 earlier existence check got wrong.
 
-Both directions are measured, on the shipped steps that produce them:
+Both directions are measured. The first five rows are driven by shipped steps;
+the last two are driven by a synthetic one-step plan (`_step_over`) run through
+the real `SetupService`, because no shipped apply can be driven into them —
+`apply_data_directory`'s `chmod` is its last statement, no apply locks its own
+parent, and the fixture's docstring records the rest:
 
-| The failing step's declared path | In `changed_paths` | Pinned by |
-| :-- | :-- | :-- |
-| a pre-existing 0755 `~/.theurian` whose `chmod` was refused — inode and mode unmoved | no | `test_a_directory_the_run_could_not_tighten_is_not_reported_as_one_it_wrote` |
-| `~/.claude.json`, left byte-identical by a failed `claude mcp add` — a file Theurian never writes | no | `test_a_config_theurian_never_writes_is_not_claimed_when_claude_refuses` |
-| a *directory* at `auth/mcp-token`, which makes the store raise before it writes | no | `test_a_credential_that_was_never_minted_is_not_offered_for_rotation` |
-| a service definition the manager raised instead of writing | no | `test_a_step_that_failed_before_writing_does_not_claim_the_file_it_never_made` |
-| a token file created and written, then a `chmod` that raised | yes | `test_a_step_that_wrote_its_artefact_before_failing_still_discloses_it` |
-| an artefact whose mode moved and nothing else | yes | `test_a_step_that_changed_only_a_mode_before_failing_still_discloses_its_artefact` |
-| a path that stopped being statable mid-run | yes, and the run still returns a halted report rather than a traceback | `test_a_path_that_stops_being_statable_is_disclosed_rather_than_assumed_untouched` |
+| The failing step's declared path | Driven by | In `changed_paths` | Pinned by |
+| :-- | :-- | :-- | :-- |
+| a pre-existing 0755 `~/.theurian` whose `chmod` was refused — inode and mode unmoved | data-directory | no | `test_a_directory_the_run_could_not_tighten_is_not_reported_as_one_it_wrote` |
+| `~/.claude.json`, left byte-identical by a failed `claude mcp add` — a file Theurian never writes itself | mcp-connection | no | `test_a_config_theurian_never_writes_is_not_claimed_when_claude_refuses` |
+| a *directory* at `auth/mcp-token`, which makes the store raise before it writes | token | no | `test_a_credential_that_was_never_minted_is_not_offered_for_rotation` |
+| a service definition the manager raised instead of writing | daemon-service | no | `test_a_step_that_failed_before_writing_does_not_claim_the_file_it_never_made` |
+| a token file created and written, then a `chmod` that raised | token | yes | `test_a_step_that_wrote_its_artefact_before_failing_still_discloses_it` |
+| an artefact whose mode moved and nothing else | `_step_over` | yes | `test_a_step_that_changed_only_a_mode_before_failing_still_discloses_its_artefact` |
+| a path that stopped being statable mid-run | `_step_over` | yes, and the run still returns a halted report rather than a traceback | `test_a_path_that_stops_being_statable_is_disclosed_rather_than_assumed_untouched` |
+
+Row two's "no" is about the failed arm only. `~/.claude.json` *does* appear in a
+converged run's `changed_paths`: the mcp-connection step declares it, and
+`claude mcp add` wrote it. "A file Theurian never writes" means Theurian's own
+process never opens it — the write is delegated to the `claude` CLI — which is
+exactly why a run where `claude` refused may not claim it and a run where
+`claude` succeeded may.
+
+The last row's pin holds the *disclosure*, not the mechanism behind it. The
+apply locks the artefact's parent, so the second observation is unobservable and
+its signature is `None` against a tuple — the row therefore passes on the
+signature comparison alone, and would keep passing if the `known` flag that
+distinguishes "absent" from "could not look" stopped being consulted. Isolating
+pins for the two unknown arms, and for `st_ino`, `st_size` and `st_mtime_ns`
+individually, are deferred to
+[#155](https://github.com/theurian/theurian/issues/155).
 
 The env file is the same "yes" as the token: `apply_env_reference` opens with
 `O_TRUNC`, so a write that raises after the truncation has already moved size and
-mtime and the path is disclosed — measured. What that rewrite replaced is not
-preserved anywhere ([#128](https://github.com/theurian/theurian/issues/128)),
-which is one more reason the report says where it stopped rather than offering to
-undo it.
+mtime and the path is disclosed. That row is **read off `O_TRUNC` rather than
+measured**: no test drives a truncation followed by a write that raises, so it
+is an inference from the open flags and not a pinned arm. What that rewrite
+replaced is not preserved anywhere
+([#128](https://github.com/theurian/theurian/issues/128)), which is one more
+reason the report says where it stopped rather than offering to undo it.
 
 Paths created implicitly on the way are not listed; a step discloses its declared
 artefacts only. That category is wider than the data directory's `auth/`
 subdirectory: the service adapters create `~/Library/LaunchAgents` on macOS and
 `~/.config/systemd/user` on Linux the same way. An adapter's own temporary files
-are outside it too — a `.tmp` file can survive an install that failed, and since
-it is nobody's declared artefact it appears only in the journal's failed record
-([#152](https://github.com/theurian/theurian/issues/152)). One more file arrives
+are outside it too — a `.plist.tmp` or `.service.tmp` can survive an install that
+failed, and since it is nobody's declared artefact it is absent from
+`changed_paths`. It is not absent from the report: the failed record's `detail`
+and the report's `warnings` carry the same `reason` string, so an exception whose
+text names the temporary path puts that path in both
+([#152](https://github.com/theurian/theurian/issues/152), whose body carries the
+same correction). One more file arrives
 without setup writing it: the macOS service definition points launchd's
 `StandardOutPath` and `StandardErrorPath` at `<data_dir>/daemon.log`, so that file
 shows up after a successful setup, written by the service manager rather than by
@@ -508,10 +572,24 @@ session may already be holding is its own defect, so setup reports where it
 stopped rather than reversing. The remedy Core names for an unwanted credential
 is `theurian auth rotate`, in `probe_token`'s own conflict detail; what that
 command does is replace the value in place, rewrite the env file that points at
-it, and restart the daemon. No client is reconfigured by it, and none needs to
-be: what a client holds is a reference — `${THEURIAN_MCP_TOKEN}` in the MCP
-entry, `THEURIAN_MCP_TOKEN="$(cat <token path>)"` in the env file — so the same
-references keep working after the value behind them changes.
+it, and restart the daemon **when it can**. `_restart_daemon` restarts only where
+`detect_manager` finds a service manager and that manager reports the service as
+something other than not-installed; otherwise the command answers
+`daemonRestarted: false` and names the restart in `nextSteps`. A halted run has
+usually stopped before daemon-service registered anything, so that is the arm an
+operator acting on a halted report reaches.
+
+No client is reconfigured by it, and none needs to be: what a client
+*configuration* holds is a reference — `${THEURIAN_MCP_TOKEN}` in the MCP entry,
+`THEURIAN_MCP_TOKEN="$(cat <token path>)"` in the env file — so the same
+references keep working after the value behind them changes. What a *process*
+holds is the expansion, taken once at its own startup, which is the third
+participant `auth_commands`' module docstring names alongside the file and the
+daemon: a shell that has already sourced `~/.theurian/env` ran its `$(cat …)`
+then, and a running client session expanded `${THEURIAN_MCP_TOKEN}` then. Both
+keep the old value until re-sourced or restarted, and `_restart_daemon` returns
+that instruction on every path it can take — including the one where the restart
+succeeded.
 
 Steps 16–17 are not an exception to any of this: they have no apply either, so
 setup neither builds nor restores an index or a migration state today. §6.2
@@ -1047,7 +1125,7 @@ replaced by a recording fake.
 | Pre-existing MCP config | Backed up; the `serena` entry survives untouched. |
 | Read-only `HOME` | The run halts at data-directory — the first step that *writes*, the three probes ahead of it having passed — creates nothing under `HOME`, and names the directory that refused the write in `warnings`: the raw `PermissionError`, which carries the path and no remedy. `changed_paths` is empty (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`). |
 | Existing token | Reused, never regenerated. |
-| Wrong file mode | Corrected, and the correction is reported. |
+| Wrong file mode | Corrected and reported for the **data directory** only. A world-accessible `~/.theurian` probes `Missing` with "Tighten … to 0700" and the apply performs it. A 0644 token file or a 0755 `auth/` probes `Conflicting` by design — tightening is not enough once a credential has been exposed, so the detail names `theurian auth rotate` — and a `Conflicting` step is never applied, `--approve-conflicts` included. A 0644 `env` file is not seen at all: `probe_env_reference` compares contents, so a run converges leaving the mode as it found it. |
 | Critical failure mid-plan | The run halts (`state = halted`); nothing is undone, and `changed_paths` discloses the finished steps' declared artefacts, whichever of the failing step's declared artefacts this run *moved*, and the setup journal this run appended to — de-duplicated, first-seen order, so a credential minted before the failure appears exactly once (§6.4). |
 | Project already registered elsewhere | Detected; no duplicate registration. |
 
