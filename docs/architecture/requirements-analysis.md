@@ -389,51 +389,129 @@ and see `tests/e2e/README.md` for which acceptance criteria have no test at all.
 Seven steps journal to `~/.theurian/setup-journal.jsonl`: the ones that carry an
 apply — rows 4–9 and 14, that is data-directory, token, token-storage,
 env-reference, daemon-service, daemon-running and mcp-connection. Each of them
-appends a line when its apply succeeds and a line when its apply raises. The
-other eleven steps — rows 1–3, 10–13 and 15–18; row 19 is the report itself and
-not a step — have no apply and never journal, so the file records what setup
-*did* and not what it looked at.
+appends one line when it *reaches* its apply: `"applied"` when the apply
+returns, `"failed"` when it raises
+(`test_the_step_that_stopped_the_run_is_journalled_as_failed`). Reaching the
+apply is the condition, not being one of the seven — a step whose probe found it
+`Satisfied` never reaches it, a `Conflicting` one never does either (approval
+buys progress on the rest of the list, never an overwrite), and neither does any
+step after a critical failure has halted the run. The other eleven steps — rows
+1–3, 10–13 and 15–18; row 19 is the report itself and not a step — have no apply
+and never journal, so the file records what setup *did* and not what it looked
+at.
 
-The journal is append-only and a record is `{"step", "event", "detail"}`. It
-carries no path, it holds no inverse action, `_apply` replays nothing, and no
-production code reads the file back — it is a trace for a person doing
-after-the-fact repair. Enumerating created paths so `uninstall` can delete them
-is a separate requirement, NFR-12, and it is not wired (R-10).
+The journal is append-only and a record is `{"step", "event", "detail"}`. There
+is no path *field* — but `detail` is prose written for a person, and it does name
+paths: an applied record carries the step's own `action`, two of the seven of
+which embed an absolute path (data-directory's "Create …/.theurian with mode
+0700", env-reference's "Write …/env, exporting …"), and a failed record carries
+the verbatim text of the exception that stopped the step, which normally names
+the path that refused. So the file is a trace to read and not a ledger to parse:
+it holds no inverse action, `_apply` replays nothing, and no production code
+reads it back — `uninstall_command` builds its list from the service path and the
+MCP config alone. Enumerating created paths so `uninstall` can delete them is a
+separate requirement, NFR-12, and it is not wired (R-10).
+
+It is created 0600 rather than at whatever the process umask allows, because
+those lines are local absolute paths and raw exception text, and `changed_paths`
+now points every reader of a halted report straight at them. The arm that fails
+to tighten the data directory is precisely the arm that leaves this file's parent
+0755 — a refused `chmod` is what put the run there — so the directory around it
+is not what keeps it private
+(`test_the_journal_is_created_private_inside_a_directory_that_is_not`). It
+records the token *step* and never the token value
+(`test_the_journal_never_records_the_token_it_watched_being_minted`; T-9 in
+[the threat model](../security/threat-model.md)).
 
 A critical step failing during apply **halts** the run at that step. The report's
 `state` is `halted`, and `changed_paths` lists:
 
-- the declared `paths` of every step whose apply finished;
-- for the step that failed partway, those of its declared `paths` that exist on
-  disk — an apply can create its artefact before the write or `chmod` that
-  raises, so the check is existence rather than provenance and is biased toward
-  over-reporting: naming a file that turns out untouched costs the operator a
-  look, and staying silent about a truncated one is the disclosure defect. The
-  arm where a declared path could have existed *before* the run is
-  `env-reference`, whose `Missing` also covers "present but differing"
-  ([#128](https://github.com/theurian/theurian/issues/128)). Both directions are
-  pinned:
-  `test_a_step_that_wrote_its_artefact_before_failing_still_discloses_it` and
-  `test_a_step_that_failed_before_writing_does_not_claim_the_file_it_never_made`;
+- the declared `paths` of every step whose apply **finished** — declared, not
+  re-measured. A step that returned is taken at its word, which is exact for
+  what ships today: every apply here writes or raises. On a run that does not
+  halt, `_verify` re-probes each step and degrades the run when one is still
+  missing; a halted run returns before that pass, so nothing re-checks the
+  trust there. The residual either way is an *external* tool that exits
+  successfully without writing what it said it would, recorded as
+  [#153](https://github.com/theurian/theurian/issues/153);
+- for the step that failed partway, those of its declared `paths` that this run
+  **moved** — provenance, not existence, described below;
 - the setup journal, when this run appended to it and the append reached the
   disk (`test_a_halted_run_names_the_journal_among_the_files_it_wrote`,
   `test_a_halted_run_leaves_the_journal_it_wrote_on_disk`).
 
-Directories created implicitly on the way — `auth/` under the data directory —
-are not listed; a step discloses its declared artefacts only. The list is
-de-duplicated in first-seen order
-(`test_the_changed_paths_keep_the_order_they_were_first_written_in`), so a
-credential minted before the failure appears exactly once and the operator can
-act on it. A run that wrote nothing names nothing — a halt on the first step
-lists no path at all
+**Provenance, not existence.** Each of the failing step's declared paths is
+reduced to `(st_ino, st_mode, st_size, st_mtime_ns)` by `os.stat` immediately
+before the apply and again in the arm that assembles the halted report. Absent
+before and present now, or present on both sides with a different signature, is
+disclosed; the same signature on both sides is not. `st_mode` is in there because
+the data-directory step's write *is* a mode change — tightening an existing 0755
+directory to 0700 moves nothing else, so a signature blind to permissions could
+not see that step happen at all. `os.stat` and not `os.lstat`, deliberately:
+every apply here writes *through* a symlink rather than replacing one, and a
+`~/.claude.json` that is a link into a dotfiles repository is an ordinary machine
+(`test_a_write_through_a_symlinked_declaration_is_disclosed`). When the
+observation itself fails on either side — EACCES on a parent, ELOOP, a name too
+long — the path is disclosed anyway: "nothing was written" and "I could not look"
+are different answers, and when the run cannot tell, it says so. Whether a
+declared path predated the run does not change any of this, which is what the
+earlier existence check got wrong.
+
+Both directions are measured, on the shipped steps that produce them:
+
+| The failing step's declared path | In `changed_paths` | Pinned by |
+| :-- | :-- | :-- |
+| a pre-existing 0755 `~/.theurian` whose `chmod` was refused — inode and mode unmoved | no | `test_a_directory_the_run_could_not_tighten_is_not_reported_as_one_it_wrote` |
+| `~/.claude.json`, left byte-identical by a failed `claude mcp add` — a file Theurian never writes | no | `test_a_config_theurian_never_writes_is_not_claimed_when_claude_refuses` |
+| a *directory* at `auth/mcp-token`, which makes the store raise before it writes | no | `test_a_credential_that_was_never_minted_is_not_offered_for_rotation` |
+| a service definition the manager raised instead of writing | no | `test_a_step_that_failed_before_writing_does_not_claim_the_file_it_never_made` |
+| a token file created and written, then a `chmod` that raised | yes | `test_a_step_that_wrote_its_artefact_before_failing_still_discloses_it` |
+| an artefact whose mode moved and nothing else | yes | `test_a_step_that_changed_only_a_mode_before_failing_still_discloses_its_artefact` |
+| a path that stopped being statable mid-run | yes, and the run still returns a halted report rather than a traceback | `test_a_path_that_stops_being_statable_is_disclosed_rather_than_assumed_untouched` |
+
+The env file is the same "yes" as the token: `apply_env_reference` opens with
+`O_TRUNC`, so a write that raises after the truncation has already moved size and
+mtime and the path is disclosed — measured. What that rewrite replaced is not
+preserved anywhere ([#128](https://github.com/theurian/theurian/issues/128)),
+which is one more reason the report says where it stopped rather than offering to
+undo it.
+
+Paths created implicitly on the way are not listed; a step discloses its declared
+artefacts only. That category is wider than the data directory's `auth/`
+subdirectory: the service adapters create `~/Library/LaunchAgents` on macOS and
+`~/.config/systemd/user` on Linux the same way. An adapter's own temporary files
+are outside it too — a `.tmp` file can survive an install that failed, and since
+it is nobody's declared artefact it appears only in the journal's failed record
+([#152](https://github.com/theurian/theurian/issues/152)). One more file arrives
+without setup writing it: the macOS service definition points launchd's
+`StandardOutPath` and `StandardErrorPath` at `<data_dir>/daemon.log`, so that file
+shows up after a successful setup, written by the service manager rather than by
+setup, and belongs in no run's `changed_paths`. The systemd unit logs to journald
+and creates no such file.
+
+The list is de-duplicated in **first-seen order**, which is the order paths were
+accumulated into the report rather than the order the filesystem saw them: each
+applying step's paths as the run reaches that step, then the journal appended
+last — even though the journal's first line was written before most of them. A
+credential minted before the failure therefore appears exactly once, and early,
+where an operator will read it
+(`test_the_changed_paths_keep_the_order_they_were_first_written_in`). A run that
+wrote nothing names nothing: on a `HOME` that refuses writes the run halts at
+data-directory — the first step that *writes*, three read-only probes having
+already passed — creates nothing, journals nothing, and lists no path at all
 (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`).
 Nothing is automatically undone.
 
 That is a design decision, not a missing feature. Deleting a token another
 session may already be holding is its own defect, so setup reports where it
-stopped rather than reversing; the remedy Core names for an unwanted credential
-is `theurian auth rotate` — `probe_token`'s own conflict detail — so that every
-configured client is updated deliberately. Steps 16–17 are not an exception to
+stopped rather than reversing. The remedy Core names for an unwanted credential
+is `theurian auth rotate`, in `probe_token`'s own conflict detail; what that
+command does is replace the value in place, rewrite the env file that points at
+it, and restart the daemon. No client is reconfigured by it, and none needs to
+be: what a client holds is a reference — `${THEURIAN_MCP_TOKEN}` in the MCP entry,
+`THEURIAN_MCP_TOKEN="$(cat <token path>)"` in the env file — so the same
+references keep working after the value behind them changes. Steps 16–17 are not
+an exception to
 any of this: they have no apply either, so setup neither builds nor restores an
 index or a migration state today. §6.2 records that build as a requirement, not
 as a description of what the step does.
@@ -826,7 +904,7 @@ daemon, MCP tools, ingestion, retrieval, RAPTOR, GitHub. Those are Milestones 1�
 | R-7 | Index build blows up wall-clock and memory on a large monorepo | Setup appears hung | Incremental builds by default; builds are cancellable; progress is reported; the old index keeps serving. The RAPTOR forest is now build-time **cost** rather than a pending mitigation, which is why it ships opt-in: `index build --raptor` adds one `summarize` call per node over what the build just wrote, and nothing has measured that on a large repository (ADR-0008 decision 3's amendment records the gap). Two bounds are recorded against the extractive default's `MAX_TOTAL_INPUT_CHARS` (1,000,000 characters). A Document node is charged its item's whole body, so a single document past that limit fails the build rather than producing a summary nobody could read. A Domain node is charged one summary per document of its kind, so its input alone grows with the corpus; `MAX_CHILDREN_PER_DOMAIN` (500) fans a large kind out into batches of at most 500 × 250 × 4 = 500k characters — half the limit — so the `~1050`-document same-kind wall an earlier review found is gone. The Catalog tier is not itself fanned out, so a scope holding one kind at roughly half a million documents (a thousand Domain batches) would still meet the limit at the Catalog node — a ceiling raised about 500×, not removed (ADR-0008 decision 2's fan-out amendment). Incremental subtree rebuild — the part that *would* limit blast radius — is still deferred (#115). |
 | R-8 | Write-queue serialization becomes a throughput bottleneck | Slow ingestion | Batch operations inside one transaction; keep transactions short; measure before optimizing. Correctness outranks throughput. |
 | R-9 | Setup corrupts a hand-tuned Claude Code config | User loses their configuration | Merge, never replace; back up with a timestamp; show a diff; ship a `--dry-run`. |
-| R-10 | Uninstall leaves orphaned OS services or files | Users cannot cleanly remove Theurian | Largely unmitigated, and this row claimed three mitigations that do not exist. The setup journal is not a path record: a line is `{"step", "event", "detail"}`, so it is a readable trace of what setup did and holds no filename to delete (§6.4). Enumeration before deletion is NFR-12, and it is **not wired** — `uninstall_command` builds its list from the service path and the MCP config alone, and reads `SetupStep.paths` nowhere; that field's docstring records the gap. There is no E2E test either: `tests/e2e/` holds `test_daemon_single_instance.py` and `test_migration_workflow.py` and nothing about uninstall, which is owed with the rest of the suite ([#65](https://github.com/theurian/theurian/issues/65)). Which paths uninstall may claim to own at all is [#127](https://github.com/theurian/theurian/issues/127). What does hold today: `uninstall` takes `--dry-run`, and setup discloses what a run wrote in `changed_paths` (§6.4). |
+| R-10 | Uninstall leaves orphaned OS services or files | Users cannot cleanly remove Theurian | Largely unmitigated, and this row claimed three mitigations that do not exist. The setup journal is not a path record: a line is `{"step", "event", "detail"}`, with no path field — `detail` is prose, naming a path in two of the seven applied actions and in whatever exception text a failed record carries — so it is a readable trace of what setup did and not a list anything can delete from (§6.4). Enumeration before deletion is NFR-12, and it is **not wired** — `uninstall_command` builds its list from the service path and the MCP config alone, and reads `SetupStep.paths` nowhere; that field's docstring records the gap. There is no E2E test either: `tests/e2e/` holds `test_daemon_single_instance.py` and `test_migration_workflow.py` and nothing about uninstall, which is owed with the rest of the suite ([#65](https://github.com/theurian/theurian/issues/65)). Which paths uninstall may claim to own at all is [#127](https://github.com/theurian/theurian/issues/127). What does hold today: `uninstall` takes `--dry-run`, and setup discloses what a run wrote in `changed_paths` (§6.4). |
 | R-11 | Optimistic concurrency is too coarse and blocks routine parallel work | Contributors fight the tool | `expectedRevision` is per item, not per store; conflicts produce a readable three-way report. |
 | R-12 | Reviews are personal data (author identity, opinions) | Privacy and compliance exposure | Store author identity as the provider's stable ID plus display name; support redaction at ingestion; document retention in SECURITY.md. |
 | R-13 | Deterministic fakes drift from real providers | Tests pass, production fails | Fakes implement the same Protocol; contract tests run against fakes in CI and against real adapters in an opt-in, credentialed job. |
@@ -966,10 +1044,10 @@ replaced by a recording fake.
 | Second run | Zero changed files; every step `Satisfied`. |
 | Third run after deleting one artifact | Only that artifact is recreated. |
 | Pre-existing MCP config | Backed up; the `serena` entry survives untouched. |
-| Read-only `HOME` | The run halts at the first step, creates nothing under `HOME`, and names the directory that refused the write in `warnings` — the raw `PermissionError`, which carries the path and no remedy. `changed_paths` is empty (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`). |
+| Read-only `HOME` | The run halts at data-directory — the first step that *writes*, the three probes ahead of it having passed — creates nothing under `HOME`, and names the directory that refused the write in `warnings`: the raw `PermissionError`, which carries the path and no remedy. `changed_paths` is empty (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`). |
 | Existing token | Reused, never regenerated. |
 | Wrong file mode | Corrected, and the correction is reported. |
-| Critical failure mid-plan | The run halts (`state = halted`); nothing is undone, and `changed_paths` discloses the finished steps' declared artefacts, whichever of the failing step's declared artefacts exist on disk, and the setup journal this run appended to — de-duplicated, first-seen order, so a credential minted before the failure appears exactly once (§6.4). |
+| Critical failure mid-plan | The run halts (`state = halted`); nothing is undone, and `changed_paths` discloses the finished steps' declared artefacts, whichever of the failing step's declared artefacts this run *moved*, and the setup journal this run appended to — de-duplicated, first-seen order, so a credential minted before the failure appears exactly once (§6.4). |
 | Project already registered elsewhere | Detected; no duplicate registration. |
 
 ### Layer 3 — E2E (real CLI, real daemon, real service manager)
