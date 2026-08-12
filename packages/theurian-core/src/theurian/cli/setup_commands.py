@@ -147,9 +147,11 @@ def setup_command(
     Creates the data directory or tightens an existing one to 0700, mints and
     stores the local access token, writes the env file that references it,
     registers and starts the user-scoped OS service, and writes the MCP
-    connection entry. Those 7 steps are every write setup performs. Nothing else
-    registers the service or writes that entry, and running it twice changes
-    nothing (FR-L2).
+    connection entry. Those 7 steps are every write setup performs, apart from
+    the setup journal it appends under the data directory -- a write that
+    belongs to no step, and one `changedPaths` names whenever that append
+    reached the disk. Nothing else registers the service or writes that entry,
+    and running it twice changes nothing (FR-L2).
 
     Setup cannot tell you Core is missing, because setup is Core: it runs from
     the installation it would have to create, and a shell with no `theurian` on

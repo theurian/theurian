@@ -28,8 +28,12 @@ class StepId(StrEnum):
     """The steps of §6.2, in application order.
 
     An enum rather than free strings: the plugin's presentation groups steps by
-    identity, `uninstall --dry-run` has to enumerate what setup created, and the
-    journal replays them by name. A typo in any of those should not typecheck.
+    identity, and the journal records what was applied under these names -- a
+    readable record for whoever repairs a half-finished run, not something
+    production code reads back, since there is no inverse action to replay and
+    nothing opens the file outside the tests. NFR-12's ``uninstall --dry-run``
+    enumeration is the third reader and is **not wired**, as
+    :attr:`SetupStep.paths` records. A typo in any of those should not typecheck.
     """
 
     PLATFORM = "platform"
@@ -93,7 +97,16 @@ class SetupState(StrEnum):
     #: Success with warnings, not a failure. A missing optional integration must
     #: not stop local knowledge from working.
     DEGRADED = "degraded"
-    ROLLED_BACK = "rolled-back"
+    #: A critical step failed and the run stopped where it was. Nothing is
+    #: undone: every apply creates, tightens or rewrites a file Theurian owns,
+    #: and the journal is append-only with no inverse action to replay (§6.4) --
+    #: #128 records that the env rewrite does not preserve a hand-edited file.
+    #: ``changed_paths`` lists the files this run wrote -- each applied step's
+    #: declared artefacts, plus the failed step's declared paths this run moved
+    #: or could not observe, plus the setup journal -- **including any
+    #: credential minted before the failure**, so the operator can act on it.
+    #: Terminal, and not a success.
+    HALTED = "halted"
     ABORTED = "aborted"
 
     @property
@@ -101,7 +114,7 @@ class SetupState(StrEnum):
         return self in {
             SetupState.CONVERGED,
             SetupState.DEGRADED,
-            SetupState.ROLLED_BACK,
+            SetupState.HALTED,
             SetupState.ABORTED,
         }
 
@@ -206,7 +219,7 @@ class SetupStep:
     #: because it read as one for long enough to be repeated in three other
     #: comments.
     paths: tuple[str, ...] = ()
-    #: A step whose failure must roll the run back rather than degrade it.
+    #: A step whose failure halts the run rather than degrading it.
     critical: bool = True
     outcome: StepOutcome = StepOutcome.NOT_ATTEMPTED
     #: Present when a step is CONFLICTING or FAILED: the difference found, or
@@ -300,8 +313,18 @@ class SetupReport:
     dry_run: bool = False
     serena_detected: bool = False
     warnings: tuple[str, ...] = ()
-    #: Files actually created or modified. Empty on a dry run, and empty on a
-    #: second real run -- which is the idempotence contract of §6.3.
+    #: The files this run wrote: each applied step's declared artefacts, plus --
+    #: for a step that failed partway -- those of its declared paths this run
+    #: moved or could not observe, plus the setup journal when this run appended
+    #: to it. Directories created implicitly are not listed: ``auth/`` under the
+    #: data directory, and ``~/Library/LaunchAgents`` or
+    #: ``~/.config/systemd/user``, which the service adapters create on the way
+    #: to the definition file they do declare. Files a registered service writes
+    #: afterwards -- ``daemon.log``, written by launchd and not by setup -- are
+    #: not listed either. Empty on a dry run, on a run that aborted before
+    #: applying, and on a second real run -- which is the idempotence contract of
+    #: §6.3, and holds through the journal too: a run that applies nothing
+    #: journals nothing.
     changed_paths: tuple[str, ...] = ()
     backups: tuple[str, ...] = field(default_factory=tuple)
 

@@ -22,10 +22,19 @@ from theurian.application.project_service import ProjectRegistry
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS, Step, probe_project_registered
-from theurian.domain.setup import SetupState, SetupStep, StepId, StepOutcome, StepStatus
+from theurian.cli.commands import _emit
+from theurian.domain.setup import (
+    SetupReport,
+    SetupState,
+    SetupStep,
+    StepId,
+    StepOutcome,
+    StepStatus,
+)
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.security.env_file import TOKEN_KEY
+from theurian.security.tokens import MIN_TOKEN_LENGTH
 
 pytestmark = pytest.mark.integration
 
@@ -1040,6 +1049,292 @@ def test_an_unlocatable_executable_aborts_before_creating_anything(tmp_path: Pat
 
     assert report.state is SetupState.ABORTED
     assert not context.data_dir.exists()
+
+
+# -- Halting on a critical apply failure (§6.4, #47) -------------------------
+#
+# ABORTED above stops *before* applying anything. HALTED is the other terminal
+# failure: a critical step fails partway through the apply, after earlier steps
+# have already written to disk. Nothing is rolled back -- the journal is
+# append-only with no inverse action -- so the report has to be honest that the
+# credential minted before the failure is still there, rather than naming a
+# state that implies it was cleaned up.
+
+
+def _halt_on_env_reference(tmp_path: Path) -> tuple[SetupContext, SetupReport]:
+    """Run setup so a critical apply fails *after* a credential is minted.
+
+    ``DATA_DIRECTORY`` is pre-converged at 0700, so `token` and `token-storage`
+    both apply and mint ``auth/mcp-token`` before the run reaches step 7. The env
+    file is created as a *directory*, so ``apply_env_reference``'s ``os.open``
+    raises ``IsADirectoryError`` -- a real critical failure from a shipped step,
+    not an injected fake one. ``env-reference`` is step 7, ahead of
+    ``daemon-service`` step 8, so the run halts before any service registration:
+    the fixture's fake service is never installed and nothing touches a real
+    service manager.
+    """
+    context = _with(tmp_path)
+    context.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    context.data_dir.chmod(0o700)
+    context.env_file.mkdir()
+
+    report = _service(context).run(SetupRequest())
+    return context, report
+
+
+def test_a_critical_apply_failure_halts_and_discloses_the_leftover_credential(
+    tmp_path: Path,
+) -> None:
+    """#47. A halted run must not name a rollback the code cannot perform (§6.4).
+
+    When a critical step fails mid-apply, nothing is undone: every apply is a
+    create-or-tighten and the journal has no inverse to replay, so the token
+    minted by the earlier steps is still on disk. Deleting a token another
+    session may already be using would itself be a defect, so the honest report
+    is HALTED and the leftover credential is surfaced through ``changed_paths``,
+    never hidden behind a state that reads as "cleaned up".
+
+    Asserted on the token file *and* the report, because either alone is weak: a
+    report naming a path nothing wrote would satisfy the second, and a token on
+    disk the report stays silent about would satisfy the first. The security
+    half is the disclosure -- an operator who is not told the credential is there
+    cannot rotate or remove it.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    token = context.auth_dir / TOKEN_KEY
+    assert report.state is SetupState.HALTED
+    assert report.succeeded is False, "a halted run is a failure, not success with warnings"
+    assert token.is_file(), "the credential minted before the failure is still on disk"
+    assert str(token) in report.changed_paths, "and the operator is told it is there"
+
+
+def test_a_halted_report_says_how_far_the_run_got(tmp_path: Path) -> None:
+    """#47. The steps are the only record of where a halted run stopped.
+
+    Nothing is undone, so "which steps ran" is what an operator needs before they
+    can repair the machine by hand: the ones that finished, the one that failed,
+    and the ones never attempted are three different situations and the report
+    has to tell them apart. The halt has its own ``return`` in
+    `SetupService._apply`, so the steps it publishes are assembled by that arm
+    alone -- measured, as a mutation: replacing that return's ``steps`` with an
+    empty tuple passed the whole suite, publishing a failure that named no step
+    at all while `changedPaths` still listed the files it wrote.
+
+    All three outcomes are asserted by *value*, and the population is asserted to
+    be every step in the specification. A halted report that dropped the steps it
+    never reached would satisfy a check on the failed one alone, and tell the
+    operator nothing about what setup still has left to do.
+    """
+    _, report = _halt_on_env_reference(tmp_path)
+
+    assert report.state is SetupState.HALTED
+    assert {step.step_id for step in report.steps} == set(StepId), (
+        "a halted report still accounts for every step, attempted or not"
+    )
+    minted = report.step(StepId.TOKEN)
+    failed = report.step(StepId.ENV_REFERENCE)
+    never_reached = report.step(StepId.DAEMON_SERVICE)
+    assert minted is not None and minted.outcome is StepOutcome.CHANGED, "this one was done"
+    assert failed is not None and failed.outcome is StepOutcome.FAILED, "this one is why it stopped"
+    assert never_reached is not None and never_reached.outcome is StepOutcome.NOT_ATTEMPTED, (
+        "and this one was never tried, which is not the same as having failed"
+    )
+
+
+def test_a_halted_report_carries_the_reason_the_run_stopped(tmp_path: Path) -> None:
+    """#47. ``warnings`` is the only field that says *why* a halt happened.
+
+    ``state`` says the run stopped and ``changed_paths`` says what it had written
+    by then; neither names the failure. The halted return builds its own
+    ``warnings`` tuple, and emptying it passed the whole suite -- leaving a
+    report that an operator can only act on by guessing which step broke.
+
+    Asserted as the exact line the runner composes, so a warning that named the
+    step without its reason, or the reason without its step, fails. The reason is
+    checked for content first: an empty ``detail`` would make the membership
+    assertion pass on a bare ``"env-reference: "``, which tells nobody anything.
+    """
+    _, report = _halt_on_env_reference(tmp_path)
+
+    failed = report.step(StepId.ENV_REFERENCE)
+    assert failed is not None
+    assert "IsADirectoryError" in failed.detail, "the failed step has to carry the reason"
+
+    assert f"{StepId.ENV_REFERENCE.value}: {failed.detail}" in report.warnings, (
+        "the warning names the step that stopped the run and why it stopped"
+    )
+
+
+def test_a_halted_run_leaves_the_journal_it_wrote_on_disk(tmp_path: Path) -> None:
+    """#47, §6.4. "Nothing is undone" covers the journal too.
+
+    The journal is the record a person repairs a half-finished machine from, so
+    a halt that tidied it away would delete the one artefact that says what had
+    already been done -- and would do it precisely when it is needed. Nothing in
+    `SetupService` deletes anything, and this pins that: inserting
+    ``self.journal_path.unlink(missing_ok=True)`` before the halted return passed
+    the whole suite, because every journal assertion in this module runs on a
+    converged run.
+
+    The contents are asserted as well as the file, so a halt that truncated or
+    recreated it empty fails here too.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    journal = _service(context).journal_path
+    assert report.state is SetupState.HALTED, "the fixture has to reach the halt path"
+    assert journal.is_file(), "a halt undoes nothing, and the journal is a file this run wrote"
+    assert journal.read_text(encoding="utf-8").splitlines(), (
+        "and it still holds the record the run appended before it stopped"
+    )
+
+
+def test_a_halted_run_names_the_journal_among_the_files_it_wrote(tmp_path: Path) -> None:
+    """#47. The journal belongs to no step, so only the runner can disclose it.
+
+    ``changed_paths`` is read as the list of files this run wrote, and the
+    journal is written by the runner rather than by any step's apply -- so
+    accumulating step paths alone left ``~/.theurian/setup-journal.jsonl`` out of
+    the report of every run that created it, while `--help` was claiming the
+    seven steps are every write setup performs. Both halves have since moved: the
+    runner appends the journal to ``changed_paths``, and `--help` names it as the
+    one write outside those steps.
+
+    The file is checked on disk first. Naming a path nothing wrote is the same
+    defect pointing the other way -- `_journal` swallows its ``OSError``, so an
+    append that never reached the disk must not be announced.
+
+    **``count(...) == 1`` is guaranteed by the funnel, not by this run.** Every
+    path leaves `SetupService._apply` through `_unique`, which returns
+    ``dict.fromkeys(paths)`` -- so no path can appear twice in ``changed_paths``
+    whatever the runner accumulated, and this count cannot reach two. Unlike the
+    credential beside it, which ``token`` and ``token-storage`` genuinely both
+    declare and which the funnel really is what collapses. What is pinned here is
+    therefore presence; the count is the cheaper spelling of it, and it would
+    only begin doing work of its own if the journal were ever appended per step
+    ahead of the funnel.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    journal = _service(context).journal_path
+    assert journal.is_file(), "the run has to have appended to the journal"
+    assert report.changed_paths.count(str(journal)) == 1, (
+        "the file the runner itself wrote is disclosed, and disclosed once"
+    )
+
+
+def test_a_halted_run_lists_the_leftover_credential_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """#47. `token` and `token-storage` both name ``auth/mcp-token``.
+
+    Accumulating each applied step's ``paths`` listed the credential twice in the
+    report an operator reads after a failure -- and twice reads like two separate
+    leftovers to chase, not one. ``changed_paths`` is de-duplicated
+    order-preservingly, so the token path appears exactly once and the list holds
+    no duplicate at all.
+
+    The second assertion is the general form of the first: pinning only the token
+    path's count would stay green if some other path began doubling, which is the
+    regression the ``_unique`` funnel exists to stop for every path, not just this
+    one.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    token = str(context.auth_dir / TOKEN_KEY)
+    assert report.changed_paths.count(token) == 1, "the credential is listed once, not twice"
+    assert len(report.changed_paths) == len(set(report.changed_paths)), (
+        "no path may appear twice in what an operator reads after a failure"
+    )
+
+
+def test_a_halted_report_never_carries_the_token_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#47, SEC-6. A halted report discloses the credential's *path*, never its value.
+
+    The halt path lists the leftover token in ``changed_paths`` so an operator can
+    rotate it, but the token's own bytes must appear nowhere in the report -- not
+    in ``changed_paths``, not in a ``warnings`` line, not in any step's
+    ``summary``, ``action`` or ``detail``.
+
+    **What the rest of the suite does and does not already hold.**
+    `test_setup_report_withholding.py` sweeps sentinels seeded into files
+    Theurian reads, but through `doctor --report`, which is a dry run -- so those
+    four token assertions are on the **plan-built** path and never reach an
+    apply. Its one real-apply case, `test_an_exception_from_an_apply_is_withheld
+    _like_one_from_a_probe`, drives a **non-critical** step, ends DEGRADED, and
+    asserts an exception *message* rather than a credential. So no test asserted
+    anything about the value of the token setup itself mints against a report of
+    any kind, and the HALTED terminal state has its own ``return`` in
+    `SetupService._apply` that neither path reaches. This locks the property
+    there.
+
+    Asserted against **both** renderings the CLI ships, because they are separate
+    code paths over the same payload: `theurian setup --json` goes through
+    ``json.dumps`` while the default goes through
+    `theurian.cli.commands._render`, which formats each ``steps`` entry with an
+    f-string over the whole dictionary. A value withheld from one is not thereby
+    withheld from the other.
+
+    The text half carries two positive assertions before its prohibition, and
+    they are what stop it decaying into a check that nothing was printed at all.
+    `_render` reaches a step's ``detail`` only through its list branch, and a
+    rendering that stopped printing lists would satisfy ``not in`` while covering
+    nothing -- so the changed path and the failed step's reason are asserted
+    *present* first.
+
+    The guard on the value's length is what stops the absence assertions passing
+    vacuously: a real ``token_urlsafe(32)`` credential is 43 characters of CSPRNG
+    output and cannot coincidentally be absent, so ``not in`` is a measurement
+    rather than an artefact of a short or empty string -- an empty value would
+    make ``"" not in ...`` false and fail the test rather than pass it, which is
+    exactly why the minimum length is asserted first.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    token_value = (context.auth_dir / TOKEN_KEY).read_text(encoding="utf-8").strip()
+    assert report.state is SetupState.HALTED, "the fixture has to reach the halt path"
+    assert token_value and len(token_value) >= MIN_TOKEN_LENGTH, (
+        "a real credential must have been minted before the failure, or the "
+        "absence assertions below prove nothing"
+    )
+
+    payload = report.to_json()
+    assert token_value not in json.dumps(payload), (
+        "a halted report may name the leftover credential's path, never its value"
+    )
+    _emit(payload, as_json=False)
+    rendered = capsys.readouterr().out
+    assert str(context.auth_dir / TOKEN_KEY) in rendered, "changedPaths has to be rendered"
+    assert "IsADirectoryError" in rendered, "and the steps, which is where a leak would land"
+    assert token_value not in rendered, (
+        "and the same holds of the text rendering, which is what `theurian setup` "
+        "prints when --json is not passed"
+    )
+
+
+def test_a_converged_run_lists_each_changed_path_once(context: SetupContext) -> None:
+    """#47. The dedup is applied at *both* return points, not just the halt.
+
+    ``_unique`` guards the CONVERGED/DEGRADED report as well as the HALTED one,
+    and a cold run walks that success path. `token` and `token-storage` both name
+    ``auth/mcp-token``, so without the funnel a fully converged run lists the
+    credential twice in ``changed_paths`` -- the same double-listing #47 fixes,
+    on the run an operator sees most often. The halted-path test above cannot see
+    this: a critical failure never reaches ``_verify``, so its ``_unique`` could
+    be removed and stay green there. Measured -- reverting the success-path dedup
+    survived the whole setup suite until this test.
+    """
+    report = _service(context).run()
+
+    assert report.succeeded, report.warnings
+    token = str(context.auth_dir / TOKEN_KEY)
+    assert report.changed_paths.count(token) == 1, "the credential is listed once, not twice"
+    assert len(report.changed_paths) == len(set(report.changed_paths)), (
+        "a converged report may not list any path twice"
+    )
 
 
 # -- Verification ------------------------------------------------------------

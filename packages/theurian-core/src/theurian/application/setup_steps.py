@@ -96,12 +96,12 @@ class Step:
     #: catches it before anything is committed. Every report-only step spells
     #: the ``None`` out.
     apply: Callable[[SetupContext], None] | None
-    #: A failure here rolls the run back rather than degrading it. Inert on a
+    #: A failure here halts the run rather than degrading it. Inert on a
     #: step whose ``apply`` is ``None``: nothing there can fail, and
     #: `_blocking_conflicts` consults only PLATFORM and CORE_PRESENT. Set
     #: anyway, because it records what §6.2 says the step *is* rather than what
     #: today's runner happens to read -- a step that later gains an action must
-    #: not acquire rollback authority silently along with it.
+    #: not acquire halt authority silently along with it.
     critical: bool = True
 
 
@@ -833,7 +833,7 @@ def probe_mcp_health(context: SetupContext) -> SetupStep:
 
     Never critical: a Theurian whose knowledge is built and whose daemon runs is
     useful even if this machine's Claude Code cannot reach it yet, and reporting
-    that in ``degraded`` beats rolling back everything that did work (§6.1).
+    that in ``degraded`` beats halting everything that did work (§6.1).
     """
     if context.health() is None:
         return SetupStep(
