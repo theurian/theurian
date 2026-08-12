@@ -35,8 +35,9 @@ from theurian.domain.setup import (
 #: after-the-fact repair possible (§6.4).
 JOURNAL_FILENAME: Final = "setup-journal.jsonl"
 
-#: The journal is created with the same mode as the token beside it, for a
-#: weaker but real reason: see :meth:`SetupService._journal`.
+#: The journal is created at -- and on every append repaired to -- the same mode
+#: as the token beside it, for a weaker but real reason: see
+#: :meth:`SetupService._journal`.
 _JOURNAL_MODE: Final = 0o600
 
 
@@ -311,6 +312,20 @@ class SetupService:
         it has to be about the whole operation and not about the first part of
         it that could be observed.
 
+        **A buffered writer and not a bare ``os.write``**, which is what makes
+        that true. ``write(2)`` is permitted to write fewer bytes than it was
+        handed and return that count without raising, so under a file-size
+        limit -- or a full disk, the same path -- an ``os.write`` whose return
+        was discarded left a truncated record and reported success: measured at
+        three half-lines run together into a single entry no reader can parse,
+        announced in ``changed_paths`` as a file this run wrote.
+        :class:`io.BufferedWriter` loops until the buffer is empty and raises
+        whatever the flush or the close hit, which lands in the ``except
+        OSError`` below. The bytes that did reach the disk are left there: the
+        file is opened ``O_APPEND``, so truncating back to a remembered length
+        would discard a concurrent writer's record rather than this one's. What
+        was false was the answer, not the byte.
+
         **Created 0600, rather than at whatever the process umask allows.** The
         lines hold local absolute paths and the verbatim text of the exception
         that stopped a step; ``changed_paths`` now points every reader of a
@@ -320,7 +335,29 @@ class SetupService:
         default would publish the location of a record of the operator's
         filesystem that every local account can read. The mode is applied by
         the ``open`` that creates the file, so there is no window at the wider
-        one; a journal an earlier version already created keeps its own.
+        one.
+
+        **And re-asserted on every append**, for two reasons the creation mode
+        cannot reach on its own:
+
+        * a journal an earlier version created keeps its own mode otherwise,
+          and 0.1.0.dev0 and dev1 both created it through ``Path.open("a")`` --
+          0644 under the usual umask. An installation that has run either of
+          them would carry that file for its whole life;
+        * the mode argument to ``os.open`` is ANDed with the umask, which can
+          only take bits away. A 0277 umask creates the journal 0400, and then
+          every later run's ``O_WRONLY`` open fails EACCES and the journal is
+          silently never written again -- the failure mode this whole method
+          exists to avoid, arriving from the direction nobody guards.
+
+        ``os.fchmod`` on the descriptor rather than ``chmod`` on the path, so
+        what changes mode is the file that was just opened and not whatever the
+        name resolves to a moment later -- the same reason
+        :meth:`~theurian.infrastructure.claude.mcp_config.ClaudeCodeMcpConfig.back_up`
+        does it that way. Before the write, so nothing is appended to a file
+        this run could not make private; a refused ``fchmod`` -- a journal owned
+        by another account -- therefore skips the append and answers ``False``,
+        which is the trade the 0600 creation already makes.
 
         Journalling must never break a working setup, so an ``OSError`` is
         swallowed -- and that is exactly why the answer is returned rather than
@@ -332,14 +369,26 @@ class SetupService:
         entry = {"step": step_id.value, "event": event, "detail": detail}
         line = json.dumps(entry, sort_keys=True) + "\n"
         try:
+            # Never the creator on a path setup takes itself, and kept for the
+            # day that stops being true. `_journal` runs only from `_apply`, and
+            # DATA_DIRECTORY is the first step there with an apply: by the time
+            # anything is journalled the directory exists, or the condition that
+            # stopped its apply -- a read-only `HOME` -- stops this `mkdir` too.
+            # So the 0700 is what it *would* create with; an existing 0755 data
+            # directory keeps 0755, which is why the file's own mode is
+            # load-bearing above.
             self.journal_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor = os.open(
-                self.journal_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _JOURNAL_MODE
-            )
-            try:
-                os.write(descriptor, line.encode("utf-8"))
-            finally:
-                os.close(descriptor)
+            # The builtin and not `Path.open`, which the linter would otherwise
+            # want here: it takes no `opener`, and the opener is what carries
+            # the creation mode.
+            with open(
+                self.journal_path,
+                "a",
+                encoding="utf-8",
+                opener=lambda path, flags: os.open(path, flags, _JOURNAL_MODE),
+            ) as handle:
+                os.fchmod(handle.fileno(), _JOURNAL_MODE)
+                handle.write(line)
         except OSError:
             return False
         return True
