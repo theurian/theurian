@@ -26,6 +26,12 @@ needs no corpus -- the tool reads the registry file and nothing else -- so its
 captures are built from a registry written by hand rather than from the project
 below.
 
+``knowledge.status`` is the third, and it arrives with its schema (#19). What
+that schema publishes is a security promise -- ``itemsByStatus`` may carry the
+surfaceable statuses and nothing else -- so it is checked against a project
+whose items are *all* retired, which is the corpus a hand-written fixture never
+contains and the one where a leak would show.
+
 It lives here rather than beside the schema tests because it touches
 subprocess, SQLite and the filesystem -- ``tests/unit/`` is I/O-free by
 convention in this repository, and the directory is how that split is actually
@@ -56,6 +62,7 @@ ALL_SCHEMA_PATHS = sorted(SCHEMAS.rglob("*.schema.json"))
 
 SEARCH_RESPONSE = "mcp/knowledge-search-response.schema.json"
 PROJECT_LIST_RESPONSE = "mcp/project-list-response.schema.json"
+STATUS_RESPONSE = "mcp/knowledge-status-response.schema.json"
 
 
 def _load(relative: str) -> dict[str, Any]:
@@ -597,6 +604,299 @@ def test_the_project_list_conformance_check_can_fail(
         {key: value for key, value in response.items() if key != "unreadable"},
         {key: value for key, value in response.items() if key != "remedy"},
         {**response, "projects": [{**response["projects"][0], "rootPath": ""}]},
+    )
+    for payload in rejected:
+        with pytest.raises(ValidationError):
+            validator.validate(payload)
+
+
+# -- knowledge.status --------------------------------------------------------
+#
+# The tool that reports a project's knowledge state, and the one whose published
+# promise is about what it does *not* report: `itemsByStatus` carries the
+# surfaceable statuses and nothing else, so a retired item is absent from every
+# count rather than present under a different label (SEC-13, T-17). That is
+# `additionalProperties: false` in the schema, which is worth exactly as much as
+# the corpus it has been run against -- so the captures below include a project
+# whose items are *all* retired, where a leak has somewhere to appear.
+#
+# Its own corpus rather than the one above: this needs statuses the search
+# corpus deliberately does not contain, and adding them there would change what
+# every search capture is a capture of.
+
+
+class StatusDocument(NamedTuple):
+    """One item in a status corpus, and the status it must end up holding.
+
+    ``deprecate`` is separate from ``status`` because ``deprecated`` is not a
+    status a revision may declare: it is the state ``deprecateItem`` leaves an
+    item in. Writing all three retired states as revision metadata would leave
+    that operation's own path unrepresented, and it is the one a user actually
+    runs.
+    """
+
+    letter: str
+    slug: str
+    title: str
+    status: str
+    deprecate: bool = False
+
+
+STATUS_OPERATIONS = """  - op: createItem
+    itemId: architecture.{slug}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.{slug}
+    revisionId: 01K1{letter}AAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/{slug}.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: {status}
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://status/{slug}.md
+"""
+
+STATUS_DEPRECATION = """  - op: deprecateItem
+    itemId: architecture.{slug}
+    reason: replaced by the edge proxy
+"""
+
+STATUS_MIGRATION_HEADER = """apiVersion: theurian.dev/v1
+id: {migration_id}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+"""
+
+#: Every status a caller may be told about, one item each. The schema declares
+#: exactly these three keys, and a corpus reaching two of them would leave the
+#: third's constraint validated by nothing -- the failure mode `sourceAnchors`
+#: already had here once.
+SURFACEABLE_CORPUS = (
+    StatusDocument("D", "auth-policy", "Authentication policy", "approved"),
+    StatusDocument("E", "caching-draft", "Caching draft", "draft"),
+    StatusDocument("F", "proposed-queue", "Proposed queue", "proposed"),
+)
+
+#: Every status a caller may *not* be told about, one item each, and nothing
+#: else -- so this project's response is the empty breakdown. All three, because
+#: they are excluded for one reason and a corpus holding one of them could not
+#: tell whether the other two were still excluded.
+WITHHELD_CORPUS = (
+    StatusDocument("G", "retired-gateway", "Retired gateway", "approved", deprecate=True),
+    StatusDocument("H", "superseded-sessions", "Superseded sessions", "superseded"),
+    StatusDocument("J", "rejected-store", "Rejected store", "rejected"),
+)
+
+#: What each corpus must really be holding, read from the canonical store. The
+#: withheld project's empty breakdown is a statement about a project with three
+#: items in it, and this is what makes it one rather than a statement about a
+#: migration that stopped applying.
+EXPECTED_STORED_STATUSES = {
+    "surfaceable": {
+        "architecture.auth-policy": "approved",
+        "architecture.caching-draft": "draft",
+        "architecture.proposed-queue": "proposed",
+    },
+    "withheld-only": {
+        "architecture.retired-gateway": "deprecated",
+        "architecture.superseded-sessions": "superseded",
+        "architecture.rejected-store": "rejected",
+    },
+}
+
+STATUS_PROJECTS: Final = {
+    "surfaceable": ("status-surfaceable", SURFACEABLE_CORPUS, "01K1SSSSSS01234567890ABCDE"),
+    "withheld-only": ("status-withheld", WITHHELD_CORPUS, "01K1WWWWWW01234567890ABCDE"),
+}
+
+
+async def _call_status(registry: Any, project_id: str) -> dict[str, Any]:
+    """One status report through the same entry point the transport uses."""
+    from theurian.daemon.runner import build_server
+
+    result = await build_server(registry).call_tool("knowledge.status", {"projectId": project_id})
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    content: Any = result.content  # type: ignore[union-attr]
+    loaded: dict[str, Any] = json.loads(content[0].text)
+    return loaded
+
+
+def _build_status_project(
+    root: pathlib.Path, documents: tuple[StatusDocument, ...], migration_id: str
+) -> None:
+    """A Git working tree holding ``documents``, applied, in one migration.
+
+    ``theurian init`` and ``project register`` read the working directory and
+    take no argument that says where, so the caller has already chdir'd into
+    ``root`` -- passed here as well because the file writes below must not
+    depend on that.
+    """
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _cli("init")
+    operations = ""
+    for document in documents:
+        (root / f".theurian/knowledge/architecture/{document.slug}.md").write_text(
+            f"# {document.title}\n\nBody text for {document.slug}.\n", encoding="utf-8"
+        )
+        operations += STATUS_OPERATIONS.format(
+            letter=document.letter,
+            slug=document.slug,
+            title=document.title,
+            status=document.status,
+        )
+        if document.deprecate:
+            operations += STATUS_DEPRECATION.format(slug=document.slug)
+
+    (root / f".theurian/migrations/{migration_id}-corpus.yaml").write_text(
+        STATUS_MIGRATION_HEADER.format(migration_id=migration_id) + operations, encoding="utf-8"
+    )
+    _cli("project", "register")
+    _cli("migrate", "apply")
+
+
+def _stored_statuses(root: pathlib.Path, project_id: str) -> dict[str, str]:
+    """Every item in one canonical store, mapped to the status it really holds."""
+    from theurian.application.project_service import ProjectPaths, read_active_state
+    from theurian.domain.context import RequestContext
+    from theurian.domain.identifiers import ProjectId
+    from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+
+    paths = ProjectPaths.of(root)
+    active = read_active_state(paths)
+    assert active is not None, f"{project_id} has no built canonical state"
+    context = RequestContext(project_id=ProjectId(project_id))
+    with SqliteCanonicalStore(paths.state / active.database_filename) as store:
+        return {item.item_id.value: item.status.value for item in store.list_items(context)}
+
+
+class StatusCaptures(NamedTuple):
+    """Real ``knowledge.status`` responses, beside what their stores hold.
+
+    The second half is not decoration. A response of ``{}`` is the correct
+    answer for a project holding three retired items and also the correct answer
+    for a project holding nothing, and only one of those is evidence.
+    """
+
+    responses: dict[str, dict[str, Any]]
+    stored: dict[str, dict[str, str]]
+
+
+def _capture_status(tmp: pathlib.Path) -> StatusCaptures:
+    """Both status projects, built by the real CLI into one registry."""
+    from theurian.application.project_service import ProjectRegistry
+
+    data_dir = tmp / "datadir"
+    responses: dict[str, dict[str, Any]] = {}
+    stored: dict[str, dict[str, str]] = {}
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    try:
+        for name, (project_id, documents, migration_id) in STATUS_PROJECTS.items():
+            root = tmp / project_id
+            root.mkdir()
+            # `init` and `project register` resolve the project from the working
+            # directory, so this is set before the build rather than passed to
+            # it. Both projects register into the one `THEURIAN_DATA_DIR` above,
+            # which is what lets one daemon answer for both.
+            monkey.chdir(root)
+            _build_status_project(root, documents, migration_id)
+            stored[name] = _stored_statuses(root, project_id)
+        registry = ProjectRegistry.default(data_dir)
+        for name, (project_id, _, _) in STATUS_PROJECTS.items():
+            responses[name] = asyncio.run(_call_status(registry, project_id))
+    finally:
+        monkey.undo()
+
+    return StatusCaptures(responses=responses, stored=stored)
+
+
+@pytest.fixture(scope="module")
+def status_captures(tmp_path_factory: pytest.TempPathFactory) -> StatusCaptures:
+    """Two projects, built once: one all-surfaceable, one all-withheld."""
+    return _capture_status(tmp_path_factory.mktemp("status-conformance"))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", list(STATUS_PROJECTS))
+def test_a_real_status_response_validates_against_its_published_schema(
+    status_captures: StatusCaptures, name: str
+) -> None:
+    """The schema #19 asked for, checked against the tool rather than read.
+
+    Both directions at once: ``additionalProperties: false`` fails a field
+    nobody declared, and ``required`` fails a declared field nothing emits.
+    """
+    _validator(STATUS_RESPONSE).validate(status_captures.responses[name])
+
+
+@pytest.mark.integration
+def test_the_status_captures_reach_every_declared_status_key_and_the_empty_one(
+    status_captures: StatusCaptures,
+) -> None:
+    """Guards the validation above, which two copies of one response satisfy.
+
+    The schema declares three keys under ``itemsByStatus`` and forbids a fourth.
+    A corpus holding only ``approved`` items would validate against a schema
+    that had lost ``proposed`` entirely, and against one that had gained
+    ``rejected``; neither is what this file is for.
+
+    The empty breakdown is the other half. It is asserted beside what the store
+    actually holds, because ``{}`` from a project with three retired items and
+    ``{}`` from an empty directory are the same response and only one of them
+    says anything.
+    """
+    assert status_captures.stored == EXPECTED_STORED_STATUSES
+
+    surfaceable = status_captures.responses["surfaceable"]
+    withheld = status_captures.responses["withheld-only"]
+
+    assert surfaceable["itemsByStatus"] == {"approved": 1, "draft": 1, "proposed": 1}
+    assert surfaceable["itemCount"] == 3
+    assert withheld["itemsByStatus"] == {}, "a retired item may not appear under any label"
+    assert withheld["itemCount"] == 0, "the total may not restore what the breakdown withheld"
+
+
+@pytest.mark.integration
+def test_the_status_conformance_check_can_fail(status_captures: StatusCaptures) -> None:
+    """Guards both validations above.
+
+    A schema loaded but never applied accepts every response and proves nothing.
+    Each rejection below is a different clause, and the middle three are the
+    ones the schema exists for: a retired status appearing as a key, the same
+    quantity relabelled into a bucket, and a count published for a status
+    holding no items -- the shapes that would leak what the breakdown withholds.
+    """
+    validator = _validator(STATUS_RESPONSE)
+    response = status_captures.responses["surfaceable"]
+    validator.validate(response)
+
+    rejected = (
+        {**response, "surprise": 1},
+        {key: value for key, value in response.items() if key != "stateHash"},
+        {key: value for key, value in response.items() if key != "itemsByStatus"},
+        {**response, "itemsByStatus": {**response["itemsByStatus"], "rejected": 1}},
+        {**response, "itemsByStatus": {**response["itemsByStatus"], "other": 2}},
+        {**response, "itemsByStatus": {**response["itemsByStatus"], "approved": 0}},
+        {**response, "stateHash": response["stateHash"].upper()},
     )
     for payload in rejected:
         with pytest.raises(ValidationError):

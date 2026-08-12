@@ -282,6 +282,33 @@ def test_the_published_result_cap_is_the_one_the_tool_enforces() -> None:
     assert schema["properties"]["count"]["maximum"] == MAX_RESULTS
 
 
+def test_the_published_status_breakdown_is_exactly_what_the_tool_may_count() -> None:
+    """SEC-13, T-17, #19. One statement written in two files.
+
+    ``knowledge.status`` builds ``itemsByStatus`` over
+    :data:`SURFACEABLE_STATUSES`, and the schema declares those keys and closes
+    the object. Drift is a defect in both directions, and only one of them shows
+    up in a response: a status added to the domain set makes the tool emit a key
+    the published contract rejects -- Theurian failing its own schema, which is
+    the shape ``retrieval-result`` held for a whole milestone -- while a retired
+    status added here quietly licenses the count SEC-13 refuses to give.
+
+    Equality rather than containment, because ``<=`` holds while the schema
+    declares ``rejected`` beside the three, and that is the direction that
+    matters. The closure assertion is not redundant with
+    :func:`test_object_schemas_reject_unknown_properties`, which reads the
+    top-level object only: without it the key set above is a list of examples
+    rather than the whole vocabulary, and a leaked status arrives as an
+    undeclared property nothing rejects.
+    """
+    from theurian.domain.enums import SURFACEABLE_STATUSES
+
+    breakdown = _load("mcp/knowledge-status-response.schema.json")["properties"]["itemsByStatus"]
+
+    assert set(breakdown["properties"]) == {status.value for status in SURFACEABLE_STATUSES}
+    assert breakdown["additionalProperties"] is False
+
+
 def test_the_source_anchor_contract_matches_the_invariant_it_came_from() -> None:
     """INV-8 is a disjunction, and the schema used to publish half of it.
 
@@ -679,6 +706,7 @@ _PROJECT_ID_FACES = (
     ("config/project-config.schema.json", ("properties", "projectId")),
     ("mcp/tool-context.schema.json", ("properties", "projectId")),
     ("mcp/knowledge-search-response.schema.json", ("properties", "projectId")),
+    ("mcp/knowledge-status-response.schema.json", ("properties", "projectId")),
     (
         "mcp/project-list-response.schema.json",
         ("properties", "projects", "items", "properties", "projectId"),
