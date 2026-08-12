@@ -3,7 +3,7 @@
 ``~/.theurian/setup-journal.jsonl`` is appended to and never rewritten, because
 nothing setup does has an inverse to replay: a run that stops halfway is
 repaired by a person reading what had already been done. That gives the file
-three properties this module holds, none of which the converged-run assertions
+four properties this module holds, none of which the converged-run assertions
 in ``test_setup_service.py`` can reach.
 
 **It records the failure, not just the successes.** Every other fixture in the
@@ -17,12 +17,23 @@ driven here: a halt with something behind it, and a halt with nothing behind it.
 
 **It is a file this run wrote, so ``changed_paths`` names it** -- and it belongs
 to no step, so only the runner can. `theurian setup --help` names it as the one
-write outside the seven steps for the same reason.
+write outside the seven steps for the same reason. *Wrote* is the whole of that
+claim, and it is answered by the append's return value rather than by the file
+being there: an append that could not complete leaves the journal unnamed, and
+one that completed early in the run keeps it named however the later ones go.
 
 **It is created 0600, and it holds the local absolute paths and the verbatim
 exception text of whatever stopped the run.** The arm that fails to tighten the
 data directory is precisely the arm that leaves this file's parent 0755, so the
 directory around it is not what protects it.
+
+**It records the token step and never the token value.** This is the fourth
+property rather than a corollary of the third: 0600 decides who may read the
+file, and this decides what is in it to read. The journal is the last row of
+T-9's surface table in ``docs/security/threat-model.md``, which cites the test
+below by name -- it sits in the same directory as the credential, is written by
+the run that mints it, and is the first thing an operator is pointed at
+afterwards (SEC-6, ADR-0011).
 
 Real files under a temporary root, fake collaborators: registering a real
 service would reach the developer's own login session, which redirecting
