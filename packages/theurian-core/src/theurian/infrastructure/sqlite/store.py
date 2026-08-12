@@ -357,7 +357,7 @@ class SqliteCanonicalStore:
         values = tuple(sorted(s.value for s in statuses))
         placeholders = ", ".join("?" for _ in values)
         # `INDEXED BY idx_items_status`, not left to the planner, and that hint is
-        # the whole of what makes this timing-independent. The covering index is
+        # the whole of what makes this timing-independent. `idx_items_status` is
         # `(project_id, status)`; the primary key gives a second index
         # `(project_id, item_id)`. `ORDER BY item_id` -- the order the substring
         # scan's `limit` cutoff depends on, so the result set stays identical to the

@@ -844,10 +844,15 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     # `list_items` returned here -- moving the filter into SQL drops no visible row.
     #
     # A status cell corrupt to a non-enum value fails the store's `IN` predicate and
-    # so drops out -- an under-report, the same #30/SILENTLY_EMPTIED family
-    # `knowledge.search` already carries. It is not detected here: detection would
-    # mean reading every row to inspect its status, which is the O(withheld) scan
-    # this change exists to remove.
+    # so drops out. That is a change of failure mode, not a new leak: the old
+    # `list_items` path this replaced materialised every row and raised `ValueError`
+    # in `KnowledgeStatus(row["status"])` (store.py `_item_from_row`), so the whole
+    # search errored with `StateDatabaseUnreadableError`. #158 converts that crash
+    # into a silent under-report of the one corrupt row, aligning this fallback to
+    # the #30/SILENTLY_EMPTIED silent drop `knowledge.search` already carries for
+    # other columns on the ranked path (recorded in #30). It is not detected here:
+    # detection would mean reading every row to inspect its status, which is the
+    # O(withheld) scan this change exists to remove.
     surfaceable = frozenset(
         s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
     )

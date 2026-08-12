@@ -126,8 +126,10 @@ class CanonicalStore(Protocol):
         time then scales with the count of the rows it discards, recoverable by
         measuring it (T-17; the ``search._scan`` sibling of the channel #19 closed
         for ``knowledge.status``, #158). Here the set is pushed into the ``IN``
-        predicate the covering index ``idx_items_status(project_id, status)`` serves,
-        so a row whose status is not in ``statuses`` is never fetched.
+        predicate the index ``idx_items_status(project_id, status)`` serves: the
+        seek locates only the in-set rows and ``SELECT *`` then fetches each by
+        rowid (``USING INDEX``, not ``USING COVERING INDEX``), so a row whose status
+        is not in ``statuses`` is never fetched.
 
         An empty ``statuses`` returns ``()`` without a query: no status can match,
         and ``IN ()`` is not valid SQL.
