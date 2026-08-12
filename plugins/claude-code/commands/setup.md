@@ -78,11 +78,17 @@ that cannot start.
    without undoing anything, so those files are on disk now — possibly including
    the `auth/mcp-token` credential. `changedPaths` is the field that says what
    was written; in `halted` the `steps[].status` values are still the plan's, as
-   above. If a token is among them, the way to be rid of it is
-   `theurian auth rotate` — that replaces it and every configured client is
-   updated deliberately. Deleting the file by hand instead means reconfiguring
-   every client that references the token, and a running session may still be
-   holding it.
+   above. If a token is among them, what to do with it depends on what the user
+   is doing next, and none of the three costs a client reconfiguration — clients
+   hold a reference (`${THEURIAN_MCP_TOKEN}`), never the value:
+
+   - **Carrying on with Theurian** — leave it. A later `theurian setup` reuses
+     the token it finds and never regenerates one.
+   - **The token may have been seen by someone else** — `theurian auth rotate`
+     replaces the value in place, rewrites the env file and restarts the daemon.
+   - **Abandoning the install** — delete the file. Nothing needs reconfiguring
+     afterwards, but a daemon that is already running may hold the old value
+     until it is stopped or restarted.
 
    `changedPaths` covers what *this* run wrote and nothing earlier. On a second
    halted run, a credential left behind by the first does not reappear there —

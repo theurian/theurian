@@ -49,14 +49,29 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([#47](https://github.com/theurian/theurian/issues/47)).
 - Step 6 says how to present a `halted` run's `changedPaths`, which it named
   without saying what to do with it. Three corrections
-  ([#47](https://github.com/theurian/theurian/issues/47)): the remedy for a
-  token left on disk is `theurian auth rotate`, not "keep or remove" — Core
-  never deletes a credential a session may be holding, and removing the file by
-  hand means reconfiguring every client that references it; `changedPaths` is
-  the field that says what was written, because in `halted` the `steps[].status`
-  values are still the plan's; and `changedPaths` covers only the run that
-  produced it, so on a repeated halted run a credential left by the first run
-  appears as the token step reporting `satisfied` rather than as a path.
+  ([#47](https://github.com/theurian/theurian/issues/47)): a token left on disk
+  gets a named remedy rather than "keep or remove", since Core never deletes a
+  credential a session may be holding; `changedPaths` is the field that says
+  what was written, because in `halted` the `steps[].status` values are still
+  the plan's; and `changedPaths` covers only the run that produced it, so on a
+  repeated halted run a credential left by the first run appears as the token
+  step reporting `satisfied` rather than as a path.
+- That remedy is now the measured one, and it replaces advice that was wrong in
+  two ways ([#47](https://github.com/theurian/theurian/issues/47)). The document
+  said the way to be rid of the token was `theurian auth rotate`, and that
+  deleting the file by hand meant reconfiguring every client that references it.
+  `rotate` removes nothing — it replaces the value in place, rewrites the env
+  file and restarts the daemon, and its own docstring scopes it to "after a
+  token has been exposed". And no client ever holds the value: the MCP entry
+  carries `${THEURIAN_MCP_TOKEN}` verbatim and the env file carries
+  `THEURIAN_MCP_TOKEN="$(cat <token path>)"`. Measured: deleting the token file
+  and re-running setup mints a new token at the same path, leaves
+  `~/.claude.json` and the env file byte-identical, and performs no MCP write.
+  Step 6 now splits the advice by what the user is doing next — carrying on
+  (leave it; a later setup reuses the token it finds), suspected exposure
+  (`rotate`), abandoning the install (delete it) — and keeps the one warning
+  that held all along: a running daemon may hold the old value until it is
+  restarted.
 
 ### Security
 
