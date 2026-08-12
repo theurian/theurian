@@ -211,7 +211,7 @@ class SetupStep:
     #: because it read as one for long enough to be repeated in three other
     #: comments.
     paths: tuple[str, ...] = ()
-    #: A step whose failure must roll the run back rather than degrade it.
+    #: A step whose failure halts the run rather than degrading it.
     critical: bool = True
     outcome: StepOutcome = StepOutcome.NOT_ATTEMPTED
     #: Present when a step is CONFLICTING or FAILED: the difference found, or

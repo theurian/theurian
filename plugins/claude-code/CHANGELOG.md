@@ -45,7 +45,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The `/theurian:setup` command doc now lists `halted` instead of `rolled-back`
   among the states where the verification pass never ran. Core renamed that
   terminal failure state — a critical step failing during apply halts the run
-  rather than rolling back a rollback that never existed
+  rather than reporting a rollback that never existed
   ([#47](https://github.com/theurian/theurian/issues/47)).
 
 ### Security

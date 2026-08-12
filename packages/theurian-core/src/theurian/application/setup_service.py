@@ -90,7 +90,7 @@ class SetupService:
                 critical=step.critical,
             )
         # The step definition owns criticality; a probe should not be able to
-        # promote its own failure into one that rolls the whole run back. It owns
+        # promote its own failure into one that halts the whole run. It owns
         # `paths` for the same reason: the field is read as "setup writes here",
         # and a step with no action writes nowhere in any of its arms. Enforced
         # here rather than trusted to each probe, because the arms are the

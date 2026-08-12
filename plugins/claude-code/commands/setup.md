@@ -74,6 +74,11 @@ that cannot start.
    the verification pass never ran, so `status` is still the plan rather than the
    result.
 
+   When `state` is `halted`, also name the report's `changedPaths`: setup stopped
+   without undoing anything, so those files are on disk now — possibly including
+   the `auth/mcp-token` credential — for the user to decide whether to keep or
+   remove.
+
 7. If the report's `serenaDetected` field is true, tell the user that Theurian
    and Serena are configured to work together, and briefly state the split:
    Theurian answers "what did we decide and why", Serena answers "where is this
