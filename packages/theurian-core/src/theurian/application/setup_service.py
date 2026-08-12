@@ -35,6 +35,10 @@ from theurian.domain.setup import (
 #: after-the-fact repair possible (§6.4).
 JOURNAL_FILENAME: Final = "setup-journal.jsonl"
 
+#: The journal is created with the same mode as the token beside it, for a
+#: weaker but real reason: see :meth:`SetupService._journal`.
+_JOURNAL_MODE: Final = 0o600
+
 
 @dataclass(frozen=True, slots=True)
 class SetupRequest:
@@ -299,19 +303,44 @@ class SetupService:
     # -- Journal ----------------------------------------------------------
 
     def _journal(self, step_id: StepId, event: str, detail: str) -> bool:
-        """Append one line, reporting whether the file actually grew.
+        """Append one line, reporting whether the append completed.
+
+        Not "whether the file grew", which is what this used to say: the open
+        can succeed and the write or the close still raise. The caller turns
+        this answer into a claim that the journal is a file this run wrote, so
+        it has to be about the whole operation and not about the first part of
+        it that could be observed.
+
+        **Created 0600, rather than at whatever the process umask allows.** The
+        lines hold local absolute paths and the verbatim text of the exception
+        that stopped a step; ``changed_paths`` now points every reader of a
+        halted report straight at the file; and the arm that fails to tighten
+        the data directory is precisely the arm that leaves this file's parent
+        0755, because a refused ``chmod`` is what put the run here. A 0644
+        default would publish the location of a record of the operator's
+        filesystem that every local account can read. The mode is applied by
+        the ``open`` that creates the file, so there is no window at the wider
+        one; a journal an earlier version already created keeps its own.
 
         Journalling must never break a working setup, so an ``OSError`` is
         swallowed -- and that is exactly why the answer is returned rather than
         assumed by the caller: ``changed_paths`` names the journal only when a
-        write reached the disk, never because one was attempted.
+        write reached the disk, never because one was attempted. Reached by the
+        read-only ``HOME`` case, where the directory this file needs is the one
+        setup could not create.
         """
         entry = {"step": step_id.value, "event": event, "detail": detail}
+        line = json.dumps(entry, sort_keys=True) + "\n"
         try:
             self.journal_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with self.journal_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(entry, sort_keys=True) + "\n")
-        except OSError:  # pragma: no cover - defensive
+            descriptor = os.open(
+                self.journal_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _JOURNAL_MODE
+            )
+            try:
+                os.write(descriptor, line.encode("utf-8"))
+            finally:
+                os.close(descriptor)
+        except OSError:
             return False
         return True
 
