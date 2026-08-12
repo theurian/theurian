@@ -552,11 +552,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   appended to it — de-duplicated in first-seen order, so the credential appears
   exactly once. Two remedies, and neither costs a client reconfiguration:
   `theurian auth rotate` replaces the value in place, rewrites the env file and
-  restarts the daemon; deleting the file by hand leaves a later `theurian setup`
-  to mint a new token at the same path. Clients hold a *reference* either way —
-  `${THEURIAN_MCP_TOKEN}` in the MCP entry, `THEURIAN_MCP_TOKEN="$(cat …)"` in
-  the env file — so nothing about them changes. A daemon already running may hold
-  the old value until it is restarted.
+  restarts the daemon **where it can**; deleting the file by hand leaves a later
+  `theurian setup` to mint a new token at the same path. `_restart_daemon`
+  restarts only where `detect_manager` finds a service manager and that manager
+  reports the service as something other than not-installed — otherwise the
+  command answers `daemonRestarted: false` and names the restart in `nextSteps`,
+  which is the arm a halted run reaches, since a halt has usually come before
+  daemon-service registered anything. Client *configuration* holds a *reference*
+  either way — `${THEURIAN_MCP_TOKEN}` in the MCP entry,
+  `THEURIAN_MCP_TOKEN="$(cat …)"` in the env file — so nothing about it changes.
+  A running *process* holds the expansion it took at its own startup: the daemon
+  until it restarts, and equally a shell that has already sourced the env file
+  and a client session already running. That is the third participant
+  `auth_commands`' module docstring names, and why `_restart_daemon` returns the
+  reload-shell instruction on every path it can take.
 
 - **`changed_paths` names two things it used to omit**
   ([#47](https://github.com/theurian/theurian/issues/47)). It listed the planned
@@ -582,21 +591,49 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   step's whole write *is* a mode change; `os.stat` follows symlinks because
   every apply here writes *through* a link rather than replacing one. A check
   that fails on either side — EACCES, ELOOP, a name too long — discloses the
-  path anyway: when the run cannot tell, it says so. The steps that finished are
-  still trusted rather than re-measured, which is exact for applies that write
-  or raise and leaves an external tool exiting successfully without writing as
-  the residual ([#153](https://github.com/theurian/theurian/issues/153)).
+  path anyway: when the run cannot tell, it says so. Two of the seven arms in
+  that truth table cannot be reached by any shipped apply and are driven by a
+  synthetic step through the real `SetupService`; the one for a path that stops
+  being statable passes on the signature comparison (`None` against a tuple)
+  rather than on the flag that separates "absent" from "could not look", so
+  isolating pins for the unknown arms and for `st_ino`, `st_size` and
+  `st_mtime_ns` individually are deferred to
+  [#155](https://github.com/theurian/theurian/issues/155).
+
+  The steps that finished are still trusted rather than re-measured. That is
+  exact for an apply that writes or raises, which is every one here **but
+  `apply_token_storage`**: it is a call to `apply_token`, which mints only when
+  there is no token, so on a fresh install the token step ahead of it has
+  written the file already and this apply returns having done neither. Its
+  declared path is truthful because its predecessor wrote it, and the ordering
+  is now pinned rather than incidental
+  (`test_the_token_is_minted_before_the_step_that_stores_it`). Swapping the two
+  moves no report field — both declare the artefact, so `state`, `changed_paths`
+  and both outcomes are identical either way; what it corrupts is the journal,
+  which would record "Generate a 256-bit token with the system CSPRNG." for a
+  step that generated nothing. The class an apply that finishes without writing
+  belongs to — this one, and an external tool exiting successfully without
+  writing — is [#153](https://github.com/theurian/theurian/issues/153).
   Truncation is still disclosed, on the arm that motivated the first fix:
   `apply_env_reference`'s `O_TRUNC` moves size and mtime before the write that
   raises, and what it replaced is preserved nowhere
-  ([#128](https://github.com/theurian/theurian/issues/128)).
+  ([#128](https://github.com/theurian/theurian/issues/128)). That arm is read
+  off the open flags and not measured — no test drives a truncation followed by
+  a write that raises.
 
   Implicitly created paths are still not listed — a step discloses its declared
   artefacts only — and that category is wider than `auth/` under the data
   directory: the service adapters create `~/Library/LaunchAgents` and
-  `~/.config/systemd/user` the same way, and an adapter's `.tmp` file surviving
-  a failed install appears only in the journal's failed record
-  ([#152](https://github.com/theurian/theurian/issues/152)).
+  `~/.config/systemd/user` the same way. An adapter's `.plist.tmp` surviving a
+  failed install is absent from `changed_paths` for the same reason, but not
+  from the report: the failed journal record's `detail` and the report's
+  `warnings` carry the same `reason` string, so an exception naming the
+  temporary path puts it in both
+  ([#152](https://github.com/theurian/theurian/issues/152)). `~/.claude.json`
+  cuts the other way — the row above says a failed `claude mcp add` may not
+  claim it, and a *converged* run does name it, because the step declares it and
+  `claude` wrote it. "A file Theurian never writes" is about Theurian's own
+  process, which delegates that write.
 
 - **The setup journal is created 0600, and `theurian setup --help` now names it**
   ([#47](https://github.com/theurian/theurian/issues/47)). Its lines hold local
@@ -607,11 +644,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   that leaves this file's parent 0755, and
   `test_the_journal_is_created_private_inside_a_directory_that_is_not` asserts
   both modes in that scenario. The mode comes from the `open` that creates the
-  file, so there is no window at the wider one, and a journal an earlier version
-  already created keeps its own. `--help` said the seven steps are every write
-  setup performs; the journal is an eighth, appended by the runner and belonging
-  to no step, and the sentence now says so
+  file, so there is no window at the wider one. **And it is re-asserted on every
+  append**, by an `os.fchmod` on the open descriptor before the write, which
+  supersedes this entry's earlier statement that a journal an earlier version
+  created keeps its own mode: `0.1.0.dev0` and `0.1.0.dev1` both created it
+  through `Path.open("a")` — 0644 under the usual umask — and the next append
+  now repairs that rather than the installation carrying it for life. The same
+  line closes the other direction, which the creation mode cannot reach either:
+  `os.open`'s mode argument is ANDed with the umask, so a 0277 umask creates the
+  journal 0400 and every later run's `O_WRONLY` open then fails EACCES, leaving
+  the journal silently never written again. A refused `fchmod` — a journal owned
+  by another account — skips the append and reports it, the same trade the 0600
+  creation already makes. `--help` said the seven steps are every write setup
+  performs; the journal is an eighth, appended by the runner and belonging to no
+  step, and the sentence now says so
   (`test_the_cli_docstring_names_the_write_that_belongs_to_no_step`).
+
+- **An append to the setup journal completes or reports that it did not**
+  ([#47](https://github.com/theurian/theurian/issues/47)). It used to answer
+  whether the file grew, and `changed_paths` turns that answer into a claim that
+  the journal is a file this run wrote. `write(2)` may write fewer bytes than it
+  was handed and return that count without raising, so under a file-size limit
+  or a full disk an `os.write` whose return was discarded left a truncated
+  record and reported success — measured at three half-lines run together into a
+  single entry no reader can parse, announced in `changed_paths` as a file this
+  run wrote. The record now goes through an `io.BufferedWriter`, which loops
+  until the buffer is empty and raises whatever the flush or the close hit; the
+  bytes that did reach the disk are left there, because the file is `O_APPEND`
+  and truncating back to a remembered length would discard a concurrent writer's
+  record rather than this one's. What was false was the answer, not the byte
+  (`test_an_append_that_could_not_complete_leaves_the_journal_undisclosed`).
+  This is per append: a line an earlier append landed stays on disk and stays
+  disclosed when a later one fails, on the applied and the failed arm alike
+  (`test_a_step_that_applied_and_could_not_be_journalled_keeps_the_earlier_line_disclosed`,
+  `test_a_failure_that_could_not_be_journalled_keeps_the_earlier_line_disclosed`).
 
 - **BREAKING — `INDEX_SCHEMA_VERSION` 4 → 5: `chunks` gains a `kind` column**
   (the purge-recompute change under Added; ADR-0008 decision 2's and ADR-0024
