@@ -1108,6 +1108,110 @@ def test_a_critical_apply_failure_halts_and_discloses_the_leftover_credential(
     assert str(token) in report.changed_paths, "and the operator is told it is there"
 
 
+def test_a_halted_report_says_how_far_the_run_got(tmp_path: Path) -> None:
+    """#47. The steps are the only record of where a halted run stopped.
+
+    Nothing is undone, so "which steps ran" is what an operator needs before they
+    can repair the machine by hand: the ones that finished, the one that failed,
+    and the ones never attempted are three different situations and the report
+    has to tell them apart. The halt has its own ``return`` in
+    `SetupService._apply`, so the steps it publishes are assembled by that arm
+    alone -- measured, as a mutation: replacing that return's ``steps`` with an
+    empty tuple passed the whole suite, publishing a failure that named no step
+    at all while `changedPaths` still listed the files it wrote.
+
+    All three outcomes are asserted by *value*, and the population is asserted to
+    be every step in the specification. A halted report that dropped the steps it
+    never reached would satisfy a check on the failed one alone, and tell the
+    operator nothing about what setup still has left to do.
+    """
+    _, report = _halt_on_env_reference(tmp_path)
+
+    assert report.state is SetupState.HALTED
+    assert {step.step_id for step in report.steps} == set(StepId), (
+        "a halted report still accounts for every step, attempted or not"
+    )
+    minted = report.step(StepId.TOKEN)
+    failed = report.step(StepId.ENV_REFERENCE)
+    never_reached = report.step(StepId.DAEMON_SERVICE)
+    assert minted is not None and minted.outcome is StepOutcome.CHANGED, "this one was done"
+    assert failed is not None and failed.outcome is StepOutcome.FAILED, "this one is why it stopped"
+    assert never_reached is not None and never_reached.outcome is StepOutcome.NOT_ATTEMPTED, (
+        "and this one was never tried, which is not the same as having failed"
+    )
+
+
+def test_a_halted_report_carries_the_reason_the_run_stopped(tmp_path: Path) -> None:
+    """#47. ``warnings`` is the only field that says *why* a halt happened.
+
+    ``state`` says the run stopped and ``changed_paths`` says what it had written
+    by then; neither names the failure. The halted return builds its own
+    ``warnings`` tuple, and emptying it passed the whole suite -- leaving a
+    report that an operator can only act on by guessing which step broke.
+
+    Asserted as the exact line the runner composes, so a warning that named the
+    step without its reason, or the reason without its step, fails. The reason is
+    checked for content first: an empty ``detail`` would make the membership
+    assertion pass on a bare ``"env-reference: "``, which tells nobody anything.
+    """
+    _, report = _halt_on_env_reference(tmp_path)
+
+    failed = report.step(StepId.ENV_REFERENCE)
+    assert failed is not None
+    assert "IsADirectoryError" in failed.detail, "the failed step has to carry the reason"
+
+    assert f"{StepId.ENV_REFERENCE.value}: {failed.detail}" in report.warnings, (
+        "the warning names the step that stopped the run and why it stopped"
+    )
+
+
+def test_a_halted_run_leaves_the_journal_it_wrote_on_disk(tmp_path: Path) -> None:
+    """#47, §6.4. "Nothing is undone" covers the journal too.
+
+    The journal is the record a person repairs a half-finished machine from, so
+    a halt that tidied it away would delete the one artefact that says what had
+    already been done -- and would do it precisely when it is needed. Nothing in
+    `SetupService` deletes anything, and this pins that: inserting
+    ``self.journal_path.unlink(missing_ok=True)`` before the halted return passed
+    the whole suite, because every journal assertion in this module runs on a
+    converged run.
+
+    The contents are asserted as well as the file, so a halt that truncated or
+    recreated it empty fails here too.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    journal = _service(context).journal_path
+    assert report.state is SetupState.HALTED, "the fixture has to reach the halt path"
+    assert journal.is_file(), "a halt undoes nothing, and the journal is a file this run wrote"
+    assert journal.read_text(encoding="utf-8").splitlines(), (
+        "and it still holds the record the run appended before it stopped"
+    )
+
+
+def test_a_halted_run_names_the_journal_among_the_files_it_wrote(tmp_path: Path) -> None:
+    """#47. The journal belongs to no step, so only the runner can disclose it.
+
+    ``changed_paths`` is read as the list of files this run wrote, and `--help`
+    says the steps are every write setup performs. The journal is written by the
+    runner rather than by any step's apply, so accumulating step paths alone left
+    ``~/.theurian/setup-journal.jsonl`` out of the report of every run that
+    created it. Exactly once, for the same reason the credential is listed once:
+    a repeated entry reads as a second file to deal with.
+
+    The file is checked on disk first. Naming a path nothing wrote is the same
+    defect pointing the other way -- `_journal` swallows its ``OSError``, so an
+    append that never reached the disk must not be announced.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    journal = _service(context).journal_path
+    assert journal.is_file(), "the run has to have appended to the journal"
+    assert report.changed_paths.count(str(journal)) == 1, (
+        "the file the runner itself wrote is disclosed, and disclosed once"
+    )
+
+
 def test_a_halted_run_lists_the_leftover_credential_exactly_once(
     tmp_path: Path,
 ) -> None:
