@@ -343,10 +343,13 @@ class SqliteCanonicalStore:
         # in Python read every row, which made the tool's response time scale
         # with the withheld count -- subtracting the published `itemCount`
         # recovered it (T-17; #158 owns the `search._scan` sibling). The `IN`
-        # list is `SURFACEABLE_STATUSES` itself, sorted for a stable statement so
-        # a status added to the domain set reaches the query with no second edit
-        # here, and `GROUP BY` returns no row for a status with no items, which
-        # keeps the mapping identical to the old first-appearance loop. The
+        # list is `SURFACEABLE_STATUSES` itself, so a status added to the domain
+        # set reaches the query with no second edit here. `sorted()` only fixes
+        # the bind order and is defensive: the statement text is `?, ?, ?`
+        # regardless of the values, and the result order comes from the SQL
+        # `ORDER BY status`. `GROUP BY` returns no row for a status with no
+        # items, which keeps the mapping identical to the old first-appearance
+        # loop. The
         # covering index `idx_items_status(project_id, status)` answers it
         # without reading a withheld row.
         statuses = tuple(sorted(s.value for s in SURFACEABLE_STATUSES))
