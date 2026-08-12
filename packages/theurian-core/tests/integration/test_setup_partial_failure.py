@@ -27,14 +27,16 @@ to say which path refused it.
 this run write the file?" with "is the file there now?", on the argument that a
 step only reaches an apply while its probe says ``MISSING`` -- so anything
 present afterwards must have been created by this run. ``MISSING`` means *not as
-setup wants it*, which is not the same as absent, and four shipped steps reach
-their apply with the declared path already sitting there: a 0755 ``~/.theurian``
-being tightened, a *directory* at ``auth/mcp-token``, an env file whose contents
-differ (#128), and ``~/.claude.json``, which exists whenever Claude Code is on
-PATH and which ``claude mcp add`` leaves byte-identical when it refuses. Each was
-published as a file this run wrote. The credential row is the one with teeth: the
-plugin reads ``changedPaths`` and tells the operator to rotate what it names, and
-there was no credential.
+setup wants it*, which is not the same as absent, and the declared path is
+already sitting there on every one of these: a 0755 ``~/.theurian`` being
+tightened, a regular file where that directory goes, a *directory* at
+``auth/mcp-token`` (declared by ``token`` and by ``token-storage`` both), an env
+file whose contents differ (#128), and ``~/.claude.json``, which exists whenever
+Claude Code is on PATH and which ``claude mcp add`` leaves byte-identical when it
+refuses. ``_changed_since`` carries the same enumeration; each was published as a
+file this run wrote. The credential row is the one with teeth: the plugin reads
+``changedPaths`` and tells the operator to rotate what it names, and there was no
+credential.
 
 So the question is answered by *provenance* -- what the path looked like
 immediately before this step's apply, against what it looks like now -- and the
