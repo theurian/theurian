@@ -107,6 +107,29 @@ class CanonicalStore(Protocol):
         """
         ...
 
+    def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:
+        """Count the items a caller may see, grouped by status, in SQL.
+
+        Returns a ``status-value -> count`` mapping over
+        :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` alone. Deprecated,
+        superseded and rejected rows are never counted, so nothing here -- not
+        even a sum across it -- restores the withheld total.
+
+        That is what separates it from :meth:`list_items`, which reads every row
+        and leaves the filtering to the caller. ``knowledge.status`` did that
+        filtering in Python, which made its *response time* proportional to the
+        withheld rows rather than to what it publishes: subtracting the published
+        count recovered the withheld one (T-17; #158 owns the ``search._scan``
+        sibling). Counting in SQL over the covering index scopes the work to the
+        surfaceable rows, so the timing carries no more than the values do.
+
+        Lives on this port beside :meth:`applied_migrations`, the other thing
+        ``knowledge.status`` reads, rather than on :class:`CanonicalReadSession`:
+        the narrowed session is the index builder's read subset, and a status
+        breakdown is not one of the questions it asks.
+        """
+        ...
+
     # -- Relations, aliases, evidence --------------------------------------
 
     def add_relation(self, relation: KnowledgeRelation) -> None: ...

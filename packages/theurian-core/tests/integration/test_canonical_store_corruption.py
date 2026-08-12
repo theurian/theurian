@@ -147,21 +147,32 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
 #:
 #: Not a leak and not a refusal, which is why nothing else in this file can see
 #: it: every other property here is read either over ``answer.refused`` or over
-#: the text of a message, and these four positions produce neither. A caller is
+#: the text of a message, and these five positions produce neither. A caller is
 #: told ``count: 0`` with ``stale: false``, or ``itemCount: 0``, and has no way
 #: to tell that from a project which genuinely holds nothing.
+#:
+#: The fifth position -- `knowledge.status` over a corrupt
+#: `knowledge_items.status` -- arrived with the T-17 timing fix (#19).
+#: `knowledge.status` now counts the surfaceable statuses in SQL instead of
+#: parsing every row into a `KnowledgeStatus`, so a sentinel in the status column
+#: fails the ``IN`` predicate and is under-reported rather than raising. Detecting
+#: that corruption was a side effect of the O(total-rows) parse the fix removes:
+#: the two are coupled through row examination and cannot both hold in the store,
+#: and the silent 0 is also the confidentiality-correct answer, so this was
+#: accepted rather than reverted and carried with the rest of the class (#30).
 #:
 #: Recorded rather than fixed. Closing it means the retrieval path noticing that
 #: a row it walked past could not be interpreted, which is a change to the gate
 #: and the status tool rather than to this store; it is carried as a Milestone 6
-#: issue. What this set buys until then is that the reach cannot grow in
-#: silence -- a fifth position appears here as a failure, and each of the four
+#: issue (#30). What this set buys until then is that the reach cannot grow in
+#: silence -- a sixth position appears here as a failure, and each of the five
 #: disappears the moment its surface starts refusing instead.
 SILENTLY_EMPTIED: Final = frozenset(
     {
         ("knowledge.search", "knowledge_items", "item_id"),
         ("knowledge.search", "knowledge_items", "project_id"),
         ("knowledge.status", "knowledge_items", "project_id"),
+        ("knowledge.status", "knowledge_items", "status"),
         ("knowledge.status", "migration_history", "project_id"),
     }
 )

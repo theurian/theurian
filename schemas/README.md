@@ -82,8 +82,8 @@ returns:
 ## Validation
 
 Schemas are validated in CI for well-formedness, every example under `examples/`
-is validated against them, and some — not all — of the published response shapes
-are validated against a real response. Which is which, because the rule above is
+is validated against them, and each published response shape is validated against
+a real response. Which test does that, and against what, because the rule above is
 worth nothing if the reader has to guess where it has been applied:
 
 | Schema | Checked against real output by |
@@ -91,20 +91,35 @@ worth nothing if the reader has to guess where it has been applied:
 | `mcp/knowledge-search-response.schema.json` | `test_wire_contract.py`, on **both** answer paths — ranked retrieval and the unranked fallback |
 | `knowledge/retrieval-result.schema.json` | the same test, transitively: the response `$ref`s it, so every validated response validates every hit |
 | `mcp/retrieval-metadata.schema.json` | the same test, transitively, by the same `$ref` |
+| `mcp/knowledge-status-response.schema.json` | `test_wire_contract.py`, against two projects the real CLI built: one holding an `approved`, a `draft` and a `proposed` item, and one holding only retired ones |
 | `cli/version.schema.json` | `test_schemas.py::test_version_output_matches_its_published_schema`, against the payload `theurian version` emits |
+| `mcp/project-list-response.schema.json` | `test_wire_contract.py`, against a registry that reads cleanly and one holding two unreadable entries |
 | `mcp/tool-context.schema.json` | nothing, and nothing should: it describes tool *input*, so there is no response to compare. `test_project_id_is_required_on_every_tool_call` holds what it is for |
-| **`mcp/project-list-response.schema.json`** | **nothing yet** |
 
-`project-list-response.schema.json` is the gap, and it is named rather than left
-to be discovered. It was published in Milestone 5 with `project.list`'s two new
-required fields, and no assertion in the repository pins that tool's response
-shape — the fields were added with every test over the MCP tools, the schemas and
-the wire contract green, 186 of them at the time. It was checked by hand against
-four real responses,
-including a registry with an unreadable entry and one whose `rootPath` is empty,
-and conformed in all four; that is evidence the schema is right *today* and no
-evidence at all that it will stay right. A conformance test is owed, on the same
-terms as the list above.
+`project-list-response.schema.json` was the gap this section was written to name,
+and this text went on naming it for a week after it was filled — which is the
+same defect as an unverified schema, one level up. It shipped in Milestone 5 with
+`project.list`'s two new required fields and no assertion anywhere pinning that
+tool's response shape: the fields were added with every test over the MCP tools,
+the schemas and the wire contract green, 186 of them at the time. It was checked
+by hand against four real responses, including a registry with an unreadable
+entry and one whose `rootPath` is empty, and conformed in all four — evidence the
+schema was right *that day* and none at all that it would stay right. The
+conformance test it was owed landed inside Milestone 5 itself, in `21e1ba9`, and
+covers both states the required fields exist to distinguish, because a capture
+where nothing is unreadable validates equally well against a schema that had lost
+`unreadable` and `remedy` entirely.
+
+`knowledge-status-response.schema.json` is the newer one, and its corpus is
+chosen the same way. A project whose items are all retired answers `{}` and `0`,
+which is also what a project holding nothing answers, so the empty capture is
+asserted beside what its canonical store really contains — otherwise it is a
+document rather than evidence. The other capture reaches all three declared keys,
+so a schema that had quietly lost `proposed`, or gained `rejected`, still fails.
+The retired-only twin holds a `deprecated` item declared in revision metadata
+beside one reached through `deprecateItem`, so both paths a retired status enters a
+store by are covered: were either to surface in the breakdown,
+`additionalProperties: false` rejects the response and this check fails.
 
 To check locally:
 

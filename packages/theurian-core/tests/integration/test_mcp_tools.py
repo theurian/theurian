@@ -12,7 +12,7 @@ import contextlib
 import json
 import sqlite3
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,8 @@ from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.ranking import Ranked
+from theurian.infrastructure.sqlite import store as store_module
+from theurian.infrastructure.sqlite.connection import open_read_connection
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 from theurian.mcp.tools import MAX_RESULTS
 
@@ -587,12 +589,12 @@ def with_retired_items(registry: ProjectRegistry) -> ProjectRegistry:
     return registry
 
 
-def _stored_statuses(registry: ProjectRegistry) -> dict[str, str]:
+def _stored_statuses(registry: ProjectRegistry, project_id: str = "demo") -> dict[str, str]:
     """Every item in the canonical store, mapped to the status it really holds."""
-    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
     active = read_active_state(paths)
     assert active is not None, "the fixture must have built a canonical state"
-    context = RequestContext(project_id=ProjectId("demo"))
+    context = RequestContext(project_id=ProjectId(project_id))
     with SqliteCanonicalStore(paths.state / active.database_filename) as store:
         return {item.item_id.value: item.status.value for item in store.list_items(context)}
 
@@ -654,6 +656,560 @@ async def test_the_item_count_is_the_sum_of_the_published_breakdown(
     assert result["itemCount"] == sum(result["itemsByStatus"].values())
     assert result["itemCount"] < len(stored), (
         "the store must be larger than the published count, or this asserts nothing"
+    )
+
+
+# -- knowledge.status: T-17's equality, and the two fields exempt from it ---
+#
+# The tests above compare one project's report against what its own store holds.
+# The pair below is the other shape, and the one T-17 is closed by: two corpora,
+# one identical request. #19 measured that difference through the real tool and
+# recorded the result in `schemas/mcp/knowledge-status-response.schema.json`;
+# this is that measurement, held as a test.
+
+#: Both halves register under this id, in data directories of their own. The
+#: request is then identical between them, which is what lets `projectId` be a
+#: field the comparison *asserts equal* rather than one it has to exclude --
+#: #19's measurement recorded it equal, and a pair registered as two different
+#: ids would drop a published field out of the property for a reason that has
+#: nothing to do with what was withheld.
+WITHHELD_HALF_PROJECT_ID = "status-pair"
+
+
+@dataclass(frozen=True, slots=True)
+class _WithheldHalfPair:
+    """Two projects one migration apart, and that migration withholds everything it makes.
+
+    ``absent``  never held an item a caller may not read
+    ``present`` holds three, and differs in nothing else
+    """
+
+    absent: ProjectRegistry
+    present: ProjectRegistry
+
+
+def _build_withheld_half_project(root: Path, *, holds_the_withheld_half: bool) -> None:
+    """One half of the pair, built by the real CLI in ``root``.
+
+    The approved item is written from the same constants the `registry` fixture
+    uses and the retired trio from the same migration `with_retired_items`
+    applies, so the two halves cannot drift apart in a way that makes their
+    reports differ for an honest reason.
+
+    No index build. `knowledge.status` reads the canonical store, and a build
+    would put an index identity into a comparison that is about the canonical
+    half -- ``stateHash`` excepted, the two are independent (ADR-0016).
+    """
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _run("init")
+    knowledge = root / ".theurian/knowledge/architecture"
+    (knowledge / "auth-policy.md").write_text(BODY)
+    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+    if holds_the_withheld_half:
+        for slug in ("retired-gateway", "superseded-sessions", "rejected-store"):
+            (knowledge / f"{slug}.md").write_text(RETIRED_BODY)
+        (root / f".theurian/migrations/{RETIRED_MIGRATION_ID}-retire.yaml").write_text(
+            RETIRED_MIGRATION
+        )
+    _run("project", "register", "--project-id", WITHHELD_HALF_PROJECT_ID)
+    _run("migrate", "apply")
+
+
+@pytest.fixture(scope="module")
+def one_withheld_migration_apart(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> _WithheldHalfPair:
+    """The pair #19 measured: identical projects, one extra withheld-only migration.
+
+    Two registries rather than two ids in one, because an id is unique per
+    registry and `projectId` is a published field. The alternative -- one
+    registry, ids `probe` and `control` -- would make that field differ for a
+    reason that has nothing to do with the withheld items, and the comparison
+    would have to exclude it.
+
+    Module-scoped: two real CLI builds under a `THEURIAN_DATA_DIR` of their own,
+    and both tests below ask them the same question.
+    """
+    base = tmp_path_factory.mktemp("withheld-half")
+    monkey = pytest.MonkeyPatch()
+    registries: dict[str, ProjectRegistry] = {}
+    try:
+        for name, holds in (("absent", False), ("present", True)):
+            data_dir = base / f"{name}-datadir"
+            monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+            root = base / name
+            root.mkdir()
+            # `init` and `project register` resolve the project from the working
+            # directory and take no argument that says where.
+            monkey.chdir(root)
+            _build_withheld_half_project(root, holds_the_withheld_half=holds)
+            registries[name] = ProjectRegistry.default(data_dir)
+    finally:
+        monkey.undo()
+    return _WithheldHalfPair(absent=registries["absent"], present=registries["present"])
+
+
+def test_the_pair_differs_by_a_migration_that_creates_only_withheld_items(
+    one_withheld_migration_apart: _WithheldHalfPair,
+) -> None:
+    """Guards the differential below, which an empty migration would satisfy too.
+
+    That comparison is a statement about withheld content only if the extra
+    migration really landed and really created nothing a caller may see. A
+    migration file that applied and created no item at all moves `stateHash` and
+    `appliedMigrations` and leaves every count alone -- which is exactly the
+    result the test below is written to observe, with nothing withheld anywhere
+    in it. So the two stores are read directly, and both halves are pinned: the
+    surfaceable half identical, the extra half retired in all three ways.
+
+    All three retired statuses rather than #19's single `rejected` item. They are
+    withheld for one reason (SEC-13, T-17), and a pair differing by one of them
+    could not tell whether the other two had started moving a count.
+    """
+    absent = _stored_statuses(one_withheld_migration_apart.absent, WITHHELD_HALF_PROJECT_ID)
+    present = _stored_statuses(one_withheld_migration_apart.present, WITHHELD_HALF_PROJECT_ID)
+
+    assert absent == {"architecture.auth-policy": "approved"}
+    assert present == {
+        "architecture.auth-policy": "approved",
+        "architecture.retired-gateway": "deprecated",
+        "architecture.superseded-sessions": "superseded",
+        "architecture.rejected-store": "rejected",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_exempts(
+    one_withheld_migration_apart: _WithheldHalfPair,
+) -> None:
+    """SEC-13, T-17, #19. T-17's equality for `knowledge.status`, exception set and all.
+
+    One request against two corpora, which is the form that closes T-17: a
+    project holding items the caller may not read must answer the way a project
+    that never held them answers. `knowledge.search` holds that outright
+    (`test_a_withheld_document_changes_nothing_a_caller_can_see`) and
+    `knowledge.get` holds it by refusing to distinguish a withheld id from an
+    absent one. This tool holds it for four of its six fields; the other two are
+    `stateHash` and `appliedMigrations`, exempt by the recorded decision in
+    `schemas/mcp/knowledge-status-response.schema.json` (#19) -- neither carries
+    a bit about *what* was withheld, and this tool takes one argument, so there
+    is no probe to vary and therefore no extraction oracle.
+
+    **The exempt set is asserted exactly, not as an upper bound.** A subset check
+    would also pass a response that had stopped publishing `appliedMigrations`,
+    and one whose `stateHash` had become insensitive to canonical state -- both
+    are changes to a published contract, and both should be *decided* rather than
+    absorbed by a comparison that quietly widens. #19 measured that both move for
+    this input, so both are asserted to move. This test is the project's record
+    of which fields are exempt, and an exemption nobody notices expiring is not a
+    record.
+
+    **Two directories, one hash -- so the pair's difference really is the
+    migration.** No path, mtime or hostname participates in a state hash
+    (`StateInputs`, in `theurian.domain.state`), which is what makes the two
+    halves comparable at all despite being built in different directories.
+    Measured rather than reasoned about: with the fixture mutated to give the
+    absent half the withheld trio as well, `moved` comes back empty -- the same
+    hash from two separate builds in two separate trees.
+
+    **What it goes RED for.** A seventh field priced on the store's true size; a
+    breakdown that counted retired items, or bucketed them under another label;
+    an `itemCount` taken from `len(items)` rather than from the published
+    breakdown; a `schemaVersion` or `projectId` made to vary with what is
+    withheld. Each moves a key outside the exempt pair, and the set comparison
+    names the key. The response's *shape* is the wire contract's subject
+    (`test_wire_contract.py`); what moves between two shapes is this one's.
+
+    The literal counts are what stop this being an equality between two empty
+    reports: a tool that answered `{}` and `0` for every project on earth would
+    satisfy the set comparison perfectly. `schemaVersion` is held equal by that
+    comparison rather than by a literal here, since its value is pinned where the
+    schema is checked.
+    """
+    absent = await _call(
+        one_withheld_migration_apart.absent, "knowledge.status", projectId=WITHHELD_HALF_PROJECT_ID
+    )
+    present = await _call(
+        one_withheld_migration_apart.present, "knowledge.status", projectId=WITHHELD_HALF_PROJECT_ID
+    )
+
+    assert absent.keys() == present.keys(), (
+        "a field one project publishes and the other does not is the whole leak, "
+        "not a difference in values"
+    )
+    moved = {key for key in absent if absent[key] != present[key]}
+
+    assert (
+        (absent["projectId"], absent["itemCount"], absent["itemsByStatus"])
+        == (
+            present["projectId"],
+            present["itemCount"],
+            present["itemsByStatus"],
+        )
+        == (WITHHELD_HALF_PROJECT_ID, 1, {"approved": 1})
+    ), "both reports must describe the one approved item, or this compares two empty answers"
+    assert moved == {"stateHash", "appliedMigrations"}, (
+        "exactly the two fields the published schema exempts -- no more, and no fewer"
+    )
+
+
+# -- knowledge.status: the read cost does not carry the withheld count ------
+#
+# The timing sibling of the equality above, and the channel #19 was opened to
+# close. `knowledge.status` used to run `list_items` (a `SELECT *` with no
+# status predicate) and drop the retired rows in Python, so it materialised
+# every withheld row before discarding it -- and the response *time* then
+# carried the withheld count, recoverable by subtracting the published
+# `itemCount` (T-17; the `search._scan` sibling of the same channel is #158).
+# The fix counts in SQL over the surfaceable statuses alone, so the store never
+# hands a withheld row back.
+#
+# Nothing else in this file can see that regression: the response is
+# byte-identical either way, which is exactly why reverting to `list_items`
+# passed the whole suite. Only the count of rows the store materialises moves,
+# so that is what this measures -- at the connection, where both the SQL path
+# and the `list_items` path fetch their rows.
+
+READ_COST_BASELINE_ID = "read-cost-baseline"
+READ_COST_HEAVY_ID = "read-cost-heavy"
+
+#: How many withheld (`rejected`) items the heavy corpus holds beyond the three
+#: approved items both corpora share. Large enough that a `list_items` path
+#: materialising every row hands back an unmistakably different count; the two
+#: corpora are otherwise identical, so the three approved rows and the single
+#: migration-history row are the only rows either report's SQL returns.
+READ_COST_WITHHELD = 25
+
+READ_COST_MIGRATION_ID = "01K1RCST0001234567890ABCDE"
+
+
+def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str) -> str:
+    return f"""  - op: createItem
+    itemId: architecture.{slug}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.{slug}
+    revisionId: {revision_id}
+    contentFile: ../knowledge/architecture/{slug}.md
+    metadata:
+      title: {title}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: {status}
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/{slug}.md
+"""
+
+
+def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> None:
+    """Three approved items, plus ``withheld`` rejected ones, in one migration.
+
+    `init` and `project register` resolve the project from the working
+    directory and take no argument that says where, so the caller has chdir'd
+    into ``root`` already; the file writes below are given it as well so they do
+    not depend on that. One migration in both corpora, so `appliedMigrations`
+    -- and the single migration-history row it reads -- is identical between
+    them and the only difference the measurement sees is the withheld items.
+    """
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _run("init")
+    knowledge = root / ".theurian/knowledge/architecture"
+    operations = ""
+    for i in range(3):
+        slug = f"read-approved-{i}"
+        (knowledge / f"{slug}.md").write_text(f"# Approved {i}\n\nApproved body {i}.\n")
+        operations += _read_cost_item_ops(
+            slug, f"01K1RCAP{i:02d}01234567890ABCDE", f"Approved {i}", "approved"
+        )
+    for i in range(withheld):
+        slug = f"read-withheld-{i:03d}"
+        (knowledge / f"{slug}.md").write_text(f"# Withheld {i}\n\nWithheld body {i}.\n")
+        operations += _read_cost_item_ops(
+            slug, f"01K1RCWH{i:02d}01234567890ABCDE", f"Withheld {i}", "rejected"
+        )
+    header = (
+        "apiVersion: theurian.dev/v1\n"
+        f"id: {READ_COST_MIGRATION_ID}\n"
+        "createdAt: 2026-08-02T10:00:00+09:00\n"
+        "author: engineer@example.com\n"
+        "operations:\n"
+    )
+    (root / f".theurian/migrations/{READ_COST_MIGRATION_ID}-corpus.yaml").write_text(
+        header + operations
+    )
+    _run("project", "register", "--project-id", project_id)
+    _run("migrate", "apply")
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadCostCorpora:
+    """Two projects sharing three approved items; one also holds withheld ones.
+
+    ``stored`` is the heavy store read directly, so the measurement's guard can
+    assert the withheld rows a `list_items` path would fetch really landed --
+    an equal read count between two three-item stores would be equal for the
+    wrong reason.
+    """
+
+    registry: ProjectRegistry
+    stored: dict[str, str]
+
+
+@pytest.fixture(scope="module")
+def read_cost_corpora(tmp_path_factory: pytest.TempPathFactory) -> _ReadCostCorpora:
+    """One baseline project and one withheld-heavy project, built by the real CLI.
+
+    Both register into one `THEURIAN_DATA_DIR` under distinct ids, so one
+    registry answers for both and the comparison is between two calls to the
+    same daemon.
+    """
+    base = tmp_path_factory.mktemp("read-cost")
+    data_dir = base / "datadir"
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    try:
+        for project_id, withheld in (
+            (READ_COST_BASELINE_ID, 0),
+            (READ_COST_HEAVY_ID, READ_COST_WITHHELD),
+        ):
+            root = base / project_id
+            root.mkdir()
+            monkey.chdir(root)
+            _build_read_cost_project(root, project_id, withheld=withheld)
+        registry = ProjectRegistry.default(data_dir)
+        stored = _stored_statuses(registry, READ_COST_HEAVY_ID)
+    finally:
+        monkey.undo()
+    return _ReadCostCorpora(registry=registry, stored=stored)
+
+
+class _RowMeter:
+    """Rows the canonical store materialises, counted at the connection.
+
+    Every row SQLite hands back to this store passes through ``row_factory`` on
+    its way to a mapper, so counting the calls counts rows materialised -- the
+    quantity the old `list_items` path inflated by fetching every row, withheld
+    ones included, and dropping them in Python. Reconstructs a real
+    ``sqlite3.Row`` so the store's key access (``row["status"]``) still works.
+    """
+
+    def __init__(self) -> None:
+        self.rows = 0
+
+    def factory(self, cursor: sqlite3.Cursor, row: tuple[Any, ...]) -> sqlite3.Row:
+        self.rows += 1
+        return sqlite3.Row(cursor, row)
+
+
+@contextlib.contextmanager
+def _rows_materialized_by_the_canonical_store() -> Iterator[_RowMeter]:
+    """Count rows the store fetches, by wrapping the reader it opens.
+
+    Installed on the connection ``open_read_connection`` returns, *after* it
+    runs -- so the schema-version `SELECT` inside it is not counted. Both
+    corpora run that identically and it is not the read under test. Every read
+    in this adapter opens through this one function as things stand, which is
+    what makes the count complete: a property of the module today, a
+    precondition of the measurement rather than a guarantee of it.
+    """
+    meter = _RowMeter()
+    # The original from where it is defined, not from `store` (which imports it,
+    # so `--no-implicit-reexport` will not read it back off that module). The
+    # patch below still targets the name `store` bound at import, because that is
+    # the reference `SqliteCanonicalStore._conn` actually calls.
+    real_open = open_read_connection
+
+    def traced(path: Path) -> sqlite3.Connection:
+        connection = real_open(path)
+        connection.row_factory = meter.factory
+        return connection
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(store_module, "open_read_connection", traced)
+        yield meter
+
+
+@pytest.mark.asyncio
+async def test_status_materializes_the_same_rows_however_many_are_withheld(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """SEC-13, T-17, #19. The read cost may not carry the withheld count.
+
+    The equality tests above compare two *responses*; this compares two
+    *costs*. A project holding twenty-five items a caller may not read must be
+    answered by the same number of materialised rows as one holding none, or
+    the response time carries the withheld count and a caller with a stopwatch
+    recovers by subtraction exactly what the counts withhold -- the oracle T-17
+    exists to close, and the channel #19 opened to shut.
+
+    Measured at the row rather than timed, so it goes RED deterministically:
+    reverting `knowledge.status` to the `list_items` + Python-filter path it
+    ran before the fix makes the store fetch every withheld row, and the heavy
+    corpus's count jumps by twenty-five while the baseline's stays put. The
+    response is byte-identical on that path, which is why every other status
+    test here stays green through the regression and only this one falls.
+    """
+    corpora = read_cost_corpora
+
+    # Guard: the heavy store really holds the withheld rows a `list_items` path
+    # would materialise. Without it, an equal count below could be two
+    # three-item stores agreeing for a reason that has nothing to do with the
+    # fix -- the shape that let the exclusion be deleted unnoticed.
+    withheld_rows = {
+        item: status for item, status in corpora.stored.items() if status == "rejected"
+    }
+    assert len(withheld_rows) == READ_COST_WITHHELD, (
+        f"the heavy corpus must hold {READ_COST_WITHHELD} withheld items for the measurement to "
+        f"mean anything; its store holds {len(withheld_rows)}"
+    )
+    assert len(corpora.stored) == 3 + READ_COST_WITHHELD, (
+        "the heavy store must be larger than the published count, or a `list_items` path would "
+        "materialise nothing extra and this would measure two equal-sized stores"
+    )
+
+    with _rows_materialized_by_the_canonical_store() as meter:
+        meter.rows = 0
+        baseline = await _call(
+            corpora.registry, "knowledge.status", projectId=READ_COST_BASELINE_ID
+        )
+        baseline_rows = meter.rows
+        meter.rows = 0
+        heavy = await _call(corpora.registry, "knowledge.status", projectId=READ_COST_HEAVY_ID)
+        heavy_rows = meter.rows
+
+    # Both report the three approved items and nothing else -- the byte-identical
+    # response that hides the cost regression from every other assertion here.
+    assert baseline["itemsByStatus"] == heavy["itemsByStatus"] == {"approved": 3}
+    assert baseline["itemCount"] == heavy["itemCount"] == 3
+
+    assert baseline_rows > 0, (
+        "the meter counted no rows, so it is watching a connection the tool does not open -- "
+        "the measurement is inert and would pass whatever the read cost did"
+    )
+    assert heavy_rows == baseline_rows, (
+        f"knowledge.status materialised {heavy_rows} rows against a store holding "
+        f"{READ_COST_WITHHELD} withheld items and {baseline_rows} against one holding none. The "
+        f"read cost is carrying the withheld count: the store is fetching rows it then discards, "
+        f"so latency reports by subtraction what the counts refuse to (SEC-13, T-17)."
+    )
+
+
+@contextlib.contextmanager
+def _statement_the_store_runs() -> Iterator[dict[str, Any]]:
+    """Capture the exact SQL a store method hands to its reader, read at runtime.
+
+    The plan assertion below must be checked against the statement the tool
+    truly runs. A SQL string copied into the test would drift from
+    ``count_surfaceable_by_status`` the first time its predicate changed, and go
+    on asserting a covering-index plan for a query nothing runs -- so the
+    statement is read off ``_read_all`` as the method builds it, never restated.
+    ``count_surfaceable_by_status`` makes exactly one ``_read_all`` call, so the
+    captured dict holds that one statement.
+    """
+    captured: dict[str, Any] = {}
+    real_read_all = SqliteCanonicalStore._read_all
+
+    def spy(
+        store: SqliteCanonicalStore,
+        sql: str,
+        parameters: tuple[str, ...],
+        mapper: Callable[[sqlite3.Row], Any],
+    ) -> tuple[Any, ...]:
+        captured["sql"] = sql
+        captured["params"] = parameters
+        return real_read_all(store, sql, parameters, mapper)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SqliteCanonicalStore, "_read_all", spy)
+        yield captured
+
+
+def _query_plan(db_path: Path, sql: str, params: tuple[str, ...]) -> str:
+    """The ``EXPLAIN QUERY PLAN`` detail lines for ``sql``, joined for matching.
+
+    Read against a fresh read-only connection to the same file the store used,
+    so the plan is the one SQLite forms over the shipped schema -- indexes and
+    all -- not over a hand-built copy of it.
+    """
+    with contextlib.closing(open_read_connection(db_path)) as conn:
+        rows = conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+    return "\n".join(str(row["detail"]) for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_status_count_is_answered_by_a_covering_index(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """SEC-13, T-17, #19. The withheld-count independence rests on this index.
+
+    The row-count pin above proves ``knowledge.status`` no longer materialises
+    the withheld rows -- but only against the ``list_items`` path it replaced.
+    ``count_surfaceable_by_status`` aggregates in SQL, so its ``GROUP BY`` hands
+    back one row per surfaceable status whatever the store holds; the row meter
+    therefore *cannot* see SQLite walk every row of the project to build that
+    aggregate. That walk is exactly what losing the covering index
+    ``idx_items_status(project_id, status)`` restores: the planner falls to the
+    namespace index, filters on ``project_id`` alone, and reads each withheld row
+    to group it -- reopening the O(withheld) timing channel T-17 closed, while
+    the response and the meter stay byte-identical.
+
+    So this pins the mechanism the row meter only proxies: the count is served by
+    a covering index that reads none of the withheld rows. Deleting or renaming
+    the index, or changing the predicate so the index can no longer cover the
+    query, drops the plan to a scan and turns this RED where the row-count pin
+    above stays green -- the two catch different regressions, so both are kept.
+    """
+    corpora = read_cost_corpora
+
+    # Arrange: the same heavy store the row-count pin measures, so the plan is
+    # read over a corpus that really holds withheld rows the covering index must
+    # not read -- built by the real CLI, so it is the shipped schema under test.
+    paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    db_path = paths.state / active.database_filename
+    context = RequestContext(project_id=ProjectId(READ_COST_HEAVY_ID))
+
+    # Act: run the real count and capture the statement it built, then plan it.
+    # The store is entered first so its connection opens before the capture is
+    # installed -- that open does not go through `_read_all`, so the one call the
+    # capture sees is the count's own statement.
+    with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
+        store.count_surfaceable_by_status(context)
+
+    assert captured, (
+        "count_surfaceable_by_status ran no statement through the store reader, so the plan "
+        "below would describe a query the tool never runs -- the capture watches the wrong method"
+    )
+    plan = _query_plan(db_path, captured["sql"], captured["params"])
+
+    # Assert: SQLite answers the count from the covering index alone. The phrase
+    # `USING COVERING INDEX idx_items_status` is stable across SQLite versions for
+    # this shape; a scan or a fall-back to another index drops it and fails here.
+    assert "USING COVERING INDEX idx_items_status" in plan, (
+        "knowledge.status is no longer answered by the covering index "
+        f"idx_items_status(project_id, status). SQLite planned:\n{plan}\n"
+        "Without it the count reads every row of the project, withheld ones included, and the "
+        "response time carries the withheld count again -- the O(withheld) channel T-17 closed "
+        "and #19 must keep shut (SEC-13)."
     )
 
 
@@ -1179,6 +1735,49 @@ async def test_search_and_status_name_the_same_canonical_state(
     search = await _call(indexed, "knowledge.search", projectId="demo", query="token")
 
     assert search["retrieval"]["snapshotId"] == status["stateHash"]
+
+
+@pytest.mark.asyncio
+async def test_status_carries_the_state_pointer_rather_than_re_reading_it(
+    registry: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-R5. `stateHash` must name the state the counts actually came from.
+
+    `knowledge.status` resolves `.theurian/state/active.json` once, to choose the
+    database it counts over. `stateHash` has to be that same resolution and not a
+    second read of the pointer: `migrate apply` swaps it atomically, so a request
+    that re-read it could count the old database and then name the *new* hash -- a
+    false answer to the freshness question the field exists for, and the one
+    `knowledge.search` publishes `snapshotId` against
+    (`test_search_and_status_name_the_same_canonical_state`).
+
+    Mirrors `test_one_read_of_the_state_pointer_serves_the_whole_request`, which
+    holds this for `knowledge.search`: the pointer is removed the instant the
+    first read returns, so nothing can read it again on any path. That the
+    reported hash is still the right one therefore means it was carried, and
+    asserting the exact value rules out a hash that was carried but wrong.
+    """
+    from theurian.mcp import tools
+
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    answered = read_active_state(paths)
+    assert answered is not None, "the fixture must have built a canonical state"
+
+    def read_and_remove(request_paths: Any) -> Any:
+        state = read_active_state(request_paths)
+        request_paths.active_pointer.unlink(missing_ok=True)
+        return state
+
+    monkeypatch.setattr(tools, "read_active_state", read_and_remove)
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["stateHash"] == str(answered.state_hash), (
+        "the pointer a re-read would have found is gone, so a status that still names the "
+        "right state carried the resolution its counts came from rather than fetching it again "
+        "-- a re-read here would count one database and name another the instant `migrate "
+        "apply` lands mid-request (FR-R5)"
+    )
 
 
 @pytest.mark.asyncio

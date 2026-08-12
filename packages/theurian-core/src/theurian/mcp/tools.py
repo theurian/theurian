@@ -38,7 +38,7 @@ from theurian.application.project_service import (
 )
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import SURFACEABLE_STATUSES, may_surface
+from theurian.domain.enums import may_surface
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.knowledge import KnowledgeRelation
@@ -570,7 +570,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
     @server.tool(
         name="knowledge.status",
-        description="Report a project's knowledge state: counts, state hash, freshness.",
+        description=(
+            "Report a project's knowledge state: item counts by status, the "
+            "canonical state hash, applied-migration count, and schema version."
+        ),
     )
     def knowledge_status(projectId: str) -> dict[str, Any]:  # noqa: N803
         # The same pointer that chose `database`, not a second read of it. The
@@ -582,49 +585,24 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         context = RequestContext(project_id=ProjectId(projectId))
 
         with SqliteCanonicalStore(database) as store:
-            items = store.list_items(context)
+            by_status = store.count_surfaceable_by_status(context)
             applied = store.applied_migrations(ProjectId(projectId))
 
-        # Counted over `SURFACEABLE_STATUSES` only -- this tool takes no
-        # `includeUnapproved` flag, so the set is fixed rather than widened per
-        # caller. `deprecated`, `superseded`, and `rejected` are excluded
-        # entirely: `knowledge.get` deliberately answers "withheld" and
-        # "absent" with the identical message so a caller cannot confirm a
-        # retired id exists (SEC-13), and a count that included them answered
-        # the same question with a number instead -- direct reconnaissance for
-        # the class of attack T-17 describes.
+        # What may be counted, and what the counts may not restore by
+        # subtraction: `itemsByStatus` covers `SURFACEABLE_STATUSES` alone, and
+        # `itemCount` is the sum of that breakdown rather than the store's size,
+        # so no count below reports anything about withheld content, not even a
+        # total (SEC-13, T-17). This now holds in the timing dimension too: the
+        # count runs in SQL and the withheld rows are never read, so the response
+        # time no longer scales with them -- filtering `list_items` in Python did
+        # scale with the withheld count, recoverable by subtraction (#158 owns
+        # the `search._scan` sibling of that channel).
         #
-        # `itemCount` is the sum of this breakdown, not `len(items)`. Reporting
-        # the true total while filtering the breakdown would leak the withheld
-        # count right back through subtraction (total minus the surfaceable
-        # sum). A single aggregate withheld count was considered and rejected
-        # for the same reason a per-status one was: even with no way to tell
-        # *which* item changed, a caller who takes an action (deprecate,
-        # supersede, reject) and watches one number move immediately afterward
-        # has confirmed it -- exactly the shape of oracle T-17 exists to close,
-        # just coarser. No count below reports anything about withheld content,
-        # not even a total.
-        #
-        # **That is a claim about the counts, not about this response, and the
-        # difference is measured.** Two projects differing only in one rejected
-        # item return the same `itemCount` and `itemsByStatus` and different
-        # `stateHash` and `appliedMigrations`, so T-17's equality -- one query
-        # against two corpora -- does not hold for this tool the way it does for
-        # `knowledge.search` and `knowledge.get`. `stateHash` covers the whole
-        # working tree by design (ADR-0016) and is query-independent by
-        # construction, which is the justification `snapshotId` carries and the
-        # reason FR-R5 publishes it at all. `appliedMigrations` had no such
-        # justification; it counts migration *files*, so it moves identically
-        # whether the migration added an approved item, a draft, a rejected one
-        # or none, and nothing about a request reaches it. Accepted for
-        # Milestone 5 with the argument and the measurement in T-17, filed at
-        # https://github.com/theurian/theurian/issues/19.
-        by_status: dict[str, int] = {}
-        for item in items:
-            if item.status not in SURFACEABLE_STATUSES:
-                continue
-            by_status[item.status.value] = by_status.get(item.status.value, 0) + 1
-
+        # That is a claim about the counts and not about the response, and the
+        # difference is now recorded where a client can read it:
+        # `schemas/mcp/knowledge-status-response.schema.json` carries the
+        # measurement, the decision that `stateHash` and `appliedMigrations`
+        # both stay, and the justification for each (#19).
         return {
             "projectId": projectId,
             "stateHash": str(active.state_hash),
