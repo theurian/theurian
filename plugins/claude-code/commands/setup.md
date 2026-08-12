@@ -85,10 +85,24 @@ that cannot start.
    - **Carrying on with Theurian** — leave it. A later `theurian setup` reuses
      the token it finds and never regenerates one.
    - **The token may have been seen by someone else** — `theurian auth rotate`
-     replaces the value in place, rewrites the env file and restarts the daemon.
+     replaces the value in place and rewrites the env file. It restarts the
+     daemon only when a service manager is installed and the service is
+     registered with it; a halted run usually stopped before the step that
+     registers it, which is this case. Read `daemonRestarted` in the output, and
+     when it is `false` relay `nextSteps` — it names the restart the user has to
+     perform.
    - **Abandoning the install** — delete the file. Nothing needs reconfiguring
-     afterwards, but a daemon that is already running may hold the old value
-     until it is stopped or restarted.
+     afterwards, but every process that already read the value keeps it: a
+     running daemon until it is stopped or restarted, and any shell or client
+     session started before the deletion.
+
+   Holding a reference is not the same as reading it afresh. The reference is
+   expanded once, at process start — a shell runs `$(cat <token path>)` when it
+   sources `~/.theurian/env`, and a client expands `${THEURIAN_MCP_TOKEN}` when
+   it starts — so after any of the three, existing shells and running client
+   sessions still hold the old value until they are re-sourced or restarted.
+   `rotate` returns that instruction in `nextSteps` on every path for this
+   reason, including the one where it did restart the daemon.
 
    `changedPaths` covers what *this* run wrote and nothing earlier. On a second
    halted run, a credential left behind by the first does not reappear there —

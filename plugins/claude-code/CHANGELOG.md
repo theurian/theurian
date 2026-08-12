@@ -61,17 +61,36 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   said the way to be rid of the token was `theurian auth rotate`, and that
   deleting the file by hand meant reconfiguring every client that references it.
   `rotate` removes nothing — it replaces the value in place, rewrites the env
-  file and restarts the daemon, and its own docstring scopes it to "after a
-  token has been exposed". And no client ever holds the value: the MCP entry
-  carries `${THEURIAN_MCP_TOKEN}` verbatim and the env file carries
-  `THEURIAN_MCP_TOKEN="$(cat <token path>)"`. Measured: deleting the token file
-  and re-running setup mints a new token at the same path, leaves
+  file and restarts the daemon where it can, and its own docstring scopes it to
+  "after a token has been exposed". And no client *configuration* ever holds the
+  value: the MCP entry carries `${THEURIAN_MCP_TOKEN}` verbatim and the env file
+  carries `THEURIAN_MCP_TOKEN="$(cat <token path>)"`. Measured: deleting the
+  token file and re-running setup mints a new token at the same path, leaves
   `~/.claude.json` and the env file byte-identical, and performs no MCP write.
   Step 6 now splits the advice by what the user is doing next — carrying on
   (leave it; a later setup reuses the token it finds), suspected exposure
   (`rotate`), abandoning the install (delete it) — and keeps the one warning
   that held all along: a running daemon may hold the old value until it is
   restarted.
+- The remedy is now stated as the conditional it is, and it names the third
+  participant in a rotation
+  ([#47](https://github.com/theurian/theurian/issues/47)). Two corrections to
+  the advice above. `theurian auth rotate` restarts the daemon only when
+  `detect_manager` finds a service manager *and* that manager reports the
+  service as something other than not-installed; otherwise it reports
+  `daemonRestarted: false` and puts the restart into `nextSteps`. A halted run
+  typically stopped before the daemon-service step registered anything, which is
+  precisely the case this paragraph is about — so the document now tells the
+  agent to read `daemonRestarted` and relay `nextSteps`, rather than to tell the
+  user a restart happened. And a configuration holding a reference is not a
+  process holding one: the expansion happens once, at process start —
+  `$(cat <token path>)` when a shell sources `~/.theurian/env`,
+  `${THEURIAN_MCP_TOKEN}` when a client session starts — so existing shells and
+  running sessions keep the old value until they are re-sourced or restarted.
+  `_restart_daemon` returns that instruction on every path for this reason,
+  including the one where it did restart the daemon. The delete-the-file branch
+  carried the daemon half of that warning and nothing else; it now names every
+  process that already read the value.
 
 ### Security
 
