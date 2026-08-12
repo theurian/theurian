@@ -180,9 +180,11 @@ from an absent one (SEC-13, and T-17 in
 
 That is a claim about the counts and not about the whole response.
 `stateHash` and `appliedMigrations` both move when a migration creating only
-withheld items lands; neither can be made to name a status, an id or a body, and
-this tool takes only `projectId`, so no request parameter reaches either. The
-per-field reasoning is in the schema.
+withheld items lands, but on different triggers: `stateHash` moves for any change
+to canonical state, `appliedMigrations` only when a migration is *added* — an edit
+to an existing one moves the hash alone. Neither can be made to name a status, an
+id or a body, and this tool takes only `projectId`, so no request parameter
+reaches either. The per-field reasoning is in the schema.
 
 **Index state and proposal ages are not in this response.** The table above
 describes the tool this page is a contract for; what ships today is the six keys
