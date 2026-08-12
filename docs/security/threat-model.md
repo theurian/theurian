@@ -194,6 +194,18 @@ config contains no high-entropy string.
 | the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
 | `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report`, `::test_a_token_in_the_installed_plist_never_reaches_a_report`, and — through the *other* service manager, which is the one the defect was found in — `::test_a_token_on_a_unit_continuation_line_never_reaches_a_report` |
 | every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into all nine sources a step reads and does not own, and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
+| the setup journal, `~/.theurian/setup-journal.jsonl` — written beside the token by the run that mints it | `packages/theurian-core/tests/integration/test_setup_journal.py::test_the_journal_never_records_the_token_it_watched_being_minted`, which asserts the minting *is* recorded before asserting the value is not, so the prohibition cannot pass on an empty file |
+
+The journal is a local file and is never served, but it outlives the run, it is
+created before the process knows whether the run will succeed, and a halted
+report's `changedPaths` points the operator straight at it. What it holds is
+local absolute paths and the verbatim text of the exception that stopped a step
+(§6.4 of [the requirements analysis](../architecture/requirements-analysis.md)),
+never the token value. The `open` that creates it asks for 0600 rather than
+leaving it to the umask, because the arm that fails to tighten `~/.theurian` is
+the arm that leaves this file's parent 0755 — both modes asserted together in
+`…test_setup_journal.py::test_the_journal_is_created_private_inside_a_directory_that_is_not`
+(SEC-6).
 
 `doctor --report` redacts two ways, and only the first was ever asserted. Path
 substitution is pinned by
