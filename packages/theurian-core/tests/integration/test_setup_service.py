@@ -33,6 +33,7 @@ from theurian.domain.setup import (
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.security.env_file import TOKEN_KEY
+from theurian.security.tokens import MIN_TOKEN_LENGTH
 
 pytestmark = pytest.mark.integration
 
@@ -1129,6 +1130,39 @@ def test_a_halted_run_lists_the_leftover_credential_exactly_once(
     assert report.changed_paths.count(token) == 1, "the credential is listed once, not twice"
     assert len(report.changed_paths) == len(set(report.changed_paths)), (
         "no path may appear twice in what an operator reads after a failure"
+    )
+
+
+def test_a_halted_report_never_carries_the_token_value(tmp_path: Path) -> None:
+    """#47, SEC-6. A halted report discloses the credential's *path*, never its value.
+
+    The halt path lists the leftover token in ``changed_paths`` so an operator can
+    rotate it, but the token's own bytes must appear nowhere in the report -- not
+    in ``changed_paths``, not in a ``warnings`` line, not in any step's
+    ``summary``, ``action`` or ``detail``. The token-masking property is exercised
+    elsewhere only on a *DEGRADED* apply failure (an exception from a non-critical
+    apply in `test_setup_report_withholding.py`); the HALTED terminal state has
+    its own return in `SetupService._apply`, so a leak added there would ship
+    green. This locks the property on that return.
+
+    The guard on the value's length is what stops the absence assertion passing
+    vacuously: a real ``token_urlsafe(32)`` credential is 43 characters of CSPRNG
+    output and cannot coincidentally be absent, so ``not in`` is a measurement
+    rather than an artefact of a short or empty string -- an empty value would
+    make ``"" not in ...`` false and fail the test rather than pass it, which is
+    exactly why the minimum length is asserted first.
+    """
+    context, report = _halt_on_env_reference(tmp_path)
+
+    token_value = (context.auth_dir / TOKEN_KEY).read_text(encoding="utf-8").strip()
+    assert report.state is SetupState.HALTED, "the fixture has to reach the halt path"
+    assert token_value and len(token_value) >= MIN_TOKEN_LENGTH, (
+        "a real credential must have been minted before the failure, or the "
+        "absence assertion below proves nothing"
+    )
+
+    assert token_value not in json.dumps(report.to_json()), (
+        "a halted report may name the leftover credential's path, never its value"
     )
 
 
