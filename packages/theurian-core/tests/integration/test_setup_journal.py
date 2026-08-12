@@ -32,6 +32,7 @@ service would reach the developer's own login session, which redirecting
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import sys
@@ -43,7 +44,7 @@ import pytest
 from fakes.setup import FakeMcpConfig, FakeService
 
 from theurian.application.setup_context import SetupContext
-from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.application.setup_service import JOURNAL_FILENAME, SetupRequest, SetupService
 from theurian.domain.setup import SetupState, StepId, StepOutcome
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import TOKEN_KEY, FileSecretStore
@@ -53,9 +54,11 @@ pytestmark = pytest.mark.integration
 
 PORT = 7419
 
-#: ``RLIMIT_FSIZE`` does not exist on Windows. The seam below is skipped rather
-#: than adapted where it would silently stop being one: a run that can append to
-#: the journal anyway passes every assertion in it while testing nothing.
+#: POSIX permission bits do not refuse root, and ``RLIMIT_FSIZE`` does not exist
+#: on Windows. Both seams below are skipped rather than adapted where they would
+#: silently stop being seams: a run that can append to the journal anyway passes
+#: every assertion here while testing nothing.
+_A_MODE_CANNOT_REFUSE_THIS_PROCESS: Final = sys.platform == "win32" or os.geteuid() == 0
 _NO_FILE_SIZE_LIMIT: Final = sys.platform == "win32"
 
 
@@ -304,6 +307,161 @@ def test_an_append_that_could_not_complete_leaves_the_journal_undisclosed(
         json.loads(lines[-1])
     assert str(service.journal_path) not in report.changed_paths, (
         "a record no reader can parse is not a file this run wrote"
+    )
+
+
+class _AStoreThatLocksTheJournal:
+    """The real file store, with the journal made unappendable just before use.
+
+    A run needs the journal to stop accepting appends *between* two of them, and
+    nothing in ``SetupService`` offers a hook there: the only code that runs
+    between one append and the next is a step's apply. The secret store is the
+    collaborator the two applies below reach first, so this is where the seam
+    costs least -- everything it is asked for is delegated to a real
+    :class:`FileSecretStore` over the real data directory, and the failures the
+    tests turn on are the shipped ones.
+
+    0400 rather than a deletion or a directory, because the property is that a
+    journal *this run wrote* stays disclosed: the file has to survive with the
+    record already in it. That makes the seam a POSIX permission bit, which is
+    why the tests skip for root.
+
+    What it stands in for is ordinary: a filesystem remounted read-only under a
+    running setup, a journal left behind by another account, a mode somebody
+    tightened by hand between two steps.
+    """
+
+    backend_id = "file"
+
+    def __init__(self, data_dir: Path, journal: Path) -> None:
+        self._store = FileSecretStore(data_dir)
+        self._journal = journal
+
+    async def get(self, key: str) -> str | None:
+        if self._journal.is_file():
+            self._journal.chmod(0o400)
+        return await self._store.get(key)
+
+    async def set(self, key: str, value: str) -> None:
+        await self._store.set(key, value)
+
+    async def delete(self, key: str) -> None:
+        await self._store.delete(key)
+
+
+def _a_run_whose_journal_locks_after_the_first_append(
+    tmp_path: Path,
+) -> tuple[SetupContext, SetupService]:
+    """A run that journals one step, then cannot journal again.
+
+    ``~/.theurian`` starts at 0755, which is the data-directory step's *tighten*
+    arm: it applies, so the run's first journal line is written and the file is
+    created 0600. The token step is the next to apply, and the store above locks
+    the journal on its way into it -- so every append after the first fails with
+    ``EACCES``, whatever the step it belongs to did.
+    """
+    context = _context(tmp_path)
+    context.data_dir.mkdir(parents=True)
+    context.data_dir.chmod(0o755)
+    locking = dataclasses.replace(
+        context,
+        secrets=_AStoreThatLocksTheJournal(context.data_dir, context.data_dir / JOURNAL_FILENAME),
+    )
+    return locking, SetupService(locking)
+
+
+def _the_only_entry(journal: Path) -> dict[str, Any]:
+    """The one record the run got onto disk before the journal locked.
+
+    Asserted as *the* entry rather than searched for: a fixture where the lock
+    never took would leave several, and every assertion about the or-fold below
+    would then be measuring an ordinary run.
+    """
+    entries = _entries(journal)
+    assert [entry["step"] for entry in entries] == [StepId.DATA_DIRECTORY.value], (
+        f"the journal has to hold exactly the first step's record, not {entries}"
+    )
+    return entries[0]
+
+
+@pytest.mark.skipif(
+    _A_MODE_CANNOT_REFUSE_THIS_PROCESS,
+    reason="POSIX permission bits, and root is refused by none of them",
+)
+def test_a_step_that_applied_and_could_not_be_journalled_keeps_the_earlier_line_disclosed(
+    tmp_path: Path,
+) -> None:
+    """#47. The runner's flag is a memory of the whole run, not of the last append.
+
+    ``changed_paths`` names the journal when *an* append reached the disk, which
+    is why `_apply` folds each answer into what it already knew rather than
+    replacing it. Dropping the ``or journalled`` from the applied arm survives
+    the entire suite: every other fixture either journals nothing or journals
+    everything, so the last answer and the running one never disagree.
+
+    Here they disagree. The data-directory step applies and its line lands; the
+    token step then applies successfully and its line cannot, and so does every
+    step after it. A runner that remembered only the last answer would report a
+    run that created ``setup-journal.jsonl``, left it on disk with a record in
+    it, and told the operator about neither.
+
+    The step's own outcome is asserted ``CHANGED`` because that is what separates
+    this from the failed arm beside it: the append that could not be written
+    belongs to a step that finished.
+    """
+    context, service = _a_run_whose_journal_locks_after_the_first_append(tmp_path)
+    context.env_file.mkdir()
+
+    report = service.run(SetupRequest())
+
+    minted = report.step(StepId.TOKEN)
+    assert report.state is SetupState.HALTED, "the env file is a directory, so the run stops there"
+    assert minted is not None and minted.outcome is StepOutcome.CHANGED, (
+        "the step whose append failed has to be one that applied, not one that raised"
+    )
+    assert _the_only_entry(service.journal_path)["event"] == "applied"
+    assert str(service.journal_path) in report.changed_paths, (
+        "a file this run wrote stays named however the appends after it went"
+    )
+
+
+@pytest.mark.skipif(
+    _A_MODE_CANNOT_REFUSE_THIS_PROCESS,
+    reason="POSIX permission bits, and root is refused by none of them",
+)
+def test_a_failure_that_could_not_be_journalled_keeps_the_earlier_line_disclosed(
+    tmp_path: Path,
+) -> None:
+    """#47. The same fold on the arm that ends the run, which is a separate line.
+
+    The failed arm has its own ``self._journal(...) or journalled``, and dropping
+    that one is a second surviving mutation: the halted return is assembled
+    immediately afterwards, so the failing step's append is the last word on
+    whether the journal is disclosed. A run whose journal locked partway would
+    then halt, leave the file on disk holding what it had already recorded, and
+    publish a ``changed_paths`` that does not mention it -- on the one report
+    setup exists to make readable.
+
+    The failure is the shipped one: ``auth/mcp-token`` is a *directory*, so the
+    store's read raises ``IsADirectoryError`` and the critical token step stops
+    the run. The outcome is asserted ``FAILED`` for the same reason the test
+    above asserts ``CHANGED`` -- either fixture could drift into the other's arm
+    and both tests would still pass, holding one line between them.
+    """
+    context, service = _a_run_whose_journal_locks_after_the_first_append(tmp_path)
+    context.auth_dir.mkdir(parents=True, mode=0o700)
+    (context.auth_dir / TOKEN_KEY).mkdir(mode=0o700)
+
+    report = service.run(SetupRequest())
+
+    failed = report.step(StepId.TOKEN)
+    assert report.state is SetupState.HALTED, "the token step is critical"
+    assert failed is not None and failed.outcome is StepOutcome.FAILED, (
+        "the step whose append failed has to be the one that stopped the run"
+    )
+    assert _the_only_entry(service.journal_path)["event"] == "applied"
+    assert str(service.journal_path) in report.changed_paths, (
+        "the record the operator is about to be sent to read is named as written"
     )
 
 
