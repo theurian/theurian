@@ -55,6 +55,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 SCHEMAS = REPO_ROOT / "schemas"
 
@@ -628,11 +630,14 @@ def test_the_project_list_conformance_check_can_fail(
 class StatusDocument(NamedTuple):
     """One item in a status corpus, and the status it must end up holding.
 
-    ``deprecate`` is separate from ``status`` because ``deprecated`` is not a
-    status a revision may declare: it is the state ``deprecateItem`` leaves an
-    item in. Writing all three retired states as revision metadata would leave
-    that operation's own path unrepresented, and it is the one a user actually
-    runs.
+    ``deprecate`` is a separate flag because ``deprecated`` is reachable two
+    ways: a revision may declare it directly -- it is in the migration schema's
+    ``status`` enum and ``migrate apply`` writes ``metadata.status`` straight
+    onto the item -- and ``deprecateItem`` leaves an item in it after
+    withdrawing an approved one. The flag drives the second path so it stays
+    represented: were every retired state written as revision metadata,
+    ``deprecateItem``'s own path -- the one a user actually runs to withdraw an
+    approved item -- would be exercised by nothing.
     """
 
     letter: str
@@ -686,18 +691,24 @@ SURFACEABLE_CORPUS = (
     StatusDocument("F", "proposed-queue", "Proposed queue", "proposed"),
 )
 
-#: Every status a caller may *not* be told about, one item each, and nothing
-#: else -- so this project's response is the empty breakdown. All three, because
-#: they are excluded for one reason and a corpus holding one of them could not
-#: tell whether the other two were still excluded.
+#: Every status a caller may *not* be told about, and nothing else -- so this
+#: project's response is the empty breakdown. All three excluded statuses are
+#: here because they are excluded for one reason and a corpus holding one of
+#: them could not tell whether the other two were still excluded. ``deprecated``
+#: appears twice, once by each path that reaches it: ``deprecateItem``
+#: withdrawing an approved item, and a revision declaring ``deprecated`` in its
+#: own metadata. The promise -- that no retired status ever surfaces under any
+#: published label -- must hold for the metadata-declared one too, and
+#: ``deprecateItem`` is not the only way a ``deprecated`` item enters a store.
 WITHHELD_CORPUS = (
     StatusDocument("G", "retired-gateway", "Retired gateway", "approved", deprecate=True),
     StatusDocument("H", "superseded-sessions", "Superseded sessions", "superseded"),
     StatusDocument("J", "rejected-store", "Rejected store", "rejected"),
+    StatusDocument("K", "sunset-scheduler", "Sunset scheduler", "deprecated"),
 )
 
 #: What each corpus must really be holding, read from the canonical store. The
-#: withheld project's empty breakdown is a statement about a project with three
+#: withheld project's empty breakdown is a statement about a project with four
 #: items in it, and this is what makes it one rather than a statement about a
 #: migration that stopped applying.
 EXPECTED_STORED_STATUSES = {
@@ -710,6 +721,7 @@ EXPECTED_STORED_STATUSES = {
         "architecture.retired-gateway": "deprecated",
         "architecture.superseded-sessions": "superseded",
         "architecture.rejected-store": "rejected",
+        "architecture.sunset-scheduler": "deprecated",
     },
 }
 
@@ -791,12 +803,20 @@ class StatusCaptures(NamedTuple):
     """Real ``knowledge.status`` responses, beside what their stores hold.
 
     The second half is not decoration. A breakdown of ``{}`` is the correct
-    answer for a project holding three retired items and also the correct answer
+    answer for a project holding four retired items and also the correct answer
     for a project holding nothing, and only one of those is evidence.
+
+    ``migration_files`` is the third half, for the field the differential test
+    cannot check. ``appliedMigrations`` is a count of *files*, so a mutation
+    that folded the withheld item count into it puts the withheld count on the
+    wire -- and the differential test exempts the field because its own two
+    corpora differ by a migration. These two differ by items alone, so the file
+    count each project actually wrote on disk is what pins the field.
     """
 
     responses: dict[str, dict[str, Any]]
     stored: dict[str, dict[str, str]]
+    migration_files: dict[str, int]
 
 
 def _capture_status(tmp: pathlib.Path) -> StatusCaptures:
@@ -806,6 +826,7 @@ def _capture_status(tmp: pathlib.Path) -> StatusCaptures:
     data_dir = tmp / "datadir"
     responses: dict[str, dict[str, Any]] = {}
     stored: dict[str, dict[str, str]] = {}
+    migration_files: dict[str, int] = {}
 
     monkey = pytest.MonkeyPatch()
     monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
@@ -820,13 +841,17 @@ def _capture_status(tmp: pathlib.Path) -> StatusCaptures:
             monkey.chdir(root)
             _build_status_project(root, documents, migration_id)
             stored[name] = _stored_statuses(root, project_id)
+            # Read off disk rather than restated as a literal: `appliedMigrations`
+            # is asserted equal to what the project actually applied, so a corpus
+            # gaining a migration cannot leave this behind.
+            migration_files[name] = len(list((root / ".theurian/migrations").glob("*.yaml")))
         registry = ProjectRegistry.default(data_dir)
         for name, (project_id, _, _) in STATUS_PROJECTS.items():
             responses[name] = asyncio.run(_call_status(registry, project_id))
     finally:
         monkey.undo()
 
-    return StatusCaptures(responses=responses, stored=stored)
+    return StatusCaptures(responses=responses, stored=stored, migration_files=migration_files)
 
 
 @pytest.fixture(scope="module")
@@ -860,7 +885,7 @@ def test_the_status_captures_reach_every_declared_status_key_and_the_empty_one(
     ``rejected``; neither is what this file is for.
 
     The empty breakdown is the other half. It is asserted beside what the store
-    actually holds, because ``{}`` from a project with three retired items and
+    actually holds, because ``{}`` from a project with four retired items and
     ``{}`` from an empty directory are the same breakdown and only one of them
     says anything.
     """
@@ -874,16 +899,41 @@ def test_the_status_captures_reach_every_declared_status_key_and_the_empty_one(
     assert withheld["itemsByStatus"] == {}, "a retired item may not appear under any label"
     assert withheld["itemCount"] == 0, "the total may not restore what the breakdown withheld"
 
+    # `schemaVersion` is pinned by value here rather than in the conformance
+    # check below, because the schema constrains it only to a positive integer:
+    # an off-by-one value validates against the schema and would slip a
+    # conformance payload. The number the tool emits must be the store's actual
+    # schema version, so a build that reported a different one is a false claim
+    # about how the database a caller just read is laid out.
+    assert surfaceable["schemaVersion"] == withheld["schemaVersion"] == SCHEMA_VERSION
+
 
 @pytest.mark.integration
 def test_the_status_conformance_check_can_fail(status_captures: StatusCaptures) -> None:
     """Guards both validations above.
 
     A schema loaded but never applied accepts every response and proves nothing.
-    Each rejection below is a different clause, and the middle three are the
-    ones the schema exists for: a retired status appearing as a key, the same
-    quantity relabelled into a bucket, and a count published for a status
-    holding no items -- the shapes that would leak what the breakdown withholds.
+    Each rejection is a different clause, and the ones about ``itemsByStatus``
+    are the security-bearing ones: a retired status appearing as a key, the same
+    quantity relabelled into a bucket, and a count published for a status holding
+    no items -- the shapes that would leak what the breakdown withholds.
+
+    **The list is sized to the constraints, not to the shapes a hand would
+    reach for.** Each payload below is admitted by exactly one loosening of the
+    published schema and by no other change, so a reviewer who weakens one
+    clause sees this test fall rather than pass on the strength of the rest:
+
+    - dropping ``appliedMigrations`` -- caught only while ``required`` names it;
+    - a 40-character ``stateHash`` -- lower-case hex, so it is admitted by
+      relaxing the length ``{64}`` and not by relaxing the character class;
+    - ``draft: 0`` -- admitted only by lowering that key's ``minimum`` from 1,
+      the constraint that says a status with no items is absent rather than
+      present with a zero.
+
+    ``schemaVersion``'s value is not among them: the schema bounds it only to a
+    positive integer, so no payload here can distinguish the right version from
+    a wrong one. It is pinned by value in
+    ``test_the_status_captures_reach_every_declared_status_key_and_the_empty_one``.
     """
     validator = _validator(STATUS_RESPONSE)
     response = status_captures.responses["surfaceable"]
@@ -893,11 +943,50 @@ def test_the_status_conformance_check_can_fail(status_captures: StatusCaptures) 
         {**response, "surprise": 1},
         {key: value for key, value in response.items() if key != "stateHash"},
         {key: value for key, value in response.items() if key != "itemsByStatus"},
+        {key: value for key, value in response.items() if key != "appliedMigrations"},
         {**response, "itemsByStatus": {**response["itemsByStatus"], "rejected": 1}},
         {**response, "itemsByStatus": {**response["itemsByStatus"], "other": 2}},
         {**response, "itemsByStatus": {**response["itemsByStatus"], "approved": 0}},
+        {**response, "itemsByStatus": {**response["itemsByStatus"], "draft": 0}},
         {**response, "stateHash": response["stateHash"].upper()},
+        {**response, "stateHash": response["stateHash"][:40]},
     )
     for payload in rejected:
         with pytest.raises(ValidationError):
             validator.validate(payload)
+
+
+@pytest.mark.integration
+def test_applied_migrations_counts_files_not_items(status_captures: StatusCaptures) -> None:
+    """SEC-13, T-17, #19. ``appliedMigrations`` is a file count, item-invariant.
+
+    The differential in ``test_a_withheld_item_moves_exactly_the_two_fields_the_
+    status_schema_exempts`` builds its two corpora one migration apart, so it
+    exempts ``appliedMigrations`` -- the field is *meant* to move there. That
+    exemption is a hole: a mutation folding the withheld item count into the
+    field (``len(applied) + withheld_count``) puts the withheld count on the
+    wire and moves only the exempt field, so nothing in that test falls.
+
+    These two corpora differ by items and not by migrations: both apply exactly
+    one migration, while ``withheld-only`` holds four items a caller may not see
+    and ``surfaceable`` holds none. So the field must equal the one migration
+    file each project wrote -- read off disk, not asserted as a literal -- and
+    must be identical between the two despite the four withheld items. The
+    mutation makes ``withheld-only`` report five against one file on disk.
+    """
+    for name in STATUS_PROJECTS:
+        response = status_captures.responses[name]
+        assert response["appliedMigrations"] == status_captures.migration_files[name], (
+            f"{name} applied {status_captures.migration_files[name]} migration file(s) but "
+            f"reports appliedMigrations={response['appliedMigrations']}; the field is counting "
+            f"something other than files -- the withheld item count folded in reaches the wire "
+            f"here (SEC-13, T-17)"
+        )
+
+    surfaceable = status_captures.responses["surfaceable"]["appliedMigrations"]
+    withheld = status_captures.responses["withheld-only"]["appliedMigrations"]
+    assert surfaceable == withheld, (
+        "two projects one migration each and differing only in the four items one withholds "
+        f"report appliedMigrations {surfaceable} and {withheld}; the field is moving with the "
+        "withheld items, which is the count subtraction would then recover (T-17)"
+    )
