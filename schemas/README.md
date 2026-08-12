@@ -116,6 +116,10 @@ which is also what a project holding nothing answers, so the empty capture is
 asserted beside what its canonical store really contains — otherwise it is a
 document rather than evidence. The other capture reaches all three declared keys,
 so a schema that had quietly lost `proposed`, or gained `rejected`, still fails.
+The retired-only twin holds a `deprecated` item declared in revision metadata
+beside one reached through `deprecateItem`, so both paths a retired status enters a
+store by are covered: were either to surface in the breakdown,
+`additionalProperties: false` rejects the response and this check fails.
 
 To check locally:
 
