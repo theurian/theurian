@@ -580,6 +580,41 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   publish no response schema
   ([#20](https://github.com/theurian/theurian/issues/20)).
 
+  **The read cost is now independent of the withheld count, not only the
+  response.** `knowledge.status` used to run `list_items` and filter
+  `SURFACEABLE_STATUSES` in Python, so its work — and its response time — scaled
+  with the total row count, letting a caller recover the withheld count by
+  subtracting `itemCount` from the time (measured at 97.5% single-call
+  classification with fifty withheld rows, T-17). It now counts in SQL through
+  `CanonicalStore.count_surfaceable_by_status` — `status IN (SURFACEABLE_STATUSES)
+  GROUP BY status` over the `idx_items_status` covering index — so the query never
+  reads a withheld row. SQLite VM steps stay flat at 103 as the withheld count
+  grows 50 → 300, where the old scan went 1,130 → 5,380, and the response dict is
+  byte-identical on both paths.
+  `test_status_materializes_the_same_rows_however_many_are_withheld` pins it at the
+  row, going RED when the `list_items` path returns. The sibling channel on the
+  search fallback (`mcp/search.py::_scan`) is filed as
+  [#158](https://github.com/theurian/theurian/issues/158). A corrupt `status` cell
+  now makes `knowledge.status` under-report rather than raise, since the SQL count
+  no longer parses every row — the fifth `SILENTLY_EMPTIED` member, carried to
+  Milestone 6 ([#30](https://github.com/theurian/theurian/issues/30)).
+
+  **`stateHash` and `appliedMigrations` move on different triggers.** `stateHash`
+  moves for any change to canonical state; `appliedMigrations` moves only when a
+  migration is *added*, not when an existing one is edited — an edit moves the hash
+  alone. Prose saying both fields move with any canonical change was wrong and is
+  corrected in the schema; `test_applied_migrations_counts_files_not_items` pins
+  the field as a file count invariant to the item count.
+
+  **`deprecated` is declarable through revision metadata, and the withheld corpus
+  now proves it.** `migration.schema.json`'s `status` enum includes `deprecated`
+  and `migrate apply` writes it straight onto the item, so `deprecateItem` is not
+  the only path to a `deprecated` item. `WITHHELD_CORPUS` in
+  `test_wire_contract.py` now carries a metadata-declared `deprecated` item beside
+  the `deprecateItem` one, so "no retired status appears under any published label"
+  is held for the metadata path too; a test docstring claiming otherwise was
+  corrected.
+
 ### Changed
 
 - **BREAKING — the terminal state a critical apply failure reaches is `halted`,
