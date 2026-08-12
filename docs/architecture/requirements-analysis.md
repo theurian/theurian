@@ -412,8 +412,8 @@ reads it back — `uninstall_command` builds its list from the service path and 
 MCP config alone. Enumerating created paths so `uninstall` can delete them is a
 separate requirement, NFR-12, and it is not wired (R-10).
 
-It is created 0600 rather than at whatever the process umask allows, because
-those lines are local absolute paths and raw exception text, and `changed_paths`
+The file is created 0600 rather than at whatever the process umask allows,
+because those lines are local absolute paths and raw exception text, and `changed_paths`
 now points every reader of a halted report straight at them. The arm that fails
 to tighten the data directory is precisely the arm that leaves this file's parent
 0755 — a refused `chmod` is what put the run there — so the directory around it
@@ -492,13 +492,14 @@ and creates no such file.
 The list is de-duplicated in **first-seen order**, which is the order paths were
 accumulated into the report rather than the order the filesystem saw them: each
 applying step's paths as the run reaches that step, then the journal appended
-last — even though the journal's first line was written before most of them. A
-credential minted before the failure therefore appears exactly once, and early,
-where an operator will read it
+last, although its first line reaches the disk as soon as the first applying step
+is done and therefore ahead of everything after that step in the list. A
+credential minted before the failure appears exactly once, and early, where an
+operator will read it
 (`test_the_changed_paths_keep_the_order_they_were_first_written_in`). A run that
 wrote nothing names nothing: on a `HOME` that refuses writes the run halts at
-data-directory — the first step that *writes*, three read-only probes having
-already passed — creates nothing, journals nothing, and lists no path at all
+data-directory — the first step that *writes*, rows 1–3 having no apply to reach
+— creates nothing, journals nothing, and lists no path at all
 (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`).
 Nothing is automatically undone.
 
@@ -508,13 +509,13 @@ stopped rather than reversing. The remedy Core names for an unwanted credential
 is `theurian auth rotate`, in `probe_token`'s own conflict detail; what that
 command does is replace the value in place, rewrite the env file that points at
 it, and restart the daemon. No client is reconfigured by it, and none needs to
-be: what a client holds is a reference — `${THEURIAN_MCP_TOKEN}` in the MCP entry,
-`THEURIAN_MCP_TOKEN="$(cat <token path>)"` in the env file — so the same
-references keep working after the value behind them changes. Steps 16–17 are not
-an exception to
-any of this: they have no apply either, so setup neither builds nor restores an
-index or a migration state today. §6.2 records that build as a requirement, not
-as a description of what the step does.
+be: what a client holds is a reference — `${THEURIAN_MCP_TOKEN}` in the MCP
+entry, `THEURIAN_MCP_TOKEN="$(cat <token path>)"` in the env file — so the same
+references keep working after the value behind them changes.
+
+Steps 16–17 are not an exception to any of this: they have no apply either, so
+setup neither builds nor restores an index or a migration state today. §6.2
+records that build as a requirement, not as a description of what the step does.
 
 ---
 
