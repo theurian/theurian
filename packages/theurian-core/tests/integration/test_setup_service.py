@@ -1193,16 +1193,27 @@ def test_a_halted_run_leaves_the_journal_it_wrote_on_disk(tmp_path: Path) -> Non
 def test_a_halted_run_names_the_journal_among_the_files_it_wrote(tmp_path: Path) -> None:
     """#47. The journal belongs to no step, so only the runner can disclose it.
 
-    ``changed_paths`` is read as the list of files this run wrote, and `--help`
-    says the steps are every write setup performs. The journal is written by the
-    runner rather than by any step's apply, so accumulating step paths alone left
-    ``~/.theurian/setup-journal.jsonl`` out of the report of every run that
-    created it. Exactly once, for the same reason the credential is listed once:
-    a repeated entry reads as a second file to deal with.
+    ``changed_paths`` is read as the list of files this run wrote, and the
+    journal is written by the runner rather than by any step's apply -- so
+    accumulating step paths alone left ``~/.theurian/setup-journal.jsonl`` out of
+    the report of every run that created it, while `--help` was claiming the
+    seven steps are every write setup performs. Both halves have since moved: the
+    runner appends the journal to ``changed_paths``, and `--help` names it as the
+    one write outside those steps.
 
     The file is checked on disk first. Naming a path nothing wrote is the same
     defect pointing the other way -- `_journal` swallows its ``OSError``, so an
     append that never reached the disk must not be announced.
+
+    **``count(...) == 1`` is guaranteed by the funnel, not by this run.** Every
+    path leaves `SetupService._apply` through `_unique`, which returns
+    ``dict.fromkeys(paths)`` -- so no path can appear twice in ``changed_paths``
+    whatever the runner accumulated, and this count cannot reach two. Unlike the
+    credential beside it, which ``token`` and ``token-storage`` genuinely both
+    declare and which the funnel really is what collapses. What is pinned here is
+    therefore presence; the count is the cheaper spelling of it, and it would
+    only begin doing work of its own if the journal were ever appended per step
+    ahead of the funnel.
     """
     context, report = _halt_on_env_reference(tmp_path)
 
