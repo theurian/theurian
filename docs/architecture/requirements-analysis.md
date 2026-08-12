@@ -308,12 +308,12 @@ stateDiagram-v2
 
     Applying --> Verifying
     Applying --> Degraded: a non-critical step failed
-    Applying --> RolledBack: a critical step failed
+    Applying --> Halted: a critical step failed
 
     Verifying --> Converged: all checks pass
     Verifying --> Degraded: a non-critical check fails
 
-    RolledBack --> [*]
+    Halted --> [*]
     Aborted --> [*]
     Degraded --> [*]
     Converged --> [*]
@@ -384,11 +384,21 @@ statement, against a real LaunchAgent in a disposable profile, is owed with the
 rest of the E2E suite: [#65](https://github.com/theurian/theurian/issues/65),
 and see `tests/e2e/README.md` for which acceptance criteria have no test at all.
 
-### 6.4 Rollback
+### 6.4 Halting, not rollback
 
-Steps 4–14 are journaled to `~/.theurian/setup-journal.jsonl` with an inverse
-action. A critical failure replays the inverses in reverse order. Steps 16–17
-are not rolled back — they are derived state and are rebuilt, never restored.
+Steps 4–14 are journaled to `~/.theurian/setup-journal.jsonl`. The journal is
+append-only: it records what was applied, as a readable record for after-the-fact
+repair. It holds no inverse action, and `_apply` replays nothing.
+
+A critical step failing during apply **halts** the run at that step. The report's
+`state` is `halted`, and `changed_paths` lists what was written — including any
+credential minted before the failure, de-duplicated so it appears exactly once —
+so the operator can act. Nothing is automatically undone.
+
+That is a design decision, not a missing feature. Deleting a token another
+session may already be holding is its own defect, so setup reports where it
+stopped rather than reversing. Steps 16–17 are the one exception, and not by
+being rolled back: they are derived state and are rebuilt, never restored.
 
 ---
 
@@ -905,7 +915,7 @@ by it.
 | `.gitignore` block | Appends only missing entries; re-running appends nothing. |
 | Token masking | A token never appears in a `SetupReport` rendered to text or JSON. |
 | Compatibility gate | The version matrix resolves to proceed/stop-old/stop-new/stop-protocol. |
-| Rollback inverses | Every mutating step has an inverse; replaying it restores the prior state. |
+| Halt is terminal, not success | `SetupState.HALTED` is a terminal state and `HALTED.is_success is False`; a halted run is a failure, not success-with-warnings. |
 
 ### Layer 2 — integration (real filesystem, fake OS service)
 
@@ -921,7 +931,7 @@ replaced by a recording fake.
 | Read-only `HOME` | Fails cleanly with an actionable message; leaves no partial state. |
 | Existing token | Reused, never regenerated. |
 | Wrong file mode | Corrected, and the correction is reported. |
-| Critical failure mid-plan | Journal replay leaves the environment as it was. |
+| Critical failure mid-plan | The run halts (`state = halted`); nothing is undone, and `changed_paths` discloses what was written — including a credential minted before the failure — listed exactly once. |
 | Project already registered elsewhere | Detected; no duplicate registration. |
 
 ### Layer 3 — E2E (real CLI, real daemon, real service manager)

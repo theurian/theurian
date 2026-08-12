@@ -70,7 +70,7 @@ that cannot start.
      point at `/theurian:doctor`; there is nothing here for the user to run.
 
    Skip this step's second and third paragraphs unless `state` is `converged` or
-   `degraded`. In `plan-built`, `awaiting-consent`, `rolled-back` and `aborted`
+   `degraded`. In `plan-built`, `awaiting-consent`, `halted` and `aborted`
    the verification pass never ran, so `status` is still the plan rather than the
    result.
 

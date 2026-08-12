@@ -537,6 +537,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Changed
 
+- **BREAKING — the setup report's terminal failure `state` is `halted`, was
+  `rolled-back`** ([#47](https://github.com/theurian/theurian/issues/47)). A
+  consumer keying on the string `"rolled-back"` must update to `"halted"`. The
+  old value named a rollback setup never performed: the setup journal
+  (`~/.theurian/setup-journal.jsonl`) is append-only with no inverse action, and
+  `_apply` replays nothing. A critical step failing during apply now halts the
+  run where it failed and undoes nothing. Any credential minted before the
+  failure remains on disk — deleting a token another session may be holding is
+  its own defect — so `changed_paths` discloses it, de-duplicated to appear
+  exactly once, for the operator to rotate or remove.
+
 - **BREAKING — `INDEX_SCHEMA_VERSION` 4 → 5: `chunks` gains a `kind` column**
   (the purge-recompute change under Added; ADR-0008 decision 2's and ADR-0024
   decision 8's Milestone 6 amendments). The withdrawal purge re-derives each

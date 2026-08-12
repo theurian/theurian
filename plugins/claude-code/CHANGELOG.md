@@ -42,6 +42,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `action` is one setup skips. All seven steps setup performs report exactly
   that before they run, so an agent following the old rule would have asked the
   user to go and "Create ~/.theurian with mode 0700" themselves.
+- The `/theurian:setup` command doc now lists `halted` instead of `rolled-back`
+  among the states where the verification pass never ran. Core renamed that
+  terminal failure state — a critical step failing during apply halts the run
+  rather than rolling back a rollback that never existed
+  ([#47](https://github.com/theurian/theurian/issues/47)).
 
 ### Security
 
