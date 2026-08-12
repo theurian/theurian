@@ -207,9 +207,11 @@ class SetupService:
                 continue
 
             # Taken immediately before the apply, so the window it is compared
-            # against holds this step's own writes and nothing else's -- not the
-            # journal below, which is appended after the comparison, and not an
-            # earlier step's.
+            # against excludes setup's own earlier writes -- not the journal
+            # below, which is appended after the comparison, and not an earlier
+            # step's artefacts. It cannot exclude another process touching the
+            # same path while the apply runs; no clock window can, and the bias
+            # in `_moved` is toward naming the path when it cannot tell.
             before = _snapshot(planned.paths)
             try:
                 action(self._context)
@@ -408,6 +410,13 @@ class _Observation:
     #: the data-directory step's entire write *is* a mode: tightening an
     #: existing 0755 directory to 0700 moves nothing else, so a signature blind
     #: to permissions could not see that step happen at all.
+    #:
+    #: The last field is only as fine as the volume stores it. APFS and ext4
+    #: keep nanoseconds; HFS+ and the FAT family keep whole seconds or coarser,
+    #: and ``THEURIAN_DATA_DIR`` can point at one of those. There, a rewrite
+    #: that changes neither length nor mode inside the same second is invisible
+    #: here and its path goes unnamed -- the one direction in which this
+    #: comparison is not biased toward disclosure.
     signature: tuple[int, int, int, int] | None
     #: ``False`` when the check itself failed for any reason other than absence.
     known: bool = True
@@ -473,8 +482,11 @@ def _changed_since(before: Mapping[str, _Observation]) -> tuple[str, ...]:
     step                how its declared path is already there when it fails
     ==================  =====================================================
     data-directory      the tighten arm, where a 0755 ``~/.theurian`` is the
-                        very thing being reported; and a regular file sitting
-                        where the directory goes, which refuses the ``mkdir``
+                        very thing being reported; and a *group- or
+                        other-accessible* regular file sitting where the
+                        directory goes, which refuses the ``mkdir``. A 0600
+                        file there is reported SATISFIED by the probe and
+                        never applied at all, so it cannot reach this arm
     token,              a *directory* at ``auth/mcp-token``, which makes the
     token-storage       store's read raise before it writes anything
     env-reference       "present but differing" (#128)

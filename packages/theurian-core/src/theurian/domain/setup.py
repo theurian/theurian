@@ -102,9 +102,10 @@ class SetupState(StrEnum):
     #: and the journal is append-only with no inverse action to replay (§6.4) --
     #: #128 records that the env rewrite does not preserve a hand-edited file.
     #: ``changed_paths`` lists the files this run wrote -- each applied step's
-    #: declared artefacts, existence-checked for the step that failed partway,
-    #: plus the setup journal -- **including any credential minted before the
-    #: failure**, so the operator can act on it. Terminal, and not a success.
+    #: declared artefacts, plus the failed step's declared paths this run moved
+    #: or could not observe, plus the setup journal -- **including any
+    #: credential minted before the failure**, so the operator can act on it.
+    #: Terminal, and not a success.
     HALTED = "halted"
     ABORTED = "aborted"
 
@@ -312,10 +313,15 @@ class SetupReport:
     dry_run: bool = False
     serena_detected: bool = False
     warnings: tuple[str, ...] = ()
-    #: The files this run wrote: each applied step's declared artefacts --
-    #: existence-checked for a step that failed partway -- plus the setup journal
-    #: when this run appended to it. Directories created implicitly (``auth/``,
-    #: say) are not listed. Empty on a dry run, on a run that aborted before
+    #: The files this run wrote: each applied step's declared artefacts, plus --
+    #: for a step that failed partway -- those of its declared paths this run
+    #: moved or could not observe, plus the setup journal when this run appended
+    #: to it. Directories created implicitly are not listed: ``auth/`` under the
+    #: data directory, and ``~/Library/LaunchAgents`` or
+    #: ``~/.config/systemd/user``, which the service adapters create on the way
+    #: to the definition file they do declare. Files a registered service writes
+    #: afterwards -- ``daemon.log``, written by launchd and not by setup -- are
+    #: not listed either. Empty on a dry run, on a run that aborted before
     #: applying, and on a second real run -- which is the idempotence contract of
     #: §6.3, and holds through the journal too: a run that applies nothing
     #: journals nothing.
