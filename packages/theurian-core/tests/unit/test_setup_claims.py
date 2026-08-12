@@ -401,6 +401,59 @@ def test_no_setup_step_installs_core_registers_a_project_or_builds_an_index() ->
     assert StepId.INITIAL_INDEX in report_only
 
 
+def test_the_token_is_minted_before_the_step_that_stores_it() -> None:
+    """§6.4, #153. Whichever of the pair runs second applies nothing.
+
+    ``apply_token_storage`` is one statement: a call to ``apply_token``, which
+    mints only when there is no token (ADR-0011). And the two probes both key on
+    ``(auth/mcp-token).is_file()``, so they report ``MISSING`` together or not at
+    all -- a run that reaches one of these applies reaches both, and the second
+    one finds the file already there and returns without writing.
+
+    That is the exception to the rule §6.4 states about a halted run's
+    ``changed_paths``: *the declared paths of every step whose apply finished --
+    declared, not re-measured. A step that returned is taken at its word, which
+    is exact for what ships today: every apply here writes or raises.*
+    ``apply_token_storage`` returns without doing either, and its declared path
+    is truthful only because the step before it wrote the file.
+    [#153](https://github.com/theurian/theurian/issues/153) records the class an
+    apply that finishes without writing belongs to.
+
+    **What swapping the two entries actually moves, measured rather than
+    argued.** A cold run and a run halted on a *directory* at ``auth/mcp-token``
+    were each executed under both orders: ``state``, ``changed_paths`` and both
+    steps' outcomes came back identical, because the credential is declared by
+    both steps and written by whichever runs first, so the run-level claim
+    survives either way. What moves is the journal. Its applied record carries
+    the step's own ``action``, and under the swap that is
+    ``token: "Generate a 256-bit token with the system CSPRNG."`` written for a
+    step that generated nothing -- an event claim, in the file an operator reads
+    to repair a machine, about work that did not happen. In the shipped order
+    the second of the pair is ``token-storage``, whose action describes a state,
+    ``"Store the token as a 0600 file inside a 0700 directory."``, and that state
+    is true at the moment the record is written.
+
+    So this is a pin on the journal and on §6.4's trust rule, not on
+    ``changed_paths``: an assertion that the report moves under the swap would
+    not fail, and one written that way would be reporting a safety that is not
+    there.
+
+    Both steps are asserted still to carry an apply, because the whole reason
+    above evaporates if one of them stops applying -- and a reader arriving after
+    that change needs the failure to land here rather than on the ordering.
+    """
+    acting = _steps_that_act()
+    order = [step.step_id for step in STEPS]
+
+    assert {StepId.TOKEN, StepId.TOKEN_STORAGE} <= acting, (
+        "both halves of the pair still apply; without that this order holds nothing"
+    )
+    assert order.index(StepId.TOKEN) < order.index(StepId.TOKEN_STORAGE), (
+        "the step that mints the token runs before the one whose apply is a no-op "
+        "once it exists, or the journal records a mint that never happened"
+    )
+
+
 def test_the_installers_pinned_here_are_the_ones_the_step_reports(
     tmp_path: pathlib.Path,
 ) -> None:
