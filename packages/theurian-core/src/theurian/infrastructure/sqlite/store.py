@@ -21,6 +21,7 @@ from typing import Final, final
 
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
+    SURFACEABLE_STATUSES,
     KnowledgeKind,
     KnowledgeStatus,
     RelationType,
@@ -335,6 +336,29 @@ class SqliteCanonicalStore:
             params += (namespace,)
         sql += " ORDER BY item_id"
         return self._read_all(sql, params, _item_from_row)
+
+    def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:
+        # Count in SQL so `knowledge.status` spends work proportional to what it
+        # publishes, not to the retired rows it withholds. Filtering `list_items`
+        # in Python read every row, which made the tool's response time scale
+        # with the withheld count -- subtracting the published `itemCount`
+        # recovered it (T-17; #158 owns the `search._scan` sibling). The `IN`
+        # list is `SURFACEABLE_STATUSES` itself, sorted for a stable statement so
+        # a status added to the domain set reaches the query with no second edit
+        # here, and `GROUP BY` returns no row for a status with no items, which
+        # keeps the mapping identical to the old first-appearance loop. The
+        # covering index `idx_items_status(project_id, status)` answers it
+        # without reading a withheld row.
+        statuses = tuple(sorted(s.value for s in SURFACEABLE_STATUSES))
+        placeholders = ", ".join("?" for _ in statuses)
+        sql = (
+            "SELECT status, COUNT(*) AS n FROM knowledge_items "  # noqa: S608 - placeholders only
+            f"WHERE project_id = ? AND status IN ({placeholders}) "
+            "GROUP BY status ORDER BY status"
+        )
+        params = (context.project_id.value, *statuses)
+        pairs = self._read_all(sql, params, lambda row: (str(row["status"]), int(row["n"])))
+        return dict(pairs)
 
     def list_relations(
         self, context: RequestContext, item_id: ItemId

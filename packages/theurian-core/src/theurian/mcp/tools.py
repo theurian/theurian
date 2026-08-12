@@ -38,7 +38,7 @@ from theurian.application.project_service import (
 )
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import SURFACEABLE_STATUSES, may_surface
+from theurian.domain.enums import may_surface
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.knowledge import KnowledgeRelation
@@ -582,26 +582,24 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         context = RequestContext(project_id=ProjectId(projectId))
 
         with SqliteCanonicalStore(database) as store:
-            items = store.list_items(context)
+            by_status = store.count_surfaceable_by_status(context)
             applied = store.applied_migrations(ProjectId(projectId))
 
         # What may be counted, and what the counts may not restore by
         # subtraction: `itemsByStatus` covers `SURFACEABLE_STATUSES` alone, and
-        # `itemCount` is the sum of that breakdown rather than `len(items)`, so
-        # no count below reports anything about withheld content, not even a
-        # total (SEC-13, T-17).
+        # `itemCount` is the sum of that breakdown rather than the store's size,
+        # so no count below reports anything about withheld content, not even a
+        # total (SEC-13, T-17). This now holds in the timing dimension too: the
+        # count runs in SQL and the withheld rows are never read, so the response
+        # time no longer scales with them -- filtering `list_items` in Python did
+        # scale with the withheld count, recoverable by subtraction (#158 owns
+        # the `search._scan` sibling of that channel).
         #
         # That is a claim about the counts and not about the response, and the
         # difference is now recorded where a client can read it:
         # `schemas/mcp/knowledge-status-response.schema.json` carries the
         # measurement, the decision that `stateHash` and `appliedMigrations`
         # both stay, and the justification for each (#19).
-        by_status: dict[str, int] = {}
-        for item in items:
-            if item.status not in SURFACEABLE_STATUSES:
-                continue
-            by_status[item.status.value] = by_status.get(item.status.value, 0) + 1
-
         return {
             "projectId": projectId,
             "stateHash": str(active.state_hash),
