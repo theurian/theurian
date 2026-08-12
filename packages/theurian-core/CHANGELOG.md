@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev2] - 2026-08-12
+
 ### Added
 
 - **`knowledge.search` takes an optional `asOf`** (RFC 3339, any explicit
@@ -2892,6 +2894,7 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev1...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev2...main
+[0.1.0.dev2]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev1...core-v0.1.0.dev2
 [0.1.0.dev1]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev0...core-v0.1.0.dev1
 [0.1.0.dev0]: https://github.com/theurian/theurian/releases/tag/core-v0.1.0.dev0
