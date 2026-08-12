@@ -585,40 +585,17 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             items = store.list_items(context)
             applied = store.applied_migrations(ProjectId(projectId))
 
-        # Counted over `SURFACEABLE_STATUSES` only -- this tool takes no
-        # `includeUnapproved` flag, so the set is fixed rather than widened per
-        # caller. `deprecated`, `superseded`, and `rejected` are excluded
-        # entirely: `knowledge.get` deliberately answers "withheld" and
-        # "absent" with the identical message so a caller cannot confirm a
-        # retired id exists (SEC-13), and a count that included them answered
-        # the same question with a number instead -- direct reconnaissance for
-        # the class of attack T-17 describes.
+        # What may be counted, and what the counts may not restore by
+        # subtraction: `itemsByStatus` covers `SURFACEABLE_STATUSES` alone, and
+        # `itemCount` is the sum of that breakdown rather than `len(items)`, so
+        # no count below reports anything about withheld content, not even a
+        # total (SEC-13, T-17).
         #
-        # `itemCount` is the sum of this breakdown, not `len(items)`. Reporting
-        # the true total while filtering the breakdown would leak the withheld
-        # count right back through subtraction (total minus the surfaceable
-        # sum). A single aggregate withheld count was considered and rejected
-        # for the same reason a per-status one was: even with no way to tell
-        # *which* item changed, a caller who takes an action (deprecate,
-        # supersede, reject) and watches one number move immediately afterward
-        # has confirmed it -- exactly the shape of oracle T-17 exists to close,
-        # just coarser. No count below reports anything about withheld content,
-        # not even a total.
-        #
-        # **That is a claim about the counts, not about this response, and the
-        # difference is measured.** Two projects differing only in one rejected
-        # item return the same `itemCount` and `itemsByStatus` and different
-        # `stateHash` and `appliedMigrations`, so T-17's equality -- one query
-        # against two corpora -- does not hold for this tool the way it does for
-        # `knowledge.search` and `knowledge.get`. `stateHash` covers the whole
-        # working tree by design (ADR-0016) and is query-independent by
-        # construction, which is the justification `snapshotId` carries and the
-        # reason FR-R5 publishes it at all. `appliedMigrations` had no such
-        # justification; it counts migration *files*, so it moves identically
-        # whether the migration added an approved item, a draft, a rejected one
-        # or none, and nothing about a request reaches it. Accepted for
-        # Milestone 5 with the argument and the measurement in T-17, filed at
-        # https://github.com/theurian/theurian/issues/19.
+        # That is a claim about the counts and not about the response, and the
+        # difference is now recorded where a client can read it:
+        # `schemas/mcp/knowledge-status-response.schema.json` carries the
+        # measurement, the decision that `stateHash` and `appliedMigrations`
+        # both stay, and the justification for each (#19).
         by_status: dict[str, int] = {}
         for item in items:
             if item.status not in SURFACEABLE_STATUSES:
