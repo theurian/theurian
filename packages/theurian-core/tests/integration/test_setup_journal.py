@@ -31,11 +31,13 @@ service would reach the developer's own login session, which redirecting
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
@@ -50,6 +52,11 @@ from theurian.security.tokens import MIN_TOKEN_LENGTH
 pytestmark = pytest.mark.integration
 
 PORT = 7419
+
+#: ``RLIMIT_FSIZE`` does not exist on Windows. The seam below is skipped rather
+#: than adapted where it would silently stop being one: a run that can append to
+#: the journal anyway passes every assertion in it while testing nothing.
+_NO_FILE_SIZE_LIMIT: Final = sys.platform == "win32"
 
 
 def _context(tmp_path: Path) -> SetupContext:
@@ -185,6 +192,118 @@ def test_the_journal_is_disclosed_when_the_first_step_to_apply_is_the_one_that_f
     assert service.journal_path.is_file(), "the failure itself is journalled"
     assert report.changed_paths == (str(service.journal_path),), (
         "so the one file this run wrote is the one file it names"
+    )
+
+
+#: The soft ``RLIMIT_FSIZE`` in force while the run below executes. The limit is
+#: process-wide for the length of that ``with``, so it has to sit far above every
+#: other file the run touches -- the token is 43 bytes, the env file a couple of
+#: hundred -- and above anything the interpreter itself might write in the same
+#: window, such as a module it byte-compiles on first import. A mebibyte clears
+#: all of it; the journal is padded up to just under the limit instead, so the
+#: only write in the run with no room left is the append.
+_FILE_SIZE_LIMIT: Final = 1 << 20
+
+#: How much room the padding leaves. Not zero: a write with *no* room fails
+#: outright with ``EFBIG``, and an implementation that reported the wrong answer
+#: for a partial write would be caught by the wrong mechanism. Twenty bytes is
+#: less than any record this journal can hold and more than none, which is
+#: exactly the case ``write(2)`` reports as a short count rather than as an
+#: error.
+_ROOM_FOR_LESS_THAN_ONE_RECORD: Final = 20
+
+
+def _one_record_of_exactly(size: int) -> str:
+    """A single valid journal line ``size`` bytes long, newline included.
+
+    Padding with one long record rather than many short ones keeps
+    :func:`_entries` honest about what the run appended: after the truncated
+    append the file holds two lines, and the second is the fragment.
+    """
+    fields = {"step": StepId.DATA_DIRECTORY.value, "event": "applied", "detail": ""}
+    overhead = len(json.dumps(fields, sort_keys=True) + "\n")
+    return json.dumps({**fields, "detail": "x" * (size - overhead)}, sort_keys=True) + "\n"
+
+
+@contextlib.contextmanager
+def _a_file_size_limit_of(size: int) -> Iterator[None]:
+    """Refuse, for the length of this block, any write past ``size`` bytes.
+
+    ``RLIMIT_FSIZE`` is how a full disk is arranged in a test: it is the same
+    ``write(2)`` path as ``ENOSPC``, and it is the only one of the two that can
+    be turned on and off again. Both the limit and the signal disposition are
+    process-wide, so the block wraps the run and nothing else, and both are put
+    back whether or not the body raised.
+
+    ``SIGXFSZ`` is ignored first because its default disposition terminates the
+    process -- the test would not fail, it would take the session with it.
+    """
+    # Imported here rather than at the top of the module: ``resource`` is
+    # POSIX-only, and a module-level import would turn the skip above into a
+    # collection error on Windows -- one test not running, against the whole
+    # file not running.
+    import resource
+    import signal
+
+    previous_handler = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (size, hard))
+    try:
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+        signal.signal(signal.SIGXFSZ, previous_handler)
+
+
+@pytest.mark.skipif(_NO_FILE_SIZE_LIMIT, reason="RLIMIT_FSIZE is POSIX")
+def test_an_append_that_could_not_complete_leaves_the_journal_undisclosed(
+    tmp_path: Path,
+) -> None:
+    """#47. ``changed_paths`` names files this run wrote, not files it opened.
+
+    ``write(2)`` is permitted to write fewer bytes than it was handed and to
+    report that count *without raising*, which is what a file-size limit and a
+    full disk both produce. An ``os.write`` whose return value was discarded
+    therefore left a half-record on disk and answered ``True``: measured as
+    three half-lines run together into a single entry no reader can parse,
+    announced in ``changed_paths`` as a file this run wrote, and pointed at by
+    the plugin as the record an operator should read after a failure.
+    :class:`io.BufferedWriter` loops until the buffer is empty and raises
+    whatever the flush hit, which is the ``except OSError`` that answers
+    ``False``.
+
+    The fixture is a journal already padded to twenty bytes below the limit, so
+    the run's first append is the one with nowhere to go. Every later append has
+    no room at all and fails the same way, which is why the disclosure this
+    asserts is about the whole run and not about one line.
+
+    Three assertions guard it, and none is decoration. The credential is
+    asserted *present* in ``changed_paths``, because a run that disclosed
+    nothing at all would satisfy the prohibition while proving nothing. The
+    line count and the unparseable tail are what show the short write really
+    happened: with no fragment on disk the append failed outright, which is the
+    arm the raw ``os.write`` already handled and not the one this test is for.
+    """
+    context, service = _halt_with_something_behind_it(tmp_path)
+    service.journal_path.write_text(
+        _one_record_of_exactly(_FILE_SIZE_LIMIT - _ROOM_FOR_LESS_THAN_ONE_RECORD),
+        encoding="utf-8",
+    )
+
+    with _a_file_size_limit_of(_FILE_SIZE_LIMIT):
+        report = service.run(SetupRequest())
+
+    lines = service.journal_path.read_text(encoding="utf-8").splitlines()
+    assert report.state is SetupState.HALTED, "the fixture has to reach the halt path"
+    assert str(context.auth_dir / TOKEN_KEY) in report.changed_paths, (
+        "the run did write the credential, and says so -- the prohibition below "
+        "would pass on a run that wrote nothing"
+    )
+    assert len(lines) == 2, f"the padding plus the fragment of one append, not {len(lines)}"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(lines[-1])
+    assert str(service.journal_path) not in report.changed_paths, (
+        "a record no reader can parse is not a file this run wrote"
     )
 
 
