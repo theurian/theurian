@@ -359,7 +359,7 @@ argument it carried is not true of the other two.
 | :-- | :-- | :-- | :-- |
 | the scan below the trigram floor (ADR-0023), `search_substring` | a `LIKE` and an occurrence count over every row of the index, per term spent | no — `sqlite3` releases it around `execute` | `MAX_QUERY_CHARS`, `MAX_QUERY_TERMS`, `index_scan.SCAN_TERMS` |
 | `IndexStore.search_dense` | `fetchall` over every embedding in the project, then a `struct.unpack` and a Python cosine per row, then a sort | **yes** — `_dense_ranking` is pure Python | **nothing.** The port takes no `limit`, and one would not have bounded it — see below |
-| `mcp.search._scan`, behind `substring_answer` | one `list_items` materialising every item in the project, then two queries per document — the revision, then its source anchors — and a Python `in` over the whole of its title and body | **yes** — the match is a Python `in` | `limit`, and only for a query that *matches*. One that matches nothing walks every document, and `list_items` materialises every item before the first comparison either way — so neither rows nor memory are bounded by anything the caller passes |
+| `mcp.search._scan`, behind `substring_answer` | one `list_items_by_status` materialising every *surfaceable* item in the project — the withheld rows are dropped by a SQL `status IN (...)` filter over `idx_items_status`, never read (#158) — then two queries per document, the revision then its source anchors, and a Python `in` over the whole of its title and body | **yes** — the match is a Python `in` | `limit`, and only for a query that *matches*. One that matches nothing walks every surfaceable document, and `list_items_by_status` materialises the whole surfaceable set before the first comparison either way — so its rows and memory are still bounded by nothing the caller passes. What it no longer carries is the *withheld* count: since #158 the read is planned through `idx_items_status` and never touches a withheld row (`test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld`) |
 
 All three are reachable from the public API with no tuning and no privileges. The
 scan needs eight two-character terms with the matching one typed last — roughly
@@ -385,21 +385,40 @@ show it was built for this project. Eight `Fallback` constants in
 the entry for two milestones because it is the *fallback*, and a fallback reads
 as the cheap path.
 
-`list_items` is the same unbounded shape one level down, behind the `_scan`
-fallback: it materialises every `KnowledgeItem` in the project with no
-`limit` anywhere in the signature. Measured at 1.26 kB per item over 1,000 items
-and 1.22 kB over 4,000 — so 4.89 MB at 4,000 items, and of the order of 120 MB at
-a hundred thousand, held per concurrent caller. Recorded, not bounded: adding a
-page bound is a change to the search fallback's published surface and belongs with
-the Milestone 6 retrieval work, not with a documentation round.
-`knowledge.status` shared this shape until Milestone 6's T-17 timing fix
-([#19](https://github.com/theurian/theurian/issues/19)) replaced its `list_items`
-call with `count_surfaceable_by_status`, a SQL `COUNT … GROUP BY status` over the
-`idx_items_status` covering index that reads neither the withheld rows nor the
-whole store — so it no longer materialises the corpus, and its read cost no longer
-scales with the withheld count (the disclosure face of that channel, closed for
-status under T-17; the surviving `search._scan` sibling is
-[#158](https://github.com/theurian/theurian/issues/158)).
+`list_items_by_status` is the same unbounded shape one level down, behind the
+`_scan` fallback: since [#158](https://github.com/theurian/theurian/issues/158) it
+materialises every *surfaceable* `KnowledgeItem` in the project — the withheld rows
+are dropped by a SQL `status IN (...)` filter forced through `idx_items_status`,
+never read — but there is still no `limit` anywhere in its signature, so the
+surfaceable set is bounded by nothing the caller passes. Measured at 1.26 kB per
+item over 1,000 items and 1.22 kB over 4,000 — so 4.89 MB at 4,000 items, and of
+the order of 120 MB at a hundred thousand, held per concurrent caller. That
+rows-and-memory residual is recorded, not bounded: adding a page bound is a change
+to the search fallback's published surface and belongs with the Milestone 6
+retrieval work, not with a documentation round.
+
+The *withheld-count* timing face of this fallback is a separate concern, and #158
+closed it this milestone. Until #158 the scan called `list_items` — a `SELECT`
+with no status predicate — and dropped the retired rows in Python, so its read
+cost scaled with the total row count, withheld rows included, and subtracting the
+published `count` recovered the withheld count: the same disclosure oracle T-17
+exists to close, one level down from `knowledge.status`. `knowledge.status` shed
+that shape under Milestone 6's T-17 timing fix
+([#19](https://github.com/theurian/theurian/issues/19)), which replaced its
+`list_items` call with `count_surfaceable_by_status`, a SQL `COUNT … GROUP BY
+status` over the `idx_items_status` covering index that reads neither the withheld
+rows nor the whole store. #158 closes the `search._scan` sibling the same way:
+`_scan` now reads through `list_items_by_status`, whose `status IN (...)` is forced
+through `idx_items_status`, so the store never hands the scan a withheld row.
+Measured: SQLite VM steps stay flat at 119–120 as the withheld count grows across
+0/50/300/1,000, where the old `list_items` scan went 63 → 913 → 5,163; the result
+set is byte-identical either way. Pinned by
+`test_the_substring_scan_reads_items_through_idx_items_status` (the read is planned
+through `idx_items_status` at both gate widths) and
+`test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld` (the
+scan materialises the same rows whatever the withheld count), both in
+`tests/integration/test_mcp_tools.py`. This closes the disclosure/timing face
+only; the rows-and-memory page bound above is untouched and stays open.
 
 **Per member, what one call costs:**
 
@@ -2033,23 +2052,43 @@ the store fetch the twenty-five extra rows a store of twenty-five withheld items
 holds — so it goes RED deterministically while every response-value test stays
 green through the same regression.
 
-**Two residuals, neither closed, both recorded — do not read this as the whole
-observable surface closing.** The read-cost fix is for `knowledge.status` alone.
-The sibling channel on the search fallback — `mcp/search.py::_scan`, whose
-`list_items` call carries the same withheld-count-shaped cost — is filed as
-[#158](https://github.com/theurian/theurian/issues/158), likely already bounded by
-Milestone 5's scan-exhaustion analysis, which the issue exists to verify rather
-than assume. And the SQL count cannot parse the status enum, so a corrupt `status`
-cell now makes `knowledge.status` under-report — `itemCount` drops rather than the
-tool refusing — where the O(total-rows) parse the fix removes used to detect it.
-That trade is the fifth member of `SILENTLY_EMPTIED` in
+**One residual closes and one stays open — do not read this as the whole
+observable surface of the search fallback closing.** The read-cost fix #19 made is
+for `knowledge.status`; its sibling channel on the search fallback —
+`mcp/search.py::_scan`, whose read used to carry the same withheld-count-shaped
+cost — is now closed the same way by
+[#158](https://github.com/theurian/theurian/issues/158) this milestone. `_scan`
+reads through `list_items_by_status` (`status IN (...)` forced through
+`idx_items_status`), so the store never hands it a withheld row and its SQLite VM
+steps stay flat at 119–120 across 0/50/300/1,000 withheld where the old
+`list_items` scan went 63 → 913 → 5,163
+(`test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld`,
+`test_the_substring_scan_reads_items_through_idx_items_status`). That closes the
+withheld-count timing/disclosure face and nothing else: the fallback's
+rows-and-memory page bound is a DoS residual (T-6 above), unchanged and still open
+for a later milestone, since bounding it changes the search fallback's published
+surface.
+
+The status fix carries a trade, and #158 extends it to a second path. The SQL
+count cannot parse the status enum, so a corrupt `status` cell makes
+`knowledge.status` under-report — `itemCount` drops rather than the tool refusing —
+where the O(total-rows) parse the fix removes used to detect it. That trade is the
+fifth member of `SILENTLY_EMPTIED` in
 `tests/integration/test_canonical_store_corruption.py`, an exact set carried to
 Milestone 6 with the rest of that integrity class
-([#30](https://github.com/theurian/theurian/issues/30)); the silent `0` is also
-the confidentiality-correct answer, and holding the set exact is what keeps its
-reach from growing without a recorded reason. What is closed for status is the
-field equality and the read-cost dependence on the withheld count; what stays open
-is #158 and #30.
+([#30](https://github.com/theurian/theurian/issues/30)). #158 makes the same
+crash → silent-drop trade on the substring path: a corrupt `status` cell now fails
+the SQL `IN` predicate and is silently dropped, where `_scan`'s old `list_items` +
+Python `may_surface` parse would have raised. That consequence is filed with the
+same integrity class (#30) but is **not** a member of `SILENTLY_EMPTIED` above: its
+sweep runs against an *indexed* corpus, so its `knowledge.search` answers through
+the ranked gate and never reaches `_scan`, leaving the substring path's silent drop
+recorded rather than pinned. In every case the silent result is also the
+confidentiality-correct answer, and holding that integrity set exact is what keeps
+its reach from growing without a recorded reason. What is closed is the read-cost
+dependence on the withheld count — for `knowledge.status`'s field equality under
+#19, and for the search fallback's timing face under #158; what stays open is #30
+and the fallback's rows-and-memory page bound (T-6).
 
 **How it is held.** `tests/integration/test_mcp_tools.py`:
 
