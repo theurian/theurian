@@ -587,12 +587,12 @@ def with_retired_items(registry: ProjectRegistry) -> ProjectRegistry:
     return registry
 
 
-def _stored_statuses(registry: ProjectRegistry) -> dict[str, str]:
+def _stored_statuses(registry: ProjectRegistry, project_id: str = "demo") -> dict[str, str]:
     """Every item in the canonical store, mapped to the status it really holds."""
-    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
     active = read_active_state(paths)
     assert active is not None, "the fixture must have built a canonical state"
-    context = RequestContext(project_id=ProjectId("demo"))
+    context = RequestContext(project_id=ProjectId(project_id))
     with SqliteCanonicalStore(paths.state / active.database_filename) as store:
         return {item.item_id.value: item.status.value for item in store.list_items(context)}
 
@@ -654,6 +654,206 @@ async def test_the_item_count_is_the_sum_of_the_published_breakdown(
     assert result["itemCount"] == sum(result["itemsByStatus"].values())
     assert result["itemCount"] < len(stored), (
         "the store must be larger than the published count, or this asserts nothing"
+    )
+
+
+# -- knowledge.status: T-17's equality, and the two fields exempt from it ---
+#
+# The tests above compare one project's report against what its own store holds.
+# The pair below is the other shape, and the one T-17 is closed by: two corpora,
+# one identical request. #19 measured that difference through the real tool and
+# recorded the result in `schemas/mcp/knowledge-status-response.schema.json`;
+# this is that measurement, held as a test.
+
+#: Both halves register under this id, in data directories of their own. The
+#: request is then identical between them, which is what lets `projectId` be a
+#: field the comparison *asserts equal* rather than one it has to exclude --
+#: #19's measurement recorded it equal, and a pair registered as two different
+#: ids would drop a published field out of the property for a reason that has
+#: nothing to do with what was withheld.
+WITHHELD_HALF_PROJECT_ID = "status-pair"
+
+
+@dataclass(frozen=True, slots=True)
+class _WithheldHalfPair:
+    """Two projects one migration apart, and that migration withholds everything it makes.
+
+    ``absent``  never held an item a caller may not read
+    ``present`` holds three, and differs in nothing else
+    """
+
+    absent: ProjectRegistry
+    present: ProjectRegistry
+
+
+def _build_withheld_half_project(root: Path, *, holds_the_withheld_half: bool) -> None:
+    """One half of the pair, built by the real CLI in ``root``.
+
+    The approved item is written from the same constants the `registry` fixture
+    uses and the retired trio from the same migration `with_retired_items`
+    applies, so the two halves cannot drift apart in a way that makes their
+    reports differ for an honest reason.
+
+    No index build. `knowledge.status` reads the canonical store, and a build
+    would put an index identity into a comparison that is about the canonical
+    half -- ``stateHash`` excepted, the two are independent (ADR-0016).
+    """
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+
+    _run("init")
+    knowledge = root / ".theurian/knowledge/architecture"
+    (knowledge / "auth-policy.md").write_text(BODY)
+    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+    if holds_the_withheld_half:
+        for slug in ("retired-gateway", "superseded-sessions", "rejected-store"):
+            (knowledge / f"{slug}.md").write_text(RETIRED_BODY)
+        (root / f".theurian/migrations/{RETIRED_MIGRATION_ID}-retire.yaml").write_text(
+            RETIRED_MIGRATION
+        )
+    _run("project", "register", "--project-id", WITHHELD_HALF_PROJECT_ID)
+    _run("migrate", "apply")
+
+
+@pytest.fixture(scope="module")
+def one_withheld_migration_apart(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> _WithheldHalfPair:
+    """The pair #19 measured: identical projects, one extra withheld-only migration.
+
+    Two registries rather than two ids in one, because an id is unique per
+    registry and `projectId` is a published field. The alternative -- one
+    registry, ids `probe` and `control` -- would make that field differ for a
+    reason that has nothing to do with the withheld items, and the comparison
+    would have to exclude it.
+
+    Module-scoped: two real CLI builds under a `THEURIAN_DATA_DIR` of their own,
+    and both tests below ask them the same question.
+    """
+    base = tmp_path_factory.mktemp("withheld-half")
+    monkey = pytest.MonkeyPatch()
+    registries: dict[str, ProjectRegistry] = {}
+    try:
+        for name, holds in (("absent", False), ("present", True)):
+            data_dir = base / f"{name}-datadir"
+            monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+            root = base / name
+            root.mkdir()
+            # `init` and `project register` resolve the project from the working
+            # directory and take no argument that says where.
+            monkey.chdir(root)
+            _build_withheld_half_project(root, holds_the_withheld_half=holds)
+            registries[name] = ProjectRegistry.default(data_dir)
+    finally:
+        monkey.undo()
+    return _WithheldHalfPair(absent=registries["absent"], present=registries["present"])
+
+
+def test_the_pair_differs_by_a_migration_that_creates_only_withheld_items(
+    one_withheld_migration_apart: _WithheldHalfPair,
+) -> None:
+    """Guards the differential below, which an empty migration would satisfy too.
+
+    That comparison is a statement about withheld content only if the extra
+    migration really landed and really created nothing a caller may see. A
+    migration file that applied and created no item at all moves `stateHash` and
+    `appliedMigrations` and leaves every count alone -- which is exactly the
+    result the test below is written to observe, with nothing withheld anywhere
+    in it. So the two stores are read directly, and both halves are pinned: the
+    surfaceable half identical, the extra half retired in all three ways.
+
+    All three retired statuses rather than #19's single `rejected` item. They are
+    withheld for one reason (SEC-13, T-17), and a pair differing by one of them
+    could not tell whether the other two had started moving a count.
+    """
+    absent = _stored_statuses(one_withheld_migration_apart.absent, WITHHELD_HALF_PROJECT_ID)
+    present = _stored_statuses(one_withheld_migration_apart.present, WITHHELD_HALF_PROJECT_ID)
+
+    assert absent == {"architecture.auth-policy": "approved"}
+    assert present == {
+        "architecture.auth-policy": "approved",
+        "architecture.retired-gateway": "deprecated",
+        "architecture.superseded-sessions": "superseded",
+        "architecture.rejected-store": "rejected",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_exempts(
+    one_withheld_migration_apart: _WithheldHalfPair,
+) -> None:
+    """SEC-13, T-17, #19. T-17's equality for `knowledge.status`, exception set and all.
+
+    One request against two corpora, which is the form that closes T-17: a
+    project holding items the caller may not read must answer the way a project
+    that never held them answers. `knowledge.search` holds that outright
+    (`test_a_withheld_document_changes_nothing_a_caller_can_see`) and
+    `knowledge.get` holds it by refusing to distinguish a withheld id from an
+    absent one. This tool holds it for four of its six fields; the other two are
+    `stateHash` and `appliedMigrations`, exempt by the recorded decision in
+    `schemas/mcp/knowledge-status-response.schema.json` (#19) -- neither carries
+    a bit about *what* was withheld, and this tool takes one argument, so there
+    is no probe to vary and therefore no extraction oracle.
+
+    **The exempt set is asserted exactly, not as an upper bound.** A subset check
+    would also pass a response that had stopped publishing `appliedMigrations`,
+    and one whose `stateHash` had become insensitive to canonical state -- both
+    are changes to a published contract, and both should be *decided* rather than
+    absorbed by a comparison that quietly widens. #19 measured that both move for
+    this input, so both are asserted to move. This test is the project's record
+    of which fields are exempt, and an exemption nobody notices expiring is not a
+    record.
+
+    **Two directories, one hash -- so the pair's difference really is the
+    migration.** No path, mtime or hostname participates in a state hash
+    (`StateInputs`, in `theurian.domain.state`), which is what makes the two
+    halves comparable at all despite being built in different directories.
+    Measured rather than reasoned about: with the fixture mutated to give the
+    absent half the withheld trio as well, `moved` comes back empty -- the same
+    hash from two separate builds in two separate trees.
+
+    **What it goes RED for.** A seventh field priced on the store's true size; a
+    breakdown that counted retired items, or bucketed them under another label;
+    an `itemCount` taken from `len(items)` rather than from the published
+    breakdown; a `schemaVersion` or `projectId` made to vary with what is
+    withheld. Each moves a key outside the exempt pair, and the set comparison
+    names the key. The response's *shape* is the wire contract's subject
+    (`test_wire_contract.py`); what moves between two shapes is this one's.
+
+    The literal counts are what stop this being an equality between two empty
+    reports: a tool that answered `{}` and `0` for every project on earth would
+    satisfy the set comparison perfectly. `schemaVersion` is held equal by that
+    comparison rather than by a literal here, since its value is pinned where the
+    schema is checked.
+    """
+    absent = await _call(
+        one_withheld_migration_apart.absent, "knowledge.status", projectId=WITHHELD_HALF_PROJECT_ID
+    )
+    present = await _call(
+        one_withheld_migration_apart.present, "knowledge.status", projectId=WITHHELD_HALF_PROJECT_ID
+    )
+
+    assert absent.keys() == present.keys(), (
+        "a field one project publishes and the other does not is the whole leak, "
+        "not a difference in values"
+    )
+    moved = {key for key in absent if absent[key] != present[key]}
+
+    assert (
+        (absent["projectId"], absent["itemCount"], absent["itemsByStatus"])
+        == (
+            present["projectId"],
+            present["itemCount"],
+            present["itemsByStatus"],
+        )
+        == (WITHHELD_HALF_PROJECT_ID, 1, {"approved": 1})
+    ), "both reports must describe the one approved item, or this compares two empty answers"
+    assert moved == {"stateHash", "appliedMigrations"}, (
+        "exactly the two fields the published schema exempts -- no more, and no fewer"
     )
 
 
