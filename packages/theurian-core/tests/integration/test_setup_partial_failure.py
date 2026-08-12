@@ -69,7 +69,11 @@ def _context(tmp_path: Path, **overrides: Any) -> SetupContext:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     data_dir = home / ".theurian"
-    service = overrides.pop("service", None) or FakeService()
+    # Popped with a default rather than coalesced with ``or``: an explicit
+    # ``service=None`` means "this platform has no service manager", and turning
+    # that back into a ``FakeService`` would leave a test silently exercising the
+    # arm it was written to avoid.
+    service = overrides.pop("service", FakeService())
     # 0755 and a real script: `probe_core` requires an absolute path that
     # resolves *and* can be started, and a 0644 file makes `core-present`
     # conflict -- which aborts the run before any apply, so every test below
@@ -87,7 +91,9 @@ def _context(tmp_path: Path, **overrides: Any) -> SetupContext:
         "connection": ConnectionSpec(port=PORT),
         "mcp_config": FakeMcpConfig(),
         "secrets": FileSecretStore(data_dir),
-        "health": lambda: {"dataDir": str(data_dir)} if service.started else None,
+        "health": lambda: (
+            {"dataDir": str(data_dir)} if getattr(service, "started", False) else None
+        ),
         "service": service,
         "executable": str(executable),
     }
