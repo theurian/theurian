@@ -76,8 +76,18 @@ that cannot start.
 
    When `state` is `halted`, also name the report's `changedPaths`: setup stopped
    without undoing anything, so those files are on disk now — possibly including
-   the `auth/mcp-token` credential — for the user to decide whether to keep or
-   remove.
+   the `auth/mcp-token` credential. `changedPaths` is the field that says what
+   was written; in `halted` the `steps[].status` values are still the plan's, as
+   above. If a token is among them, the way to be rid of it is
+   `theurian auth rotate` — that replaces it and every configured client is
+   updated deliberately. Deleting the file by hand instead means reconfiguring
+   every client that references the token, and a running session may still be
+   holding it.
+
+   `changedPaths` covers what *this* run wrote and nothing earlier. On a second
+   halted run, a credential left behind by the first does not reappear there —
+   it shows up as the token step reporting `satisfied`. Read the two together
+   before telling the user what is on disk.
 
 7. If the report's `serenaDetected` field is true, tell the user that Theurian
    and Serena are configured to work together, and briefly state the split:

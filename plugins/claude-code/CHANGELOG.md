@@ -47,6 +47,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   terminal failure state — a critical step failing during apply halts the run
   rather than reporting a rollback that never existed
   ([#47](https://github.com/theurian/theurian/issues/47)).
+- Step 6 says how to present a `halted` run's `changedPaths`, which it named
+  without saying what to do with it. Three corrections
+  ([#47](https://github.com/theurian/theurian/issues/47)): the remedy for a
+  token left on disk is `theurian auth rotate`, not "keep or remove" — Core
+  never deletes a credential a session may be holding, and removing the file by
+  hand means reconfiguring every client that references it; `changedPaths` is
+  the field that says what was written, because in `halted` the `steps[].status`
+  values are still the plan's; and `changedPaths` covers only the run that
+  produced it, so on a repeated halted run a credential left by the first run
+  appears as the token step reporting `satisfied` rather than as a path.
 
 ### Security
 
