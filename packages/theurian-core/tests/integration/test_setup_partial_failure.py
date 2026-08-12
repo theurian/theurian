@@ -19,6 +19,10 @@ other:
 - a critical step that raised before writing, driven through a service manager
   whose ``install`` refuses, leaving its declared definition file absent.
 
+The third case is the one no redirection protects against: a ``HOME`` its owner
+cannot write to. Nothing is created, so nothing may be claimed, and the run has
+to say which path refused it.
+
 Real files under a temporary root, fake collaborators. Installing a real
 LaunchAgent would register it in the developer's own login session, which no
 amount of ``HOME`` redirection prevents.
@@ -27,6 +31,9 @@ amount of ``HOME`` redirection prevents.
 from __future__ import annotations
 
 import errno
+import os
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, override
 
@@ -43,6 +50,12 @@ from theurian.security.paths import ensure_private_mode
 pytestmark = pytest.mark.integration
 
 PORT = 7419
+
+#: POSIX permission bits are what the read-only ``HOME`` case turns on, and they
+#: do not refuse root. Skipped rather than adapted: a run as root would create
+#: the directory, converge, and pass every prohibition below while testing
+#: nothing.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 
 def _context(tmp_path: Path, **overrides: Any) -> SetupContext:
@@ -203,4 +216,59 @@ def test_a_step_that_failed_before_writing_does_not_claim_the_file_it_never_made
     assert str(plist) not in report.changed_paths, "so no run wrote it, and none may claim it"
     assert str(context.env_file) in report.changed_paths, (
         "while the files the earlier steps really did write are still named"
+    )
+
+
+# -- A HOME that refuses to be written to ------------------------------------
+
+
+@pytest.fixture
+def home_that_refuses_writes(tmp_path: Path) -> Iterator[SetupContext]:
+    """A ``HOME`` its owner may read and traverse but not write to.
+
+    0500, which is a real state: a mounted-read-only profile, a locked-down
+    managed account, a directory somebody tightened by hand. The mode is restored
+    on the way out whether or not the test passed, because pytest's own temporary
+    directory cleanup cannot remove a tree it may not write to, and that failure
+    would surface on some later run rather than on this one.
+    """
+    context = _context(tmp_path)
+    context.home.chmod(0o500)
+    try:
+        yield context
+    finally:
+        context.home.chmod(0o700)
+
+
+@pytest.mark.skipif(
+    _CANNOT_BE_REFUSED_BY_A_MODE,
+    reason="POSIX permission bits, and root is refused by none of them",
+)
+def test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused(
+    home_that_refuses_writes: SetupContext,
+) -> None:
+    """The first step fails, so this is the halt with nothing behind it (§6.4).
+
+    Every other halt in the suite happens after something was written, which
+    leaves the empty-``changed_paths`` arm of the halted return untested: a run
+    that could not create ``~/.theurian`` created nothing, journalled nothing --
+    ``_journal`` needs that same directory and swallows its ``OSError`` -- and so
+    must claim nothing. A report listing a path here would be inventing one.
+
+    The warning is the other half. ``state`` says the run stopped and
+    ``changed_paths`` is empty by construction, so the only thing that can tell
+    the operator *what* to fix is the sentence naming the directory that refused
+    -- and a halt whose warnings said nothing would satisfy every prohibition
+    above.
+    """
+    context = home_that_refuses_writes
+
+    report = SetupService(context).run(SetupRequest())
+
+    assert report.state is SetupState.HALTED
+    assert not context.data_dir.exists(), "the data directory could not be created"
+    assert list(context.home.iterdir()) == [], "and nothing else was created under HOME either"
+    assert report.changed_paths == (), "a run that wrote nothing may not name a file"
+    assert any(str(context.data_dir) in warning for warning in report.warnings), (
+        "the report has to name the path that refused; nothing else here can"
     )
