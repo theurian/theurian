@@ -265,6 +265,29 @@ def _context(tmp_path: pathlib.Path, *, executable: str = "") -> SetupContext:
     )
 
 
+def _degraded_setup(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> SetupService:
+    """The service behind :func:`_degraded_report`, before it has run.
+
+    Handed out separately because one test below needs the *plan* as well as the
+    report, and the two disagree by design: a step that applied successfully
+    probes ``SATISFIED`` afterwards and declares no paths at all, so the finished
+    report cannot be asked what setup said it would write.
+
+    The start timeout is patched to zero because :func:`apply_daemon_running`
+    waits out ``DAEMON_START_TIMEOUT_SECONDS`` for a daemon that will never
+    arrive, and fifteen seconds of real sleeping is not something a unit test
+    should buy.
+    """
+    monkeypatch.setattr(setup_steps, "DAEMON_START_TIMEOUT_SECONDS", 0.0)
+    executable = tmp_path / "theurian"
+    # 0755, not `touch()`: `probe_core` requires a path a service manager could
+    # exec, and a 0644 file makes `core-present` abort the run, so every claim
+    # below would be asserted against a plan that never ran (#49).
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    return SetupService(_context(tmp_path, executable=str(executable)))
+
+
 def _degraded_report(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> SetupReport:
     """A real run that ends ``DEGRADED`` -- probed *after* the verification pass.
 
@@ -275,19 +298,9 @@ def _degraded_report(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) ->
     ``MISSING`` are the ones setup could not finish.
 
     The scenario is the ordinary one -- the service is registered and started,
-    and nothing ever answers on the port. No apply raises. The start timeout is
-    patched to zero because :func:`apply_daemon_running` waits out
-    ``DAEMON_START_TIMEOUT_SECONDS`` for a daemon that will never arrive, and
-    fifteen seconds of real sleeping is not something a unit test should buy.
+    and nothing ever answers on the port. No apply raises.
     """
-    monkeypatch.setattr(setup_steps, "DAEMON_START_TIMEOUT_SECONDS", 0.0)
-    executable = tmp_path / "theurian"
-    # 0755, not `touch()`: `probe_core` requires a path a service manager could
-    # exec, and a 0644 file makes `core-present` abort the run, so every claim
-    # below would be asserted against a plan that never ran (#49).
-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    executable.chmod(0o755)
-    return SetupService(_context(tmp_path, executable=str(executable))).run(SetupRequest())
+    return _degraded_setup(tmp_path, monkeypatch).run(SetupRequest())
 
 
 def _collapsed(text: str) -> str:
@@ -450,20 +463,26 @@ def test_the_cli_docstring_enumerates_every_step_that_only_reports() -> None:
     Parsed out of the sentence and compared to the table, so the next rewrite
     either lists all of them or fails here.
 
-    **"Every write setup performs" is a claim about steps, and one write belongs
-    to no step**: :meth:`SetupService._journal` appends ``setup-journal.jsonl``
-    on every applied step, attributed to nothing. It lands inside the
-    ``~/.theurian`` the first clause already announces, so the *footprint* the
-    sentence describes is right, and the sentence stays as it is because it is
-    true of steps.
+    **The count of the writers is asserted here; that they are every write is
+    not**, and the difference is what two earlier versions of this note got
+    wrong. ``those N steps are every write setup performs`` quantifies over
+    *writes*, not over steps, so :meth:`SetupService._journal` -- which appends
+    ``setup-journal.jsonl`` on every applied step, attributed to nothing --
+    falsified it from the moment that method existed. The note recorded the
+    exception and then argued the sentence could stay, first because the journal
+    lands inside the ``~/.theurian`` the first clause already announces, and
+    then because the sentence "is true of steps". It is not a sentence about
+    steps: it is the one place ``--help`` tells a reader that the list they have
+    just read is complete.
 
-    This note used to add that the journal was absent from ``changedPaths`` and
-    that the honest fix belonged on the report side rather than in ``--help``.
-    That fix has since landed: ``SetupService._apply`` appends the journal to
-    ``changed_paths`` whenever an append reached the disk (#47), so a run that
-    wrote the file now discloses it even though no step declares it. Pinned by
-    `test_a_halted_run_names_the_journal_among_the_files_it_wrote` in
-    ``tests/integration/test_setup_service.py``.
+    The correction landed in the docstring rather than in this note. ``--help``
+    now names the journal as the write outside the seven and says
+    ``changedPaths`` lists it whenever the append reached the disk, which is
+    what the return value of `_journal` means. Held to the code by
+    :func:`test_the_cli_docstring_names_the_write_that_belongs_to_no_step`
+    below, which measures the undeclared path off a real run rather than
+    remembering it -- because a note is where this claim survived being written
+    down as false twice.
     """
     doc = _collapsed(setup_command.__doc__ or "")
 
@@ -477,6 +496,49 @@ def test_the_cli_docstring_enumerates_every_step_that_only_reports() -> None:
 
     writes = len(_steps_that_act())
     assert f"those {writes} steps are every write setup performs" in doc
+
+
+def test_the_cli_docstring_names_the_write_that_belongs_to_no_step(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#47. The completeness claim is measured against a run, not read off the table.
+
+    ``--help`` says the seven writing steps are every write setup performs. That
+    is checkable: a run publishes ``changedPaths``, the plan publishes what each
+    step said it would write, and anything in the first that is not in the
+    second is a write belonging to no step. There is exactly one, and it is the
+    journal -- which is why the sentence carries an exception, and why the
+    exception has to name it rather than gesture at the data directory.
+
+    The plan is read *before* the run and the report after: a step that applied
+    successfully probes ``SATISFIED`` afterwards and declares no paths at all, so
+    comparing against the finished report would report every path as undeclared
+    and pass this test for a reason that has nothing to do with the journal.
+
+    The prose half asserts the journal is named **in the same sentence as the
+    claim**, not merely somewhere in the docstring. A rewrite that dropped the
+    exception while leaving the word elsewhere is exactly the drift this exists
+    to catch, and one that says "except for" or "besides" instead is not.
+    """
+    service = _degraded_setup(tmp_path, monkeypatch)
+    declared = service.plan().paths
+
+    report = service.run(SetupRequest())
+
+    assert report.state is SetupState.DEGRADED, f"the fixture no longer degrades: {report.state}"
+    undeclared = [path for path in report.changed_paths if path not in declared]
+    assert undeclared == [str(service.journal_path)], (
+        "one write belongs to no step, and it is the journal; if this list grew, "
+        "`--help`'s exception clause is now incomplete rather than merely unnamed"
+    )
+
+    doc = _collapsed(setup_command.__doc__ or "")
+    claim = f"those {len(_steps_that_act())} steps are every write setup performs"
+    assert claim in doc, "`theurian setup --help` no longer makes the completeness claim"
+    rest_of_sentence = doc[doc.index(claim) + len(claim) :].split(".")[0]
+    assert "journal" in rest_of_sentence, (
+        f"the claim is stated without its one exception: {claim}{rest_of_sentence}"
+    )
 
 
 def test_the_cli_docstring_names_the_commands_those_steps_defer_to(
