@@ -11,7 +11,8 @@ states what *is*, not what the apply functions believe they did.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import os
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, final
@@ -200,6 +201,11 @@ class SetupService:
                 applied.append(planned.applied(StepOutcome.UNCHANGED))
                 continue
 
+            # Taken immediately before the apply, so the window it is compared
+            # against holds this step's own writes and nothing else's -- not the
+            # journal below, which is appended after the comparison, and not an
+            # earlier step's.
+            before = _snapshot(planned.paths)
             try:
                 action(self._context)
             except Exception as exc:  # reported in the step, not propagated
@@ -217,19 +223,12 @@ class SetupService:
                 # `apply_env_reference` opens with `O_TRUNC`. Listing only the
                 # steps that *finished* leaves that file on disk and absent from
                 # what the operator reads afterwards -- the disclosure defect #47
-                # set out to fix, in the arm it did not cover.
-                #
-                # Existence is the test rather than provenance, and it errs
-                # toward disclosure on purpose. A step reaches here only with
-                # ``MISSING``, which for every step but one means "absent" -- so
-                # a declared path that exists now was created by this run. The
-                # exception is `env-reference`, whose ``MISSING`` also covers
-                # "present but differing" (#128): there the file may have existed
-                # already, and it may equally have been truncated a microsecond
-                # before the failure. Naming a file that turns out untouched
-                # costs the operator a look; staying silent about a truncated one
-                # is the failure this branch exists to prevent.
-                changed.extend(path for path in planned.paths if Path(path).exists())
+                # set out to fix, in the arm it did not cover. Which of them this
+                # run actually wrote is `_changed_since`'s question, and it is
+                # answered by comparison rather than by existence: a `MISSING`
+                # step's declared path can be sitting there untouched, on every
+                # arm that docstring enumerates.
+                changed.extend(_changed_since(before))
                 journalled = self._journal(definition.step_id, "failed", reason) or journalled
                 failed_critically = definition.critical
                 continue
@@ -315,6 +314,125 @@ class SetupService:
         except OSError:  # pragma: no cover - defensive
             return False
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class _Observation:
+    """One declared path as ``os.stat`` saw it, at a single instant.
+
+    ``signature`` is ``None`` for a path that was not there, which is an answer
+    and compares like one. :attr:`known` is what separates that from "setup
+    could not look", because the two lead to opposite disclosures.
+    """
+
+    #: ``(st_ino, st_mode, st_size, st_mtime_ns)`` -- identity, permissions,
+    #: length, and when the contents last moved. The mode is in there because
+    #: the data-directory step's entire write *is* a mode: tightening an
+    #: existing 0755 directory to 0700 moves nothing else, so a signature blind
+    #: to permissions could not see that step happen at all.
+    signature: tuple[int, int, int, int] | None
+    #: ``False`` when the check itself failed for any reason other than absence.
+    known: bool = True
+
+
+#: Neither present nor absent: what a refused or impossible check reports.
+_UNOBSERVABLE: Final = _Observation(signature=None, known=False)
+
+
+def _observe(path: str) -> _Observation:
+    """Reduce one path to the fields a write moves. Never raises.
+
+    ``os.stat`` and not ``os.lstat``: every apply here writes *through* a
+    symlink rather than replacing one -- ``os.open``, ``Path.mkdir``,
+    ``Path.chmod`` and ``claude mcp add`` all follow links -- and a home
+    directory kept in a dotfiles repository, where ``~/.claude.json`` is a link
+    into it, is an ordinary machine rather than an exotic one. Watching the link
+    instead of what it points at would report every such write as "nothing
+    happened", which is the silence #47 exists to end, arriving from the other
+    side.
+
+    ``os.stat`` and not ``Path.stat`` either, which is what the linter wants
+    here: ``Path("")`` is ``Path(".")``, so a step declaring the empty string --
+    which ``setup_steps._service_path`` returns when no adapter attribute names
+    the definition file -- would be measured against the current working
+    directory. ``os.stat("")`` answers ENOENT, which is the truth about it.
+    """
+    try:
+        status = os.stat(path)  # noqa: PTH116 -- see above: Path("") is not this path
+    except (FileNotFoundError, NotADirectoryError):
+        return _Observation(signature=None)
+    except (OSError, ValueError):
+        # EACCES on a parent, ELOOP, ENAMETOOLONG -- and ``ValueError`` for a
+        # NUL byte in the string, which is not an ``OSError`` at all. The
+        # distinction between "absent" and "unobservable" is the whole point of
+        # the arm above; everything else says nothing about the file.
+        return _UNOBSERVABLE
+    return _Observation(
+        signature=(status.st_ino, status.st_mode, status.st_size, status.st_mtime_ns)
+    )
+
+
+def _snapshot(paths: Iterable[str]) -> dict[str, _Observation]:
+    """Observe one step's declared paths, keeping the order they were declared in.
+
+    Called for each step just before its apply, so this is two ``stat`` calls at
+    the very most -- no step declares more than one path today -- and never a
+    walk of anything.
+    """
+    return {path: _observe(path) for path in paths}
+
+
+def _changed_since(before: Mapping[str, _Observation]) -> tuple[str, ...]:
+    """Which of those paths the step that just failed may have written.
+
+    **Provenance, not existence.** Existence was the test here until it was
+    measured, and it published paths a failed run had never touched. The claim
+    it rested on -- that a step reaches the failure arm only with ``MISSING``,
+    so a declared path that exists now was created by this run -- is false:
+    ``MISSING`` means "not as setup wants it", which is not the same as absent.
+
+    ==================  =====================================================
+    step                how its declared path is already there when it fails
+    ==================  =====================================================
+    data-directory      the tighten arm, where a 0755 ``~/.theurian`` is the
+                        very thing being reported; and a regular file sitting
+                        where the directory goes, which refuses the ``mkdir``
+    token,              a *directory* at ``auth/mcp-token``, which makes the
+    token-storage       store's read raise before it writes anything
+    env-reference       "present but differing" (#128)
+    mcp-connection      ``~/.claude.json`` exists whenever Claude Code is on
+                        PATH, and ``claude mcp add`` leaves it byte-identical
+                        when it fails
+    ==================  =====================================================
+
+    The last two rows are why this is a correctness question and not a tidiness
+    one. :class:`~theurian.infrastructure.claude.mcp_config.ClaudeCodeMcpConfig`
+    opens by stating that Theurian never writes that file, so a report naming it
+    among the files this run wrote contradicted the product's own account of
+    itself. The token row is worse: the plugin reads ``changedPaths`` and tells
+    the operator to rotate the credential it names, and there was no credential.
+
+    So a path is named only where this run's own window shows it moved -- absent
+    before and present now, or a different signature. The bias is still toward
+    disclosure, and it has to be: a check that could not tell, on either side,
+    names the path anyway, because "nothing was written" and "I could not look"
+    are different answers and only one of them is safe to give in silence.
+
+    **Never raises**, which is load-bearing rather than defensive. This runs
+    inside the ``except`` arm that assembles the halted report; ``Path.exists``,
+    which used to stand here, re-raises EACCES and ENAMETOOLONG (measured on
+    3.13); and nothing between here and ``setup_command`` catches anything. A
+    raise on this line would replace the report an operator repairs their
+    machine from with a traceback.
+    """
+    return tuple(path for path, was in before.items() if _moved(was, _observe(path)))
+
+
+def _moved(before: _Observation, after: _Observation) -> bool:
+    """Whether the window between two observations may have written the path."""
+    if not before.known or not after.known:
+        return True
+    return before.signature != after.signature
 
 
 def _unique(paths: Iterable[str]) -> tuple[str, ...]:
