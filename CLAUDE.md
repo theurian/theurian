@@ -67,6 +67,51 @@ happened, in order:
    was built.
 6. **CI green**, then squash-merge.
 
+## Depth is instructed; stopping is not — so instruct it
+
+The review discipline below makes the orchestrator excellent at *depth*: it
+finds real defects, kills mutations, and names the mechanism behind a closure
+argument. That is the accelerator. What follows is the brake, because a class
+that keeps producing real findings does not stop expanding on its own — and
+Milestones 5 and 6 lost days to that, one class at a time.
+
+### A class stops expanding on a budget, not on running dry
+
+When an emergent class has produced **three sibling findings, two follow-up PRs,
+or eight hours of elapsed orchestrator time** — whichever comes first — stop
+expanding it. "The reviews keep finding real bugs" is not a reason to continue:
+in a setup/config-shaped class it is *always* true, and waiting for it to run
+dry is how a warm-up slice eats four review rounds (SEC-18 #27, #47).
+
+Finish or park the PR in flight by the normal CRITICAL/HIGH gate — merge if
+green, otherwise leave it open with the unresolved findings recorded. Then,
+before opening another PR in that class:
+
+- **Split the box.** A finding adjacent to the slice's stated scope, arising
+  from a different root cause, is a *different class* — file it as its own issue
+  (as #128 was split from #47) and close the original slice on its own scope.
+  Score the class, not the face, applies to *which* class a PR owns.
+- **Say which it is.** If the slice's own core still carries an unresolved
+  CRITICAL/HIGH, it is not ballooning — the core is hard, and that is a
+  different problem said plainly. Settle which by grep and source, not by
+  running one more round.
+- **Compare against the plan.** If no planned milestone item has a commit, a PR,
+  or an assignment in progress, the next slot starts a planned item — unless the
+  class still has a reproducible CRITICAL in shipped default behaviour.
+
+A warm-up slice must end at warm-up weight, review rounds included. If it does
+not, it was never a warm-up.
+
+### Merge-ready work is checked at every transition
+
+A finished, reviewed, CI-green PR left open is flow debt: the milestone is not
+done until it is merged (step 6 above), and the next class is started on top of
+work that has not landed. When closing an assignment and when opening the next,
+run `gh pr list --state open` and merge anything green and mergeable before
+dispatching new work. Reviews on this project settle in-session, not in the PR's
+GitHub comments, so a clean checks list plus an in-session green *is* the merge
+signal — do not wait for a GitHub review that this workflow never posts.
+
 ## The review round
 
 Before opening any PR, launch all three **in a single message** so they run
