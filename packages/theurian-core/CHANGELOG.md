@@ -548,11 +548,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the failure remains on disk — deleting a token another session may be holding
   is its own defect — so `changed_paths` discloses it. What that list holds: each
   applied step's declared artefacts, plus whichever of the failing step's
-  declared artefacts exist on disk, plus the setup journal when this run appended
-  to it — de-duplicated in first-seen order, so the credential appears exactly
-  once. The remedy for it is `theurian auth rotate`, which updates every
-  configured client deliberately; removing the file by hand means reconfiguring
-  each of them.
+  declared artefacts this run *moved*, plus the setup journal when this run
+  appended to it — de-duplicated in first-seen order, so the credential appears
+  exactly once. Two remedies, and neither costs a client reconfiguration:
+  `theurian auth rotate` replaces the value in place, rewrites the env file and
+  restarts the daemon; deleting the file by hand leaves a later `theurian setup`
+  to mint a new token at the same path. Clients hold a *reference* either way —
+  `${THEURIAN_MCP_TOKEN}` in the MCP entry, `THEURIAN_MCP_TOKEN="$(cat …)"` in
+  the env file — so nothing about them changes. A daemon already running may hold
+  the old value until it is restarted.
 
 - **`changed_paths` names two things it used to omit**
   ([#47](https://github.com/theurian/theurian/issues/47)). It listed the planned
@@ -561,14 +565,53 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   raised — an apply can create its artefact before the write or `chmod` that
   fails, since `FileSecretStore.set` and `apply_env_reference` both `os.open`
   with `O_CREAT | O_TRUNC` ahead of the `os.write` and the `chmod`. Both now
-  appear. The failing step's paths are existence-checked
-  rather than tracked, which over-reports on one arm: `env-reference` reports
-  `Missing` for "present but differing" as well as "absent", so a file that
-  existed before the run can be named when that step fails
-  ([#128](https://github.com/theurian/theurian/issues/128)). Naming a file that
-  turns out untouched costs a look; staying silent about a truncated one is the
-  defect. Implicitly created directories — `auth/` under the data directory —
-  are still not listed: a step discloses its declared artefacts only.
+  appear.
+
+  **A failing step's path is published on provenance, not on existence.** The
+  first fix in this milestone asked whether the declared path is on disk now, on
+  the premise that a step reaches its apply only when `Missing`; `Missing` means
+  "not as setup wants it", not "absent", so that check published paths the run
+  had never touched — a pre-existing 0755 `~/.theurian` whose `chmod` was
+  refused, a `~/.claude.json` left byte-identical by a failed `claude mcp add`
+  (a file Theurian never writes at all), and a *directory* at `auth/mcp-token`,
+  which had the plugin advising an operator to rotate a credential that did not
+  exist. Each declared path is now reduced to
+  `(st_ino, st_mode, st_size, st_mtime_ns)` by `os.stat` immediately before the
+  apply and again after the raise, and named only if it appeared or its
+  signature changed. `st_mode` is in the signature because the data-directory
+  step's whole write *is* a mode change; `os.stat` follows symlinks because
+  every apply here writes *through* a link rather than replacing one. A check
+  that fails on either side — EACCES, ELOOP, a name too long — discloses the
+  path anyway: when the run cannot tell, it says so. The steps that finished are
+  still trusted rather than re-measured, which is exact for applies that write
+  or raise and leaves an external tool exiting successfully without writing as
+  the residual ([#153](https://github.com/theurian/theurian/issues/153)).
+  Truncation is still disclosed, on the arm that motivated the first fix:
+  `apply_env_reference`'s `O_TRUNC` moves size and mtime before the write that
+  raises, and what it replaced is preserved nowhere
+  ([#128](https://github.com/theurian/theurian/issues/128)).
+
+  Implicitly created paths are still not listed — a step discloses its declared
+  artefacts only — and that category is wider than `auth/` under the data
+  directory: the service adapters create `~/Library/LaunchAgents` and
+  `~/.config/systemd/user` the same way, and an adapter's `.tmp` file surviving
+  a failed install appears only in the journal's failed record
+  ([#152](https://github.com/theurian/theurian/issues/152)).
+
+- **The setup journal is created 0600, and `theurian setup --help` now names it**
+  ([#47](https://github.com/theurian/theurian/issues/47)). Its lines hold local
+  absolute paths and the verbatim text of the exception that stopped a step, and
+  `changed_paths` points every reader of a halted report straight at the file;
+  under a 0022 umask it was created 0644. The directory around it is not what
+  protects it — the arm that fails to tighten `~/.theurian` is exactly the arm
+  that leaves this file's parent 0755, and
+  `test_the_journal_is_created_private_inside_a_directory_that_is_not` asserts
+  both modes in that scenario. The mode comes from the `open` that creates the
+  file, so there is no window at the wider one, and a journal an earlier version
+  already created keeps its own. `--help` said the seven steps are every write
+  setup performs; the journal is an eighth, appended by the runner and belonging
+  to no step, and the sentence now says so
+  (`test_the_cli_docstring_names_the_write_that_belongs_to_no_step`).
 
 - **BREAKING — `INDEX_SCHEMA_VERSION` 4 → 5: `chunks` gains a `kind` column**
   (the purge-recompute change under Added; ADR-0008 decision 2's and ADR-0024
