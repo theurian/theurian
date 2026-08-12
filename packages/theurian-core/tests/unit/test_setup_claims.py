@@ -452,12 +452,18 @@ def test_the_cli_docstring_enumerates_every_step_that_only_reports() -> None:
 
     **"Every write setup performs" is a claim about steps, and one write belongs
     to no step**: :meth:`SetupService._journal` appends ``setup-journal.jsonl``
-    on every applied step, attributed to nothing and absent from
-    ``changedPaths``. It lands inside the ``~/.theurian`` the first clause
-    already announces, so the *footprint* the sentence describes is right and the
-    sentence is not. Recorded rather than reworded, because the honest fix is for
-    the journal to be reported, which is a change to the report and not to
-    ``--help``.
+    on every applied step, attributed to nothing. It lands inside the
+    ``~/.theurian`` the first clause already announces, so the *footprint* the
+    sentence describes is right, and the sentence stays as it is because it is
+    true of steps.
+
+    This note used to add that the journal was absent from ``changedPaths`` and
+    that the honest fix belonged on the report side rather than in ``--help``.
+    That fix has since landed: ``SetupService._apply`` appends the journal to
+    ``changed_paths`` whenever an append reached the disk (#47), so a run that
+    wrote the file now discloses it even though no step declares it. Pinned by
+    `test_a_halted_run_names_the_journal_among_the_files_it_wrote` in
+    ``tests/integration/test_setup_service.py``.
     """
     doc = _collapsed(setup_command.__doc__ or "")
 
