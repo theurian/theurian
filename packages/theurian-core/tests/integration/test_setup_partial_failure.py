@@ -38,10 +38,12 @@ there was no credential.
 
 So the question is answered by *provenance* -- what the path looked like
 immediately before this step's apply, against what it looks like now -- and the
-tests below drive both answers plus the two edges the comparison introduces: a
-write that is only a mode, and a path that stops being statable while the apply
-is running. The last one is disclosed *because* the check could not tell, which
-is the one arm where naming a path setup did not write is the correct answer.
+tests below drive both answers plus the four edges that comparison introduces: a
+write that is only a mode, a declaration that is a symlink onto what was really
+written, a path that stops being statable while the apply is running, and a
+declaration that is not a path at all. The third of those is disclosed *because*
+the check could not tell, which is the one arm where naming a path setup did not
+write is the correct answer.
 
 Real files under a temporary root, fake collaborators. Installing a real
 LaunchAgent would register it in the developer's own login session, which no
@@ -494,24 +496,29 @@ def test_a_config_theurian_never_writes_is_not_claimed_when_claude_refuses(
 # -- The two edges the comparison introduces ---------------------------------
 
 
-def _step_over(artefact: Path, apply: Any) -> Step:
-    """A one-step plan whose declared path is ``artefact``.
+def _step_over(declared: str, apply: Any) -> Step:
+    """A one-step plan whose declared path is the string ``declared``.
 
-    Written here rather than borrowed from ``setup_steps``, because both cases
-    below need an apply that fails *after* doing something specific, and no
-    shipped step can be driven into either: ``apply_data_directory``'s ``chmod``
-    is its last statement, and no apply locks its own parent. The subject is the
-    runner's comparison, not the step, so a synthetic step is the honest fixture
-    -- and it is run through the real :class:`SetupService`, not around it.
+    Written here rather than borrowed from ``setup_steps``, because the cases
+    below need an apply that fails *after* doing something specific and no
+    shipped step can be driven into any of them: ``apply_data_directory``'s
+    ``chmod`` is its last statement, no apply locks its own parent, and both
+    service adapters expose a definition path so none of them declares the empty
+    string ``_service_path`` falls back to. The subject is the runner's
+    comparison, not the step, so a synthetic step is the honest fixture -- and it
+    is run through the real :class:`SetupService`, not around it.
+
+    A ``str`` and not a ``Path``, because one case below turns on the difference:
+    ``str(Path(""))`` is ``"."``, and the declaration under test is ``""``.
     """
 
     def probe(_: SetupContext) -> SetupStep:
         return SetupStep(
             step_id=StepId.DATA_DIRECTORY,
             status=StepStatus.MISSING,
-            summary=f"{artefact} is not as setup wants it.",
-            action=f"Write {artefact}.",
-            paths=(str(artefact),),
+            summary=f"{declared} is not as setup wants it.",
+            action=f"Write {declared}.",
+            paths=(declared,),
         )
 
     return Step(StepId.DATA_DIRECTORY, probe, apply)
@@ -544,7 +551,7 @@ def test_a_step_that_changed_only_a_mode_before_failing_still_discloses_its_arte
         artefact.chmod(0o600)
         raise OSError(errno.EPERM, "Operation not permitted", str(artefact))
 
-    report = SetupService(context, steps=(_step_over(artefact, tighten_then_fail),)).run(
+    report = SetupService(context, steps=(_step_over(str(artefact), tighten_then_fail),)).run(
         SetupRequest()
     )
 
@@ -597,7 +604,7 @@ def test_a_path_that_stops_being_statable_is_disclosed_rather_than_assumed_untou
         locked.chmod(0o000)
         raise OSError(errno.EIO, "Input/output error", str(artefact))
 
-    service = SetupService(context, steps=(_step_over(artefact, lock_the_parent_then_fail),))
+    service = SetupService(context, steps=(_step_over(str(artefact), lock_the_parent_then_fail),))
 
     try:
         report = service.run(SetupRequest())
@@ -612,6 +619,54 @@ def test_a_path_that_stops_being_statable_is_disclosed_rather_than_assumed_untou
     )
     assert artefact.read_text(encoding="utf-8") == "present when the step was planned\n", (
         "and it is named without having been written, which is what this arm is for"
+    )
+
+
+def test_a_step_declaring_the_empty_string_never_publishes_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#47. ``""`` is a declaration setup can produce, and it is not a path.
+
+    ``setup_steps._service_path`` falls back to the empty string when no adapter
+    attribute names the definition file, and its own comment says that reaches a
+    report as a sentence missing its subject rather than as a disclosure. Both
+    shipped adapters expose one today, so nothing arrives here from production --
+    which is exactly why the guard needs a test rather than a reader.
+
+    The guard is the choice of ``os.stat`` over ``Path.stat``, and it is the one
+    the linter argues against: ``Path("")`` is ``Path(".")``, so the declaration
+    would be measured against **the directory setup happened to be run from**.
+    That directory moves for reasons that have nothing to do with setup -- here,
+    because the failing apply writes into it -- and the run would publish ``""``
+    as a file it had changed. ``os.stat("")`` answers ENOENT, which is the truth
+    about it.
+
+    The working directory is asserted to have moved across the run, because a
+    fixture where it did not would make both implementations agree and this test
+    would hold nothing.
+    """
+    context = _context(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    before = Path.cwd().stat()
+
+    def write_into_the_working_directory_then_fail(_: SetupContext) -> None:
+        (tmp_path / "written-by-something-else").write_text("moved\n", encoding="utf-8")
+        raise OSError(errno.EACCES, "Permission denied", "")
+
+    service = SetupService(
+        context, steps=(_step_over("", write_into_the_working_directory_then_fail),)
+    )
+
+    report = service.run(SetupRequest())
+
+    after = Path.cwd().stat()
+    assert report.state is SetupState.HALTED, "the step is critical"
+    assert after.st_mtime_ns != before.st_mtime_ns, (
+        'the working directory has to move, or `Path("")` and `os.stat("")` agree here'
+    )
+    assert "" not in report.changed_paths, "a declaration that names no path may not be published"
+    assert report.changed_paths == (str(service.journal_path),), (
+        "and the only file this run wrote is the runner's own journal"
     )
 
 
