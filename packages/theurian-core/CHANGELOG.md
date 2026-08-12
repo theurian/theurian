@@ -537,16 +537,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Changed
 
-- **BREAKING — the setup report's terminal failure `state` is `halted`, was
-  `rolled-back`** ([#47](https://github.com/theurian/theurian/issues/47)). A
-  consumer keying on the string `"rolled-back"` must update to `"halted"`. The
-  old value named a rollback setup never performed: the setup journal
-  (`~/.theurian/setup-journal.jsonl`) is append-only with no inverse action, and
-  `_apply` replays nothing. A critical step failing during apply now halts the
-  run where it failed and undoes nothing. Any credential minted before the
-  failure remains on disk — deleting a token another session may be holding is
-  its own defect — so `changed_paths` discloses it, de-duplicated to appear
-  exactly once, for the operator to rotate or remove.
+- **BREAKING — the terminal state a critical apply failure reaches is `halted`,
+  was `rolled-back`** ([#47](https://github.com/theurian/theurian/issues/47)).
+  `aborted` is terminal too and is unaffected; this is the failure *during*
+  apply. A consumer keying on the string `"rolled-back"` must update to
+  `"halted"`. The old value named a rollback setup never performed: the setup
+  journal (`~/.theurian/setup-journal.jsonl`) is append-only with no inverse
+  action, and `_apply` replays nothing. A critical step failing during apply now
+  halts the run where it failed and undoes nothing. Any credential minted before
+  the failure remains on disk — deleting a token another session may be holding
+  is its own defect — so `changed_paths` discloses it. What that list holds: each
+  applied step's declared artefacts, plus whichever of the failing step's
+  declared artefacts exist on disk, plus the setup journal when this run appended
+  to it — de-duplicated in first-seen order, so the credential appears exactly
+  once. The remedy for it is `theurian auth rotate`, which updates every
+  configured client deliberately; removing the file by hand means reconfiguring
+  each of them.
+
+- **`changed_paths` names two things it used to omit**
+  ([#47](https://github.com/theurian/theurian/issues/47)). It listed the planned
+  paths of the steps that *finished*, so a halted run reported neither the setup
+  journal it had just appended to nor what the failing step wrote before it
+  raised — an apply can create its artefact before the write or `chmod` that
+  fails, since `FileSecretStore.set` and `apply_env_reference` both `os.open`
+  with `O_CREAT | O_TRUNC` ahead of the `os.write` and the `chmod`. Both now
+  appear. The failing step's paths are existence-checked
+  rather than tracked, which over-reports on one arm: `env-reference` reports
+  `Missing` for "present but differing" as well as "absent", so a file that
+  existed before the run can be named when that step fails
+  ([#128](https://github.com/theurian/theurian/issues/128)). Naming a file that
+  turns out untouched costs a look; staying silent about a truncated one is the
+  defect. Implicitly created directories — `auth/` under the data directory —
+  are still not listed: a step discloses its declared artefacts only.
 
 - **BREAKING — `INDEX_SCHEMA_VERSION` 4 → 5: `chunks` gains a `kind` column**
   (the purge-recompute change under Added; ADR-0008 decision 2's and ADR-0024
