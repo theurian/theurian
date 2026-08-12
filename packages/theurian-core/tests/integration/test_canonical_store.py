@@ -481,6 +481,76 @@ def test_list_items_never_filters_by_validity(database: Path, lock: Path) -> Non
     )
 
 
+def test_list_items_by_status_short_circuits_an_empty_set_without_a_query(
+    database: Path, lock: Path
+) -> None:
+    """SEC-13, T-17, #158. An empty status set must resolve to no items via no query.
+
+    ``list_items_by_status`` builds ``status IN (?, ?, ...)`` with one placeholder
+    per status, so an empty set would build ``status IN ()``. The
+    ``if not statuses: return ()`` guard short-circuits before that statement is
+    ever assembled. It is not reachable from ``_scan`` today (the resolved
+    surfaceable set always contains ``approved``), so nothing else exercises it:
+    the adversarial reviewer mutated the guard to ``if statuses is None:`` and the
+    whole suite stayed green, because an empty ``frozenset`` is not ``None`` and
+    falls straight through to build ``IN ()``.
+
+    Why this asserts *no statement ran* and not merely *the result is empty*: on
+    this SQLite build ``status IN ()`` does not raise -- it evaluates to false and
+    returns zero rows -- so ``result == ()`` holds under the mutation too and would
+    not catch it. Verified: with the guard mutated to ``if statuses is None:`` this
+    test goes RED only on the ``statements == []`` assertion, having recorded the
+    ``... status IN () ...`` statement the mutant let through. The empty-result
+    assertion is kept for its own sake (the contract is "no items"), but the
+    statement-capture assertion is the one that is load-bearing, so it must not be
+    relaxed to a bare ``result == ()``.
+    """
+    approved = replace(
+        _item(), item_id=ItemId("architecture.approved"), status=KnowledgeStatus.APPROVED
+    )
+    draft = replace(_item(), item_id=ItemId("architecture.draft"), status=KnowledgeStatus.DRAFT)
+    rejected = replace(
+        _item(), item_id=ItemId("architecture.rejected"), status=KnowledgeStatus.REJECTED
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.put_item(approved)
+        writer.put_item(draft)
+        writer.put_item(rejected)
+
+    # Watch the exact statements the store hands to its reader. The store is
+    # entered first so its connection opens before the spy is installed -- that
+    # open does not go through `_read_all`, so an empty capture means the method
+    # itself issued no read.
+    statements: list[str] = []
+    real_read_all = SqliteCanonicalStore._read_all
+
+    def spy(
+        store: SqliteCanonicalStore,
+        sql: str,
+        parameters: tuple[str, ...],
+        mapper: object,
+    ) -> tuple[object, ...]:
+        statements.append(sql)
+        return real_read_all(store, sql, parameters, mapper)  # type: ignore[arg-type]
+
+    with SqliteCanonicalStore(database) as store, pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SqliteCanonicalStore, "_read_all", spy)
+        result = store.list_items_by_status(
+            RequestContext(project_id=PROJECT), statuses=frozenset()
+        )
+
+    assert result == (), (
+        f"an empty status set must resolve to no items; the store returned {result!r} instead"
+    )
+    assert statements == [], (
+        "the empty status set reached the store's reader, so it built `status IN ()` "
+        "-- an invalid statement SQLite raises on. The `if not statuses` short-circuit "
+        f"is gone. Statements run: {statements!r}"
+    )
+
+
 # -- Session lifetime ------------------------------------------------------
 
 

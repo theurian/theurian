@@ -12,6 +12,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Security
+
+- **The substring-search fallback's withheld-count timing channel is closed**
+  ([#158](https://github.com/theurian/theurian/issues/158)), the twin of #19's
+  `knowledge.status` fix. `knowledge.search`'s unranked fallback
+  (`mcp/search.py::_scan`) used to read every item with `list_items` (`SELECT *`,
+  no status predicate) and drop the withheld rows in Python, so its response time
+  scaled with the withheld count and a caller with a stopwatch could recover by
+  subtraction exactly what `count` withholds (T-17). It now resolves the
+  surfaceable statuses and reads through `SqliteCanonicalStore.list_items_by_status`,
+  whose `status IN (...)` is forced through the `idx_items_status` index, so a
+  withheld row is never materialised and the read cost is independent of the
+  withheld count: SQLite VM steps stay flat at 119–120 across 0/50/300/1,000
+  withheld where the old scan went 63 → 913 → 5,163, and the result set is
+  byte-identical. Pinned by
+  `test_the_substring_scan_reads_items_through_idx_items_status`,
+  `test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld`,
+  and `test_the_substring_scan_never_surfaces_a_retired_item_even_with_include_unapproved`
+  in `tests/integration/test_mcp_tools.py`. Two trades are recorded, not fixed: a
+  corrupt `status` cell on this path is now silently dropped by the SQL filter
+  rather than crashing the Python `may_surface` parse it replaced — the same
+  crash → silent-drop trade #19 made for `knowledge.status`, carried with that
+  integrity class as [#30](https://github.com/theurian/theurian/issues/30) — and
+  the fallback's rows-and-memory page bound stays a deferred DoS residual (T-6),
+  since bounding it changes the search fallback's published surface.
+
 ## [0.1.0.dev2] - 2026-08-12
 
 ### Added

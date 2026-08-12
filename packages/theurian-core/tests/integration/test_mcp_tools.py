@@ -31,6 +31,7 @@ from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_D
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
+from theurian.domain.enums import KnowledgeStatus, may_surface
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.ranking import Ranked
 from theurian.infrastructure.sqlite import store as store_module
@@ -1210,6 +1211,244 @@ async def test_status_count_is_answered_by_a_covering_index(
         "Without it the count reads every row of the project, withheld ones included, and the "
         "response time carries the withheld count again -- the O(withheld) channel T-17 closed "
         "and #19 must keep shut (SEC-13)."
+    )
+
+
+# -- knowledge.search substring fallback: the scan's read cost does not carry
+#    the withheld count (#158, the `search._scan` sibling of #19 above) --------
+#
+# `knowledge.search`'s unranked fallback (`search._scan`) used to read every item
+# with `list_items` and drop the retired rows in Python, so its response *time*
+# carried the withheld count exactly the way `knowledge.status` did before #19 --
+# recoverable by subtracting the published `count` (T-17, the oracle #158 closes).
+# 5f6ce09 pushed the status gate into SQL (`list_items_by_status`, `status IN
+# (...)` forced through `idx_items_status`), so the store never hands the scan a
+# withheld row. As with the `knowledge.status` siblings above, no response field
+# moves either way -- the response is byte-identical -- so only the plan and the
+# rows materialised can see the regression, and each of the three below fails on a
+# different mutation the others survive.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("include_unapproved", "expected_status_count"),
+    [(False, 1), (True, 3)],
+    ids=["default-approved-only", "include-unapproved-three-statuses"],
+)
+async def test_the_substring_scan_reads_items_through_idx_items_status(
+    read_cost_corpora: _ReadCostCorpora,
+    include_unapproved: bool,
+    expected_status_count: int,
+) -> None:
+    """SEC-13, T-17, #158. The scan's withheld-count independence rests on this index.
+
+    `search._scan` reads its surfaceable items through
+    `SqliteCanonicalStore.list_items_by_status`, and that method's `INDEXED BY
+    idx_items_status` hint is the whole of what keeps the read proportional to the
+    rows it may return. Drop the hint and SQLite prefers the primary-key autoindex
+    -- `ORDER BY item_id` is satisfied there with no temp b-tree -- then reads
+    every withheld row to apply `status` as a post-filter (the reviewer measured VM
+    steps 75 -> 325 -> 1575 across 0/50/300 withheld), reopening the O(withheld)
+    timing channel #158 closed. Delete `CREATE INDEX idx_items_status` and the
+    hinted statement raises `no such index` rather than silently scanning.
+
+    Named `USING INDEX`, not `COVERING`: these are `SELECT *` reads, so SQLite
+    seeks the index and then fetches each matched row from the table -- the plan is
+    `SEARCH ... USING INDEX idx_items_status`, never the `USING COVERING INDEX` that
+    `knowledge.status`'s aggregate earns.
+
+    Both gate widths are pinned. `includeUnapproved` unset resolves a one-status
+    set (`approved`) and the widened gate resolves three (`approved`, `draft`,
+    `proposed`), so the planned statement is `IN (?)` or `IN (?, ?, ?)`
+    respectively -- and the widened read must seek through the same index, or a
+    caller who opts in pays O(withheld) even though the withheld set is unchanged.
+
+    The row-cost pin below proves the scan no longer materialises the withheld
+    rows, but only against the `list_items` path it replaced. This pins the
+    mechanism that pin only proxies: the read is *planned* through
+    `idx_items_status`, so it can never touch a withheld row. Dropping or renaming
+    the index turns this RED where the row-cost pin could still pass on a plan that
+    happened to read the same rows, so the two catch different regressions and both
+    are kept.
+    """
+    corpora = read_cost_corpora
+
+    # Arrange: the heavy store the row-cost pin measures, built by the real CLI so
+    # the plan is read over the shipped schema and a corpus that truly holds the
+    # withheld rows the index must not read.
+    paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    db_path = paths.state / active.database_filename
+    context = RequestContext(project_id=ProjectId(READ_COST_HEAVY_ID))
+
+    # The status set `_scan` resolves for this `includeUnapproved`, built the same
+    # way here -- so the statement planned below is the one the shipped fallback
+    # runs, never a hand-copied stand-in that would drift the first time the
+    # surfaceable set changed.
+    surfaceable = frozenset(
+        s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
+    )
+    assert len(surfaceable) == expected_status_count, (
+        f"the {'widened' if include_unapproved else 'default'} gate must resolve "
+        f"{expected_status_count} surfaceable status(es), so the statement planned below is the "
+        f"`IN ({', '.join('?' * expected_status_count)})` the tool runs; it resolved "
+        f"{len(surfaceable)}. A drift here would pin the plan of a query the tool never issues."
+    )
+
+    # Act: run the real read and capture the statement it built, then plan it. The
+    # store is entered first so its connection opens before the capture is
+    # installed -- that open does not go through `_read_all`, so the one call the
+    # capture sees is `list_items_by_status`'s own statement.
+    with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
+        store.list_items_by_status(context, statuses=surfaceable)
+
+    assert captured, (
+        "list_items_by_status ran no statement through the store reader, so the plan below "
+        "would describe a query the tool never runs -- the capture watches the wrong method"
+    )
+    assert captured["sql"].count("?") == 1 + expected_status_count, (
+        "the captured statement binds one `project_id` plus one placeholder per surfaceable "
+        f"status, so a {expected_status_count}-status gate must show {1 + expected_status_count} "
+        f"placeholders; it showed {captured['sql'].count('?')}. The capture watched the wrong "
+        "statement, so the plan below would not describe this gate width."
+    )
+    plan = _query_plan(db_path, captured["sql"], captured["params"])
+
+    # Assert: SQLite seeks through `idx_items_status`. `SEARCH ... USING INDEX
+    # idx_items_status` is stable across SQLite versions for this shape; a fall to
+    # the primary-key autoindex reads `USING INDEX sqlite_autoindex_knowledge_items`
+    # instead and fails here.
+    assert "USING INDEX idx_items_status" in plan, (
+        "the substring scan's item read is no longer served by idx_items_status(project_id, "
+        f"status) for a {expected_status_count}-status gate. SQLite planned:\n{plan}\nWithout the "
+        "hint the read seeks on project_id alone and reads every withheld row to post-filter "
+        "status, so the scan's response time carries the withheld count again -- the O(withheld) "
+        "channel T-17 closed and #158 must keep shut (SEC-13)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """SEC-13, T-17, #158. The scan's read cost may not carry the withheld count.
+
+    The plan pin above proves the read *is planned* through `idx_items_status`;
+    this proves the effect it exists for, against the `list_items` path #158
+    replaced. A project holding twenty-five items a caller may not read must be
+    answered by the same number of materialised rows as one holding none, or the
+    scan's response time carries the withheld count and a caller with a stopwatch
+    recovers by subtraction exactly what `count` withholds (the oracle T-17 closes).
+
+    Measured at the row rather than timed, so it goes RED deterministically:
+    reverting `_scan` to the pre-5f6ce09 `list_items` + Python `may_surface` path
+    makes the store fetch every withheld row, and the heavy corpus's count jumps by
+    twenty-five while the baseline's stays put. Both responses answer the three
+    approved items and nothing else -- byte-identical on that path, which is why
+    every other substring test here stays green through the regression and only
+    this one falls.
+    """
+    corpora = read_cost_corpora
+
+    # Guard: the heavy store really holds the withheld rows a `list_items` path
+    # would materialise. Without it an equal count below could be two three-item
+    # stores agreeing for a reason that has nothing to do with the fix.
+    withheld_rows = {
+        item: status for item, status in corpora.stored.items() if status == "rejected"
+    }
+    assert len(withheld_rows) == READ_COST_WITHHELD, (
+        f"the heavy corpus must hold {READ_COST_WITHHELD} withheld items for the measurement to "
+        f"mean anything; its store holds {len(withheld_rows)}"
+    )
+    assert len(corpora.stored) == 3 + READ_COST_WITHHELD, (
+        "the heavy store must be larger than the surfaceable count, or a `list_items` path would "
+        "materialise nothing extra and this would measure two equal-sized stores"
+    )
+
+    with _rows_materialized_by_the_canonical_store() as meter:
+        meter.rows = 0
+        baseline = await _call(
+            corpora.registry,
+            "knowledge.search",
+            projectId=READ_COST_BASELINE_ID,
+            query="approved",
+        )
+        baseline_rows = meter.rows
+        meter.rows = 0
+        heavy = await _call(
+            corpora.registry, "knowledge.search", projectId=READ_COST_HEAVY_ID, query="approved"
+        )
+        heavy_rows = meter.rows
+
+    # Both answer through the unranked scan and return the three approved items --
+    # the byte-identical response that hides the cost regression from every other
+    # assertion here.
+    for response in (baseline, heavy):
+        assert response["retrieval"]["mode"] == "substring", (
+            "the corpus must answer through the unranked scan, or this does not exercise "
+            "`_scan`'s `list_items_by_status` read"
+        )
+        assert response["retrieval"]["indexed"] is False
+    assert baseline["count"] == heavy["count"] == 3, (
+        "both corpora hold the same three approved items; a different count means a withheld "
+        "row surfaced or an approved one was dropped"
+    )
+
+    assert baseline_rows > 0, (
+        "the meter counted no rows, so it is watching a connection the tool does not open -- "
+        "the measurement is inert and would pass whatever the read cost did"
+    )
+    assert heavy_rows == baseline_rows, (
+        f"the substring scan materialised {heavy_rows} rows against a store holding "
+        f"{READ_COST_WITHHELD} withheld items and {baseline_rows} against one holding none. The "
+        f"read cost is carrying the withheld count: the store is fetching rows it then discards, "
+        f"so latency reports by subtraction what the scan refuses to (SEC-13, T-17, #158)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_substring_scan_never_surfaces_a_retired_item_even_with_include_unapproved(
+    with_retired_items: ProjectRegistry,
+) -> None:
+    """SEC-13, T-15, #158. The SQL gate drops no visible row and admits no withheld one.
+
+    #158 replaced `_scan`'s `list_items` + Python `may_surface` filter with a SQL
+    `status IN (...)` over the set `_scan` resolves from `may_surface`. That
+    predicate is now the whole gate on this path, so a status wrongly admitted into
+    the surfaceable set -- or the predicate dropped -- would hand a retired revision
+    to a caller while the plan and row count stayed innocent. The row-cost pins
+    above cannot see that: they move rows, this moves who is behind them.
+
+    `with_retired_items` has no index, so `knowledge.search` answers through
+    `substring_answer` -> `_scan`. Its three retired items (deprecated, superseded,
+    rejected) share a body no surfaceable item holds, and `includeUnapproved=True`
+    is the widest a caller can open the gate -- yet retired knowledge is reachable
+    through no flag (`may_surface` withholds it whatever `include_unapproved` says,
+    because a rejected revision is where the secret that caused the rejection still
+    lives). So a needle that matches only the retired bodies must find nothing.
+
+    Distinct from `test_a_draft_is_withheld_by_default`, which is RED only when the
+    gate drops the default `include_unapproved=False` case: this stays RED when the
+    flag itself wrongly widens to a never-surfaceable status, which that test, run
+    without the flag, cannot reach.
+    """
+    result = await _call(
+        with_retired_items,
+        "knowledge.search",
+        projectId="demo",
+        query="retired",
+        includeUnapproved=True,
+    )
+
+    assert result["retrieval"]["mode"] == "substring", (
+        "the corpus must answer through the unranked scan, or this does not exercise "
+        "`_scan`'s `list_items_by_status` gate"
+    )
+    assert result["count"] == 0, (
+        "the substring scan surfaced a retired item: `retired` matches only the deprecated, "
+        "superseded and rejected bodies, and none of the three may be surfaced through any flag "
+        f"(SEC-13, T-15, #158). Returned statuses: {[hit['status'] for hit in result['results']]}"
     )
 
 

@@ -337,6 +337,52 @@ class SqliteCanonicalStore:
         sql += " ORDER BY item_id"
         return self._read_all(sql, params, _item_from_row)
 
+    def list_items_by_status(
+        self, context: RequestContext, *, statuses: frozenset[KnowledgeStatus]
+    ) -> tuple[KnowledgeItem, ...]:
+        # A status-filtered read with no visibility semantics. The caller passes the
+        # status set it has already resolved, so the `may_surface` gate stays in the
+        # tool layer (`search._scan`) where the security enumeration expects it and
+        # this adapter never consults it. `knowledge.search`'s substring fallback is
+        # the caller; filtering in SQL is what keeps its response time proportional
+        # to the rows it may return rather than to the retired rows it withholds --
+        # the `search._scan` sibling of the channel #19 closed for `knowledge.status`
+        # (T-17, SEC-13, #158).
+        #
+        # An empty set short-circuits to `()`: no status can match, so a query would
+        # only return zero rows. The guard is defensive -- `search._scan` always
+        # resolves at least APPROVED into the set
+        # (`may_surface(APPROVED, include_unapproved=False)` is always true), so it
+        # never passes an empty one. `sorted()` only fixes the bind order: the
+        # statement text is `?, ?, ?` regardless of the values.
+        if not statuses:
+            return ()
+        values = tuple(sorted(s.value for s in statuses))
+        placeholders = ", ".join("?" for _ in values)
+        # `INDEXED BY idx_items_status`, not left to the planner, and that hint is
+        # the whole of what makes this timing-independent. `idx_items_status` is
+        # `(project_id, status)`; the primary key gives a second index
+        # `(project_id, item_id)`. `ORDER BY item_id` -- the order the substring
+        # scan's `limit` cutoff depends on, so the result set stays identical to the
+        # `list_items` path #158 replaced -- makes the planner *prefer* the primary
+        # key, because it satisfies the sort with no temp b-tree. Preferring it
+        # means seeking on `project_id` alone and reading every row of the project,
+        # the discarded ones included, to apply `status` as a post-filter: measured
+        # VM steps then grew 75 -> 325 -> 1575 across 0/50/300 filtered-out rows,
+        # which is the O(withheld) channel this read exists to close (T-17, SEC-13,
+        # #158). Forcing `idx_items_status` seeks straight to the in-set rows and
+        # sorts only those in a bounded temp b-tree: 118 -> 119 -> 119, flat. The
+        # force is also structural, not advisory -- drop or rename the index and the
+        # query fails loudly rather than silently falling back to the scan that
+        # reopens the channel.
+        sql = (
+            "SELECT * FROM knowledge_items INDEXED BY idx_items_status "  # noqa: S608 - placeholders only
+            f"WHERE project_id = ? AND status IN ({placeholders}) "
+            "ORDER BY item_id"
+        )
+        params = (context.project_id.value, *values)
+        return self._read_all(sql, params, _item_from_row)
+
     def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:
         # Count in SQL so `knowledge.status` spends work proportional to what it
         # publishes, not to the retired rows it withholds. Filtering `list_items`
