@@ -790,7 +790,7 @@ def _stored_statuses(root: pathlib.Path, project_id: str) -> dict[str, str]:
 class StatusCaptures(NamedTuple):
     """Real ``knowledge.status`` responses, beside what their stores hold.
 
-    The second half is not decoration. A response of ``{}`` is the correct
+    The second half is not decoration. A breakdown of ``{}`` is the correct
     answer for a project holding three retired items and also the correct answer
     for a project holding nothing, and only one of those is evidence.
     """
@@ -861,7 +861,7 @@ def test_the_status_captures_reach_every_declared_status_key_and_the_empty_one(
 
     The empty breakdown is the other half. It is asserted beside what the store
     actually holds, because ``{}`` from a project with three retired items and
-    ``{}`` from an empty directory are the same response and only one of them
+    ``{}`` from an empty directory are the same breakdown and only one of them
     says anything.
     """
     assert status_captures.stored == EXPECTED_STORED_STATUSES
