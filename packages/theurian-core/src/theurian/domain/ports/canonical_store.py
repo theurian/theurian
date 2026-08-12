@@ -132,7 +132,8 @@ class CanonicalStore(Protocol):
         is not in ``statuses`` is never fetched.
 
         An empty ``statuses`` returns ``()`` without a query: no status can match,
-        and ``IN ()`` is not valid SQL.
+        so a query would only return zero rows. It is defensive -- ``search._scan``
+        always resolves at least APPROVED into the set, so never passes an empty one.
         """
         ...
 

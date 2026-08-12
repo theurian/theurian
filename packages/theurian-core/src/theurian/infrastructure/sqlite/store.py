@@ -349,9 +349,12 @@ class SqliteCanonicalStore:
         # the `search._scan` sibling of the channel #19 closed for `knowledge.status`
         # (T-17, SEC-13, #158).
         #
-        # An empty set short-circuits: no status can match, and `IN ()` is a syntax
-        # error rather than an empty result. `sorted()` only fixes the bind order
-        # and is defensive: the statement text is `?, ?, ?` regardless of the values.
+        # An empty set short-circuits to `()`: no status can match, so a query would
+        # only return zero rows. The guard is defensive -- `search._scan` always
+        # resolves at least APPROVED into the set
+        # (`may_surface(APPROVED, include_unapproved=False)` is always true), so it
+        # never passes an empty one. `sorted()` only fixes the bind order: the
+        # statement text is `?, ?, ?` regardless of the values.
         if not statuses:
             return ()
         values = tuple(sorted(s.value for s in statuses))
