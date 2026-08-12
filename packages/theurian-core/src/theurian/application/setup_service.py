@@ -154,6 +154,7 @@ class SetupService:
         changed: list[str] = []
         warnings: list[str] = []
         failed_critically = False
+        journalled = False
 
         for definition in self._steps:
             planned = plan.step(definition.step_id)
@@ -210,19 +211,51 @@ class SetupService:
                 reason = failure_detail(exc, for_publication=self._context.for_publication)
                 applied.append(planned.applied(StepOutcome.FAILED, reason))
                 warnings.append(f"{definition.step_id.value}: {reason}")
-                self._journal(definition.step_id, "failed", reason)
+                # An apply that raised may still have written its artefact:
+                # `FileSecretStore.set` creates the token file with `O_CREAT`
+                # before the `os.write` or the `chmod` that can fail, and
+                # `apply_env_reference` opens with `O_TRUNC`. Listing only the
+                # steps that *finished* leaves that file on disk and absent from
+                # what the operator reads afterwards -- the disclosure defect #47
+                # set out to fix, in the arm it did not cover.
+                #
+                # Existence is the test rather than provenance, and it errs
+                # toward disclosure on purpose. A step reaches here only with
+                # ``MISSING``, which for every step but one means "absent" -- so
+                # a declared path that exists now was created by this run. The
+                # exception is `env-reference`, whose ``MISSING`` also covers
+                # "present but differing" (#128): there the file may have existed
+                # already, and it may equally have been truncated a microsecond
+                # before the failure. Naming a file that turns out untouched
+                # costs the operator a look; staying silent about a truncated one
+                # is the failure this branch exists to prevent.
+                changed.extend(path for path in planned.paths if Path(path).exists())
+                journalled = self._journal(definition.step_id, "failed", reason) or journalled
                 failed_critically = definition.critical
                 continue
 
             applied.append(planned.applied(StepOutcome.CHANGED))
             changed.extend(planned.paths)
-            self._journal(definition.step_id, "applied", planned.action)
+            journalled = self._journal(definition.step_id, "applied", planned.action) or journalled
+
+        if journalled:
+            # The journal is a file this run wrote, and `changed_paths` is the
+            # list of those. It belongs to no step -- the runner appends it, not
+            # an apply -- so accumulating step paths alone left
+            # `~/.theurian/setup-journal.jsonl` out of every applying run's
+            # report while `--help` was claiming the steps are every write setup
+            # performs. Added only when an append actually reached the disk:
+            # `_journal` swallows its ``OSError``, and naming a file that was
+            # never created is the same defect pointing the other way.
+            changed.append(str(self.journal_path))
 
         if failed_critically:
-            # Nothing is undone. Every apply here is a create-or-tighten, and the
-            # journal records what was done -- so the honest report is HALTED,
-            # "this is where it stopped", not a rollback that deletes a token
-            # another session may already be using (§6.4).
+            # Nothing is undone. Every apply here creates, tightens or rewrites a
+            # file Theurian owns, and the journal only records what was done --
+            # there is no inverse to replay, and #128 records that the env
+            # rewrite does not even preserve what it replaced. So the honest
+            # report is HALTED, "this is where it stopped", not a rollback that
+            # deletes a token another session may already be using (§6.4).
             return SetupReport(
                 state=SetupState.HALTED,
                 steps=tuple(applied),
@@ -266,15 +299,22 @@ class SetupService:
 
     # -- Journal ----------------------------------------------------------
 
-    def _journal(self, step_id: StepId, event: str, detail: str) -> None:
-        """Append one line. Journalling must never break a working setup."""
+    def _journal(self, step_id: StepId, event: str, detail: str) -> bool:
+        """Append one line, reporting whether the file actually grew.
+
+        Journalling must never break a working setup, so an ``OSError`` is
+        swallowed -- and that is exactly why the answer is returned rather than
+        assumed by the caller: ``changed_paths`` names the journal only when a
+        write reached the disk, never because one was attempted.
+        """
         entry = {"step": step_id.value, "event": event, "detail": detail}
         try:
             self.journal_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             with self.journal_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(entry, sort_keys=True) + "\n")
         except OSError:  # pragma: no cover - defensive
-            return
+            return False
+        return True
 
 
 def _unique(paths: Iterable[str]) -> tuple[str, ...]:

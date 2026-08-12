@@ -28,8 +28,12 @@ class StepId(StrEnum):
     """The steps of §6.2, in application order.
 
     An enum rather than free strings: the plugin's presentation groups steps by
-    identity, `uninstall --dry-run` has to enumerate what setup created, and the
-    journal replays them by name. A typo in any of those should not typecheck.
+    identity, and the journal records what was applied under these names -- a
+    readable record for whoever repairs a half-finished run, not something
+    production code reads back, since there is no inverse action to replay and
+    nothing opens the file outside the tests. NFR-12's ``uninstall --dry-run``
+    enumeration is the third reader and is **not wired**, as
+    :attr:`SetupStep.paths` records. A typo in any of those should not typecheck.
     """
 
     PLATFORM = "platform"
@@ -94,10 +98,13 @@ class SetupState(StrEnum):
     #: not stop local knowledge from working.
     DEGRADED = "degraded"
     #: A critical step failed and the run stopped where it was. Nothing is
-    #: undone: every apply is a create-or-tighten and the journal is append-only
-    #: with no inverse action to replay (§6.4). ``changed_paths`` lists what was
-    #: written, **including any credential minted before the failure**, so the
-    #: operator can act on it. Terminal, and not a success.
+    #: undone: every apply creates, tightens or rewrites a file Theurian owns,
+    #: and the journal is append-only with no inverse action to replay (§6.4) --
+    #: #128 records that the env rewrite does not preserve a hand-edited file.
+    #: ``changed_paths`` lists the files this run wrote -- each applied step's
+    #: declared artefacts, existence-checked for the step that failed partway,
+    #: plus the setup journal -- **including any credential minted before the
+    #: failure**, so the operator can act on it. Terminal, and not a success.
     HALTED = "halted"
     ABORTED = "aborted"
 
@@ -305,8 +312,13 @@ class SetupReport:
     dry_run: bool = False
     serena_detected: bool = False
     warnings: tuple[str, ...] = ()
-    #: Files actually created or modified. Empty on a dry run, and empty on a
-    #: second real run -- which is the idempotence contract of §6.3.
+    #: The files this run wrote: each applied step's declared artefacts --
+    #: existence-checked for a step that failed partway -- plus the setup journal
+    #: when this run appended to it. Directories created implicitly (``auth/``,
+    #: say) are not listed. Empty on a dry run, on a run that aborted before
+    #: applying, and on a second real run -- which is the idempotence contract of
+    #: §6.3, and holds through the journal too: a run that applies nothing
+    #: journals nothing.
     changed_paths: tuple[str, ...] = ()
     backups: tuple[str, ...] = field(default_factory=tuple)
 
