@@ -40,7 +40,7 @@ from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import may_surface
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
-from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH, ItemId, ProjectId
 from theurian.domain.knowledge import KnowledgeRelation
 from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.state import ActiveState
@@ -79,6 +79,22 @@ class ToolError(TheurianError):
 #: amplifier `MAX_QUERY_CHARS` and `ItemId` already close for `query` and
 #: `itemId` -- see `test_an_over_long_item_id_is_not_echoed_back`.
 MAX_AS_OF_CHARS: Final = 100
+
+#: Cap on `projectId` before it can be echoed into an unresolved-project error.
+#:
+#: A registered project's id is a `ProjectId`, and a `ProjectId` is at most
+#: `MAX_IDENTIFIER_LENGTH` characters (the schema records the same as
+#: `maxLength: 200`). `_resolve` runs before any `ProjectId` is constructed --
+#: `knowledge.get` builds one only *after* `_resolve` returns -- so the raw
+#: caller string reaches `_unresolvable` unbounded, where it used to be echoed
+#: verbatim. An unresolvable id is therefore one of two things: well-formed but
+#: unregistered (within this ceiling, so naming it back helps a typo) or
+#: oversized (which no project id can be, so echoing it only reflects the
+#: caller's own bytes). Bounded here to the same discipline `MAX_QUERY_CHARS`
+#: and `ItemId` already hold for `query` and `itemId` -- an over-long id is
+#: reported by its length, never quoted (SEC-15, and
+#: `test_an_over_long_item_id_is_not_echoed_back`).
+MAX_PROJECT_ID_CHARS: Final = MAX_IDENTIFIER_LENGTH
 
 
 def _parse_as_of(raw: str) -> datetime:
@@ -261,6 +277,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 f"entry, then register the project again from its repository."
             )
 
+        # `known` and `skipped` are the daemon's own registry contents, not the
+        # caller's input: `load` admits only ids that construct as a `ProjectId`
+        # (each <= MAX_PROJECT_ID_CHARS), and `unreadable` is whatever a hand
+        # edit left in the file. Neither is amplified by this request.
         known = ", ".join(sorted(entries)) or "none"
         skipped = (
             f"Present but unreadable, and served by nothing until removed with "
@@ -268,6 +288,18 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             if unreadable
             else ""
         )
+        # `project_id` is the raw caller string, reached before any `ProjectId`
+        # bounded it. An oversized id is reported by its length rather than
+        # echoed, so the error cannot be turned into an ~1x amplifier of the
+        # caller's own bytes (#17); a well-formed unregistered id is still named
+        # so a typo is visible.
+        if len(project_id) > MAX_PROJECT_ID_CHARS:
+            return ToolError(
+                f"A project id of {len(project_id)} characters is not registered "
+                f"(longer than any project id can be). Registered: {known}. "
+                f"{skipped}"
+                f"Run `theurian project register` inside the repository."
+            )
         return ToolError(
             f"Project {project_id!r} is not registered. Registered: {known}. "
             f"{skipped}"
