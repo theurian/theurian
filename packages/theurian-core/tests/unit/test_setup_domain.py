@@ -157,6 +157,46 @@ def test_a_satisfied_step_contributes_no_paths() -> None:
 
 # -- States ----------------------------------------------------------------
 
+#: Every ``SetupState``'s published string, keyed by member name and written out
+#: by hand. Deriving either side from the enum would make the assertion below
+#: vacuous -- which is the whole hazard: :meth:`SetupReport.to_json` publishes
+#: ``state.value``, ``plugins/claude-code/commands/setup.md`` branches on those
+#: literals, and every Python test in this repository compares *members* by
+#: identity. Renaming a value therefore breaks `/theurian:setup` while the suite
+#: stays green.
+#:
+#: Measured, on the one value #47 changed: reverting ``HALTED`` to its former
+#: ``"rolled-back"`` passed all 2266 tests.
+SETUP_STATE_WIRE_VALUES = {
+    "PREFLIGHT": "preflight",
+    "PLAN_BUILT": "plan-built",
+    "AWAITING_CONSENT": "awaiting-consent",
+    "APPLYING": "applying",
+    "VERIFYING": "verifying",
+    "CONVERGED": "converged",
+    "DEGRADED": "degraded",
+    "HALTED": "halted",
+    "ABORTED": "aborted",
+}
+
+
+def test_every_state_publishes_the_string_its_readers_match_on() -> None:
+    """The wire values of §6.1, all of them, in one place.
+
+    ``plan-built`` and ``degraded`` were each pinned ad hoc where some other
+    test happened to need them, so seven of the nine were free to be renamed. A
+    plugin that renders "setup rolled back" for a state the code now calls
+    ``halted`` shows the user a rollback that never happened -- which is exactly
+    what #47 set out to stop the product claiming.
+
+    Compared as a whole mapping rather than value by value, so a *new* state
+    added without a decision about its published name fails here too: an
+    unlisted member makes the dictionaries unequal.
+    """
+    published = {state.name: state.value for state in SetupState}
+
+    assert published == SETUP_STATE_WIRE_VALUES
+
 
 @pytest.mark.parametrize(
     ("state", "success"),
