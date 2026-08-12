@@ -576,10 +576,11 @@ the amplification, not the audience.
 choosing where it goes is not. `_unresolvable` runs on the failure path of a
 value that has *not* been through `ProjectId`, and is reached from three tools —
 so a bound in `_resolve`, in `_unresolvable`, or in a boundary conversion changes
-a different set of published error texts, and neither `knowledge.get` nor
-`knowledge.status` has a response schema to change alongside it
-([#20](https://github.com/theurian/theurian/issues/20)). It is named as known and
-open inside the class's own closure argument — the docstring of
+a different set of published error texts, and of the tools it reaches only
+`knowledge.status` now has a published response schema to be documented beside
+([#19](https://github.com/theurian/theurian/issues/19)); `knowledge.get` still
+has none ([#20](https://github.com/theurian/theurian/issues/20)). It is named as
+known and open inside the class's own closure argument — the docstring of
 `test_an_over_long_item_id_is_not_echoed_back` in
 `tests/integration/test_mcp_tools.py` — rather than left out of it, because a
 class with an unnamed member returns as "another instance of the one you closed".
@@ -1782,10 +1783,12 @@ the same `migrate apply` (issue #15), so no statistic counts a row the caller ma
 not read. Read the gate's *own* guarantee as "no stage computes a number from a
 withheld *row*", which is what the gate verifies; the trigger is what makes the
 stronger "the withdrawn document has no effect on any published number" true, by
-taking the document out of the build. The claim is also about two of the five
-tools rather than all of them — `knowledge.status` publishes two values that move,
-one of them justified and one of them accepted; see *The equality is a claim about
-two tools, not three*, below.
+taking the document out of the build. The claim is also about three of the five
+tools rather than all of them, and the third names its exceptions:
+`knowledge.status` holds it for four of its six fields and publishes two that
+move — `stateHash` and `appliedMigrations` — exempt by a decision now recorded in
+that tool's response schema and pinned as an exact set by a test; see *The
+equality covers three tools, and the third names its exceptions*, below.
 
 Three details of that control are load-bearing and easy to lose:
 
@@ -1891,14 +1894,16 @@ narrower and still worth having: the three published numbers are read off one
 object built in one of two named places. The claim that carries the security
 property is the ordering above, not the type.
 
-**The equality is a claim about two tools, not three.** It is asserted end to
-end for `knowledge.search`
-(`test_a_withheld_document_changes_nothing_a_caller_can_see`) and, since round
-eight, for `knowledge.get`. `knowledge.status` does not hold it, and that is
-recorded here rather than left to a reader who takes "the whole response" at face
-value. Two projects built identically except for one extra migration creating a
-`rejected` item — invisible to every tool — measured through the real MCP tool
-against two real projects built by the real CLI:
+**The equality covers three tools, and the third names its exceptions.** It is
+asserted end to end for `knowledge.search`
+(`test_a_withheld_document_changes_nothing_a_caller_can_see`), since round eight
+for `knowledge.get`, and now for `knowledge.status` — which holds it for four of
+its six fields and publishes two that move under a recorded exemption. The
+exemption is stated here, and in that tool's response schema, rather than left to
+a reader who takes "the whole response" at face value. Two projects built
+identically except for one extra migration creating a `rejected` item — invisible
+to every tool — measured through the real MCP tool against two real projects
+built by the real CLI:
 
 ```
 appliedMigrations    1                    2                    DIFFERS
@@ -1911,16 +1916,17 @@ stateHash            ee3ab796ab22f936…    8624b114c4bc0017…    DIFFERS
 
 `itemCount` and `itemsByStatus` are correct and pinned by
 `test_retired_items_are_absent_from_every_published_count`. The two that move are
-response-scope values, and only one of them had a justification:
+response-scope values, and when this was measured only one of them had a
+justification:
 
 | Field | Why it moves | Justified? |
 | :-- | :-- | :-- |
 | `stateHash` | it covers the whole working tree by design (ADR-0016), so it moves for any change to migrations or content | **yes** — query-independent by construction, the same argument `snapshotId` carries, and it is the value FR-R5 exists to let a caller compare against |
 | `appliedMigrations` | a count of migration *files* applied, which a migration creating only withheld items increments | **it did not have one**; it does now, below |
 
-**`appliedMigrations` is accepted for Milestone 5 and filed at
+**`appliedMigrations` was accepted for Milestone 5 and filed at
 [#19](https://github.com/theurian/theurian/issues/19).** The argument, stated
-rather than assumed:
+rather than assumed, and now published per field in the schema below:
 
 - It counts migrations, not items, so it moves identically for a migration that
   adds an approved item, a draft, a rejected one, or none at all. It cannot be
@@ -1934,17 +1940,67 @@ rather than assumed:
   added rather than edited — which is a fact about a Git-tracked migration
   directory the caller's own repository contains.
 
-**Every remedy is a wire-contract change and none is obviously right**, which is
+**Every remedy is a wire-contract change and none is obviously right**, which was
 the deferral: removing it breaks the question the field exists to answer (did my
 `migrate apply` land), bucketing it answers a question nobody asked, and counting
 only migrations that produced surfaceable items makes a number no user can
-reproduce from their own migration directory. There is also no
-`knowledge-status-response.schema.json` for a decision to land in
-([#20](https://github.com/theurian/theurian/issues/20)).
+reproduce from their own migration directory.
+
+**Discharged by [#19](https://github.com/theurian/theurian/issues/19): the
+decision has a schema to live in, and the exception set is pinned by a test.**
+`schemas/mcp/knowledge-status-response.schema.json` publishes the response's six
+fields under `additionalProperties: false`, with `itemsByStatus` declaring only
+`approved`, `draft` and `proposed` and forbidding a fourth key — so a retired
+status is rejected under its own name and under a relabelled bucket alike, since
+either would report the same quantity. It carries the argument above per field:
+the counts say nothing about withheld content, not even a total, and both
+`stateHash` and `appliedMigrations` stay, each with its reason.
+[#20](https://github.com/theurian/theurian/issues/20) named two tools and stays
+open for the other one: `knowledge.get` still publishes no response schema, and
+neither does `system.capabilities`.
+
+The exception set is a test rather than a sentence.
+`test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_exempts`
+(`tests/integration/test_mcp_tools.py`) builds two projects one migration apart,
+where that migration creates a `deprecated`, a `superseded` and a `rejected` item
+and nothing else — all three, because a pair differing by one could not tell
+whether the other two had started moving a count. Both register under the same id
+in registries of their own, so the request is byte-identical and `projectId` is a
+field the comparison asserts *equal* rather than one it has to exclude. It then
+asserts that the set of fields whose values differ **equals**
+`{stateHash, appliedMigrations}`. An exact set and not a subset: a subset check
+also passes a response that has stopped publishing `appliedMigrations`, and one
+whose `stateHash` has gone insensitive to canonical state, both of which are
+contract changes that should be decided rather than absorbed.
+`test_the_pair_differs_by_a_migration_that_creates_only_withheld_items` guards it
+by reading both canonical stores directly, because a migration that applied and
+created no item at all moves the same two fields with nothing withheld anywhere
+in the run.
+
+**The two fields move with the migration, not with where it was built.** No path,
+mtime or hostname is an input to a state hash (`StateInputs`, in
+`theurian.domain.state`), which is what makes two projects built in two
+directories comparable at all. Measured rather than argued, twice: with the
+fixture mutated to give the absent half the withheld trio as well, the differing
+set comes back empty, and the same corpus built by the real CLI into two
+directories with different names answers with one hash,
+`ee3ab796ab22f93691584839e376a00f23aa981ee10d27925586d53a62010f8f` — which is the
+first column of the table above, unchanged since it was measured there.
+
+The response *shape* is held against real output rather than a fixture.
+`tests/integration/test_wire_contract.py` validates the schema against
+`knowledge.status` responses from projects the real CLI built, one holding an
+`approved`, a `draft` and a `proposed` item and one holding only retired ones —
+whose breakdown is `{}` and whose `itemCount` is `0`, asserted beside what its
+canonical store really contains, because `{}` from a project holding three
+retired items and `{}` from an empty one are the same document and only one of
+them is evidence.
 
 `mcp/tools.py`'s comment over the status counts said "Nothing about withheld
 content is reported here, not even a total" — true of the counts it sits over,
-false of the response — and has been narrowed to what holds rather than deleted.
+false of the response — and was narrowed to what holds rather than deleted. It
+now states the counts' own property and points at the schema for the response's,
+so the decision has one home rather than two that drift apart.
 
 **How it is held.** `tests/integration/test_mcp_tools.py`:
 
