@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.context import RequestContext
+from theurian.domain.enums import KnowledgeStatus
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
@@ -104,6 +105,32 @@ class CanonicalStore(Protocol):
         caller in this codebase already uses, so there is exactly one
         comparison to get right instead of two that have to be kept in
         agreement.
+        """
+        ...
+
+    def list_items_by_status(
+        self, context: RequestContext, *, statuses: frozenset[KnowledgeStatus]
+    ) -> tuple[KnowledgeItem, ...]:
+        """Every item in scope whose status is in ``statuses``, filtered in SQL.
+
+        A dumb status-filtered read. It holds no visibility semantics and never
+        decides what a caller may see: the caller passes the status set it has
+        already resolved. ``knowledge.search``'s substring fallback builds that set
+        from :func:`~theurian.domain.enums.may_surface`, so the status gate stays in
+        the tool layer where it is enumerated (SEC-13, T-15) and this port stays
+        gate-agnostic -- an adapter must not consult the visibility rule.
+
+        Its value over :meth:`list_items` is *where* the filtering happens.
+        ``list_items`` reads every row and filters in Python, so a caller keeping
+        only some statuses still pays to materialise the rest -- and its response
+        time then scales with the count of the rows it discards, recoverable by
+        measuring it (T-17; the ``search._scan`` sibling of the channel #19 closed
+        for ``knowledge.status``, #158). Here the set is pushed into the ``IN``
+        predicate the covering index ``idx_items_status(project_id, status)`` serves,
+        so a row whose status is not in ``statuses`` is never fetched.
+
+        An empty ``statuses`` returns ``()`` without a query: no status can match,
+        and ``IN ()`` is not valid SQL.
         """
         ...
 

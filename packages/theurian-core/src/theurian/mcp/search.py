@@ -85,7 +85,7 @@ from theurian.application.retrieval_service import (
 )
 from theurian.application.visibility import Visibility
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import KnowledgeStatus, may_surface
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ranking import RetrievalMode, estimate_tokens, mode_of
@@ -832,10 +832,28 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     context = RequestContext(project_id=ProjectId(project_id))
     matches: list[dict[str, Any]] = []
 
+    # The status gate stays here, in the tool layer the security enumeration pins
+    # it to (`test_gate_call_sites.py`, SEC-13/T-15). `_scan` resolves which
+    # statuses are surfaceable under `include_unapproved` and hands the set to the
+    # store, which filters in SQL without knowing what "surfaceable" means -- so the
+    # visibility rule is consulted exactly once, where it is enumerated, and never
+    # inside an adapter. That SQL filter is what closes #158's timing channel:
+    # withheld rows are never materialised, so this scan's cost is independent of
+    # the withheld count and a caller cannot recover that count by timing the
+    # response (T-17). The result set is exactly what the old `may_surface` gate on
+    # `list_items` returned here -- moving the filter into SQL drops no visible row.
+    #
+    # A status cell corrupt to a non-enum value fails the store's `IN` predicate and
+    # so drops out -- an under-report, the same #30/SILENTLY_EMPTIED family
+    # `knowledge.search` already carries. It is not detected here: detection would
+    # mean reading every row to inspect its status, which is the O(withheld) scan
+    # this change exists to remove.
+    surfaceable = frozenset(
+        s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
+    )
+
     with SqliteCanonicalStore(database) as store:
-        for item in store.list_items(context):
-            if not may_surface(item.status, include_unapproved=include_unapproved):
-                continue
+        for item in store.list_items_by_status(context, statuses=surfaceable):
             if as_of is not None and not item.validity.contains(as_of):
                 continue
             if item.current_revision_id is None:
