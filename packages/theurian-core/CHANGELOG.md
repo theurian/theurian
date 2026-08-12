@@ -535,6 +535,51 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   (ten, then twelve) were short. The builder and traversal absences those files
   also name stay open, since neither exists yet.
 
+- **`knowledge.status` publishes a response schema, and the two fields a withheld
+  item may move are pinned as an exact set**
+  ([#19](https://github.com/theurian/theurian/issues/19)).
+  `schemas/mcp/knowledge-status-response.schema.json` declares the response's six
+  fields — `projectId`, `stateHash`, `itemCount`, `itemsByStatus`,
+  `appliedMigrations`, `schemaVersion` — under `additionalProperties: false`,
+  with `itemsByStatus` declaring only `approved`, `draft` and `proposed` and
+  forbidding a fourth key, so a retired status is rejected under its own name and
+  under a relabelled bucket alike; either reports the quantity the breakdown
+  exists to withhold. **Additive, and no wire change**: the tool emitted these
+  six fields before the schema existed and emits the same six now. The only
+  change under `src/` is a comment.
+
+  It is also where #19's decision now lives, instead of in that comment.
+  `stateHash` and `appliedMigrations` both stay, and the schema states why per
+  field: neither carries a bit about *what* was withheld; `stateHash`
+  content-addresses the whole working tree by design (ADR-0016) and is the
+  query-independent value FR-R5 exists to let a caller compare against;
+  `appliedMigrations` counts migration *files*, so it moves identically whether a
+  migration created an approved item, a draft, a rejected one, or none at all.
+  `knowledge.status` takes only `projectId`, so nothing about a request reaches
+  either number — no probe to vary, and therefore no extraction oracle. The
+  remedies considered and rejected are recorded there too: removing the field
+  breaks the question it exists to answer, bucketing it answers a question nobody
+  asked, and counting only migrations that produced surfaceable items publishes a
+  number no user can reproduce from their own migration directory.
+
+  **The exception set is a test, not a sentence.**
+  `test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_exempts`
+  builds two projects one migration apart, where that migration creates a
+  `deprecated`, a `superseded` and a `rejected` item and nothing else, registers
+  both under the same id in registries of their own so the request is
+  byte-identical, and asserts that the set of fields whose values differ *equals*
+  `{stateHash, appliedMigrations}`. An exact set rather than a subset: a response
+  that stopped publishing `appliedMigrations`, or a `stateHash` gone insensitive
+  to canonical state, goes red instead of passing quietly. This extends T-17's
+  one-query-two-corpora equality to a third tool — `knowledge.search` and
+  `knowledge.get` hold it without exception. The schema is checked against real
+  CLI-built projects in `test_wire_contract.py`, including one whose items are all
+  retired, whose breakdown is `{}` and whose `itemCount` is `0`, asserted beside
+  what its canonical store really holds, because `{}` from a project that holds
+  nothing is the same document. `knowledge.get` and `system.capabilities` still
+  publish no response schema
+  ([#20](https://github.com/theurian/theurian/issues/20)).
+
 ### Changed
 
 - **BREAKING — the terminal state a critical apply failure reaches is `halted`,
