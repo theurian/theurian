@@ -1132,6 +1132,28 @@ def test_a_halted_run_lists_the_leftover_credential_exactly_once(
     )
 
 
+def test_a_converged_run_lists_each_changed_path_once(context: SetupContext) -> None:
+    """#47. The dedup is applied at *both* return points, not just the halt.
+
+    ``_unique`` guards the CONVERGED/DEGRADED report as well as the HALTED one,
+    and a cold run walks that success path. `token` and `token-storage` both name
+    ``auth/mcp-token``, so without the funnel a fully converged run lists the
+    credential twice in ``changed_paths`` -- the same double-listing #47 fixes,
+    on the run an operator sees most often. The halted-path test above cannot see
+    this: a critical failure never reaches ``_verify``, so its ``_unique`` could
+    be removed and stay green there. Measured -- reverting the success-path dedup
+    survived the whole setup suite until this test.
+    """
+    report = _service(context).run()
+
+    assert report.succeeded, report.warnings
+    token = str(context.auth_dir / TOKEN_KEY)
+    assert report.changed_paths.count(token) == 1, "the credential is listed once, not twice"
+    assert len(report.changed_paths) == len(set(report.changed_paths)), (
+        "a converged report may not list any path twice"
+    )
+
+
 # -- Verification ------------------------------------------------------------
 
 
