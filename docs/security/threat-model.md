@@ -196,18 +196,40 @@ config contains no high-entropy string.
 | every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into all nine sources a step reads and does not own, and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
 | the setup journal, `~/.theurian/setup-journal.jsonl` — written beside the token by the run that mints it | `packages/theurian-core/tests/integration/test_setup_journal.py::test_the_journal_never_records_the_token_it_watched_being_minted`, which asserts the minting *is* recorded before asserting the value is not, so the prohibition cannot pass on an empty file |
 | the env-reference step's *conflict* detail, which the sweep above does not reach | `packages/theurian-core/tests/integration/test_setup_env_file.py::test_the_conflict_detail_carries_the_markers_and_the_remedy_and_no_other_line` |
+| the env-reference step's *satisfied* detail, the override warning — a detail hanging off a step that **passed**, which is a channel this sweep was written before there was one | the sweep's env-file seed was re-pointed at it: it now seeds a current block with `export THEURIAN_MCP_TOKEN=<sentinel>` under it, which is the shape that reaches this arm, and `…/test_setup_env_file.py::test_the_override_warning_names_the_variable_and_never_the_line_it_found` pins the message itself |
+| `theurian auth rotate`'s `nextSteps`, when the OS refuses the env file | `…/tests/integration/test_auth_rotate.py::test_the_refusal_names_the_kind_of_failure_and_not_what_the_os_said` — the exception's class name, never its message |
 
-**One arm is covered by an individual pin rather than by the sweep.** The sweep
-seeds an env file holding `export NOTE=<sentinel>` and no markers, which takes
-the `Missing` branch; the `Conflicting` branch added with
-[#128](https://github.com/theurian/theurian/issues/128) is reached only by
-markers that delimit no single block, and its detail is built from what the
-probe *read*. It is pinned both ways round instead — the two marker strings, the
-path and the remedy must be there, and a line beside them in the same file must
-not be. Widening the sweep to seed that shape too would be the general fix and
-is not done: the sweep's claim is "no step in the current plan publishes a seeded
-value", one seed per source, and a second seed for the same source's second
-branch is a change to its shape rather than an addition to its list.
+**Both env-file channels are closed structurally rather than carefully**, which
+is what makes them worth stating here as a property and not as a habit:
+
+- The **conflict** detail cannot carry a line, because
+  `MalformedEnvBlockError.__init__` takes an `EnvBlockFault` and not a string:
+  the message is assembled from that closed set and the two marker constants,
+  none of which came out of the file. Pinned on the annotation itself
+  (`tests/unit/test_env_file_merge.py::test_the_refusal_is_constructed_from_a_closed_set_and_never_from_a_string`),
+  because a widening to `EnvBlockFault | str` is what would let "line 14 says
+  `export AWS_SECRET…`" through and would otherwise land as a one-word diff, and
+  on the output for both members of the enum
+  (`::test_every_refusal_says_which_markers_to_look_for_and_what_to_re_run`).
+- The **override warning** cannot carry a line for the same kind of reason:
+  `contains_shadowing_assignment` returns `bool`, so the probe learns that such a
+  line exists and never what is on it, and the detail is built from the path, the
+  variable name and the start marker. The existence *is* disclosed — that is the
+  point of the warning — and the value beside the `=` is not.
+
+**One arm remains outside the sweep.** Seeding the override shape is what puts
+the file in the `Satisfied` branch, so the `Conflicting` branch — markers that
+delimit no single block — is no longer reached by it, and is covered by
+`…/test_setup_env_file.py::test_the_conflict_detail_carries_the_markers_and_the_remedy_and_no_other_line`
+instead, both ways round: the two marker strings, the path and the remedy must be
+there, and a line beside them in the same file must not be. Seeding both shapes
+would be the general fix and is not done: the sweep's claim is "no step in the
+current plan publishes a seeded value", one seed per source, and a second seed
+for the same source's second branch is a change to its shape rather than an
+addition to its list. The env-file seed is also a *guard* and not a measurement —
+it is not in `_OBSERVED_SEEDS`, because a value the probe never holds would not
+appear even with withholding switched off, so no positive control can exist for
+it.
 
 The journal is a local file and is never served, but it outlives the run, it is
 created before the process knows whether the run will succeed, and a halted
@@ -3421,18 +3443,58 @@ every `theurian auth rotate` until
 difference, and a line the user had added to a file whose own header says
 "Sourced by your shell profile" went with no diff, no backup and no mention in
 `changedPaths`. Both writers now rewrite only the span between
-`# >>> theurian >>>` and `# <<< theurian <<<`, and markers that delimit no single
-block are reported rather than repaired: once the delimiters disagree, setup
-cannot tell which lines are its own. There is no backup and no diff on this
-path. Preservation is by construction instead — the merge is computed before the
-file is opened, so a file setup cannot delimit is never opened at all — and that
-is what the pins assert:
-`packages/theurian-core/tests/unit/test_env_file_merge.py` for the merge,
+`# >>> theurian >>>` and `# <<< theurian <<<`. There is no backup and no diff on
+this path. Preservation is by construction instead — the merge is computed before
+the file is opened, so a file setup cannot delimit is never opened at all.
+
+**The mechanism is a line match, not a search.** A marker is a whole line: the
+file is split on `\n` alone — `str.splitlines` also breaks on `\v`, `\f`, `\x1c`,
+`\x85` and `\u2028`, none of which end a line for a shell — and a trailing `\r`
+is dropped from the line's text before comparison, so a CRLF file delimits while
+its `\r` bytes stay outside every span and survive. Refused, rather than
+repaired: **two or more start lines anywhere in the file**, counted before a span
+is chosen, and **a start line with no end line after it**. An end line with no
+start above it, and a second end line, delimit nothing and are kept. The first
+cut of this work searched for substrings; measured over every file those three
+symbols build up to five lines long, 363 arrangements, 39 took the wrong refusal
+decision and 16 of those reported success while dropping 19 of the user's lines
+— one of them an `export AWS_SECRET_ACCESS_KEY`, with the run reporting
+`converged` and the re-probe `satisfied`. The pins:
+`packages/theurian-core/tests/unit/test_env_file_merge.py` for the merge, whose
+`::test_no_arrangement_of_the_markers_loses_a_line_outside_the_block` sweeps that
+population against a rule read off the symbols rather than off the code;
 `…/tests/integration/test_setup_env_file.py` for setup driven end to end over
-real files (its refusal arms assert the bytes on disk, not the reported state),
-and
+real files (its refusal arms assert the bytes on disk, not the reported state,
+and `::test_a_crlf_file_keeps_every_byte_outside_the_block` counts the `\r`s the
+run did not author); and
 `…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
 for the second writer.
+
+**Two defenses on this path are deliberately unpinned, and are recorded here
+rather than asserted.** Both are real and neither is measurable on the platforms
+Theurian supports:
+
+| Defense | Why no test can fail without it |
+| :-- | :-- |
+| `newline=""` on the *write* side of both writers | Writing with `newline=None` translates `\n` to `os.linesep`, which is `\n` on POSIX — measured on darwin: both forms produce identical bytes. It is the read side that carries the property here, and it *is* pinned. The write-side flag is the half that would matter to a Windows port, where the same code would otherwise rewrite every line ending it touched. |
+| the `0600` creation mode on the `open`'s `opener` | The `chmod(0o600)` after the write is unconditional and runs last, so a mode read afterwards cannot tell the two apart. What the opener alone buys is that the file never *exists* with a wider mode — a window between create and chmod, which nothing here observes. The complementary arm is pinned, because the creation mode does not reach a file that already exists: `…/test_setup_env_file.py::test_an_env_file_left_group_readable_by_an_older_version_is_tightened` is the `chmod` on its own, and `::test_the_env_file_is_private_however_permissive_the_umask_is` fixes the umask at `0o000` so the verdict is about the code. |
+
+**Controls, the repository's `.gitignore`:** written by `theurian init` rather
+than by setup — setup's row-13 probe only reads it — and in scope here because it
+is the same class in a second command, swept with #128. `ensure_gitignore` had
+`str.find` and no count of the start markers, so a file holding two of them, what
+resolving a merge conflict by keeping both sides leaves behind, had every rule
+between them swallowed by the rewrite and reported as `changed: true` with
+nothing else said. It now matches whole lines, counts the start lines first, and
+raises on both refusals; `init_command` renders that as `error:` plus a remedy
+and exit 1, where it used to arrive as a Typer traceback with the remedy buried
+in it. Pinned in
+`packages/theurian-core/tests/integration/test_init_gitignore_block.py`, which
+drives the real command: the file is byte-identical after a refusal, the message
+never quotes a rule back, the remedy is carried out and re-run to prove it works,
+and a CRLF `.gitignore` keeps its line endings through a rewrite. A `.gitignore`
+is tracked by Git, so a rule lost there shows in a diff — a mitigation, not the
+fix.
 
 ---
 
