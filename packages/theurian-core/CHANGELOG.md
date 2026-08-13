@@ -204,6 +204,230 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   keeps that set from going vacuous by naming the three positions
   (`migration_history.project_id` on each tool) that must fire the key.
 
+- **`theurian setup` and `theurian auth rotate` rewrite only the Theurian-owned
+  block in `<data_dir>/env`, and leave every other byte of that file alone**
+  ([#128](https://github.com/theurian/theurian/issues/128)). Both used to render
+  the whole file and truncate whatever else was in it, and `probe_env_reference`
+  reported `Missing` on any difference — so a line somebody had added to a file
+  whose own header says "Sourced by your shell profile" was destroyed with no
+  diff, no backup and no mention in `changedPaths`, on every run of a command whose
+  contract is that running it twice changes nothing (FR-L2). §6.2 row 7 of the
+  requirements analysis had required "rewrite the Theurian-owned block only"
+  throughout. The block is delimited by `# >>> theurian >>>` and
+  `# <<< theurian <<<`, spelled exactly as the pair `theurian init` writes into a
+  `.gitignore` so that someone who has seen one managed block recognises the
+  other, and the merge is computed *before* the file is opened — so a file that
+  cannot be delimited is never opened at all.
+
+  **What an operator upgrading from `0.1.0.dev0`–`dev2` sees.** Those versions
+  wrote the whole file as a fixed rendering of the data directory, so the first
+  `setup` or `auth rotate` after upgrading recognises that rendering and replaces
+  it *in place* with the marked block: one `export THEURIAN_MCP_TOKEN` afterwards
+  and not two, with lines added before it still before it and lines added after
+  it still after it. Appending the block beside the old rendering would have left
+  two assignments naming different paths once a data directory moves — the shell
+  taking whichever came last, while setup reported the machine converged.
+
+  **Recognition is exact, and deliberately not fuzzy**: those lines must be
+  consecutive and whole, and must name *this* data directory's token path. A
+  rendering somebody edited, and one written for another installation, are
+  therefore left alone and the block is appended below them — two visible
+  exports, the shell keeping the block because it reads it last. That is the
+  honest answer for a line somebody changed on purpose; matching it loosely is
+  what glued the block over half of one in the first cut.
+
+  **A marker is a whole line, and the first cut of this fix did not do that.**
+  Review found it substring-based: `str.find` opened the span at the first
+  *occurrence* of the start marker, so `echo "everything between
+  # >>> theurian >>> and here"` opened one and the rewrite cut that line in half,
+  leaving an unclosed quote that poisons every line after it in a sourced file;
+  the count that was supposed to catch a second start looked only at what
+  followed the *end* marker, so `S`, a user's line, `S`, the block, `E` — what
+  repairing an unterminated block by pasting a fresh one under it leaves — was
+  swallowed whole; and the dev0–dev2 rendering was matched as a substring, so
+  `export THEURIAN_MCP_TOKEN  # my note` had the block spliced over its first
+  half and the leftovers glued onto the end marker. Measured over every file a
+  start marker, an end marker and a user's line build up to five lines long, 363
+  arrangements: **39 took the wrong refusal decision and 16 of those reported
+  success while dropping 19 of the user's lines**, one of them an
+  `export AWS_SECRET_ACCESS_KEY`, with the run reporting `converged` and the
+  re-probe `satisfied`. What shipped matches whole lines — split on `\n` alone,
+  a trailing `\r` dropped, so a CRLF file delimits — and counts the start lines
+  over the whole file *before* choosing a span, which is what makes the second
+  one's position irrelevant.
+
+  **A behaviour change for a file whose markers do not delimit exactly one
+  block** — two or more start lines anywhere in the file, or a start line with no
+  end line after it. That used to be overwritten; it is now `Conflicting`,
+  because once the delimiters disagree setup cannot tell which lines are its own.
+  An *end* line with no start above it, and a second end line, are not that: they
+  delimit nothing, and they are kept like any other line. `setup` writes nothing
+  there, declares no path for it, and stops at consent; `--approve-conflicts`
+  applies the rest of the plan and still leaves that file byte-identical,
+  finishing `degraded` with the step named in `warnings`. `auth rotate` leaves the
+  file untouched, **still rotates the token**, and prepends one line to
+  `nextSteps` naming the file to repair — an exposed credential outranks a comment
+  marker, and the token has already been replaced by the time that file is
+  reached. The same holds when the OS refuses the write — a read-only checkout, a
+  file another account owns, a full disk: rotation completes and `nextSteps`
+  carries the exception's class name and never its message, which holds
+  `strerror`, the errno and on some platforms a second path. The conflict detail
+  carries the two marker strings, the path they are in and the command to re-run,
+  and no other line out of that file, because `doctor --report` publishes it
+  (O-3, SEC-6).
+
+  **A run can be right about the block and wrong about the machine, and now says
+  so for the direct assignment forms.** A shell keeps the last assignment it
+  reads, so a line *below* the block assigning `THEURIAN_MCP_TOKEN` again is what
+  gets exported while the probe — deliberately blind to lines it does not own —
+  reports the block current. That line is not Theurian's to edit and it is not a
+  conflict either; the step stays `satisfied` and carries a caveat, which
+  `_reservations` turns into a warning, so the run ends **`degraded` where it
+  used to end `converged`**. The warning names the path, the variable and the
+  start marker to move the line above, and never the line itself. A bare
+  `export THEURIAN_MCP_TOKEN` or a commented-out assignment is not an override
+  and leaves the run converged. Currency is asked first, so a block that is both
+  stale and shadowed is rewritten and *then* reported, rather than reported
+  instead of fixed.
+
+  **What finds that line is a heuristic, and the scope is published rather than
+  implied.** `contains_shadowing_assignment` reads one line at a time and
+  recognises a first word spelled `THEURIAN_MCP_TOKEN=…`, or that word after
+  `export`, `declare`, `typeset` or `readonly`. It is wrong in both directions,
+  measured with `/bin/bash` sourcing the block and then the line: an `&&` list,
+  an `if`/`then`, a `{ }` group and an `eval` each assign the variable while the
+  run stays **silent and `converged`**, and an assignment inside a quoted heredoc
+  *body* draws the warning although the shell keeps the block's value. The four
+  misses are pinned **as** the recorded boundary, each through a real shell
+  rather than restated against the function, so a change that starts warning on
+  one of them has to arrive with an argument and update the pin deliberately. Not
+  extended, and that is the decision rather than a to-do: what a line does is
+  settled by the shell at run time — `eval` takes a string that need not exist
+  until then, and a heredoc body is not shell at all — and a probe that runs
+  somebody's shell profile is not a probe. The residual is carried in the wording
+  instead: both published sentences say the line *appears* to assign and the
+  block *appears* to be overridden, which is what keeps the heredoc case honest,
+  and both are pinned — dropping the hedge from the `summary` alone, the sentence
+  a reader who stops at `satisfied` sees, survived all 2,442 tests while the
+  `detail`'s was held. **What stays unqualified** is the other arm's summary,
+  "`…/env` exports `THEURIAN_MCP_TOKEN` by reference" — and the `converged` the
+  run reports beside it. On a machine using one of the four evading shapes both
+  are true of the block and incomplete about the machine; measured through the
+  real CLI, `theurian doctor --json` publishes that summary, zero warnings and
+  exit 0 while `bash` exports the later line's value. Recorded here and in §6.2
+  row 7 rather than fixed, because no line-level rule can tell that machine from
+  a healthy one.
+
+  **`theurian doctor` and `theurian setup --dry-run` now carry that warning
+  too**, which is the caller-visible half of this. The sentence was built in the
+  verification pass alone, so on one machine `theurian setup` said `degraded`
+  with the caveat while `theurian doctor --json` said `"warnings": []` and exited
+  0 — the caveat sitting in the payload the whole time as the `detail` of a step
+  whose status reads `satisfied`, which is where a reader stops. Both surfaces
+  that publish a plan now build their warnings with the same `_reservations`, so
+  a shadowed machine gains one `env-reference: …` line in `doctor --json`,
+  `doctor --report` and the `--dry-run` plan the plugin renders. Nothing else
+  moved, deliberately: a reservation is a finding with no work attached, so
+  `healthy`, `problemCount` and the exit status stay tied to what setup would
+  change and what needs consent, and a machine whose only finding is a line
+  Theurian will not touch still exits 0. The reports built on the way *past* a
+  plan — `aborted`, `awaiting_consent` and `halted` — carry no reservations, and
+  that is recorded rather than closed in `_reservations`' docstring: each hands
+  the reader a larger question first, and the step's `detail` still travels with
+  the report.
+
+  **Line endings are bytes somebody chose.** Both writers read and write with
+  newline translation off, so a file edited on Windows keeps its `\r` bytes
+  outside the block — including a `\r` inside a quoted value, which translation
+  would turn into a newline and split the assignment in two. The block itself is
+  written with `\n`, so a block that arrived with CRLF markers is normalised on
+  the first run and is a fixed point after that.
+
+  **The same class in `theurian init`.** `ensure_gitignore` writes an
+  identically-spelled block into a repository's `.gitignore` with the same
+  `str.find` and no count of the start markers, so a file holding two of them —
+  what resolving a merge conflict by keeping both sides leaves behind — had every
+  rule between them swallowed by the rewrite and reported as `changed: true` with
+  nothing else said. It now matches whole lines, counts the starts first, keeps a
+  CRLF `.gitignore`'s line endings, and refuses both undelimited shapes. **The
+  refusal also reaches a person differently**: it used to arrive as a Typer
+  traceback with the remedy buried in it, because the only `except` in
+  `init_command` wrapped context resolution, and it is now `error: …` plus a
+  remedy on stderr with exit 1. A refused run leaves the `.theurian/`
+  directories it had already created; nothing else is written.
+
+  **Not marked BREAKING, and here is the one place it is arguable.** No MCP tool,
+  field, type or name changed, and no published contract promised any of this
+  (see *Changing this contract* in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md)). What did
+  change for a script is exit status on two inputs. `theurian init` over a
+  `.gitignore` holding two start markers used to exit 0 having silently eaten the
+  rules between them, and now exits 1 (an *unterminated* block already failed,
+  though as a traceback). `theurian setup` over an env file in either state used
+  to rewrite it and count the step converged; it now stops the whole run at
+  consent — exit 5, `EXIT_NEEDS_CONSENT` — before `_apply` is reached, so nothing
+  at all is written. Both are the fix, not a side effect of it.
+
+  Idempotence is now measured on the file rather than on the report: a converged
+  second run does not reopen it at all, witnessed on the mtime, so a run that
+  rewrote identical bytes fails the pin. The write goes *through* the inode
+  rather than temp-and-rename, because this file is a symlink into a dotfiles
+  repository on plenty of machines, and through an `io.BufferedWriter`, because a
+  short write here would now destroy lines Theurian did not author. 74 tests, 97
+  collected cases: `tests/unit/test_env_file_merge.py` (33 tests, including one
+  that sweeps all 363 arrangements against a rule read off the symbols rather
+  than off the code), `tests/integration/test_setup_env_file.py` (21, driving the
+  real `SetupService` over real files because the defect lived in the seam — a
+  probe asking one question while the apply performs a different write is exactly
+  what shipped, two of them — five cases — asking a real `bash` what a file
+  exports rather than asking the heuristic to agree with itself),
+  `tests/integration/test_init_gitignore_block.py` (9, through the real
+  `theurian init`), `tests/integration/test_auth_rotate.py` (6 added),
+  `tests/integration/test_setup_cli.py` (3 added, for the `doctor` and
+  `--dry-run` parity above), and `tests/integration/test_setup_service.py` (2
+  added). The last two of those close pins that were simply absent: nothing
+  asserted `CONVERGED` by value — replacing `_verify`'s state choice with an
+  unconditional `DEGRADED` passed the whole suite, because `succeeded` is true of
+  both — and nothing asserted the *status* half of the reservation test, so
+  reporting every explained `NOT_APPLICABLE` step as a warning, which would turn
+  the supply-chain note on row 3 into something wrong with this install, passed
+  it too. Four parser decision points gained pins the same way: a marker line
+  with a trailing space is not a marker, in the env file **and** in the
+  `.gitignore` scan beside it; the block is searched for before the dev0–dev2
+  rendering; markers that cannot be resolved are refused even where that
+  rendering is also present; and the probe asks currency before shadowing.
+
+  **Round two re-measured the parser rather than re-reading it.** A second sweep
+  over an extended alphabet, 2,800 shapes, found no arrangement that loses a line
+  outside the block or takes the wrong refusal decision; the two writers were
+  compared over 84 file-state combinations and produce identical bytes; and the
+  six numbers this entry publishes — 363, 229 refused, 134 merged, and the first
+  cut's 39, 16 and 19 — were re-measured exact. Those are review measurements and
+  not suite tests: what guards the rule from here on is the 363-arrangement
+  sweep, which asserts its own population size so a shrunken alphabet fails
+  rather than passing quietly.
+
+  **Two remedies now describe the state they are reached from.** The `.gitignore`
+  refusal said "Add `# <<< theurian <<<` where the block ends" to a person whose
+  file appears to have that line already — a marker is matched as a whole line,
+  so a trailing space is the likeliest way to reach an unterminated block, and
+  the remedy sent them looking for what was in front of them; it now says what
+  the line must be, trailing space and all. `auth rotate`'s `OSError` remedy
+  offered "an older block, or readable by other accounts" for a file that can
+  also be left *empty*, since the `open` truncates before the write that failed —
+  reproduced under `RLIMIT_FSIZE`, 588 bytes in and 16 out — and now admits that
+  state. A third correction is not user-visible: the comment above the rotation's
+  env-file refresh enumerated the shapes it handles, absent, stale and
+  pre-marker, without the residual — a line below the block that assigns the
+  token again survives the rotation and produces the 401 anyway, and `doctor` is
+  what reports it.
+
+  This supersedes one sentence of `0.1.0.dev2`'s `changed_paths` entry below. The
+  env file's truncation is still disclosed on the arm that motivated it, but
+  "what it replaced is preserved nowhere" no longer holds: what a completed write
+  puts back includes the lines the run did not author. What stays unpinned, as
+  there, is the window between the truncation and the write's last byte.
+
 ### Security
 
 - **The substring-search fallback's withheld-count timing channel is closed**

@@ -72,6 +72,7 @@ from theurian.domain.setup import SetupState, SetupStep, StepId, StepOutcome, St
 from theurian.infrastructure.claude.mcp_config import ClaudeCodeMcpConfig, ConnectionSpec
 from theurian.infrastructure.secrets.file_store import TOKEN_KEY, FileSecretStore
 from theurian.infrastructure.services.runner import CommandResult
+from theurian.security.env_file import env_block
 from theurian.security.paths import ensure_private_mode
 
 pytestmark = pytest.mark.integration
@@ -677,19 +678,23 @@ def test_a_write_through_a_symlinked_declaration_is_disclosed(
 ) -> None:
     """#47. The observation follows links, because every apply here does.
 
-    ``apply_env_reference`` opens with ``O_TRUNC`` and ``apply_data_directory``,
+    ``apply_env_reference`` writes through the existing inode -- ``open(path,
+    "w")``, never a temporary file and a rename -- and ``apply_data_directory``,
     ``FileSecretStore.set`` and ``claude mcp add`` all write *through* a symlink
     rather than replacing one. A home directory kept in a dotfiles repository,
     where these files are links into it, is an ordinary machine -- and watching
     the link instead of what it points at reports every such write as "nothing
     happened", which is the silence #47 exists to end arriving from the other
-    side.
+    side. It is also why #128's merge cannot be made atomic: a rename would
+    leave a regular file where the link was.
 
     Measured on the link, which is what the step declares: writing the target
     leaves the link's own inode, size and mtime untouched, so this passes under
-    ``os.stat`` and fails under ``os.lstat``. The target's bytes are asserted
-    rewritten first, so the disclosure is being compared against a write that
-    really happened.
+    ``os.stat`` and fails under ``os.lstat``. The target is asserted to have
+    *gained the block* first, so the disclosure is being compared against a
+    write that really happened -- and to have kept the line already in it,
+    because the witness this test carried until #128 was the target's
+    truncation, which was the defect and not the write.
     """
     context = _context(tmp_path)
     target = tmp_path / "dotfiles" / "env"
@@ -705,8 +710,13 @@ def test_a_write_through_a_symlinked_declaration_is_disclosed(
     failed = report.step(StepId.ENV_REFERENCE)
     assert report.state is SetupState.HALTED, "the env-reference step is critical"
     assert failed is not None and failed.outcome is StepOutcome.FAILED
-    assert "an-older-spelling" not in target.read_text(encoding="utf-8"), (
+    written = target.read_text(encoding="utf-8")
+    assert env_block(context.data_dir) in written, (
         "the apply wrote through the link before its chmod raised"
+    )
+    assert "export THEURIAN_MCP_TOKEN=an-older-spelling\n" in written, (
+        "and kept the line the target already held, which the whole-file rewrite "
+        "this replaces would have destroyed (#128)"
     )
     after = context.env_file.lstat()
     assert (after.st_ino, after.st_size, after.st_mtime_ns) == (

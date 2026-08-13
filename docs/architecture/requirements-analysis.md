@@ -324,8 +324,42 @@ stateDiagram-v2
 
 ### 6.2 Step-level state, in order
 
-Every step is a `SetupStep` with an independent tri-state probe result:
-`Satisfied` (skip), `Missing` (create), `Conflicting` (back up or ask).
+Every step is a `SetupStep` with an independent probe result: `Satisfied`
+(skip), `Missing` (create), `Conflicting` (back up or ask) — and `NotApplicable`,
+which `StepStatus` carries so a report never claims to have checked something it
+skipped. `Satisfied` may still carry a `detail` — a **reservation**: a finding
+with no work attached. The block being correct and the shell exporting its value
+are different claims, and row 7 is where they come apart.
+
+`_reservations` turns each one into a report warning, and **both surfaces that
+publish a plan call it**, because they had drifted. The verification pass carried
+the sentence and ended a real run `Degraded`, while the `PlanBuilt` report that
+`theurian doctor` and `theurian setup --dry-run` both return carried no warnings
+at all: on one machine, `theurian setup` said `degraded` with the sentence and
+`theurian doctor --json` said `"warnings": []` and exited 0, the caveat sitting
+in the payload the whole time as the `detail` of a step whose status reads
+`satisfied` — which is where a reader stops. Pinned in
+`tests/integration/test_setup_cli.py`:
+`test_doctor_calls_a_line_it_will_not_touch_a_warning_and_not_a_problem`,
+`test_the_plan_setup_prints_carries_the_same_reservation_doctor_does`, and
+`test_doctor_says_nothing_about_a_machine_with_nothing_below_the_block` as the
+control that keeps the first two from passing on a command that warns
+unconditionally.
+
+A reservation is **not** a problem. `doctor`'s `healthy` and `problemCount` count
+what setup would change and what it would ask consent for, and a reservation is
+neither, so neither field moves and the exit code stays 0: a non-zero exit that
+no command Theurian ships can clear is how a health check stops being read.
+Measured on a real `theurian doctor --json` over one sandbox with and without a
+shadowing line: `problemCount` is 4 both times, and the second run carries one
+extra `env-reference: …` warning. The status half of `_reservations`' condition
+is load-bearing and pinned, because every machine carries `NotApplicable` steps
+that explain themselves — row 3's supply-chain note is one on every platform —
+and matching on `detail` alone would turn each of them into a finding about this
+install
+(`tests/integration/test_setup_service.py::test_a_step_that_is_not_applicable_and_says_why_is_not_a_warning`;
+the state a run with no findings at all reaches is
+`::test_a_healthy_machine_ends_the_run_converged`).
 
 | # | Step | Probe | Action when `Missing` | Action when `Conflicting` |
 | :-- | :-- | :-- | :-- | :-- |
@@ -335,13 +369,13 @@ Every step is a `SetupStep` with an independent tri-state probe result:
 | 4 | Data directory | `~/.theurian` exists, mode 0700 | `mkdir -p`, `chmod 700` | tighten mode, report the change |
 | 5 | Token | token exists and is ≥ 32 bytes | generate via CSPRNG | reuse; never regenerate silently |
 | 6 | Token storage | file mode 0600, or Keychain entry | write | `chmod`, report |
-| 7 | Env reference | `~/.theurian/env` exports `THEURIAN_MCP_TOKEN` | write | rewrite the Theurian-owned block only |
+| 7 | Env reference | `~/.theurian/env` holds a current Theurian-owned block | write the block, or rewrite a stale one, leaving every other line alone | markers that delimit no single block: report, never write |
 | 8 | Daemon service | LaunchAgent / systemd user unit present | install a user-scoped unit | show a diff, back up, ask |
 | 9 | Daemon running | `GET /health` returns 200 | start the service | reuse the existing daemon |
 | 10 | Single instance | lock held by exactly one PID | acquire | reuse; never kill a live daemon |
 | 11 | Project registered | `projectId` present in the registry | register the current repo | reuse; update the root path if the repo moved |
 | 12 | `.theurian/` layout | required directories exist | create | leave existing files untouched |
-| 13 | `.gitignore` entries | derived paths ignored | append a marked block | leave the user's rules; append only what is missing |
+| 13 | `.gitignore` entries | derived paths ignored | `theurian init` appends a marked block; setup only reports | — see below |
 | 14 | MCP connection | a `theurian` entry with the right URL | write via a merge-not-replace update | back up, show a diff, ask |
 | 15 | MCP health | initialize handshake succeeds | — | report and continue in `Degraded` |
 | 16 | Migrations valid | `migrate validate` is clean | — | report; never auto-repair data |
@@ -369,6 +403,114 @@ carry checksums — ships. The gap is filed as
 [#39](https://github.com/theurian/theurian/issues/39), and why closing it is a
 change to how Theurian is obtained rather than a probe added here is recorded
 under [T-16](../security/threat-model.md).
+
+**Row 7's "the Theurian-owned block only" ships, and its tri-state is not where
+this table first put it.** `probe_env_reference` compares the marked block and
+nothing else; `apply_env_reference` rewrites that span alone, and every byte
+outside it survives byte for byte
+([#128](https://github.com/theurian/theurian/issues/128)) — the span being the
+marked block, or, on a machine `0.1.0.dev0`–`dev2` set up, the unmarked rendering
+those versions wrote, which is replaced in place rather than appended beside. A
+file that ended without a newline gains one; nothing else is added and nothing
+outside is removed. What moved is which
+state carries the requirement. A stale or absent block is `Missing` — `Missing`
+means "not as setup wants it", not "absent" — so the block-only rewrite is the
+`Missing` action, and this row used to name it under `Conflicting`. `Conflicting`
+is now the narrower case no rewrite survives: markers that do not delimit one
+block, where setup cannot tell which lines are its own. It then writes nothing at
+all, `--approve-conflicts` included, and declares no path
+(`tests/integration/test_setup_env_file.py::test_markers_that_do_not_delimit_one_block_are_a_conflict_and_not_a_rewrite`,
+`::test_approving_the_conflict_buys_progress_and_never_an_overwrite`).
+
+**Which markers delimit is decided on lines, and on a count taken first.** A
+marker is a whole line — the file is split on `\n` alone, with a trailing `\r`
+dropped from the line's text, so a CRLF file delimits while its `\r` bytes stay
+outside every span — and `Conflicting` covers exactly two arrangements: two or
+more start *lines* anywhere in the file, and a start line with no end line after
+it. The starts are counted over the whole file before a span is chosen, which is
+what makes the second one's position irrelevant. An end line with no start above
+it, and a second end line, are ordinary lines the merge keeps. The rule is
+asserted over the population rather than shape by shape, in
+`tests/unit/test_env_file_merge.py::test_no_arrangement_of_the_markers_loses_a_line_outside_the_block`:
+every file those three symbols build up to five lines long, 363 of them, 229
+refused and 134 merged with every line outside the delimited block surviving in
+order. The first cut of this work searched for substrings instead; measured
+against it, 39 of the 363 took the wrong refusal decision and 16 of those
+reported success while dropping 19 of the user's lines.
+
+**Row 7 also has a `Satisfied` arm that does not mean converged.** A shell keeps
+the last assignment it reads, so a line *below* the block assigning
+`THEURIAN_MCP_TOKEN` again is what the machine exports. The probe stays
+`Satisfied`, because the block is correct and applying the step would write the
+same bytes, and it is not `Conflicting`, because a conflict asks for consent to
+do something and there is nothing here setup wants to do — that line is not
+Theurian's to edit (SEC-18). It is reported instead: the step carries a `detail`,
+`_reservations` turns it into a warning on both surfaces above, and a real run
+ends `Degraded`
+(`tests/integration/test_setup_env_file.py::test_an_assignment_below_the_block_is_reported_rather_than_edited_away`).
+The warning names the path, the variable and the start marker to move the line
+above, exactly once, and never the line itself
+(`::test_the_override_warning_names_the_variable_and_never_the_line_it_found`). A
+bare `export THEURIAN_MCP_TOKEN` or a commented-out assignment is not an
+override and leaves the run converged
+(`::test_a_line_that_only_mentions_the_token_leaves_the_run_converged`). Currency
+is asked *first*: a block that is stale **and** shadowed is `Missing`, rewritten,
+and reported by the re-probe afterwards — one warning, not a report instead of
+the fix
+(`::test_a_stale_block_with_a_later_assignment_is_rewritten_rather_than_reported`).
+
+**What finds that line is a heuristic over the direct assignment forms, and its
+boundary is recorded rather than closed.** `contains_shadowing_assignment` reads
+one line at a time and recognises a first word spelled `THEURIAN_MCP_TOKEN=…`, or
+that word following `export`, `declare`, `typeset` or `readonly`. It is wrong in
+both directions, measured with `/bin/bash` sourcing the block and then the line:
+
+| A line below the block | The shell exports | The run says |
+| :-- | :-- | :-- |
+| `[ -n "$HOME" ] && THEURIAN_MCP_TOKEN=x` | `x` | nothing; `Converged` |
+| `if [ -n "$HOME" ]; then THEURIAN_MCP_TOKEN=x; fi` | `x` | nothing; `Converged` |
+| `{ THEURIAN_MCP_TOKEN=x; }` | `x` | nothing; `Converged` |
+| `eval 'THEURIAN_MCP_TOKEN=x'` | `x` | nothing; `Converged` |
+| an assignment inside a quoted heredoc *body* | the block's value | the warning |
+
+The four misses are pinned **as** the recorded boundary, one case per shape and
+each measured through a real `bash` rather than restated against the function
+(`::test_a_shape_the_heuristic_does_not_recognise_leaves_the_run_silent`), so a
+change that begins warning on one of them has to come here and to that list and
+say so. On those four machines the step's summary still reads
+"`<data_dir>/env` exports `THEURIAN_MCP_TOKEN` by reference" — true of the block,
+and incomplete about the machine.
+
+**Not extended, and that is the decision rather than a to-do.** What a line does
+is settled by the shell at run time — `eval` takes a string that need not exist
+until then, and a heredoc body is not shell at all — so no line-level rule
+separates these, each shape added would move the boundary without closing it, and
+a probe that runs somebody's shell profile is not a probe. The answer is in the
+wording instead: both published sentences say the line *appears* to assign and
+the block *appears* to be overridden, which is what keeps the last row honest —
+that run warns about a file doing exactly what setup wanted, and the shell was
+asked before the assertion was written
+(`::test_the_sentence_about_a_line_it_cannot_read_claims_only_that_it_appears_to_assign`,
+which holds the `summary` as well as the `detail`, because a reader who stops at
+a status of `satisfied` sees only the first; dropping the hedge from the summary
+alone survived all 2,442 tests while the detail's was held).
+
+**Row 13 is a report in setup and a write in `theurian init`.**
+`probe_gitignore` has no apply. It answers `Satisfied` when `.theurian/state`
+appears anywhere in the file, `Missing` otherwise with "Run `theurian init`", and
+`NotApplicable` outside a Git repository — so a `.gitignore` whose markers do not
+delimit one block still probes `Satisfied` while that one string is in it. Setup
+never opens that file for writing, so nothing is at risk in the meantime; what
+the report does not do is say so. `ensure_gitignore`, which `init` calls, is the
+writer, and #128's class was swept there too: markers matched as whole lines, the
+start lines counted first, and both refusals raised as a `ProjectError` that
+`init_command` renders as `error:` plus a remedy and exit 1 rather than the Typer
+traceback it was
+(`tests/integration/test_init_gitignore_block.py::test_the_refusal_reaches_a_person_as_an_error_line_and_not_a_traceback`,
+`::test_markers_that_do_not_delimit_one_block_leave_the_file_exactly_as_it_was`).
+A `.gitignore` is tracked, so a rule lost there shows in `git diff` — a
+mitigation, not the fix, and worth nothing to somebody running `init` in a tree
+that already has changes in it.
 
 ### 6.3 Idempotence contract
 
@@ -404,9 +546,11 @@ The journal is append-only and a record is `{"step", "event", "detail"}`. There
 is no path *field* — but `detail` is prose written for a person, and it does name
 paths: an applied record carries the step's own `action`, two of the seven of
 which embed an absolute path (data-directory's "Create …/.theurian with mode
-0700", env-reference's "Write …/env, exporting …"), and a failed record carries
-the verbatim text of the exception that stopped the step, which normally names
-the path that refused. So the file is a trace to read and not a ledger to parse:
+0700", and env-reference's "Write …/env, exporting …" for a file that is not
+there or "Rewrite the Theurian-owned block in …/env" for one that is), and a
+failed record carries the verbatim text of the exception that stopped the step,
+which normally names the path that refused. So the file is a trace to read and
+not a ledger to parse:
 it holds no inverse action, `_apply` replays nothing, and no production code
 reads it back — `uninstall_command` builds its list from the service path and the
 MCP config alone. Enumerating created paths so `uninstall` can delete them is a
@@ -478,6 +622,16 @@ A critical step failing during apply **halts** the run at that step. The report'
   disk (`test_a_halted_run_names_the_journal_among_the_files_it_wrote`,
   `test_a_halted_run_leaves_the_journal_it_wrote_on_disk`).
 
+**A halted report's `warnings` are the failures that stopped the run, and carry
+no reservations.** `_reservations` is called from the verification pass and from
+the `PlanBuilt` report, and a halted run reaches neither; `Aborted` and
+`AwaitingConsent` return earlier still, over a blocking conflict and over a plan
+nobody has approved. So §6.2's "a later line appears to assign it again" caveat
+is absent from exactly those three reports. That is recorded rather than closed,
+in `_reservations`' own docstring: each of the three hands the reader a larger
+question first, and the step's `detail` travels with the report in all of them —
+what is missing is the promotion to a warning, not the sentence.
+
 **Provenance, not existence.** Each of the failing step's declared paths is
 reduced to `(st_ino, st_mode, st_size, st_mtime_ns)` by `os.stat` immediately
 before the apply and again in the arm that assembles the halted report. Absent
@@ -527,14 +681,32 @@ pins for the two unknown arms, and for `st_ino`, `st_size` and `st_mtime_ns`
 individually, are deferred to
 [#155](https://github.com/theurian/theurian/issues/155).
 
-The env file is the same "yes" as the token: `apply_env_reference` opens with
-`O_TRUNC`, so a write that raises after the truncation has already moved size and
-mtime and the path is disclosed. That row is **read off `O_TRUNC` rather than
-measured**: no test drives a truncation followed by a write that raises, so it
-is an inference from the open flags and not a pinned arm. What that rewrite
-replaced is not preserved anywhere
-([#128](https://github.com/theurian/theurian/issues/128)), which is one more
-reason the report says where it stopped rather than offering to undo it.
+The env file is the same "yes" as the token: `apply_env_reference` opens it for
+writing, which truncates, so a write that raises after that has already moved
+size and mtime and the path is disclosed. That row is **read off the open flags
+rather than measured**: no test drives a truncation followed by a write that
+raises, so it is an inference and not a pinned arm.
+
+What the truncation replaces is now preserved by construction
+([#128](https://github.com/theurian/theurian/issues/128)). The merge runs
+*before* the open — the apply reads the file, computes the new contents with
+`merge_env_file` (this data directory's block, every other byte as it was), and
+only then opens — so a file whose markers it cannot delimit is never opened at
+all, and what a completed write puts back includes the lines the run did not
+author. Pinned in `tests/integration/test_setup_env_file.py`:
+`test_an_undelimited_env_file_stops_the_run_before_anything_is_written` asserts
+the bytes rather than the state, and
+`test_lines_around_a_stale_block_survive_it_being_rewritten` and
+`test_upgrading_a_pre_marker_file_keeps_the_lines_added_to_it` assert the whole
+file after one.
+
+What is left is the window between the truncation and the write's last byte,
+where a device error leaves a prefix of the merged contents on disk. A *short*
+write is not in that window — the write goes through an `io.BufferedWriter`, for
+the reason given above for the journal — and the window is unpinned for the same
+reason the disclosure row above is. Nothing is replayed either way: the journal
+holds no inverse action, which is why a halted run says where it stopped rather
+than offering to undo it.
 
 Paths created implicitly on the way are not listed; a step discloses its declared
 artefacts only. That category is wider than the data directory's `auth/`
@@ -571,8 +743,23 @@ That is a design decision, not a missing feature. Deleting a token another
 session may already be holding is its own defect, so setup reports where it
 stopped rather than reversing. The remedy Core names for an unwanted credential
 is `theurian auth rotate`, in `probe_token`'s own conflict detail; what that
-command does is replace the value in place, rewrite the env file that points at
-it, and restart the daemon **when it can**. `_restart_daemon` restarts only where
+command does is replace the value in place, rewrite the Theurian-owned block in
+the env file that points at it — through the same merge setup performs, so lines
+somebody added around that block survive the rotation
+(`tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`)
+— and restart the daemon **when it can**. Two things stop that rewrite and
+neither stops the rotation: markers that delimit no single block, which leave the
+file untouched, and an OS-level refusal — a read-only checkout, a file another
+account owns, a full disk — which leaves it wherever the write reached. By then
+the token has already been replaced, so refusing over a comment marker or a
+permission bit would leave an exposed credential in place; the file to repair is
+named in `nextSteps` instead, and the second arm names the exception's class and
+not its message, which carries whatever the OS put in it
+(`::test_rotation_leaves_an_env_file_it_cannot_delimit_alone_and_says_so` and
+`::test_a_rotation_survives_an_env_file_the_os_will_not_let_it_write` each assert
+all three together;
+`::test_the_refusal_names_the_kind_of_failure_and_not_what_the_os_said` holds the
+message out). `_restart_daemon` restarts only where
 `detect_manager` finds a service manager and that manager reports the service as
 something other than not-installed; otherwise the command answers
 `daemonRestarted: false` and names the restart in `nextSteps`. A halted run has
@@ -1086,7 +1273,7 @@ flowchart TB
 | T-11 | A client authorized for Project A reads Project B | EoP | High | SEC-13 |
 | T-12 | An agent silently rewrites an approved decision | Tampering | High | SEC-17, ADR-0013 |
 | T-13 | Two daemons corrupt the same SQLite file | Tampering | High | NFR-1, R-1 |
-| T-14 | Setup overwrites a user's MCP configuration | Tampering | Medium | SEC-18, R-9 |
+| T-14 | Setup overwrites a user's configuration — the MCP entry, and `~/.theurian/env` since #128 | Tampering | Medium | SEC-18, R-9 |
 | T-15 | A secret in a document becomes an approved, indexed revision | Information disclosure | High | SEC-11 |
 | T-16 | A compromised release artifact is installed | Tampering | Critical | OSS-7, OSS-11, setup step 3 |
 
@@ -1125,7 +1312,7 @@ replaced by a recording fake.
 | Pre-existing MCP config | Backed up; the `serena` entry survives untouched. |
 | Read-only `HOME` | The run halts at data-directory — the first step that *writes*, the three probes ahead of it having passed — creates nothing under `HOME`, and names the directory that refused the write in `warnings`: the raw `PermissionError`, which carries the path and no remedy. `changed_paths` is empty (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`). |
 | Existing token | Reused, never regenerated. |
-| Wrong file mode | Corrected and reported for the **data directory** only. A world-accessible `~/.theurian` probes `Missing` with "Tighten … to 0700" and the apply performs it. A 0644 token file or a 0755 `auth/` probes `Conflicting` by design — tightening is not enough once a credential has been exposed, so the detail names `theurian auth rotate` — and a `Conflicting` step is never applied, `--approve-conflicts` included. A 0644 `env` file is not seen at all: `probe_env_reference` compares contents, so a run converges leaving the mode as it found it. |
+| Wrong file mode | Corrected and reported for the **data directory** only. A world-accessible `~/.theurian` probes `Missing` with "Tighten … to 0700" and the apply performs it. A 0644 token file or a 0755 `auth/` probes `Conflicting` by design — tightening is not enough once a credential has been exposed, so the detail names `theurian auth rotate` — and a `Conflicting` step is never applied, `--approve-conflicts` included. A 0644 `env` file is not seen at all: `probe_env_reference` asks only whether the Theurian-owned block is current, so a converged run never reaches the apply — the one place that mode is re-asserted — and leaves it as it found it. A run that *does* rewrite the block tightens it on the way through, which is the arm every machine set up by 0.1.0.dev0–dev2 takes on its first upgraded run (`tests/integration/test_setup_env_file.py::test_an_env_file_left_group_readable_by_an_older_version_is_tightened`). |
 | Critical failure mid-plan | The run halts (`state = halted`); nothing is undone, and `changed_paths` discloses the finished steps' declared artefacts, whichever of the failing step's declared artefacts this run *moved*, and the setup journal this run appended to — de-duplicated, first-seen order, so a credential minted before the failure appears exactly once (§6.4). |
 | Project already registered elsewhere | Detected; no duplicate registration. |
 

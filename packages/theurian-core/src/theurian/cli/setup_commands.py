@@ -145,13 +145,16 @@ def setup_command(
     """Configure this machine to run Theurian, and connect Claude Code to it.
 
     Creates the data directory or tightens an existing one to 0700, mints and
-    stores the local access token, writes the env file that references it,
-    registers and starts the user-scoped OS service, and writes the MCP
-    connection entry. Those 7 steps are every write setup performs, apart from
-    the setup journal it appends under the data directory -- a write that
+    stores the local access token, writes the block that references it in the
+    env file, registers and starts the user-scoped OS service, and writes the
+    MCP connection entry. Those 7 steps are every write setup performs, apart
+    from the setup journal it appends under the data directory -- a write that
     belongs to no step, and one `changedPaths` names whenever that append
     reached the disk. Nothing else registers the service or writes that entry,
     and running it twice changes nothing (FR-L2).
+
+    In the env file it rewrites only the lines between its own `# >>> theurian
+    >>>` markers. Anything you added around them stays where you put it.
 
     Setup cannot tell you Core is missing, because setup is Core: it runs from
     the installation it would have to create, and a shell with no `theurian` on
@@ -193,11 +196,23 @@ def doctor_command(
     Deliberately read-only. A diagnostic that repairs things is a diagnostic
     whose output you cannot trust, because you can no longer tell what was
     broken from what it just fixed.
+
+    A problem is something setup would change, or something it would ask you to
+    approve. A step can also be satisfied and still carry a reservation -- a
+    line below Theurian's block in your env file that appears to assign the same
+    variable, say, which setup will not touch because it is yours. Those are
+    listed under warnings and are not counted as problems, so a machine can be
+    healthy and still have something worth reading.
     """
     context = build_context(port=port, for_publication=report_mode)
     report = SetupService(context).run(SetupRequest(dry_run=True))
     payload = report.to_json()
 
+    # Deliberately not widened to take in the report's warnings. A reservation
+    # is a finding with no work attached -- `SetupService._reservations` states
+    # the split -- and counting one as a problem would exit 1 on a machine where
+    # there is nothing for `theurian setup` to do about it. It reaches the reader
+    # through `warnings`, which this payload carries verbatim.
     problems = [step for step in report.steps if step.would_change or step.needs_consent]
     payload["healthy"] = not problems
     payload["problemCount"] = len(problems)

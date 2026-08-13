@@ -15,6 +15,8 @@ can, and says plainly what the user must do when it cannot.
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -28,7 +30,7 @@ from theurian.infrastructure.secrets.file_store import (
     default_data_dir,
 )
 from theurian.infrastructure.services import detect_manager
-from theurian.security.env_file import env_file_contents
+from theurian.security.env_file import MalformedEnvBlockError, merge_env_file
 from theurian.security.tokens import TOKEN_ENV_VAR, describe, generate_token
 
 auth_app = typer.Typer(help="Manage the local access token.", no_args_is_help=True)
@@ -53,11 +55,19 @@ def auth_rotate(
     token = generate_token()
     asyncio.run(store.set(TOKEN_KEY, token))
 
-    # Rewritten too: it names the token's location, and a rotation that left a
-    # stale env file pointing somewhere else would be a 401 with no visible cause.
-    env_path = data_dir / "env"
-    env_path.write_text(env_file_contents(data_dir), encoding="utf-8")
-    env_path.chmod(0o600)
+    # Brought up to date too. Not because rotation moves anything it names --
+    # the block references the token by *path*, and rotation changes the value
+    # in that file and not the path to it -- but because this is the moment the
+    # user is about to re-source the file: a machine whose block is absent,
+    # stale or pre-marker exports nothing or exports the wrong path, and the
+    # 401 that follows would look like the rotation's fault.
+    #
+    # Those three shapes and no others. A line *below* the block that assigns
+    # the token again survives this and goes unmentioned: rotation writes the
+    # block, the shell keeps that later line, and the 401 arrives anyway.
+    # `probe_env_reference` is what reports it, so the sentence a person needs
+    # comes from `theurian doctor` rather than from here.
+    env_remedy = _refresh_env_file(data_dir)
 
     restarted, remedy = _restart_daemon(port=port)
 
@@ -69,10 +79,70 @@ def auth_rotate(
             "token": describe(token),
             "tokenFile": str(data_dir / "auth" / TOKEN_KEY),
             "daemonRestarted": restarted,
-            "nextSteps": remedy,
+            "nextSteps": env_remedy + remedy,
         },
         as_json=as_json,
     )
+
+
+def _refresh_env_file(data_dir: Path) -> list[str]:
+    """Bring the env file's Theurian block up to date, keeping the rest.
+
+    The same managed block ``theurian setup`` writes, through the same merge:
+    this command used to render the whole file and truncate whatever else was
+    in it, so a rotation destroyed the lines its own header invites people to
+    add (#128). Rotation is usually run *because* a credential has been
+    exposed, which is the worst moment to take something away silently.
+
+    Returns:
+        Lines to prepend to ``nextSteps``, empty when the file was updated.
+
+    Nothing here is allowed to fail the rotation, and the reason is the ordering
+    the caller already committed to: the token has been replaced by the time
+    this runs. Markers that do not delimit one block leave the file untouched;
+    an OS-level refusal -- a read-only ``HOME``, a full disk, a file another
+    account owns -- leaves it in whatever state the write reached. Both put the
+    repair in ``nextSteps`` rather than raising, because the alternatives are
+    worse in both directions: refusing to rotate leaves an exposed credential in
+    place over a comment marker or a permission bit, and an exception here ends
+    the command with a fresh token on disk, a daemon never restarted, and a
+    traceback where the remedy should be.
+
+    ``newline=""`` on both sides and the creation mode on the ``open``, for the
+    reasons :func:`~theurian.application.setup_steps.apply_env_reference` states:
+    this is the second writer of the same file and the two must not differ.
+    """
+    env_path = data_dir / "env"
+    try:
+        existing = env_path.read_text(encoding="utf-8", newline="") if env_path.is_file() else None
+        merged = merge_env_file(existing, data_dir)
+        with open(
+            env_path,
+            "w",
+            encoding="utf-8",
+            newline="",
+            opener=lambda file, flags: os.open(file, flags, 0o600),
+        ) as handle:
+            handle.write(merged)
+        # Re-asserted, for the same two reasons the setup step re-asserts it:
+        # the creation mode is ANDed with the umask, and a file an earlier
+        # version created keeps whatever mode it was given.
+        env_path.chmod(0o600)
+    except MalformedEnvBlockError as exc:
+        return [f"{env_path} was left untouched: {exc}"]
+    except OSError as exc:
+        # The type and the path, never the message: an OSError carries whatever
+        # the OS put in it, and this line is printed beside a rotation somebody
+        # may well paste into a bug report.
+        return [
+            f"{env_path} could not be updated ({type(exc).__name__}): it may still name an "
+            f"older block, hold part of one, be empty -- the open that truncates it comes "
+            f"before the write that failed -- or be readable by other accounts. The new "
+            f"token is already in place; repair that file, then run `theurian setup` to "
+            f"rewrite the block."
+        ]
+
+    return []
 
 
 def _restart_daemon(*, port: int) -> tuple[bool, list[str]]:

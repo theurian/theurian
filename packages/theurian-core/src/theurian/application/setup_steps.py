@@ -55,14 +55,23 @@ from theurian.domain.extras import (
 )
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.domain.setup import SetupStep, StepId, StepStatus
-from theurian.security.env_file import TOKEN_KEY, env_file_contents
+from theurian.security.env_file import (
+    ENV_BLOCK_START,
+    TOKEN_KEY,
+    MalformedEnvBlockError,
+    contains_current_block,
+    contains_shadowing_assignment,
+    merge_env_file,
+)
 from theurian.security.paths import is_world_accessible
 from theurian.security.tokens import MIN_TOKEN_LENGTH, TOKEN_ENV_VAR, generate_token
 
-#: Marker delimiting the block setup owns in a shell profile. Only ever this
-#: block is rewritten; the rest of the file is never touched (SEC-18).
-PROFILE_BEGIN: Final = "# >>> theurian >>>"
-PROFILE_END: Final = "# <<< theurian <<<"
+# The marker pair that used to be declared here as `PROFILE_BEGIN`/`PROFILE_END`
+# now lives with the text it delimits, as
+# :data:`~theurian.security.env_file.ENV_BLOCK_START`. Nothing ever read the
+# constants here -- no step writes a shell profile -- while the claim attached to
+# them, that only the block between them is rewritten, was false of the one file
+# setup does write until #128.
 
 _DATA_DIR_MODE: Final = 0o700
 
@@ -433,8 +442,29 @@ def apply_token_storage(context: SetupContext) -> None:
 
 
 def probe_env_reference(context: SetupContext) -> SetupStep:
-    """The file that exports the token by *reference* (SEC-5)."""
-    wanted = env_file_contents(context.data_dir)
+    """The file that exports the token by *reference* (SEC-5).
+
+    The question is whether *the Theurian block* is current, not whether the
+    file matches something. Comparing the whole file answered ``Missing`` for
+    every user who had appended a line to it -- and the apply then rewrote the
+    file from scratch, which is how a line somebody added disappeared with no
+    diff and no backup (#128). §6.2 row 7 says "the Theurian-owned block only",
+    and this is that sentence in both arms: what is compared, and what is
+    written.
+
+    Blind to the lines around the block, but not to what they appear to *do*: a
+    line below it assigning the same variable is what the shell keeps, so the
+    arm that finds one reports the block current and says so rather than
+    claiming the file exports the token by reference.
+
+    That arm rests on a heuristic.
+    :func:`~theurian.security.env_file.contains_shadowing_assignment` recognises
+    the direct assignment forms and no others, and its docstring tabulates the
+    shapes that evade it and the one that trips it. Both sentences this step
+    publishes therefore say the line *appears* to assign: a shape the heuristic
+    misses leaves the final arm's "exports it by reference" standing, which is
+    the failure this step inherits and does not close.
+    """
     path = context.env_file
     if not path.is_file():
         return SetupStep(
@@ -444,14 +474,60 @@ def probe_env_reference(context: SetupContext) -> SetupStep:
             action=f"Write {path}, exporting {TOKEN_ENV_VAR} from the token file.",
             paths=(str(path),),
         )
-    if path.read_text(encoding="utf-8") != wanted:
+
+    try:
+        content = _read_env_file(path)
+        current = contains_current_block(content, context.data_dir)
+    except MalformedEnvBlockError as exc:
+        # Not a difference setup can resolve: the markers are what tells it
+        # which lines are its own. Reported as a conflict, which is never
+        # applied -- so the file is left exactly as its owner left it, and the
+        # detail says what to do about it (SEC-18).
+        return SetupStep(
+            step_id=StepId.ENV_REFERENCE,
+            status=StepStatus.CONFLICTING,
+            summary=f"The Theurian block in {path} is not delimited.",
+            # Marker text and the path only. Every other byte of that file was
+            # written by somebody else, and `doctor --report` publishes this.
+            detail=f"{path}: {exc}",
+        )
+
+    if not current:
         return SetupStep(
             step_id=StepId.ENV_REFERENCE,
             status=StepStatus.MISSING,
-            summary=f"{path} does not match the current token location.",
-            action=f"Rewrite {path}.",
+            summary=f"The Theurian block in {path} is missing or out of date.",
+            action=f"Rewrite the Theurian-owned block in {path}. Other lines are left as they are.",
             paths=(str(path),),
         )
+
+    if contains_shadowing_assignment(content):
+        # Satisfied, because the block *is* current and applying this step would
+        # write the same bytes -- and reported, because the machine may well not
+        # export what the block says. Not a conflict: a conflict asks the user
+        # for consent to proceed past it, and there is nothing here setup wants
+        # to do. `SetupService` turns this detail into a warning, which is what
+        # ends a real run DEGRADED instead of CONVERGED and what puts it in
+        # `doctor`'s payload.
+        return SetupStep(
+            step_id=StepId.ENV_REFERENCE,
+            status=StepStatus.SATISFIED,
+            summary=(
+                f"The Theurian block in {path} is current, but a later line appears to override it."
+            ),
+            # The path, the variable and the marker -- all Theurian's own text.
+            # Not the offending line: `doctor --report` publishes this, and
+            # somebody wrote that line for their own reasons. Which also means
+            # the reader cannot see what was matched, so the sentence has to
+            # carry its own uncertainty rather than lean on them checking.
+            detail=(
+                f"A line below the block in {path} appears to assign {TOKEN_ENV_VAR} again, "
+                f"and a shell keeps the last assignment it reads. Theurian does not edit "
+                f"lines outside its markers: remove that line, or move it above "
+                f"{ENV_BLOCK_START!r}, for the block's value to be the one your shell exports."
+            ),
+        )
+
     return SetupStep(
         step_id=StepId.ENV_REFERENCE,
         status=StepStatus.SATISFIED,
@@ -459,16 +535,69 @@ def probe_env_reference(context: SetupContext) -> SetupStep:
     )
 
 
+def _read_env_file(path: Path) -> str:
+    """The env file exactly as it is on disk, ``\\r`` bytes and all.
+
+    ``newline=""`` on the *read*, which is half of a byte-for-byte promise that
+    the write cannot keep on its own: universal newline translation turns every
+    ``\\r\\n`` into ``\\n`` before the merge ever sees the file, so a rewrite of
+    the block silently rewrote the line endings of lines it does not own -- and
+    a ``\\r`` inside a quoted value, ``export GREETING="hello\\rworld"``, came
+    back as a newline that splits the assignment in two. Measured on a CRLF file
+    through the real ``SetupService``: two ``\\r`` bytes in, zero out.
+    """
+    return path.read_text(encoding="utf-8", newline="")
+
+
 def apply_env_reference(context: SetupContext) -> None:
+    """Rewrite the Theurian-owned block, leaving every other line alone (#128).
+
+    Read, merge, then write -- in that order, and the order is the point. The
+    merge is computed before the file is opened, so a failure to read it, or a
+    file whose markers cannot be delimited, leaves the original untouched
+    rather than truncated. What cannot be deferred is the truncation the write
+    itself performs, so the merged content exists in full before the ``open``
+    that shortens the file to nothing.
+
+    **In place, rather than written beside and renamed over.** Not because a
+    rename cannot be made atomic here -- ``os.replace`` onto ``path.resolve()``
+    keeps a symlink into a dotfiles repository pointing where it pointed, which
+    is what the note here used to deny. The reasons are the ones a rename brings
+    with it: the temporary file needs write permission in the *target's*
+    directory, which a read-only dotfiles checkout does not give; a failure
+    between the write and the rename leaves that temporary file behind in a
+    directory whose whole contents a person curates; and a rename replaces the
+    inode, so any hard link to this file stops following it. An in-place write
+    trades atomicity for those three, and the trade is recorded rather than
+    inherited.
+
+    **A buffered writer and not a bare ``os.write``**, for the reason
+    :meth:`~theurian.application.setup_service.SetupService._journal` adopted
+    one: ``write(2)`` may write fewer bytes than it was handed and return that
+    count without raising, and a short write here now destroys lines Theurian
+    did not author. :class:`io.BufferedWriter` loops until the buffer is empty
+    and raises what the flush or the close hit, which reaches the runner as a
+    failed step instead of a silently truncated file.
+    """
     path = context.env_file
     path.parent.mkdir(parents=True, exist_ok=True, mode=_DATA_DIR_MODE)
-    # 0600 before anything is written: the file names the token's location, and
-    # its whole purpose is to be sourced by the owner alone.
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(descriptor, env_file_contents(context.data_dir).encode("utf-8"))
-    finally:
-        os.close(descriptor)
+    existing = _read_env_file(path) if path.is_file() else None
+    merged = merge_env_file(existing, context.data_dir)
+    # 0600 from the moment it is created: the file names the token's location,
+    # and its whole purpose is to be sourced by its owner alone. The builtin
+    # and not `Path.open`, which takes no `opener` -- and the opener is what
+    # carries the creation mode. `newline=""` for the reason `_read_env_file`
+    # passes it: what this writes is what the merge produced, byte for byte.
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+        newline="",
+        opener=lambda file, flags: os.open(file, flags, 0o600),
+    ) as handle:
+        handle.write(merged)
+    # Re-asserted, because the mode above is ANDed with the umask and because a
+    # file an earlier version created keeps whatever mode it was given.
     path.chmod(0o600)
 
 

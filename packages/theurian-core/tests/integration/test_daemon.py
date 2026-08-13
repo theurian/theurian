@@ -38,8 +38,8 @@ from theurian.infrastructure.secrets.file_store import (
     TOKEN_KEY,
     FileSecretStore,
     InsecureSecretPermissionsError,
-    env_file_contents,
 )
+from theurian.security.env_file import env_file_contents
 from theurian.security.tokens import generate_token
 
 pytestmark = pytest.mark.integration

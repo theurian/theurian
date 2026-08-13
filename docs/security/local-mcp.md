@@ -126,25 +126,112 @@ configuration holds a *reference*:
 }
 ```
 
-`/theurian:setup` writes `~/.theurian/env` (mode 0600):
-
-```sh
-THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/mcp-token")"
-export THEURIAN_MCP_TOKEN
-```
-
-and offers — showing the diff, and asking first — to add one guarded block to
-your shell profile:
+`theurian setup` writes one guarded block into `~/.theurian/env` (mode 0600):
 
 ```sh
 # >>> theurian >>>
-[ -f "$HOME/.theurian/env" ] && . "$HOME/.theurian/env"
+# Written by `theurian setup`. Sourced by your shell profile so that
+# Claude Code can expand ${THEURIAN_MCP_TOKEN} in its MCP configuration
+# without the literal token ever entering a config file (ADR-0011).
+#
+# Theurian rewrites only the lines between these two markers. Anything
+# you add outside them is left exactly as you wrote it.
+THEURIAN_MCP_TOKEN="$(cat "/Users/you/.theurian/auth/mcp-token")"
+export THEURIAN_MCP_TOKEN
 # <<< theurian <<<
 ```
 
-Only that block is ever rewritten. The rest of your profile is never touched. If
-you decline, setup completes in `degraded` state and prints the export line for
-you to place yourself.
+The token's path is written out resolved, not as `${HOME}`.
+
+**Only that block is ever rewritten, and everything around it survives byte for
+byte** — under `theurian setup` and under `theurian auth rotate` alike. The file
+invites you to add lines to it and it means it: put your own exports above or
+below the markers and they stay where you put them, trailing whitespace
+included. A file your editor left without a final newline keeps its last line
+and gains one, rather than having the marker run onto the end of it.
+
+Until [#128](https://github.com/theurian/theurian/issues/128) that was not true.
+Both commands rendered the whole file and truncated whatever else was in it, so
+a line you had added was gone with no diff, no backup and no mention in the
+report. If you set this machine up with `0.1.0.dev0` through `dev2`, the first
+`setup` or `auth rotate` after upgrading replaces that older rendering in place
+with the block above — one export of `THEURIAN_MCP_TOKEN` afterwards, not two —
+and keeps anything you appended to it.
+
+That replacement is recognised by those lines naming *this* data directory's
+token path, exactly and whole. If you edited one of them, or if the file was
+written for another installation, it is not recognised and not touched: you get
+the block appended below it and both exports visible. Your shell keeps the
+block's value, because it reads it last, and you can tidy the rest yourself.
+
+**A marker is a whole line, never text inside one.** The file is split on `\n`
+and on nothing else — what your shell ends a line at — with a trailing carriage
+return dropped before the comparison, so a file with CRLF endings delimits just
+as well. A line of yours that happens to mention a marker is a line of yours:
+
+```sh
+echo "everything between # >>> theurian >>> and here"
+```
+
+opens nothing. The block's own lines are written with `\n` endings, so a block
+that came back from a Windows editor with CRLF markers is rewritten once to
+normalise it and then left alone for good — the lines around it keeping the line
+endings you gave them, including a `\r` inside a quoted value, which would
+otherwise become a newline and split the assignment in two.
+
+**Markers that do not delimit exactly one block stop the write instead of
+guessing:**
+
+| What your file holds | What Theurian does |
+| :-- | :-- |
+| two or more start lines, wherever they are | refuses; it cannot tell which lines between them are its own |
+| a start line with no end line after it | refuses; it cannot tell where its own lines end |
+| an end line with no start above it, or a second end line | nothing — it delimits nothing, so it is one more line of yours to keep |
+
+The start lines are counted across the whole file before anything is delimited,
+so pasting a fresh block above a broken one is caught rather than swallowing
+whatever sits between the two. With two blocks your shell would export whichever
+came last, which need not be the one setup chose.
+
+On a refusal `setup` reports a conflict and writes nothing (`--approve-conflicts`
+buys progress on the rest of the plan, never an overwrite of this file), and
+`auth rotate` leaves the file alone, still rotates the token, and names the file
+to repair in `nextSteps` — an exposed credential outranks a comment marker. What
+either one tells you is the two marker strings, the path they are in, and the
+command to re-run; never a line out of the file, because `theurian doctor
+--report` is meant to be pasted in public.
+
+**One thing setup can be right about and still be wrong.** Its question is
+whether the block is current, which is deliberately blind to your lines — so if
+one of them assigns `THEURIAN_MCP_TOKEN` again *below* the block, your shell
+keeps that one and not the block's. That line is yours, so it is not edited away
+and it is not a conflict; the run says so and finishes `degraded` instead of
+`converged`, naming the file, the variable and the marker to move the line above.
+`theurian doctor` says the same thing, as a warning and not a problem: there is
+nothing for setup to do about a line of yours, so it does not count against
+`problemCount`, and a machine whose only finding is this one is still `healthy`
+and still exits 0. Neither command prints the line, because whatever is on the
+right of that `=` is a credential often enough to matter.
+
+**That check reads one line at a time, so treat it as a help and not a
+guarantee.** It recognises a plain `THEURIAN_MCP_TOKEN=…` at the start of a line,
+with or without `export`. It does not recognise an assignment tucked inside a
+conditional, a `{ … }` group or an `eval` — measured with `bash`, those export
+their value and setup stays quiet and says `converged` — and it *does* warn about
+an assignment inside a quoted heredoc body, which your shell never runs at all.
+That is why the sentence says the line *appears* to assign rather than that it
+overrides: deciding what a line really does means running your shell profile, and
+Theurian will not do that to answer a question about a file. If a `setup` that
+ended `converged` is followed by a 401, ask a fresh shell what it really has —
+this compares it against the file the block points at and prints neither:
+
+```sh
+[ "$THEURIAN_MCP_TOKEN" = "$(cat ~/.theurian/auth/mcp-token)" ] && echo match || echo mismatch
+```
+
+Nothing here edits your shell profile. The line that sources `~/.theurian/env`
+is yours to add, which is the one real ergonomic cost of keeping the token out
+of every config file.
 
 The secret exists in exactly one file. Everything else points at it.
 

@@ -14,7 +14,6 @@ from typing import Final, final
 
 from theurian.domain.errors import SecurityError
 from theurian.security.env_file import TOKEN_KEY as _TOKEN_KEY
-from theurian.security.env_file import env_file_contents
 from theurian.security.paths import ensure_private_mode, is_world_accessible
 
 #: The token file, relative to the data directory. Re-exported from
@@ -113,10 +112,15 @@ def default_data_dir() -> Path:
     return Path(override) if override else Path.home() / ".theurian"
 
 
+# `env_file_contents` used to be re-exported from here, and this adapter never
+# called it. A whole-file renderer reachable as public API is #128 waiting for
+# its next caller: the defect was that the file was rendered rather than merged,
+# and the function that renders it is correct only where there is no file yet.
+# It lives in `theurian.security.env_file` beside `merge_env_file`, which is
+# where a reader meets the choice between them.
 __all__ = [
     "TOKEN_KEY",
     "FileSecretStore",
     "InsecureSecretPermissionsError",
     "default_data_dir",
-    "env_file_contents",
 ]

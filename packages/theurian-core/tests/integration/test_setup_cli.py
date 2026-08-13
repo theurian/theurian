@@ -17,12 +17,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes.setup import FakeMcpConfig
+from fakes.setup import FakeMcpConfig, FakeService
 from typer.testing import CliRunner
 
 from theurian.application.setup_context import SetupContext
+from theurian.application.setup_service import SetupRequest, SetupService
+from theurian.cli import setup_commands
 from theurian.cli.main import app
 from theurian.cli.setup_commands import _redaction_anchors
+from theurian.domain.setup import SetupState
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.security.env_file import TOKEN_KEY
@@ -33,6 +36,10 @@ runner = CliRunner()
 
 #: Another repository on this machine, as the registry would name it.
 FOREIGN_PROJECT_ID = "acme-unreleased-merger-tooling"
+
+#: A line below the block that assigns the same variable again. The value is
+#: distinctive so that a payload carrying it cannot do so by coincidence.
+SHADOWING_LINE = "export THEURIAN_MCP_TOKEN=SentinelShadowedValueZZZZ\n"
 
 
 @pytest.fixture
@@ -93,6 +100,156 @@ def test_doctor_names_a_remedy_for_every_problem(sandbox: Path) -> None:
     unresolved = [s for s in payload["steps"] if s["status"] == "missing"]
     assert unresolved
     assert all(step["action"] for step in unresolved)
+
+
+# -- A finding with no work attached (#128) ----------------------------------
+#
+# `env-reference` can be satisfied -- the block is current, so applying the step
+# would write the same bytes -- and still have something to say, because a line
+# below the block appears to assign the same variable and a shell keeps the last
+# assignment it reads. `SetupService` turns that into a warning.
+#
+# Both commands here return *before* the apply: `doctor` is a dry run and so is
+# `setup --dry-run`. The warning was built in the verification pass alone, so on
+# the very machine `theurian setup` ended DEGRADED over, `theurian doctor --json`
+# published `"warnings": []` and exited 0 -- the caveat sitting in the payload
+# the whole time as the `detail` of a step whose status reads `satisfied`, which
+# is where a reader stops.
+
+
+def _converged_machine(tmp_path: Path) -> SetupContext:
+    """A machine `theurian setup` has already brought to CONVERGED.
+
+    The data directory, the token and the env file are real files under
+    ``tmp_path``. The service manager and Claude Code's configuration are fakes
+    for the reason `fakes/setup.py` gives: a real LaunchAgent registers itself in
+    the developer's own login session, which no ``HOME`` redirection prevents.
+
+    Built here rather than by exporting one of the setup modules' fixtures,
+    because what these tests need is a context `build_context` can be pointed at
+    -- and `build_context` is the one function in the composition root that
+    *cannot* be pointed at a temporary machine by environment alone.
+    """
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    data_dir = home / ".theurian"
+    service = FakeService()
+    # 0755 and a real script: `probe_core` needs an absolute path that resolves
+    # *and* can be started, or `core-present` conflicts and the run aborts (#49).
+    executable = tmp_path / "bin" / "theurian"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    context = SetupContext(
+        home=home,
+        data_dir=data_dir,
+        port=7419,
+        project_root=None,
+        connection=ConnectionSpec(port=7419),
+        mcp_config=FakeMcpConfig(),
+        secrets=FileSecretStore(data_dir),
+        health=lambda: {"dataDir": str(data_dir)} if service.started else None,
+        service=service,
+        executable=str(executable),
+    )
+    report = SetupService(context).run(SetupRequest())
+    assert report.state is SetupState.CONVERGED, report.warnings
+    return context
+
+
+@pytest.fixture
+def converged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SetupContext:
+    """A converged machine, with both commands' composition root pointed at it.
+
+    ``HOME`` is redirected as well as the context replaced, which is belt and
+    braces on purpose: the substitution is what makes the machine converged,
+    and the redirection is what keeps this module's opening claim true for the
+    tests below -- nothing here may read the developer's own home directory even
+    if a future edit reaches `build_context` by another route.
+    """
+    context = _converged_machine(tmp_path)
+    monkeypatch.setenv("HOME", str(context.home))
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(context.data_dir))
+    monkeypatch.setattr(setup_commands, "build_context", lambda **_: context)
+    return context
+
+
+@pytest.fixture
+def shadowed(converged: SetupContext) -> SetupContext:
+    """The same machine, with one line added below the block by its owner."""
+    with converged.env_file.open("a", encoding="utf-8") as handle:
+        handle.write(SHADOWING_LINE)
+    return converged
+
+
+def test_doctor_calls_a_line_it_will_not_touch_a_warning_and_not_a_problem(
+    shadowed: SetupContext,
+) -> None:
+    """A reservation is a finding with no work attached, so it is not a problem.
+
+    `doctor` counts what setup would change and what it would ask consent for,
+    and exits 1 on either. A line below the block is neither: it belongs to
+    whoever wrote it, setup will not edit it (SEC-18), and there is nothing to
+    schedule. Counting it would exit 1 on a machine where no command Theurian
+    ships can do anything about it -- and a non-zero exit that no action clears
+    is how a health check stops being read.
+
+    So it goes to ``warnings``, and this pins both halves of that split at once:
+    the sentence is published, and the count and the exit code do not move.
+
+    The value on the offending line is asserted absent because this is the same
+    payload `--report` publishes, and whatever is to the right of an ``=`` is a
+    credential often enough to matter.
+    """
+    code, payload = _invoke("doctor")
+
+    warnings = [w for w in payload["warnings"] if "env-reference" in w]
+    assert len(warnings) == 1, payload["warnings"]
+    assert str(shadowed.env_file) in warnings[0]
+    assert "SentinelShadowedValue" not in warnings[0], "not the line it matched"
+    assert payload["healthy"] is True, "there is nothing here for setup to do"
+    assert payload["problemCount"] == 0
+    assert code == 0, "and an exit code no command can clear is one nobody reads"
+
+
+def test_doctor_says_nothing_about_a_machine_with_nothing_below_the_block(
+    converged: SetupContext,
+) -> None:
+    """The control the test above is worth nothing without.
+
+    A `doctor` that warned unconditionally, or that turned every explained
+    NOT_APPLICABLE step into a line, would satisfy every assertion up there. This
+    is the same converged machine with the shadowing line left out, and the
+    answer has to be silence.
+    """
+    code, payload = _invoke("doctor")
+
+    assert payload["warnings"] == [], payload["warnings"]
+    assert payload["healthy"] is True
+    assert code == 0
+    assert converged.env_file.is_file(), "the fixture converged; there is a block to shadow"
+
+
+def test_the_plan_setup_prints_carries_the_same_reservation_doctor_does(
+    shadowed: SetupContext,
+) -> None:
+    """One machine, two commands whose job is to say what is wrong, one answer.
+
+    `/theurian:setup` renders `setup --dry-run` and a person runs `doctor`, and
+    they reach the same `PLAN_BUILT` report by different routes. Divergence here
+    is not a cosmetic difference: it is one command telling somebody their
+    machine is fine while the other names the line that makes it not.
+
+    Asserted as equality *and* on the content, because two empty lists are also
+    equal -- which is exactly the state this pins the way out of.
+    """
+    _, plan = _invoke("setup", "--dry-run")
+    _, diagnosis = _invoke("doctor")
+
+    assert any("env-reference" in warning for warning in plan["warnings"]), plan["warnings"]
+    assert plan["warnings"] == diagnosis["warnings"]
+    assert plan["state"] == "plan-built" and plan["dryRun"] is True
 
 
 def test_the_report_mode_redacts_the_home_directory(sandbox: Path) -> None:
