@@ -22,6 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
@@ -6541,3 +6542,51 @@ async def test_a_re_apply_and_a_third_migration_leave_every_tool_silent(
     assert "integrity" not in status, "a healthy three-migration status must not report damage"
     assert "integrity" not in got, "a healthy three-migration get must not report damage"
     assert status["appliedMigrations"] == 3, "the pointer must have counted the third migration"
+
+
+# -- #30 PR1: a pointer that cannot be true is refused, not published --------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("knowledge.search", {"query": "token"}),
+        ("knowledge.get", {"itemId": "architecture.auth-policy"}),
+        ("knowledge.status", {}),
+    ],
+)
+async def test_a_negative_migration_count_is_refused_by_every_read_tool(
+    registry: ProjectRegistry, tool: str, arguments: dict[str, Any]
+) -> None:
+    """#30 PR1. `appliedMigrations` cannot be published below its own `minimum: 0`.
+
+    `active.json` is a file on disk, and `migrationCount` was parsed as any
+    integer -- so a hand edit to `-5` reached the wire verbatim as
+    `appliedMigrations: -5`, in violation of the schema `knowledge.status`
+    publishes. A strict client rejects that response *whole*, which throws away
+    the `integrity` key riding on it: the one field that says the state is
+    damaged is discarded by the damage.
+
+    Refused at parse time instead, in the family a corrupt pointer already
+    produces, so every tool that resolves the project refuses with the pointer's
+    own remedy -- and the negative number reaches no successful response at all,
+    because there is no successful response. All three are covered because
+    `_resolve` is shared and a fix applied at one call site would leave the other
+    two publishing it.
+
+    RED the moment the range check leaves `ActiveState.from_json`: the pointer
+    parses again, the tool answers, and `_call_failing` fails on DID NOT RAISE.
+    """
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
+    paths.active_pointer.write_text(json.dumps({**pointer, "migrationCount": -5}), encoding="utf-8")
+
+    message = await _call_failing(registry, tool, projectId="demo", **arguments)
+
+    assert "migrationCount" in message, (
+        f"the refusal must name the field a user has to fix: {message!r}"
+    )
+    assert ACTIVE_POINTER_REMEDY in message, (
+        f"{tool} refused a malformed pointer without the remedy that rebuilds it: {message!r}"
+    )
