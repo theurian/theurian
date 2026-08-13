@@ -228,30 +228,102 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   two assignments naming different paths once a data directory moves — the shell
   taking whichever came last, while setup reported the machine converged.
 
+  **A marker is a whole line, and the first cut of this fix did not do that.**
+  Review found it substring-based: `str.find` opened the span at the first
+  *occurrence* of the start marker, so `echo "everything between
+  # >>> theurian >>> and here"` opened one and the rewrite cut that line in half,
+  leaving an unclosed quote that poisons every line after it in a sourced file;
+  the count that was supposed to catch a second start looked only at what
+  followed the *end* marker, so `S`, a user's line, `S`, the block, `E` — what
+  repairing an unterminated block by pasting a fresh one under it leaves — was
+  swallowed whole; and the dev0–dev2 rendering was matched as a substring, so
+  `export THEURIAN_MCP_TOKEN  # my note` had the block spliced over its first
+  half and the leftovers glued onto the end marker. Measured over every file a
+  start marker, an end marker and a user's line build up to five lines long, 363
+  arrangements: **39 took the wrong refusal decision and 16 of those reported
+  success while dropping 19 of the user's lines**, one of them an
+  `export AWS_SECRET_ACCESS_KEY`, with the run reporting `converged` and the
+  re-probe `satisfied`. What shipped matches whole lines — split on `\n` alone,
+  a trailing `\r` dropped, so a CRLF file delimits — and counts the start lines
+  over the whole file *before* choosing a span, which is what makes the second
+  one's position irrelevant.
+
   **A behaviour change for a file whose markers do not delimit exactly one
-  block** — a start with no end, or a second start. That used to be overwritten;
-  it is now `Conflicting`, because once the delimiters disagree setup cannot tell
-  which lines are its own. `setup` writes nothing there, declares no path for it,
-  and stops at consent; `--approve-conflicts` applies the rest of the plan and
-  still leaves that file byte-identical, finishing `degraded` with the step named
-  in `warnings`. `auth rotate` leaves the file untouched, **still rotates the
-  token**, and prepends one line to `nextSteps` naming the file to repair — an
-  exposed credential outranks a comment marker, and the token has already been
-  replaced by the time that file is reached. The conflict detail carries the two
-  marker strings, the path they are in and the command to re-run, and no other
-  line out of that file, because `doctor --report` publishes it (O-3, SEC-6).
+  block** — two or more start lines anywhere in the file, or a start line with no
+  end line after it. That used to be overwritten; it is now `Conflicting`,
+  because once the delimiters disagree setup cannot tell which lines are its own.
+  An *end* line with no start above it, and a second end line, are not that: they
+  delimit nothing, and they are kept like any other line. `setup` writes nothing
+  there, declares no path for it, and stops at consent; `--approve-conflicts`
+  applies the rest of the plan and still leaves that file byte-identical,
+  finishing `degraded` with the step named in `warnings`. `auth rotate` leaves the
+  file untouched, **still rotates the token**, and prepends one line to
+  `nextSteps` naming the file to repair — an exposed credential outranks a comment
+  marker, and the token has already been replaced by the time that file is
+  reached. The same holds when the OS refuses the write — a read-only checkout, a
+  file another account owns, a full disk: rotation completes and `nextSteps`
+  carries the exception's class name and never its message, which holds
+  `strerror`, the errno and on some platforms a second path. The conflict detail
+  carries the two marker strings, the path they are in and the command to re-run,
+  and no other line out of that file, because `doctor --report` publishes it
+  (O-3, SEC-6).
+
+  **A run can be right about the block and wrong about the machine, and now says
+  so.** A shell keeps the last assignment it reads, so a line *below* the block
+  assigning `THEURIAN_MCP_TOKEN` again is what gets exported while the probe —
+  deliberately blind to lines it does not own — reports the block current. That
+  line is not Theurian's to edit and it is not a conflict either; the step stays
+  `satisfied` and carries a caveat, which `_verify` turns into a warning, so the
+  run ends **`degraded` where it used to end `converged`**. The warning names the
+  path, the variable and the start marker to move the line above, and never the
+  line itself. A bare `export THEURIAN_MCP_TOKEN` or a commented-out assignment
+  is not an override and leaves the run converged.
+
+  **Line endings are bytes somebody chose.** Both writers read and write with
+  newline translation off, so a file edited on Windows keeps its `\r` bytes
+  outside the block — including a `\r` inside a quoted value, which translation
+  would turn into a newline and split the assignment in two. The block itself is
+  written with `\n`, so a block that arrived with CRLF markers is normalised on
+  the first run and is a fixed point after that.
+
+  **The same class in `theurian init`.** `ensure_gitignore` writes an
+  identically-spelled block into a repository's `.gitignore` with the same
+  `str.find` and no count of the start markers, so a file holding two of them —
+  what resolving a merge conflict by keeping both sides leaves behind — had every
+  rule between them swallowed by the rewrite and reported as `changed: true` with
+  nothing else said. It now matches whole lines, counts the starts first, keeps a
+  CRLF `.gitignore`'s line endings, and refuses both undelimited shapes. **The
+  refusal also reaches a person differently**: it used to arrive as a Typer
+  traceback with the remedy buried in it, because the only `except` in
+  `init_command` wrapped context resolution, and it is now `error: …` plus a
+  remedy on stderr with exit 1. A refused run leaves the `.theurian/`
+  directories it had already created; nothing else is written.
+
+  **Not marked BREAKING, and here is the one place it is arguable.** No MCP tool,
+  field, type or name changed, and no published contract promised any of this
+  (see *Changing this contract* in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md)). What did
+  change for a script is exit status on two inputs. `theurian init` over a
+  `.gitignore` holding two start markers used to exit 0 having silently eaten the
+  rules between them, and now exits 1 (an *unterminated* block already failed,
+  though as a traceback). `theurian setup` over an env file in either state used
+  to rewrite it and count the step converged; it now stops the whole run at
+  consent — exit 5, `EXIT_NEEDS_CONSENT` — before `_apply` is reached, so nothing
+  at all is written. Both are the fix, not a side effect of it.
 
   Idempotence is now measured on the file rather than on the report: a converged
   second run does not reopen it at all, witnessed on the mtime, so a run that
   rewrote identical bytes fails the pin. The write goes *through* the inode
   rather than temp-and-rename, because this file is a symlink into a dotfiles
   repository on plenty of machines, and through an `io.BufferedWriter`, because a
-  short write here would now destroy lines Theurian did not author. 27 pins:
-  `tests/unit/test_env_file_merge.py` (14), `tests/integration/test_setup_env_file.py`
-  (11, which drives the real `SetupService` over real files because the defect
-  lived in the seam — a probe asking one question while the apply performs a
-  different write is exactly what shipped), and
-  `tests/integration/test_auth_rotate.py` (2).
+  short write here would now destroy lines Theurian did not author. 62 tests, 81
+  collected cases: `tests/unit/test_env_file_merge.py` (30 tests, including one
+  that sweeps all 363 arrangements against a rule read off the symbols rather
+  than off the code), `tests/integration/test_setup_env_file.py` (18, driving the
+  real `SetupService` over real files because the defect lived in the seam — a
+  probe asking one question while the apply performs a different write is exactly
+  what shipped), `tests/integration/test_init_gitignore_block.py` (8, through the
+  real `theurian init`), and `tests/integration/test_auth_rotate.py` (6 added).
 
   This supersedes one sentence of `0.1.0.dev2`'s `changed_paths` entry below. The
   env file's truncation is still disclosed on the arm that motivated it, but
