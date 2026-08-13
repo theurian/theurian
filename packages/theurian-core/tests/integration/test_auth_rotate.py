@@ -15,7 +15,13 @@ import pytest
 from typer.testing import CliRunner
 
 from theurian.cli.main import app
-from theurian.security.env_file import TOKEN_KEY
+from theurian.security.env_file import (
+    ENV_BLOCK_END,
+    ENV_BLOCK_START,
+    TOKEN_KEY,
+    env_block,
+    legacy_env_file_contents,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -76,6 +82,59 @@ def test_the_env_file_is_rewritten_alongside_it(sandbox: Path) -> None:
     assert "THEURIAN_MCP_TOKEN" in contents
     assert str(sandbox / "auth" / TOKEN_KEY) in contents
     assert (sandbox / "env").stat().st_mode & 0o777 == 0o600
+
+
+def test_rotation_keeps_the_lines_the_user_added_to_the_env_file(sandbox: Path) -> None:
+    """#128. Rotation is the second writer of this file, with the same root cause.
+
+    It rendered the whole file and truncated the rest of it, exactly as setup
+    did -- and this is the worse of the two places for it, because a rotation is
+    usually run *because* a credential has been exposed. Taking something away
+    silently at that moment is how a person ends up with two problems.
+
+    Seeded as a machine a released version set up and its owner then appended
+    to, and asserted as the exact whole file: the old rendering replaced where
+    it stood, the appended line still after it, and one export of the variable
+    rather than two.
+    """
+    sandbox.mkdir(parents=True, mode=0o700)
+    mine = "export MY_OTHER_VAR=keepme\n"
+    (sandbox / "env").write_text(legacy_env_file_contents(sandbox) + mine, encoding="utf-8")
+
+    _rotate()
+
+    written = (sandbox / "env").read_text(encoding="utf-8")
+    assert written == env_block(sandbox) + "\n" + mine
+    assert written.count("export THEURIAN_MCP_TOKEN\n") == 1
+    assert (sandbox / "env").stat().st_mode & 0o777 == 0o600
+
+
+def test_rotation_leaves_an_env_file_it_cannot_delimit_alone_and_says_so(sandbox: Path) -> None:
+    """SEC-18 and SEC-4 pulling opposite ways, resolved in favour of the token.
+
+    Markers that do not delimit one block leave setup unable to tell which lines
+    are its own, so the file is not written. Refusing to *rotate* over that
+    would be the wrong trade in the other direction: the exposed credential
+    outranks a comment marker, and the token has already been replaced by the
+    time this file is reached.
+
+    So both halves are asserted together -- the rotation happened, the file did
+    not move, and the person is told which file to repair. Any two of those
+    without the third is a defect: a silent rewrite, a refused rotation, or a
+    machine that now 401s with the remedy nowhere in the output.
+    """
+    sandbox.mkdir(parents=True, mode=0o700)
+    seeded = f"export MINE=1\n{ENV_BLOCK_START}\nexport THEURIAN_MCP_TOKEN=by-hand\n"
+    (sandbox / "env").write_text(seeded, encoding="utf-8")
+
+    payload = _rotate()
+
+    assert payload["rotated"] is True, "an exposed token is not left in place over a marker"
+    assert (sandbox / "auth" / TOKEN_KEY).is_file()
+    assert (sandbox / "env").read_text(encoding="utf-8") == seeded, "the file is left as it was"
+    remedy = "\n".join(payload["nextSteps"])
+    assert str(sandbox / "env") in remedy, "and the output names the file that was skipped"
+    assert ENV_BLOCK_START in remedy and ENV_BLOCK_END in remedy, "with what to look for in it"
 
 
 def test_the_new_token_never_appears_in_the_output(sandbox: Path) -> None:
