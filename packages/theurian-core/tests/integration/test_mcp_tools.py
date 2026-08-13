@@ -6306,3 +6306,82 @@ async def test_an_absent_item_over_a_healthy_state_is_refused_as_absence(
         f"a healthy project must refuse an unknown id as absent: {message!r}"
     )
     assert GET_DAMAGE_PHRASE not in message, f"a healthy project reported damage: {message!r}"
+
+
+# -- #30 PR1: a surplus row is damage too (the `!=` more-side) ---------------
+
+
+def _add_a_foreign_migration_history_row(database: Path, project_id: str = "demo") -> None:
+    """Write one extra `migration_history` row *for this project*, so live > expected.
+
+    The direction no fixture reached. Every other damage in this file removes a
+    row or drops it out of the `WHERE`, so `live < expected` was the only side
+    measured -- and `>=` in place of `!=` survived the whole suite because of it.
+    This is the shape the store's own docstring names: another project's rows
+    reaching this one, here written directly rather than by corrupting a
+    `project_id`, so `expected` is untouched and the surplus is the only change.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "INSERT INTO migration_history "
+            "(migration_id, project_id, checksum, applied_at, sequence) VALUES (?, ?, ?, ?, ?)",
+            ("01K1ZZZZZZ01234567890ABCDE", project_id, "d" * 64, "2026-08-02T13:00:00+00:00", 99),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_surplus_migration_row_is_damage_on_every_read_tool(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector compares with `!=`, so *more* rows are damage as well.
+
+    The state database is immutable once built, so a live count above the
+    pointer's is not a project that got ahead -- it is rows that were never
+    applied here, and an answer assembled from them is an answer from a state
+    nobody recorded. `<` or `>=` in place of `!=` calls that healthy, and no
+    fixture in this file could tell: every other damage it writes *removes*
+    reach, so `live > expected` had never been built at all.
+
+    All three surfaces are asserted in one test because the claim is one claim --
+    the direction of a single comparison -- and it reaches a caller three
+    different ways: a field on `search`, a field on `status`, and a *message* on
+    `get`, which publishes no field on a refusal.
+    """
+    database, active = _state_database(registry)
+    _add_a_foreign_migration_history_row(database)
+    connection = sqlite3.connect(database)
+    try:
+        live = connection.execute(
+            "SELECT COUNT(*) FROM migration_history WHERE project_id = ?", ("demo",)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert live == active.migration_count + 1 == 3, (
+        f"the surplus row must really land in this project's history: live={live}, "
+        f"pointer={active.migration_count}. Without it this measures a healthy project."
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert search["integrity"]["damageDetected"] is True, (
+        "knowledge.search called a surplus migration row healthy; the comparison has become a "
+        "shortfall test and rows that were never applied here are answering queries"
+    )
+    assert status["integrity"]["damageDetected"] is True, (
+        "knowledge.status called a surplus migration row healthy"
+    )
+    assert status["appliedMigrations"] == 2, (
+        "appliedMigrations is the pointer's own count and must not follow the surplus row"
+    )
+    assert GET_DAMAGE_PHRASE in message, (
+        f"knowledge.get called a surplus migration row healthy: {message!r}"
+    )
