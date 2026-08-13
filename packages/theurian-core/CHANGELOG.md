@@ -38,6 +38,25 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the fallback's rows-and-memory page bound stays a deferred DoS residual (T-6),
   since bounding it changes the search fallback's published surface.
 
+- **The unresolved-project error now bounds the `projectId` it echoes**
+  ([#17](https://github.com/theurian/theurian/issues/17)), the last member of the
+  error-echo amplification class. `mcp/tools.py::_unresolvable` interpolated the
+  caller's raw `projectId` into the "not registered" message with no length bound:
+  `_resolve` runs before any `ProjectId` is constructed, so a 2,000,000-character
+  id produced a 2,000,141-character message — an ~1× amplifier of the caller's own
+  bytes. An unregistered id longer than `MAX_IDENTIFIER_LENGTH` (200, the ceiling a
+  `ProjectId` cannot exceed, duplicated in the JSON schemas as `maxLength: 200`) is
+  now reported by its length and never echoed; a well-formed unregistered id within
+  the ceiling is still named so a typo stays visible. That matches the discipline
+  `MAX_QUERY_CHARS` already holds for `query` and `ItemId` for `itemId`, so all
+  three error-echo members are bounded. Not a disclosure — the caller only ever
+  gets back bytes it sent (the `Registered:` list is the daemon's own registry
+  contents, SEC-13). Pinned by
+  `test_an_over_long_project_id_is_reported_by_length_not_echoed` and
+  `test_the_project_id_echo_is_named_up_to_the_id_ceiling_then_by_length` in
+  `tests/integration/test_mcp_tools.py`; see T-6 in
+  [the threat model](../../docs/security/threat-model.md).
+
 ## [0.1.0.dev2] - 2026-08-12
 
 ### Added
