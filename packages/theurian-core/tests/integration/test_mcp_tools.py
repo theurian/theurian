@@ -5782,3 +5782,271 @@ async def test_an_unparseable_as_of_is_a_clean_tool_error(
     assert "asOf" in message
     assert expected in message
     assert len(message) < 500, f"the message must not grow with its input ({len(message)} chars)"
+
+
+# -- #30 PR1: the present-only `integrity` damage signal --------------------
+#
+# The canonical store is derived and immutable once built (ADR-0004), so the
+# active pointer that chose it records how many migrations it was built from --
+# `ActiveState.migration_count` -- and a healthy project's live
+# `migration_history` row count equals that number. PR1 discloses a difference
+# through a present-only `integrity` object on all three read tools: present
+# *only* when `live != expected`, absent otherwise. Absence asserts nothing --
+# there is deliberately no `damageDetected: false` form -- because the check is
+# incomplete by design (a migration-count mismatch, and nothing finer), and a
+# `false` token would read as "checked and clean" over a detector that is not.
+#
+# The tests below hold four things, each failing independently:
+#   * the detector actually *runs* -- a real mismatch surfaces `integrity` from
+#     each of search / status / get (RED the moment that tool's emission is
+#     unplugged, which is the whole point of PR1 over merely shaping the field);
+#   * a healthy build emits nothing, single-project and with a sibling's rows in
+#     the same file (the "absence" side of the present-only contract);
+#   * the signal carries no bit about withheld content (the closure argument);
+#   * the added `COUNT(*)` stays on its covering index, off the O(withheld)
+#     timing channel #158 and #19 closed.
+
+
+#: The action every `integrity` remedy names. Matched as a substring rather than
+#: pinned whole, so this reads the published surface and not the wording, which
+#: the mcp agent may still revise -- but `migrate apply` is the rebuild, and a
+#: remedy that stopped naming a runnable rebuild would leave a caller stuck.
+INTEGRITY_REMEDY_ACTION = "migrate apply"
+
+
+def _state_database(registry: ProjectRegistry, project_id: str = "demo") -> tuple[Path, Any]:
+    """The state database file and the active pointer a tool would resolve.
+
+    Read the same way `_resolve` reads them, so a test damages exactly the file
+    the tool reads and compares against exactly the pointer the tool trusts.
+    """
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state to damage"
+    return paths.state / active.database_filename, active
+
+
+def _drop_one_migration_history_row(database: Path) -> int:
+    """Delete the draft migration's history row, so ``live == expected - 1``.
+
+    A single lost row is the minimal, unambiguous mismatch: `live` drops by
+    exactly one while the pointer's `migration_count` is untouched, so the
+    detector's `live != expected` is the only reason a signal appears. The
+    knowledge items are left intact, so `knowledge.get` still reads its item and
+    exercises the *success*-path emission rather than a refusal.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        changed = connection.execute(
+            "DELETE FROM migration_history WHERE migration_id = ?", (DRAFT_ID,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_search(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector runs on `knowledge.search`, not just the field's shape.
+
+    A corrupt `migration_history.project_id` or a lost row makes both answer
+    paths report `count: 0, stale: false` -- a false "no such decision" -- while
+    the pointer still records the migrations that built the state. The count
+    below catches that and the field discloses it. This is RED the moment
+    search's `integrity` emission is unplugged (return `answer` unconditionally,
+    or force the detector to `None`), which is what proves PR1 wired the detector
+    into this path and did not merely define the object.
+    """
+    database, _ = _state_database(registry)
+    assert _drop_one_migration_history_row(database) == 1, (
+        "the draft migration's history row must exist, or nothing is damaged and this is vacuous"
+    )
+
+    result = await _call(registry, "knowledge.search", projectId="demo", query="token")
+
+    assert result["count"] == 1, "the search still answers its approved item"
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_status(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector runs on `knowledge.status`, and `appliedMigrations`
+    holds the pointer's count rather than the shrunken live read.
+
+    RED the moment status's `integrity` emission is unplugged. The
+    `appliedMigrations` assertion is the second half of the same fix: it is
+    published from `active.migration_count`, so it reports two even while the
+    live migration-row count has fallen to one -- the honest number, disclosed
+    beside a signal that says the two disagree, not the silent under-report PR1
+    removes.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    assert _drop_one_migration_history_row(database) == 1, "nothing damaged; the test is vacuous"
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+    assert result["appliedMigrations"] == 2, (
+        "appliedMigrations is the pointer's own count and must not shrink with the lost row"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_get(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector runs on `knowledge.get`'s success path.
+
+    The item is read -- its body comes back intact -- and the signal still
+    applies, because damage elsewhere in the migration history means the
+    response was assembled from a state holding less than its pointer records.
+    RED the moment get's success-path `integrity` emission is unplugged.
+    """
+    database, _ = _state_database(registry)
+    assert _drop_one_migration_history_row(database) == 1, "nothing damaged; the test is vacuous"
+
+    result = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert result["body"] == BODY, "the item itself still reads, so this is the success path"
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_build_emits_no_integrity_field_from_any_tool(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, M1. The "absence" side of the present-only contract.
+
+    A healthy project has `live == expected`, so the key is *genuinely absent*
+    from every tool -- not `damageDetected: false`, which would assert a clean
+    bill the detector cannot honestly give. RED the moment the detector is made
+    to emit on a match (always-present), which is the mistake this pins against.
+
+    The guard is what stops the absence being vacuous: the build really applied
+    two migrations and really holds two live rows, so the detector evaluated
+    `2 == 2` and *chose* to stay silent -- the same code path the mismatch tests
+    above prove will speak.
+    """
+    database, active = _state_database(registry)
+    connection = sqlite3.connect(database)
+    try:
+        live = connection.execute(
+            "SELECT COUNT(*) FROM migration_history WHERE project_id = ?", ("demo",)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert live == active.migration_count == 2, (
+        "the healthy build must hold as many live rows as its pointer records, or its silence "
+        "is an accident rather than the detector choosing absence on a match"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert "integrity" not in search, "a healthy search must not report damage"
+    assert "integrity" not in status, "a healthy status must not report damage"
+    assert "integrity" not in got, "a healthy get must not report damage"
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_projects_rows_in_the_same_file_forge_no_mismatch(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, M1 (multi-project). The COUNT is scoped, so another project's rows
+    do not inflate `live` into a false mismatch.
+
+    The detector treats `live > expected` as damage too (`!=`, not `<`), so a
+    count that forgot its `WHERE project_id = ?` would read every project's rows
+    and forge a signal on a healthy project the moment a second project's
+    migration history shared the file. Five foreign rows are written in beside
+    demo's two; a scoped count still answers two, so the healthy project stays
+    silent. Drop the `project_id` predicate and this goes RED.
+    """
+    database, active = _state_database(registry)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        for seq in range(5):
+            connection.execute(
+                "INSERT INTO migration_history "
+                "(migration_id, project_id, checksum, applied_at, sequence) VALUES (?, ?, ?, ?, ?)",
+                (f"sibling-migration-{seq}", "sibling", "c" * 64, "2026-08-02T10:00:00+00:00", seq),
+            )
+        connection.commit()
+        total = connection.execute("SELECT COUNT(*) FROM migration_history").fetchone()[0]
+    finally:
+        connection.close()
+    assert total == active.migration_count + 5, (
+        "the sibling project's rows must really land in the shared file, or a scoped and an "
+        "unscoped count would agree for the wrong reason"
+    )
+
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+
+    assert "integrity" not in status, "a sibling project's rows must not forge damage on demo"
+    assert "integrity" not in search, "a sibling project's rows must not forge damage on demo"
+    assert status["appliedMigrations"] == active.migration_count
+
+
+def _corrupt_migration_project_id(database: Path, sentinel: str = "not-a-project") -> int:
+    """Overwrite every `migration_history.project_id`, dropping demo's rows out of
+    the `WHERE project_id = 'demo'`.
+
+    This is SILENTLY_EMPTIED member #5 as it was: a sentinel here made the tool
+    answer `appliedMigrations: 0` against a project that had applied several.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        changed = connection.execute(
+            "UPDATE migration_history SET project_id = ?", (sentinel,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_migration_project_id_is_disclosed_not_silently_emptied(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The position that left SILENTLY_EMPTIED: member #5 is now caught.
+
+    Corrupting `migration_history.project_id` drops every row out of demo's
+    `WHERE`, so `live` reads zero. Before PR1 `knowledge.status` published that
+    zero as `appliedMigrations: 0` -- a successful, false statement to an agent
+    that the project had applied nothing. Now the tool reports `appliedMigrations`
+    from the pointer's own count (so it does not shrink) and emits `integrity`
+    because the live count disagrees. This is RED both if the emission is
+    unplugged and if `appliedMigrations` reverts to the live read.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    assert _corrupt_migration_project_id(database) == 2, (
+        "both migration rows must take the sentinel, or nothing is emptied and this is vacuous"
+    )
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+    assert result["appliedMigrations"] == 2, (
+        "appliedMigrations must report the pointer's two, not the silently-emptied live zero -- "
+        "the member #5 under-report PR1 removed"
+    )
