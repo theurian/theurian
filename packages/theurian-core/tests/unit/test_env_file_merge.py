@@ -430,6 +430,105 @@ def test_a_marker_that_is_not_the_whole_line_does_not_open_a_block(
     assert merged == existing + "\n" + env_block(DATA_DIR) + "\n", shape
 
 
+def test_a_marker_line_with_a_space_after_it_is_not_a_marker() -> None:
+    """A line ends at ``\\n``, and everything before it is what has to match.
+
+    ``_lines`` strips a trailing ``\\r`` -- so that a CRLF file still delimits --
+    and nothing else. Widening that to ``rstrip()`` would take a marker with a
+    trailing space, or a tab, for a real one, which reads like tolerance and is
+    the opposite: measured on
+    ``# >>> theurian >>>␠␠`` / a secret of the user's / ``# <<< theurian <<<␠␠``,
+    the span opens and closes on those two lines and the merge writes the block
+    over the line between them. That file is not one Theurian wrote -- every
+    marker it writes is exact -- so the lines inside it were somebody's, and the
+    whitespace is invisible in every editor that would show it to them.
+
+    The honest answer is that this file holds no Theurian block at all: it is
+    appended to, both odd-looking lines are kept, and the person can see both.
+    Asserted as the whole file for the reason the module header gives, with the
+    sentinel named as well, so a failure says which line went.
+    """
+    existing = f"{ENV_BLOCK_START}  \n{USER_LINE}{ENV_BLOCK_END}  \n"
+
+    assert find_theurian_block(existing) is None, "neither line is a marker"
+
+    merged = merge_env_file(existing, DATA_DIR)
+
+    assert merged == existing + "\n" + env_block(DATA_DIR) + "\n"
+    assert "SentinelEnvMergeZZZZ" in merged, "the line between them was never Theurian's to take"
+
+
+# -- Which of the two searches goes first (SEC-18) ----------------------------
+#
+# `merge_env_file` looks for the marked block and, only if there is none, for
+# the pre-marker rendering. A machine can hold both: dev2 wrote the rendering as
+# the whole file, a newer version added the block above or below it, or a
+# dotfiles repository carries one and this machine grew the other.
+
+
+@pytest.mark.parametrize(
+    ("shape", "existing"),
+    [
+        (
+            "the old rendering above the block",
+            legacy_env_file_contents(DATA_DIR) + env_block(DATA_DIR) + "\n",
+        ),
+        (
+            "the old rendering below the block",
+            env_block(DATA_DIR) + "\n" + legacy_env_file_contents(DATA_DIR),
+        ),
+    ],
+    ids=["rendering-above", "rendering-below"],
+)
+def test_a_file_holding_both_the_old_rendering_and_a_block_is_left_with_one_block(
+    shape: str, existing: str
+) -> None:
+    """The block is searched for first, so a file that has both keeps one of each.
+
+    Reverse the two searches and the rendering is replaced by a *second* copy of
+    the block, whichever side it sits on -- and the file then holds two start
+    markers, which the next run refuses as unresolvable (SEC-18). Measured: one
+    `theurian setup` turns a working machine into one that no `theurian setup`
+    can converge, and the remedy it publishes is to go and repair the markers by
+    hand in a file the tool itself broke.
+
+    Pinned on the marker count and on the merge being a fixed point over its own
+    output, because that pair is what "the next run still works" means. The old
+    rendering is left where it is rather than tidied away: it is two lines
+    outside the block, and a shell keeps whichever assignment it reads last --
+    which `contains_shadowing_assignment` is what reports.
+    """
+    merged = merge_env_file(existing, DATA_DIR)
+
+    assert merged.count(ENV_BLOCK_START) == 1, shape
+    assert merge_env_file(merged, DATA_DIR) == merged, "and the next run writes nothing new"
+
+
+def test_markers_that_cannot_be_resolved_are_refused_even_beside_the_old_rendering() -> None:
+    """The refusal is not something a second recognisable shape can buy past.
+
+    ``S``, a line of the user's, ``S``, ``E`` -- what repairing an unterminated
+    block by pasting a fresh one leaves -- with the dev2 rendering underneath,
+    which is the file a machine upgraded twice really has. Search for the
+    rendering first and it is found, so the block search that would have refused
+    is never reached: the rendering is replaced in place, the run reports
+    success, and the two start markers are still sitting above it with the
+    user's line between them.
+
+    Pinned by fault rather than by message, because which of the two refusals
+    fires is what tells the person what to look for.
+    """
+    existing = (
+        f"{ENV_BLOCK_START}\n{USER_LINE}{ENV_BLOCK_START}\n{ENV_BLOCK_END}\n"
+        + legacy_env_file_contents(DATA_DIR)
+    )
+
+    with pytest.raises(MalformedEnvBlockError) as raised:
+        merge_env_file(existing, DATA_DIR)
+
+    assert raised.value.fault is EnvBlockFault.REPEATED_START
+
+
 def test_a_line_ending_carriage_return_still_lets_the_markers_delimit() -> None:
     """A file with CRLF endings is delimited, not appended to a second time.
 
