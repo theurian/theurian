@@ -5827,6 +5827,22 @@ async def test_an_unparseable_as_of_is_a_clean_tool_error(
 #: remedy that stopped naming a runnable rebuild would leave a caller stuck.
 INTEGRITY_REMEDY_ACTION = "migrate apply"
 
+#: The two further things the remedy has to name, in this order.
+#:
+#: The remedy used to be that one command and nothing else, and measurement found
+#: it cannot cure every shape it is emitted for: against a *surplus*
+#: `migration_history` row there is nothing pending, so `migrate apply` exits 0
+#: reporting `applied: [], changed: false` and the signal is still there
+#: afterwards. A remedy a caller can run three times to no effect is worse than
+#: no remedy, because it reads as "already fixed".
+#:
+#: So the string prescribes a fallback, and the third step is load-bearing rather
+#: than decorative: deleting the derived state deletes the published index with
+#: it, so a caller who stops after the rebuild has a project that answers but no
+#: longer ranks. Order is asserted as well as presence, because "rebuild the
+#: index" before "delete the state" cures nothing.
+INTEGRITY_REMEDY_FALLBACK = (".theurian/state/", "theurian index build")
+
 
 def _state_database(registry: ProjectRegistry, project_id: str = "demo") -> tuple[Path, Any]:
     """The state database file and the active pointer a tool would resolve.
@@ -6386,6 +6402,127 @@ async def test_a_surplus_migration_row_is_damage_on_every_read_tool(
     assert GET_DAMAGE_PHRASE in message, (
         f"knowledge.get called a surplus migration row healthy: {message!r}"
     )
+
+
+# -- #30 PR1: why the remedy has a second sentence --------------------------
+
+
+def _apply_returning_its_report(root: Path) -> dict[str, Any]:
+    """Run the remedy's first command against ``root``, and return what it printed.
+
+    The working directory is set *in the same call* that runs the CLI rather than
+    inherited from an earlier one: `migrate apply` resolves the project from
+    ``Path.cwd()`` and takes no argument that says where, so a test leaning on a
+    fixture's `chdir` is one refactor away from applying against this checkout.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(root)
+        result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+    assert result.exit_code == 0, result.stdout + (result.stderr or "")
+    report: dict[str, Any] = json.loads(result.stdout)
+    return report
+
+
+@pytest.mark.asyncio
+async def test_a_plain_apply_does_not_cure_a_surplus_migration_row(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The measured fact the remedy's fallback sentence rests on.
+
+    `theurian migrate apply` reconciles the migration *files* against the history
+    it finds, so it cures a shortfall -- a lost row is pending again, and the
+    apply writes it back. It cannot cure a surplus: the row is already recorded,
+    nothing is pending, and the command exits 0 reporting `applied: []` and
+    `changed: false` while the signal it was named as the cure for is still
+    there. A caller who runs it and re-reads the response is told the same thing
+    it was told before, by a command that reported success.
+
+    That is why the remedy gained a second sentence, and why this is pinned
+    rather than left as a measurement in a document: the sentence is *predicated*
+    on this behaviour. If a future change made a plain apply silently reconcile a
+    surplus by deleting rows the pointer does not account for, this goes RED --
+    and that would be worth noticing on its own, because deleting canonical
+    history to make a signal go away is a larger decision than a remedy's
+    wording.
+
+    Three consecutive applies, which is what was measured: one apply proves the
+    command does not cure it, and three prove the caller cannot get there by
+    repeating it.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    database, _ = _state_database(registry)
+    _add_a_foreign_migration_history_row(database)
+
+    before = await _call(registry, "knowledge.status", projectId="demo")
+    assert "integrity" in before, (
+        "the surplus row did not produce a signal, so there is nothing for an apply to fail to "
+        "cure and this test would pass over a healthy project"
+    )
+
+    for attempt in range(1, 4):
+        report = _apply_returning_its_report(root)
+
+        assert report["applied"] == [], (
+            f"apply #{attempt} applied {report['applied']}; a surplus row is not a pending "
+            f"migration, so an apply that has something to do here is reconciling the history "
+            f"against the pointer -- a different behaviour than the remedy is written for"
+        )
+        assert report["changed"] is False, f"apply #{attempt} reported a change: {report}"
+        after = await _call(registry, "knowledge.status", projectId="demo")
+        assert after.get("integrity") == before["integrity"], (
+            f"the integrity signal moved after apply #{attempt}: {before.get('integrity')} -> "
+            f"{after.get('integrity')}. Either a plain apply now cures a surplus row -- in which "
+            f"case the remedy's fallback sentence is describing a case that no longer exists -- "
+            f"or it changed the signal without curing it"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_published_remedy_names_the_fallback_and_the_index_rebuild(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. A remedy that cannot cure the shape it is emitted for is not one.
+
+    Asserted over the string a *caller receives*, on both surfaces that carry it
+    -- the `integrity` object's `remedy` field and `knowledge.get`'s refusal
+    message -- rather than over the module constant, so a tool that stopped
+    publishing the constant would fail here too.
+
+    Three fragments, each failing for its own regression: the first command
+    (already pinned elsewhere, restated here because a fallback with no first
+    step is not a remedy either), the state directory the fallback deletes, and
+    the index rebuild that follows it. The order between the last two is
+    asserted because it is the whole content of the third step: deleting the
+    derived state deletes the published index with it, measured as
+    `indexed: false` / `no-index` afterwards, and a caller told to rebuild the
+    index *before* deleting the state rebuilds the one it is about to lose.
+
+    RED against the single-command string this replaced.
+    """
+    database, _ = _state_database(registry)
+    assert _drop_one_migration_history_row(database) == 1, "nothing damaged; the test is vacuous"
+
+    published = await _call(registry, "knowledge.status", projectId="demo")
+    refusal = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    for surface, remedy in (
+        ("knowledge.status integrity.remedy", published["integrity"]["remedy"]),
+        ("knowledge.get refusal", refusal),
+    ):
+        assert INTEGRITY_REMEDY_ACTION in remedy, f"{surface} names no rebuild command: {remedy!r}"
+        for fragment in INTEGRITY_REMEDY_FALLBACK:
+            assert fragment in remedy, (
+                f"{surface} names no fallback for the shape a plain apply cannot cure "
+                f"({fragment!r} is missing): {remedy!r}"
+            )
+        assert remedy.index(INTEGRITY_REMEDY_FALLBACK[1]) > remedy.index(
+            INTEGRITY_REMEDY_FALLBACK[0]
+        ), (
+            f"{surface} tells a caller to rebuild the index before deleting the state that "
+            f"holds it, so the rebuilt index is the one the next step throws away: {remedy!r}"
+        )
 
 
 # -- #30 PR1: the cells this tool stopped reading ---------------------------
