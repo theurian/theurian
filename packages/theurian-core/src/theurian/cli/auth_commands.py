@@ -61,6 +61,12 @@ def auth_rotate(
     # user is about to re-source the file: a machine whose block is absent,
     # stale or pre-marker exports nothing or exports the wrong path, and the
     # 401 that follows would look like the rotation's fault.
+    #
+    # Those three shapes and no others. A line *below* the block that assigns
+    # the token again survives this and goes unmentioned: rotation writes the
+    # block, the shell keeps that later line, and the 401 arrives anyway.
+    # `probe_env_reference` is what reports it, so the sentence a person needs
+    # comes from `theurian doctor` rather than from here.
     env_remedy = _refresh_env_file(data_dir)
 
     restarted, remedy = _restart_daemon(port=port)
@@ -130,8 +136,10 @@ def _refresh_env_file(data_dir: Path) -> list[str]:
         # may well paste into a bug report.
         return [
             f"{env_path} could not be updated ({type(exc).__name__}): it may still name an "
-            f"older block, or be readable by other accounts. The new token is already in "
-            f"place -- repair that file, then run `theurian setup` to rewrite the block."
+            f"older block, hold part of one, be empty -- the open that truncates it comes "
+            f"before the write that failed -- or be readable by other accounts. The new "
+            f"token is already in place; repair that file, then run `theurian setup` to "
+            f"rewrite the block."
         ]
 
     return []

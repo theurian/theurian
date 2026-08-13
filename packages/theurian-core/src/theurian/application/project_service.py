@@ -463,9 +463,17 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
             raise ProjectError(
                 f"{gitignore} has an unterminated Theurian block, so Theurian cannot tell "
                 f"where its own rules end.",
+                # "Add the end marker" reads as unactionable to the person whose
+                # file already appears to have one: a marker is matched as a
+                # whole line, so a trailing space, an indent or a comment after
+                # it is not one, and that is the likeliest way to arrive here.
+                # The remedy therefore says what the line must be rather than
+                # only what it says -- the same honesty as the env file's
+                # "Repair the markers by hand".
                 remedy=(
-                    f"Add {GITIGNORE_BLOCK_END!r} where the block ends, or remove the block "
-                    f"along with its rules, then re-run `theurian init`."
+                    f"End the block with a line that is exactly {GITIGNORE_BLOCK_END!r} and "
+                    f"nothing else -- a trailing space is enough to stop it counting -- or "
+                    f"remove the block along with its rules. Then re-run `theurian init`."
                 ),
             )
         end = closing[1]
