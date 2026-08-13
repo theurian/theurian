@@ -141,12 +141,32 @@ def _parse_as_of(raw: str) -> datetime:
     return parsed
 
 
-#: The single action that rebuilds a project's derived state from its
-#: Git-tracked migrations, named by every ``integrity`` signal. One string so the
-#: three tools cannot drift on the remedy they publish, and the same cure
-#: ``_resolve`` prints for a missing state database.
+#: How to rebuild a project's derived state from its Git-tracked migrations,
+#: named by every ``integrity`` signal. One string so the three tools cannot
+#: drift on the remedy they publish.
+#:
+#: **Two steps, because one does not cure every shape this signal fires on.**
+#: ``migrate apply`` is the cheap cure and comes first: for a *lost* row it
+#: re-applies the migration and the signal clears (measured -- ``applied: [...],
+#: changed: true``, live back to the pointer's count). It cures nothing when the
+#: state holds a *surplus* row, the direction ``!=`` deliberately catches: the
+#: migration set is already fully applied, so three consecutive runs exited 0
+#: with ``applied: [], changed: false`` and left the signal present. Naming only
+#: that command published a false claim for a shape the detector itself emits.
+#:
+#: The second step is the universal cure and the one the state-refusal messages
+#: already print: the whole state directory is derived (ADR-0004), so deleting it
+#: makes the next apply rebuild the database from the migrations with exactly the
+#: recorded count (measured -- ``databaseCreated: true``, signal absent). It
+#: takes the published retrieval index with it, which is why the rebuild is named
+#: too: after the two-step, ``retrieval.indexed`` measured ``false`` until
+#: ``index build`` ran, and a remedy that silently downgraded a project to
+#: unranked scans would trade one wrong answer for another.
 INTEGRITY_REMEDY: Final = (
-    "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations."
+    "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked "
+    "migrations. If this signal persists, delete `.theurian/state/` and run "
+    "`theurian migrate apply` again, then `theurian index build` to restore ranked "
+    "retrieval; the state is derived, so nothing is lost."
 )
 
 

@@ -47,7 +47,7 @@
         "remedy": {
           "type": "string",
           "minLength": 1,
-          "description": "The single action that rebuilds the derived state from the Git-tracked migrations — the same cure a missing state database already names. The derived state is reconstructible (ADR-0004), so the remedy is always cheap and always the same, and it never quotes the damaged cell."
+          "description": "How to rebuild the derived state from the Git-tracked migrations. **Two steps, because one does not cure every shape this signal fires on.** `theurian migrate apply` comes first and is the cheap cure: a *lost* migration row is re-applied and the signal clears. A *surplus* row is not — the migration set is already fully applied, so that command exits 0 having changed nothing and the signal stays, measured over three consecutive runs. Deleting `.theurian/state/` is the universal cure and the one the state-refusal messages already print: the whole directory is derived (ADR-0004), so the next apply rebuilds the database from the migrations with exactly the recorded count.\n\nThat deletion takes a published retrieval index with it — measured, `retrieval.indexed` reads `false` afterwards until a rebuild — so the string names `theurian index build` too rather than curing this signal by silently downgrading the project to unranked scans.\n\nOne string, identical on every signal from every tool, and it never quotes the damaged cell."
         }
       }
     }
