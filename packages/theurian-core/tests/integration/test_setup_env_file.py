@@ -732,6 +732,13 @@ def test_the_sentence_about_a_line_it_cannot_read_claims_only_that_it_appears_to
     it exported the block's token. A report that told this person their line
     overrides the block would send them to delete a line that does nothing.
 
+    **Both sentences, because they are published separately.** The ``detail``
+    reaches a person through the report's ``warnings``; the ``summary`` is what
+    `doctor --json` prints for the step and what the plugin's `setup.md` renders,
+    and a reader who stops at a status of ``satisfied`` sees only that one.
+    Measured: dropping the hedge from the summary alone survived all 2442 tests
+    while the detail's was held.
+
     The value on that line is asserted absent for the reason the test above this
     section gives -- `doctor --report` publishes these warnings, and whatever is
     to the right of an ``=`` is a credential often enough to matter.
@@ -749,6 +756,10 @@ def test_the_sentence_about_a_line_it_cannot_read_claims_only_that_it_appears_to
     assert len(warnings) == 1, report.warnings
     assert "appears" in warnings[0], "the sentence may not claim what only the shell decides"
     assert "SentinelHeredocValue" not in warnings[0], "and not the line it matched"
+
+    step = _env_step(context)
+    assert step.status is StepStatus.SATISFIED, "the fixture has to reach the arm that hedges"
+    assert "appears" in step.summary, "the sentence a reader who stops at the status sees"
 
 
 def test_the_env_file_is_private_however_permissive_the_umask_is(tmp_path: Path) -> None:
