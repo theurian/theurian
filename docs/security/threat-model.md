@@ -1934,7 +1934,10 @@ property is the ordering above, not the type.
 asserted end to end for `knowledge.search`
 (`test_a_withheld_document_changes_nothing_a_caller_can_see`), since round eight
 for `knowledge.get`, and now for `knowledge.status` — which holds it for four of
-its six fields and publishes two that move under a recorded exemption. The
+its six always-present fields and publishes two that move under a recorded
+exemption. (A seventh key, `integrity`, arrived with #30 PR1 and appears only
+under damage; whether it appears is held equal across a withheld-only difference
+by a differential of its own, below.) The
 exemption is stated here, and in that tool's response schema, rather than left to
 a reader who takes "the whole response" at face value. Two projects built
 identically except for one extra migration creating a `rejected` item — invisible
@@ -1985,7 +1988,10 @@ reproduce from their own migration directory.
 **Discharged by [#19](https://github.com/theurian/theurian/issues/19): the
 decision has a schema to live in, and the exception set is pinned by a test.**
 `schemas/mcp/knowledge-status-response.schema.json` publishes the response's six
-fields under `additionalProperties: false`, with `itemsByStatus` declaring only
+required fields under `additionalProperties: false` — seven declared properties
+since #30 PR1 added the optional `integrity` object, which is declared precisely so
+that `additionalProperties: false` keeps holding when it is present — with
+`itemsByStatus` declaring only
 `approved`, `draft` and `proposed` and forbidding a fourth key — so a retired
 status is rejected under its own name and under a relabelled bucket alike, since
 either would report the same quantity. It carries the argument above per field:
@@ -2082,10 +2088,12 @@ The status fix carries a trade, and #158 extends it to a second path. The SQL
 count cannot parse the status enum, so a corrupt `status` cell makes
 `knowledge.status` under-report — `itemCount` drops rather than the tool refusing —
 where the O(total-rows) parse the fix removes used to detect it. That trade is the
-fifth member of `SILENTLY_EMPTIED` in
+member `(knowledge.status, knowledge_items, status)` of `SILENTLY_EMPTIED` in
 `tests/integration/test_canonical_store_corruption.py`, an exact set carried to
 Milestone 6 with the rest of that integrity class
-([#30](https://github.com/theurian/theurian/issues/30)). #158 makes the same
+([#30](https://github.com/theurian/theurian/issues/30)) — named by its tuple
+rather than by its position, because the set has since lost a different member
+(#30 PR1, below) and any ordinal here would now be wrong. #158 makes the same
 crash → silent-drop trade on the substring path: a corrupt `status` cell now fails
 the SQL `IN` predicate and is silently dropped, where `_scan`'s old `list_items` +
 Python `may_surface` parse would have raised. That consequence is filed with the
@@ -2096,8 +2104,93 @@ recorded rather than pinned. In every case the silent result is also the
 confidentiality-correct answer, and holding that integrity set exact is what keeps
 its reach from growing without a recorded reason. What is closed is the read-cost
 dependence on the withheld count — for `knowledge.status`'s field equality under
-#19, and for the search fallback's timing face under #158; what stays open is #30
-and the fallback's rows-and-memory page bound (T-6).
+#19, and for the search fallback's timing face under #158; what stays open is most
+of #30 — one of its five positions closes in PR1 below, four remain — and the
+fallback's rows-and-memory page bound (T-6).
+
+**One member of that set leaves it in #30 PR1, and the class does not close with
+it.** `(knowledge.status, migration_history, project_id)` was the position where a
+sentinel in that column dropped every migration row out of the `WHERE`, so the
+tool answered `appliedMigrations: 0` against a project that had applied several — a
+successful, false statement. PR1 does two things to it. `appliedMigrations` is now
+published from the active pointer's own `migrationCount`, carried from the same
+resolution of `active.json` that chose the state database, so the number cannot
+shrink with the rows; and the live row count is compared against it and any
+difference disclosed through a new `integrity` object on `knowledge.search`,
+`knowledge.get` and `knowledge.status`. `SILENTLY_EMPTIED` therefore holds four
+members, and the sweep asserting set equality
+(`test_no_tool_answers_with_less_than_the_intact_database_holds`) is what pins the
+departure: it goes RED if `knowledge.status` starts shrinking again, and RED if a
+fifth position appears.
+`test_a_corrupt_migration_project_id_is_disclosed_not_silently_emptied` holds the
+same position at the tool.
+
+**The signal's semantics are one-way, and that is the security-relevant part.**
+`integrity` is present *only* when a bounded check detected a discrepancy; absence
+means the check did not fire, which asserts nothing and is **not** a statement that
+the state was verified clean. There is deliberately no `damageDetected: false`
+form: the detector is incomplete by design — PR1 detects a migration-count mismatch
+and nothing finer — so a `false` token would publish "checked and clean" over a
+check that never made that claim, and a caller cannot misread absence without
+inventing a claim of its own. The shape is the one `raptorPath` already uses
+(ADR-0008 decision 8): the wire branches on key presence.
+
+The detector: `expected` is `ActiveState.migration_count`, carried from the
+resolution that chose the database rather than re-read; `live` is
+`SELECT COUNT(*) FROM migration_history INDEXED BY idx_migration_history_sequence
+WHERE project_id = ?`; damage is `live != expected`, not `<`, so another project's
+rows bleeding into the file are damage too
+(`test_a_sibling_projects_rows_in_the_same_file_forge_no_mismatch`). Presence and
+absence are both pinned rather than assumed: a lost row surfaces the field from
+each of the three tools
+(`test_a_lost_migration_row_surfaces_integrity_from_knowledge_search`, `…_status`,
+`…_get`, each RED when that tool's emission is unplugged), and a healthy build
+emits it from none of them
+(`test_a_healthy_build_emits_no_integrity_field_from_any_tool`, guarded by reading
+the live count and the pointer so the silence is a match rather than an accident).
+`knowledge.get` refuses with a bare string and no field, so the distinction lives
+in the message: over damage it now says the project "could not be fully read",
+where before it said the same thing it says for an item that is simply not present
+— the SEC-13 refusal that must not distinguish a withheld id from an absent one is
+unchanged, and what changed is that "the state is short of what its own pointer
+records" is no longer reported as absence.
+
+**The signal carries no bit about withheld content, and its cost carries none
+either.** It counts rows in `migration_history`, a table that holds no knowledge
+items, so nothing it reads scales with the withheld set. Measured as a differential
+rather than argued: `test_the_integrity_signal_is_identical_across_a_withheld_only_difference`
+runs `knowledge.search`, `knowledge.get` and `knowledge.status` against two corpora
+holding the same migration and the same three approved items and differing only in
+twenty-five `rejected` items, and asserts that whether `integrity` appears is
+identical between them — a detector counting `knowledge_items` instead would make
+the key's *presence* a withheld-count oracle. The added per-request read on
+`knowledge.search` stays off the channel #19 and #158 closed for the same reason
+and one more: SQLite answers it from the covering index, planned as
+`SEARCH migration_history USING COVERING INDEX idx_migration_history_sequence
+(project_id=?)`, so its cost is O(migrations) and independent of the corpus.
+`test_the_search_integrity_count_is_answered_by_a_covering_index` pins both halves
+— the `INDEXED BY` hint in the statement the store really runs, and the plan SQLite
+produces for it — so a dropped index fails loudly instead of falling back to a
+table scan whose cost the corpus can move.
+
+**What PR1 does not cover, stated because absence asserts nothing.** Four
+`SILENTLY_EMPTIED` members remain and are carried to PR2:
+`(knowledge.search, knowledge_items, item_id)`,
+`(knowledge.search, knowledge_items, project_id)`,
+`(knowledge.status, knowledge_items, project_id)` and
+`(knowledge.status, knowledge_items, status)`. The migration-count check does not
+see any of them: they empty a *result*, not the migration history, so `live` still
+equals `expected` and the key stays absent exactly as it does on a healthy project.
+PR1 also changes one behaviour in the other direction, recorded rather than buried.
+`knowledge.status` used to refuse over a corrupt `migration_history.migration_id`
+or `checksum`, as a side effect of parsing rows it no longer reads — measured on
+this branch, the tool now answers successfully and emits no `integrity`, while the
+`applied_migrations` read it dropped still raises `StateDatabaseUnreadableError`
+over the same cell. No published status field is derived from either cell, and
+`migrate status` and `migrate apply` still exit 4 over both (measured), so
+migration tamper is detected where it is acted on rather than where it is
+displayed. It is a real reduction in what `knowledge.status` notices, and it is
+unpinned.
 
 **How it is held.** `tests/integration/test_mcp_tools.py`:
 
