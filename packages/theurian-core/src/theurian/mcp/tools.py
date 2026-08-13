@@ -141,6 +141,47 @@ def _parse_as_of(raw: str) -> datetime:
     return parsed
 
 
+#: The single action that rebuilds a project's derived state from its
+#: Git-tracked migrations, named by every ``integrity`` signal. One string so the
+#: three tools cannot drift on the remedy they publish, and the same cure
+#: ``_resolve`` prints for a missing state database.
+INTEGRITY_REMEDY: Final = (
+    "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations."
+)
+
+
+def _integrity_signal(*, live: int, expected: int) -> dict[str, Any] | None:
+    """The ``integrity`` object when derived state holds fewer or other rows than
+    its own records expect, or ``None`` when it does not (#30, PR1).
+
+    **Present-only by contract.** The field is returned *only* when damage is
+    detected; ``None`` here means the caller omits the key entirely. Absence
+    asserts nothing -- never "verified clean" -- so a caller cannot misread it as
+    a clean bill without inventing a claim, which matters because this check is
+    incomplete by design: PR1 detects only a migration-count mismatch. There is
+    deliberately no ``damageDetected: false`` form. A ``false`` token would read
+    louder than any schema description, asserting "checked and clean" over a
+    detector that is not; absence is the only honest way to say "nothing to
+    report". This matches ``raptorPath``, emitted only when non-empty (ADR-0008
+    decision 8) -- the wire already branches on key presence.
+
+    ``damageDetected`` is always ``true`` when present, and it is kept explicit
+    rather than reduced to a bare boolean so the object can grow a second field
+    (a code, a bound) without a wire break.
+
+    ``expected`` is ``ActiveState.migration_count``, carried from the same
+    resolution of ``active.json`` that chose the state database rather than a
+    second read of the pointer; ``live`` is
+    :meth:`~theurian.domain.ports.canonical_store.CanonicalStore.count_migration_history`.
+    The state database is immutable once built, so a healthy project has ``live
+    == expected`` and *any* difference is damage -- including ``live > expected``
+    from another project's rows bleeding in. Hence ``!=``, not ``<``.
+    """
+    if live == expected:
+        return None
+    return {"damageDetected": True, "remedy": INTEGRITY_REMEDY}
+
+
 def _relation_is_visible(
     store: CanonicalReadSession,
     context: RequestContext,
@@ -483,20 +524,34 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             use_dense=useDense,
             as_of=as_of,
         )
-        if not isinstance(answer, Fallback):
-            return answer
+        if isinstance(answer, Fallback):
+            answer = substring_answer(
+                database,
+                state=active,
+                project_id=projectId,
+                query=searched,
+                limit=capped_limit,
+                include_unapproved=includeUnapproved,
+                budget_tokens=capped_budget,
+                fallback=answer,
+                as_of=as_of,
+            )
 
-        return substring_answer(
-            database,
-            state=active,
-            project_id=projectId,
-            query=searched,
-            limit=capped_limit,
-            include_unapproved=includeUnapproved,
-            budget_tokens=capped_budget,
-            fallback=answer,
-            as_of=as_of,
-        )
+        # The #30 integrity signal, checked against the same `active` pointer
+        # that chose `database` and answered `snapshotId`. A corrupt
+        # `migration_history.project_id` (or a lost row) makes both answer paths
+        # report `count: 0, stale: false` -- a false "no such decision" -- while
+        # the pointer still records the migrations that built the state; the
+        # count below catches that and the field discloses it. A short-lived
+        # connection for one covering-index COUNT, O(migrations): the ranked and
+        # scan paths open and close their own stores, and this stays off their
+        # hot path so it cannot reopen the O(withheld) timing channels they close.
+        with SqliteCanonicalStore(database) as store:
+            integrity = _integrity_signal(
+                live=store.count_migration_history(ProjectId(projectId)),
+                expected=active.migration_count,
+            )
+        return answer if integrity is None else {**answer, "integrity": integrity}
 
     @server.tool(
         name="knowledge.get",
@@ -528,7 +583,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         and "outside its window" that this tool does not otherwise have any
         reason to create.
         """
-        _, database, _ = _resolve(projectId)
+        _, database, active = _resolve(projectId)
         context = RequestContext(project_id=ProjectId(projectId))
 
         try:
@@ -561,6 +616,29 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 item.status, include_unapproved=includeUnapproved
             )
             if item is None or item.current_revision_id is None or withheld:
+                # "Not present" and "damaged" are different answers with the same
+                # shape, and #30 is the case where the damage *is* the absence: a
+                # corrupt `project_id`/`item_id` pointer cell drops the row out of
+                # the lookup, so the item cannot be read and reports as gone. The
+                # migration-count check separates the two -- if the derived state
+                # holds fewer rows than its pointer records, the honest answer is
+                # "could not be fully read", not "not present". `get` refuses with
+                # a bare string and no field, so the distinction lives in the
+                # message; the remedy is the same rebuild either way.
+                if (
+                    _integrity_signal(
+                        live=store.count_migration_history(context.project_id),
+                        expected=active.migration_count,
+                    )
+                    is not None
+                ):
+                    msg = (
+                        f"Project {projectId!r} could not be fully read: its derived state "
+                        f"holds fewer migration-history rows than its own records expect, so "
+                        f"an item present in the canonical migrations may be missing from it. "
+                        f"{INTEGRITY_REMEDY}"
+                    )
+                    raise ToolError(msg)
                 # Deliberately the same message as "absent". A distinct one would
                 # confirm that a retired item exists at that id, which is the
                 # inference SEC-13 exists to prevent.
@@ -586,6 +664,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                     store, context, relation, include_unapproved=includeUnapproved
                 )
             )
+            # On the success path the item was read; the signal still applies,
+            # because damage elsewhere in the migration history means the
+            # *response* was assembled from a state that holds less than its
+            # pointer records. Read while the store is open, one covering-index
+            # COUNT.
+            integrity = _integrity_signal(
+                live=store.count_migration_history(context.project_id),
+                expected=active.migration_count,
+            )
 
         payload = result_payload(revision, item.status, item.sensitivity, datetime.now(UTC))
         payload["body"] = revision.body
@@ -598,6 +685,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             for r in relations
         ]
         payload["structured"] = revision.structured
+        if integrity is not None:
+            payload["integrity"] = integrity
         return payload
 
     @server.tool(
@@ -618,7 +707,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         with SqliteCanonicalStore(database) as store:
             by_status = store.count_surfaceable_by_status(context)
-            applied = store.applied_migrations(ProjectId(projectId))
+            live_migrations = store.count_migration_history(context.project_id)
 
         # What may be counted, and what the counts may not restore by
         # subtraction: `itemsByStatus` covers `SURFACEABLE_STATUSES` alone, and
@@ -635,14 +724,31 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # `schemas/mcp/knowledge-status-response.schema.json` carries the
         # measurement, the decision that `stateHash` and `appliedMigrations`
         # both stay, and the justification for each (#19).
-        return {
+        #
+        # `appliedMigrations` is the pointer's own `migration_count`, carried
+        # from the resolution that chose `database`, not `len(applied_migrations)`
+        # read back from the store. On a healthy project the two are equal by
+        # construction (the state database is immutable once built); they diverge
+        # only under damage, and there the pointer's count is the authoritative
+        # one. Reporting the live read instead is precisely the #30 silent
+        # under-report: a corrupt `migration_history.project_id` dropped every
+        # row out of the `WHERE`, so the tool answered `appliedMigrations: 0`
+        # against a project that had applied several -- a successful, false
+        # statement. The live count is now compared against the pointer and the
+        # discrepancy disclosed through `integrity` rather than published as the
+        # answer.
+        integrity = _integrity_signal(live=live_migrations, expected=active.migration_count)
+        response: dict[str, Any] = {
             "projectId": projectId,
             "stateHash": str(active.state_hash),
             "itemCount": sum(by_status.values()),
             "itemsByStatus": by_status,
-            "appliedMigrations": len(applied),
+            "appliedMigrations": active.migration_count,
             "schemaVersion": SCHEMA_VERSION,
         }
+        if integrity is not None:
+            response["integrity"] = integrity
+        return response
 
     @server.tool(
         name="project.list",

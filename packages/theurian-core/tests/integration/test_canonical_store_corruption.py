@@ -151,7 +151,7 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
 #: told ``count: 0`` with ``stale: false``, or ``itemCount: 0``, and has no way
 #: to tell that from a project which genuinely holds nothing.
 #:
-#: The fifth position -- `knowledge.status` over a corrupt
+#: The fourth position -- `knowledge.status` over a corrupt
 #: `knowledge_items.status` -- arrived with the T-17 timing fix (#19).
 #: `knowledge.status` now counts the surfaceable statuses in SQL instead of
 #: parsing every row into a `KnowledgeStatus`, so a sentinel in the status column
@@ -161,19 +161,29 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
 #: and the silent 0 is also the confidentiality-correct answer, so this was
 #: accepted rather than reverted and carried with the rest of the class (#30).
 #:
-#: Recorded rather than fixed. Closing it means the retrieval path noticing that
-#: a row it walked past could not be interpreted, which is a change to the gate
-#: and the status tool rather than to this store; it is carried as a Milestone 6
-#: issue (#30). What this set buys until then is that the reach cannot grow in
-#: silence -- a sixth position appears here as a failure, and each of the five
-#: disappears the moment its surface starts refusing instead.
+#: **A fifth position left this set in #30 PR1.** `(knowledge.status,
+#: migration_history, project_id)` used to belong here: a sentinel in that column
+#: dropped every migration row out of the `WHERE`, so the tool answered
+#: `appliedMigrations: 0` against a project that had applied several. PR1 closes
+#: it -- `knowledge.status` now reports `appliedMigrations` from the active
+#: pointer's own `migrationCount` (so it no longer shrinks) and emits the
+#: `integrity` damage signal when the live migration-row count disagrees with it.
+#: The position therefore no longer answers with a smaller integer, so it is no
+#: longer a member of this set; it is caught rather than carried.
+#:
+#: The remaining four are recorded rather than fixed. Closing them means the
+#: retrieval path noticing that a row it walked past could not be interpreted,
+#: which is a change to the gate and the status tool rather than to this store;
+#: they are carried as a Milestone 6 issue (#30). What this set buys until then
+#: is that the reach cannot grow in silence -- a fifth position appears here as a
+#: failure, and each of the four disappears the moment its surface starts
+#: refusing, or emitting `integrity`, instead.
 SILENTLY_EMPTIED: Final = frozenset(
     {
         ("knowledge.search", "knowledge_items", "item_id"),
         ("knowledge.search", "knowledge_items", "project_id"),
         ("knowledge.status", "knowledge_items", "project_id"),
         ("knowledge.status", "knowledge_items", "status"),
-        ("knowledge.status", "migration_history", "project_id"),
     }
 )
 
