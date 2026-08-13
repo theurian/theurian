@@ -37,6 +37,7 @@ quietly fall behind the DDL.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import json
 import re
@@ -184,6 +185,61 @@ SILENTLY_EMPTIED: Final = frozenset(
         ("knowledge.search", "knowledge_items", "project_id"),
         ("knowledge.status", "knowledge_items", "project_id"),
         ("knowledge.status", "knowledge_items", "status"),
+    }
+)
+
+#: Every (tool, table, column) in the migration history where an MCP read tool
+#: answers **cleanly** -- no refusal, no shrunken count, no ``integrity`` -- over
+#: a cell the CLI treats as tampering, stated exactly.
+#:
+#: The third face of the same question, and the one neither set above can hold.
+#: :data:`REFUSALS_WITHOUT_A_REMEDY` is read over refusals and
+#: :data:`SILENTLY_EMPTIED` over shrinking integers; these positions produce
+#: neither, because what changed is *upstream* of the answer: `knowledge.status`
+#: used to reach the migration history through ``applied_migrations``, which
+#: parses every row into a ``MigrationId`` and a ``ContentHash``, so a damaged
+#: `migration_id` or `checksum` made it refuse. #30 PR1 replaced that with a bare
+#: ``COUNT(*)`` that interprets no cell -- which is what keeps the integrity
+#: check itself unable to refuse or quote on the damage it exists to report
+#: (#18) -- and the two positions became clean answers.
+#:
+#: **What it guards is that this stays a trade and not a loss.** The measurement
+#: below pairs each position with the CLI: `migrate status` and `migrate apply`
+#: exit 4 on exactly these two cells, so the tamper detection the read tools gave
+#: up still exists on the surface a user runs to check a project. A position
+#: leaving this set means a read tool started refusing again (which would put the
+#: `COUNT` back on a parsed row); a position joining it means a cell the CLI calls
+#: tampering became invisible to a read tool that used to notice it.
+#:
+#: All three tools, not `knowledge.status` alone: `knowledge.search` and
+#: `knowledge.get` call the same ``COUNT`` on every request, so they answer over
+#: these cells identically, and a set naming only the tool whose behaviour
+#: changed would leave the other two free to start refusing without a word.
+ANSWERED_CLEAN_OVER_A_DAMAGED_CELL: Final = frozenset(
+    {
+        ("knowledge.search", "migration_history", "migration_id"),
+        ("knowledge.get", "migration_history", "migration_id"),
+        ("knowledge.status", "migration_history", "migration_id"),
+        ("knowledge.search", "migration_history", "checksum"),
+        ("knowledge.get", "migration_history", "checksum"),
+        ("knowledge.status", "migration_history", "checksum"),
+    }
+)
+
+#: Every (tool, table, column) in the migration history where a damaged cell is
+#: disclosed through the present-only ``integrity`` object (#30 PR1), exactly.
+#:
+#: The counterpart of the set above, and the guard that stops it being vacuous: a
+#: build where the detector never fires would make *every* migration-history
+#: position "clean", and the set above would be a larger frozenset nobody read as
+#: a failure. One column reaches the detector -- `project_id`, whose sentinel
+#: drops every row out of the ``WHERE`` and takes the live count to zero -- and
+#: it reaches all three tools.
+DISCLOSED_AS_INTEGRITY: Final = frozenset(
+    {
+        ("knowledge.search", "migration_history", "project_id"),
+        ("knowledge.get", "migration_history", "project_id"),
+        ("knowledge.status", "migration_history", "project_id"),
     }
 )
 
@@ -1863,4 +1919,157 @@ async def test_no_tool_answers_with_less_than_the_intact_database_holds(
         f"holds has moved. Newly emptied: "
         f"{ {p: emptied[p] for p in set(emptied) - SILENTLY_EMPTIED} }; "
         f"no longer emptied: {sorted(SILENTLY_EMPTIED - set(emptied))}"
+    )
+
+
+# -- Answering cleanly over a cell the tool stopped reading -----------------
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationHistoryAnswer:
+    """One tool's answer over one damaged `migration_history` cell, classified.
+
+    Three outcomes, and a position falls in exactly one of them: it refused, it
+    disclosed the damage through the present-only ``integrity`` object (#30 PR1),
+    or it answered clean. ``shrunk`` folds into "not clean" rather than into its
+    own state -- :data:`SILENTLY_EMPTIED` already states that class exactly, and
+    a migration-history cell that started emptying a count would have to appear
+    there rather than pass silently here.
+    """
+
+    refused: bool
+    integrity: bool
+    shrunk: dict[str, str]
+
+    @property
+    def clean(self) -> bool:
+        return not self.refused and not self.integrity and not self.shrunk
+
+
+def _integrity_reported(text: str) -> bool:
+    """Whether a successful payload carries the present-only ``integrity`` key."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, dict) and "integrity" in payload
+
+
+@pytest.fixture(scope="module")
+def migration_history_answers(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[tuple[str, str, str], MigrationHistoryAnswer]:
+    """Every tool's answer over every damaged `migration_history` cell, once.
+
+    Its own corpus, for the reason :func:`cli_observations` builds one: the sweep
+    restores the database between columns, so the *result* is safe to share while
+    the corpus is not.
+
+    Scoped to `migration_history` because that is the whole of what the #30 PR1
+    detector reads. A sweep over the other nine tables would answer a different
+    question -- which cells a tool interprets at all -- and both properties below
+    are about the one table whose row count is the signal.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        corpus = _build_corpus(tmp_path_factory.mktemp("migration-history-sweep"), patch)
+        server = build_server(corpus.registry)
+        intact = {
+            tool: _published_integers(asyncio.run(call_tool(server, tool, args)).text)
+            for tool, args in TOOL_CALLS
+        }
+        assert all(intact.values()), f"a tool published no integer to compare against: {intact}"
+
+        observed: dict[tuple[str, str, str], MigrationHistoryAnswer] = {}
+        columns = [
+            column
+            for column in corruptible_columns(corpus.database)
+            if column.table == "migration_history"
+        ]
+        assert columns, "the corpus holds no migration_history row to damage"
+        for column in columns:
+            assert corrupt(corpus.database, column), f"{column} took no value"
+            try:
+                for tool, args in TOOL_CALLS:
+                    answer = asyncio.run(call_tool(server, tool, args))
+                    published = _published_integers(answer.text)
+                    observed[tool, column.table, column.name] = MigrationHistoryAnswer(
+                        refused=answer.refused,
+                        integrity=_integrity_reported(answer.text),
+                        shrunk={
+                            field: f"{before} -> {published[field]}"
+                            for field, before in intact[tool].items()
+                            if field in published and published[field] < before
+                        },
+                    )
+            finally:
+                restore(corpus)
+        return observed
+
+
+def test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tampering(
+    migration_history_answers: dict[tuple[str, str, str], MigrationHistoryAnswer],
+    cli_observations: dict[tuple[str, str, str], tuple[int, str]],
+) -> None:
+    """#30 PR1. The cells the read tools stopped interpreting, stated exactly.
+
+    A tool that answers cleanly over a damaged cell is not automatically wrong --
+    it is wrong when nothing else notices. So the population here is not "cells a
+    tool ignores" but "cells a tool ignores *and the CLI refuses*": the two
+    surfaces are read together, and the set is what remains.
+
+    Both halves are measured rather than assumed. The CLI half comes from the
+    same sweep :func:`test_exactly_these_commands_notice_a_single_damaged_cell`
+    reads, so a `migrate status` that stopped exiting 4 on a tampered checksum
+    empties the population and this fails -- which is the outcome that matters,
+    because the read tools' silence is only acceptable while that exit exists.
+
+    An exact set, so it fails in both directions. A read tool that starts
+    refusing again -- the shape that returns if the integrity `COUNT` is put back
+    on a parsed row -- drops its position and fails here; a cell the CLI calls
+    tampering that a tool used to notice and no longer does joins the set and
+    fails here too.
+    """
+    tampering = {
+        (table, column)
+        for (_command, table, column), (code, _text) in cli_observations.items()
+        if code != 0 and table == "migration_history"
+    }
+    clean_over_tampering = {
+        position
+        for position, answer in migration_history_answers.items()
+        if answer.clean and (position[1], position[2]) in tampering
+    }
+
+    assert clean_over_tampering == ANSWERED_CLEAN_OVER_A_DAMAGED_CELL, (
+        f"the set of positions answering cleanly over a cell the CLI calls tampering has moved. "
+        f"Newly clean: {sorted(clean_over_tampering - ANSWERED_CLEAN_OVER_A_DAMAGED_CELL)}; "
+        f"no longer clean: {sorted(ANSWERED_CLEAN_OVER_A_DAMAGED_CELL - clean_over_tampering)}. "
+        f"The cells `migrate status` and `migrate apply` refuse are {sorted(tampering)}"
+    )
+
+
+def test_exactly_these_positions_disclose_migration_history_damage_as_integrity(
+    migration_history_answers: dict[tuple[str, str, str], MigrationHistoryAnswer],
+) -> None:
+    """#30 PR1. The detector fires, and on exactly one column.
+
+    The guard for the property above, which a build with the detector unplugged
+    would satisfy with a *larger* clean set that nobody reads as a failure --
+    every migration-history position would be "clean", and only this test says
+    which of them must not be.
+
+    One column reaches it: a sentinel in `migration_history.project_id` drops
+    every row out of the `WHERE`, so the live count falls to zero against a
+    pointer recording one. That is the position `knowledge.status` used to
+    publish as `appliedMigrations: 0` -- a successful, false statement -- and it
+    now arrives on all three tools as damage instead.
+    """
+    disclosed = {
+        position for position, answer in migration_history_answers.items() if answer.integrity
+    }
+
+    assert disclosed == DISCLOSED_AS_INTEGRITY, (
+        f"the set of positions disclosed through `integrity` has moved. Newly disclosing: "
+        f"{sorted(disclosed - DISCLOSED_AS_INTEGRITY)}; no longer disclosing: "
+        f"{sorted(DISCLOSED_AS_INTEGRITY - disclosed)}"
     )
