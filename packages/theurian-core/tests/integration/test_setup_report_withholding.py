@@ -54,6 +54,8 @@ from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.infrastructure.services.launchagent import LABEL, LaunchAgentManager
 from theurian.infrastructure.services.runner import CommandResult
 from theurian.infrastructure.services.systemd_user import SystemdUserManager
+from theurian.security.env_file import env_block
+from theurian.security.tokens import TOKEN_ENV_VAR
 
 pytestmark = pytest.mark.integration
 
@@ -706,7 +708,16 @@ def _seed_every_external_source(context: SetupContext) -> tuple[SetupContext, di
         json.dumps({seeds["project registry"]: {"noRootPath": True}}), encoding="utf-8"
     )
     (root / ".gitignore").write_text(f"{seeds['.gitignore']}\n", encoding="utf-8")
-    (data_dir / "env").write_text(f"export NOTE={seeds['env file']}\n", encoding="utf-8")
+    # A *current* block with a line under it assigning the same variable, rather
+    # than a file with no markers at all. Both are read by `probe_env_reference`,
+    # but only this one reaches the arm that reports a SATISFIED step carrying a
+    # detail (#128) -- and a detail on a satisfied step is a publishing channel
+    # that was added after this sweep was written. The seed is the value on that
+    # line, which is what a detail built from what the probe read would carry.
+    (data_dir / "env").write_text(
+        f"{env_block(data_dir)}\nexport {TOKEN_ENV_VAR}={seeds['env file']}\n",
+        encoding="utf-8",
+    )
     (data_dir / "auth").mkdir(parents=True, exist_ok=True)
     (data_dir / "auth" / "mcp-token").write_text(seeds["token file"], encoding="utf-8")
 
