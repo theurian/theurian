@@ -144,7 +144,9 @@ An unparseable `asOf` is a clean `ToolError` naming the fix, never a traceback.
 
 ### `knowledge.status`
 
-Six keys, all six always present. The contract is
+Six keys, all six always present — and a seventh, `integrity`, only when a
+bounded damage check fired ([below](#damage-is-reported-through-a-present-only-integrity-key)).
+The contract is
 [`knowledge-status-response.schema.json`](../../schemas/mcp/knowledge-status-response.schema.json),
 which also records why two of them are what they are.
 
@@ -165,7 +167,7 @@ which also records why two of them are what they are.
 | `stateHash` | Which canonical state the counts were read from. Byte-identical to the `retrieval.snapshotId` a `knowledge.search` answered from that state publishes, so the two can be compared without a second call (FR-R5) |
 | `itemCount` | The sum of `itemsByStatus`, and deliberately not the number of items in the store |
 | `itemsByStatus` | How many items hold each status a caller may see. A status with no items is absent rather than present with a zero, so `{}` is valid and expected |
-| `appliedMigrations` | How many migration files this project has applied. Files, never items |
+| `appliedMigrations` | How many migration files this project has applied. Files, never items. Read from the active pointer's own `migrationCount`, so it cannot shrink when the state database loses migration rows — any difference between the two is reported as `integrity` instead ([#30](https://github.com/theurian/theurian/issues/30)). It is the pointer's number, not a measurement of the rows: if the pointer is itself wrong, this field is wrong with it |
 | `schemaVersion` | The canonical store's SQLite schema version — not `protocolVersion`, and not the retrieval index's schema version |
 
 **The counts report nothing about withheld content, not even a total.**
@@ -188,7 +190,81 @@ reaches either. The per-field reasoning is in the schema.
 
 **Index state and proposal ages are not in this response.** The table above
 describes the tool this page is a contract for; what ships today is the six keys
-here.
+here, plus the conditional `integrity` key below.
+
+### Damage is reported through a present-only `integrity` key
+
+`knowledge.search`, `knowledge.get` and `knowledge.status` each carry an optional
+top-level `integrity` object ([#30](https://github.com/theurian/theurian/issues/30)):
+
+```json
+{
+  "integrity": {
+    "damageDetected": true,
+    "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations. If this signal persists, delete `.theurian/state/` and run `theurian migrate apply` again, then `theurian index build` to restore ranked retrieval; the state is derived, so nothing is lost."
+  }
+}
+```
+
+**It is present only when a bounded check detected a discrepancy. Its absence
+asserts nothing** — not "verified clean", and a client must not display it as
+one. There is no `damageDetected: false` form and there will not be one: the
+check is incomplete by design, so a `false` token would claim more than the
+product knows, where an absent key claims nothing. `damageDetected` is therefore
+always `true` when the key is present; branch on the key, not on its value. This
+is the same present-only shape `raptorPath` already uses (ADR-0008 decision 8).
+
+What today's check measures, and the whole of it: the derived state holds a
+different number of `migration_history` rows for this project — fewer, or more —
+than the active pointer that chose that database records in its `migrationCount`.
+The state database is immutable once built, so the two agree on a healthy project
+and any difference is damage: fewer when a row is lost or falls out of a `WHERE`
+(a sentinel in `migration_history.project_id`), more when another project's rows
+reach this one. That is how a lost or corrupt pointer-chain cell used to make
+`knowledge.status` answer successfully with an `appliedMigrations` that had
+shrunk.
+
+**It does not detect a result-emptying corruption of `knowledge_items`.** A
+sentinel in `knowledge_items.project_id` or `item_id` drops a document out of every
+`knowledge.search` query, and one in `knowledge_items.project_id` or `status`
+under-reports `knowledge.status`, while the migration rows stay intact. So `search`
+answers `count: 0, results: []` and `status` answers `itemCount: 0` — a false "we
+have no such decision" — with this key *absent* and nothing else on the response
+saying otherwise: `retrieval.stale` reports `false` on the ranked path and `null`
+on the unranked one, and neither reports damage. Those four positions are the
+`SILENTLY_EMPTIED` members carried to PR2. Damage the migration count cannot see
+leaves the key absent exactly as a healthy project does.
+
+**The remedy names a fallback because the first command does not cure every
+shape.** The state database is derived and Git-ignored
+([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md)), so nothing authored is
+lost by rebuilding it. `theurian migrate apply` is the cheap cure and comes first:
+measured, it clears the key for a lost row, for a sentinel in
+`migration_history.project_id`, and for a pointer that over-counts. It clears
+nothing for a *surplus* row — the direction `!=` deliberately catches — because
+every authored migration is already applied, so the command exits 0 and the key is
+still there on the next call. Deleting `.theurian/state/` makes the following
+apply rebuild the database, and `theurian index build` is named third because that
+deletion takes the published retrieval index with it: measured, `retrieval.indexed`
+is `false` with `fallbackReason: "no-index"` after the second step and `true` again
+after the third. Following the string token by token takes a surplus row from
+`integrity` present to absent with ranked retrieval intact. The efficacy is
+measured, not yet pinned by a test.
+
+`knowledge.get` refuses with a message rather than a payload when an item cannot
+be returned, so it carries the distinction in the text: over detected damage it
+reports a project that "could not be fully read: its derived state holds a
+different number of migration-history rows than its own records expect", instead
+of the message it gives for an item that is simply not present. A withheld id and
+an absent id still get the *same* message as each other (SEC-13) — what changed is
+that "the state disagrees with its own pointer" is no longer reported as absence.
+Both directions are pinned, since either alone is satisfied by a tool that says
+one thing always
+(`test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence`,
+`test_an_absent_item_over_a_healthy_state_is_refused_as_absence`).
+
+The reasoning, the measurements and what remains uncovered are in
+[the threat model](../security/threat-model.md) under T-17.
 
 ## Review
 

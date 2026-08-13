@@ -482,6 +482,30 @@ class SqliteCanonicalStore:
             _applied_migration_from_row,
         )
 
+    def count_migration_history(self, project_id: ProjectId) -> int:
+        # A bare COUNT over one project's migration-history rows, for the #30
+        # integrity signal. It interprets no migration cell -- neither the id nor
+        # the checksum, unlike `applied_migrations` above -- so a damaged one
+        # cannot make this refuse or leak; the tool compares the number against
+        # the active pointer's `migration_count` and discloses a mismatch.
+        #
+        # `INDEXED BY` forces `idx_migration_history_sequence(project_id,
+        # sequence)`, which serves this as `USING COVERING INDEX
+        # (project_id=?)` -- a scan of one project's index entries, O(migrations)
+        # and never the table, so calling it on every `knowledge.search` reopens
+        # none of the O(withheld) timing channels #158 and #19 closed. The force
+        # is structural like `list_items_by_status`'s: drop or rename the index
+        # and the query fails loudly rather than silently falling back to a scan.
+        # `COUNT(*)` returns exactly one row, so `_read_one` never yields None
+        # here; the guard is defensive.
+        count = self._read_one(
+            "SELECT COUNT(*) AS n FROM migration_history "
+            "INDEXED BY idx_migration_history_sequence WHERE project_id = ?",
+            (project_id.value,),
+            lambda row: int(row["n"]),
+        )
+        return 0 if count is None else count
+
 
 @final
 class SqliteWriter:

@@ -171,12 +171,35 @@ class ActiveState:
 
     @classmethod
     def from_json(cls, payload: dict[str, object]) -> ActiveState:
+        """Parse a pointer file's contents, refusing one that cannot be true.
+
+        ``migration_count`` is range-checked here because it is *published*: the
+        MCP `knowledge.status` tool reports it as ``appliedMigrations``, whose
+        schema declares ``minimum: 0``. Parsing it as any integer meant a
+        hand-edited ``migrationCount: -5`` reached the wire verbatim, and a
+        strict client rejects that whole response -- including the ``integrity``
+        signal it carries, which is the one field saying the state is damaged.
+        Refusing here turns a false answer into an actionable one.
+
+        Raises:
+            DomainError: On a missing, unparseable or negative field. Every
+                caller reaches this through
+                :func:`~theurian.application.project_service.read_active_state`,
+                which converts it to a ``ProjectError`` carrying
+                ``ACTIVE_POINTER_REMEDY`` (delete the derived pointer and
+                re-apply); the MCP tools' ``_resolve`` then re-raises that as a
+                ``ToolError`` whose message names the remedy.
+        """
         try:
             state_hash = StateHash(ContentHash(str(payload["stateHash"])))
+            migration_count = int(str(payload["migrationCount"]))
+            if migration_count < 0:
+                msg = f"migrationCount is negative ({migration_count})"
+                raise ValueError(msg)
             return cls(
                 state_hash=state_hash,
                 database_filename=str(payload["databaseFilename"]),
-                migration_count=int(str(payload["migrationCount"])),
+                migration_count=migration_count,
                 updated_at=str(payload["updatedAt"]),
             )
         except (KeyError, ValueError) as exc:

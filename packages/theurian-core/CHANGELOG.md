@@ -12,6 +12,198 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **A present-only `integrity` object discloses derived-state damage on
+  `knowledge.search`, `knowledge.get` and `knowledge.status`**
+  ([#30](https://github.com/theurian/theurian/issues/30), PR1 of five positions —
+  one closes here, four remain).
+
+  ```json
+  {
+    "integrity": {
+      "damageDetected": true,
+      "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations. If this signal persists, delete `.theurian/state/` and run `theurian migrate apply` again, then `theurian index build` to restore ranked retrieval; the state is derived, so nothing is lost."
+    }
+  }
+  ```
+
+  **The key is present only when a bounded check detected a discrepancy, and its
+  absence asserts nothing.** No `integrity` key means the check did not fire —
+  which is *not* "verified clean" and must not be read as one. There is
+  deliberately no `damageDetected: false` form: the detector is incomplete by
+  design, so a `false` token would publish "checked and clean" over a check that
+  never made that claim, while absence cannot be misread without a caller
+  inventing a claim of its own. `damageDetected` is therefore always `true` when
+  present, kept explicit rather than reduced to a bare boolean so the object can
+  gain a second field without a wire break. This is the same present-only shape
+  `raptorPath` already uses (ADR-0008 decision 8), so the wire already branches on
+  key presence; the schema declares the key as an optional property precisely so
+  `additionalProperties: false` keeps holding when it appears
+  (`knowledge-search-response.schema.json`,
+  `knowledge-status-response.schema.json`; `knowledge.get` still publishes no
+  response schema, [#20](https://github.com/theurian/theurian/issues/20)).
+
+  **What PR1 detects is a migration-count mismatch, and nothing finer.**
+  `expected` is the active pointer's own `migrationCount`, carried from the same
+  resolution of `active.json` that chose the state database rather than re-read;
+  `live` is `SELECT COUNT(*) FROM migration_history INDEXED BY
+  idx_migration_history_sequence WHERE project_id = ?`. The state database is
+  immutable once built, so a healthy project has `live == expected` and any
+  difference is damage — `!=`, not `<`, so another project's rows reaching this
+  one count too (`test_a_surplus_migration_row_is_damage_on_every_read_tool`,
+  which is RED against `>=` in place of `!=`; the `WHERE project_id = ?` that
+  keeps a *sibling* project's rows out of `live` is
+  `test_a_sibling_projects_rows_in_the_same_file_forge_no_mismatch`). Both sides
+  are pinned: a lost row surfaces the field from each of the three tools
+  (`test_a_lost_migration_row_surfaces_integrity_from_knowledge_search`,
+  `…_status`, `…_get`, each RED when that tool's emission is unplugged) and a
+  healthy build emits it from none of them
+  (`test_a_healthy_build_emits_no_integrity_field_from_any_tool`, and
+  `test_a_re_apply_and_a_third_migration_leave_every_tool_silent` for the same
+  silence after the pointer has moved). The wire form is validated against the
+  schemas from a damaged project rather than a healthy one, where the optional
+  key is never present to check
+  (`test_the_damaged_captures_really_carry_the_optional_integrity_key`,
+  `test_the_integrity_conformance_check_can_fail`).
+
+  **The signal carries no bit about withheld content, and its cost carries none
+  either.** It reads `migration_history`, a table no gate filters, so nothing it
+  counts scales with the withheld set —
+  `test_the_integrity_signal_is_identical_across_a_withheld_only_difference`
+  measures whether the key appears across two corpora differing only in
+  twenty-five `rejected` items and asserts it is identical for all three tools.
+  The added per-request read on `knowledge.search` is answered from the covering
+  index — SQLite plans `SEARCH migration_history USING COVERING INDEX
+  idx_migration_history_sequence (project_id=?)`, so its cost is `O(migrations)`
+  and independent of the corpus — which is what keeps it off the `O(withheld)`
+  timing channels [#19](https://github.com/theurian/theurian/issues/19) and
+  [#158](https://github.com/theurian/theurian/issues/158) closed
+  (`test_the_search_integrity_count_is_answered_by_a_covering_index`, pinning both
+  the `INDEXED BY` hint in the statement the store really runs and the plan
+  SQLite produces for it). The plan assertion requires the *seek* — `SEARCH`, the
+  index name, and the `(project_id=?` that opens the constraint list — because the
+  index name alone appears on a `SCAN` line too: reversing the declared columns to
+  `(sequence, project_id)` keeps the name and walks every project's migration
+  entries at 172× the work, measured, and passed the earlier substring. The same
+  strengthening was applied to `idx_items_status`'s assertion in
+  `test_status_count_is_answered_by_a_covering_index`.
+
+  **`knowledge.get` distinguishes damage from absence in its refusal message.**
+  It refuses with a bare string and no field, so the distinction lives in the
+  text: where the check reports damage, an item it could not read is now reported
+  as a project that "could not be fully read: its derived state holds a different
+  number of migration-history rows than its own records expect", not as an item
+  that is not present. Both directions are pinned, because either alone is
+  satisfied by a tool that says one thing always
+  (`test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence`,
+  `test_an_absent_item_over_a_healthy_state_is_refused_as_absence`). The SEC-13
+  rule that a withheld id and an absent id get the same message is unchanged.
+
+  **What this does not cover.** Four `SILENTLY_EMPTIED` positions remain and are
+  carried to PR2 — `(knowledge.search, knowledge_items, item_id)`,
+  `(knowledge.search, knowledge_items, project_id)`,
+  `(knowledge.status, knowledge_items, project_id)`,
+  `(knowledge.status, knowledge_items, status)`. A migration-count check cannot
+  see any of them: they empty a result rather than the migration history, so
+  `live` still equals `expected` and the key stays absent exactly as on a healthy
+  project. That is what "absence asserts nothing" means in practice.
+
+  **The `remedy` names a fallback, because one command does not cure both
+  directions.**
+  `theurian migrate apply` is the cheap cure and comes first — measured, it clears
+  a lost row, a sentinel in `migration_history.project_id`, and an over-counting
+  pointer. It clears nothing for a *surplus* row: every authored migration is
+  already applied, so three consecutive runs exited 0 with `applied: [], changed:
+  false` and left the key present. Deleting `.theurian/state/` makes the next apply
+  rebuild the database (`databaseCreated: true`, key absent), and `theurian index
+  build` is named third because that deletion takes the published retrieval index
+  with it — measured, `retrieval.indexed` is `false` with `fallbackReason:
+  "no-index"` until the rebuild runs, so without the third step "nothing is lost"
+  would be false. The efficacy is measured, not yet pinned by a test.
+
+  Two further limits, measured rather than assumed, both recorded in
+  [the threat model](../../docs/security/threat-model.md) under T-17:
+
+  - **A pointer whose `migrationCount` is wrong in the same direction as the rows
+    is undetectable.** The check compares two derived numbers against each other,
+    never against the Git-tracked migrations, so a state that lost its migration
+    row *and* a pointer recording `0` agree — measured, all three tools answer,
+    `knowledge.status` publishes `appliedMigrations: 0` against a project holding
+    one applied migration, and `migrate status`, `migrate apply` and `index build`
+    all exit 0. A pointer wrong on its own does fire the key (measured at `2` and
+    at `0` against one live row), but the signal cannot say which side is wrong,
+    and `appliedMigrations` publishes the pointer's number either way.
+  - **Corrupt `migration_history.applied_at` or `.sequence` is seen by no shipped
+    surface at all** — measured: all three tools answer cleanly, and `migrate
+    status`, `migrate apply` (with and without a new migration to apply) and
+    `index build` all exit 0.
+
+### Changed
+
+- **`knowledge.status` reports `appliedMigrations` from the active pointer's
+  `migrationCount`, not from a live count of `migration_history` rows**
+  ([#30](https://github.com/theurian/theurian/issues/30) PR1). On a healthy
+  project the two are equal by construction and no response changes. They diverge
+  only under damage, and there the pointer's count is the authoritative one:
+  before this change a corrupt `migration_history.project_id` dropped every row
+  out of the `WHERE`, so the tool answered `appliedMigrations: 0` against a
+  project that had applied several — a successful, false statement, and the
+  `SILENTLY_EMPTIED` position PR1 closes. The live count is now compared against
+  the pointer and any difference — in either direction — disclosed through
+  `integrity` instead of published as the answer
+  (`test_a_corrupt_migration_project_id_is_disclosed_not_silently_emptied`;
+  `test_no_tool_answers_with_less_than_the_intact_database_holds` holds the set at
+  four members and goes RED if the field starts shrinking again). **A behaviour
+  change for a caller that compares this field against a row count it obtained
+  some other way**: over a damaged state the two now disagree by design, and the
+  `integrity` key is what says so.
+
+- **A negative `migrationCount` in `.theurian/state/active.json` is now refused
+  at parse time, where it used to be published**
+  ([#30](https://github.com/theurian/theurian/issues/30) PR1). `knowledge.status`
+  reports that field as `appliedMigrations`, whose schema declares `minimum: 0`,
+  and `ActiveState.from_json` accepted any integer. Measured before the fix:
+  `migrationCount: -5` reached the wire as `appliedMigrations: -5`, so the
+  response violated its own published contract — and a strict client rejects the
+  whole response, including the `integrity` key riding along on it to say the
+  state is damaged. The one field reporting the damage was thrown away by the
+  damage. It is now a `DomainError` at parse time, converted by
+  `read_active_state` into the `ProjectError` a corrupt pointer already produced,
+  so all three read tools refuse with "Malformed active state pointer:
+  migrationCount is negative (-5)" and the delete-the-pointer-and-re-apply cure
+  (`test_a_negative_migration_count_is_refused_by_every_read_tool`). **A behaviour
+  change for anyone who hand-edits the pointer**: a value that used to be answered
+  with is now a refusal. Only negative values are refused — a non-negative integer
+  that is simply wrong is still accepted, which is the one-way limit recorded
+  above and in the threat model.
+  ([#30](https://github.com/theurian/theurian/issues/30) PR1). The refusal was a
+  side effect of parsing rows the tool no longer reads: it used to call
+  `applied_migrations`, which converts both cells and raises on a damaged one,
+  and it now calls a bare `COUNT` that interprets neither. Measured on the
+  corruption corpus: with a sentinel in either column the tool returns its six
+  keys and no `integrity` — the count is unaffected, so the check does not fire —
+  while `applied_migrations` over the same database still raises
+  `StateDatabaseUnreadableError`. No published `knowledge.status` field is
+  derived from either cell, and `migrate status` and `migrate apply` still exit 4
+  over both, so migration tamper is still detected where it is acted on. Recorded
+  rather than marked BREAKING because no published contract promised the refusal
+  and no field, type or tool name changed (see *Changing this contract* in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md)).
+
+  **It is a real reduction in what the read tools notice, and it is now pinned as
+  an exact six-cell set** rather than left to a reader:
+  `ANSWERED_CLEAN_OVER_A_DAMAGED_CELL` in
+  `tests/integration/test_canonical_store_corruption.py` names all three tools
+  over both cells, and
+  `test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tampering`
+  reads it against the CLI sweep — so the silence is only green while `migrate
+  status` and `migrate apply` keep exiting non-zero on the same cells, and a read
+  tool that starts refusing again fails it too. Its counterpart
+  `test_exactly_these_positions_disclose_migration_history_damage_as_integrity`
+  keeps that set from going vacuous by naming the three positions
+  (`migration_history.project_id` on each tool) that must fire the key.
+
 ### Security
 
 - **The substring-search fallback's withheld-count timing channel is closed**

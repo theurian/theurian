@@ -22,6 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
@@ -1177,6 +1178,15 @@ async def test_status_count_is_answered_by_a_covering_index(
     the index, or changing the predicate so the index can no longer cover the
     query, drops the plan to a scan and turns this RED where the row-count pin
     above stays green -- the two catch different regressions, so both are kept.
+
+    **The seek form is asserted, not merely the index name.** ``USING COVERING
+    INDEX idx_items_status`` appears in a ``SCAN`` line too, so that substring
+    alone was satisfied by a plan that walks the whole index -- measured:
+    reversing the declared columns to ``(status, project_id)`` leaves the phrase
+    intact while the leading column stops being the project. The three parts
+    below -- ``SEARCH``, the index, and the ``(project_id=?`` that opens the
+    constraint list -- are what say SQLite seeks into one project's entries; the
+    reversal plans ``(status=? AND project_id=?)`` and fails the third.
     """
     corpora = read_cost_corpora
 
@@ -1202,16 +1212,20 @@ async def test_status_count_is_answered_by_a_covering_index(
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
-    # Assert: SQLite answers the count from the covering index alone. The phrase
-    # `USING COVERING INDEX idx_items_status` is stable across SQLite versions for
-    # this shape; a scan or a fall-back to another index drops it and fails here.
-    assert "USING COVERING INDEX idx_items_status" in plan, (
-        "knowledge.status is no longer answered by the covering index "
-        f"idx_items_status(project_id, status). SQLite planned:\n{plan}\n"
-        "Without it the count reads every row of the project, withheld ones included, and the "
-        "response time carries the withheld count again -- the O(withheld) channel T-17 closed "
-        "and #19 must keep shut (SEC-13)."
-    )
+    # Assert: SQLite *seeks* into the covering index rather than walking it. All
+    # three fragments are stable across SQLite versions for this shape, and each
+    # fails for a different regression: `SEARCH` for a plan that scans,
+    # `idx_items_status` for a dropped or renamed index, `(project_id=?` for an
+    # index whose leading column is no longer the project.
+    for fragment in ("SEARCH", "USING COVERING INDEX idx_items_status", "(project_id=?"):
+        assert fragment in plan, (
+            f"knowledge.status is no longer answered by a seek into the covering index "
+            f"idx_items_status(project_id, status): {fragment!r} is missing. SQLite planned:\n"
+            f"{plan}\n"
+            "Without that seek the count reads rows of the project it does not publish, withheld "
+            "ones included, and the response time carries the withheld count again -- the "
+            "O(withheld) channel T-17 closed and #19 must keep shut (SEC-13)."
+        )
 
 
 # -- knowledge.search substring fallback: the scan's read cost does not carry
@@ -5782,3 +5796,934 @@ async def test_an_unparseable_as_of_is_a_clean_tool_error(
     assert "asOf" in message
     assert expected in message
     assert len(message) < 500, f"the message must not grow with its input ({len(message)} chars)"
+
+
+# -- #30 PR1: the present-only `integrity` damage signal --------------------
+#
+# The canonical store is derived and immutable once built (ADR-0004), so the
+# active pointer that chose it records how many migrations it was built from --
+# `ActiveState.migration_count` -- and a healthy project's live
+# `migration_history` row count equals that number. PR1 discloses a difference
+# through a present-only `integrity` object on all three read tools: present
+# *only* when `live != expected`, absent otherwise. Absence asserts nothing --
+# there is deliberately no `damageDetected: false` form -- because the check is
+# incomplete by design (a migration-count mismatch, and nothing finer), and a
+# `false` token would read as "checked and clean" over a detector that is not.
+#
+# The tests below hold four things, each failing independently:
+#   * the detector actually *runs* -- a real mismatch surfaces `integrity` from
+#     each of search / status / get (RED the moment that tool's emission is
+#     unplugged, which is the whole point of PR1 over merely shaping the field);
+#   * a healthy build emits nothing, single-project and with a sibling's rows in
+#     the same file (the "absence" side of the present-only contract);
+#   * the signal carries no bit about withheld content (the closure argument);
+#   * the added `COUNT(*)` stays on its covering index, off the O(withheld)
+#     timing channel #158 and #19 closed.
+
+
+#: The action every `integrity` remedy names. Matched as a substring rather than
+#: pinned whole, so this reads the published surface and not the wording, which
+#: the mcp agent may still revise -- but `migrate apply` is the rebuild, and a
+#: remedy that stopped naming a runnable rebuild would leave a caller stuck.
+INTEGRITY_REMEDY_ACTION = "migrate apply"
+
+#: The two further things the remedy has to name, in this order.
+#:
+#: The remedy used to be that one command and nothing else, and measurement found
+#: it cannot cure every shape it is emitted for: against a *surplus*
+#: `migration_history` row there is nothing pending, so `migrate apply` exits 0
+#: reporting `applied: [], changed: false` and the signal is still there
+#: afterwards. A remedy a caller can run three times to no effect is worse than
+#: no remedy, because it reads as "already fixed".
+#:
+#: So the string prescribes a fallback, and the third step is load-bearing rather
+#: than decorative: deleting the derived state deletes the published index with
+#: it, so a caller who stops after the rebuild has a project that answers but no
+#: longer ranks. Order is asserted as well as presence, because "rebuild the
+#: index" before "delete the state" cures nothing.
+INTEGRITY_REMEDY_FALLBACK = (".theurian/state/", "theurian index build")
+
+
+def _state_database(registry: ProjectRegistry, project_id: str = "demo") -> tuple[Path, Any]:
+    """The state database file and the active pointer a tool would resolve.
+
+    Read the same way `_resolve` reads them, so a test damages exactly the file
+    the tool reads and compares against exactly the pointer the tool trusts.
+    """
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state to damage"
+    return paths.state / active.database_filename, active
+
+
+def _drop_one_migration_history_row(database: Path) -> int:
+    """Delete the draft migration's history row, so ``live == expected - 1``.
+
+    A single lost row is the minimal, unambiguous mismatch: `live` drops by
+    exactly one while the pointer's `migration_count` is untouched, so the
+    detector's `live != expected` is the only reason a signal appears. The
+    knowledge items are left intact, so `knowledge.get` still reads its item and
+    exercises the *success*-path emission rather than a refusal.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        changed = connection.execute(
+            "DELETE FROM migration_history WHERE migration_id = ?", (DRAFT_ID,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_search(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector runs on `knowledge.search`, not just the field's shape.
+
+    What the detector measures is one number against one number: this project's
+    live `migration_history` row count, against the `migrationCount` the active
+    pointer that chose the state database records. A lost row moves the first and
+    not the second, and the field discloses the difference.
+
+    **The search still answers, and that is the point** -- `count: 1` below, not
+    `count: 0`. Losing a migration-history row does not empty a response: the
+    `knowledge_items` rows are untouched, so the retrievers find what they always
+    found, and nothing in the answer itself says the state that produced it is
+    damaged. The `integrity` key is the only thing that does. The corruptions
+    that *do* empty a response -- a sentinel in `knowledge_items.project_id` or
+    `item_id`, answering `count: 0, results: []` with `stale: false` -- leave this
+    key absent and are PR2's (the `SILENTLY_EMPTIED` positions, #30).
+
+    RED the moment search's `integrity` emission is unplugged (return `answer`
+    unconditionally, or force the detector to `None`), which is what proves PR1
+    wired the detector into this path and did not merely define the object.
+    """
+    database, _ = _state_database(registry)
+    assert _drop_one_migration_history_row(database) == 1, (
+        "the draft migration's history row must exist, or nothing is damaged and this is vacuous"
+    )
+
+    result = await _call(registry, "knowledge.search", projectId="demo", query="token")
+
+    assert result["count"] == 1, "the search still answers its approved item"
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_status(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector runs on `knowledge.status`, and `appliedMigrations`
+    holds the pointer's count rather than the shrunken live read.
+
+    RED the moment status's `integrity` emission is unplugged. The
+    `appliedMigrations` assertion is the second half of the same fix: it is
+    published from `active.migration_count`, so it reports two even while the
+    live migration-row count has fallen to one -- the honest number, disclosed
+    beside a signal that says the two disagree, not the silent under-report PR1
+    removes.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    assert _drop_one_migration_history_row(database) == 1, "nothing damaged; the test is vacuous"
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+    assert result["appliedMigrations"] == 2, (
+        "appliedMigrations is the pointer's own count and must not shrink with the lost row"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_get(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector runs on `knowledge.get`'s success path.
+
+    The item is read -- its body comes back intact -- and the signal still
+    applies, because damage elsewhere in the migration history means the
+    response was assembled from a state holding less than its pointer records.
+    RED the moment get's success-path `integrity` emission is unplugged.
+    """
+    database, _ = _state_database(registry)
+    assert _drop_one_migration_history_row(database) == 1, "nothing damaged; the test is vacuous"
+
+    result = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert result["body"] == BODY, "the item itself still reads, so this is the success path"
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_build_emits_no_integrity_field_from_any_tool(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, M1. The "absence" side of the present-only contract.
+
+    A healthy project has `live == expected`, so the key is *genuinely absent*
+    from every tool -- not `damageDetected: false`, which would assert a clean
+    bill the detector cannot honestly give. RED the moment the detector is made
+    to emit on a match (always-present), which is the mistake this pins against.
+
+    The guard is what stops the absence being vacuous: the build really applied
+    two migrations and really holds two live rows, so the detector evaluated
+    `2 == 2` and *chose* to stay silent -- the same code path the mismatch tests
+    above prove will speak.
+    """
+    database, active = _state_database(registry)
+    connection = sqlite3.connect(database)
+    try:
+        live = connection.execute(
+            "SELECT COUNT(*) FROM migration_history WHERE project_id = ?", ("demo",)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert live == active.migration_count == 2, (
+        "the healthy build must hold as many live rows as its pointer records, or its silence "
+        "is an accident rather than the detector choosing absence on a match"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert "integrity" not in search, "a healthy search must not report damage"
+    assert "integrity" not in status, "a healthy status must not report damage"
+    assert "integrity" not in got, "a healthy get must not report damage"
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_projects_rows_in_the_same_file_forge_no_mismatch(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, M1 (multi-project). The COUNT is scoped, so another project's rows
+    do not inflate `live` into a false mismatch.
+
+    The detector treats `live > expected` as damage too (`!=`, not `<`), so a
+    count that forgot its `WHERE project_id = ?` would read every project's rows
+    and forge a signal on a healthy project the moment a second project's
+    migration history shared the file. Five foreign rows are written in beside
+    demo's two; a scoped count still answers two, so the healthy project stays
+    silent. Drop the `project_id` predicate and this goes RED.
+    """
+    database, active = _state_database(registry)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        for seq in range(5):
+            connection.execute(
+                "INSERT INTO migration_history "
+                "(migration_id, project_id, checksum, applied_at, sequence) VALUES (?, ?, ?, ?, ?)",
+                (f"sibling-migration-{seq}", "sibling", "c" * 64, "2026-08-02T10:00:00+00:00", seq),
+            )
+        connection.commit()
+        total = connection.execute("SELECT COUNT(*) FROM migration_history").fetchone()[0]
+    finally:
+        connection.close()
+    assert total == active.migration_count + 5, (
+        "the sibling project's rows must really land in the shared file, or a scoped and an "
+        "unscoped count would agree for the wrong reason"
+    )
+
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+
+    assert "integrity" not in status, "a sibling project's rows must not forge damage on demo"
+    assert "integrity" not in search, "a sibling project's rows must not forge damage on demo"
+    assert status["appliedMigrations"] == active.migration_count
+
+
+def _corrupt_migration_project_id(database: Path, sentinel: str = "not-a-project") -> int:
+    """Overwrite every `migration_history.project_id`, dropping demo's rows out of
+    the `WHERE project_id = 'demo'`.
+
+    This is SILENTLY_EMPTIED member #5 as it was: a sentinel here made the tool
+    answer `appliedMigrations: 0` against a project that had applied several.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        changed = connection.execute(
+            "UPDATE migration_history SET project_id = ?", (sentinel,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_migration_project_id_is_disclosed_not_silently_emptied(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The position that left SILENTLY_EMPTIED: member #5 is now caught.
+
+    Corrupting `migration_history.project_id` drops every row out of demo's
+    `WHERE`, so `live` reads zero. Before PR1 `knowledge.status` published that
+    zero as `appliedMigrations: 0` -- a successful, false statement to an agent
+    that the project had applied nothing. Now the tool reports `appliedMigrations`
+    from the pointer's own count (so it does not shrink) and emits `integrity`
+    because the live count disagrees. This is RED both if the emission is
+    unplugged and if `appliedMigrations` reverts to the live read.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    assert _corrupt_migration_project_id(database) == 2, (
+        "both migration rows must take the sentinel, or nothing is emptied and this is vacuous"
+    )
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["integrity"]["damageDetected"] is True
+    assert INTEGRITY_REMEDY_ACTION in result["integrity"]["remedy"]
+    assert result["appliedMigrations"] == 2, (
+        "appliedMigrations must report the pointer's two, not the silently-emptied live zero -- "
+        "the member #5 under-report PR1 removed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_integrity_signal_is_identical_across_a_withheld_only_difference(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """#30 PR1. The closure argument: `integrity` carries no bit about withheld content.
+
+    The two corpora hold the *same* one migration and the same three approved
+    items, and differ only in the twenty-five `rejected` items the heavy one also
+    holds -- items a caller may not read. So `expected` (the pointer's
+    migration_count) and a healthy `live` (the migration-row count) are identical
+    between them, and the signal's presence must be identical too: absent in
+    both. Were the detector to read anything that scaled with withheld content --
+    counting `knowledge_items` rather than `migration_history`, say -- the heavy
+    corpus would diverge and the presence of `integrity` would leak the withheld
+    count. Measured across all three tools; mirrors the #19 status differential.
+    """
+    corpora = read_cost_corpora
+
+    # Guard: the pair really differs only by withheld content, so an equal signal
+    # below is equal *because* the signal ignores it -- not because the corpora
+    # are the same size.
+    withheld = {item for item, status in corpora.stored.items() if status == "rejected"}
+    assert len(withheld) == READ_COST_WITHHELD, (
+        f"the heavy corpus must hold {READ_COST_WITHHELD} withheld items for this to test "
+        f"withheld-independence; it holds {len(withheld)}"
+    )
+    assert len(corpora.stored) == 3 + READ_COST_WITHHELD, (
+        "the heavy corpus must be larger than the baseline, or this compares two equal corpora"
+    )
+
+    calls: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("knowledge.search", {"query": "approved"}),
+        ("knowledge.status", {}),
+        ("knowledge.get", {"itemId": "architecture.read-approved-0"}),
+    )
+    for tool, extra in calls:
+        baseline = await _call(corpora.registry, tool, projectId=READ_COST_BASELINE_ID, **extra)
+        heavy = await _call(corpora.registry, tool, projectId=READ_COST_HEAVY_ID, **extra)
+
+        assert ("integrity" in baseline) == ("integrity" in heavy), (
+            f"{tool}: whether `integrity` appears changed with withheld content alone -- the "
+            f"signal is carrying a bit about what the caller may not read (SEC-13)"
+        )
+        assert "integrity" not in baseline and "integrity" not in heavy, (
+            f"{tool}: both corpora are healthy, so neither may report damage -- an equal signal "
+            f"that was present in both would pass the line above for the wrong reason"
+        )
+
+
+@contextlib.contextmanager
+def _one_row_statement_the_store_runs() -> Iterator[dict[str, Any]]:
+    """Capture the SQL a single-row store method hands to its reader, at runtime.
+
+    The sibling of `_statement_the_store_runs` for `_read_one`, which
+    `count_migration_history` uses. Read off the reader as the method builds it,
+    never restated, so the plan below is checked against the statement the tool
+    truly runs rather than a copy that would drift.
+    """
+    captured: dict[str, Any] = {}
+    real_read_one = SqliteCanonicalStore._read_one
+
+    def spy(
+        store: SqliteCanonicalStore,
+        sql: str,
+        parameters: tuple[str, ...],
+        mapper: Callable[[sqlite3.Row], Any],
+    ) -> Any:
+        captured["sql"] = sql
+        captured["params"] = parameters
+        return real_read_one(store, sql, parameters, mapper)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SqliteCanonicalStore, "_read_one", spy)
+        yield captured
+
+
+@pytest.mark.asyncio
+async def test_the_search_integrity_count_is_answered_by_a_covering_index(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """#30 PR1, M2. The added `COUNT(*)` does not reopen the O(withheld) timing channel.
+
+    `knowledge.search` reads `count_migration_history` on every request. Its cost
+    stays off the corpus because it is served by
+    `idx_migration_history_sequence(project_id, sequence)` as a covering-index
+    scan of one project's migration rows -- O(migrations), never a table scan and
+    never `knowledge_items`, so it cannot carry the withheld count the way the
+    ranked and scan reads once did (#158, #19). Mirrors
+    `test_status_count_is_answered_by_a_covering_index`.
+
+    Two halves, because two mutations must each turn it RED:
+
+    * the captured statement carries `INDEXED BY idx_migration_history_sequence`.
+      Dropping the hint is RED here even though SQLite would pick the same index
+      on its own -- the hint is what makes a *lost* index fail loudly rather than
+      fall to a silent table scan (the store's own reasoning);
+    * SQLite *seeks* into that covering index. Dropping or renaming the index
+      makes the hinted read raise `no such index`, so the store call below raises
+      rather than reaching the assertion; reversing its declared columns to
+      ``(sequence, project_id)`` keeps the index and the hint and turns the seek
+      into a full walk of every project's migration entries -- measured at 172x
+      the work, and `USING COVERING INDEX idx_migration_history_sequence` is in
+      that plan too, which is why the index name alone was not enough to assert.
+      The seek form is: ``SEARCH`` + the index + the ``(project_id=?`` that opens
+      the constraint list. The reversal plans ``SCAN migration_history USING
+      COVERING INDEX idx_migration_history_sequence`` and fails two of the three.
+    """
+    corpora = read_cost_corpora
+    paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    db_path = paths.state / active.database_filename
+
+    # The store is entered first so its connection opens before the capture is
+    # installed -- that open does not go through `_read_one`, so the one call the
+    # capture sees is `count_migration_history`'s own statement.
+    with SqliteCanonicalStore(db_path) as store, _one_row_statement_the_store_runs() as captured:
+        store.count_migration_history(ProjectId(READ_COST_HEAVY_ID))
+
+    assert captured, (
+        "count_migration_history ran no statement through _read_one, so the plan below would "
+        "describe a query the tool never runs -- the capture watches the wrong reader"
+    )
+    assert "INDEXED BY idx_migration_history_sequence" in captured["sql"], (
+        "the migration COUNT dropped its INDEXED BY hint; without it a dropped or renamed index "
+        "falls to a silent table scan rather than failing loudly, and the O(migrations) bound "
+        f"stops being structural. Statement:\n{captured['sql']}"
+    )
+    plan = _query_plan(db_path, captured["sql"], captured["params"])
+
+    for fragment in (
+        "SEARCH",
+        "USING COVERING INDEX idx_migration_history_sequence",
+        "(project_id=?",
+    ):
+        assert fragment in plan, (
+            f"the search integrity COUNT is no longer a seek into the covering index "
+            f"idx_migration_history_sequence(project_id, sequence): {fragment!r} is missing. "
+            f"SQLite planned:\n{plan}\n"
+            "Without that seek the read walks every project's migration entries -- a cost the "
+            "corpus can move, reopening the O(withheld) channel #158 and #19 closed (SEC-13)."
+        )
+
+
+# -- #30 PR1: what `knowledge.get` says when the damage *is* the absence -----
+#
+# `knowledge.get` publishes no field on a refusal, so its half of the integrity
+# signal is a different *message*: "could not be fully read", naming the rebuild,
+# instead of the "is not present" that a genuinely absent id earns. Two things
+# have to hold and they fail separately -- the branch has to be reached, and it
+# has to say something other than absence -- which is why both are asserted here
+# rather than one standing in for the other.
+
+
+#: The phrase that distinguishes `get`'s damage refusal from its absence
+#: refusal. Matched as a substring of the published message, because `get` has
+#: no `integrity` field to read: the message *is* the signal.
+GET_DAMAGE_PHRASE = "a different number of migration-history rows"
+
+#: What `get` says for an id that is simply not there -- and, by SEC-13, for one
+#: it is withholding. Pinned here so the damage message can be asserted *unequal*
+#: to it: a damage branch that reached for this text would be reporting damage as
+#: absence, which is exactly the #30 under-report on the `get` surface.
+GET_ABSENCE_PHRASE = "is not present in project"
+
+
+@pytest.mark.asyncio
+async def test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. `knowledge.get` must not report damage as absence.
+
+    "Not present" is a claim about a store somebody could read in full. When the
+    live `migration_history` count disagrees with the pointer's, nobody can: an
+    item present in the canonical migrations may be missing from the derived
+    state, so the honest answer is "could not be fully read", with the rebuild
+    named. Answering "is not present" instead tells an agent that a decision does
+    not exist when the truth is that the state holding it is damaged -- the same
+    silent under-report `appliedMigrations: 0` was on `knowledge.status`.
+
+    The item asked for really is absent from the store, so the *absence* branch
+    is the one the tool would otherwise take -- which is what makes this a test
+    of the damage branch and not of the corruption. Two mutations turn it RED for
+    two different reasons, and neither assertion catches both:
+
+    * forcing the damage branch off (`if False:`) drops through to the absence
+      refusal, so the damage phrase is missing;
+    * swapping the damage message for the absence text keeps the branch and
+      loses the distinction, so the absence phrase is present.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    assert _corrupt_migration_project_id(database) == 2, (
+        "both migration rows must take the sentinel, or the state is undamaged and the tool "
+        "would refuse with absence for the honest reason"
+    )
+
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert GET_DAMAGE_PHRASE in message, (
+        f"`knowledge.get` answered for a damaged state without saying so: {message!r}"
+    )
+    assert GET_ABSENCE_PHRASE not in message, (
+        f"`knowledge.get` reported damage as absence, which is the #30 under-report on this "
+        f"surface: {message!r}"
+    )
+    assert INTEGRITY_REMEDY_ACTION in message, "a damage refusal must name the rebuild"
+
+
+@pytest.mark.asyncio
+async def test_an_absent_item_over_a_healthy_state_is_refused_as_absence(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, the other side. The damage message is reserved for damage.
+
+    Without this, the test above is satisfied by a `get` that answers every
+    unknown id with "could not be fully read" -- a tool that cries damage over a
+    healthy project, whose refusals then say nothing at all. The two together are
+    what make the message a signal: absence here, damage there, on the same call
+    against the same fixture with one row count changed.
+    """
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert GET_ABSENCE_PHRASE in message, (
+        f"a healthy project must refuse an unknown id as absent: {message!r}"
+    )
+    assert GET_DAMAGE_PHRASE not in message, f"a healthy project reported damage: {message!r}"
+
+
+# -- #30 PR1: a surplus row is damage too (the `!=` more-side) ---------------
+
+
+def _add_a_foreign_migration_history_row(database: Path, project_id: str = "demo") -> None:
+    """Write one extra `migration_history` row *for this project*, so live > expected.
+
+    The direction no fixture reached. Every other damage in this file removes a
+    row or drops it out of the `WHERE`, so `live < expected` was the only side
+    measured -- and `>=` in place of `!=` survived the whole suite because of it.
+    This is the shape the store's own docstring names: another project's rows
+    reaching this one, here written directly rather than by corrupting a
+    `project_id`, so `expected` is untouched and the surplus is the only change.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "INSERT INTO migration_history "
+            "(migration_id, project_id, checksum, applied_at, sequence) VALUES (?, ?, ?, ?, ?)",
+            ("01K1ZZZZZZ01234567890ABCDE", project_id, "d" * 64, "2026-08-02T13:00:00+00:00", 99),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_surplus_migration_row_is_damage_on_every_read_tool(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The detector compares with `!=`, so *more* rows are damage as well.
+
+    The state database is immutable once built, so a live count above the
+    pointer's is not a project that got ahead -- it is rows that were never
+    applied here, and an answer assembled from them is an answer from a state
+    nobody recorded. `<` or `>=` in place of `!=` calls that healthy, and no
+    fixture in this file could tell: every other damage it writes *removes*
+    reach, so `live > expected` had never been built at all.
+
+    All three surfaces are asserted in one test because the claim is one claim --
+    the direction of a single comparison -- and it reaches a caller three
+    different ways: a field on `search`, a field on `status`, and a *message* on
+    `get`, which publishes no field on a refusal.
+    """
+    database, active = _state_database(registry)
+    _add_a_foreign_migration_history_row(database)
+    connection = sqlite3.connect(database)
+    try:
+        live = connection.execute(
+            "SELECT COUNT(*) FROM migration_history WHERE project_id = ?", ("demo",)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert live == active.migration_count + 1 == 3, (
+        f"the surplus row must really land in this project's history: live={live}, "
+        f"pointer={active.migration_count}. Without it this measures a healthy project."
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert search["integrity"]["damageDetected"] is True, (
+        "knowledge.search called a surplus migration row healthy; the comparison has become a "
+        "shortfall test and rows that were never applied here are answering queries"
+    )
+    assert status["integrity"]["damageDetected"] is True, (
+        "knowledge.status called a surplus migration row healthy"
+    )
+    assert status["appliedMigrations"] == 2, (
+        "appliedMigrations is the pointer's own count and must not follow the surplus row"
+    )
+    assert GET_DAMAGE_PHRASE in message, (
+        f"knowledge.get called a surplus migration row healthy: {message!r}"
+    )
+
+
+# -- #30 PR1: why the remedy has a second sentence --------------------------
+
+
+def _apply_returning_its_report(root: Path) -> dict[str, Any]:
+    """Run the remedy's first command against ``root``, and return what it printed.
+
+    The working directory is set *in the same call* that runs the CLI rather than
+    inherited from an earlier one: `migrate apply` resolves the project from
+    ``Path.cwd()`` and takes no argument that says where, so a test leaning on a
+    fixture's `chdir` is one refactor away from applying against this checkout.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(root)
+        result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+    assert result.exit_code == 0, result.stdout + (result.stderr or "")
+    report: dict[str, Any] = json.loads(result.stdout)
+    return report
+
+
+@pytest.mark.asyncio
+async def test_a_plain_apply_does_not_cure_a_surplus_migration_row(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. The measured fact the remedy's fallback sentence rests on.
+
+    `theurian migrate apply` reconciles the migration *files* against the history
+    it finds, so it cures a shortfall -- a lost row is pending again, and the
+    apply writes it back. It cannot cure a surplus: the row is already recorded,
+    nothing is pending, and the command exits 0 reporting `applied: []` and
+    `changed: false` while the signal it was named as the cure for is still
+    there. A caller who runs it and re-reads the response is told the same thing
+    it was told before, by a command that reported success.
+
+    That is why the remedy gained a second sentence, and why this is pinned
+    rather than left as a measurement in a document: the sentence is *predicated*
+    on this behaviour. If a future change made a plain apply silently reconcile a
+    surplus by deleting rows the pointer does not account for, this goes RED --
+    and that would be worth noticing on its own, because deleting canonical
+    history to make a signal go away is a larger decision than a remedy's
+    wording.
+
+    Three consecutive applies, which is what was measured: one apply proves the
+    command does not cure it, and three prove the caller cannot get there by
+    repeating it.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    database, _ = _state_database(registry)
+    _add_a_foreign_migration_history_row(database)
+
+    before = await _call(registry, "knowledge.status", projectId="demo")
+    assert "integrity" in before, (
+        "the surplus row did not produce a signal, so there is nothing for an apply to fail to "
+        "cure and this test would pass over a healthy project"
+    )
+
+    for attempt in range(1, 4):
+        report = _apply_returning_its_report(root)
+
+        assert report["applied"] == [], (
+            f"apply #{attempt} applied {report['applied']}; a surplus row is not a pending "
+            f"migration, so an apply that has something to do here is reconciling the history "
+            f"against the pointer -- a different behaviour than the remedy is written for"
+        )
+        assert report["changed"] is False, f"apply #{attempt} reported a change: {report}"
+        after = await _call(registry, "knowledge.status", projectId="demo")
+        assert after.get("integrity") == before["integrity"], (
+            f"the integrity signal moved after apply #{attempt}: {before.get('integrity')} -> "
+            f"{after.get('integrity')}. Either a plain apply now cures a surplus row -- in which "
+            f"case the remedy's fallback sentence is describing a case that no longer exists -- "
+            f"or it changed the signal without curing it"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_published_remedy_names_the_fallback_and_the_index_rebuild(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. A remedy that cannot cure the shape it is emitted for is not one.
+
+    Asserted over the string a *caller receives*, on both surfaces that carry it
+    -- the `integrity` object's `remedy` field and `knowledge.get`'s refusal
+    message -- rather than over the module constant, so a tool that stopped
+    publishing the constant would fail here too.
+
+    Three fragments, each failing for its own regression: the first command
+    (already pinned elsewhere, restated here because a fallback with no first
+    step is not a remedy either), the state directory the fallback deletes, and
+    the index rebuild that follows it. The order between the last two is
+    asserted because it is the whole content of the third step: deleting the
+    derived state deletes the published index with it, measured as
+    `indexed: false` / `no-index` afterwards, and a caller told to rebuild the
+    index *before* deleting the state rebuilds the one it is about to lose.
+
+    RED against the single-command string this replaced.
+    """
+    database, _ = _state_database(registry)
+    assert _drop_one_migration_history_row(database) == 1, "nothing damaged; the test is vacuous"
+
+    published = await _call(registry, "knowledge.status", projectId="demo")
+    refusal = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    for surface, remedy in (
+        ("knowledge.status integrity.remedy", published["integrity"]["remedy"]),
+        ("knowledge.get refusal", refusal),
+    ):
+        assert INTEGRITY_REMEDY_ACTION in remedy, f"{surface} names no rebuild command: {remedy!r}"
+        for fragment in INTEGRITY_REMEDY_FALLBACK:
+            assert fragment in remedy, (
+                f"{surface} names no fallback for the shape a plain apply cannot cure "
+                f"({fragment!r} is missing): {remedy!r}"
+            )
+        assert remedy.index(INTEGRITY_REMEDY_FALLBACK[1]) > remedy.index(
+            INTEGRITY_REMEDY_FALLBACK[0]
+        ), (
+            f"{surface} tells a caller to rebuild the index before deleting the state that "
+            f"holds it, so the rebuilt index is the one the next step throws away: {remedy!r}"
+        )
+
+
+# -- #30 PR1: the cells this tool stopped reading ---------------------------
+#
+# `knowledge.status` used to build its count through `applied_migrations`, which
+# parses every migration row into a `MigrationId` and a `ContentHash` -- so a
+# damaged `migration_id` or `checksum` made the tool *refuse*. It now runs a bare
+# `COUNT(*)` that interprets no cell, so those two positions answer cleanly.
+#
+# That is a deliberate trade and not an oversight: tamper detection over the
+# migration history is `theurian migrate status`'s job, which still exits 4 on
+# both cells (measured; pinned in `test_canonical_store_corruption.py`). What
+# must not happen is the read tools quietly answering with *less* than the
+# database holds, and they do not: `appliedMigrations` comes from the pointer.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "rows"),
+    [
+        # The composite primary key is (project_id, migration_id), so both rows
+        # cannot take the same sentinel id; one row is corrupted instead. One is
+        # enough -- a single unreadable id used to refuse the whole call.
+        ("migration_id", 1),
+        ("checksum", 2),
+    ],
+)
+async def test_status_answers_cleanly_over_a_migration_cell_it_no_longer_reads(
+    registry: ProjectRegistry, column: str, rows: int
+) -> None:
+    """#30 PR1. A cell the count does not interpret cannot make this tool refuse.
+
+    The bare `COUNT(*)` is what keeps the integrity check itself safe: a detector
+    that parsed the rows it counted could be made to refuse -- or to quote a cell
+    -- by the very damage it exists to report (#18). The cost is that these two
+    cells no longer reach `knowledge.status` at all, which is why this pins the
+    *clean* answer explicitly rather than leaving it as whatever falls out.
+
+    Three assertions, because "did not refuse" alone would be satisfied by a tool
+    that answered zeroes: the counts must be the true ones, `appliedMigrations`
+    must be the pointer's two, and `integrity` must be absent -- the detector
+    saw no discrepancy, because there is none in the row *count*.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        changed = connection.execute(
+            f"UPDATE migration_history SET {column} = ? "  # noqa: S608 - parametrized column name
+            f"WHERE rowid IN (SELECT rowid FROM migration_history ORDER BY rowid LIMIT {rows})",
+            ("ROTATE-ME sk-live-9f2a7c41d8e3",),
+        ).rowcount
+        connection.commit()
+        held = connection.execute(
+            f"SELECT COUNT(*) FROM migration_history WHERE {column} = ?",  # noqa: S608
+            ("ROTATE-ME sk-live-9f2a7c41d8e3",),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert changed == held == rows, (
+        f"migration_history.{column} did not take the sentinel ({changed} updated, {held} hold "
+        f"it), so this call is being answered over an undamaged database"
+    )
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["itemCount"] == 2, "the item counts do not come from the migration history"
+    assert result["appliedMigrations"] == 2, (
+        "appliedMigrations must stay the pointer's own count over a damaged migration cell"
+    )
+    assert "integrity" not in result, (
+        f"a damaged migration_history.{column} moved no row count, so the detector has nothing "
+        f"to report -- an `integrity` key here means it is firing on something else: {result}"
+    )
+
+
+# -- #30 PR1: the healthy invariant survives more applies -------------------
+
+
+def _live_and_expected(registry: ProjectRegistry, project_id: str = "demo") -> tuple[int, int]:
+    """The detector's two operands, read the way it reads them.
+
+    ``live`` straight from SQLite rather than through the store, so a store
+    method that started answering from the pointer could not make the two agree
+    by construction; ``expected`` from the pointer the tools resolve.
+    """
+    database, active = _state_database(registry, project_id)
+    connection = sqlite3.connect(database)
+    try:
+        live = connection.execute(
+            "SELECT COUNT(*) FROM migration_history WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    return int(live), active.migration_count
+
+
+@pytest.mark.asyncio
+async def test_a_re_apply_and_a_third_migration_leave_every_tool_silent(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, M1. `live == expected` is an invariant of `migrate apply`, not of two.
+
+    The absence tests above measure one build of two migrations. That leaves the
+    invariant pinned at a single point, where an off-by-one in either operand --
+    a pointer written before the last row lands, an idempotent re-apply that
+    bumps `migrationCount` without writing a row -- would fire `integrity` on a
+    project nobody damaged and turn the signal into noise a caller learns to
+    ignore. So the pointer and the rows are compared again after a re-apply that
+    changes nothing, and again after a third migration that changes both.
+
+    The guard is the row count read straight from SQLite beside the pointer's:
+    silence proves the detector chose it only if the two operands really are
+    equal and really did move.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        # An apply with nothing pending: the pointer must not count what it did
+        # not write.
+        _run("migrate", "apply")
+        after_reapply = _live_and_expected(registry)
+
+        slug, title, letter = "retry-policy", "Retry policy", "C"
+        (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+            f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
+        )
+        (root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml").write_text(
+            EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title)
+        )
+        _run("migrate", "apply")
+        after_third = _live_and_expected(registry)
+    finally:
+        monkey.undo()
+
+    assert after_reapply == (2, 2), (
+        f"an idempotent re-apply moved the operands to {after_reapply}; the detector would now "
+        f"report damage on a project nobody touched"
+    )
+    assert after_third == (3, 3), (
+        f"a third migration left the operands at {after_third}, so the build below either did "
+        f"not happen or left the pointer disagreeing with its own rows"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.retry-policy"
+    )
+
+    assert "integrity" not in search, "a healthy three-migration search must not report damage"
+    assert "integrity" not in status, "a healthy three-migration status must not report damage"
+    assert "integrity" not in got, "a healthy three-migration get must not report damage"
+    assert status["appliedMigrations"] == 3, "the pointer must have counted the third migration"
+
+
+# -- #30 PR1: a pointer that cannot be true is refused, not published --------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("knowledge.search", {"query": "token"}),
+        ("knowledge.get", {"itemId": "architecture.auth-policy"}),
+        ("knowledge.status", {}),
+    ],
+)
+async def test_a_negative_migration_count_is_refused_by_every_read_tool(
+    registry: ProjectRegistry, tool: str, arguments: dict[str, Any]
+) -> None:
+    """#30 PR1. `appliedMigrations` cannot be published below its own `minimum: 0`.
+
+    `active.json` is a file on disk, and `migrationCount` was parsed as any
+    integer -- so a hand edit to `-5` reached the wire verbatim as
+    `appliedMigrations: -5`, in violation of the schema `knowledge.status`
+    publishes. A strict client rejects that response *whole*, which throws away
+    the `integrity` key riding on it: the one field that says the state is
+    damaged is discarded by the damage.
+
+    Refused at parse time instead, in the family a corrupt pointer already
+    produces, so every tool that resolves the project refuses with the pointer's
+    own remedy -- and the negative number reaches no successful response at all,
+    because there is no successful response. All three are covered because
+    `_resolve` is shared and a fix applied at one call site would leave the other
+    two publishing it.
+
+    RED the moment the range check leaves `ActiveState.from_json`: the pointer
+    parses again, the tool answers, and `_call_failing` fails on DID NOT RAISE.
+    """
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    pointer = json.loads(paths.active_pointer.read_text(encoding="utf-8"))
+    paths.active_pointer.write_text(json.dumps({**pointer, "migrationCount": -5}), encoding="utf-8")
+
+    message = await _call_failing(registry, tool, projectId="demo", **arguments)
+
+    assert "migrationCount" in message, (
+        f"the refusal must name the field a user has to fix: {message!r}"
+    )
+    assert ACTIVE_POINTER_REMEDY in message, (
+        f"{tool} refused a malformed pointer without the remedy that rebuilds it: {message!r}"
+    )

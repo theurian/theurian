@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import sqlite3
 import subprocess
 from datetime import datetime
 from typing import Any, Final, NamedTuple
@@ -196,6 +197,14 @@ ANCHORLESS_ITEM_IDS = frozenset(
 #: Named responses, captured once. Each reaches a different combination of the
 #: fields a schema is most likely to be wrong about: the optional ones, the
 #: null-carrying ones, and the empty-result case that would validate vacuously.
+#:
+#: ``ranked-damaged`` is the only one taken over a state database somebody broke,
+#: and it is here for the reason every other name is: the response carries a key
+#: no healthy capture does. ``integrity`` is optional and present-only (#30), so
+#: without a damaged capture its declaration is validated by nothing --
+#: ``additionalProperties: false`` would reject the real object and no test would
+#: notice, which is exactly how ``retrieval-result.schema.json`` came to reject
+#: every real result for a milestone.
 CAPTURES = (
     "unranked",
     "unranked-authored-here",
@@ -206,6 +215,7 @@ CAPTURES = (
     "ranked-dense",
     "ranked-no-match",
     "unapproved-not-indexed",
+    "ranked-damaged",
 )
 
 
@@ -236,6 +246,33 @@ async def _call_search(registry: Any, arguments: dict[str, Any]) -> dict[str, An
 
 def _search(registry: Any, **arguments: Any) -> dict[str, Any]:
     return asyncio.run(_call_search(registry, arguments))
+
+
+def _drop_one_migration_history_row(root: pathlib.Path) -> int:
+    """Delete one `migration_history` row, so the live count falls below the pointer's.
+
+    The minimal input that makes a tool emit ``integrity`` (#30): the active
+    pointer still records the migrations the state was built from, and the state
+    now holds one fewer row. The `knowledge_items` rows are untouched, so the
+    response is a *complete, ordinary* response with the damage key added --
+    which is what makes it a capture of the optional key rather than a capture of
+    an error.
+    """
+    from theurian.application.project_service import ProjectPaths, read_active_state
+
+    paths = ProjectPaths.of(root)
+    active = read_active_state(paths)
+    assert active is not None, "the corpus must have built a canonical state to damage"
+    connection = sqlite3.connect(paths.state / active.database_filename)
+    try:
+        changed = connection.execute(
+            "DELETE FROM migration_history WHERE rowid = (SELECT MIN(rowid) FROM migration_history)"
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    assert changed == 1, "no migration-history row was deleted, so nothing is damaged"
+    return changed
 
 
 def _build_conformance_project(root: pathlib.Path) -> None:
@@ -313,10 +350,15 @@ def _capture(tmp: pathlib.Path) -> dict[str, dict[str, Any]]:
             "ranked-no-match": _search(registry, query="kubernetes"),
             "unapproved-not-indexed": _search(registry, query="caching", includeUnapproved=True),
         }
+        # Taken last, because it is the only one that damages the corpus: every
+        # capture above is of a healthy project and none may be answered from a
+        # state with a row missing.
+        _drop_one_migration_history_row(root)
+        damaged = {"ranked-damaged": _search(registry, query="signed token")}
     finally:
         monkey.undo()
 
-    return {**unranked, **ranked}
+    return {**unranked, **ranked, **damaged}
 
 
 @pytest.fixture(scope="module")
@@ -730,6 +772,19 @@ STATUS_PROJECTS: Final = {
     "withheld-only": ("status-withheld", WITHHELD_CORPUS, "01K1WWWWWW01234567890ABCDE"),
 }
 
+#: The status responses validated against the published schema: both projects,
+#: plus the same surfaceable project asked again once its migration history has
+#: lost a row. The third is not a third project -- it is the second answer the
+#: first project gives, which is what makes the difference between the two
+#: captures the damage and nothing else.
+#:
+#: Here for the reason `ranked-damaged` is in :data:`CAPTURES`: ``integrity`` is
+#: optional and present-only (#30), so a schema that got its shape wrong --
+#: `additionalProperties: false` over the wrong property names, `const: true`
+#: against something else -- would be validated by nothing while every healthy
+#: capture passed.
+STATUS_CAPTURES: Final = (*STATUS_PROJECTS, "damaged")
+
 
 async def _call_status(registry: Any, project_id: str) -> dict[str, Any]:
     """One status report through the same entry point the transport uses."""
@@ -848,6 +903,11 @@ def _capture_status(tmp: pathlib.Path) -> StatusCaptures:
         registry = ProjectRegistry.default(data_dir)
         for name, (project_id, _, _) in STATUS_PROJECTS.items():
             responses[name] = asyncio.run(_call_status(registry, project_id))
+        # Damaged last, and over the project whose healthy answer is already
+        # captured above, so the pair differs by the lost row alone.
+        surfaceable_id, _, _ = STATUS_PROJECTS["surfaceable"]
+        _drop_one_migration_history_row(tmp / surfaceable_id)
+        responses["damaged"] = asyncio.run(_call_status(registry, surfaceable_id))
     finally:
         monkey.undo()
 
@@ -861,7 +921,7 @@ def status_captures(tmp_path_factory: pytest.TempPathFactory) -> StatusCaptures:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("name", list(STATUS_PROJECTS))
+@pytest.mark.parametrize("name", list(STATUS_CAPTURES))
 def test_a_real_status_response_validates_against_its_published_schema(
     status_captures: StatusCaptures, name: str
 ) -> None:
@@ -990,3 +1050,109 @@ def test_applied_migrations_counts_files_not_items(status_captures: StatusCaptur
         f"report appliedMigrations {surfaceable} and {withheld}; the field is moving with the "
         "withheld items, which is the count subtraction would then recover (T-17)"
     )
+
+
+# -- the present-only `integrity` key ----------------------------------------
+#
+# Both response schemas declare an optional `integrity` object that a tool emits
+# only when a bounded damage check fired (#30). "Optional" is why it needs its
+# own captures: a schema whose `integrity` declaration was wrong -- the wrong
+# property names under `additionalProperties: false`, a `const` against something
+# the tool does not send -- validates every healthy response perfectly, because
+# no healthy response contains the key at all.
+
+
+def _integrity_captures(
+    real_responses: dict[str, dict[str, Any]], status_captures: StatusCaptures
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    """The damaged capture from each tool, beside the schema it must validate against."""
+    return {
+        "knowledge.search": (SEARCH_RESPONSE, real_responses["ranked-damaged"]),
+        "knowledge.status": (STATUS_RESPONSE, status_captures.responses["damaged"]),
+    }
+
+
+@pytest.mark.integration
+def test_the_damaged_captures_really_carry_the_optional_integrity_key(
+    real_responses: dict[str, dict[str, Any]], status_captures: StatusCaptures
+) -> None:
+    """Guards every validation of a damaged capture, which is otherwise vacuous.
+
+    A damaged capture that carried no ``integrity`` key would validate against
+    the published schema exactly as the healthy ones do -- and against a schema
+    whose ``integrity`` declaration was nonsense. So this asserts the key is
+    really there, with the value the schema constrains, before anything else
+    treats those two responses as evidence about it.
+
+    The healthy counterparts are asserted in the same breath because the contract
+    is *present-only*: the key means damage, absence asserts nothing, and a build
+    that emitted it always would satisfy every "it is there" assertion while
+    destroying the meaning of the field.
+    """
+    for tool, (_schema, response) in _integrity_captures(real_responses, status_captures).items():
+        integrity = response.get("integrity")
+        assert integrity is not None, (
+            f"{tool}'s damaged capture carries no `integrity` key, so validating it says nothing "
+            f"about the optional key this section exists for: {response}"
+        )
+        assert integrity["damageDetected"] is True, (
+            f"{tool} published `damageDetected: {integrity['damageDetected']!r}`; the object has "
+            f"no clean form, only its absence"
+        )
+        assert isinstance(integrity["remedy"], str) and integrity["remedy"], (
+            f"{tool} published a damage signal with no remedy: {integrity}"
+        )
+
+    assert "integrity" not in real_responses["ranked"], (
+        "a healthy knowledge.search response carries the damage key, so its presence says nothing"
+    )
+    assert "integrity" not in status_captures.responses["surfaceable"], (
+        "a healthy knowledge.status response carries the damage key, so its presence says nothing"
+    )
+
+
+@pytest.mark.integration
+def test_the_integrity_conformance_check_can_fail(
+    real_responses: dict[str, dict[str, Any]], status_captures: StatusCaptures
+) -> None:
+    """Guards the damaged captures' validation, on both schemas at once.
+
+    A published object nothing has ever been validated against is a shape someone
+    wrote down, not a contract. Each payload below is admitted by exactly one
+    loosening of the ``integrity`` declaration and by no other change, so a
+    reviewer who relaxes one clause sees this fall rather than pass on the
+    strength of the rest:
+
+    - a field nobody declared -- caught only while ``additionalProperties`` is
+      ``false`` *on the nested object*, which the outer response's own
+      ``additionalProperties: false`` does not reach;
+    - ``damageDetected: false`` -- caught only by ``const: true``, and it is the
+      one payload that matters most, because a ``false`` token is precisely the
+      "checked and clean" claim this key refuses to make;
+    - each required field dropped in turn;
+    - an empty remedy -- caught only by ``minLength: 1``, and a signal naming no
+      action is the failure the remedy exists to prevent.
+
+    Run against both schemas from one list, because the two declarations are
+    copies of each other and a divergence between them is exactly what a shared
+    list catches.
+    """
+    for _tool, (schema, response) in _integrity_captures(real_responses, status_captures).items():
+        validator = _validator(schema)
+        validator.validate(response)
+        integrity = response["integrity"]
+
+        rejected = (
+            {**response, "integrity": {**integrity, "surprise": 1}},
+            {**response, "integrity": {**integrity, "damageDetected": False}},
+            {**response, "integrity": {**integrity, "damageDetected": "true"}},
+            {
+                **response,
+                "integrity": {k: v for k, v in integrity.items() if k != "damageDetected"},
+            },
+            {**response, "integrity": {k: v for k, v in integrity.items() if k != "remedy"}},
+            {**response, "integrity": {**integrity, "remedy": ""}},
+        )
+        for payload in rejected:
+            with pytest.raises(ValidationError):
+                validator.validate(payload)

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://theurian.dev/schemas/mcp/knowledge-search-response.schema.json",
   "title": "Output of the `knowledge.search` MCP tool",
-  "description": "The whole response, not a fragment of it. A client validates what arrives, and publishing only the hit shape leaves the keys around it — `count`, `results`, and the `retrieval` block that says how the answer was produced — as an undeclared contract that drifts without anything noticing.\n\nBoth answer paths produce this shape: ranked retrieval against a published index, and the unranked canonical scan used when no index can answer. The fallback is not a degraded contract but the same one, because a project that has applied migrations and not yet indexed would otherwise answer every query with nothing — which an agent reads as \"we have no such decision\" rather than \"ask me again in a moment\".",
+  "description": "The whole response, not a fragment of it. A client validates what arrives, and publishing only the hit shape leaves the keys around it — `count`, `results`, and the `retrieval` block that says how the answer was produced — as an undeclared contract that drifts without anything noticing.\n\nBoth answer paths produce this shape: ranked retrieval against a published index, and the unranked canonical scan used when no index can answer. The fallback is not a degraded contract but the same one, because a project that has applied migrations and not yet indexed would otherwise answer every query with nothing — which an agent reads as \"we have no such decision\" rather than \"ask me again in a moment\".\n\nFive required keys, always all five, and a sixth — `integrity` — that appears only when a bounded damage check fired (#30) and is absent, asserting nothing, otherwise.",
   "type": "object",
   "required": ["projectId", "query", "count", "results", "retrieval"],
   "additionalProperties": false,
@@ -33,6 +33,23 @@
     },
     "retrieval": {
       "$ref": "https://theurian.dev/schemas/mcp/retrieval-metadata.schema.json"
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["damageDetected", "remedy"],
+      "description": "Present **only** when a bounded integrity check detected a discrepancy: the derived state database holds a different number of `migration_history` rows for this project — fewer, or more — than the active pointer that chose that database records in its `migrationCount` (#30). That comparison is the whole of what this key measures. The state database is immutable once built, so the two agree on a healthy project and any difference is damage: fewer when a row is lost or falls out of a `WHERE` (a corrupt `migration_history.project_id`), more when another project's rows reach this one — which is why it is a difference and not a shortfall. The check is a single covering-index `COUNT` over one project's migration rows (`O(migrations)`, off the retrieval hot path), so it reopens none of the timing channels the search paths close.\n\n**It does not detect a result-emptying corruption of `knowledge_items`.** A sentinel in `knowledge_items.project_id` or `knowledge_items.item_id` drops the item out of every query while the migration rows stay intact, so this tool answers `count: 0, results: []` — a false \"we have no such decision\" — with *this key absent* and nothing in `retrieval` saying otherwise (`stale: false` on the ranked path, `null` on the unranked one, neither of which reports damage). Those positions are the `SILENTLY_EMPTIED` members carried to PR2 (#30), and nothing on this response distinguishes them from a project that genuinely holds nothing.\n\n**Absence asserts nothing.** No `integrity` key means the check did not fire, which is *not* a clean bill of health and must not be read as one. The check is incomplete by design — this release (PR1) detects only a migration-count mismatch — so damage it does not yet cover leaves this key absent exactly as a healthy project does. There is deliberately no `damageDetected: false` form: a `false` token would read as \"checked and clean\" over an admittedly incomplete detector, louder than any description here, while absence, asserting nothing, cannot be misread without a caller inventing a claim. This is the same present-only contract `raptorPath` already follows on a hit (ADR-0008 decision 8): the wire already branches on key presence.\n\nDeclared so `additionalProperties: false` continues to hold when the key is present.",
+      "properties": {
+        "damageDetected": {
+          "const": true,
+          "description": "Always `true` when this key is present — the object exists to report detected damage, so the field is redundant with presence by design. Kept explicit rather than reduced to a bare boolean so the signal can grow a second field (a code, a bound) without a wire break, and never carries `false`: there is no clean form of this object, only its absence."
+        },
+        "remedy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How to rebuild the derived state from the Git-tracked migrations. **Two steps, because one does not cure every shape this signal fires on.** `theurian migrate apply` comes first and is the cheap cure: a *lost* migration row is re-applied and the signal clears. A *surplus* row is not — the migration set is already fully applied, so that command exits 0 having changed nothing and the signal stays, measured over three consecutive runs. Deleting `.theurian/state/` is the universal cure and the one the state-refusal messages already print: the whole directory is derived (ADR-0004), so the next apply rebuilds the database from the migrations with exactly the recorded count.\n\nThat deletion takes a published retrieval index with it — measured, `retrieval.indexed` reads `false` afterwards until a rebuild — so the string names `theurian index build` too rather than curing this signal by silently downgrading the project to unranked scans.\n\nOne string, identical on every signal from every tool, and it never quotes the damaged cell."
+        }
+      }
     }
   }
 }

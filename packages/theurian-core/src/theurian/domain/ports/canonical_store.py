@@ -218,6 +218,29 @@ class CanonicalStore(Protocol):
         """
         ...
 
+    def count_migration_history(self, project_id: ProjectId) -> int:
+        """How many migration-history rows this project holds, counted in SQL.
+
+        The bounded integrity signal a tool emits on ``#30``: the active pointer
+        that chose the state database records how many migrations it was built
+        from (``ActiveState.migration_count``), and the state database is
+        immutable once built, so in a healthy project this count equals that
+        number. A difference is damage -- a corrupt ``project_id`` cell dropping
+        the row out of the ``WHERE``, a lost row, or another project's rows
+        bleeding in -- which a tool reads back and discloses rather than
+        answering with silently less than the database holds.
+
+        Deliberately a bare ``COUNT``, not :meth:`applied_migrations`, and
+        deliberately gate-agnostic: it interprets no migration cell -- not the
+        id, not the checksum -- so it cannot itself refuse or leak on a damaged
+        one, and it is served by ``idx_migration_history_sequence(project_id,
+        sequence)`` as a covering index scan over one project's rows. Its cost is
+        therefore ``O(migrations)`` and independent of the corpus, so a tool that
+        calls it on every request -- ``knowledge.search`` included -- reopens
+        none of the ``O(withheld)`` timing channels #158 and #19 closed.
+        """
+        ...
+
 
 @runtime_checkable
 class CanonicalReadSession(Protocol):
