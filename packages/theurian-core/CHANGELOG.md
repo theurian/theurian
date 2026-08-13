@@ -277,15 +277,64 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   (O-3, SEC-6).
 
   **A run can be right about the block and wrong about the machine, and now says
-  so.** A shell keeps the last assignment it reads, so a line *below* the block
-  assigning `THEURIAN_MCP_TOKEN` again is what gets exported while the probe —
-  deliberately blind to lines it does not own — reports the block current. That
-  line is not Theurian's to edit and it is not a conflict either; the step stays
-  `satisfied` and carries a caveat, which `_verify` turns into a warning, so the
-  run ends **`degraded` where it used to end `converged`**. The warning names the
-  path, the variable and the start marker to move the line above, and never the
-  line itself. A bare `export THEURIAN_MCP_TOKEN` or a commented-out assignment
-  is not an override and leaves the run converged.
+  so for the direct assignment forms.** A shell keeps the last assignment it
+  reads, so a line *below* the block assigning `THEURIAN_MCP_TOKEN` again is what
+  gets exported while the probe — deliberately blind to lines it does not own —
+  reports the block current. That line is not Theurian's to edit and it is not a
+  conflict either; the step stays `satisfied` and carries a caveat, which
+  `_reservations` turns into a warning, so the run ends **`degraded` where it
+  used to end `converged`**. The warning names the path, the variable and the
+  start marker to move the line above, and never the line itself. A bare
+  `export THEURIAN_MCP_TOKEN` or a commented-out assignment is not an override
+  and leaves the run converged. Currency is asked first, so a block that is both
+  stale and shadowed is rewritten and *then* reported, rather than reported
+  instead of fixed.
+
+  **What finds that line is a heuristic, and the scope is published rather than
+  implied.** `contains_shadowing_assignment` reads one line at a time and
+  recognises a first word spelled `THEURIAN_MCP_TOKEN=…`, or that word after
+  `export`, `declare`, `typeset` or `readonly`. It is wrong in both directions,
+  measured with `/bin/bash` sourcing the block and then the line: an `&&` list,
+  an `if`/`then`, a `{ }` group and an `eval` each assign the variable while the
+  run stays **silent and `converged`**, and an assignment inside a quoted heredoc
+  *body* draws the warning although the shell keeps the block's value. The four
+  misses are pinned **as** the recorded boundary, each through a real shell
+  rather than restated against the function, so a change that starts warning on
+  one of them has to arrive with an argument and update the pin deliberately. Not
+  extended, and that is the decision rather than a to-do: what a line does is
+  settled by the shell at run time — `eval` takes a string that need not exist
+  until then, and a heredoc body is not shell at all — and a probe that runs
+  somebody's shell profile is not a probe. The residual is carried in the wording
+  instead: both published sentences say the line *appears* to assign and the
+  block *appears* to be overridden, which is what keeps the heredoc case honest,
+  and both are pinned — dropping the hedge from the `summary` alone, the sentence
+  a reader who stops at `satisfied` sees, survived all 2,442 tests while the
+  `detail`'s was held. **What stays unqualified** is the other arm's summary,
+  "`…/env` exports `THEURIAN_MCP_TOKEN` by reference" — and the `converged` the
+  run reports beside it. On a machine using one of the four evading shapes both
+  are true of the block and incomplete about the machine; measured through the
+  real CLI, `theurian doctor --json` publishes that summary, zero warnings and
+  exit 0 while `bash` exports the later line's value. Recorded here and in §6.2
+  row 7 rather than fixed, because no line-level rule can tell that machine from
+  a healthy one.
+
+  **`theurian doctor` and `theurian setup --dry-run` now carry that warning
+  too**, which is the caller-visible half of this. The sentence was built in the
+  verification pass alone, so on one machine `theurian setup` said `degraded`
+  with the caveat while `theurian doctor --json` said `"warnings": []` and exited
+  0 — the caveat sitting in the payload the whole time as the `detail` of a step
+  whose status reads `satisfied`, which is where a reader stops. Both surfaces
+  that publish a plan now build their warnings with the same `_reservations`, so
+  a shadowed machine gains one `env-reference: …` line in `doctor --json`,
+  `doctor --report` and the `--dry-run` plan the plugin renders. Nothing else
+  moved, deliberately: a reservation is a finding with no work attached, so
+  `healthy`, `problemCount` and the exit status stay tied to what setup would
+  change and what needs consent, and a machine whose only finding is a line
+  Theurian will not touch still exits 0. The reports built on the way *past* a
+  plan — `aborted`, `awaiting_consent` and `halted` — carry no reservations, and
+  that is recorded rather than closed in `_reservations`' docstring: each hands
+  the reader a larger question first, and the step's `detail` still travels with
+  the report.
 
   **Line endings are bytes somebody chose.** Both writers read and write with
   newline translation off, so a file edited on Windows keeps its `\r` bytes
@@ -324,14 +373,54 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   rewrote identical bytes fails the pin. The write goes *through* the inode
   rather than temp-and-rename, because this file is a symlink into a dotfiles
   repository on plenty of machines, and through an `io.BufferedWriter`, because a
-  short write here would now destroy lines Theurian did not author. 62 tests, 81
-  collected cases: `tests/unit/test_env_file_merge.py` (30 tests, including one
+  short write here would now destroy lines Theurian did not author. 74 tests, 97
+  collected cases: `tests/unit/test_env_file_merge.py` (33 tests, including one
   that sweeps all 363 arrangements against a rule read off the symbols rather
-  than off the code), `tests/integration/test_setup_env_file.py` (18, driving the
+  than off the code), `tests/integration/test_setup_env_file.py` (21, driving the
   real `SetupService` over real files because the defect lived in the seam — a
   probe asking one question while the apply performs a different write is exactly
-  what shipped), `tests/integration/test_init_gitignore_block.py` (8, through the
-  real `theurian init`), and `tests/integration/test_auth_rotate.py` (6 added).
+  what shipped, two of them — five cases — asking a real `bash` what a file
+  exports rather than asking the heuristic to agree with itself),
+  `tests/integration/test_init_gitignore_block.py` (9, through the real
+  `theurian init`), `tests/integration/test_auth_rotate.py` (6 added),
+  `tests/integration/test_setup_cli.py` (3 added, for the `doctor` and
+  `--dry-run` parity above), and `tests/integration/test_setup_service.py` (2
+  added). The last two of those close pins that were simply absent: nothing
+  asserted `CONVERGED` by value — replacing `_verify`'s state choice with an
+  unconditional `DEGRADED` passed the whole suite, because `succeeded` is true of
+  both — and nothing asserted the *status* half of the reservation test, so
+  reporting every explained `NOT_APPLICABLE` step as a warning, which would turn
+  the supply-chain note on row 3 into something wrong with this install, passed
+  it too. Four parser decision points gained pins the same way: a marker line
+  with a trailing space is not a marker, in the env file **and** in the
+  `.gitignore` scan beside it; the block is searched for before the dev0–dev2
+  rendering; markers that cannot be resolved are refused even where that
+  rendering is also present; and the probe asks currency before shadowing.
+
+  **Round two re-measured the parser rather than re-reading it.** A second sweep
+  over an extended alphabet, 2,800 shapes, found no arrangement that loses a line
+  outside the block or takes the wrong refusal decision; the two writers were
+  compared over 84 file-state combinations and produce identical bytes; and the
+  six numbers this entry publishes — 363, 229 refused, 134 merged, and the first
+  cut's 39, 16 and 19 — were re-measured exact. Those are review measurements and
+  not suite tests: what guards the rule from here on is the 363-arrangement
+  sweep, which asserts its own population size so a shrunken alphabet fails
+  rather than passing quietly.
+
+  **Two remedies now describe the state they are reached from.** The `.gitignore`
+  refusal said "Add `# <<< theurian <<<` where the block ends" to a person whose
+  file appears to have that line already — a marker is matched as a whole line,
+  so a trailing space is the likeliest way to reach an unterminated block, and
+  the remedy sent them looking for what was in front of them; it now says what
+  the line must be, trailing space and all. `auth rotate`'s `OSError` remedy
+  offered "an older block, or readable by other accounts" for a file that can
+  also be left *empty*, since the `open` truncates before the write that failed —
+  reproduced under `RLIMIT_FSIZE`, 588 bytes in and 16 out — and now admits that
+  state. A third correction is not user-visible: the comment above the rotation's
+  env-file refresh enumerated the shapes it handles, absent, stale and
+  pre-marker, without the residual — a line below the block that assigns the
+  token again survives the rotation and produces the 401 anyway, and `doctor` is
+  what reports it.
 
   This supersedes one sentence of `0.1.0.dev2`'s `changed_paths` entry below. The
   env file's truncation is still disclosed on the arm that motivated it, but
