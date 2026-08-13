@@ -2139,21 +2139,65 @@ The detector: `expected` is `ActiveState.migration_count`, carried from the
 resolution that chose the database rather than re-read; `live` is
 `SELECT COUNT(*) FROM migration_history INDEXED BY idx_migration_history_sequence
 WHERE project_id = ?`; damage is `live != expected`, not `<`, so another project's
-rows bleeding into the file are damage too
-(`test_a_sibling_projects_rows_in_the_same_file_forge_no_mismatch`). Presence and
-absence are both pinned rather than assumed: a lost row surfaces the field from
-each of the three tools
+rows reaching this one are damage too. Both sides of that `!=` are now pinned:
+`test_a_surplus_migration_row_is_damage_on_every_read_tool` writes one extra row
+for this project and asserts all three tools disclose it — RED against `>=` in
+place of `!=`, the mutation the whole suite survived while every fixture removed
+rows — and
+`test_a_sibling_projects_rows_in_the_same_file_forge_no_mismatch` holds the other
+half, that a *sibling* project's rows in the same file stay out of `live` and forge
+no signal on a healthy project. Presence and absence are both pinned rather than
+assumed: a lost row surfaces the field from each of the three tools
 (`test_a_lost_migration_row_surfaces_integrity_from_knowledge_search`, `…_status`,
 `…_get`, each RED when that tool's emission is unplugged), and a healthy build
 emits it from none of them
 (`test_a_healthy_build_emits_no_integrity_field_from_any_tool`, guarded by reading
-the live count and the pointer so the silence is a match rather than an accident).
+the live count and the pointer so the silence is a match rather than an accident;
+`test_a_re_apply_and_a_third_migration_leave_every_tool_silent` holds the same
+silence after the pointer has moved twice).
 `knowledge.get` refuses with a bare string and no field, so the distinction lives
-in the message: over damage it now says the project "could not be fully read",
-where before it said the same thing it says for an item that is simply not present
-— the SEC-13 refusal that must not distinguish a withheld id from an absent one is
-unchanged, and what changed is that "the state is short of what its own pointer
-records" is no longer reported as absence.
+in the message: over damage it now says the project "could not be fully read: its
+derived state holds a different number of migration-history rows than its own
+records expect", where before it said the same thing it says for an item that is
+simply not present — the SEC-13 refusal that must not distinguish a withheld id
+from an absent one is unchanged, and what changed is that "the state disagrees with
+its own pointer" is no longer reported as absence. Both directions are pinned,
+because a tool that answered "could not be fully read" to every unknown id would
+satisfy the damage half alone
+(`test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence`,
+`test_an_absent_item_over_a_healthy_state_is_refused_as_absence`).
+
+**The pointer is one side of the comparison, so a corrupt pointer is a way to be
+wrong.** PR1 closes the half of that which the published contract could catch: a
+negative `migrationCount` is refused at parse time in `ActiveState.from_json`,
+because `knowledge.status` publishes that number as `appliedMigrations` under a
+schema declaring `minimum: 0`. Measured before the fix, `migrationCount: -5`
+reached the wire verbatim, so the response violated its own contract and a strict
+client discards the whole of it — including the `integrity` key on that same
+response saying the state is damaged. It is now a `DomainError` converted to the
+`ProjectError` a corrupt pointer already produced, and all three read tools refuse
+with `ACTIVE_POINTER_REMEDY`'s delete-and-re-apply cure
+(`test_a_negative_migration_count_is_refused_by_every_read_tool`).
+
+**What that leaves is a one-way limit, recorded and not claimed closed.** The
+check compares two derived numbers against each other and neither against the
+Git-tracked migrations, so a non-negative `migrationCount` that is simply *wrong*
+is not refused. Measured on a sandbox project holding one applied migration:
+
+| Pointer | Live rows | What every surface does |
+| :-- | :-- | :-- |
+| `-5` | 1 | all three tools refuse, naming the pointer remedy |
+| `2` | 1 | `integrity` on all three; `knowledge.status` publishes `appliedMigrations: 2` |
+| `0` | 1 | `integrity` on all three; `knowledge.status` publishes `appliedMigrations: 0` |
+| `0` | 0 (row deleted) | **nothing fires anywhere** — all three tools answer, `appliedMigrations: 0`, and `migrate status`, `migrate apply` and `index build` all exit 0 |
+
+The last row is the limit: the signal is a disagreement between two numbers, so
+corrupting both in the same direction silences it, and `appliedMigrations` then
+publishes a false count with no key beside it. The middle two are detected but not
+*attributed* — the key says the state and its pointer disagree, never which of them
+is wrong, while `appliedMigrations` publishes the pointer's number either way.
+Nothing here asserts a clean pointer; absence continues to assert nothing, which is
+what keeps this a limit rather than a false claim.
 
 **The signal carries no bit about withheld content, and its cost carries none
 either.** It counts rows in `migration_history`, a table that holds no knowledge
@@ -2173,6 +2217,32 @@ and one more: SQLite answers it from the covering index, planned as
 produces for it — so a dropped index fails loudly instead of falling back to a
 table scan whose cost the corpus can move.
 
+**Both plan assertions now pin the *seek*, not the index name.** This one and the
+`idx_items_status` assertion #19 left behind
+(`test_status_count_is_answered_by_a_covering_index`) each read a substring naming
+their index, which a reversed column order survives — `USING COVERING INDEX <name>`
+appears on a `SCAN` line too. Measured on the migration index: declaring it
+`(sequence, project_id)` keeps the name and the `INDEXED BY` hint, plans
+`SCAN migration_history USING COVERING INDEX idx_migration_history_sequence`, and
+walks every project's migration entries at 172× the work — and the old assertion
+passed it. Both now require three fragments: `SEARCH`, the index name, and the
+`(project_id=?` that opens the constraint list. The reversal fails two of the
+three on the migration index and the third on `idx_items_status`, which plans
+`(status=? AND project_id=?)` instead.
+
+**Fail-loudly is the chosen behaviour when the index is gone, and it is loud.**
+Measured on a sandbox project with `idx_migration_history_sequence` dropped: all
+three read tools refuse, each with the `StateDatabaseUnreadableError` message that
+names the state database as derived and Git-ignored and prints the cure — delete
+`.theurian/state/` and run `theurian migrate apply`. That cure works; the
+one-command form does not. Also measured, and worth recording because it is the
+gap between the two remedies this class publishes: with the index dropped,
+`migrate status`, `migrate apply` and `index build` all exit 0, and a bare
+`migrate apply` leaves the index absent and the tools still refusing, because there
+is no migration left to apply and therefore no rebuild. The refusal names the
+two-step cure, so a caller who follows the message recovers; the one-command
+remedy the `integrity` object publishes for other shapes would not have.
+
 **What PR1 does not cover, stated because absence asserts nothing.** Four
 `SILENTLY_EMPTIED` members remain and are carried to PR2:
 `(knowledge.search, knowledge_items, item_id)`,
@@ -2187,10 +2257,59 @@ or `checksum`, as a side effect of parsing rows it no longer reads — measured 
 this branch, the tool now answers successfully and emits no `integrity`, while the
 `applied_migrations` read it dropped still raises `StateDatabaseUnreadableError`
 over the same cell. No published status field is derived from either cell, and
-`migrate status` and `migrate apply` still exit 4 over both (measured), so
-migration tamper is detected where it is acted on rather than where it is
-displayed. It is a real reduction in what `knowledge.status` notices, and it is
-unpinned.
+`migrate status` and `migrate apply` still exit 4 over both (measured, both cells),
+so migration tamper is detected where it is acted on rather than where it is
+displayed. It is a real reduction in what the read tools notice.
+
+**That split is now an exact set rather than a paragraph.**
+`ANSWERED_CLEAN_OVER_A_DAMAGED_CELL` in
+`tests/integration/test_canonical_store_corruption.py` names six positions — all
+three read tools over `migration_history.migration_id` and over `.checksum` — and
+`test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tampering`
+holds it against the CLI sweep in the same run, so the population is "cells a tool
+ignores *and* the CLI refuses" rather than "cells a tool ignores". The read tools'
+silence is green only while that exit code exists: a `migrate status` that stopped
+refusing empties the CLI half and fails the test. All three tools rather than
+`knowledge.status` alone, because `knowledge.search` and `knowledge.get` run the
+same `COUNT` on every request, and a set naming only the tool whose behaviour
+changed would let the other two start refusing unremarked.
+`test_exactly_these_positions_disclose_migration_history_damage_as_integrity` is
+what stops that set going vacuous — a build with the detector unplugged would make
+every migration-history position "clean" and grow the set rather than fail — by
+holding `DISCLOSED_AS_INTEGRITY` at the three positions
+(`migration_history.project_id` on each tool) that must fire the key.
+
+**A third outcome exists that neither set holds, and it is a #30-family limit.**
+`ANSWERED_CLEAN_OVER_A_DAMAGED_CELL` is the cells a read tool ignores *and* the
+CLI refuses, and `DISCLOSED_AS_INTEGRITY` is the cells the detector fires on; a
+cell that every surface ignores is in neither, so no exact set holds it and this
+record is what carries it. A corrupt `migration_history.applied_at` or `.sequence`
+is invisible to every shipped surface. Measured — all three read tools answer
+cleanly with no `integrity`, and
+`migrate status`, `migrate apply` and `index build` all exit 0; applying a *new*
+migration over the damaged cell also exits 0, because that path rebuilds the
+database from the Git-tracked migrations and discards the corrupt row rather than
+reporting it. Neither cell reaches a published field, so nothing false is answered
+today, and the `COUNT` cannot see them by construction: it interprets no cell. They
+are recorded here rather than fixed because whether the product *should* notice a
+tampered `applied_at` is a design question — a detector for it is not a bigger
+count but a different check — and it is carried with the rest of
+[#30](https://github.com/theurian/theurian/issues/30). Absence of a signal over
+these cells asserts nothing, exactly as everywhere else in this entry.
+
+**One published remedy does not cure the shape it is published for.** The
+`integrity` object's `remedy` is "Run `theurian migrate apply` to rebuild the
+derived state from the Git-tracked migrations", and measured against each shape
+that fires the key it clears three of four: a deleted migration row, a sentinel in
+`migration_history.project_id`, and a pointer that over-counts. It does not clear a
+surplus row — with `live > expected` every authored migration is already applied,
+so `migrate apply` exits 0, rebuilds nothing, and the key is still there on the
+next call (measured over three consecutive runs); `migrate status` and `index
+build` also exit 0. Deleting `.theurian/state/` and re-applying clears it. The
+remedy string is therefore incomplete for the direction PR1 itself added when it
+chose `!=` over `<`. Recorded as an open defect in this class, not as a property:
+nothing authored is at risk (ADR-0004), but a caller following the published
+remedy on that shape gets a command that reports success and changes nothing.
 
 **How it is held.** `tests/integration/test_mcp_tools.py`:
 

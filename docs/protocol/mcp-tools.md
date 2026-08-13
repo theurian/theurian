@@ -167,7 +167,7 @@ which also records why two of them are what they are.
 | `stateHash` | Which canonical state the counts were read from. Byte-identical to the `retrieval.snapshotId` a `knowledge.search` answered from that state publishes, so the two can be compared without a second call (FR-R5) |
 | `itemCount` | The sum of `itemsByStatus`, and deliberately not the number of items in the store |
 | `itemsByStatus` | How many items hold each status a caller may see. A status with no items is absent rather than present with a zero, so `{}` is valid and expected |
-| `appliedMigrations` | How many migration files this project has applied. Files, never items. Read from the active pointer's own `migrationCount`, so it cannot shrink when the state database loses migration rows — that shortfall is reported as `integrity` instead ([#30](https://github.com/theurian/theurian/issues/30)) |
+| `appliedMigrations` | How many migration files this project has applied. Files, never items. Read from the active pointer's own `migrationCount`, so it cannot shrink when the state database loses migration rows — any difference between the two is reported as `integrity` instead ([#30](https://github.com/theurian/theurian/issues/30)). It is the pointer's number, not a measurement of the rows: if the pointer is itself wrong, this field is wrong with it |
 | `schemaVersion` | The canonical store's SQLite schema version — not `protocolVersion`, and not the retrieval index's schema version |
 
 **The counts report nothing about withheld content, not even a total.**
@@ -214,22 +214,49 @@ product knows, where an absent key claims nothing. `damageDetected` is therefore
 always `true` when the key is present; branch on the key, not on its value. This
 is the same present-only shape `raptorPath` already uses (ADR-0008 decision 8).
 
-What today's check covers, and only this: the derived state holds a different
-number of `migration_history` rows than the active pointer that chose it records.
-That is how a lost or corrupt pointer-chain cell makes a project answer
-successfully with less than it holds — `count: 0` with `retrieval.stale: false`,
-or an `appliedMigrations` that shrank. Damage the count cannot see leaves the key
-absent exactly as a healthy project does. `theurian migrate apply` is the remedy
-in every case: the state database is derived and Git-ignored, rebuilt from the
-Git-tracked migrations ([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md)),
-so nothing authored is lost by rebuilding it.
+What today's check measures, and the whole of it: the derived state holds a
+different number of `migration_history` rows for this project — fewer, or more —
+than the active pointer that chose that database records in its `migrationCount`.
+The state database is immutable once built, so the two agree on a healthy project
+and any difference is damage: fewer when a row is lost or falls out of a `WHERE`
+(a sentinel in `migration_history.project_id`), more when another project's rows
+reach this one. That is how a lost or corrupt pointer-chain cell used to make
+`knowledge.status` answer successfully with an `appliedMigrations` that had
+shrunk.
+
+**It does not detect a result-emptying corruption of `knowledge_items`.** A
+sentinel in `knowledge_items.project_id` or `item_id` drops a document out of every
+`knowledge.search` query, and one in `knowledge_items.project_id` or `status`
+under-reports `knowledge.status`, while the migration rows stay intact. So `search`
+answers `count: 0, results: []` and `status` answers `itemCount: 0` — a false "we
+have no such decision" — with this key *absent* and nothing else on the response
+saying otherwise: `retrieval.stale` reports `false` on the ranked path and `null`
+on the unranked one, and neither reports damage. Those four positions are the
+`SILENTLY_EMPTIED` members carried to PR2. Damage the migration count cannot see
+leaves the key absent exactly as a healthy project does.
+
+The remedy is the rebuild, and it is not complete for every shape. The state
+database is derived and Git-ignored
+([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md)), so nothing authored is
+lost by rebuilding it. Measured on this branch: `theurian migrate apply` clears
+the key for a lost row, for a sentinel in `migration_history.project_id`, and for
+a pointer that over-counts. It does **not** clear a surplus row — with
+`live > expected` there is nothing to apply, so the command exits 0 and the key
+persists across repeated runs; deleting `.theurian/state/` and re-applying is what
+clears that one, and the `remedy` string does not say so. Recorded under T-17 in
+[the threat model](../security/threat-model.md), not fixed here.
 
 `knowledge.get` refuses with a message rather than a payload when an item cannot
 be returned, so it carries the distinction in the text: over detected damage it
-reports a project that "could not be fully read", instead of the message it gives
-for an item that is simply not present. A withheld id and an absent id still get
-the *same* message as each other (SEC-13) — what changed is that "the state is
-short of what its own pointer records" is no longer reported as absence.
+reports a project that "could not be fully read: its derived state holds a
+different number of migration-history rows than its own records expect", instead
+of the message it gives for an item that is simply not present. A withheld id and
+an absent id still get the *same* message as each other (SEC-13) — what changed is
+that "the state disagrees with its own pointer" is no longer reported as absence.
+Both directions are pinned, since either alone is satisfied by a tool that says
+one thing always
+(`test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence`,
+`test_an_absent_item_over_a_healthy_state_is_refused_as_absence`).
 
 The reasoning, the measurements and what remains uncovered are in
 [the threat model](../security/threat-model.md) under T-17.
