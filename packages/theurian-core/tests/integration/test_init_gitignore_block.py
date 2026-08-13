@@ -211,6 +211,39 @@ def test_a_marker_inside_a_line_somebody_wrote_is_not_a_marker(project: Path) ->
     assert content.count(f"{GITIGNORE_BLOCK_START}\n") == 1, "one real block was appended"
 
 
+def test_a_marker_line_with_a_space_after_it_is_not_a_marker(project: Path) -> None:
+    """The env file's whole-line rule again, on the ``.gitignore`` scan beside it.
+
+    ``_gitignore_marker_lines`` strips a trailing ``\\r`` so a CRLF file still
+    delimits, and stops there. Widening that to ``rstrip()`` reads like
+    tolerance and is the opposite: ``# >>> theurian >>>␠`` and
+    ``# <<< theurian <<<␠`` would then delimit a block Theurian did not write --
+    every marker it writes is exact -- so the rules between them are somebody
+    else's, and the rewrite replaces them with Theurian's own. A trailing space
+    is invisible in every editor that would have shown it to them.
+
+    The honest answer is that this file holds no Theurian block: a real one is
+    appended, both odd-looking lines stay where they are, and the rule between
+    them is still there. Asserted on the rule by name as well as on the prefix,
+    so a failure says what went.
+
+    The two scans are deliberately not shared -- separate marker literals, in
+    files edited by different code -- which is exactly why this has to be
+    pinned on both sides. `tests/unit/test_env_file_merge.py` holds the other.
+    """
+    gitignore = project / ".gitignore"
+    padded = f"{GITIGNORE_BLOCK_START} \n{USER_RULE}{GITIGNORE_BLOCK_END} \n"
+    gitignore.write_text(padded, encoding="utf-8")
+
+    code, payload = _init_json()
+
+    content = gitignore.read_text(encoding="utf-8")
+    assert code == 0, payload
+    assert content.startswith(padded), "no line of theirs is inside a block Theurian owns"
+    assert "sentinel-gitignore-rule-zzzz" in content, "the rule between them survived"
+    assert content.count(f"{GITIGNORE_BLOCK_START}\n") == 1, "and one real block was appended"
+
+
 def test_an_end_marker_above_the_block_does_not_become_the_blocks_own_end(
     project: Path,
 ) -> None:
