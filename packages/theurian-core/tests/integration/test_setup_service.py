@@ -1066,9 +1066,13 @@ def _halt_on_env_reference(tmp_path: Path) -> tuple[SetupContext, SetupReport]:
 
     ``DATA_DIRECTORY`` is pre-converged at 0700, so `token` and `token-storage`
     both apply and mint ``auth/mcp-token`` before the run reaches step 7. The env
-    file is created as a *directory*, so ``apply_env_reference``'s ``os.open``
-    raises ``IsADirectoryError`` -- a real critical failure from a shipped step,
-    not an injected fake one. ``env-reference`` is step 7, ahead of
+    file is created as a *directory*: a directory is not ``is_file()``, so the
+    merge #128 added reads nothing and produces a fresh block, and the
+    ``open(path, "w")`` that writes it raises ``IsADirectoryError`` -- a real
+    critical failure from a shipped step, not an injected fake one. Verified
+    against the merged code, because a fixture that stopped raising would leave
+    every halt assertion below running on a converged run. ``env-reference`` is
+    step 7, ahead of
     ``daemon-service`` step 8, so the run halts before any service registration:
     the fixture's fake service is never installed and nothing touches a real
     service manager.

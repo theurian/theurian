@@ -15,6 +15,7 @@ can, and says plainly what the user must do when it cannot.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -28,7 +29,7 @@ from theurian.infrastructure.secrets.file_store import (
     default_data_dir,
 )
 from theurian.infrastructure.services import detect_manager
-from theurian.security.env_file import env_file_contents
+from theurian.security.env_file import MalformedEnvBlockError, merge_env_file
 from theurian.security.tokens import TOKEN_ENV_VAR, describe, generate_token
 
 auth_app = typer.Typer(help="Manage the local access token.", no_args_is_help=True)
@@ -55,9 +56,7 @@ def auth_rotate(
 
     # Rewritten too: it names the token's location, and a rotation that left a
     # stale env file pointing somewhere else would be a 401 with no visible cause.
-    env_path = data_dir / "env"
-    env_path.write_text(env_file_contents(data_dir), encoding="utf-8")
-    env_path.chmod(0o600)
+    env_remedy = _refresh_env_file(data_dir)
 
     restarted, remedy = _restart_daemon(port=port)
 
@@ -69,10 +68,41 @@ def auth_rotate(
             "token": describe(token),
             "tokenFile": str(data_dir / "auth" / TOKEN_KEY),
             "daemonRestarted": restarted,
-            "nextSteps": remedy,
+            "nextSteps": env_remedy + remedy,
         },
         as_json=as_json,
     )
+
+
+def _refresh_env_file(data_dir: Path) -> list[str]:
+    """Bring the env file's Theurian block up to date, keeping the rest.
+
+    The same managed block ``theurian setup`` writes, through the same merge:
+    this command used to render the whole file and truncate whatever else was
+    in it, so a rotation destroyed the lines its own header invites people to
+    add (#128). Rotation is usually run *because* a credential has been
+    exposed, which is the worst moment to take something away silently.
+
+    Returns:
+        Lines to prepend to ``nextSteps``, empty when the file was updated.
+
+    Markers that do not delimit one block leave the file untouched and put the
+    repair in the output instead. The alternative orderings are both worse:
+    refusing to rotate leaves the exposed token in place over a comment marker,
+    and rewriting anyway is the data loss this function exists to end. The
+    token has already been replaced by the time this runs, so the shell that
+    sources this file needs the block fixed before it stops seeing 401s.
+    """
+    env_path = data_dir / "env"
+    existing = env_path.read_text(encoding="utf-8") if env_path.is_file() else None
+    try:
+        merged = merge_env_file(existing, data_dir)
+    except MalformedEnvBlockError as exc:
+        return [f"{env_path} was left untouched: {exc}"]
+
+    env_path.write_text(merged, encoding="utf-8")
+    env_path.chmod(0o600)
+    return []
 
 
 def _restart_daemon(*, port: int) -> tuple[bool, list[str]]:

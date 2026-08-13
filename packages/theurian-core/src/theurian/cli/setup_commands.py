@@ -145,13 +145,16 @@ def setup_command(
     """Configure this machine to run Theurian, and connect Claude Code to it.
 
     Creates the data directory or tightens an existing one to 0700, mints and
-    stores the local access token, writes the env file that references it,
-    registers and starts the user-scoped OS service, and writes the MCP
-    connection entry. Those 7 steps are every write setup performs, apart from
-    the setup journal it appends under the data directory -- a write that
+    stores the local access token, writes the block that references it in the
+    env file, registers and starts the user-scoped OS service, and writes the
+    MCP connection entry. Those 7 steps are every write setup performs, apart
+    from the setup journal it appends under the data directory -- a write that
     belongs to no step, and one `changedPaths` names whenever that append
     reached the disk. Nothing else registers the service or writes that entry,
     and running it twice changes nothing (FR-L2).
+
+    In the env file it rewrites only the lines between its own `# >>> theurian
+    >>>` markers. Anything you added around them stays where you put it.
 
     Setup cannot tell you Core is missing, because setup is Core: it runs from
     the installation it would have to create, and a shell with no `theurian` on

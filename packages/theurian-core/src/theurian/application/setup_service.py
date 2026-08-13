@@ -257,11 +257,11 @@ class SetupService:
 
         if failed_critically:
             # Nothing is undone. Every apply here creates, tightens or rewrites a
-            # file Theurian owns, and the journal only records what was done --
-            # there is no inverse to replay, and #128 records that the env
-            # rewrite does not even preserve what it replaced. So the honest
-            # report is HALTED, "this is where it stopped", not a rollback that
-            # deletes a token another session may already be using (§6.4).
+            # file Theurian owns -- the env file only between its markers, since
+            # #128 -- and the journal records what was done with no inverse to
+            # replay. So the honest report is HALTED, "this is where it stopped",
+            # not a rollback that deletes a token another session may already be
+            # using (§6.4).
             return SetupReport(
                 state=SetupState.HALTED,
                 steps=tuple(applied),

@@ -119,9 +119,11 @@ def _halt_with_something_behind_it(tmp_path: Path) -> tuple[SetupContext, SetupS
 
     ``DATA_DIRECTORY`` is pre-converged at 0700, so ``token`` and
     ``token-storage`` both apply and ``auth/mcp-token`` exists before the run
-    reaches step 7. The env file is created as a *directory*, so
-    ``apply_env_reference``'s ``os.open`` raises ``IsADirectoryError`` -- a real
-    critical failure from a shipped step. Step 7 is ahead of ``daemon-service``,
+    reaches step 7. The env file is created as a *directory*, so the
+    ``open(path, "w")`` at the end of ``apply_env_reference`` raises
+    ``IsADirectoryError`` -- a real critical failure from a shipped step. The
+    merge #128 put in front of that open reads nothing here, because a directory
+    is not ``is_file()``. Step 7 is ahead of ``daemon-service``,
     so the run halts before any service registration and the fake service is
     never even asked to install.
     """
