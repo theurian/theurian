@@ -6385,3 +6385,78 @@ async def test_a_surplus_migration_row_is_damage_on_every_read_tool(
     assert GET_DAMAGE_PHRASE in message, (
         f"knowledge.get called a surplus migration row healthy: {message!r}"
     )
+
+
+# -- #30 PR1: the cells this tool stopped reading ---------------------------
+#
+# `knowledge.status` used to build its count through `applied_migrations`, which
+# parses every migration row into a `MigrationId` and a `ContentHash` -- so a
+# damaged `migration_id` or `checksum` made the tool *refuse*. It now runs a bare
+# `COUNT(*)` that interprets no cell, so those two positions answer cleanly.
+#
+# That is a deliberate trade and not an oversight: tamper detection over the
+# migration history is `theurian migrate status`'s job, which still exits 4 on
+# both cells (measured; pinned in `test_canonical_store_corruption.py`). What
+# must not happen is the read tools quietly answering with *less* than the
+# database holds, and they do not: `appliedMigrations` comes from the pointer.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "rows"),
+    [
+        # The composite primary key is (project_id, migration_id), so both rows
+        # cannot take the same sentinel id; one row is corrupted instead. One is
+        # enough -- a single unreadable id used to refuse the whole call.
+        ("migration_id", 1),
+        ("checksum", 2),
+    ],
+)
+async def test_status_answers_cleanly_over_a_migration_cell_it_no_longer_reads(
+    registry: ProjectRegistry, column: str, rows: int
+) -> None:
+    """#30 PR1. A cell the count does not interpret cannot make this tool refuse.
+
+    The bare `COUNT(*)` is what keeps the integrity check itself safe: a detector
+    that parsed the rows it counted could be made to refuse -- or to quote a cell
+    -- by the very damage it exists to report (#18). The cost is that these two
+    cells no longer reach `knowledge.status` at all, which is why this pins the
+    *clean* answer explicitly rather than leaving it as whatever falls out.
+
+    Three assertions, because "did not refuse" alone would be satisfied by a tool
+    that answered zeroes: the counts must be the true ones, `appliedMigrations`
+    must be the pointer's two, and `integrity` must be absent -- the detector
+    saw no discrepancy, because there is none in the row *count*.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        changed = connection.execute(
+            f"UPDATE migration_history SET {column} = ? "  # noqa: S608 - parametrized column name
+            f"WHERE rowid IN (SELECT rowid FROM migration_history ORDER BY rowid LIMIT {rows})",
+            ("ROTATE-ME sk-live-9f2a7c41d8e3",),
+        ).rowcount
+        connection.commit()
+        held = connection.execute(
+            f"SELECT COUNT(*) FROM migration_history WHERE {column} = ?",  # noqa: S608
+            ("ROTATE-ME sk-live-9f2a7c41d8e3",),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert changed == held == rows, (
+        f"migration_history.{column} did not take the sentinel ({changed} updated, {held} hold "
+        f"it), so this call is being answered over an undamaged database"
+    )
+
+    result = await _call(registry, "knowledge.status", projectId="demo")
+
+    assert result["itemCount"] == 2, "the item counts do not come from the migration history"
+    assert result["appliedMigrations"] == 2, (
+        "appliedMigrations must stay the pointer's own count over a damaged migration cell"
+    )
+    assert "integrity" not in result, (
+        f"a damaged migration_history.{column} moved no row count, so the detector has nothing "
+        f"to report -- an `integrity` key here means it is firing on something else: {result}"
+    )
