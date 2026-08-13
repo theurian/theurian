@@ -6050,3 +6050,134 @@ async def test_a_corrupt_migration_project_id_is_disclosed_not_silently_emptied(
         "appliedMigrations must report the pointer's two, not the silently-emptied live zero -- "
         "the member #5 under-report PR1 removed"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_integrity_signal_is_identical_across_a_withheld_only_difference(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """#30 PR1. The closure argument: `integrity` carries no bit about withheld content.
+
+    The two corpora hold the *same* one migration and the same three approved
+    items, and differ only in the twenty-five `rejected` items the heavy one also
+    holds -- items a caller may not read. So `expected` (the pointer's
+    migration_count) and a healthy `live` (the migration-row count) are identical
+    between them, and the signal's presence must be identical too: absent in
+    both. Were the detector to read anything that scaled with withheld content --
+    counting `knowledge_items` rather than `migration_history`, say -- the heavy
+    corpus would diverge and the presence of `integrity` would leak the withheld
+    count. Measured across all three tools; mirrors the #19 status differential.
+    """
+    corpora = read_cost_corpora
+
+    # Guard: the pair really differs only by withheld content, so an equal signal
+    # below is equal *because* the signal ignores it -- not because the corpora
+    # are the same size.
+    withheld = {item for item, status in corpora.stored.items() if status == "rejected"}
+    assert len(withheld) == READ_COST_WITHHELD, (
+        f"the heavy corpus must hold {READ_COST_WITHHELD} withheld items for this to test "
+        f"withheld-independence; it holds {len(withheld)}"
+    )
+    assert len(corpora.stored) == 3 + READ_COST_WITHHELD, (
+        "the heavy corpus must be larger than the baseline, or this compares two equal corpora"
+    )
+
+    calls: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("knowledge.search", {"query": "approved"}),
+        ("knowledge.status", {}),
+        ("knowledge.get", {"itemId": "architecture.read-approved-0"}),
+    )
+    for tool, extra in calls:
+        baseline = await _call(corpora.registry, tool, projectId=READ_COST_BASELINE_ID, **extra)
+        heavy = await _call(corpora.registry, tool, projectId=READ_COST_HEAVY_ID, **extra)
+
+        assert ("integrity" in baseline) == ("integrity" in heavy), (
+            f"{tool}: whether `integrity` appears changed with withheld content alone -- the "
+            f"signal is carrying a bit about what the caller may not read (SEC-13)"
+        )
+        assert "integrity" not in baseline and "integrity" not in heavy, (
+            f"{tool}: both corpora are healthy, so neither may report damage -- an equal signal "
+            f"that was present in both would pass the line above for the wrong reason"
+        )
+
+
+@contextlib.contextmanager
+def _one_row_statement_the_store_runs() -> Iterator[dict[str, Any]]:
+    """Capture the SQL a single-row store method hands to its reader, at runtime.
+
+    The sibling of `_statement_the_store_runs` for `_read_one`, which
+    `count_migration_history` uses. Read off the reader as the method builds it,
+    never restated, so the plan below is checked against the statement the tool
+    truly runs rather than a copy that would drift.
+    """
+    captured: dict[str, Any] = {}
+    real_read_one = SqliteCanonicalStore._read_one
+
+    def spy(
+        store: SqliteCanonicalStore,
+        sql: str,
+        parameters: tuple[str, ...],
+        mapper: Callable[[sqlite3.Row], Any],
+    ) -> Any:
+        captured["sql"] = sql
+        captured["params"] = parameters
+        return real_read_one(store, sql, parameters, mapper)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SqliteCanonicalStore, "_read_one", spy)
+        yield captured
+
+
+@pytest.mark.asyncio
+async def test_the_search_integrity_count_is_answered_by_a_covering_index(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """#30 PR1, M2. The added `COUNT(*)` does not reopen the O(withheld) timing channel.
+
+    `knowledge.search` reads `count_migration_history` on every request. Its cost
+    stays off the corpus because it is served by
+    `idx_migration_history_sequence(project_id, sequence)` as a covering-index
+    scan of one project's migration rows -- O(migrations), never a table scan and
+    never `knowledge_items`, so it cannot carry the withheld count the way the
+    ranked and scan reads once did (#158, #19). Mirrors
+    `test_status_count_is_answered_by_a_covering_index`.
+
+    Two halves, because two mutations must each turn it RED:
+
+    * the captured statement carries `INDEXED BY idx_migration_history_sequence`.
+      Dropping the hint is RED here even though SQLite would pick the same index
+      on its own -- the hint is what makes a *lost* index fail loudly rather than
+      fall to a silent table scan (the store's own reasoning);
+    * SQLite answers that statement from the covering index. Dropping or renaming
+      the index makes the hinted read raise `no such index`, so the store call
+      below raises rather than reaching the assertion.
+    """
+    corpora = read_cost_corpora
+    paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    db_path = paths.state / active.database_filename
+
+    # The store is entered first so its connection opens before the capture is
+    # installed -- that open does not go through `_read_one`, so the one call the
+    # capture sees is `count_migration_history`'s own statement.
+    with SqliteCanonicalStore(db_path) as store, _one_row_statement_the_store_runs() as captured:
+        store.count_migration_history(ProjectId(READ_COST_HEAVY_ID))
+
+    assert captured, (
+        "count_migration_history ran no statement through _read_one, so the plan below would "
+        "describe a query the tool never runs -- the capture watches the wrong reader"
+    )
+    assert "INDEXED BY idx_migration_history_sequence" in captured["sql"], (
+        "the migration COUNT dropped its INDEXED BY hint; without it a dropped or renamed index "
+        "falls to a silent table scan rather than failing loudly, and the O(migrations) bound "
+        f"stops being structural. Statement:\n{captured['sql']}"
+    )
+    plan = _query_plan(db_path, captured["sql"], captured["params"])
+
+    assert "USING COVERING INDEX idx_migration_history_sequence" in plan, (
+        "the search integrity COUNT is no longer answered by the covering index "
+        f"idx_migration_history_sequence(project_id, sequence). SQLite planned:\n{plan}\n"
+        "Without it the read is a table scan whose cost the corpus can move -- reopening the "
+        "O(withheld) channel #158 and #19 closed (SEC-13)."
+    )
