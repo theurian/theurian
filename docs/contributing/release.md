@@ -578,6 +578,13 @@ Branch from the tag, fix, PATCH bump, tag, publish, then forward-port to `main`.
 Never fix only on `main` and hope the next release covers it — that is how a
 hotfix gets reverted by the following release.
 
+**A vulnerability does not start here.** This procedure is public from the first
+push, so the defect is described in a branch name, a pull request and a commit
+message before anyone can install the fix.
+[*Fixing a vulnerability privately*](#fixing-a-vulnerability-privately) below is
+the route that is not, and this section is where its step 4 lands when the fix
+cannot ship off `main`.
+
 A hotfix publishes out of version order — `0.2.1` after `0.3.0` — which is the
 one case where "Latest" can move backwards. Step 7 passes `make_latest=legacy`
 so GitHub decides by version rather than by whichever published most recently;
@@ -585,12 +592,204 @@ without it the REST default is `true` and the hotfix takes the Latest badge off
 `0.3.0`. Measured. Nothing to do here — it is noted because this is the
 procedure that would otherwise hit it.
 
+## Fixing a vulnerability privately
+
+Everything above is public from the first push — the branch, the pull request,
+and a commit message this project requires to say *why*, all of them describing
+the defect before anyone can install the fix. [SECURITY.md](../../SECURITY.md)
+promises the opposite for a released artifact: a private advisory first,
+published with the release that carries the fix. **This is the procedure behind
+that promise.** SECURITY.md states the policy and points here; the steps live
+only here.
+
+Whether a defect takes this route at all is SECURITY.md's question, not this
+document's. An ordinary bug in a released artifact is a public issue and takes
+*Hotfixes* above.
+
+**What this procedure says about GitHub's own behaviour is documented by GitHub
+and not measured here** — no advisory has been exercised on this repository.
+Three claims below rest on that: that CI cannot reach a temporary private fork
+(step 2), that branch protection is not enforced on the advisory's merge
+(step 3), and that the "Report a vulnerability" button is offered only where
+private vulnerability reporting is enabled (step 1). The sources are
+[Collaborating in a temporary private fork](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-repository-security-vulnerability)
+and [Privately reporting a security vulnerability](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability).
+What this procedure says about *this repository* — its workflows, its branch
+protection — is measured, and step 3 carries the fallback for the one GitHub
+claim that hurts if it is wrong.
+
+1. **Open a draft advisory.** A report that arrived through GitHub's ["Report a
+   vulnerability"](https://github.com/theurian/theurian/security/advisories/new)
+   form already is one; for a defect we found ourselves, create it under the
+   repository's **Security → Advisories**.
+
+   **Opening it does not start SECURITY.md's ninety days.** They run from
+   *confirmation*: for a report, the assessment SECURITY.md gives seven business
+   days, so at most seven business days after it arrived; for a defect we found
+   ourselves, the moment we accept it. **Write the confirmation date on the
+   advisory as you confirm it** — nothing else records it, and step 5 counts from
+   it. Counting from the advisory's creation instead publishes an unfixed
+   vulnerability up to seven business days early.
+
+   SECURITY.md promises a reporter two more things, and the advisory is where
+   both are answered and recorded: an acknowledgement within three business days,
+   and that assessment within seven.
+
+   The intake form is offered to a reporter only while private vulnerability
+   reporting is enabled (documented by GitHub, not measured here) — a repository
+   setting, not a file here, so nothing in this repository fails if it is
+   switched off. The answer has to be `{"enabled":true}`:
+
+   ```sh
+   gh api repos/theurian/theurian/private-vulnerability-reporting
+   gh api -X PUT repos/theurian/theurian/private-vulnerability-reporting  # enable
+   ```
+
+   On `{"enabled":false}` the button is shown to nobody without admin or security
+   permissions, and SECURITY.md's intake link leads a reporter to a form they
+   cannot submit.
+
+2. **Fix it in the temporary private fork.** *Start a temporary private fork*
+   sits at the bottom of the advisory form; it makes a copy of this repository
+   named `theurian-ghsa-xxxx-xxxx-xxxx`, visible only to the advisory's
+   collaborators and cloned like any other repository:
+
+   ```sh
+   git clone git@github.com:theurian/theurian-ghsa-xxxx-xxxx-xxxx.git
+   ```
+
+   **No CI runs there** (documented by GitHub, not measured here). GitHub does
+   not let integrations, including CI, reach a temporary private fork, and status
+   checks do not run on pull requests inside one. Every workflow in
+   `.github/workflows/` is therefore unavailable until the
+   fix reaches this repository, and four things normally done for you have to be
+   done by hand — **all four before step 3**, which cannot be undone:
+
+   - **Run the gate on your own machine**, from the fork's branch. *Releasing
+     Core* §1 *Prepare* above is the list — including the two checks it names as
+     easy to forget, `==` on every dependency and a current `uv.lock` — and
+     *Releasing the plugin* §1 is the list for a plugin fix. Those commands check
+     `packages tests` where `core.yml` checks `packages tests tools`
+     ([#170](https://github.com/theurian/theurian/issues/170)); add `tools` if you
+     touched it.
+   - **Scan for secrets before the merge rather than after.** `security.yml`'s
+     `secret-scan` job does run on the step-3 push, and that is too late: the
+     commit is public by then and a leaked credential cannot be recalled. Locally
+     it is the same command that job's scan step runs:
+
+     ```sh
+     gitleaks git --redact --verbose --exit-code 1 .
+     ```
+
+   - **Review the dependency changes yourself.** `security.yml`'s
+     `dependency-review` job is `if: github.event_name == 'pull_request'` and the
+     step-3 merge is a push, so unlike everything else here it does not run late
+     — it never runs at all. A vulnerability fix is exactly where a dependency
+     gets bumped.
+   - **Sign, sign off, and write a Conventional Commits subject.** Normally an
+     unsigned commit is refused by `main`'s `required_signatures`, and a missing
+     sign-off or a malformed subject turns `shared.yml`'s `commits` job red.
+     Neither happens here: that job is `if: github.event_name == 'pull_request'`,
+     and GitHub does not enforce branch protection on the step-3 merge.
+
+   Write as much of the release into those commits as the fix's line allows: the
+   CHANGELOG **Security** entry, the threat-model entry, and the version bump
+   where the release will come off `main`. Whatever is left out is work done
+   after the defect is public.
+
+3. **Merge from the advisory. This is where it becomes public.** Not from the
+   fork: *Merge pull request(s)*, at the bottom of the advisory form, lands the
+   fork's open pull requests in this repository, and only a maintainer can do it.
+   The commits are readable by anyone from the moment they land, whatever state
+   the advisory is in.
+
+   **Do not merge until step 4 can run without waiting.** `publish-pypi` stops
+   for a `core-maintainers` approval on the `pypi` environment (§5, step 6), so
+   line up an approver first. That pause sits inside the window between a public
+   fix and a fetchable one, and an approval nobody is waiting for makes the
+   window as long as it takes someone to notice.
+
+   Branch protection is not enforced on that merge (documented by GitHub, not
+   measured here). This is what would otherwise apply, measured with
+   `gh api repos/theurian/theurian/branches/main/protection`:
+
+   | Setting | Value |
+   | :-- | :-- |
+   | `required_signatures` | `true` |
+   | `required_linear_history` | `true` |
+   | `enforce_admins` | `true` |
+   | `required_status_checks` | `null` — nothing is required, so no check either blocks or clears this merge |
+
+   **If the merge is refused, do not push the fork's branch here.** That is the
+   public branch *Hotfixes* is, and it carries the account of the defect with it.
+   A refusal most likely means the claim above is wrong and
+   `required_linear_history` is rejecting a merge commit. Take the patch out
+   instead: `git format-patch` in the clone, apply it to a branch off `main`,
+   commit it signed and signed off, open an ordinary pull request and merge it as
+   soon as it is green. It is public either way from the moment you first tried,
+   so step 4's window opens at the merge attempt and not at the pull request.
+
+   **What runs after the merge, and what does not.** The push to `main` runs
+   `security.yml` and `shared.yml`, plus `core.yml` or `plugin.yml` as the changed
+   paths select. From there the two trains differ, and only one of them has a
+   second gate:
+
+   - **Core** — the tag in step 4 runs the full **quality** gate again inside
+     `release-core.yml` (§5, step 1): ruff over `packages tests`, mypy, and
+     `pytest -q` on a single runner. `build` `needs` that job and the three
+     publication jobs need `build`, so a failure cannot reach PyPI. It is the
+     quality gate and not the whole of CI — `security.yml` and `shared.yml` filter
+     on `branches: [main]` and do not trigger on a tag, so the supply-chain and
+     cross-artifact contract jobs run only on the push above.
+   - **The plugin** — nothing triggers on `plugin-v*` at all (*Releasing the
+     plugin* §4), so there is no second gate. What `plugin.yml` caught on the
+     step-3 push, plus your own run in step 2, is all of it.
+
+4. **Release immediately.** The gap between step 3 and a fetchable fix is the
+   window this procedure exists to keep short.
+
+   - **Core** — if `main` is releasable, follow *Releasing Core* above; if it is
+     not, cherry-pick onto a branch from the tag and follow *Hotfixes*. The
+     forward-port that section insists on has already happened, in step 3.
+   - **The plugin** — bump `version` in `.claude-plugin/plugin.json` and
+     `pluginVersion` in `compatibility.yaml`, then move the marketplace pin. Those
+     two are the delivery; the rest follows *Releasing the plugin* above. A pin
+     that moves under an unchanged version reaches new installs only.
+
+5. **Publish the advisory**, once that release is fetchable — *delivered*, in
+   SECURITY.md's sense. Fill in the fixed version before publishing: without one
+   the advisory still reaches users through Dependabot, offering them no safe
+   version to move to. For Core, name the affected product as well — ecosystem
+   `pip`, package `theurian`, and the affected range — because that is what
+   carries it into the GitHub Advisory Database and in front of Dependabot at
+   all. The plugin has no ecosystem to declare, so its advisory is a public
+   record rather than a notification.
+
+   **Confirm the credit with the reporter first.** SECURITY.md credits them
+   unless they asked not to be named; it is opt-out, and easy to get backwards.
+
+   If the ninety days from step 1's confirmation date run out before a fix ships,
+   publish anyway, with whatever a reader can act on in place of a fixed version:
+   the affected versions, and the mitigation SECURITY.md's table promises for a
+   critical issue at thirty days. That is the commitment, not an accident.
+
+   Then finish the record. Step 2 asked for the CHANGELOG **Security** entry and
+   the threat-model entry in the fork's commits; write whatever slipped now.
+   `release-core.yml` refuses a tag whose version has no changelog section at all
+   (§5, step 2), so the Core path cannot lose the section — but nothing checks
+   that it says *Security*, and nothing anywhere checks the threat model.
+
 ## Yanking
 
-If a release is broken or has a vulnerability:
+**If it is a vulnerability, stop here and take
+[*Fixing a vulnerability privately*](#fixing-a-vulnerability-privately) first.**
+This list is in the wrong order for that case: its steps 1 and 2 are what keep
+the fix private, and you rejoin at its step 4, with the yank below in front of
+the PATCH. Coming back here first is how the advisory ends up trailing a release
+that already described the defect.
+
+If a release is broken:
 
 1. Yank from PyPI (do not delete — deletion breaks lock files that reference it).
 2. Publish a fixed PATCH release immediately.
-3. If it is a vulnerability, publish a security advisory per
-   [SECURITY.md](../../SECURITY.md).
-4. Untag only if the release never reached users.
+3. Untag only if the release never reached users.
