@@ -147,7 +147,7 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
 #:
 #: Not a leak and not a refusal, which is why nothing else in this file can see
 #: it: every other property here is read either over ``answer.refused`` or over
-#: the text of a message, and these five positions produce neither. A caller is
+#: the text of a message, and these four positions produce neither. A caller is
 #: told ``count: 0`` with ``stale: false``, or ``itemCount: 0``, and has no way
 #: to tell that from a project which genuinely holds nothing.
 #:
