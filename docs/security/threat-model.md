@@ -572,12 +572,14 @@ retrieval change, and is filed for a later milestone on that basis:
 row of that table for all three members. The other three rows are separate
 changes and are not filed.
 
-**A fourth member spends no CPU and is here for the same reason: it is unbounded
-work for one call.** An error message built out of an unbounded input is an
+**A fourth member spends no CPU and was here for the same reason: it was
+unbounded work for one call, and [#17](https://github.com/theurian/theurian/issues/17)
+has now bounded it.** An error message built out of an unbounded input is an
 amplifier — whatever reads it receives the whole of what the caller sent.
-`mcp/tools.py`'s `_unresolvable` interpolates the caller's `projectId`, and
-nothing bounds it. Measured through the real MCP tool, in process, against a
-project built by the real CLI:
+`mcp/tools.py`'s `_unresolvable` interpolated the caller's `projectId` with
+nothing bounding it: `_resolve` runs before any `ProjectId` is constructed, so
+the raw string reached the message as sent. Measured through the real MCP tool
+**before the fix**, in process, against a project built by the real CLI:
 
 ```
 projectId in=      100  message out=      241  ratio=2.4100
@@ -588,34 +590,41 @@ itemId  in=2000000  message out=      185
 ```
 
 Two million characters in, two million out — 141 characters of message wrapped
-around the caller's own input. The last two rows are the members of this class
-that are closed: `MAX_QUERY_CHARS` clamps `query` before the search, so the
-echoed value is the searched value, and `ItemId` checks length before it quotes,
-so the error reports the length and never the string.
+around the caller's own input, against `query` clamped to `MAX_QUERY_CHARS` and
+`itemId` reported by length.
+
+**Closed by [#17](https://github.com/theurian/theurian/issues/17) (db36089), so
+the echo-amplification class is complete.** `_unresolvable` now holds the same
+discipline its two siblings do: an unregistered id longer than
+`MAX_IDENTIFIER_LENGTH` (200, which the JSON schemas duplicate as `maxLength:
+200`) is reported by its length and never echoed — a project id can be no longer
+than that, so echoing it would only reflect the caller's own bytes — while a
+well-formed unregistered id within the ceiling is still named so a typo stays
+visible. All three members of the class are now closed:
+
+| Member | Bounded by |
+| :-- | :-- |
+| `query` | `MAX_QUERY_CHARS` clamps it before the search, so the echoed value is the searched value |
+| `itemId` | `ItemId` checks length before it quotes, so the error reports the length and never the string |
+| `projectId` | `_unresolvable` reports an id over `MAX_IDENTIFIER_LENGTH` by its length, never echoed (#17) |
+
+Pinned by `test_an_over_long_project_id_is_reported_by_length_not_echoed` (a
+50,000-character unregistered id is reported by length, the message under 500
+characters) and
+`test_the_project_id_echo_is_named_up_to_the_id_ceiling_then_by_length` (an id at
+the ceiling is named, one character over is by length — which also catches a `>`
+vs `>=` off-by-one in the check), both in
+`tests/integration/test_mcp_tools.py`.
 
 **Not a disclosure, and stated so it is not read as one.** The caller gets back
 bytes it sent. `Registered:` names ids the same caller reads from `project.list`,
-which is why `_unresolvable` publishes them at all (SEC-13). What is unbounded is
-the amplification, not the audience.
-
-**Accepted for Milestone 5, filed at
-[#17](https://github.com/theurian/theurian/issues/17).** The bound is trivial;
-choosing where it goes is not. `_unresolvable` runs on the failure path of a
-value that has *not* been through `ProjectId`, and is reached from three tools —
-so a bound in `_resolve`, in `_unresolvable`, or in a boundary conversion changes
-a different set of published error texts, and of the tools it reaches only
-`knowledge.status` now has a published response schema to be documented beside
-([#19](https://github.com/theurian/theurian/issues/19)); `knowledge.get` still
-has none ([#20](https://github.com/theurian/theurian/issues/20)). It is named as
-known and open inside the class's own closure argument — the docstring of
-`test_an_over_long_item_id_is_not_echoed_back` in
-`tests/integration/test_mcp_tools.py` — rather than left out of it, because a
-class with an unnamed member returns as "another instance of the one you closed".
+which is why `_unresolvable` publishes them at all (SEC-13); those ids and the
+unreadable list are the daemon's own registry contents, not caller input, so they
+need no bound. What was unbounded was the amplification, not the audience.
 
 Recorded under T-6 rather than as its own entry: resource exhaustion is one
 threat, and splitting it by which stage the load enters would leave a reader
-asking "can someone burn this daemon's CPU" to find two places. Assigning a new
-id and a severity is a maintainer's decision, not the pass that found it.
+asking "can someone burn this daemon's CPU" to find two places.
 
 #### T-7 — A hostile Git or external URL triggers an internal request (SSRF, Medium)
 
