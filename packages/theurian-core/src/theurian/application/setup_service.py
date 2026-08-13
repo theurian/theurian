@@ -138,6 +138,12 @@ class SetupService:
                 steps=plan.steps,
                 dry_run=True,
                 serena_detected=self._context.mcp_config.serena_detected(),
+                # The reservations belong to the *plan*, not to the apply, so a
+                # run that applies nothing still reports them. Without this,
+                # `doctor` and `setup --dry-run` -- the two commands whose whole
+                # job is to say what is wrong -- published `warnings: []` on the
+                # very machine a real run ends DEGRADED over.
+                warnings=_reservations(plan.steps),
             )
 
         if plan.conflicting_steps and not ask.approve_conflicts:
@@ -293,20 +299,7 @@ class SetupService:
             f"{step.step_id.value} is still {step.status.value} after setup ran: {step.summary}"
             for step in unresolved
         )
-        # A step can be satisfied and still have something to say. `env-reference`
-        # is the case that made this necessary: the block is current, applying
-        # the step would write the same bytes -- and a line below the block
-        # assigns the same variable, so the shell exports something else. There
-        # is nothing for setup to do about a line it does not own (SEC-18), and
-        # nothing here is a conflict, but a run that ends CONVERGED over it is
-        # reporting a state the machine is not in. A detail on a satisfied step
-        # is that caveat, and this is what carries it into the report -- and
-        # into DEGRADED, which is success with warnings and the honest answer.
-        warnings.extend(
-            f"{step.step_id.value}: {step.detail}"
-            for step in final_steps
-            if step.status is StepStatus.SATISFIED and step.detail
-        )
+        warnings.extend(_reservations(final_steps))
 
         state = SetupState.CONVERGED if not warnings else SetupState.DEGRADED
         return SetupReport(
@@ -408,6 +401,46 @@ class SetupService:
         except OSError:
             return False
         return True
+
+
+def _reservations(steps: Iterable[SetupStep]) -> tuple[str, ...]:
+    """One line for each step that is satisfied and still has something to say.
+
+    ``env-reference`` is the case that made these necessary: the block is
+    current, so applying the step would write the same bytes -- and a line below
+    the block appears to assign the same variable, so the shell may export
+    something else. There is nothing for setup to *do* about a line it does not
+    own (SEC-18) and nothing here is a conflict, but a run that ends CONVERGED
+    over it reports a state the machine may not be in. A ``detail`` on a
+    SATISFIED step is that caveat; this turns it into a warning.
+
+    **A reservation is a finding, not a change to apply**, which is why nothing
+    here touches the problem count. :func:`~theurian.cli.setup_commands.doctor_command`
+    counts what setup would change and what needs consent, and a reservation is
+    neither -- there is no work to schedule, and a machine whose only finding is
+    a reservation is ``healthy`` in the sense that field carries. It belongs in
+    ``warnings``, which is the payload's list of findings that are not changes.
+
+    **Built here because two callers publish it and they had drifted.**
+    :meth:`SetupService._verify` turned a reservation into a warning and ended a
+    real run DEGRADED, while the ``PLAN_BUILT`` report that ``doctor`` and
+    ``setup --dry-run`` both return carried no warnings at all: on the same
+    machine, ``theurian setup`` said ``degraded`` with the sentence, and
+    ``theurian doctor --json`` said ``"warnings": []`` and exited 0. The caveat
+    was in the payload the whole time, as the step's own ``detail`` -- attached
+    to a step whose status reads ``satisfied``, which is where a reader stops.
+
+    The reports built on the way *past* a plan do not carry these, and that is
+    recorded rather than closed: ABORTED stops at a conflict consent cannot buy
+    past, AWAITING_CONSENT has not run yet, and a HALTED run's warnings are the
+    failures that stopped it -- each hands the reader a larger question first,
+    and the step's ``detail`` still travels with them.
+    """
+    return tuple(
+        f"{step.step_id.value}: {step.detail}"
+        for step in steps
+        if step.status is StepStatus.SATISFIED and step.detail
+    )
 
 
 @dataclass(frozen=True, slots=True)
