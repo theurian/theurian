@@ -137,7 +137,11 @@ literal secret — in configuration.
     recognised and replaced *in place* by this block, so an upgraded machine
     carries one `export THEURIAN_MCP_TOKEN` and not two; and a file that ended
     without a newline gains one, rather than having the start marker run onto the
-    end of somebody's last line.
+    end of somebody's last line. Recognition is by naming *this* data
+    directory's token path, as consecutive whole lines. A rendering somebody
+    edited, and one written for another installation, are therefore not
+    recognised and not touched: the block is appended below instead, both exports
+    stay visible, and the shell keeps the block because it comes last.
 
     **A marker is a whole line.** The file is split on `\n` and on nothing else —
     what a shell ends a line at — and a trailing carriage return is dropped from

@@ -228,6 +228,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   two assignments naming different paths once a data directory moves — the shell
   taking whichever came last, while setup reported the machine converged.
 
+  **Recognition is exact, and deliberately not fuzzy**: those lines must be
+  consecutive and whole, and must name *this* data directory's token path. A
+  rendering somebody edited, and one written for another installation, are
+  therefore left alone and the block is appended below them — two visible
+  exports, the shell keeping the block because it reads it last. That is the
+  honest answer for a line somebody changed on purpose; matching it loosely is
+  what glued the block over half of one in the first cut.
+
   **A marker is a whole line, and the first cut of this fix did not do that.**
   Review found it substring-based: `str.find` opened the span at the first
   *occurrence* of the start marker, so `echo "everything between

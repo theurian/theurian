@@ -158,6 +158,12 @@ report. If you set this machine up with `0.1.0.dev0` through `dev2`, the first
 with the block above — one export of `THEURIAN_MCP_TOKEN` afterwards, not two —
 and keeps anything you appended to it.
 
+That replacement is recognised by those lines naming *this* data directory's
+token path, exactly and whole. If you edited one of them, or if the file was
+written for another installation, it is not recognised and not touched: you get
+the block appended below it and both exports visible. Your shell keeps the
+block's value, because it reads it last, and you can tidy the rest yourself.
+
 **A marker is a whole line, never text inside one.** The file is split on `\n`
 and on nothing else — what your shell ends a line at — with a trailing carriage
 return dropped before the comparison, so a file with CRLF endings delimits just
