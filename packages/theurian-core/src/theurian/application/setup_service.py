@@ -293,6 +293,20 @@ class SetupService:
             f"{step.step_id.value} is still {step.status.value} after setup ran: {step.summary}"
             for step in unresolved
         )
+        # A step can be satisfied and still have something to say. `env-reference`
+        # is the case that made this necessary: the block is current, applying
+        # the step would write the same bytes -- and a line below the block
+        # assigns the same variable, so the shell exports something else. There
+        # is nothing for setup to do about a line it does not own (SEC-18), and
+        # nothing here is a conflict, but a run that ends CONVERGED over it is
+        # reporting a state the machine is not in. A detail on a satisfied step
+        # is that caveat, and this is what carries it into the report -- and
+        # into DEGRADED, which is success with warnings and the honest answer.
+        warnings.extend(
+            f"{step.step_id.value}: {step.detail}"
+            for step in final_steps
+            if step.status is StepStatus.SATISFIED and step.detail
+        )
 
         state = SetupState.CONVERGED if not warnings else SetupState.DEGRADED
         return SetupReport(

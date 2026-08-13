@@ -222,9 +222,17 @@ class SetupStep:
     #: A step whose failure halts the run rather than degrading it.
     critical: bool = True
     outcome: StepOutcome = StepOutcome.NOT_ATTEMPTED
-    #: Present when a step is CONFLICTING or FAILED: the difference found, or
-    #: the reason. Shown to the user, who decides whether the run proceeds around
-    #: it; what was found is left in place either way.
+    #: What was found, beyond the one line of :attr:`summary`: the difference on
+    #: a CONFLICTING step, the reason on a FAILED one, why a NOT_APPLICABLE step
+    #: does not apply here -- and on a SATISFIED step, a caveat that survives it
+    #: being satisfied. :meth:`SetupService._verify` turns that last one into a
+    #: report warning, which is how a run whose every step is satisfied can
+    #: still end DEGRADED instead of claiming a state the machine is not in.
+    #:
+    #: Shown to the user, who decides whether the run proceeds around it; what
+    #: was found is left in place either way. Published verbatim by `doctor
+    #: --report`, so it carries Theurian's own text and never a line read out of
+    #: a file somebody else wrote.
     detail: str = ""
 
     def __post_init__(self) -> None:
