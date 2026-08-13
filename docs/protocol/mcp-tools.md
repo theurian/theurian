@@ -201,7 +201,7 @@ top-level `integrity` object ([#30](https://github.com/theurian/theurian/issues/
 {
   "integrity": {
     "damageDetected": true,
-    "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations."
+    "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations. If this signal persists, delete `.theurian/state/` and run `theurian migrate apply` again, then `theurian index build` to restore ranked retrieval; the state is derived, so nothing is lost."
   }
 }
 ```
@@ -235,16 +235,21 @@ on the unranked one, and neither reports damage. Those four positions are the
 `SILENTLY_EMPTIED` members carried to PR2. Damage the migration count cannot see
 leaves the key absent exactly as a healthy project does.
 
-The remedy is the rebuild, and it is not complete for every shape. The state
-database is derived and Git-ignored
+**The remedy names a fallback because the first command does not cure every
+shape.** The state database is derived and Git-ignored
 ([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md)), so nothing authored is
-lost by rebuilding it. Measured on this branch: `theurian migrate apply` clears
-the key for a lost row, for a sentinel in `migration_history.project_id`, and for
-a pointer that over-counts. It does **not** clear a surplus row — with
-`live > expected` there is nothing to apply, so the command exits 0 and the key
-persists across repeated runs; deleting `.theurian/state/` and re-applying is what
-clears that one, and the `remedy` string does not say so. Recorded under T-17 in
-[the threat model](../security/threat-model.md), not fixed here.
+lost by rebuilding it. `theurian migrate apply` is the cheap cure and comes first:
+measured, it clears the key for a lost row, for a sentinel in
+`migration_history.project_id`, and for a pointer that over-counts. It clears
+nothing for a *surplus* row — the direction `!=` deliberately catches — because
+every authored migration is already applied, so the command exits 0 and the key is
+still there on the next call. Deleting `.theurian/state/` makes the following
+apply rebuild the database, and `theurian index build` is named third because that
+deletion takes the published retrieval index with it: measured, `retrieval.indexed`
+is `false` with `fallbackReason: "no-index"` after the second step and `true` again
+after the third. Following the string token by token takes a surplus row from
+`integrity` present to absent with ranked retrieval intact. The efficacy is
+measured, not yet pinned by a test.
 
 `knowledge.get` refuses with a message rather than a payload when an item cannot
 be returned, so it carries the distinction in the text: over detected damage it

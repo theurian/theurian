@@ -2234,14 +2234,21 @@ three on the migration index and the third on `idx_items_status`, which plans
 Measured on a sandbox project with `idx_migration_history_sequence` dropped: all
 three read tools refuse, each with the `StateDatabaseUnreadableError` message that
 names the state database as derived and Git-ignored and prints the cure — delete
-`.theurian/state/` and run `theurian migrate apply`. That cure works; the
-one-command form does not. Also measured, and worth recording because it is the
-gap between the two remedies this class publishes: with the index dropped,
-`migrate status`, `migrate apply` and `index build` all exit 0, and a bare
+`.theurian/state/` and run `theurian migrate apply`. Also measured: with the index
+dropped, `migrate status`, `migrate apply` and `index build` all exit 0, and a bare
 `migrate apply` leaves the index absent and the tools still refusing, because there
-is no migration left to apply and therefore no rebuild. The refusal names the
-two-step cure, so a caller who follows the message recovers; the one-command
-remedy the `integrity` object publishes for other shapes would not have.
+is no migration left to apply and therefore no rebuild. So the deletion is what
+recovers, and the message names it.
+
+**That message stops one step short of the `integrity` remedy, and the difference
+is measured.** After delete-and-apply the tools answer again, but the deletion took
+the published retrieval index too: `retrieval.indexed` measured `false` with
+`fallbackReason: "no-index"` until `theurian index build` ran. The `integrity`
+remedy names that third step since `b8fa3e3`; this refusal does not, so a caller
+who follows it recovers a readable project on unranked scans rather than a fully
+restored one. It claims only "nothing authored is lost", which stays true, so this
+is an incompleteness rather than a false statement — recorded here, in the same
+class as the `remedy` string `b8fa3e3` corrected, and not fixed.
 
 **What PR1 does not cover, stated because absence asserts nothing.** Four
 `SILENTLY_EMPTIED` members remain and are carried to PR2:
@@ -2297,19 +2304,36 @@ count but a different check — and it is carried with the rest of
 [#30](https://github.com/theurian/theurian/issues/30). Absence of a signal over
 these cells asserts nothing, exactly as everywhere else in this entry.
 
-**One published remedy does not cure the shape it is published for.** The
-`integrity` object's `remedy` is "Run `theurian migrate apply` to rebuild the
-derived state from the Git-tracked migrations", and measured against each shape
-that fires the key it clears three of four: a deleted migration row, a sentinel in
-`migration_history.project_id`, and a pointer that over-counts. It does not clear a
-surplus row — with `live > expected` every authored migration is already applied,
-so `migrate apply` exits 0, rebuilds nothing, and the key is still there on the
-next call (measured over three consecutive runs); `migrate status` and `index
-build` also exit 0. Deleting `.theurian/state/` and re-applying clears it. The
-remedy string is therefore incomplete for the direction PR1 itself added when it
-chose `!=` over `<`. Recorded as an open defect in this class, not as a property:
-nothing authored is at risk (ADR-0004), but a caller following the published
-remedy on that shape gets a command that reports success and changes nothing.
+**One published remedy did not cure a shape it is emitted for. Fixed in
+`b8fa3e3`, and the measurement that found it is the evidence.** The `integrity`
+object's `remedy` named one command — "Run `theurian migrate apply` to rebuild the
+derived state from the Git-tracked migrations" — and measured against each shape
+that fires the key it cleared three of four: a deleted migration row, a sentinel in
+`migration_history.project_id`, and a pointer that over-counts. It did not clear a
+surplus row. With `live > expected` every authored migration is already applied, so
+`migrate apply` exits 0 (`applied: []`, `changed: false`, `databaseCreated: false`),
+rebuilds nothing, and the key is still there on the next call — measured over three
+consecutive runs, with `migrate status` and `index build` also exiting 0. A caller
+following the published remedy on that shape got a command that reported success
+and changed nothing, for the one direction PR1 itself added when it chose `!=`
+over `<`.
+
+The string now names a fallback after the cheap cure, in this order, and each
+command is there for a measured reason:
+
+| Command | Why it is in the string |
+| :-- | :-- |
+| `theurian migrate apply` | The cheap cure, and it clears the lost-row shape on the first run (`changed: true`). Kept first so the common case costs one command |
+| delete `.theurian/state/`, then apply again | The universal cure, and the one the state-refusal messages already print. The state directory is derived (ADR-0004), so the next apply rebuilds the database with exactly the recorded count — `databaseCreated: true`, key absent |
+| `theurian index build` | The deletion takes the *published retrieval index* with it. Measured after step two: `retrieval.indexed: false` with `fallbackReason: "no-index"`, and `true` again after this step. Without it the remedy would cure the signal by silently downgrading the project to unranked scans, and "nothing is lost" would be false |
+
+Verified by executing the published string's backticked tokens in order against a
+surplus row: `integrity` present → step 1 leaves it present → step 2 clears it and
+drops `retrieval.indexed` to `false` → step 3 restores ranked retrieval with the
+key still absent. **Measured, not yet pinned**: no test asserts that a plain apply
+fails to clear the surplus shape or that the string names the second step, so a
+future edit could reintroduce the one-command form and stay green. That test is
+owed, and until it lands this paragraph is the only thing holding the property.
 
 **How it is held.** `tests/integration/test_mcp_tools.py`:
 

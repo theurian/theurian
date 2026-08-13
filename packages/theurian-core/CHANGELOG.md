@@ -23,7 +23,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   {
     "integrity": {
       "damageDetected": true,
-      "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations."
+      "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations. If this signal persists, delete `.theurian/state/` and run `theurian migrate apply` again, then `theurian index build` to restore ranked retrieval; the state is derived, so nothing is lost."
     }
   }
   ```
@@ -109,7 +109,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `live` still equals `expected` and the key stays absent exactly as on a healthy
   project. That is what "absence asserts nothing" means in practice.
 
-  Three further limits, measured rather than assumed, all recorded in
+  **The `remedy` names a fallback, because one command does not cure both
+  directions.**
+  `theurian migrate apply` is the cheap cure and comes first — measured, it clears
+  a lost row, a sentinel in `migration_history.project_id`, and an over-counting
+  pointer. It clears nothing for a *surplus* row: every authored migration is
+  already applied, so three consecutive runs exited 0 with `applied: [], changed:
+  false` and left the key present. Deleting `.theurian/state/` makes the next apply
+  rebuild the database (`databaseCreated: true`, key absent), and `theurian index
+  build` is named third because that deletion takes the published retrieval index
+  with it — measured, `retrieval.indexed` is `false` with `fallbackReason:
+  "no-index"` until the rebuild runs, so without the third step "nothing is lost"
+  would be false. The efficacy is measured, not yet pinned by a test.
+
+  Two further limits, measured rather than assumed, both recorded in
   [the threat model](../../docs/security/threat-model.md) under T-17:
 
   - **A pointer whose `migrationCount` is wrong in the same direction as the rows
@@ -125,10 +138,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     surface at all** — measured: all three tools answer cleanly, and `migrate
     status`, `migrate apply` (with and without a new migration to apply) and
     `index build` all exit 0.
-  - **The published `remedy` does not clear a surplus row.** With `live >
-    expected`, `theurian migrate apply` exits 0 with nothing to apply and the key
-    persists across repeated runs; deleting `.theurian/state/` first is what
-    clears it, and the remedy string does not say so.
 
 ### Changed
 
