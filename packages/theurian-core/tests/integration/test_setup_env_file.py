@@ -24,6 +24,8 @@ redirection prevents.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ from theurian.infrastructure.secrets.file_store import FileSecretStore
 from theurian.security.env_file import (
     ENV_BLOCK_END,
     ENV_BLOCK_START,
+    TOKEN_KEY,
     env_block,
     legacy_env_file_contents,
 )
@@ -578,6 +581,174 @@ def test_a_line_that_only_mentions_the_token_leaves_the_run_converged(
 
     assert _env_warnings(report) == (), shape
     assert _env_step(context).status is StepStatus.SATISFIED
+
+
+def test_a_stale_block_with_a_later_assignment_is_rewritten_rather_than_reported(
+    tmp_path: Path,
+) -> None:
+    """Currency is asked first, and the order is the property (#128, §6.2 row 7).
+
+    Both things are true of this machine at once: the block names a data
+    directory this install no longer uses, *and* a line below it assigns the
+    variable again. The two arms answer different questions, and only one of
+    them has work attached -- so the stale block is rewritten, and the override
+    is reported afterwards by the re-probe.
+
+    Fold the shadow test into the currency test -- ``if not current and not
+    shadowed`` -- and this machine reports ``satisfied`` with a caveat instead:
+    the block is never rewritten, so the env file goes on naming a token path
+    that does not exist, and the reason a person is given is a line of their own
+    that is not what is wrong with it. The run ends DEGRADED either way, which is
+    what makes it invisible from the state alone.
+
+    Asserted on the bytes, so the rewrite is measured rather than inferred from
+    the status, and the shadowing line is asserted to have survived it: setup
+    rewrites the block and never a line outside it (SEC-18).
+    """
+    context = _context(tmp_path)
+    _seed(context, _stale_block(context) + "\n" + SHADOWING_LINE)
+
+    assert _env_step(context).status is StepStatus.MISSING, "an out-of-date block is work to do"
+
+    report = SetupService(context).run(SetupRequest())
+
+    assert context.env_file.read_text(encoding="utf-8") == (
+        env_block(context.data_dir) + "\n" + SHADOWING_LINE
+    )
+    assert _env_step(context).status is StepStatus.SATISFIED, "and the block is current afterwards"
+    assert len(_env_warnings(report)) == 1, "with the override reported by the re-probe"
+
+
+# -- The heuristic's boundary, as designed -----------------------------------
+#
+# `contains_shadowing_assignment` recognises the *direct* assignment forms and
+# says so: its docstring tabulates four shapes that assign the variable and are
+# answered ``False``, and one that does not and is answered ``True``. Extending
+# it to cover them is refused rather than deferred -- what a line does is
+# settled by the shell at run time, and a probe that runs somebody's shell
+# profile is not a probe.
+#
+# The four below are therefore pinned as the *recorded* misses. A change that
+# starts warning on any of them is not a bug fix that happens to break a test:
+# it is a claim that a line-level rule can decide what these do, and it has to
+# come here and say so.
+
+
+def _bash() -> str:
+    """The shell whose behaviour the heuristic's table was measured against."""
+    found = shutil.which("bash")
+    assert found, "these cases are about what a shell does, so they need one"
+    return found
+
+
+#: The value the evading shapes assign. Distinctive, so that finding it in what
+#: the shell exported cannot be a coincidence.
+EVADED_VALUE = "SentinelEvadedValueZZZZ"
+
+#: Every shape :func:`~theurian.security.env_file._assigns_token` tabulates as
+#: assigning the variable while answering ``False``, written as a line below the
+#: block. Spelled here as the docstring spells them, because that table is what
+#: this test holds in place.
+EVADING_SHAPES = {
+    "and-list": f'[ -n "$HOME" ] && THEURIAN_MCP_TOKEN={EVADED_VALUE}\n',
+    "if-then": f'if [ -n "$HOME" ]; then THEURIAN_MCP_TOKEN={EVADED_VALUE}; fi\n',
+    "group": f"{{ THEURIAN_MCP_TOKEN={EVADED_VALUE}; }}\n",
+    "eval": f"eval 'THEURIAN_MCP_TOKEN={EVADED_VALUE}'\n",
+}
+
+#: An assignment inside a quoted heredoc *body*, which is not shell at all: the
+#: shell hands those bytes to `cat` and exports nothing. The one shape the
+#: heuristic answers ``True`` about wrongly.
+HEREDOC_SHAPE = "cat <<'EOF' >/dev/null\nTHEURIAN_MCP_TOKEN=SentinelHeredocValueZZZZ\nEOF\n"
+
+
+def _sourced_token(context: SetupContext) -> str:
+    """What a shell that sources this file ends up exporting.
+
+    The whole subject of these two tests is the gap between what the file *does*
+    and what a line-level rule can see, so the first half is measured with a real
+    shell rather than asserted from the same reading the code under test makes.
+
+    The environment is built rather than inherited: ``HOME`` is what the
+    ``and-list`` and ``if-then`` shapes branch on, and ``PATH`` is what finds the
+    ``cat`` the block itself runs.
+    """
+    result = subprocess.run(  # noqa: S603 - an absolute path from `shutil.which`
+        [_bash(), "-c", f'. "{context.env_file}"; printf "%s" "$THEURIAN_MCP_TOKEN"'],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"HOME": str(context.home), "PATH": os.environ.get("PATH", "")},
+    )
+    return result.stdout
+
+
+@pytest.mark.parametrize("shape", sorted(EVADING_SHAPES))
+def test_a_shape_the_heuristic_does_not_recognise_leaves_the_run_silent(
+    tmp_path: Path, shape: str
+) -> None:
+    """The recorded miss, measured rather than restated (SEC-18, #128).
+
+    On each of these machines the shell exports the later line's value, and
+    setup ends CONVERGED with nothing to say -- its ``env-reference`` summary
+    still reading "exports THEURIAN_MCP_TOKEN by reference", which is false
+    here. That is the residual the heuristic's docstring records and declines to
+    close, and this is where it is written down as behaviour.
+
+    The shell call is what stops this being a test of the implementation against
+    itself: without it the assertions say only that a function answers ``False``
+    for four strings, which is a restatement of the function. With it they say
+    that four files really do export something else and Theurian really is
+    silent about them.
+
+    **Failing here is not a licence to update the expectation.** A heuristic that
+    began catching one of these would be an improvement, and it would have to
+    arrive with the argument the docstring says nobody has -- so the change is to
+    that docstring and to this list, deliberately, in the same commit.
+    """
+    context = _context(tmp_path)
+    _seed(context, env_block(context.data_dir) + "\n" + EVADING_SHAPES[shape])
+
+    report = SetupService(context).run(SetupRequest())
+
+    assert _sourced_token(context) == EVADED_VALUE, "the shell really does take the later line"
+    assert report.state is SetupState.CONVERGED, report.warnings
+    assert _env_warnings(report) == (), "and this is the miss the docstring records"
+
+
+def test_the_sentence_about_a_line_it_cannot_read_claims_only_that_it_appears_to_assign(
+    tmp_path: Path,
+) -> None:
+    """SEC-6, O-3. The published sentence is measured on a machine where it is wrong.
+
+    An assignment inside a quoted heredoc body is not shell: those bytes go to
+    `cat` and the shell keeps exporting the block's value. The heuristic answers
+    ``True`` anyway -- it reads one line at a time and that line has the shape --
+    so this run warns about a file that is doing exactly what setup wanted.
+
+    Which is why every sentence built on that answer says the line *appears* to
+    assign. Pinned here rather than beside a real override, because here the
+    stronger wording would be provably false: the shell has just been asked, and
+    it exported the block's token. A report that told this person their line
+    overrides the block would send them to delete a line that does nothing.
+
+    The value on that line is asserted absent for the reason the test above this
+    section gives -- `doctor --report` publishes these warnings, and whatever is
+    to the right of an ``=`` is a credential often enough to matter.
+    """
+    context = _context(tmp_path)
+    _seed(context, env_block(context.data_dir) + "\n" + HEREDOC_SHAPE)
+
+    report = SetupService(context).run(SetupRequest())
+
+    token = (context.auth_dir / TOKEN_KEY).read_text(encoding="utf-8").strip()
+    assert token, "the block's own value has to exist, or the comparison below proves nothing"
+    assert _sourced_token(context) == token, "the shell kept the block's value, not that line's"
+
+    warnings = _env_warnings(report)
+    assert len(warnings) == 1, report.warnings
+    assert "appears" in warnings[0], "the sentence may not claim what only the shell decides"
+    assert "SentinelHeredocValue" not in warnings[0], "and not the line it matched"
 
 
 def test_the_env_file_is_private_however_permissive_the_umask_is(tmp_path: Path) -> None:
