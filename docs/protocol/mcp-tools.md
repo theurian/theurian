@@ -144,7 +144,9 @@ An unparseable `asOf` is a clean `ToolError` naming the fix, never a traceback.
 
 ### `knowledge.status`
 
-Six keys, all six always present. The contract is
+Six keys, all six always present — and a seventh, `integrity`, only when a
+bounded damage check fired ([below](#damage-is-reported-through-a-present-only-integrity-key)).
+The contract is
 [`knowledge-status-response.schema.json`](../../schemas/mcp/knowledge-status-response.schema.json),
 which also records why two of them are what they are.
 
@@ -165,7 +167,7 @@ which also records why two of them are what they are.
 | `stateHash` | Which canonical state the counts were read from. Byte-identical to the `retrieval.snapshotId` a `knowledge.search` answered from that state publishes, so the two can be compared without a second call (FR-R5) |
 | `itemCount` | The sum of `itemsByStatus`, and deliberately not the number of items in the store |
 | `itemsByStatus` | How many items hold each status a caller may see. A status with no items is absent rather than present with a zero, so `{}` is valid and expected |
-| `appliedMigrations` | How many migration files this project has applied. Files, never items |
+| `appliedMigrations` | How many migration files this project has applied. Files, never items. Read from the active pointer's own `migrationCount`, so it cannot shrink when the state database loses migration rows — that shortfall is reported as `integrity` instead ([#30](https://github.com/theurian/theurian/issues/30)) |
 | `schemaVersion` | The canonical store's SQLite schema version — not `protocolVersion`, and not the retrieval index's schema version |
 
 **The counts report nothing about withheld content, not even a total.**
@@ -188,7 +190,49 @@ reaches either. The per-field reasoning is in the schema.
 
 **Index state and proposal ages are not in this response.** The table above
 describes the tool this page is a contract for; what ships today is the six keys
-here.
+here, plus the conditional `integrity` key below.
+
+### Damage is reported through a present-only `integrity` key
+
+`knowledge.search`, `knowledge.get` and `knowledge.status` each carry an optional
+top-level `integrity` object ([#30](https://github.com/theurian/theurian/issues/30)):
+
+```json
+{
+  "integrity": {
+    "damageDetected": true,
+    "remedy": "Run `theurian migrate apply` to rebuild the derived state from the Git-tracked migrations."
+  }
+}
+```
+
+**It is present only when a bounded check detected a discrepancy. Its absence
+asserts nothing** — not "verified clean", and a client must not display it as
+one. There is no `damageDetected: false` form and there will not be one: the
+check is incomplete by design, so a `false` token would claim more than the
+product knows, where an absent key claims nothing. `damageDetected` is therefore
+always `true` when the key is present; branch on the key, not on its value. This
+is the same present-only shape `raptorPath` already uses (ADR-0008 decision 8).
+
+What today's check covers, and only this: the derived state holds a different
+number of `migration_history` rows than the active pointer that chose it records.
+That is how a lost or corrupt pointer-chain cell makes a project answer
+successfully with less than it holds — `count: 0` with `retrieval.stale: false`,
+or an `appliedMigrations` that shrank. Damage the count cannot see leaves the key
+absent exactly as a healthy project does. `theurian migrate apply` is the remedy
+in every case: the state database is derived and Git-ignored, rebuilt from the
+Git-tracked migrations ([ADR-0004](../adr/0004-sqlite-is-a-derived-artifact.md)),
+so nothing authored is lost by rebuilding it.
+
+`knowledge.get` refuses with a message rather than a payload when an item cannot
+be returned, so it carries the distinction in the text: over detected damage it
+reports a project that "could not be fully read", instead of the message it gives
+for an item that is simply not present. A withheld id and an absent id still get
+the *same* message as each other (SEC-13) — what changed is that "the state is
+short of what its own pointer records" is no longer reported as absence.
+
+The reasoning, the measurements and what remains uncovered are in
+[the threat model](../security/threat-model.md) under T-17.
 
 ## Review
 
