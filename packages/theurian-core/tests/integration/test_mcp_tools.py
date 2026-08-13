@@ -1177,6 +1177,15 @@ async def test_status_count_is_answered_by_a_covering_index(
     the index, or changing the predicate so the index can no longer cover the
     query, drops the plan to a scan and turns this RED where the row-count pin
     above stays green -- the two catch different regressions, so both are kept.
+
+    **The seek form is asserted, not merely the index name.** ``USING COVERING
+    INDEX idx_items_status`` appears in a ``SCAN`` line too, so that substring
+    alone was satisfied by a plan that walks the whole index -- measured:
+    reversing the declared columns to ``(status, project_id)`` leaves the phrase
+    intact while the leading column stops being the project. The three parts
+    below -- ``SEARCH``, the index, and the ``(project_id=?`` that opens the
+    constraint list -- are what say SQLite seeks into one project's entries; the
+    reversal plans ``(status=? AND project_id=?)`` and fails the third.
     """
     corpora = read_cost_corpora
 
@@ -1202,16 +1211,20 @@ async def test_status_count_is_answered_by_a_covering_index(
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
-    # Assert: SQLite answers the count from the covering index alone. The phrase
-    # `USING COVERING INDEX idx_items_status` is stable across SQLite versions for
-    # this shape; a scan or a fall-back to another index drops it and fails here.
-    assert "USING COVERING INDEX idx_items_status" in plan, (
-        "knowledge.status is no longer answered by the covering index "
-        f"idx_items_status(project_id, status). SQLite planned:\n{plan}\n"
-        "Without it the count reads every row of the project, withheld ones included, and the "
-        "response time carries the withheld count again -- the O(withheld) channel T-17 closed "
-        "and #19 must keep shut (SEC-13)."
-    )
+    # Assert: SQLite *seeks* into the covering index rather than walking it. All
+    # three fragments are stable across SQLite versions for this shape, and each
+    # fails for a different regression: `SEARCH` for a plan that scans,
+    # `idx_items_status` for a dropped or renamed index, `(project_id=?` for an
+    # index whose leading column is no longer the project.
+    for fragment in ("SEARCH", "USING COVERING INDEX idx_items_status", "(project_id=?"):
+        assert fragment in plan, (
+            f"knowledge.status is no longer answered by a seek into the covering index "
+            f"idx_items_status(project_id, status): {fragment!r} is missing. SQLite planned:\n"
+            f"{plan}\n"
+            "Without that seek the count reads rows of the project it does not publish, withheld "
+            "ones included, and the response time carries the withheld count again -- the "
+            "O(withheld) channel T-17 closed and #19 must keep shut (SEC-13)."
+        )
 
 
 # -- knowledge.search substring fallback: the scan's read cost does not carry
@@ -6158,9 +6171,16 @@ async def test_the_search_integrity_count_is_answered_by_a_covering_index(
       Dropping the hint is RED here even though SQLite would pick the same index
       on its own -- the hint is what makes a *lost* index fail loudly rather than
       fall to a silent table scan (the store's own reasoning);
-    * SQLite answers that statement from the covering index. Dropping or renaming
-      the index makes the hinted read raise `no such index`, so the store call
-      below raises rather than reaching the assertion.
+    * SQLite *seeks* into that covering index. Dropping or renaming the index
+      makes the hinted read raise `no such index`, so the store call below raises
+      rather than reaching the assertion; reversing its declared columns to
+      ``(sequence, project_id)`` keeps the index and the hint and turns the seek
+      into a full walk of every project's migration entries -- measured at 172x
+      the work, and `USING COVERING INDEX idx_migration_history_sequence` is in
+      that plan too, which is why the index name alone was not enough to assert.
+      The seek form is: ``SEARCH`` + the index + the ``(project_id=?`` that opens
+      the constraint list. The reversal plans ``SCAN migration_history USING
+      COVERING INDEX idx_migration_history_sequence`` and fails two of the three.
     """
     corpora = read_cost_corpora
     paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
@@ -6185,9 +6205,15 @@ async def test_the_search_integrity_count_is_answered_by_a_covering_index(
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
-    assert "USING COVERING INDEX idx_migration_history_sequence" in plan, (
-        "the search integrity COUNT is no longer answered by the covering index "
-        f"idx_migration_history_sequence(project_id, sequence). SQLite planned:\n{plan}\n"
-        "Without it the read is a table scan whose cost the corpus can move -- reopening the "
-        "O(withheld) channel #158 and #19 closed (SEC-13)."
-    )
+    for fragment in (
+        "SEARCH",
+        "USING COVERING INDEX idx_migration_history_sequence",
+        "(project_id=?",
+    ):
+        assert fragment in plan, (
+            f"the search integrity COUNT is no longer a seek into the covering index "
+            f"idx_migration_history_sequence(project_id, sequence): {fragment!r} is missing. "
+            f"SQLite planned:\n{plan}\n"
+            "Without that seek the read walks every project's migration entries -- a cost the "
+            "corpus can move, reopening the O(withheld) channel #158 and #19 closed (SEC-13)."
+        )
