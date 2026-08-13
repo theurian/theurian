@@ -5852,13 +5852,23 @@ async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_search(
 ) -> None:
     """#30 PR1. The detector runs on `knowledge.search`, not just the field's shape.
 
-    A corrupt `migration_history.project_id` or a lost row makes both answer
-    paths report `count: 0, stale: false` -- a false "no such decision" -- while
-    the pointer still records the migrations that built the state. The count
-    below catches that and the field discloses it. This is RED the moment
-    search's `integrity` emission is unplugged (return `answer` unconditionally,
-    or force the detector to `None`), which is what proves PR1 wired the detector
-    into this path and did not merely define the object.
+    What the detector measures is one number against one number: this project's
+    live `migration_history` row count, against the `migrationCount` the active
+    pointer that chose the state database records. A lost row moves the first and
+    not the second, and the field discloses the difference.
+
+    **The search still answers, and that is the point** -- `count: 1` below, not
+    `count: 0`. Losing a migration-history row does not empty a response: the
+    `knowledge_items` rows are untouched, so the retrievers find what they always
+    found, and nothing in the answer itself says the state that produced it is
+    damaged. The `integrity` key is the only thing that does. The corruptions
+    that *do* empty a response -- a sentinel in `knowledge_items.project_id` or
+    `item_id`, answering `count: 0, results: []` with `stale: false` -- leave this
+    key absent and are PR2's (the `SILENTLY_EMPTIED` positions, #30).
+
+    RED the moment search's `integrity` emission is unplugged (return `answer`
+    unconditionally, or force the detector to `None`), which is what proves PR1
+    wired the detector into this path and did not merely define the object.
     """
     database, _ = _state_database(registry)
     assert _drop_one_migration_history_row(database) == 1, (
