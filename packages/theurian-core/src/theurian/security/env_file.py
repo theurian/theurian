@@ -268,7 +268,7 @@ def contains_current_block(content: str, data_dir: Path) -> bool:
 
 
 def contains_shadowing_assignment(content: str) -> bool:
-    """Whether a line *below* the block assigns the same variable again.
+    """Whether a line *below* the block **appears** to assign the same variable again.
 
     A shell sources this file top to bottom, so the last assignment of
     ``THEURIAN_MCP_TOKEN`` is the one it keeps — and the probe's question, "is
@@ -278,6 +278,16 @@ def contains_shadowing_assignment(content: str) -> bool:
     machine converged and the step summary said the file "exports
     THEURIAN_MCP_TOKEN by reference". The block was current; the sentence was
     false anyway.
+
+    **A heuristic, and completeness is not claimed.** ``True`` means some line
+    below the block has the *shape* of a direct assignment, not that the shell
+    ends up exporting that value; ``False`` means no line has that shape, not
+    that none assigns. :func:`_assigns_token` tabulates both directions,
+    measured against ``/bin/bash``. So a ``False`` here reads the way the
+    integrity signal's absence reads -- nothing was found, which is not the same
+    sentence as nothing is there -- and every published sentence built on this
+    says the line *appears* to assign, which is what
+    :func:`~theurian.application.setup_steps.probe_env_reference` writes.
 
     Never repaired and never a conflict. That line belongs to whoever wrote it,
     and a conflict would stop the run over a file setup has no business editing
@@ -304,11 +314,39 @@ _EXPORT_KEYWORDS: Final = frozenset({"export", "declare", "typeset", "readonly"}
 
 
 def _assigns_token(line: str) -> bool:
-    """Whether this line assigns :data:`TOKEN_ENV_VAR` in the sourcing shell.
+    """Whether this line, read alone, has the shape of an assignment to :data:`TOKEN_ENV_VAR`.
 
-    Only the first word can be an assignment on its own account; a name later
-    on a line is an argument, and ``THEURIAN_MCP_TOKEN`` inside ``echo`` is
-    somebody talking about the variable rather than setting it.
+    A line-level heuristic over the *direct* forms and nothing else: a first
+    word spelled ``THEURIAN_MCP_TOKEN=…``, or that word following one of
+    :data:`_EXPORT_KEYWORDS`. A name later on a line is usually an argument, and
+    ``THEURIAN_MCP_TOKEN`` inside an ``echo`` is somebody talking about the
+    variable rather than setting it -- which is what keeps a converged machine
+    quiet.
+
+    **It is wrong in both directions**, measured with ``/bin/bash`` sourcing the
+    block followed by the line:
+
+    =====================================================  =========  ========
+    line below the block                                   exported   answered
+    =====================================================  =========  ========
+    ``[ -n "$HOME" ] && THEURIAN_MCP_TOKEN=x``             ``x``      ``False``
+    ``if [ -n "$HOME" ]; then THEURIAN_MCP_TOKEN=x; fi``   ``x``      ``False``
+    ``{ THEURIAN_MCP_TOKEN=x; }``                          ``x``      ``False``
+    ``eval 'THEURIAN_MCP_TOKEN=x'``                        ``x``      ``False``
+    an assignment inside a quoted heredoc *body*           the block  ``True``
+    =====================================================  =========  ========
+
+    **Not extended to cover them, and that is the decision rather than a
+    to-do.** What a line does is settled by the shell at run time -- ``eval``
+    takes a string that need not exist until then, and a heredoc body is not
+    shell at all -- so no line-level rule separates these, and each shape added
+    would move the boundary without closing it while making the list read as the
+    completeness this table denies. Only running the file decides, and a probe
+    that runs somebody's shell profile is not a probe. What the answer buys is
+    the case #128 measured: a line pasted from an older install, sitting at the
+    start of a line. The false positive is answered in the same place as the
+    false negative -- the published sentence says the line *appears* to assign,
+    which is true of a heredoc body too.
     """
     words = line.strip().split()
     if not words:

@@ -452,10 +452,18 @@ def probe_env_reference(context: SetupContext) -> SetupStep:
     and this is that sentence in both arms: what is compared, and what is
     written.
 
-    Blind to the lines around the block, but not to what they *do*: a line below
-    it assigning the same variable is what the shell keeps, so the last arm
-    reports the block current and says so rather than claiming the file exports
-    the token by reference.
+    Blind to the lines around the block, but not to what they appear to *do*: a
+    line below it assigning the same variable is what the shell keeps, so the
+    arm that finds one reports the block current and says so rather than
+    claiming the file exports the token by reference.
+
+    That arm rests on a heuristic.
+    :func:`~theurian.security.env_file.contains_shadowing_assignment` recognises
+    the direct assignment forms and no others, and its docstring tabulates the
+    shapes that evade it and the one that trips it. Both sentences this step
+    publishes therefore say the line *appears* to assign: a shape the heuristic
+    misses leaves the final arm's "exports it by reference" standing, which is
+    the failure this step inherits and does not close.
     """
     path = context.env_file
     if not path.is_file():
@@ -495,23 +503,28 @@ def probe_env_reference(context: SetupContext) -> SetupStep:
 
     if contains_shadowing_assignment(content):
         # Satisfied, because the block *is* current and applying this step would
-        # write the same bytes -- and reported, because the machine does not
+        # write the same bytes -- and reported, because the machine may well not
         # export what the block says. Not a conflict: a conflict asks the user
         # for consent to proceed past it, and there is nothing here setup wants
-        # to do. `SetupService._verify` turns this detail into a warning, which
-        # is what ends the run DEGRADED instead of CONVERGED.
+        # to do. `SetupService` turns this detail into a warning, which is what
+        # ends a real run DEGRADED instead of CONVERGED and what puts it in
+        # `doctor`'s payload.
         return SetupStep(
             step_id=StepId.ENV_REFERENCE,
             status=StepStatus.SATISFIED,
-            summary=f"The Theurian block in {path} is current, but a later line overrides it.",
+            summary=(
+                f"The Theurian block in {path} is current, but a later line appears to override it."
+            ),
             # The path, the variable and the marker -- all Theurian's own text.
             # Not the offending line: `doctor --report` publishes this, and
-            # somebody wrote that line for their own reasons.
+            # somebody wrote that line for their own reasons. Which also means
+            # the reader cannot see what was matched, so the sentence has to
+            # carry its own uncertainty rather than lean on them checking.
             detail=(
-                f"{path} assigns {TOKEN_ENV_VAR} again below the block, and a shell keeps the "
-                f"last assignment it reads. Theurian does not edit lines outside its markers: "
-                f"remove that line, or move it above {ENV_BLOCK_START!r}, for the block's value "
-                f"to be the one your shell exports."
+                f"A line below the block in {path} appears to assign {TOKEN_ENV_VAR} again, "
+                f"and a shell keeps the last assignment it reads. Theurian does not edit "
+                f"lines outside its markers: remove that line, or move it above "
+                f"{ENV_BLOCK_START!r}, for the block's value to be the one your shell exports."
             ),
         )
 
