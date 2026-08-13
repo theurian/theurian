@@ -104,6 +104,53 @@ def test_every_specified_step_is_reported(context: SetupContext) -> None:
 # -- Applying ---------------------------------------------------------------
 
 
+def test_a_healthy_machine_ends_the_run_converged(context: SetupContext) -> None:
+    """§6.1. CONVERGED is the state every other state in this module departs from.
+
+    Nothing asserted it. `SetupReport.succeeded` is true of DEGRADED as well --
+    it is success with warnings -- so every `assert report.succeeded` above and
+    below stays green on a run that ended DEGRADED with a page of warnings, and
+    so does every assertion about the files on disk. Measured: replacing
+    `SetupService._verify`'s ``SetupState.CONVERGED if not warnings else
+    DEGRADED`` with an unconditional ``DEGRADED`` passed all 2426 tests. The one
+    state a person is trying to reach was the one state nothing pinned.
+
+    Asserted by *value* rather than as "not DEGRADED": the five states are what
+    the plugin branches on, and a run that reached PLAN_BUILT without applying
+    anything is also not DEGRADED.
+    """
+    report = _service(context).run()
+
+    assert report.state is SetupState.CONVERGED, report.warnings
+
+
+def test_a_step_that_is_not_applicable_and_says_why_is_not_a_warning(
+    context: SetupContext,
+) -> None:
+    """The other half of `SetupService._reservations`, which no test held.
+
+    A reservation is a step that is SATISFIED *and* carries a ``detail`` -- the
+    env file's shadowed-block arm, pinned in `test_setup_env_file.py`. The status
+    half of that condition is what this holds: every machine, converged or not,
+    carries NOT_APPLICABLE steps with a detail explaining the gap, and
+    ``artifact-integrity`` carries one on every platform in every state (T-16).
+    Dropping the status test -- ``if step.detail`` alone -- therefore turns every
+    healthy machine DEGRADED, with the supply-chain note published as though it
+    were something wrong with this install. Measured: that mutation passed all
+    2426 tests, because nothing asserted the warnings of a converged run.
+
+    The fixture guard is the first two assertions rather than a comment: with no
+    NOT_APPLICABLE-with-detail step in the report, ``warnings == ()`` says
+    nothing about the branch.
+    """
+    report = _service(context).run()
+
+    explained = [s for s in report.steps if s.status is StepStatus.NOT_APPLICABLE and s.detail]
+    assert explained, "the fixture has to reach the branch"
+    assert StepId.ARTIFACT_INTEGRITY in {s.step_id for s in explained}
+    assert report.warnings == (), "a gap that is explained is not a finding about this machine"
+
+
 def test_a_cold_setup_creates_everything_with_correct_modes(context: SetupContext) -> None:
     """§20's cold-setup case. The modes are the security property, so they are
     asserted rather than assumed."""
