@@ -592,11 +592,10 @@ def test_the_env_file_is_private_however_permissive_the_umask_is(tmp_path: Path)
     common ``0o077``. This one fixes the umask at its most permissive, so the
     answer is about the code.
 
-    Measured: neither half is redundant to a *test*, but each is redundant to
-    the other in the code -- dropping the opener's mode or dropping the chmod
-    leaves the file 0600 either way, and only dropping both is caught. That is
-    defence in depth working as intended, and it is why this test asserts the
-    outcome rather than the mechanism.
+    On a file this run *creates*, the two halves are redundant to each other:
+    measured, dropping either one on its own still leaves 0600, and only
+    dropping both is caught. The arm where the chmod is the sole guarantee is
+    the one below, on a file that already exists.
     """
     context = _context(tmp_path)
     previous = os.umask(0o000)
@@ -607,3 +606,29 @@ def test_the_env_file_is_private_however_permissive_the_umask_is(tmp_path: Path)
 
     assert report.succeeded, report.warnings
     assert context.env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_an_env_file_left_group_readable_by_an_older_version_is_tightened(
+    tmp_path: Path,
+) -> None:
+    """A creation mode does not apply to a file that is already there (SEC-5).
+
+    Every machine set up by 0.1.0.dev0 through dev2 has this file already, and
+    the mode it was given then is the mode it still has -- ``write_text`` under
+    the usual ``0o022`` leaves 0644, so the file naming the token's location is
+    readable by every account on the machine. The ``open`` that rewrites the
+    block cannot fix that: its mode argument is consulted only on creation. The
+    ``chmod`` after the write is the whole of the repair, and this is the arm
+    that can tell, because here it is not shadowed by the opener.
+    """
+    context = _context(tmp_path)
+    _seed(context, BEFORE + _stale_block(context) + "\n" + AFTER)
+    context.env_file.chmod(0o644)
+
+    report = SetupService(context).run(SetupRequest())
+
+    assert report.succeeded, report.warnings
+    assert context.env_file.stat().st_mode & 0o777 == 0o600
+    assert context.env_file.read_text(encoding="utf-8") == (
+        BEFORE + env_block(context.data_dir) + "\n" + AFTER
+    ), "and the rewrite it came in for still happened"
