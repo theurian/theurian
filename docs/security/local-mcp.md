@@ -207,8 +207,27 @@ one of them assigns `THEURIAN_MCP_TOKEN` again *below* the block, your shell
 keeps that one and not the block's. That line is yours, so it is not edited away
 and it is not a conflict; the run says so and finishes `degraded` instead of
 `converged`, naming the file, the variable and the marker to move the line above.
-It does not print the line, because whatever is on the right of that `=` is a
-credential often enough to matter.
+`theurian doctor` says the same thing, as a warning and not a problem: there is
+nothing for setup to do about a line of yours, so it does not count against
+`problemCount`, and a machine whose only finding is this one is still `healthy`
+and still exits 0. Neither command prints the line, because whatever is on the
+right of that `=` is a credential often enough to matter.
+
+**That check reads one line at a time, so treat it as a help and not a
+guarantee.** It recognises a plain `THEURIAN_MCP_TOKEN=…` at the start of a line,
+with or without `export`. It does not recognise an assignment tucked inside a
+conditional, a `{ … }` group or an `eval` — measured with `bash`, those export
+their value and setup stays quiet and says `converged` — and it *does* warn about
+an assignment inside a quoted heredoc body, which your shell never runs at all.
+That is why the sentence says the line *appears* to assign rather than that it
+overrides: deciding what a line really does means running your shell profile, and
+Theurian will not do that to answer a question about a file. If a `setup` that
+ended `converged` is followed by a 401, ask a fresh shell what it really has —
+this compares it against the file the block points at and prints neither:
+
+```sh
+[ "$THEURIAN_MCP_TOKEN" = "$(cat ~/.theurian/auth/mcp-token)" ] && echo match || echo mismatch
+```
 
 Nothing here edits your shell profile. The line that sources `~/.theurian/env`
 is yours to add, which is the one real ergonomic cost of keeping the token out

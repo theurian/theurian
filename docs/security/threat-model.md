@@ -217,6 +217,20 @@ is what makes them worth stating here as a property and not as a habit:
   variable name and the start marker. The existence *is* disclosed — that is the
   point of the warning — and the value beside the `=` is not.
 
+**That sentence now reaches two more surfaces.** The warning was built in the
+verification pass alone, so `theurian doctor` and `theurian setup --dry-run` —
+which return the `PLAN_BUILT` report — published `"warnings": []` on the same
+machine a real `theurian setup` ended `degraded` over; measured on one sandbox
+before the fix. Both now go through `SetupService._reservations`, so the same
+`detail` is published by `doctor --json` and `doctor --report` as well.
+`…/tests/integration/test_setup_cli.py::test_doctor_calls_a_line_it_will_not_touch_a_warning_and_not_a_problem`
+asserts the sentence on the CLI payload *and* that the value on the line
+(`SentinelShadowedValue`) is not in it, which is this row's property on the new
+surface; `::test_the_plan_setup_prints_carries_the_same_reservation_doctor_does`
+is the `--dry-run` twin. Nothing else moved: `healthy` and `problemCount` count
+what setup would change and what needs consent, a reservation is neither, and the
+exit stays 0.
+
 **One arm remains outside the sweep.** Seeding the override shape is what puts
 the file in the `Satisfied` branch, so the `Conflicting` branch — markers that
 delimit no single block — is no longer reached by it, and is covered by
@@ -3469,6 +3483,29 @@ and `::test_a_crlf_file_keeps_every_byte_outside_the_block` counts the `\r`s the
 run did not author); and
 `…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
 for the second writer.
+
+**A line below the block is reported and never edited, and what finds it is a
+heuristic.** Setup asks whether the *block* is current, which is blind to lines
+it does not own, so a later `THEURIAN_MCP_TOKEN=…` is what the shell exports
+while the block is correct. That line belongs to whoever wrote it (SEC-18), so
+the step stays `satisfied`, carries the caveat, and the run ends `degraded`
+rather than editing it away. The check behind that caveat recognises the direct
+assignment forms and no others, and is wrong in both directions, measured with
+`/bin/bash` sourcing the block and then the line: an `&&` list, an `if`/`then`, a
+`{ }` group and an `eval` each assign the variable while the run stays silent and
+`converged`, and an assignment inside a quoted heredoc *body* draws the warning
+although the shell keeps the block's value. The table is §6.2 row 7 of
+[the requirements analysis](../architecture/requirements-analysis.md); the four
+misses are pinned as the recorded boundary, through a real shell, in
+`…/test_setup_env_file.py::test_a_shape_the_heuristic_does_not_recognise_leaves_the_run_silent`.
+The residual is carried in the wording rather than in a parser — every published
+sentence says the line *appears* to assign
+(`::test_the_sentence_about_a_line_it_cannot_read_claims_only_that_it_appears_to_assign`)
+— and on an evading machine the step's summary still reads "…/env exports
+`THEURIAN_MCP_TOKEN` by reference", which is true of the block and incomplete
+about the machine. Extending the check is refused rather than deferred: what a
+line does is settled by the shell at run time, and a probe that runs somebody's
+shell profile is not a probe.
 
 **Two defenses on this path are deliberately unpinned, and are recorded here
 rather than asserted.** Both are real and neither is measurable on the platforms

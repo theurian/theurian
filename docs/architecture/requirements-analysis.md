@@ -327,9 +327,39 @@ stateDiagram-v2
 Every step is a `SetupStep` with an independent probe result: `Satisfied`
 (skip), `Missing` (create), `Conflicting` (back up or ask) — and `NotApplicable`,
 which `StepStatus` carries so a report never claims to have checked something it
-skipped. `Satisfied` may still carry a `detail`, which `_verify` turns into a
-report warning: the block being correct and the shell exporting its value are
-different claims, and row 7 is where they come apart.
+skipped. `Satisfied` may still carry a `detail` — a **reservation**: a finding
+with no work attached. The block being correct and the shell exporting its value
+are different claims, and row 7 is where they come apart.
+
+`_reservations` turns each one into a report warning, and **both surfaces that
+publish a plan call it**, because they had drifted. The verification pass carried
+the sentence and ended a real run `Degraded`, while the `PlanBuilt` report that
+`theurian doctor` and `theurian setup --dry-run` both return carried no warnings
+at all: on one machine, `theurian setup` said `degraded` with the sentence and
+`theurian doctor --json` said `"warnings": []` and exited 0, the caveat sitting
+in the payload the whole time as the `detail` of a step whose status reads
+`satisfied` — which is where a reader stops. Pinned in
+`tests/integration/test_setup_cli.py`:
+`test_doctor_calls_a_line_it_will_not_touch_a_warning_and_not_a_problem`,
+`test_the_plan_setup_prints_carries_the_same_reservation_doctor_does`, and
+`test_doctor_says_nothing_about_a_machine_with_nothing_below_the_block` as the
+control that keeps the first two from passing on a command that warns
+unconditionally.
+
+A reservation is **not** a problem. `doctor`'s `healthy` and `problemCount` count
+what setup would change and what it would ask consent for, and a reservation is
+neither, so neither field moves and the exit code stays 0: a non-zero exit that
+no command Theurian ships can clear is how a health check stops being read.
+Measured on a real `theurian doctor --json` over one sandbox with and without a
+shadowing line: `problemCount` is 4 both times, and the second run carries one
+extra `env-reference: …` warning. The status half of `_reservations`' condition
+is load-bearing and pinned, because every machine carries `NotApplicable` steps
+that explain themselves — row 3's supply-chain note is one on every platform —
+and matching on `detail` alone would turn each of them into a finding about this
+install
+(`tests/integration/test_setup_service.py::test_a_step_that_is_not_applicable_and_says_why_is_not_a_warning`;
+the state a run with no findings at all reaches is
+`::test_a_healthy_machine_ends_the_run_converged`).
 
 | # | Step | Probe | Action when `Missing` | Action when `Conflicting` |
 | :-- | :-- | :-- | :-- | :-- |
@@ -415,15 +445,55 @@ the last assignment it reads, so a line *below* the block assigning
 same bytes, and it is not `Conflicting`, because a conflict asks for consent to
 do something and there is nothing here setup wants to do — that line is not
 Theurian's to edit (SEC-18). It is reported instead: the step carries a `detail`,
-`_verify` turns a `detail` on a `Satisfied` step into a warning, and the run ends
-`Degraded`
+`_reservations` turns it into a warning on both surfaces above, and a real run
+ends `Degraded`
 (`tests/integration/test_setup_env_file.py::test_an_assignment_below_the_block_is_reported_rather_than_edited_away`).
 The warning names the path, the variable and the start marker to move the line
 above, exactly once, and never the line itself
 (`::test_the_override_warning_names_the_variable_and_never_the_line_it_found`). A
 bare `export THEURIAN_MCP_TOKEN` or a commented-out assignment is not an
 override and leaves the run converged
-(`::test_a_line_that_only_mentions_the_token_leaves_the_run_converged`).
+(`::test_a_line_that_only_mentions_the_token_leaves_the_run_converged`). Currency
+is asked *first*: a block that is stale **and** shadowed is `Missing`, rewritten,
+and reported by the re-probe afterwards — one warning, not a report instead of
+the fix
+(`::test_a_stale_block_with_a_later_assignment_is_rewritten_rather_than_reported`).
+
+**What finds that line is a heuristic over the direct assignment forms, and its
+boundary is recorded rather than closed.** `contains_shadowing_assignment` reads
+one line at a time and recognises a first word spelled `THEURIAN_MCP_TOKEN=…`, or
+that word following `export`, `declare`, `typeset` or `readonly`. It is wrong in
+both directions, measured with `/bin/bash` sourcing the block and then the line:
+
+| A line below the block | The shell exports | The run says |
+| :-- | :-- | :-- |
+| `[ -n "$HOME" ] && THEURIAN_MCP_TOKEN=x` | `x` | nothing; `Converged` |
+| `if [ -n "$HOME" ]; then THEURIAN_MCP_TOKEN=x; fi` | `x` | nothing; `Converged` |
+| `{ THEURIAN_MCP_TOKEN=x; }` | `x` | nothing; `Converged` |
+| `eval 'THEURIAN_MCP_TOKEN=x'` | `x` | nothing; `Converged` |
+| an assignment inside a quoted heredoc *body* | the block's value | the warning |
+
+The four misses are pinned **as** the recorded boundary, one case per shape and
+each measured through a real `bash` rather than restated against the function
+(`::test_a_shape_the_heuristic_does_not_recognise_leaves_the_run_silent`), so a
+change that begins warning on one of them has to come here and to that list and
+say so. On those four machines the step's summary still reads
+"`<data_dir>/env` exports `THEURIAN_MCP_TOKEN` by reference" — true of the block,
+and incomplete about the machine.
+
+**Not extended, and that is the decision rather than a to-do.** What a line does
+is settled by the shell at run time — `eval` takes a string that need not exist
+until then, and a heredoc body is not shell at all — so no line-level rule
+separates these, each shape added would move the boundary without closing it, and
+a probe that runs somebody's shell profile is not a probe. The answer is in the
+wording instead: both published sentences say the line *appears* to assign and
+the block *appears* to be overridden, which is what keeps the last row honest —
+that run warns about a file doing exactly what setup wanted, and the shell was
+asked before the assertion was written
+(`::test_the_sentence_about_a_line_it_cannot_read_claims_only_that_it_appears_to_assign`,
+which holds the `summary` as well as the `detail`, because a reader who stops at
+a status of `satisfied` sees only the first; dropping the hedge from the summary
+alone survived all 2,442 tests while the detail's was held).
 
 **Row 13 is a report in setup and a write in `theurian init`.**
 `probe_gitignore` has no apply. It answers `Satisfied` when `.theurian/state`
@@ -551,6 +621,16 @@ A critical step failing during apply **halts** the run at that step. The report'
 - the setup journal, when this run appended to it and the append reached the
   disk (`test_a_halted_run_names_the_journal_among_the_files_it_wrote`,
   `test_a_halted_run_leaves_the_journal_it_wrote_on_disk`).
+
+**A halted report's `warnings` are the failures that stopped the run, and carry
+no reservations.** `_reservations` is called from the verification pass and from
+the `PlanBuilt` report, and a halted run reaches neither; `Aborted` and
+`AwaitingConsent` return earlier still, over a blocking conflict and over a plan
+nobody has approved. So §6.2's "a later line appears to assign it again" caveat
+is absent from exactly those three reports. That is recorded rather than closed,
+in `_reservations`' own docstring: each of the three hands the reader a larger
+question first, and the step's `detail` travels with the report in all of them —
+what is missing is the promotion to a warning, not the sentence.
 
 **Provenance, not existence.** Each of the failing step's declared paths is
 reduced to `(st_ino, st_mode, st_size, st_mtime_ns)` by `os.stat` immediately
