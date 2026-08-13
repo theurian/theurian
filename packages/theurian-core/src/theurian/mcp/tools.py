@@ -151,8 +151,9 @@ INTEGRITY_REMEDY: Final = (
 
 
 def _integrity_signal(*, live: int, expected: int) -> dict[str, Any] | None:
-    """The ``integrity`` object when derived state holds fewer or other rows than
-    its own records expect, or ``None`` when it does not (#30, PR1).
+    """The ``integrity`` object when derived state holds a different number of
+    migration-history rows than its own pointer records, or ``None`` when the two
+    agree (#30, PR1).
 
     **Present-only by contract.** The field is returned *only* when damage is
     detected; ``None`` here means the caller omits the key entirely. Absence
@@ -176,6 +177,15 @@ def _integrity_signal(*, live: int, expected: int) -> dict[str, Any] | None:
     The state database is immutable once built, so a healthy project has ``live
     == expected`` and *any* difference is damage -- including ``live > expected``
     from another project's rows bleeding in. Hence ``!=``, not ``<``.
+
+    **That count is the whole of what it measures, and it is not the damage a
+    caller is most likely to meet.** Corruption of `knowledge_items` empties a
+    response while the migration rows stay intact, so this returns ``None``
+    there: measured over a real daemon, a `knowledge_items.project_id` sentinel
+    answers ``count: 0, results: []``, ``itemCount: 0`` and `get`'s "is not
+    present" with no ``integrity`` key on any of the three. Those positions are
+    the ``SILENTLY_EMPTIED`` members carried to PR2 (#30); nothing here or on the
+    wire distinguishes them from a project that genuinely holds nothing.
     """
     if live == expected:
         return None
@@ -538,14 +548,24 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             )
 
         # The #30 integrity signal, checked against the same `active` pointer
-        # that chose `database` and answered `snapshotId`. A corrupt
-        # `migration_history.project_id` (or a lost row) makes both answer paths
-        # report `count: 0, stale: false` -- a false "no such decision" -- while
-        # the pointer still records the migrations that built the state; the
-        # count below catches that and the field discloses it. A short-lived
-        # connection for one covering-index COUNT, O(migrations): the ranked and
-        # scan paths open and close their own stores, and this stays off their
-        # hot path so it cannot reopen the O(withheld) timing channels they close.
+        # that chose `database` and answered `snapshotId`. One measurement: this
+        # project's live `migration_history` row count against the
+        # `migrationCount` that pointer records. Any difference is damage to the
+        # state that produced the answer above -- a row lost, or dropped out of
+        # the `WHERE` by a corrupt `migration_history.project_id`, or another
+        # project's rows reaching this one -- and the field discloses it.
+        #
+        # It does not see the corruption that empties *this* response. A sentinel
+        # in `knowledge_items.project_id`/`item_id` drops the item from both
+        # answer paths with the migration rows untouched, so `count: 0,
+        # results: []` -- a false "no such decision" -- still goes out with no
+        # `integrity` key and a `retrieval` block reporting nothing wrong: the
+        # SILENTLY_EMPTIED members carried to PR2.
+        #
+        # A short-lived connection for one covering-index COUNT, O(migrations):
+        # the ranked and scan paths open and close their own stores, and this
+        # stays off their hot path so it cannot reopen the O(withheld) timing
+        # channels they close.
         with SqliteCanonicalStore(database) as store:
             integrity = _integrity_signal(
                 live=store.count_migration_history(ProjectId(projectId)),
@@ -617,14 +637,24 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             )
             if item is None or item.current_revision_id is None or withheld:
                 # "Not present" and "damaged" are different answers with the same
-                # shape, and #30 is the case where the damage *is* the absence: a
-                # corrupt `project_id`/`item_id` pointer cell drops the row out of
-                # the lookup, so the item cannot be read and reports as gone. The
-                # migration-count check separates the two -- if the derived state
-                # holds fewer rows than its pointer records, the honest answer is
-                # "could not be fully read", not "not present". `get` refuses with
-                # a bare string and no field, so the distinction lives in the
+                # shape, and #30 is the case where the damage *is* the absence.
+                # The check below is one measurement -- the live
+                # `migration_history` row count against the count this project's
+                # pointer records -- and when the two differ, the state that
+                # failed to produce this item is itself damaged, so "could not be
+                # fully read" is the honest answer and "not present" would be a
+                # claim about a store nobody could read in full. `get` refuses
+                # with a bare string and no field, so the distinction lives in the
                 # message; the remedy is the same rebuild either way.
+                #
+                # It does not say that *this* item's row is the damaged one, and
+                # it does not fire for the corruption that hides an item by
+                # itself: measured over a real daemon, a sentinel in
+                # `knowledge_items.project_id`/`item_id` leaves the migration rows
+                # intact, so this branch is skipped and the refusal below -- "is
+                # not present", naming no remedy -- is what a caller gets for a
+                # row that exists and cannot be read (the SILENTLY_EMPTIED members
+                # carried to PR2).
                 if (
                     _integrity_signal(
                         live=store.count_migration_history(context.project_id),
@@ -634,9 +664,9 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 ):
                     msg = (
                         f"Project {projectId!r} could not be fully read: its derived state "
-                        f"holds fewer migration-history rows than its own records expect, so "
-                        f"an item present in the canonical migrations may be missing from it. "
-                        f"{INTEGRITY_REMEDY}"
+                        f"holds a different number of migration-history rows than its own "
+                        f"records expect, so an item present in the canonical migrations may "
+                        f"be missing from it. {INTEGRITY_REMEDY}"
                     )
                     raise ToolError(msg)
                 # Deliberately the same message as "absent". A distinct one would
