@@ -6460,3 +6460,84 @@ async def test_status_answers_cleanly_over_a_migration_cell_it_no_longer_reads(
         f"a damaged migration_history.{column} moved no row count, so the detector has nothing "
         f"to report -- an `integrity` key here means it is firing on something else: {result}"
     )
+
+
+# -- #30 PR1: the healthy invariant survives more applies -------------------
+
+
+def _live_and_expected(registry: ProjectRegistry, project_id: str = "demo") -> tuple[int, int]:
+    """The detector's two operands, read the way it reads them.
+
+    ``live`` straight from SQLite rather than through the store, so a store
+    method that started answering from the pointer could not make the two agree
+    by construction; ``expected`` from the pointer the tools resolve.
+    """
+    database, active = _state_database(registry, project_id)
+    connection = sqlite3.connect(database)
+    try:
+        live = connection.execute(
+            "SELECT COUNT(*) FROM migration_history WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    return int(live), active.migration_count
+
+
+@pytest.mark.asyncio
+async def test_a_re_apply_and_a_third_migration_leave_every_tool_silent(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, M1. `live == expected` is an invariant of `migrate apply`, not of two.
+
+    The absence tests above measure one build of two migrations. That leaves the
+    invariant pinned at a single point, where an off-by-one in either operand --
+    a pointer written before the last row lands, an idempotent re-apply that
+    bumps `migrationCount` without writing a row -- would fire `integrity` on a
+    project nobody damaged and turn the signal into noise a caller learns to
+    ignore. So the pointer and the rows are compared again after a re-apply that
+    changes nothing, and again after a third migration that changes both.
+
+    The guard is the row count read straight from SQLite beside the pointer's:
+    silence proves the detector chose it only if the two operands really are
+    equal and really did move.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        # An apply with nothing pending: the pointer must not count what it did
+        # not write.
+        _run("migrate", "apply")
+        after_reapply = _live_and_expected(registry)
+
+        slug, title, letter = "retry-policy", "Retry policy", "C"
+        (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+            f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
+        )
+        (root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml").write_text(
+            EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title)
+        )
+        _run("migrate", "apply")
+        after_third = _live_and_expected(registry)
+    finally:
+        monkey.undo()
+
+    assert after_reapply == (2, 2), (
+        f"an idempotent re-apply moved the operands to {after_reapply}; the detector would now "
+        f"report damage on a project nobody touched"
+    )
+    assert after_third == (3, 3), (
+        f"a third migration left the operands at {after_third}, so the build below either did "
+        f"not happen or left the pointer disagreeing with its own rows"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.retry-policy"
+    )
+
+    assert "integrity" not in search, "a healthy three-migration search must not report damage"
+    assert "integrity" not in status, "a healthy three-migration status must not report damage"
+    assert "integrity" not in got, "a healthy three-migration get must not report damage"
+    assert status["appliedMigrations"] == 3, "the pointer must have counted the third migration"
