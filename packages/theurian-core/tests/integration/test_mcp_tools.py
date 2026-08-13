@@ -6217,3 +6217,92 @@ async def test_the_search_integrity_count_is_answered_by_a_covering_index(
             "Without that seek the read walks every project's migration entries -- a cost the "
             "corpus can move, reopening the O(withheld) channel #158 and #19 closed (SEC-13)."
         )
+
+
+# -- #30 PR1: what `knowledge.get` says when the damage *is* the absence -----
+#
+# `knowledge.get` publishes no field on a refusal, so its half of the integrity
+# signal is a different *message*: "could not be fully read", naming the rebuild,
+# instead of the "is not present" that a genuinely absent id earns. Two things
+# have to hold and they fail separately -- the branch has to be reached, and it
+# has to say something other than absence -- which is why both are asserted here
+# rather than one standing in for the other.
+
+
+#: The phrase that distinguishes `get`'s damage refusal from its absence
+#: refusal. Matched as a substring of the published message, because `get` has
+#: no `integrity` field to read: the message *is* the signal.
+GET_DAMAGE_PHRASE = "a different number of migration-history rows"
+
+#: What `get` says for an id that is simply not there -- and, by SEC-13, for one
+#: it is withholding. Pinned here so the damage message can be asserted *unequal*
+#: to it: a damage branch that reached for this text would be reporting damage as
+#: absence, which is exactly the #30 under-report on the `get` surface.
+GET_ABSENCE_PHRASE = "is not present in project"
+
+
+@pytest.mark.asyncio
+async def test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1. `knowledge.get` must not report damage as absence.
+
+    "Not present" is a claim about a store somebody could read in full. When the
+    live `migration_history` count disagrees with the pointer's, nobody can: an
+    item present in the canonical migrations may be missing from the derived
+    state, so the honest answer is "could not be fully read", with the rebuild
+    named. Answering "is not present" instead tells an agent that a decision does
+    not exist when the truth is that the state holding it is damaged -- the same
+    silent under-report `appliedMigrations: 0` was on `knowledge.status`.
+
+    The item asked for really is absent from the store, so the *absence* branch
+    is the one the tool would otherwise take -- which is what makes this a test
+    of the damage branch and not of the corruption. Two mutations turn it RED for
+    two different reasons, and neither assertion catches both:
+
+    * forcing the damage branch off (`if False:`) drops through to the absence
+      refusal, so the damage phrase is missing;
+    * swapping the damage message for the absence text keeps the branch and
+      loses the distinction, so the absence phrase is present.
+    """
+    database, active = _state_database(registry)
+    assert active.migration_count == 2, "the fixture applies two migrations"
+    assert _corrupt_migration_project_id(database) == 2, (
+        "both migration rows must take the sentinel, or the state is undamaged and the tool "
+        "would refuse with absence for the honest reason"
+    )
+
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert GET_DAMAGE_PHRASE in message, (
+        f"`knowledge.get` answered for a damaged state without saying so: {message!r}"
+    )
+    assert GET_ABSENCE_PHRASE not in message, (
+        f"`knowledge.get` reported damage as absence, which is the #30 under-report on this "
+        f"surface: {message!r}"
+    )
+    assert INTEGRITY_REMEDY_ACTION in message, "a damage refusal must name the rebuild"
+
+
+@pytest.mark.asyncio
+async def test_an_absent_item_over_a_healthy_state_is_refused_as_absence(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR1, the other side. The damage message is reserved for damage.
+
+    Without this, the test above is satisfied by a `get` that answers every
+    unknown id with "could not be fully read" -- a tool that cries damage over a
+    healthy project, whose refusals then say nothing at all. The two together are
+    what make the message a signal: absence here, damage there, on the same call
+    against the same fixture with one row count changed.
+    """
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert GET_ABSENCE_PHRASE in message, (
+        f"a healthy project must refuse an unknown id as absent: {message!r}"
+    )
+    assert GET_DAMAGE_PHRASE not in message, f"a healthy project reported damage: {message!r}"
