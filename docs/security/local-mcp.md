@@ -158,17 +158,51 @@ report. If you set this machine up with `0.1.0.dev0` through `dev2`, the first
 with the block above — one export of `THEURIAN_MCP_TOKEN` afterwards, not two —
 and keeps anything you appended to it.
 
+**A marker is a whole line, never text inside one.** The file is split on `\n`
+and on nothing else — what your shell ends a line at — with a trailing carriage
+return dropped before the comparison, so a file with CRLF endings delimits just
+as well. A line of yours that happens to mention a marker is a line of yours:
+
+```sh
+echo "everything between # >>> theurian >>> and here"
+```
+
+opens nothing. The block's own lines are written with `\n` endings, so a block
+that came back from a Windows editor with CRLF markers is rewritten once to
+normalise it and then left alone for good — the lines around it keeping the line
+endings you gave them, including a `\r` inside a quoted value, which would
+otherwise become a newline and split the assignment in two.
+
 **Markers that do not delimit exactly one block stop the write instead of
-guessing.** A start marker with no end, or a second start marker, means Theurian
-cannot tell which of these lines are its own — and with two blocks your shell
-would export whichever came last, which need not be the one setup chose. So
-`setup` reports it as a conflict and writes nothing (`--approve-conflicts` buys
-progress on the rest of the plan, never an overwrite of this file), and `auth
-rotate` leaves the file alone, still rotates the token, and names the file to
-repair in `nextSteps` — an exposed credential outranks a comment marker. What
+guessing:**
+
+| What your file holds | What Theurian does |
+| :-- | :-- |
+| two or more start lines, wherever they are | refuses; it cannot tell which lines between them are its own |
+| a start line with no end line after it | refuses; it cannot tell where its own lines end |
+| an end line with no start above it, or a second end line | nothing — it delimits nothing, so it is one more line of yours to keep |
+
+The start lines are counted across the whole file before anything is delimited,
+so pasting a fresh block above a broken one is caught rather than swallowing
+whatever sits between the two. With two blocks your shell would export whichever
+came last, which need not be the one setup chose.
+
+On a refusal `setup` reports a conflict and writes nothing (`--approve-conflicts`
+buys progress on the rest of the plan, never an overwrite of this file), and
+`auth rotate` leaves the file alone, still rotates the token, and names the file
+to repair in `nextSteps` — an exposed credential outranks a comment marker. What
 either one tells you is the two marker strings, the path they are in, and the
 command to re-run; never a line out of the file, because `theurian doctor
 --report` is meant to be pasted in public.
+
+**One thing setup can be right about and still be wrong.** Its question is
+whether the block is current, which is deliberately blind to your lines — so if
+one of them assigns `THEURIAN_MCP_TOKEN` again *below* the block, your shell
+keeps that one and not the block's. That line is yours, so it is not edited away
+and it is not a conflict; the run says so and finishes `degraded` instead of
+`converged`, naming the file, the variable and the marker to move the line above.
+It does not print the line, because whatever is on the right of that `=` is a
+credential often enough to matter.
 
 Nothing here edits your shell profile. The line that sources `~/.theurian/env`
 is yours to add, which is the one real ergonomic cost of keeping the token out

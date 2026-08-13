@@ -84,10 +84,15 @@ literal secret — in configuration.
    a headless Linux box may have no Secret Service.
 8. Rotation: `theurian auth rotate` writes a new token and refreshes the
    Theurian-owned block in `~/.theurian/env` through the same merge setup uses
-   (point 10). Where that file's markers delimit no single block it is left
-   untouched and named in `nextSteps`, and the rotation still completes: the
-   exposed credential outranks a comment marker. Rotation is never automatic,
-   and never happens in `SessionStart` (§8 of the brief).
+   (point 10). **Nothing after the new token is on disk may end the command.**
+   Markers that delimit no single block leave that file untouched; an OS-level
+   refusal — a read-only checkout, a file another account owns, a full disk —
+   leaves it wherever the write reached. Both name the file in `nextSteps` and
+   the rotation still completes: the exposed credential outranks a comment marker
+   or a permission bit, and by then the token has already been replaced. What the
+   OS-level arm says is the exception's class name and never its message, which
+   carries `strerror`, the errno and on some platforms a second path. Rotation is
+   never automatic, and never happens in `SessionStart` (§8 of the brief).
 
 ### Reaching the client
 
@@ -127,9 +132,32 @@ literal secret — in configuration.
 
     The token's path is written resolved, not as `${HOME}`. Everything outside
     the markers survives byte for byte, under `setup` and `auth rotate` alike
-    (SEC-18). Markers that delimit no single block — a start with no end, or a
-    second start — are reported and never repaired: setup cannot tell which lines
-    are its own, and every way of guessing ends in editing lines a person wrote.
+    (SEC-18) — with two exceptions, both of them additions or Theurian's own
+    text: the unmarked whole-file rendering `0.1.0.dev0`–`dev2` wrote is
+    recognised and replaced *in place* by this block, so an upgraded machine
+    carries one `export THEURIAN_MCP_TOKEN` and not two; and a file that ended
+    without a newline gains one, rather than having the start marker run onto the
+    end of somebody's last line.
+
+    **A marker is a whole line.** The file is split on `\n` and on nothing else —
+    what a shell ends a line at — and a trailing carriage return is dropped from
+    a line's text before it is compared, so a file with CRLF endings still
+    delimits while its `\r` bytes stay outside every span. Marker text anywhere
+    else on a line belongs to whoever wrote that line: `echo "between
+    # >>> theurian >>> and here"` opens nothing.
+
+    Two arrangements are reported and never repaired, because once the
+    delimiters disagree setup cannot tell which lines are its own: **two or more
+    start lines, anywhere in the file**, and **a start line with no end line
+    after it**. The start lines are counted over the whole file before a span is
+    chosen, so where a second one sits does not matter. An *end* line with no
+    start above it, and a second end line, are neither: they delimit nothing, and
+    a line Theurian cannot claim is a line Theurian keeps.
+
+    The block is Theurian's own text and is written with `\n` endings, so a block
+    that came back from a Windows editor with CRLF markers is not the current
+    block. It is normalised once — the lines around it keeping their own endings —
+    and the file is a fixed point from then on.
 
     > **Amended after Milestone 6, by the env-file managed-block CL
     > ([#128](https://github.com/theurian/theurian/issues/128)). As accepted,
@@ -161,11 +189,28 @@ literal secret — in configuration.
     > the user's own edit to their own profile, which is the ergonomic cost the
     > first *Negative* below records and not an oversight.
     >
-    > Pinned by `packages/theurian-core/tests/unit/test_env_file_merge.py` for
-    > the merge, `…/tests/integration/test_setup_env_file.py` for setup driven
-    > end to end over real files, and
+    > **The first cut of this amendment was substring-based, and the whole-line
+    > rule above was false of it.** `str.find` opened the span at the first
+    > *occurrence* of the start marker rather than at a line equal to it, counted
+    > a second start only in what followed the end marker, and matched the
+    > dev0–dev2 rendering as a substring. Measured over every file three symbols —
+    > a start marker, an end marker, a line of the user's — build up to five
+    > lines, 363 arrangements: 39 took the wrong refusal decision, and 16 of those
+    > reported success while dropping 19 of the user's lines between them, the run
+    > reporting `converged` and the re-probe `satisfied`. `S`, a user's line, `S`,
+    > the block, `E` — what repairing an unterminated block by pasting a fresh one
+    > under it leaves — was one of the 16. Matching lines, and counting the start
+    > lines before choosing a span, is what makes those paragraphs true.
+    >
+    > Pinned by `packages/theurian-core/tests/unit/test_env_file_merge.py` for the
+    > merge, `…/tests/integration/test_setup_env_file.py` for setup driven end to
+    > end over real files, and
     > `…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
-    > for the second writer.
+    > for the second writer. The whole-line rule is asserted over the population
+    > rather than one shape at a time, in
+    > `…/test_env_file_merge.py::test_no_arrangement_of_the_markers_loses_a_line_outside_the_block`
+    > — the 363 arrangements above, of which 229 are refused and 134 merge with
+    > every line outside the delimited block surviving in its original order.
 
 11. If the variable is unset, Claude Code passes the literal `${THEURIAN_MCP_TOKEN}`
     through and the daemon rejects it with a 401 whose body names the fix. A
@@ -321,12 +366,45 @@ Landed after Milestone 6, discharging point 10 as amended
   holds the detail both ways round (O-3, SEC-6): it names the two markers, the
   path and the command to re-run, and carries no other line out of a file whose
   every other byte somebody else wrote. `doctor --report` publishes that detail.
-  This arm is **outside** `test_setup_report_withholding.py`'s sweep, which seeds
-  an env file with no markers and therefore takes the `Missing` branch; the pin
-  above is what covers it instead.
+  This arm is **outside** `test_setup_report_withholding.py`'s sweep: that
+  sweep's env-file seed is now a current block with an assignment under it, which
+  is what reaches the override warning, and a file in that shape is not
+  conflicting. One seed per source is the sweep's shape, so the pin above is what
+  covers this branch instead. Neither detail can carry a line by construction —
+  the conflict one is built from `EnvBlockFault` and the marker constants, and
+  `contains_shadowing_assignment` returns `bool` — which is recorded under T-9 in
+  the [threat model](../security/threat-model.md).
+- `…/test_env_file_merge.py::test_no_arrangement_of_the_markers_loses_a_line_outside_the_block`
+  is the whole-line rule stated as a property rather than as a shape: every file
+  a start marker, an end marker and a user's line build up to five lines long,
+  363 of them, with the refusal rule read off the symbols instead of asked of the
+  code. `::test_a_marker_that_is_not_the_whole_line_does_not_open_a_block` covers
+  the four ways marker text appears inside a line somebody wrote, and
+  `::test_an_end_marker_with_no_start_delimits_nothing_and_is_no_reason_to_refuse`
+  and `::test_an_end_marker_above_the_block_does_not_become_the_blocks_own_end`
+  hold the other half — the arrangements that are *not* a refusal.
+- The CRLF pair, on both sides of the same claim:
+  `…/test_setup_env_file.py::test_a_crlf_file_keeps_every_byte_outside_the_block`
+  asserts the exact bytes through a real run and counts the `\r`s the run did not
+  author, and `::test_a_block_that_arrived_with_crlf_endings_is_normalised_exactly_once`
+  pins the sequence — missing once, applied once, satisfied afterwards, and the
+  second run measured on the file's mtime because a rewrite to identical bytes is
+  still a rewrite.
 - `…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
   and `::test_rotation_leaves_an_env_file_it_cannot_delimit_alone_and_says_so` —
-  the second writer, and the SEC-4/SEC-18 trade in point 8.
+  the second writer, and the SEC-4/SEC-18 trade in point 8. Its other arm,
+  `::test_a_rotation_survives_an_env_file_the_os_will_not_let_it_write`, asserts
+  the three halves together: rotated, the file unmoved, and the repair in
+  `nextSteps`; `::test_the_refusal_names_the_kind_of_failure_and_not_what_the_os_said`
+  holds the class name in and the OS's own sentence out (SEC-6).
+- The block being current is not the same claim as the shell exporting it.
+  `…/test_setup_env_file.py::test_an_assignment_below_the_block_is_reported_rather_than_edited_away`
+  pins a line below the block that assigns `THEURIAN_MCP_TOKEN` again as
+  `Satisfied` with a caveat — never edited away, since it is not Theurian's line
+  (SEC-18) — which ends the run `Degraded` rather than `Converged`. What that
+  warning may say is pinned separately in
+  `::test_the_override_warning_names_the_variable_and_never_the_line_it_found`:
+  the path, the variable and the marker, exactly once, and never the line itself.
 
 Still owed, with the milestone that will satisfy it:
 
