@@ -29,7 +29,11 @@ _DOTTED_PATTERN: Final = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?
 # A single kebab-case segment: ``backend-service``.
 _SLUG_PATTERN: Final = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
-_MAX_IDENTIFIER_LENGTH: Final = 200
+# Public because a composition root bounds a caller-supplied id against it before
+# any identifier is constructed: `mcp/tools.py` echoes an unresolvable `projectId`
+# and must know a real one's ceiling to refuse an oversized string by length
+# rather than reflecting it. The JSON schemas duplicate this as `maxLength: 200`.
+MAX_IDENTIFIER_LENGTH: Final = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +125,9 @@ class _DottedId(_StringId):
     def _validate(cls, value: str) -> None:
         if not value:
             raise InvalidIdentifierError(f"{cls.__name__} must not be empty")
-        if len(value) > _MAX_IDENTIFIER_LENGTH:
+        if len(value) > MAX_IDENTIFIER_LENGTH:
             raise InvalidIdentifierError(
-                f"{cls.__name__} must be at most {_MAX_IDENTIFIER_LENGTH} characters, "
+                f"{cls.__name__} must be at most {MAX_IDENTIFIER_LENGTH} characters, "
                 f"got {len(value)}"
             )
         if not _DOTTED_PATTERN.match(value):
@@ -161,9 +165,9 @@ class ProjectId(_StringId):
     def _validate(cls, value: str) -> None:
         if not value:
             raise InvalidIdentifierError("ProjectId must not be empty")
-        if len(value) > _MAX_IDENTIFIER_LENGTH:
+        if len(value) > MAX_IDENTIFIER_LENGTH:
             raise InvalidIdentifierError(
-                f"ProjectId must be at most {_MAX_IDENTIFIER_LENGTH} characters, got {len(value)}"
+                f"ProjectId must be at most {MAX_IDENTIFIER_LENGTH} characters, got {len(value)}"
             )
         if not _SLUG_PATTERN.match(value):
             raise InvalidIdentifierError(f"ProjectId must be lowercase kebab-case, got {value!r}")
@@ -180,9 +184,9 @@ class AgentId(_StringId):
     @override
     @classmethod
     def _validate(cls, value: str) -> None:
-        if not value or len(value) > _MAX_IDENTIFIER_LENGTH:
+        if not value or len(value) > MAX_IDENTIFIER_LENGTH:
             raise InvalidIdentifierError(
-                f"AgentId must be 1..{_MAX_IDENTIFIER_LENGTH} characters, got {len(value)}"
+                f"AgentId must be 1..{MAX_IDENTIFIER_LENGTH} characters, got {len(value)}"
             )
 
 
@@ -193,7 +197,7 @@ class TaskId(_StringId):
     @override
     @classmethod
     def _validate(cls, value: str) -> None:
-        if not value or len(value) > _MAX_IDENTIFIER_LENGTH:
+        if not value or len(value) > MAX_IDENTIFIER_LENGTH:
             raise InvalidIdentifierError(
-                f"TaskId must be 1..{_MAX_IDENTIFIER_LENGTH} characters, got {len(value)}"
+                f"TaskId must be 1..{MAX_IDENTIFIER_LENGTH} characters, got {len(value)}"
             )

@@ -37,7 +37,7 @@ from theurian.domain.ranking import Ranked
 from theurian.infrastructure.sqlite import store as store_module
 from theurian.infrastructure.sqlite.connection import open_read_connection
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
-from theurian.mcp.tools import MAX_RESULTS
+from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
@@ -4136,22 +4136,80 @@ async def test_an_over_long_item_id_is_not_echoed_back(registry: ProjectRegistry
     property is that the message does not grow with its input, and 183 is one
     wording of it.
 
-    **`projectId` is a third member of this class and is known and open.**
-    `mcp/tools.py`'s `_unresolvable` interpolates it with no bound: measured
-    through this same entry point, 2,000,000 characters in produce a 2,000,141
-    character message, against 2,000 for `query` and 185 for `itemId`. It is
-    named here rather than left out, because a class carrying an unnamed member
-    comes back a round later as another instance of the one that was closed. The
-    reasoning for converting it rather than fixing it in Milestone 5, and the
-    decision it is waiting on, are T-6 in the threat model and
-    https://github.com/theurian/theurian/issues/17. Delete this paragraph in the
-    change that closes it.
+    **`projectId` was the third member of this class, and it is now closed.**
+    `mcp/tools.py`'s `_unresolvable` used to interpolate it with no bound:
+    measured through this same entry point, 2,000,000 characters in produced a
+    2,000,141 character message, against 2,000 for `query` and 185 for `itemId`.
+    `db36089` (#17) bounded it to the same discipline -- an over-long
+    unregistered id is reported by its length, never echoed -- so the class
+    carries no unnamed or unpinned member. The sibling pins are
+    `test_an_over_long_project_id_is_reported_by_length_not_echoed` and
+    `test_the_project_id_echo_is_named_up_to_the_id_ceiling_then_by_length`.
     """
     message = await _call_failing(registry, "knowledge.get", projectId="demo", itemId="a" * 20_000)
 
     assert "aaaa" not in message, "not even a truncated prefix of the identifier"
     assert "20000" in message, "the length is what the caller needs to see"
     assert len(message) < 500, f"the message grew with its input ({len(message)} characters)"
+
+
+@pytest.mark.asyncio
+async def test_an_over_long_project_id_is_reported_by_length_not_echoed(
+    registry: ProjectRegistry,
+) -> None:
+    """#17. The `projectId` echo, the third member of the amplifier class above.
+
+    `_resolve` runs before any `ProjectId` bounds the caller's string, so an
+    unregistered id reaches `_unresolvable` as raw bytes. Interpolated verbatim,
+    the error mirrored the whole of what the caller sent -- an ~1x amplifier of
+    an unbounded input, the same failure `MAX_QUERY_CHARS` closes for `query`
+    and `ItemId` closes for `itemId`. `db36089` reports an over-long id by its
+    length instead, so the message cannot grow with its input (SEC-15).
+
+    Asserting the length *value* appears, not merely that some number does: a
+    message that dropped the count would leave a caller unable to tell that the
+    id was too long at all, only that it was unregistered.
+    """
+    over_long = "a" * 50_000
+
+    message = await _call_failing(registry, "knowledge.status", projectId=over_long)
+
+    assert "aaaa" not in message, "not even a truncated prefix of the id may be echoed"
+    assert "50000" in message, "the length is what the caller needs to see instead"
+    assert len(message) < 500, f"the message grew with its input ({len(message)} characters)"
+
+
+@pytest.mark.asyncio
+async def test_the_project_id_echo_is_named_up_to_the_id_ceiling_then_by_length(
+    registry: ProjectRegistry,
+) -> None:
+    """#17. The boundary between "named so a typo is visible" and "by length".
+
+    A registered id is a `ProjectId`, which is at most `MAX_PROJECT_ID_CHARS`
+    (defined as the domain ceiling `MAX_IDENTIFIER_LENGTH`). An unregistered id
+    within that ceiling could be a typo of a real one, so it is named back; an
+    id past it could not be any project id, so echoing it would only reflect the
+    caller's own bytes and is replaced by the length.
+
+    The boundary is derived from the constant rather than pinned at 200, so it
+    tracks the ceiling if it moves and it catches an off-by-one in the check:
+    an id of exactly `MAX_PROJECT_ID_CHARS` must be named (the check is `>`, not
+    `>=`), one character over must not.
+    """
+    normal = "mistyped-project"
+    at_ceiling = "b" * MAX_PROJECT_ID_CHARS
+    just_over = "c" * (MAX_PROJECT_ID_CHARS + 1)
+
+    named_normal = await _call_failing(registry, "knowledge.status", projectId=normal)
+    named_ceiling = await _call_failing(registry, "knowledge.status", projectId=at_ceiling)
+    by_length = await _call_failing(registry, "knowledge.status", projectId=just_over)
+
+    assert normal in named_normal, "a normal unregistered id is named so a typo stays visible"
+    assert at_ceiling in named_ceiling, "an id no longer than a project id can be is named back"
+    assert "longer than any project id can be" not in named_ceiling, "so it is not by length"
+
+    assert just_over not in by_length, "one character over the ceiling is not echoed"
+    assert str(MAX_PROJECT_ID_CHARS + 1) in by_length, "it is reported by its length instead"
 
 
 # -- The candidate depth itself, and the equality that closes the family ------
