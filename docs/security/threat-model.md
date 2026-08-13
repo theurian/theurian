@@ -195,6 +195,19 @@ config contains no high-entropy string.
 | `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report`, `::test_a_token_in_the_installed_plist_never_reaches_a_report`, and — through the *other* service manager, which is the one the defect was found in — `::test_a_token_on_a_unit_continuation_line_never_reaches_a_report` |
 | every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into all nine sources a step reads and does not own, and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
 | the setup journal, `~/.theurian/setup-journal.jsonl` — written beside the token by the run that mints it | `packages/theurian-core/tests/integration/test_setup_journal.py::test_the_journal_never_records_the_token_it_watched_being_minted`, which asserts the minting *is* recorded before asserting the value is not, so the prohibition cannot pass on an empty file |
+| the env-reference step's *conflict* detail, which the sweep above does not reach | `packages/theurian-core/tests/integration/test_setup_env_file.py::test_the_conflict_detail_carries_the_markers_and_the_remedy_and_no_other_line` |
+
+**One arm is covered by an individual pin rather than by the sweep.** The sweep
+seeds an env file holding `export NOTE=<sentinel>` and no markers, which takes
+the `Missing` branch; the `Conflicting` branch added with
+[#128](https://github.com/theurian/theurian/issues/128) is reached only by
+markers that delimit no single block, and its detail is built from what the
+probe *read*. It is pinned both ways round instead — the two marker strings, the
+path and the remedy must be there, and a line beside them in the same file must
+not be. Widening the sweep to seed that shape too would be the general fix and
+is not done: the sweep's claim is "no step in the current plan publishes a seeded
+value", one seed per source, and a second seed for the same source's second
+branch is a change to its shape rather than an addition to its list.
 
 The journal is a local file and is never served, but it outlives the run, it is
 created before the process knows whether the run will succeed, and a halted
@@ -3393,11 +3406,33 @@ enumerates every registered tool and asserts none reaches a canonical write.
 
 ### TB-4: the filesystem and setup
 
-#### T-14 — Setup overwrites a user's MCP configuration (Tampering, Medium)
+#### T-14 — Setup overwrites a user's configuration (Tampering, Medium)
 
-**Controls:** merge, never replace; timestamped backup; diff shown before
-applying; `--dry-run`; a test asserts an existing `serena` entry survives
-byte-for-byte.
+**Controls, the MCP configuration:** merge, never replace; timestamped backup;
+diff shown before applying; `--dry-run`; a test asserts an existing `serena`
+entry survives byte-for-byte.
+
+**Controls, `~/.theurian/env`:** the same merge-never-replace rule, reached late.
+This entry named only the MCP configuration, and the other file setup may find a
+user has already written to was overwritten whole by every `theurian setup` and
+every `theurian auth rotate` until
+[#128](https://github.com/theurian/theurian/issues/128) — the apply opened it
+`O_TRUNC` and rendered it from scratch, the probe reported `Missing` on any
+difference, and a line the user had added to a file whose own header says
+"Sourced by your shell profile" went with no diff, no backup and no mention in
+`changedPaths`. Both writers now rewrite only the span between
+`# >>> theurian >>>` and `# <<< theurian <<<`, and markers that delimit no single
+block are reported rather than repaired: once the delimiters disagree, setup
+cannot tell which lines are its own. There is no backup and no diff on this
+path. Preservation is by construction instead — the merge is computed before the
+file is opened, so a file setup cannot delimit is never opened at all — and that
+is what the pins assert:
+`packages/theurian-core/tests/unit/test_env_file_merge.py` for the merge,
+`…/tests/integration/test_setup_env_file.py` for setup driven end to end over
+real files (its refusal arms assert the bytes on disk, not the reported state),
+and
+`…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
+for the second writer.
 
 ---
 
@@ -3418,7 +3453,7 @@ byte-for-byte.
 | T-11 | Cross-project read | E | High | SEC-13 |
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
-| T-14 | Setup overwrites configuration | T | Medium | SEC-18 |
+| T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |

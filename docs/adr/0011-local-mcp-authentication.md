@@ -82,9 +82,12 @@ literal secret — in configuration.
 2. When available, mirror into the OS secret store through the `SecretStore` port
    (macOS Keychain, Linux Secret Service). The file remains the fallback, because
    a headless Linux box may have no Secret Service.
-8. Rotation: `theurian auth rotate` writes a new token and rewrites
-   `~/.theurian/env`. Rotation is never automatic, and never happens in
-   `SessionStart` (§8 of the brief).
+8. Rotation: `theurian auth rotate` writes a new token and refreshes the
+   Theurian-owned block in `~/.theurian/env` through the same merge setup uses
+   (point 10). Where that file's markers delimit no single block it is left
+   untouched and named in `nextSteps`, and the rotation still completes: the
+   exposed credential outranks a comment marker. Rotation is never automatic,
+   and never happens in `SessionStart` (§8 of the brief).
 
 ### Reaching the client
 
@@ -106,24 +109,63 @@ literal secret — in configuration.
    HTTP servers. Verified against the current Claude Code documentation before
    adopting this design.
 
-10. `/theurian:setup` generates `~/.theurian/env` (mode 0600):
-
-    ```sh
-    THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/mcp-token")"
-    export THEURIAN_MCP_TOKEN
-    ```
-
-    and offers to add a single guarded block to the user's shell profile:
+10. `theurian setup` writes one guarded block into `~/.theurian/env` (mode 0600),
+    and rewrites nothing else in that file:
 
     ```sh
     # >>> theurian >>>
-    [ -f "$HOME/.theurian/env" ] && . "$HOME/.theurian/env"
+    # Written by `theurian setup`. Sourced by your shell profile so that
+    # Claude Code can expand ${THEURIAN_MCP_TOKEN} in its MCP configuration
+    # without the literal token ever entering a config file (ADR-0011).
+    #
+    # Theurian rewrites only the lines between these two markers. Anything
+    # you add outside them is left exactly as you wrote it.
+    THEURIAN_MCP_TOKEN="$(cat "/Users/you/.theurian/auth/mcp-token")"
+    export THEURIAN_MCP_TOKEN
     # <<< theurian <<<
     ```
 
-    The block is shown as a diff and requires consent (SEC-18). Only the guarded
-    block is ever rewritten; the rest of the profile is never touched. If consent
-    is declined, setup completes in `Degraded` state and prints the export line.
+    The token's path is written resolved, not as `${HOME}`. Everything outside
+    the markers survives byte for byte, under `setup` and `auth rotate` alike
+    (SEC-18). Markers that delimit no single block — a start with no end, or a
+    second start — are reported and never repaired: setup cannot tell which lines
+    are its own, and every way of guessing ends in editing lines a person wrote.
+
+    > **Amended after Milestone 6, by the env-file managed-block CL
+    > ([#128](https://github.com/theurian/theurian/issues/128)). As accepted,
+    > this point showed an *unmarked* env file and put the guarded block in the
+    > user's shell profile** — shown as a diff, requiring consent, "only the
+    > guarded block is ever rewritten; the rest of the profile is never touched",
+    > and a `Degraded` completion printing the export line if consent was
+    > declined.
+    >
+    > **No step ever implemented any of that.** Setup does not edit a shell
+    > profile, has no consent prompt for one and no `Degraded` arm for a declined
+    > one; `STEPS` has no such member. The markers existed as `PROFILE_BEGIN` and
+    > `PROFILE_END` in `application/setup_steps.py` with no reader at all, which
+    > is how the sentence stood unchallenged from the day it was accepted.
+    >
+    > Meanwhile the promise attached to those unread constants — only the block
+    > between them is rewritten — was **false of the one file setup does write**.
+    > `apply_env_reference` opened `~/.theurian/env` with `O_TRUNC` and rendered
+    > it whole, and the probe reported `Missing` on any difference, so a line
+    > added to a file whose own header says "Sourced by your shell profile" was
+    > destroyed with no diff, no backup and no mention in `changedPaths` — on
+    > every setup and every rotation, by a command whose contract is that running
+    > it twice changes nothing.
+    >
+    > So the guarded block moved into the file it had been describing all along,
+    > and the ADR now states the property where it is enforced rather than where
+    > it was imagined. Theurian owns a marked span inside `~/.theurian/env` and
+    > nothing outside `~/.theurian`; the line that *sources* that file is still
+    > the user's own edit to their own profile, which is the ergonomic cost the
+    > first *Negative* below records and not an oversight.
+    >
+    > Pinned by `packages/theurian-core/tests/unit/test_env_file_merge.py` for
+    > the merge, `…/tests/integration/test_setup_env_file.py` for setup driven
+    > end to end over real files, and
+    > `…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
+    > for the second writer.
 
 11. If the variable is unset, Claude Code passes the literal `${THEURIAN_MCP_TOKEN}`
     through and the daemon rejects it with a 401 whose body names the fix. A
@@ -254,6 +296,37 @@ Landed in Milestone 4:
   the sweep does not seed is outside it, and the sweep is where to add one.
 - `test_a_second_run_never_regenerates_the_token` — setup mints a token only
   when there is none.
+
+Landed after Milestone 6, discharging point 10 as amended
+([#128](https://github.com/theurian/theurian/issues/128)):
+
+- `packages/theurian-core/tests/unit/test_env_file_merge.py` pins the merge
+  itself — a stale block replaced where it stands, a file with no Theurian
+  material keeping all of it, a file that ends without a newline keeping its last
+  line, and the dev0–dev2 whole-file rendering replaced rather than appended
+  beside (which is what keeps a machine from carrying two assignments of
+  `THEURIAN_MCP_TOKEN` naming different paths).
+- `…/tests/integration/test_setup_env_file.py` drives the real `SetupService`
+  over real files, because the defect lived in the seam and not in the decision:
+  a probe asking one question while the apply performs a different write is
+  exactly what shipped. `test_a_second_run_does_not_reopen_the_env_file` measures
+  convergence on the file's mtime rather than on the report, so a run that
+  rewrote identical bytes still fails it.
+- The refusal arm is pinned on the bytes, not the state:
+  `::test_an_undelimited_env_file_stops_the_run_before_anything_is_written` and
+  `::test_approving_the_conflict_buys_progress_and_never_an_overwrite` —
+  `--approve-conflicts` is consent to proceed *past* a conflict, and reads as
+  "yes, do it" often enough to be worth pinning as the opposite.
+- `::test_the_conflict_detail_carries_the_markers_and_the_remedy_and_no_other_line`
+  holds the detail both ways round (O-3, SEC-6): it names the two markers, the
+  path and the command to re-run, and carries no other line out of a file whose
+  every other byte somebody else wrote. `doctor --report` publishes that detail.
+  This arm is **outside** `test_setup_report_withholding.py`'s sweep, which seeds
+  an env file with no markers and therefore takes the `Missing` branch; the pin
+  above is what covers it instead.
+- `…/tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`
+  and `::test_rotation_leaves_an_env_file_it_cannot_delimit_alone_and_says_so` —
+  the second writer, and the SEC-4/SEC-18 trade in point 8.
 
 Still owed, with the milestone that will satisfy it:
 

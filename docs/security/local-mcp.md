@@ -126,25 +126,53 @@ configuration holds a *reference*:
 }
 ```
 
-`/theurian:setup` writes `~/.theurian/env` (mode 0600):
-
-```sh
-THEURIAN_MCP_TOKEN="$(cat "${HOME}/.theurian/auth/mcp-token")"
-export THEURIAN_MCP_TOKEN
-```
-
-and offers — showing the diff, and asking first — to add one guarded block to
-your shell profile:
+`theurian setup` writes one guarded block into `~/.theurian/env` (mode 0600):
 
 ```sh
 # >>> theurian >>>
-[ -f "$HOME/.theurian/env" ] && . "$HOME/.theurian/env"
+# Written by `theurian setup`. Sourced by your shell profile so that
+# Claude Code can expand ${THEURIAN_MCP_TOKEN} in its MCP configuration
+# without the literal token ever entering a config file (ADR-0011).
+#
+# Theurian rewrites only the lines between these two markers. Anything
+# you add outside them is left exactly as you wrote it.
+THEURIAN_MCP_TOKEN="$(cat "/Users/you/.theurian/auth/mcp-token")"
+export THEURIAN_MCP_TOKEN
 # <<< theurian <<<
 ```
 
-Only that block is ever rewritten. The rest of your profile is never touched. If
-you decline, setup completes in `degraded` state and prints the export line for
-you to place yourself.
+The token's path is written out resolved, not as `${HOME}`.
+
+**Only that block is ever rewritten, and everything around it survives byte for
+byte** — under `theurian setup` and under `theurian auth rotate` alike. The file
+invites you to add lines to it and it means it: put your own exports above or
+below the markers and they stay where you put them, trailing whitespace
+included. A file your editor left without a final newline keeps its last line
+and gains one, rather than having the marker run onto the end of it.
+
+Until [#128](https://github.com/theurian/theurian/issues/128) that was not true.
+Both commands rendered the whole file and truncated whatever else was in it, so
+a line you had added was gone with no diff, no backup and no mention in the
+report. If you set this machine up with `0.1.0.dev0` through `dev2`, the first
+`setup` or `auth rotate` after upgrading replaces that older rendering in place
+with the block above — one export of `THEURIAN_MCP_TOKEN` afterwards, not two —
+and keeps anything you appended to it.
+
+**Markers that do not delimit exactly one block stop the write instead of
+guessing.** A start marker with no end, or a second start marker, means Theurian
+cannot tell which of these lines are its own — and with two blocks your shell
+would export whichever came last, which need not be the one setup chose. So
+`setup` reports it as a conflict and writes nothing (`--approve-conflicts` buys
+progress on the rest of the plan, never an overwrite of this file), and `auth
+rotate` leaves the file alone, still rotates the token, and names the file to
+repair in `nextSteps` — an exposed credential outranks a comment marker. What
+either one tells you is the two marker strings, the path they are in, and the
+command to re-run; never a line out of the file, because `theurian doctor
+--report` is meant to be pasted in public.
+
+Nothing here edits your shell profile. The line that sources `~/.theurian/env`
+is yours to add, which is the one real ergonomic cost of keeping the token out
+of every config file.
 
 The secret exists in exactly one file. Everything else points at it.
 
