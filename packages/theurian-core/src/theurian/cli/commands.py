@@ -428,7 +428,23 @@ def init_command(as_json: JsonOption = False) -> None:
         return
 
     created = initialize_project(context.paths)
-    gitignore_changed, _ = ensure_gitignore(context.paths.root)
+    try:
+        gitignore_changed, _ = ensure_gitignore(context.paths.root)
+    except TheurianError as exc:
+        # Markers that do not delimit one block, which `ensure_gitignore`
+        # refuses rather than guessing at -- the .gitignore half of #128. It
+        # arrived here as a Typer traceback with the remedy buried in it,
+        # because the only `except` in this command wraps `resolve_context`.
+        # The directories above are already created and are not undone: they are
+        # `.theurian/` and nothing else, and a re-run after the repair adds the
+        # ignore block to them.
+        _fail(
+            str(exc),
+            remedy=_context_remedy(exc, default="Repair the .gitignore block, then re-run."),
+            as_json=as_json,
+            code=1,
+        )
+        return
 
     _emit(
         {

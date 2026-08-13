@@ -371,14 +371,60 @@ def initialize_project(paths: ProjectPaths) -> tuple[str, ...]:
     return tuple(created)
 
 
+def _gitignore_marker_lines(content: str, marker: str) -> list[tuple[int, int]]:
+    """Every whole line equal to ``marker``, as ``(start, end)`` slice bounds.
+
+    ``end`` stops before the line's terminator, so a ``\\r\\n`` outside the block
+    stays outside every span built from these bounds.
+
+    Split on ``\\n`` alone rather than with ``str.splitlines``, which also breaks
+    on ``\\v``, ``\\f`` and ``\\u2028`` -- none of which end a line for Git, so a
+    marker "line" found at one of those would not be one.
+
+    Deliberately not shared with the identically-spelled scan in
+    :mod:`theurian.security.env_file`. Those markers are separate literals for a
+    stated reason -- different files, edited by different code, where renaming
+    one must not silently rewrite the other -- and a shared scanner would put
+    them back in one place through the back door.
+    """
+    found: list[tuple[int, int]] = []
+    offset = 0
+    for line in content.split("\n"):
+        text = line.rstrip("\r")
+        if text == marker:
+            found.append((offset, offset + len(text)))
+        offset += len(line) + 1  # the separator `split` removed
+    return found
+
+
 def ensure_gitignore(root: Path) -> tuple[bool, str]:
     """Append Theurian's ignore block to ``.gitignore`` if it is missing.
 
     Written between markers so a re-run rewrites only Theurian's own lines and
-    never touches a rule the user wrote (SEC-18).
+    never touches a rule the user wrote (SEC-18). That sentence was false until
+    #128's class was swept here too: the search was ``str.find`` with no count
+    of the start markers, so a file holding two of them -- what resolving a
+    merge conflict by keeping both sides leaves behind -- had every rule between
+    them swallowed by the rewrite, reported as ``changed: true`` and nothing
+    else. A marker is now a whole *line*, and a second start marker anywhere in
+    the file is refused rather than guessed at.
+
+    Unlike the env file, this one is tracked by Git, so a rule lost here shows
+    in ``git diff`` and is recoverable. That is a mitigation and not the fix:
+    the loss is still silent when it happens, and whoever runs `theurian init`
+    in a tree that already has changes in it is not looking at that diff.
+
+    ``newline=""`` on both the read and the write, so a ``.gitignore`` with CRLF
+    endings does not come back with every line ending rewritten by a run that
+    was supposed to touch Theurian's own lines only.
 
     Returns:
         ``(changed, rendered_block)``.
+
+    Raises:
+        ProjectError: The markers do not delimit exactly one block -- a second
+            start marker, or a start with no end after it. Each arm names what
+            to look for and the command to re-run.
     """
     block = "\n".join(
         [
@@ -390,17 +436,39 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
     )
 
     gitignore = root / ".gitignore"
-    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    existing = gitignore.read_text(encoding="utf-8", newline="") if gitignore.exists() else ""
 
-    if GITIGNORE_BLOCK_START in existing:
-        start = existing.index(GITIGNORE_BLOCK_START)
-        end_marker = existing.find(GITIGNORE_BLOCK_END, start)
-        if end_marker == -1:
+    opened = _gitignore_marker_lines(existing, GITIGNORE_BLOCK_START)
+    if len(opened) > 1:
+        raise ProjectError(
+            f"{gitignore} holds more than one {GITIGNORE_BLOCK_START!r} line, so Theurian "
+            f"cannot tell which of the rules between them are its own.",
+            remedy=(
+                "Delete the block you do not want -- markers and all -- then re-run "
+                "`theurian init`."
+            ),
+        )
+
+    if opened:
+        start = opened[0][0]
+        closing = next(
+            (
+                span
+                for span in _gitignore_marker_lines(existing, GITIGNORE_BLOCK_END)
+                if span[0] > start
+            ),
+            None,
+        )
+        if closing is None:
             raise ProjectError(
-                f"{gitignore} has an unterminated Theurian block. "
-                f"Add {GITIGNORE_BLOCK_END!r} or remove the block, then retry."
+                f"{gitignore} has an unterminated Theurian block, so Theurian cannot tell "
+                f"where its own rules end.",
+                remedy=(
+                    f"Add {GITIGNORE_BLOCK_END!r} where the block ends, or remove the block "
+                    f"along with its rules, then re-run `theurian init`."
+                ),
             )
-        end = end_marker + len(GITIGNORE_BLOCK_END)
+        end = closing[1]
         if existing[start:end] == block:
             return False, block
         updated = existing[:start] + block + existing[end:]
@@ -408,7 +476,7 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
         separator = "" if existing.endswith("\n") or not existing else "\n"
         updated = f"{existing}{separator}\n{block}\n" if existing else f"{block}\n"
 
-    gitignore.write_text(updated, encoding="utf-8")
+    gitignore.write_text(updated, encoding="utf-8", newline="")
     return True, block
 
 
