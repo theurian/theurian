@@ -120,7 +120,10 @@ conditions outlived the branch they used to decide.
 
 The fix is written in the temporary private fork a
 [security advisory](https://github.com/theurian/theurian/security/advisories/new)
-provides — the only route this repository uses to hold one back. The advisory is
+provides — the only route this repository uses to hold one back, and the steps
+are [`release.md`'s *Fixing a vulnerability
+privately*](docs/contributing/release.md#fixing-a-vulnerability-privately),
+including what does not work inside that fork. The advisory is
 published when the fix is **delivered, or ninety days after we confirmed the
 vulnerability, whichever comes first — whether or not there is a reporter.** Most
 of what this section governs we found ourselves, so a clock that starts at an
@@ -155,9 +158,10 @@ separated them.
   [Advisory Database](https://github.com/advisories) reaches Dependabot.
   Declaring it is a choice made when the advisory is written, not a property of
   the form, and an advisory left without an affected product reaches only people
-  who read this repository. **Core's advisories name the affected range**; the
-  yank procedure's advisory step
-  ([`release.md`](docs/contributing/release.md#yanking)) is where that happens.
+  who read this repository. **Core's advisories name the affected range**; step 5
+  of [`release.md`'s *Fixing a vulnerability
+  privately*](docs/contributing/release.md#fixing-a-vulnerability-privately) is
+  where that happens.
 - **The plugin** has no ecosystem to declare. It is distributed by a sha pin in a
   marketplace repository, which no dependency scanner reads, so an advisory about
   the plugin **is a public record, not a notification** — and publishing one
@@ -172,10 +176,12 @@ delivered something to those users, the fix takes the private fork above and the
 public record follows it.
 
 Yanking a broken release is
-[`release.md`'s procedure](docs/contributing/release.md#yanking), and this file is
-what its advisory step refers back to. Its "yank from PyPI" and "untag" steps are
-Core's alone: the plugin has neither, and untagging cancels nothing that a sha
-pin distributes.
+[`release.md`'s procedure](docs/contributing/release.md#yanking); the advisory
+that accompanies it is step 5 of that document's
+[*Fixing a vulnerability privately*](docs/contributing/release.md#fixing-a-vulnerability-privately),
+which a yank does not reorder — `release.md` holds the steps, this file holds the
+policy. Its "yank from PyPI" and "untag" steps are Core's alone: the plugin has
+neither, and untagging cancels nothing that a sha pin distributes.
 
 ### The two conditions, and the pre-release branch that closed at the tag
 
