@@ -204,6 +204,61 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   keeps that set from going vacuous by naming the three positions
   (`migration_history.project_id` on each tool) that must fire the key.
 
+- **`theurian setup` and `theurian auth rotate` rewrite only the Theurian-owned
+  block in `<data_dir>/env`, and leave every other byte of that file alone**
+  ([#128](https://github.com/theurian/theurian/issues/128)). Both used to render
+  the whole file and truncate whatever else was in it, and `probe_env_reference`
+  reported `Missing` on any difference — so a line somebody had added to a file
+  whose own header says "Sourced by your shell profile" was destroyed with no
+  diff, no backup and no mention in `changedPaths`, on every run of a command whose
+  contract is that running it twice changes nothing (FR-L2). §6.2 row 7 of the
+  requirements analysis had required "rewrite the Theurian-owned block only"
+  throughout. The block is delimited by `# >>> theurian >>>` and
+  `# <<< theurian <<<`, spelled exactly as the pair `theurian init` writes into a
+  `.gitignore` so that someone who has seen one managed block recognises the
+  other, and the merge is computed *before* the file is opened — so a file that
+  cannot be delimited is never opened at all.
+
+  **What an operator upgrading from `0.1.0.dev0`–`dev2` sees.** Those versions
+  wrote the whole file as a fixed rendering of the data directory, so the first
+  `setup` or `auth rotate` after upgrading recognises that rendering and replaces
+  it *in place* with the marked block: one `export THEURIAN_MCP_TOKEN` afterwards
+  and not two, with lines added before it still before it and lines added after
+  it still after it. Appending the block beside the old rendering would have left
+  two assignments naming different paths once a data directory moves — the shell
+  taking whichever came last, while setup reported the machine converged.
+
+  **A behaviour change for a file whose markers do not delimit exactly one
+  block** — a start with no end, or a second start. That used to be overwritten;
+  it is now `Conflicting`, because once the delimiters disagree setup cannot tell
+  which lines are its own. `setup` writes nothing there, declares no path for it,
+  and stops at consent; `--approve-conflicts` applies the rest of the plan and
+  still leaves that file byte-identical, finishing `degraded` with the step named
+  in `warnings`. `auth rotate` leaves the file untouched, **still rotates the
+  token**, and prepends one line to `nextSteps` naming the file to repair — an
+  exposed credential outranks a comment marker, and the token has already been
+  replaced by the time that file is reached. The conflict detail carries the two
+  marker strings, the path they are in and the command to re-run, and no other
+  line out of that file, because `doctor --report` publishes it (O-3, SEC-6).
+
+  Idempotence is now measured on the file rather than on the report: a converged
+  second run does not reopen it at all, witnessed on the mtime, so a run that
+  rewrote identical bytes fails the pin. The write goes *through* the inode
+  rather than temp-and-rename, because this file is a symlink into a dotfiles
+  repository on plenty of machines, and through an `io.BufferedWriter`, because a
+  short write here would now destroy lines Theurian did not author. 27 pins:
+  `tests/unit/test_env_file_merge.py` (14), `tests/integration/test_setup_env_file.py`
+  (11, which drives the real `SetupService` over real files because the defect
+  lived in the seam — a probe asking one question while the apply performs a
+  different write is exactly what shipped), and
+  `tests/integration/test_auth_rotate.py` (2).
+
+  This supersedes one sentence of `0.1.0.dev2`'s `changed_paths` entry below. The
+  env file's truncation is still disclosed on the arm that motivated it, but
+  "what it replaced is preserved nowhere" no longer holds: what a completed write
+  puts back includes the lines the run did not author. What stays unpinned, as
+  there, is the window between the truncation and the write's last byte.
+
 ### Security
 
 - **The substring-search fallback's withheld-count timing channel is closed**
