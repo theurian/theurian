@@ -15,6 +15,7 @@ can, and says plainly what the user must do when it cannot.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -54,8 +55,12 @@ def auth_rotate(
     token = generate_token()
     asyncio.run(store.set(TOKEN_KEY, token))
 
-    # Rewritten too: it names the token's location, and a rotation that left a
-    # stale env file pointing somewhere else would be a 401 with no visible cause.
+    # Brought up to date too. Not because rotation moves anything it names --
+    # the block references the token by *path*, and rotation changes the value
+    # in that file and not the path to it -- but because this is the moment the
+    # user is about to re-source the file: a machine whose block is absent,
+    # stale or pre-marker exports nothing or exports the wrong path, and the
+    # 401 that follows would look like the rotation's fault.
     env_remedy = _refresh_env_file(data_dir)
 
     restarted, remedy = _restart_daemon(port=port)
@@ -86,22 +91,49 @@ def _refresh_env_file(data_dir: Path) -> list[str]:
     Returns:
         Lines to prepend to ``nextSteps``, empty when the file was updated.
 
-    Markers that do not delimit one block leave the file untouched and put the
-    repair in the output instead. The alternative orderings are both worse:
-    refusing to rotate leaves the exposed token in place over a comment marker,
-    and rewriting anyway is the data loss this function exists to end. The
-    token has already been replaced by the time this runs, so the shell that
-    sources this file needs the block fixed before it stops seeing 401s.
+    Nothing here is allowed to fail the rotation, and the reason is the ordering
+    the caller already committed to: the token has been replaced by the time
+    this runs. Markers that do not delimit one block leave the file untouched;
+    an OS-level refusal -- a read-only ``HOME``, a full disk, a file another
+    account owns -- leaves it in whatever state the write reached. Both put the
+    repair in ``nextSteps`` rather than raising, because the alternatives are
+    worse in both directions: refusing to rotate leaves an exposed credential in
+    place over a comment marker or a permission bit, and an exception here ends
+    the command with a fresh token on disk, a daemon never restarted, and a
+    traceback where the remedy should be.
+
+    ``newline=""`` on both sides and the creation mode on the ``open``, for the
+    reasons :func:`~theurian.application.setup_steps.apply_env_reference` states:
+    this is the second writer of the same file and the two must not differ.
     """
     env_path = data_dir / "env"
-    existing = env_path.read_text(encoding="utf-8") if env_path.is_file() else None
     try:
+        existing = env_path.read_text(encoding="utf-8", newline="") if env_path.is_file() else None
         merged = merge_env_file(existing, data_dir)
+        with open(
+            env_path,
+            "w",
+            encoding="utf-8",
+            newline="",
+            opener=lambda file, flags: os.open(file, flags, 0o600),
+        ) as handle:
+            handle.write(merged)
+        # Re-asserted, for the same two reasons the setup step re-asserts it:
+        # the creation mode is ANDed with the umask, and a file an earlier
+        # version created keeps whatever mode it was given.
+        env_path.chmod(0o600)
     except MalformedEnvBlockError as exc:
         return [f"{env_path} was left untouched: {exc}"]
+    except OSError as exc:
+        # The type and the path, never the message: an OSError carries whatever
+        # the OS put in it, and this line is printed beside a rotation somebody
+        # may well paste into a bug report.
+        return [
+            f"{env_path} could not be updated ({type(exc).__name__}): it may still name an "
+            f"older block, or be readable by other accounts. The new token is already in "
+            f"place -- repair that file, then run `theurian setup` to rewrite the block."
+        ]
 
-    env_path.write_text(merged, encoding="utf-8")
-    env_path.chmod(0o600)
     return []
 
 
