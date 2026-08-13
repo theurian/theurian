@@ -335,7 +335,7 @@ Every step is a `SetupStep` with an independent tri-state probe result:
 | 4 | Data directory | `~/.theurian` exists, mode 0700 | `mkdir -p`, `chmod 700` | tighten mode, report the change |
 | 5 | Token | token exists and is ≥ 32 bytes | generate via CSPRNG | reuse; never regenerate silently |
 | 6 | Token storage | file mode 0600, or Keychain entry | write | `chmod`, report |
-| 7 | Env reference | `~/.theurian/env` exports `THEURIAN_MCP_TOKEN` | write | rewrite the Theurian-owned block only |
+| 7 | Env reference | `~/.theurian/env` holds a current Theurian-owned block | write the block, or rewrite a stale one, leaving every other line alone | markers that delimit no single block: report, never write |
 | 8 | Daemon service | LaunchAgent / systemd user unit present | install a user-scoped unit | show a diff, back up, ask |
 | 9 | Daemon running | `GET /health` returns 200 | start the service | reuse the existing daemon |
 | 10 | Single instance | lock held by exactly one PID | acquire | reuse; never kill a live daemon |
@@ -369,6 +369,20 @@ carry checksums — ships. The gap is filed as
 [#39](https://github.com/theurian/theurian/issues/39), and why closing it is a
 change to how Theurian is obtained rather than a probe added here is recorded
 under [T-16](../security/threat-model.md).
+
+**Row 7's "the Theurian-owned block only" ships, and its tri-state is not where
+this table first put it.** `probe_env_reference` compares the marked block and
+nothing else; `apply_env_reference` rewrites that span alone, and every byte
+outside it survives byte for byte
+([#128](https://github.com/theurian/theurian/issues/128)). What moved is which
+state carries the requirement. A stale or absent block is `Missing` — `Missing`
+means "not as setup wants it", not "absent" — so the block-only rewrite is the
+`Missing` action, and this row used to name it under `Conflicting`. `Conflicting`
+is now the narrower case no rewrite survives: a start marker with no end, or a
+second start marker, where setup cannot tell which lines are its own. It then
+writes nothing at all, `--approve-conflicts` included, and declares no path
+(`tests/integration/test_setup_env_file.py::test_markers_that_do_not_delimit_one_block_are_a_conflict_and_not_a_rewrite`,
+`::test_approving_the_conflict_buys_progress_and_never_an_overwrite`).
 
 ### 6.3 Idempotence contract
 
@@ -404,9 +418,11 @@ The journal is append-only and a record is `{"step", "event", "detail"}`. There
 is no path *field* — but `detail` is prose written for a person, and it does name
 paths: an applied record carries the step's own `action`, two of the seven of
 which embed an absolute path (data-directory's "Create …/.theurian with mode
-0700", env-reference's "Write …/env, exporting …"), and a failed record carries
-the verbatim text of the exception that stopped the step, which normally names
-the path that refused. So the file is a trace to read and not a ledger to parse:
+0700", and env-reference's "Write …/env, exporting …" for a file that is not
+there or "Rewrite the Theurian-owned block in …/env" for one that is), and a
+failed record carries the verbatim text of the exception that stopped the step,
+which normally names the path that refused. So the file is a trace to read and
+not a ledger to parse:
 it holds no inverse action, `_apply` replays nothing, and no production code
 reads it back — `uninstall_command` builds its list from the service path and the
 MCP config alone. Enumerating created paths so `uninstall` can delete them is a
@@ -527,14 +543,32 @@ pins for the two unknown arms, and for `st_ino`, `st_size` and `st_mtime_ns`
 individually, are deferred to
 [#155](https://github.com/theurian/theurian/issues/155).
 
-The env file is the same "yes" as the token: `apply_env_reference` opens with
-`O_TRUNC`, so a write that raises after the truncation has already moved size and
-mtime and the path is disclosed. That row is **read off `O_TRUNC` rather than
-measured**: no test drives a truncation followed by a write that raises, so it
-is an inference from the open flags and not a pinned arm. What that rewrite
-replaced is not preserved anywhere
-([#128](https://github.com/theurian/theurian/issues/128)), which is one more
-reason the report says where it stopped rather than offering to undo it.
+The env file is the same "yes" as the token: `apply_env_reference` opens it for
+writing, which truncates, so a write that raises after that has already moved
+size and mtime and the path is disclosed. That row is **read off the open flags
+rather than measured**: no test drives a truncation followed by a write that
+raises, so it is an inference and not a pinned arm.
+
+What the truncation replaces is now preserved by construction
+([#128](https://github.com/theurian/theurian/issues/128)). The merge runs
+*before* the open — the apply reads the file, computes the new contents with
+`merge_env_file` (this data directory's block, every other byte as it was), and
+only then opens — so a file whose markers it cannot delimit is never opened at
+all, and what a completed write puts back includes the lines the run did not
+author. Pinned in `tests/integration/test_setup_env_file.py`:
+`test_an_undelimited_env_file_stops_the_run_before_anything_is_written` asserts
+the bytes rather than the state, and
+`test_lines_around_a_stale_block_survive_it_being_rewritten` and
+`test_upgrading_a_pre_marker_file_keeps_the_lines_added_to_it` assert the whole
+file after one.
+
+What is left is the window between the truncation and the write's last byte,
+where a device error leaves a prefix of the merged contents on disk. A *short*
+write is not in that window — the write goes through an `io.BufferedWriter`, for
+the reason given above for the journal — and the window is unpinned for the same
+reason the disclosure row above is. Nothing is replayed either way: the journal
+holds no inverse action, which is why a halted run says where it stopped rather
+than offering to undo it.
 
 Paths created implicitly on the way are not listed; a step discloses its declared
 artefacts only. That category is wider than the data directory's `auth/`
@@ -571,8 +605,17 @@ That is a design decision, not a missing feature. Deleting a token another
 session may already be holding is its own defect, so setup reports where it
 stopped rather than reversing. The remedy Core names for an unwanted credential
 is `theurian auth rotate`, in `probe_token`'s own conflict detail; what that
-command does is replace the value in place, rewrite the env file that points at
-it, and restart the daemon **when it can**. `_restart_daemon` restarts only where
+command does is replace the value in place, rewrite the Theurian-owned block in
+the env file that points at it — through the same merge setup performs, so lines
+somebody added around that block survive the rotation
+(`tests/integration/test_auth_rotate.py::test_rotation_keeps_the_lines_the_user_added_to_the_env_file`)
+— and restart the daemon **when it can**. Markers that delimit no single block
+are the one case where the file is left untouched, and the rotation still
+happens: by then the token has already been replaced, so refusing over a comment
+marker would leave an exposed credential in place, and the file to repair is
+named in `nextSteps` instead
+(`::test_rotation_leaves_an_env_file_it_cannot_delimit_alone_and_says_so` asserts
+all three together). `_restart_daemon` restarts only where
 `detect_manager` finds a service manager and that manager reports the service as
 something other than not-installed; otherwise the command answers
 `daemonRestarted: false` and names the restart in `nextSteps`. A halted run has
@@ -1086,7 +1129,7 @@ flowchart TB
 | T-11 | A client authorized for Project A reads Project B | EoP | High | SEC-13 |
 | T-12 | An agent silently rewrites an approved decision | Tampering | High | SEC-17, ADR-0013 |
 | T-13 | Two daemons corrupt the same SQLite file | Tampering | High | NFR-1, R-1 |
-| T-14 | Setup overwrites a user's MCP configuration | Tampering | Medium | SEC-18, R-9 |
+| T-14 | Setup overwrites a user's configuration — the MCP entry, and `~/.theurian/env` since #128 | Tampering | Medium | SEC-18, R-9 |
 | T-15 | A secret in a document becomes an approved, indexed revision | Information disclosure | High | SEC-11 |
 | T-16 | A compromised release artifact is installed | Tampering | Critical | OSS-7, OSS-11, setup step 3 |
 
@@ -1125,7 +1168,7 @@ replaced by a recording fake.
 | Pre-existing MCP config | Backed up; the `serena` entry survives untouched. |
 | Read-only `HOME` | The run halts at data-directory — the first step that *writes*, the three probes ahead of it having passed — creates nothing under `HOME`, and names the directory that refused the write in `warnings`: the raw `PermissionError`, which carries the path and no remedy. `changed_paths` is empty (`test_a_home_it_cannot_write_to_halts_the_run_and_names_the_path_that_refused`). |
 | Existing token | Reused, never regenerated. |
-| Wrong file mode | Corrected and reported for the **data directory** only. A world-accessible `~/.theurian` probes `Missing` with "Tighten … to 0700" and the apply performs it. A 0644 token file or a 0755 `auth/` probes `Conflicting` by design — tightening is not enough once a credential has been exposed, so the detail names `theurian auth rotate` — and a `Conflicting` step is never applied, `--approve-conflicts` included. A 0644 `env` file is not seen at all: `probe_env_reference` compares contents, so a run converges leaving the mode as it found it. |
+| Wrong file mode | Corrected and reported for the **data directory** only. A world-accessible `~/.theurian` probes `Missing` with "Tighten … to 0700" and the apply performs it. A 0644 token file or a 0755 `auth/` probes `Conflicting` by design — tightening is not enough once a credential has been exposed, so the detail names `theurian auth rotate` — and a `Conflicting` step is never applied, `--approve-conflicts` included. A 0644 `env` file is not seen at all: `probe_env_reference` asks only whether the Theurian-owned block is current, so a converged run never reaches the apply — the one place that mode is re-asserted — and leaves it as it found it. |
 | Critical failure mid-plan | The run halts (`state = halted`); nothing is undone, and `changed_paths` discloses the finished steps' declared artefacts, whichever of the failing step's declared artefacts this run *moved*, and the setup journal this run appended to — de-duplicated, first-seen order, so a credential minted before the failure appears exactly once (§6.4). |
 | Project already registered elsewhere | Detected; no duplicate registration. |
 
