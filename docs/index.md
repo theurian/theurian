@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" markdown="1">
 
 <img src="assets/theurian-logo.svg" alt="Theurian" width="420">
 
@@ -219,7 +219,7 @@ distinguishes implemented capabilities from planned ones.
 
 ---
 
-<div align="center">
+<div align="center" markdown="1">
 
 ### Give your AI the decisions behind the code.
 

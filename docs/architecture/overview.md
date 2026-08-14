@@ -3,6 +3,12 @@
 Start here. Detail lives in the [ADRs](../adr/README.md) and the
 [requirements analysis](requirements-analysis.md).
 
+**Theurian Core will always work completely offline**, with no account, no
+network call, and no API key. No feature will be removed from Core in order to
+sell it back. Both are stated in
+[GOVERNANCE.md](https://github.com/theurian/theurian/blob/main/GOVERNANCE.md)
+as commitments, not intentions.
+
 ## The shape of the system
 
 ```mermaid

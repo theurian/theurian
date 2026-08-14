@@ -5,6 +5,46 @@ repo_name: theurian/theurian
 repo_url: https://github.com/theurian/theurian
 edit_uri: edit/main/docs/
 
+# Pages that stay in the repository and out of the published site.
+#
+# Four are project-process documents — how this project is run, rather than how
+# Theurian works: the work logs, the ADR template, the repository strategy and
+# the release procedure. architecture/cloud-ready-design.md is excluded for a
+# different reason: it is forward-looking design for a deployment that does not
+# exist yet, and is curated out of the site rather than published as current.
+#
+# The leading slash on /work-logs/ anchors the pattern to the top of docs/.
+# These are gitignore patterns, so an unanchored work-logs/ would also exclude a
+# directory of that name at any depth. The anchor cuts both ways: a work-logs
+# directory anywhere else under docs/ would be published. Top level only is the
+# intended scope.
+#
+# Two kinds of link have to be written as an absolute GitHub URL, and the build
+# does not treat them alike:
+#
+#   - to a page excluded above: reported at INFO only, and MkDocs still emits a
+#     site-internal URL for it, which 404s once published. --strict does not
+#     fail on INFO, so convention and review are the only thing holding this
+#     one.
+#   - to a repository file outside docs/: reported as a WARNING, so --strict
+#     does fail the build. The gate holds this one.
+exclude_docs: |
+  /work-logs/
+  adr/0000-adr-template.md
+  architecture/cloud-ready-design.md
+  architecture/repository-strategy.md
+  contributing/release.md
+
+# A relative link MkDocs cannot classify — a directory-form link such as
+# ../../schemas/mcp/ — is reported at INFO by default, so --strict lets it
+# through and the link ships broken. Raising it to a warning makes the build
+# fail on it. This does not cover links to excluded pages: MkDocs floors that
+# message at INFO regardless of configuration, so the convention above is
+# still the only thing holding it.
+validation:
+  links:
+    unrecognized_links: warn
+
 theme:
   name: material
 
@@ -18,3 +58,11 @@ theme:
 
 plugins:
   - search
+
+# The landing page centres its hero and closing call to action in a div.
+# Python-Markdown does not process Markdown inside a block-level HTML element,
+# so without this the headings and links in those divs are published as literal
+# source text. The extension is half of the fix; each div also needs
+# markdown="1", which is what actually opts its content back in.
+markdown_extensions:
+  - md_in_html

@@ -158,7 +158,7 @@ Review data contains author identity and opinions.
 - The approved knowledge that results is a *rule*, not a quotation — attributed
   to evidence rather than to a person's opinion.
 
-See [SECURITY.md](../../SECURITY.md).
+See [SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md).
 
 ## Provider abstraction
 

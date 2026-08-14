@@ -35,7 +35,7 @@ alternatives that were rejected and why.
 
 ## Writing a new ADR
 
-1. Copy [`0000-adr-template.md`](0000-adr-template.md) to
+1. Copy [`0000-adr-template.md`](https://github.com/theurian/theurian/blob/main/docs/adr/0000-adr-template.md) to
    `NNNN-kebab-case-title.md`, using the next free number.
 2. Open it with status `proposed`.
 3. Reference requirement IDs from

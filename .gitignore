@@ -30,6 +30,18 @@ htmlcov/
 *.sqlite-wal
 *.sqlite-shm
 
+# --- Documentation site (derived) ---
+# `mkdocs build` writes site/. The Pages workflow copies the logo into
+# docs/assets/ before building, so anyone replicating that build locally
+# creates it too; the tracked copy is assets/theurian-logo.svg.
+#
+# Both patterns are anchored, and both anchors matter. An unanchored site/
+# would also ignore docs/site/, packages/*/site/ and tests/fixtures/site/.
+# Naming the one generated file rather than docs/assets/ leaves a real image
+# added to that directory visible to git status.
+/site/
+/docs/assets/theurian-logo.svg
+
 # --- OS / editor ---
 .DS_Store
 .idea/

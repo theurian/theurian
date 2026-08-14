@@ -698,7 +698,7 @@ trigger now closes in the same `migrate apply` (#15).
 
 #### T-16 — A compromised release artifact is installed (Tampering, **Critical** — publication ships, install-time verification does not)
 
-**Controls:** [`release-core.yml`](../../.github/workflows/release-core.yml) runs
+**Controls:** [`release-core.yml`](https://github.com/theurian/theurian/blob/main/.github/workflows/release-core.yml) runs
 on a `core-v*` tag and, before anything is published: builds, then installs the
 wheel into a clean environment and runs `theurian version --json` against it;
 produces a reproducible CycloneDX 1.6 SBOM from that verified install rather than
@@ -1524,7 +1524,7 @@ more copy to go stale, and this one would be held by nothing.
 `tests/unit/test_artifact_integrity_claim.py` is what holds it: the retired
 wordings, the grammar that produced them, the absence of a schedule promise, and
 a text comparison against the JSON block in
-[`release.md`](../contributing/release.md).
+[`release.md`](https://github.com/theurian/theurian/blob/main/docs/contributing/release.md).
 
 > **What holds those rules is a constraint on the probe's shape, not a search of
 > its contents** — and this paragraph said the opposite for one round. It claimed

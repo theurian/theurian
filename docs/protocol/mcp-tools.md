@@ -5,7 +5,7 @@ Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 
 > Tools land across Milestones 3–8. This page is the contract they are being
 > built against; each schema is published under
-> [`schemas/mcp/`](../../schemas/mcp/) as it ships.
+> [`schemas/mcp/`](https://github.com/theurian/theurian/tree/main/schemas/mcp) as it ships.
 
 ## Every call carries its own context
 
@@ -31,7 +31,7 @@ task, even if the developer switches branches mid-run.
 `agentId` and `taskId` are provenance only. Theurian does not authenticate
 agents; these label which run produced a proposal.
 
-Schema: [`tool-context.schema.json`](../../schemas/mcp/tool-context.schema.json).
+Schema: [`tool-context.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/tool-context.schema.json).
 
 ## Knowledge
 
@@ -110,7 +110,7 @@ provenance too, but they belong to the response's `retrieval` envelope, not to a
 hit: one query is answered from one canonical state and one index build, so a
 per-hit copy could never differ between hits (FR-R5).
 
-Schema: [`retrieval-result.schema.json`](../../schemas/knowledge/retrieval-result.schema.json).
+Schema: [`retrieval-result.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/knowledge/retrieval-result.schema.json).
 
 ### `asOf` pins a search to a moment
 
@@ -147,7 +147,7 @@ An unparseable `asOf` is a clean `ToolError` naming the fix, never a traceback.
 Six keys, all six always present — and a seventh, `integrity`, only when a
 bounded damage check fired ([below](#damage-is-reported-through-a-present-only-integrity-key)).
 The contract is
-[`knowledge-status-response.schema.json`](../../schemas/mcp/knowledge-status-response.schema.json),
+[`knowledge-status-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-status-response.schema.json),
 which also records why two of them are what they are.
 
 ```json
@@ -325,7 +325,7 @@ everything else should still work.
 ### `project.list`
 
 Four keys, all four always present. The contract is
-[`schemas/mcp/project-list-response.schema.json`](../../schemas/mcp/project-list-response.schema.json).
+[`schemas/mcp/project-list-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/project-list-response.schema.json).
 
 ```json
 {
@@ -408,7 +408,7 @@ this value. See the round-eight correction to T-3 in
 content as data. An agent that follows instructions found inside a document will
 be influenced by a document that contains instructions, and no MCP server can
 prevent that from the server side. This is stated in
-[SECURITY.md](../../SECURITY.md) rather than buried here.
+[SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md) rather than buried here.
 
 ## Changing this contract
 

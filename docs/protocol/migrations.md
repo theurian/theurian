@@ -1,7 +1,7 @@
 # Knowledge migration format
 
 Normative schema:
-[`schemas/migrations/migration.schema.json`](../../schemas/migrations/migration.schema.json).
+[`schemas/migrations/migration.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/migrations/migration.schema.json).
 Decision record: [ADR-0005](../adr/0005-yaml-knowledge-migrations.md).
 
 ## Two migration systems, deliberately separate
