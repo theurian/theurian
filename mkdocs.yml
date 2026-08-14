@@ -35,6 +35,16 @@ exclude_docs: |
   architecture/repository-strategy.md
   contributing/release.md
 
+# A relative link MkDocs cannot classify — a directory-form link such as
+# ../../schemas/mcp/ — is reported at INFO by default, so --strict lets it
+# through and the link ships broken. Raising it to a warning makes the build
+# fail on it. This does not cover links to excluded pages: MkDocs floors that
+# message at INFO regardless of configuration, so the convention above is
+# still the only thing holding it.
+validation:
+  links:
+    unrecognized_links: warn
+
 theme:
   name: material
 
