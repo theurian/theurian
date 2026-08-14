@@ -35,12 +35,16 @@ htmlcov/
 # docs/assets/ before building, so anyone replicating that build locally
 # creates it too; the tracked copy is assets/theurian-logo.svg.
 #
-# Both patterns are anchored, and both anchors matter. An unanchored site/
-# would also ignore docs/site/, packages/*/site/ and tests/fixtures/site/.
-# Naming the one generated file rather than docs/assets/ leaves a real image
-# added to that directory visible to git status.
+# The workflow also fetches the mermaid bundle into docs/js/ before building.
+#
+# Every pattern in this section is anchored, unlike the older ones above, and
+# the anchors matter here. An unanchored site/ would also ignore docs/site/,
+# packages/*/site/ and tests/fixtures/site/. Naming the generated files rather
+# than the directories docs/assets/ and docs/js/ leaves anything else added to
+# them visible to git status — docs/js/ also holds tracked source.
 /site/
 /docs/assets/theurian-logo.svg
+/docs/js/mermaid.min.js
 
 # --- OS / editor ---
 .DS_Store
