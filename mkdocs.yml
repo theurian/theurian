@@ -48,3 +48,11 @@ theme:
 
 plugins:
   - search
+
+# The landing page centres its hero and closing call to action in a div.
+# Python-Markdown does not process Markdown inside a block-level HTML element,
+# so without this the headings and links in those divs are published as literal
+# source text. The extension is half of the fix; each div also needs
+# markdown="1", which is what actually opts its content back in.
+markdown_extensions:
+  - md_in_html
