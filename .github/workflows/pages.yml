@@ -41,6 +41,13 @@ jobs:
       contents: read
       pages: read
 
+    # The mermaid pin, declared once for every step in this job that needs it.
+    # mkdocs.yml quotes the same version and hash as documentation for local
+    # builds; that copy has to move whenever this one does.
+    env:
+      MERMAID_VERSION: "11.16.1"
+      MERMAID_SHA256: "18327bef70d96fb505fe7287d9f6a7362ebf07ff6576ddfaffb1a06f3e1a2954"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -65,8 +72,38 @@ jobs:
           mkdir -p docs/assets
           cp assets/theurian-logo.svg docs/assets/theurian-logo.svg
 
+      # Fetched at build time and served from our own origin, so no published
+      # page references a third-party host. The checksum is what establishes
+      # trust, not the transport: on mismatch sha256sum exits non-zero and the
+      # job stops before anything is published. --proto/--proto-redir keep -L
+      # from being talked down to a plaintext hop.
+      #
+      # The pin is re-derivable without trusting this commit. npm publishes a
+      # SLSA provenance attestation for this exact version at
+      # https://registry.npmjs.org/-/npm/v1/attestations/mermaid@11.16.1
+      # and the hash in env above is of dist/mermaid.min.js inside that release.
+      - name: Fetch the pinned mermaid bundle
+        run: |
+          mkdir -p docs/js
+          curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --max-time 120 \
+            "https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.min.js" \
+            -o docs/js/mermaid.min.js
+          echo "${MERMAID_SHA256}  docs/js/mermaid.min.js" | sha256sum -c -
+
       - name: Build documentation
         run: mkdocs build --strict --site-dir site
+
+      # A file missing from docs/ is not a build error: MkDocs copies what is
+      # there and exits 0, and the page then asks for a bundle that was never
+      # fetched. Checking the built site rather than docs/ covers the copy step
+      # as well, so what is verified is what actually ships.
+      #
+      # This guarantees the bundle is present and unaltered in the artifact. It
+      # says nothing about whether any diagram parses: a fence that fails to
+      # parse is handled at page time by mermaid-init.js, which restores its
+      # source text.
+      - name: Check the mermaid bundle reached the site intact
+        run: echo "${MERMAID_SHA256}  site/js/mermaid.min.js" | sha256sum -c -
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

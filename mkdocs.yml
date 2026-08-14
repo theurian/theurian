@@ -66,3 +66,34 @@ plugins:
 # markdown="1", which is what actually opts its content back in.
 markdown_extensions:
   - md_in_html
+
+# Only these two small files are loaded by every page. mermaid-init.js asks for
+# the 3,566,058-byte mermaid bundle itself, and only on a page that actually
+# has a diagram. A page without one makes no bundle request and pays 6,925
+# bytes uncompressed across the two: 6,384 for js/mermaid-init.js and 541 for
+# css/mermaid.css. That is 24 of the 43 published markdown pages, or 26 of the
+# 45 served HTML files, since 404.html and search.html load them too.
+#
+# docs/js/mermaid.min.js is not in the repository. The Pages workflow fetches
+# it, checksum-verified, before the build, and a local build has to do the
+# same. The version and hash below are a copy of the workflow's job-level env
+# and have to move whenever that pin moves. The checksum line has to stay on
+# one line with two spaces before the filename; broken across a continuation it
+# reports a missing file even when the file is correct:
+#
+#   mkdir -p docs/js
+#   curl -fsSL --proto '=https' --proto-redir '=https' \
+#     https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js \
+#     -o docs/js/mermaid.min.js
+#   echo "18327bef70d96fb505fe7287d9f6a7362ebf07ff6576ddfaffb1a06f3e1a2954  docs/js/mermaid.min.js" | sha256sum -c -
+#
+# `shasum -a 256 -c -` takes the same input and is available everywhere, if
+# sha256sum is not on the path.
+#
+# Forgetting the fetch is not a build error — MkDocs copies what is there and
+# exits 0 — so the workflow verifies the bundle in the built site afterwards.
+extra_javascript:
+  - js/mermaid-init.js
+
+extra_css:
+  - css/mermaid.css
