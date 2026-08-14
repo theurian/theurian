@@ -93,6 +93,18 @@ jobs:
       - name: Build documentation
         run: mkdocs build --strict --site-dir site
 
+      # A file missing from docs/ is not a build error: MkDocs copies what is
+      # there and exits 0, and the page then asks for a bundle that was never
+      # fetched. Checking the built site rather than docs/ covers the copy step
+      # as well, so what is verified is what actually ships.
+      #
+      # This guarantees the bundle is present and unaltered in the artifact. It
+      # says nothing about whether any diagram parses: a fence that fails to
+      # parse is handled at page time by mermaid-init.js, which restores its
+      # source text.
+      - name: Check the mermaid bundle reached the site intact
+        run: echo "${MERMAID_SHA256}  site/js/mermaid.min.js" | sha256sum -c -
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:

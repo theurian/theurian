@@ -1,0 +1,10 @@
+/* mermaid-init.js turns useMaxWidth off, so a diagram renders at its natural
+   size instead of being scaled down to the content column. Without this rule
+   a wide one overflows the pre — which stays at the theme's overflow-x:
+   visible and lets the full-width svg paint straight through it — and is then
+   cut off by the theme's own BODY.wy-body-for-nav { overflow-x: hidden },
+   where no scroll of any kind can reach it. This gives the overflow a
+   scrollable container of its own instead. */
+pre.mermaid {
+  overflow-x: auto;
+}
