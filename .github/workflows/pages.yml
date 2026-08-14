@@ -38,8 +38,13 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Prepare documentation assets
+        run: |
+          mkdir -p docs/assets
+          cp assets/theurian-logo.svg docs/assets/theurian-logo.svg
+      
       - name: Build documentation
-        run: mkdocs build --site-dir site
+        run: mkdocs build --strict --site-dir site
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
