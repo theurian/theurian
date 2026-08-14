@@ -1,0 +1,20 @@
+site_name: Theurian
+site_url: https://theurian.github.io/theurian/
+
+repo_name: theurian/theurian
+repo_url: https://github.com/theurian/theurian
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.path
+    - toc.follow
+    - content.action.view
+    - content.action.edit
+
+plugins:
+  - search
