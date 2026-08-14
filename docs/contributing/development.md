@@ -174,7 +174,7 @@ Adding one:
 ## Commits
 
 Conventional Commits, DCO sign-off, one topic per pull request. Full detail in
-[CONTRIBUTING.md](../../CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md).
 
 ```sh
 git config commit.template .gitmessage   # optional, prompts for both

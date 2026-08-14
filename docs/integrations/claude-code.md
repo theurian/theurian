@@ -1,6 +1,6 @@
 # Claude Code integration
 
-The [plugin README](../../plugins/claude-code/README.md) is the user-facing
+The [plugin README](https://github.com/theurian/theurian/blob/main/plugins/claude-code/README.md) is the user-facing
 guide. This page covers how the integration works and why it is shaped this way.
 
 ## Two artifacts, one contract
@@ -181,7 +181,7 @@ Removing the plugin never deletes approved knowledge. It is in Git.
 
 ## Related
 
-- [Plugin README](../../plugins/claude-code/README.md)
+- [Plugin README](https://github.com/theurian/theurian/blob/main/plugins/claude-code/README.md)
 - [Using Theurian with Serena](serena.md)
 - [ADR-0001 — monorepo with independent artifacts](../adr/0001-monorepo-with-independent-artifacts.md)
 - [ADR-0012 — the plugin does not auto-register the MCP server](../adr/0012-plugin-does-not-autoregister-mcp-server.md)

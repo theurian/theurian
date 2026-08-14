@@ -20,7 +20,7 @@ without changing the wire format.
 ## The declaration
 
 `plugins/claude-code/compatibility.yaml`, validated against
-[`schemas/protocol/compatibility.schema.json`](../../schemas/protocol/compatibility.schema.json):
+[`schemas/protocol/compatibility.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/protocol/compatibility.schema.json):
 
 ```yaml
 pluginVersion: 0.2.1

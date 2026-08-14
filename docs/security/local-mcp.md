@@ -346,7 +346,7 @@ Every retrieval result carries:
 ```
 
 `executable` is `const: false` in
-[`schemas/knowledge/retrieval-result.schema.json`](../../schemas/knowledge/retrieval-result.schema.json),
+[`schemas/knowledge/retrieval-result.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/knowledge/retrieval-result.schema.json),
 and a real tool response carrying `executable: true` is rejected by it —
 asserted in `tests/integration/test_wire_contract.py`. This used to say "the type
 rejects it", naming `domain.retrieval.SafetyMetadata`, which does refuse it and
@@ -357,7 +357,7 @@ T-3 in [the threat model](threat-model.md).
 instructions will be influenced by a document that contains instructions, and no
 MCP server can prevent that from the server side. This is a shared responsibility
 with the calling agent, and it is stated plainly in
-[SECURITY.md](../../SECURITY.md) rather than buried in a design document.
+[SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md) rather than buried in a design document.
 
 ## Verifying your installation
 
