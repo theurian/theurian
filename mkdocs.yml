@@ -46,15 +46,15 @@ validation:
     unrecognized_links: warn
 
 theme:
-  name: material
+  name: readthedocs
 
-  features:
-    - navigation.sections
-    - navigation.indexes
-    - navigation.path
-    - toc.follow
-    - content.action.view
-    - content.action.edit
+  # The theme otherwise loads highlight.js and its stylesheet from
+  # cdnjs.cloudflare.com on every page, with no integrity attribute. GitHub
+  # Pages cannot send a Content-Security-Policy, so nothing else would
+  # constrain that origin. Turning it off leaves the site with no third-party
+  # script or stylesheet at all; code blocks keep their language-* classes and
+  # are simply not coloured.
+  highlightjs: false
 
 plugins:
   - search
