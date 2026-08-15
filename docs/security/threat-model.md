@@ -3440,6 +3440,70 @@ to what a caller reads once the purge has published.
 flag, not behind a permission. Write-intent tools emit proposal files. A test
 enumerates every registered tool and asserts none reaches a canonical write.
 
+#### T-18 — A reused revision id resolves an approved item to a withheld item's body (Information disclosure, **Critical** — closed in 0.1.0.dev3)
+
+Class: **identity resolved by `revision_id` where `item_id` is authoritative.**
+
+A migration that reused an existing `revisionId` under a second `itemId` — the
+shape a copy-pasted `upsertRevision` operation block produces — pointed the second
+(approved) item's `current_revision_id` at the first item's revision row. When the
+first item was withheld (for example `status: rejected`), its full body — title,
+source anchors, and any secret that caused the rejection — reached `knowledge.get`
+and `knowledge.search` for a caller who requested the *approved* item's id.
+Requesting the withheld id directly was still correctly refused; the reuse
+bypassed that gate, and `theurian migrate validate` / `migrate apply` reported
+nothing. Reproducible in the shipped default configuration through the documented
+migration API, so **Critical**. Affected 0.1.0.dev0–0.1.0.dev2, fixed in
+0.1.0.dev3 (GHSA-7997-g35f-q59h).
+
+The root cause was `SqliteWriter.append_revision` resolving FR-K8 idempotency by
+`revision_id` alone: a content-hash match returned a no-op without checking that
+the stored row's `item_id` matched the incoming operation. A revision id is
+globally unique and names one item for the life of a project; the reuse wrote a
+pointer naming another item's revision, and every read path that dereferences the
+pointer served its body.
+
+**Controls: the class is closed by invariant restoration, not face by face.** Two
+store-enforced guards, and a schema gate that forces every database a fixed build
+reads to have passed them:
+
+- **The revision row is the single write chokepoint.** `append_revision` now
+  refuses to no-op when the stored row's `item_id` differs from the incoming
+  revision's (`InvariantViolationError`, checked before the content comparison so
+  a damaged cell still routes to the rebuild remedy). Legitimate idempotency —
+  the same revision id under the same item with the same content — stays a no-op.
+- **The pointer carries a symmetric guard.** The only site setting a non-None
+  `current_revision_id` is the migration engine, whose in-memory INV-2 the write
+  no longer rests on: `put_item` refuses a pointer naming another item's revision
+  regardless of how the item was built. Both existence lookups are project-scoped,
+  closing a latent cross-project `item_id` disclosure.
+- **The schema gate forces every accepted database through those guards.**
+  `SCHEMA_VERSION` is bumped 1→2 (an input to the derived-state hash), so a state
+  database written by an affected version is refused on open and rebuilt from the
+  Git-tracked migrations on the next `theurian migrate apply`. Because every fixed
+  build regenerates its state through the guarded chokepoint, `revision_id → item`
+  uniqueness holds over all data any fixed build accepts, and every read-side face
+  that resolves by `revision_id` — `knowledge.get`, the substring fallback, the
+  ranked path, and the index build, all four through the single `get_revision`
+  primitive — is closed transitively, including faces added later.
+
+Two residual members are closed and verified by running. An affected-version state
+database is closed by the schema bump, which refuses it on open — pinned, not
+merely present: a regression test asserts a `schema_version = 1` database (the
+version every affected build wrote) is refused, so reverting the constant goes RED
+and the `SCHEMA_VERSION` 2→1 mutation is now killed where it previously survived
+the whole suite. A published index built from a poisoned store is closed
+transitively by the same bump, because no search path serves an index passage
+without first opening the now-refused state database (verified: a poison built at
+state v1 / index v5 leaks under an affected build and is refused under the fix
+across all four read faces, so `INDEX_SCHEMA_VERSION` needs no bump). Updating the
+build alone does not remediate a database an affected version already wrote;
+`theurian migrate apply` after upgrading rebuilds a clean state database, and if
+the migration set itself encodes the reuse the rebuild refuses it (exit 4, naming
+the reused `revisionId`) until the operation is given its own id. The derived
+state carries no data unrecoverable from the Git-tracked migrations, so the
+rebuild strands nothing.
+
 ### TB-4: the filesystem and setup
 
 #### T-14 — Setup overwrites a user's configuration (Tampering, Medium)
@@ -3557,6 +3621,7 @@ fix.
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |
+| T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 
 ## Explicitly out of scope
 

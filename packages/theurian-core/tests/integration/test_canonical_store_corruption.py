@@ -1270,14 +1270,15 @@ async def test_the_corpus_reaches_each_converter_family(
 
 # -- Where the guard sits, on the writer -----------------------------------
 #
-# `SqliteWriter` reads five times and is guarded four times, and until now
+# `SqliteWriter` reads six times and is guarded four times, and until now
 # nothing anywhere held either half. Deleting any of the four guards left the
 # suite green while the corrupted cell walked out of `theurian migrate status`
 # -- so the placement was correct and unproven, which is the state a later edit
-# removes without noticing. The remaining read, `append_revision`'s
-# `content_sha256`, is unguarded on purpose, and
+# removes without noticing. The remaining two reads are unguarded on purpose:
+# `append_revision`'s `content_sha256`, whose absence
 # `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`
-# below is the half that holds the absence.
+# below holds, and `_refuse_pointer_to_another_items_revision`'s `item_id`
+# lookup, recorded with its reason in `WRITER_READS_NOT_GUARDED`.
 #
 # Reached through the writer directly rather than through the CLI, and that is
 # forced rather than convenient. `record_migration`, `get_item`,
@@ -1293,10 +1294,12 @@ ITEM_ID: Final = ItemId("architecture.auth-policy")
 REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
-#: Four of the five reads :class:`SqliteWriter` performs, each over a cell whose
+#: Four of the six reads :class:`SqliteWriter` performs, each over a cell whose
 #: converter quotes what it would not accept. Every one of these four sits behind
-#: a guard today. The fifth, `append_revision`'s `content_sha256`, deliberately
-#: does not, and is held one test below rather than here.
+#: a guard today. The other two -- `append_revision`'s `SELECT item_id,
+#: content_sha256` and `_refuse_pointer_to_another_items_revision`'s `SELECT
+#: item_id` -- deliberately do not, and are recorded with their reasons in
+#: :data:`WRITER_READS_NOT_GUARDED` rather than swept here.
 WRITER_READS: Final = (
     (
         "get_item",
@@ -1341,13 +1344,26 @@ WRITER_READS: Final = (
 #: the column, because one read may interpret several cells.
 WRITER_READS_NOT_GUARDED: Final = {
     ("append_revision", "knowledge_revisions"): (
-        "compares two `content_sha256` strings and interprets neither, so no "
-        "converter can put the stored cell into a message. The mismatch branch "
-        "*does* interpret, and that one line -- `ContentHash(stored)` -- is "
-        "guarded on its own. Guarding the read itself would answer a conflicting "
-        "write with a remedy that deletes the state, which is what "
+        "hands both cells it reads to `_refuse_unless_it_is_the_same_revision`, "
+        "which compares `item_id` against `item_id` and `content_sha256` against "
+        "`content_sha256` and interprets neither, so no converter can put a "
+        "stored cell into a message. Each mismatch branch *does* interpret, and "
+        "those two lines -- `ItemId(stored_item)` and `ContentHash(stored)` -- "
+        "are guarded on their own. Guarding the read itself would answer a "
+        "conflicting write with a remedy that deletes the state, which is what "
         "`test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state` "
         "holds."
+    ),
+    ("_refuse_pointer_to_another_items_revision", "knowledge_revisions"): (
+        "fetches the `item_id` that owns the revision a `put_item` pointer names "
+        "and compares it, opaque, against `item.item_id.value`; the `SELECT` "
+        "interprets nothing, so no converter can put a stored cell into the "
+        "mismatch message. The one branch that does interpret, "
+        "`ItemId(stored_item)`, is guarded on its own line -- the same shape as "
+        "`append_revision`'s two mismatch branches. Guarding the read itself "
+        "would answer a cross-item pointer with the delete-the-state remedy "
+        "`test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state` "
+        "holds against."
     ),
 }
 
@@ -1503,7 +1519,7 @@ def test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it(
 def test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state(
     corpus: Corpus,
 ) -> None:
-    """The inverse, and the reason the writer is guarded three times and not four.
+    """The inverse, and the reason the writer is guarded four times and not five.
 
     `append_revision` reads a stored `content_sha256` and is deliberately *not*
     guarded, because past ``BEGIN IMMEDIATE`` a failure is the caller's statement

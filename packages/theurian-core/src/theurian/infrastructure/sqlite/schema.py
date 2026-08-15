@@ -5,7 +5,9 @@ Git-tracked YAML migrations into an empty file, which is what makes discarding
 it on a schema change a cache miss rather than data loss.
 
 ``SCHEMA_VERSION`` is an input to the state hash, so bumping it invalidates
-every existing state database. Bump it for any change to the DDL below.
+every existing state database. Bump it for any change to the DDL below, and for
+a correctness fix that must not trust state an earlier build already derived --
+the bump is what forces such a database to be rebuilt rather than read in place.
 """
 
 from __future__ import annotations
@@ -14,8 +16,11 @@ from pathlib import Path
 from typing import Final
 from urllib.parse import quote
 
-#: Bump for ANY change to the DDL. See ADR-0017.
-SCHEMA_VERSION: Final = 1
+#: Bump for any change that must invalidate every existing state database: a
+#: change to the DDL below (ADR-0017), or a correctness fix in how state is
+#: derived, since a bump is the mechanism that forces an older file to be rebuilt
+#: from its Git-tracked migrations rather than read in place.
+SCHEMA_VERSION: Final = 2
 
 #: Applied to every connection. `foreign_keys` is per-connection in SQLite, not
 #: per-database, so forgetting it on one connection silently disables referential

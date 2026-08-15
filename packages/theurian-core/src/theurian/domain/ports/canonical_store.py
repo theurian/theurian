@@ -55,9 +55,17 @@ class CanonicalStore(Protocol):
     def append_revision(self, revision: KnowledgeRevision) -> None:
         """Append an immutable revision.
 
+        A revision id belongs to exactly one item, so an adapter must decide
+        idempotency on the whole revision and never on the id alone: returning
+        as a no-op for an id another item holds lets the caller's item pointer
+        name a revision of that other item, and every reader dereferences that
+        pointer.
+
         Raises:
             InvariantViolationError: If ``revision.revision_id`` already exists
-                with different content. Revisions are never rewritten.
+                under a different ``item_id``, or under the same one with
+                different content. Revisions are never rewritten, and never
+                change hands.
         """
         ...
 

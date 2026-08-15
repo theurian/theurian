@@ -134,12 +134,12 @@ def _reading() -> Iterator[None]:
     -- and guards three of them; an `INSERT` interprets the caller's domain
     objects, not this file, and reporting a constraint violation as an
     unreadable database would name the wrong cause. The fourth read is
-    `append_revision`'s ``SELECT content_sha256``, left outside a block
+    `append_revision`'s ``SELECT item_id, content_sha256``, left outside a block
     deliberately: past ``BEGIN IMMEDIATE`` a failure is the caller's write
     against the caller's data, and "delete `.theurian/state/`" is
     a destructive remedy for a write that simply did not apply. Only the
-    question of *why* that comparison failed is an interpretation, and that one
-    line is guarded. Both arms are held by
+    question of *why* one of those two comparisons failed is an interpretation,
+    and each of those lines is guarded. Both arms are held by
     `test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it` and
     `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`.
 
@@ -558,38 +558,22 @@ class SqliteWriter:
         """Append an immutable revision (INV-1).
 
         Raises:
-            InvariantViolationError: If the id exists with different content.
-                Re-appending the *identical* revision is allowed, because
-                re-applying a migration must be a no-op (FR-K8).
-            StateDatabaseUnreadableError: If the stored hash differs because it
-                is not a hash. Distinguished from the above because the two
-                remedies disagree -- see the comment on the comparison.
+            InvariantViolationError: If the id is already held -- by a different
+                item, or by this one with different content. Re-appending the
+                *identical* revision is allowed, because re-applying a migration
+                must be a no-op (FR-K8).
+            StateDatabaseUnreadableError: If a cell the refusal compares is not
+                the kind of value it claims to be. Distinguished from the above
+                because the two remedies disagree -- see
+                :meth:`_refuse_unless_it_is_the_same_revision`.
         """
         existing = self._conn.execute(
-            "SELECT content_sha256 FROM knowledge_revisions WHERE revision_id = ?",
-            (revision.revision_id.value,),
+            "SELECT item_id, content_sha256 FROM knowledge_revisions "
+            "WHERE revision_id = ? AND project_id = ?",
+            (revision.revision_id.value, revision.project_id.value),
         ).fetchone()
         if existing is not None:
-            stored: str = existing["content_sha256"]
-            if stored != revision.content_sha256.value:
-                # Two states produce this mismatch and their cures are opposite:
-                # an author rewriting a revision, and a damaged cell. Only the
-                # first is INV-1, and telling the second to "write a new revision
-                # instead" appends a duplicate into a database that is already
-                # broken -- reached by re-applying an *unchanged* migration,
-                # which FR-K8 requires to be a no-op.
-                #
-                # The comparison itself stays a comparison of opaque strings, so
-                # the guard's key -- does this line interpret bytes that came out
-                # of this file? -- is answered "no" everywhere but here. Only the
-                # question of *why* the comparison failed is an interpretation,
-                # and it is asked only once the answer changes what is raised.
-                with _reading():
-                    ContentHash(stored)
-                raise InvariantViolationError(
-                    f"Revision {revision.revision_id} already exists with different content. "
-                    f"Revisions are immutable; write a new revision instead."
-                )
+            self._refuse_unless_it_is_the_same_revision(existing, revision)
             return
 
         metadata = revision.metadata
@@ -632,6 +616,67 @@ class SqliteWriter:
         for anchor in revision.source_anchors:
             self._insert_anchor(revision.project_id, revision.revision_id, anchor)
 
+    @staticmethod
+    def _refuse_unless_it_is_the_same_revision(
+        existing: sqlite3.Row, revision: KnowledgeRevision
+    ) -> None:
+        """Return only when the stored row *is* the revision being appended.
+
+        Reached when the id is already present, which FR-K8 requires to be the
+        ordinary case: ``theurian migrate apply`` repeats every append of every
+        migration it has already applied. Sameness therefore has to be decided
+        here, and by more than the id.
+
+        Both arms compare opaque strings, so the guard's key -- does this line
+        interpret bytes that came out of this file? -- is answered "no" for the
+        comparisons themselves. Only the question of *why* a comparison failed is
+        an interpretation, and each of those two lines is guarded on its own.
+        """
+        # **The item, before the content.** A revision id names one item for the
+        # life of the project, and resolving idempotency by the id alone left
+        # that unenforced: a second item declaring an id the first already held
+        # took the no-op path above, and the caller's own `put_item` -- whose
+        # in-memory revision is honest, so INV-2 in `KnowledgeItem.with_revision`
+        # passes -- then pointed the second item at the first item's row.
+        #
+        # No reader can catch that state, and none should have to: they
+        # dereference `current_revision_id` and are right to. Measured on the
+        # shipped CLI, one migration reusing a `revisionId` across a `rejected`
+        # item and an `approved` one applied with exit 0, after which
+        # `knowledge.get` for the *approved* id answered with the rejected
+        # item's id, title, source anchors and full body, and `knowledge.search`
+        # excerpted the same body -- past a gate that had correctly refused the
+        # rejected item asked for by name. The refusal belongs here because this
+        # is the only place the stored row's owner is visible.
+        stored_item: str = existing["item_id"]
+        if stored_item != revision.item_id.value:
+            # Same two opposite cures as the content arm below: a reused id, and
+            # a damaged cell. "Give this operation its own revisionId" is the
+            # wrong answer to the second, and an author who follows it appends a
+            # duplicate into a database that is already broken.
+            with _reading():
+                ItemId(stored_item)
+            raise InvariantViolationError(
+                f"Revision {revision.revision_id} already belongs to item {stored_item}, "
+                f"so {revision.item_id} cannot claim it as well. A revision id names one "
+                f"item for the life of the project; give this operation its own revisionId."
+            )
+
+        stored: str = existing["content_sha256"]
+        if stored != revision.content_sha256.value:
+            # Two states produce this mismatch and their cures are opposite: an
+            # author rewriting a revision, and a damaged cell. Only the first is
+            # INV-1, and telling the second to "write a new revision instead"
+            # appends a duplicate into a database that is already broken --
+            # reached by re-applying an *unchanged* migration, which FR-K8
+            # requires to be a no-op.
+            with _reading():
+                ContentHash(stored)
+            raise InvariantViolationError(
+                f"Revision {revision.revision_id} already exists with different content. "
+                f"Revisions are immutable; write a new revision instead."
+            )
+
     def _insert_anchor(
         self, project_id: ProjectId, revision_id: RevisionId, anchor: SourceAnchor
     ) -> None:
@@ -655,6 +700,7 @@ class SqliteWriter:
         )
 
     def put_item(self, item: KnowledgeItem) -> None:
+        self._refuse_pointer_to_another_items_revision(item)
         self._conn.execute(
             "INSERT INTO knowledge_items (item_id, project_id, namespace, kind, status, "
             "current_revision_id, owner, trust_level, sensitivity, tenant_id, acl_group, "
@@ -681,6 +727,52 @@ class SqliteWriter:
                 None if item.validity.valid_to is None else item.validity.valid_to.isoformat(),
             ),
         )
+
+    def _refuse_pointer_to_another_items_revision(self, item: KnowledgeItem) -> None:
+        """Refuse a ``current_revision_id`` that names another item's revision.
+
+        The store half of INV-2, symmetric to
+        :meth:`_refuse_unless_it_is_the_same_revision` on the revision write.
+        :meth:`KnowledgeItem.with_revision` already refuses a cross-item pointer,
+        but that is an in-memory guarantee the ``ON CONFLICT`` upsert above
+        trusts the caller to have used: every call site does today, and none has
+        to for the leak to reopen. The append guard closes the row a bad pointer
+        would dereference; this closes the pointer itself, so neither half stands
+        on the other being reached first -- a pointer that adopts another item's
+        revision is the path by which an approved item comes to serve a withheld
+        item's title, anchors and body.
+
+        Absence is not ours to answer: the ``current_revision_id`` foreign key
+        already refuses a pointer to a revision that does not exist, so this
+        guard decides only the cross-item case.
+        """
+        if item.current_revision_id is None:
+            return
+        # Project-scoped like `get_revision`, not because a global PK needs it
+        # today but because an unscoped lookup would read another project's
+        # `item_id` the moment a config puts two projects in one database.
+        existing = self._conn.execute(
+            "SELECT item_id FROM knowledge_revisions WHERE revision_id = ? AND project_id = ?",
+            (item.current_revision_id.value, item.project_id.value),
+        ).fetchone()
+        if existing is None:
+            return
+        stored_item: str = existing["item_id"]
+        if stored_item != item.item_id.value:
+            # The same two opposite cures as the append guard: a pointer at
+            # another item's revision, and a damaged cell whose garbage only
+            # looks like a different id. "Point at a revision of this item" is
+            # the wrong answer to the second, so validate the cell before naming
+            # that remedy -- a bad cell is an unreadable database, not an author
+            # error.
+            with _reading():
+                ItemId(stored_item)
+            raise InvariantViolationError(
+                f"Revision {item.current_revision_id} belongs to item {stored_item}, so "
+                f"item {item.item_id} cannot point its current revision at it. A revision "
+                f"id names one item for the life of the project; point at a revision of "
+                f"this item."
+            )
 
     def add_relation(self, relation: KnowledgeRelation) -> None:
         self._conn.execute(

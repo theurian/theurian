@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev3] - 2026-08-15
+
 ### Added
 
 - **A present-only `integrity` object discloses derived-state damage on
@@ -429,6 +431,35 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   there, is the window between the truncation and the write's last byte.
 
 ### Security
+
+- **A reused `revisionId` across two items no longer leaks a withheld item's body**
+  ([GHSA-7997-g35f-q59h](https://github.com/theurian/theurian/security/advisories/GHSA-7997-g35f-q59h);
+  fix commit to be linked at publication). **BREAKING (state database schema).**
+  In 0.1.0.dev0–0.1.0.dev2 a migration that reused an existing `revisionId` under
+  a second `itemId` — the shape a copy-pasted `upsertRevision` block produces —
+  pointed the second (approved) item's current revision at the first item's
+  revision row. When that first item was withheld (for example `status:
+  rejected`), its full body — title, source anchors, and any secret that caused
+  the rejection — reached `knowledge.get` and `knowledge.search` for a caller who
+  requested the *approved* item's id. Requesting the withheld id directly was
+  still correctly refused; the reuse bypassed that gate, and `migrate validate` /
+  `migrate apply` reported nothing.
+
+  **Fixed** by making `append_revision` refuse to treat a reused `revisionId` as
+  an idempotent no-op when the stored row belongs to a different item — a revision
+  id names one item for the life of a project — with a symmetric store-level guard
+  in `put_item` that refuses a `current_revision_id` naming another item's
+  revision. The state database `SCHEMA_VERSION` is bumped from 1 to 2 (an input to
+  the derived-state hash), so a state database written by an affected version — the
+  old shape, opened and served regardless of provenance — is refused on open and
+  rebuilt from the Git-tracked migrations on the next `theurian migrate apply`. The
+  derived state carries no data that is not recoverable from those migrations, so
+  the rebuild strands nothing. If the migration set itself encodes the reuse, that
+  rebuild refuses it (exit 4, naming the reused `revisionId`) until the operation
+  is given its own id. **Updating the build alone does not remediate a database an
+  affected version already wrote; run `theurian migrate apply` after upgrading.**
+
+  Affected: `theurian` 0.1.0.dev0, 0.1.0.dev1, 0.1.0.dev2. Fixed in 0.1.0.dev3.
 
 - **The substring-search fallback's withheld-count timing channel is closed**
   ([#158](https://github.com/theurian/theurian/issues/158)), the twin of #19's

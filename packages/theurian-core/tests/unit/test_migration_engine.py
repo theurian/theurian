@@ -28,6 +28,7 @@ from theurian.domain.enums import (
     TrustLevel,
 )
 from theurian.domain.errors import (
+    InvariantViolationError,
     MigrationChecksumMismatchError,
     MigrationCycleError,
     MigrationDependencyMissingError,
@@ -160,6 +161,61 @@ def test_reapplying_the_same_set_is_a_no_op() -> None:
     assert second.skipped == [MigrationId(MIG_1)]
     assert not second.changed
     assert len(writer.revisions) == 1
+
+
+def test_a_revision_id_given_to_a_second_item_is_refused() -> None:
+    """The engine's half of INV-2: no item may adopt another item's revision.
+
+    `KnowledgeItem.with_revision` already refuses to point an item at a revision
+    of another -- but the revision it is handed here is honest, built from *this*
+    operation's `itemId`, so that check passes and the disagreement exists only
+    between the operation and the writer's stored row. The refusal therefore has
+    to come from the writer, and the engine has to let it out rather than
+    swallowing it as an append it had already made.
+
+    Nothing rolls back here -- this writer has no transaction -- so the state
+    afterwards is only asserted as far as that allows: the stored row still
+    belongs to the item that created it. What the transaction guarantees is
+    pinned against a real one in
+    ``integration/test_revision_id_reuse.py``.
+    """
+    writer = InMemoryWriter()
+    engine = _engine(BODY_V1)
+    other = ItemId("architecture.caching-policy")
+
+    engine.apply(
+        writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+    )
+
+    with pytest.raises(InvariantViolationError) as caught:
+        engine.apply(
+            writer,
+            PROJECT,
+            MigrationSet.ordered(
+                (
+                    _create_and_upsert(MIG_1, REV_1, BODY_V1),
+                    _migration(
+                        MIG_2,
+                        CreateItem(
+                            item_id=other,
+                            kind_=KnowledgeKind.ARCHITECTURE,
+                            namespace="backend",
+                            owner="platform-team",
+                        ),
+                        UpsertRevision(
+                            item_id=other,
+                            revision_id=REV_1,
+                            content_file_path="../knowledge/a.md",
+                            metadata=_metadata(),
+                            content_sha256=ContentHash.of_text(BODY_V1),
+                        ),
+                    ),
+                )
+            ),
+        )
+
+    assert REV_1.value in str(caught.value)
+    assert writer.revisions[REV_1.value].item_id == ITEM, "the stored row keeps its owner"
 
 
 def test_a_second_revision_supersedes_the_first() -> None:

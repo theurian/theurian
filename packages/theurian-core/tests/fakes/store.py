@@ -41,15 +41,56 @@ class InMemoryWriter:
     def append_revision(self, revision: KnowledgeRevision) -> None:
         existing = self.revisions.get(revision.revision_id.value)
         if existing is not None:
-            if existing.content_sha256 != revision.content_sha256:
+            # Both arms, in the real store's order. A fake that resolved
+            # idempotency by the id alone would let the engine build a state the
+            # adapter refuses -- an item pointing at another item's revision --
+            # and every engine test written against it would be describing a
+            # database that cannot exist.
+            if existing.item_id != revision.item_id:
                 raise InvariantViolationError(
-                    f"Revision {revision.revision_id} already exists with different content."
+                    f"Revision {revision.revision_id} already belongs to item "
+                    f"{existing.item_id}, so {revision.item_id} cannot claim it as well. "
+                    f"A revision id names one item for the life of the project; give this "
+                    f"operation its own revisionId."
+                )
+            if existing.content_sha256 != revision.content_sha256:
+                # The remedy is part of the mirror: the real store names it and a
+                # contract test pins it on both adapters, so a fake that only said
+                # "different content" would let the wording drift undetected.
+                raise InvariantViolationError(
+                    f"Revision {revision.revision_id} already exists with different content. "
+                    f"Revisions are immutable; write a new revision instead."
                 )
             return
         self.revisions[revision.revision_id.value] = revision
 
     def put_item(self, item: KnowledgeItem) -> None:
+        self._refuse_pointer_to_another_items_revision(item)
         self.items[(item.project_id.value, item.item_id.value)] = item
+
+    def _refuse_pointer_to_another_items_revision(self, item: KnowledgeItem) -> None:
+        # Mirrors SqliteWriter._refuse_pointer_to_another_items_revision -- the
+        # store half of INV-2. `put_item` upserts an item's `current_revision_id`,
+        # and the real adapter refuses one that names a revision belonging to a
+        # different item. A fake that stored it anyway would let the engine build
+        # the exact cross-item pointer -- an approved item serving a withheld
+        # item's body -- that the real store rejects, and every engine test
+        # written against the fake would describe a database that cannot exist.
+        if item.current_revision_id is None:
+            return
+        existing = self.revisions.get(item.current_revision_id.value)
+        # Project-scoped like the real store's `... WHERE project_id = ?`: a
+        # revision in another project is not found here, so it is not a cross-item
+        # pointer this guard should refuse.
+        if existing is None or existing.project_id.value != item.project_id.value:
+            return
+        if existing.item_id.value != item.item_id.value:
+            raise InvariantViolationError(
+                f"Revision {item.current_revision_id} belongs to item {existing.item_id}, so "
+                f"item {item.item_id} cannot point its current revision at it. A revision "
+                f"id names one item for the life of the project; point at a revision of "
+                f"this item."
+            )
 
     def get_item(self, project_id: ProjectId, item_id: ItemId) -> KnowledgeItem | None:
         return self.items.get((project_id.value, item_id.value))

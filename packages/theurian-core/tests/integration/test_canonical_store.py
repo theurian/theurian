@@ -48,6 +48,8 @@ pytestmark = pytest.mark.integration
 
 PROJECT = ProjectId("demo")
 ITEM = ItemId("architecture.auth-policy")
+#: A second item, so a revision can be offered to one it does not belong to.
+OTHER_ITEM = ItemId("architecture.caching-policy")
 REV_1 = RevisionId("01K1REV00101234567890ABCDE")
 REV_2 = RevisionId("01K1REV00201234567890ABCDE")
 MIGRATION = MigrationId("01K1AAAAAA01234567890ABCDE")
@@ -211,6 +213,108 @@ def test_rewriting_a_revision_with_different_content_is_refused(database: Path, 
             writer.append_revision(_revision(body="rewritten"))
 
 
+def test_a_revision_id_cannot_change_hands(database: Path, lock: Path) -> None:
+    """A revision id names one item, and matching content does not transfer it.
+
+    Idempotency is resolved on the whole revision rather than on the id, because
+    these two inputs are indistinguishable by id and content alone: a `migrate
+    apply` repeating an append it has already made, and a second item laying
+    claim to the first item's revision. Answering the second as a no-op leaves
+    that item with no revision of its own, and the `put_item` which follows in
+    the same transaction then points it at this row.
+    """
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.append_revision(_revision())
+
+        with pytest.raises(InvariantViolationError) as caught:
+            writer.append_revision(replace(_revision(), item_id=OTHER_ITEM))
+
+    message = str(caught.value)
+    assert ITEM.value in message, "the refusal must name the item that holds the id"
+    assert REV_1.value in message, "and the id that was reused, or it names no line to edit"
+    assert "revisionId" in message, "and the field an author has to change"
+
+
+def test_a_damaged_stored_item_id_is_not_reported_as_a_reused_revision_id(
+    database: Path, lock: Path
+) -> None:
+    """The second arm of the partition the stored hash already had.
+
+    A cell that is not an item id at all differs from the appended revision's
+    item exactly as a genuinely reused id does, and it is reached on the input
+    that must *succeed* -- the unchanged re-append FR-K8 requires to be a no-op.
+    An author who is told to "give this operation its own revisionId" by a
+    damaged database appends a duplicate revision into it.
+    """
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.append_revision(_revision())
+
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute(
+            "UPDATE knowledge_revisions SET item_id = ? WHERE revision_id = ?",
+            (SENTINEL, REV_1.value),
+        )
+
+    with (
+        write_transaction(database, lock) as connection,
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+    ):
+        SqliteWriter(connection).append_revision(_revision())
+
+    assert "theurian migrate apply" in str(caught.value), "a refusal a caller cannot act on"
+    assert "revisionId" not in str(caught.value), "the reuse remedy is the harmful one here"
+    assert SENTINEL not in str(caught.value), "and the cell stays inside the guard"
+
+
+def test_a_damaged_item_id_under_a_content_change_reports_damage_not_a_rewrite(
+    database: Path, lock: Path
+) -> None:
+    """The item, before the content -- the ordering the whole partition rests on.
+
+    `_refuse_unless_it_is_the_same_revision` checks the stored `item_id` before
+    the stored `content_sha256`, and the order is load-bearing because the two
+    arms answer to opposite remedies. When the stored `item_id` cell is not an
+    item id at all *and* the incoming body differs, the content arm -- reached
+    second -- would raise `InvariantViolationError` ("write a new revision
+    instead"): the immutability cure, which tells an author to append a duplicate
+    into a database that is already broken. The item arm, reached first, cannot
+    read the cell as an `ItemId` and answers `StateDatabaseUnreadableError`: the
+    rebuild cure, which is the correct one for a damaged file.
+
+    No other test in this suite reaches this square. The one damaged-`item_id`
+    case above keeps the body identical, so the content arm's condition is false
+    and the ordering never shows -- which is exactly why swapping the two arms
+    (content before item) passed the whole suite. Verified: with the arms
+    swapped, this test goes RED with an `InvariantViolationError`.
+    """
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.append_revision(_revision(body="original"))
+
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute(
+            "UPDATE knowledge_revisions SET item_id = ? WHERE revision_id = ?",
+            (SENTINEL, REV_1.value),
+        )
+
+    with (
+        write_transaction(database, lock) as connection,
+        pytest.raises(StateDatabaseUnreadableError) as caught,
+    ):
+        SqliteWriter(connection).append_revision(_revision(body="a rewritten body"))
+
+    message = str(caught.value)
+    assert "theurian migrate apply" in message, "a damaged cell names the rebuild remedy"
+    assert "immutable" not in message, "not the immutability cure the content arm would print"
+    assert "revisionId" not in message, "and not the reuse cure the item arm would print"
+    assert SENTINEL not in message, "the cell stays inside the guard"
+
+
 def test_a_damaged_stored_hash_is_not_reported_as_an_immutability_violation(
     database: Path, lock: Path
 ) -> None:
@@ -325,6 +429,30 @@ def test_a_foreign_schema_version_is_refused(database: Path) -> None:
         open_read_connection(database)
 
     assert exc.value.found == 999
+    assert "rebuild" in str(exc.value).lower()
+
+
+def test_a_state_database_written_at_version_one_is_refused(database: Path) -> None:
+    """Version 1 specifically -- the version every pre-fix state database carries.
+
+    Not ``assert SCHEMA_VERSION == 2`` and not ``SCHEMA_VERSION - 1``: this pins
+    the literal 1 because that is the version a build *before* the revision-reuse
+    fix stamped into its state files, and the residual-disclosure closure rests on
+    exactly this refusal. A state database an affected build derived may still hold
+    the withheld body; the closure holds only because such a file is refused and
+    rebuilt from the Git-tracked migrations rather than read in place, and the
+    ``SCHEMA_VERSION`` bump to 2 is the mechanism that forces the rebuild. So
+    reverting ``SCHEMA_VERSION`` to 1 -- which a version-agnostic
+    ``== SCHEMA_VERSION`` check cannot see -- would make ``open_read_connection``
+    accept the poisoned file, and this test is what goes RED when it does.
+    """
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute("UPDATE schema_metadata SET schema_version = 1")
+
+    with pytest.raises(SchemaVersionMismatchError) as exc:
+        open_read_connection(database)
+
+    assert exc.value.found == 1
     assert "rebuild" in str(exc.value).lower()
 
 
