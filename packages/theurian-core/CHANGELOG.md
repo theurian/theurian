@@ -434,7 +434,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 - **A reused `revisionId` across two items no longer leaks a withheld item's body**
   ([GHSA-7997-g35f-q59h](https://github.com/theurian/theurian/security/advisories/GHSA-7997-g35f-q59h);
-  fix commit to be linked at publication). **BREAKING (state database schema).**
+  fixed in [`67c0e81`](https://github.com/theurian/theurian/commit/67c0e81)).
+  **BREAKING (state database schema).**
   In 0.1.0.dev0–0.1.0.dev2 a migration that reused an existing `revisionId` under
   a second `itemId` — the shape a copy-pasted `upsertRevision` block produces —
   pointed the second (approved) item's current revision at the first item's
