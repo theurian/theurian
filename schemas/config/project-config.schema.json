@@ -71,7 +71,7 @@
             "repositories": {
               "type": "array",
               "items": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
-              "description": "Allowlist of `owner/repo` values. A repository absent from this list is never contacted (SEC-10)."
+              "description": "Allowlist of `owner/repo` values that review ingestion must consult before contacting a repository (SEC-10). Not in force: nothing in `src/` reads this file, and `infrastructure/github/` holds no adapter, so the allowlist reader is owed with review ingestion in Milestone 7 (https://github.com/theurian/theurian/issues/129)."
             }
           }
         }
