@@ -1504,12 +1504,18 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     survived the whole suite, and the first two are what Milestone 7 flips.
     That the block holds *only* those seven is the sibling test below.
 
-    Two fields outside the block are deliberately not pinned here.
-    `schemaVersion` is asserted truthy rather than to a value, because the schema
-    version moves on its own schedule. `milestone` is not asserted at all: it
-    reads 5 in a build past Milestone 5, so pinning it now would freeze a value
-    already known to be wrong -- #206 owns deciding what that field should say
-    and pins it in the change that decides.
+    One field outside the block is deliberately not pinned to a value here:
+    `schemaVersion` is asserted truthy rather than to a constant, because the
+    schema version moves on its own schedule.
+
+    A `milestone` field used to sit beside it, reporting a build progress
+    integer that had drifted stale against the README since Milestone 6
+    closed, with no test, schema, or doc pinning it -- a mutation to `99`
+    survived the whole suite. #206 removed it rather than defining it: it was
+    produced in exactly one place and consumed nowhere in this repository.
+    The `capabilities` booleans are the supported contract; the sibling test
+    below pins the response's full top-level key set, `milestone`'s absence
+    included.
     """
     result = await _call(registry, "system.capabilities")
 
@@ -1587,6 +1593,46 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         f"promise no test holds the server to: add the new flag to "
         f"`test_capabilities_report_what_is_and_is_not_built` with the value it "
         f"actually holds and the reason it holds it, then add it here."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_pinned(
+    registry: ProjectRegistry,
+) -> None:
+    """The population one level above the block, which is where `milestone` sat.
+
+    The sibling test above pins the population of the `capabilities` block, but
+    `milestone` lived beside it -- a top-level sibling of `version` and
+    `schemaVersion`, not an entry inside the block -- so that test could never
+    see it. Nothing enumerated the response's own top-level keys, and a
+    mutation setting `milestone` to `99` survived the whole suite (#206). This
+    is that enumeration, one layer up: it fails when a top-level field is
+    added or removed, exactly as the block's own population test does for the
+    block.
+
+    `milestone` does not appear here. #206 removed it rather than defining it:
+    it was produced in exactly one place and consumed nowhere in this
+    repository, `docs/protocol/mcp-tools.md` never defined what it meant, and
+    it had drifted stale against the README's own milestone claim since
+    Milestone 6 closed. The `capabilities` booleans (and `knowledgeSearch`)
+    are the supported, tested contract; a client that wants build progress
+    reads `version`.
+    """
+    result = await _call(registry, "system.capabilities")
+
+    assert set(result) == {
+        "version",
+        "protocolVersion",
+        "schemaVersion",
+        "capabilities",
+        "note",
+    }, (
+        f"system.capabilities returned top-level keys {sorted(result)}. A "
+        f"field a client can see is part of the wire contract, so an "
+        f"unenumerated one is a promise nothing holds the server to: decide "
+        f"what it means, document it in docs/protocol/mcp-tools.md, then add "
+        f"it here."
     )
 
 

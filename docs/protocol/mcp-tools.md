@@ -371,7 +371,9 @@ and the outcomes must still exist as data
 
 `system.capabilities` exists so a client can degrade per feature rather than
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
-everything else should still work.
+everything else should still work. The `capabilities` object's flags are the
+supported contract a client may rely on; the response's other top-level fields
+(`version`, `protocolVersion`, `schemaVersion`, `note`) are informational.
 
 ### `project.list`
 
