@@ -139,7 +139,12 @@ SQLite database and ten index builders racing. That is corruption, not slowness.
 
 ## Commands
 
-All twelve are thin adapters over the CLI. None contains Theurian logic.
+Eleven of the twelve are thin adapters over the CLI and contain no Theurian
+logic. The exception is `/theurian:propose`: the `propose` subcommand
+[ADR-0013](../adr/0013-ai-writes-produce-proposals.md) describes is not
+registered yet ([#89](https://github.com/theurian/theurian/issues/89)), so until
+Milestone 7 builds it the command writes the proposal directory itself and the
+migration format lives in the command document rather than in Core.
 
 | Command | Underlying CLI |
 | :-- | :-- |
@@ -152,7 +157,7 @@ All twelve are thin adapters over the CLI. None contains Theurian logic.
 | `/theurian:reindex` | `theurian index rebuild --json` |
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
-| `/theurian:propose` | `theurian propose --json` |
+| `/theurian:propose` | none yet — writes `.theurian/proposals/<id>/`; the gate is `theurian migrate validate --json` |
 | `/theurian:upgrade` | `theurian version --json`, `theurian compat check --json` |
 | `/theurian:uninstall` | `theurian uninstall [--dry-run] --json` |
 

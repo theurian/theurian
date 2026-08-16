@@ -6,16 +6,19 @@ This plugin connects Claude Code to a **Theurian daemon** running on your
 machine, so every agent in your session can search your team's specifications,
 architecture decisions, review history, and traceability graph.
 
-It is an independently versioned artifact. It ships no Theurian logic of its
-own — every command is a thin adapter over the `theurian` CLI.
+It is an independently versioned artifact. Eleven of its twelve commands are
+thin adapters over the `theurian` CLI and ship no Theurian logic of their own.
+The twelfth, `/theurian:propose`, writes the proposal directory by hand, because
+the CLI subcommand that would do it is not registered yet
+([#89](https://github.com/theurian/theurian/issues/89)).
 
 ---
 
 ## Install
 
 Theurian Core is a prerequisite, not something this plugin brings with it. Every
-command here shells out to the `theurian` binary, so it goes on the machine
-first:
+command here either shells out to the `theurian` binary or produces a file only
+the CLI can check and apply, so it goes on the machine first:
 
 ```sh
 uv tool install 'theurian[daemon]'    # or: pipx install 'theurian[daemon]'

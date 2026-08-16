@@ -116,6 +116,38 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   result, so the instruction described a run that cannot happen. It now states
   FR-V5 as owed with review ingestion
   ([#129](https://github.com/theurian/theurian/issues/129)).
+- **`/theurian:propose` ran a command that does not exist.** Its step 2 shelled
+  out to a `propose` subcommand to generate the proposal, and its step 4 offered
+  a `propose accept` to approve it. The CLI registers neither, so a user running
+  the slash command was sent into `No such command`
+  ([#89](https://github.com/theurian/theurian/issues/89)). Same class as
+  `/theurian:upgrade` in 0.1.1, and the reachable member of it: the compatibility
+  remedy only fires once `coreCompatibility.minimum` is raised above the shipped
+  Core, whereas this one fired every time the command was used.
+
+  The command now runs
+  [ADR-0013](../../docs/adr/0013-ai-writes-produce-proposals.md) §4's flow by
+  hand. The agent writes `.theurian/proposals/<proposal-id>/` itself — the
+  `Write` grant it already held, and the reason it holds it — and the approval
+  steps are the user's: move the migration into `.theurian/migrations/` and the
+  body to the path its `contentFile` names, check it with
+  `theurian migrate validate --json`, open a pull request, and run
+  `theurian migrate apply --json` after the merge. Both of those are registered.
+
+  Two things the document now states because running the flow showed them.
+  `contentFile` resolves from `.theurian/migrations/` rather than from the
+  directory holding the migration file that names it, so a proposal whose path
+  is relative to itself stops resolving the moment it is moved into place. And
+  `theurian migrate validate` reads `.theurian/migrations/` only: while a
+  proposal sits under `.theurian/proposals/` it reports zero migrations and says
+  nothing about it, so nothing checks a proposal until a human has already
+  decided to accept it.
+
+  The `propose` subcommand is still the intended shape, and Milestone 7 builds
+  it. Until then the migration format is knowledge the plugin carries, which is
+  the boundary cost of the interim flow and why this README and
+  `docs/integrations/claude-code.md` now say eleven of the twelve commands are
+  thin adapters rather than all twelve.
 
 ### Security
 
