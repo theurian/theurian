@@ -169,6 +169,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   searchable. There is now a step 4.6 that builds the index, and the pull request
   step says to include the proposal directory, since `evidence.json` is read by
   reviewers and never by Core.
+
+  Two corrections to that step 4.6 and to what step 4.5 claims. The rebuild was
+  unconditional, which walked into the RAPTOR trap the `/theurian:reindex` entry
+  below describes — a plain build publishes `nodes: 0`, so on a forest-bearing
+  project the summary retriever goes quiet — and it now asks about the forest
+  first and uses `--raptor` only on a yes, never unasked (ADR-0008 decision 10).
+  And step 4.5 said a failed apply "left no state database behind"; it does leave
+  one, measured at 151,552 bytes with no pointer referencing it. The successful
+  run's `databaseCreated: true` follows the changed state hash (ADR-0017), not
+  anything the failed run cleaned up. The step now says both. The shape section
+  also recommends `contentSha256` on every revision and `expectedRevision` on
+  updates — optional to the schema, and what makes an out-of-band body edit or a
+  concurrent change detectable rather than silent
+  ([#210](https://github.com/theurian/theurian/issues/210)).
 - **`/theurian:reindex` ran a command that does not exist**, the second live
   face of the same root cause as the entry above: a user-facing instruction
   naming a `theurian` subcommand that is not registered (#89). Its step 2
@@ -221,6 +235,26 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Bash(command -v:*)` and drops `Edit`. `command` is a shell builtin that runs
   its argument, so the prefix pattern pre-approved arbitrary execution; the
   document's own Rules section already forbade editing configuration files.
+- `/theurian:propose` narrows its `Write` grant to
+  `Write(.theurian/proposals/**)`. The command's whole purpose is writing a
+  proposal directory, and an unscoped `Write` auto-approved writes to
+  `.theurian/migrations/` and `.theurian/knowledge/` — the two directories its
+  own Rules section forbids it to touch.
+
+  **That narrowing bounds what the command writes, not what it may invoke, and
+  the documents now say so.** `/theurian:propose` claimed "There is no code path
+  from this command to approved state" while the same front-matter's
+  `Bash(theurian:*)` auto-approves `theurian migrate apply`, a canonical write;
+  `/theurian:reindex` carries the same grant over the irreversible
+  `theurian index gc`. `allowed-tools` grants and removes nothing — only
+  `disallowed-tools` removes — which this changelog already recorded for
+  `/theurian:upgrade` in 0.1.1 and which was reintroduced here from the other
+  side. Both documents now carry the residual statement: during the manual flow
+  containment is a documented rule plus a scoped grant, not a server-side check,
+  and the "You cannot approve knowledge" rule is what keeps approval with the
+  human. Narrowing the `Bash` grant itself is deliberately not done here and is
+  tracked as its own class
+  ([#209](https://github.com/theurian/theurian/issues/209)).
 
 ## [0.1.1] - 2026-08-09
 

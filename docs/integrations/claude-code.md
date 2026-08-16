@@ -154,7 +154,7 @@ migration format lives in the command document rather than in Core.
 | `/theurian:register-project` | `theurian project register --json` |
 | `/theurian:unregister-project` | `theurian project unregister --json` |
 | `/theurian:index` | `theurian index build --json` |
-| `/theurian:reindex` | `theurian index build --json`, `theurian index gc --json` |
+| `/theurian:reindex` | `theurian index build [--raptor] --json`, `theurian index gc [--dry-run] --json` |
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
 | `/theurian:propose` | — (see note) |
@@ -162,10 +162,19 @@ migration format lives in the command document rather than in Core.
 | `/theurian:uninstall` | `theurian uninstall [--dry-run] --json` |
 
 `/theurian:propose` has no CLI of its own to adapt. It writes
-`.theurian/proposals/<proposal-id>/` with `Write`, and the commands in the flow
-are the user's: `theurian migrate validate --json` on the accepted migration,
-then `theurian migrate apply --json` and `theurian index build --json` after the
-pull request merges.
+`.theurian/proposals/<proposal-id>/` with a `Write` grant scoped to that
+directory (`Write(.theurian/proposals/**)`), and the commands in the flow are the
+user's: `theurian migrate validate --json` on the accepted migration, then
+`theurian migrate apply --json` and `theurian index build --json` after the pull
+request merges — `--raptor` on that last one where the project keeps a summary
+forest, since a plain build writes no summary nodes.
+
+The scoped `Write` bounds what the command writes; it does not bound what it may
+invoke. `allowed-tools` grants and never removes, so `Bash(theurian:*)`
+auto-approves `migrate apply` and `index gc` in exactly the commands that reserve
+them for a human. During the manual flow that boundary is the command documents'
+rules rather than a check Core performs
+([#209](https://github.com/theurian/theurian/issues/209)).
 
 Setup logic exists once, in `SetupService`. `/theurian:setup` and `theurian
 setup` are the same code path with different presentation — duplicating it in the

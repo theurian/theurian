@@ -16,14 +16,25 @@ What this command adds is step 3: publishing a build does not delete the one it
 replaced, so superseded builds accumulate until something removes them, and
 removing them is explicit rather than automatic (ADR-0007, ADR-0024 point 6).
 
+**Step 3 deletes index build files irreversibly.** Nothing here restores them; a
+lost build is recovered by building again, and only if the state it was built
+from still exists.
+
+Containment for that is a documented rule, not a server-side check.
+`allowed-tools` is a permission *grant*: it auto-approves matching invocations so
+this command does not prompt, and it removes nothing — only `disallowed-tools`
+does that. `Bash(theurian:*)` therefore auto-approves `theurian index gc`, the
+irreversible half, exactly as it does the harmless `--dry-run` form. What holds
+the deletion behind the user's confirmation is step 3 below, not the front-matter
+([#209](https://github.com/theurian/theurian/issues/209)).
+
 ## What to do
 
 1. Ask the user whether this project's index is built with the RAPTOR summary
-   forest. You cannot work it out: `theurian index status --json` reports the
-   build id, the three state hashes and the schema version, and nothing at all
-   about summaries. The answer decides step 2, and **never add `--raptor` on
-   your own judgement** — it is opt-in because a forest must not arrive as the
-   side effect of something else (ADR-0008 decision 10).
+   forest. You cannot work it out: nothing among `theurian index status --json`'s
+   fields reports whether summaries were derived. The answer decides step 2, and
+   **never add `--raptor` on your own judgement** — it is opt-in because a forest
+   must not arrive as the side effect of something else (ADR-0008 decision 10).
 
 2. Build and publish. Without the forest:
 
@@ -79,9 +90,10 @@ removing them is explicit rather than automatic (ADR-0007, ADR-0024 point 6).
 - It refuses the whole run rather than treating every build on disk as
   unreferenced, in two cases: the pointer names a build whose file is missing,
   and the pointer cannot be read at all. Both exit 1 having reclaimed nothing,
-  with `--dry-run` too. Relay the remedy it prints instead of retrying — for the
-  missing file that is to run `theurian index build` and publish a build that
-  exists, *"because reclaiming now would delete every build on disk"*.
+  with `--dry-run` too. Relay the remedy it prints instead of retrying; for the
+  missing file that remedy is ``Run `theurian index build` to publish a build
+  that exists. Reclaiming now would delete every build on disk, because none of
+  them is the published one.``
 - Reach for this when the index is suspected to be inconsistent, after changing
   an embedding or summarization provider, or after a Theurian upgrade that
   changes the index format. The provider case is the one where step 1 matters

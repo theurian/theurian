@@ -13,6 +13,17 @@ Until it lands, this command runs ADR-0013 §4's flow by hand: you write the
 proposal directory with `Write`, and every approval step is performed by a person
 using commands that do exist.
 
+**During this manual flow, containment is a documented rule plus a scoped
+permission grant, not a server-side check.** `allowed-tools` is a permission
+*grant*: it auto-approves matching invocations so this command does not prompt,
+and it removes nothing — only `disallowed-tools` does that. So the same
+front-matter that scopes `Write` to `.theurian/proposals/**` also auto-approves
+*every* `theurian` invocation, `theurian migrate apply` — a canonical write —
+included. What keeps approval with the human is the **"You cannot approve
+knowledge"** rule below, not the grant. Narrowing the grant is tracked separately
+([#209](https://github.com/theurian/theurian/issues/209)); reading it as a
+sandbox is how a document ends up trusting a boundary that is not there.
+
 ## What to do
 
 1. Establish what is being proposed and, critically, the **evidence** for it: a
@@ -50,7 +61,7 @@ using commands that do exist.
 
    ```yaml
    apiVersion: theurian.dev/v1
-   id: 01K9AB2CD3EF4GH5JK6MN7PQ8R           # ULID, uppercase Crockford base32
+   id: 01K9C7VN4TQZB2M8XR5HD3JFEW           # ULID, uppercase Crockford base32
    createdAt: 2026-08-17T09:00:00+09:00     # RFC 3339, explicit offset
    author: platform-team@example.com        # the human who will own this
    description: Why the change is being made. Reviewers read this before the diff.
@@ -62,8 +73,9 @@ using commands that do exist.
        owner: platform-team
      - op: upsertRevision
        itemId: architecture.retry-policy
-       revisionId: 01K9AB2CD3EF4GH5JK6MN7PQ8S
+       revisionId: 01K9D2G8YT6PXN0VKS4WBZ7RQM
        contentFile: ../knowledge/architecture/retry-policy.md
+       contentSha256: <sha256 of the body file>   # compute it; never copy one
        metadata:
          title: Retry policy
          contentType: text/markdown
@@ -86,10 +98,21 @@ using commands that do exist.
    - **Leave `trustLevel` and `sensitivity` out.** Both are optional, and
      `trustLevel: reviewed` on something you drafted claims a review that has
      not happened. A reviewer can add them.
-   - **`contentFile` is resolved from `.theurian/migrations/`**, not from the
-     directory holding the migration file that names it. Write the path the body
-     will have *after* step 4.2 moves it; a path relative to the proposal
-     directory parses and then fails to resolve once the migration is in place.
+   - **`contentFile` is resolved relative to the migration file**
+     ([migrations.md](../../../docs/protocol/migrations.md#path-safety)), and
+     after step 4.2 that file lives in `.theurian/migrations/` — so write the
+     path the body will have *once the migration is in place*, not one relative
+     to the proposal directory it is sitting in now. A proposal-relative path
+     parses and then fails to resolve after the move.
+   - **Pin `contentSha256`, and add `expectedRevision` when the item already
+     exists.** Both are optional to the schema and worth writing anyway.
+     `contentSha256` is what makes an edit to the body detectable: *"When
+     present, a mismatch fails the migration"* (`migration.schema.json`) —
+     compute it from the body file you wrote rather than copying one.
+     `expectedRevision` is the optimistic concurrency guard on an update, and
+     must equal the item's current revision id: *"A mismatch is reported, never
+     merged"* (ADR-0006). Neither is a Core default, so recommending them is this
+     document's job ([#210](https://github.com/theurian/theurian/issues/210)).
    - **`metadata.sourceAnchors` is optional to the schema and required by
      `theurian migrate apply`.** Do not drop it from the shape above to save
      space: a revision without one validates and then fails to apply (measured:
@@ -117,6 +140,12 @@ using commands that do exist.
       names. If `.theurian/migrations/` already holds a file of that name, stop
       and say so rather than overwriting it: the name carries the migration's
       id, so a collision means that migration is already in place.
+
+      The two moves are not symmetric. The migration file must never land on an
+      existing name, while the body file *may* replace what is at the
+      `contentFile` path — on an update to existing knowledge that is exactly
+      the intent, which is what `contentSha256` and `expectedRevision` above are
+      for: they make the replacement a stated one rather than a silent one.
    3. Check it:
 
       ```sh
@@ -141,9 +170,16 @@ using commands that do exist.
       theurian migrate apply --json
       ```
 
-      This is where the invariants land. A migration that failed one exits 4
-      and applies nothing — measured, the run that exited 4 left no state
-      database behind, and the corrected run reported `databaseCreated: true`.
+      This is where the invariants land. A migration that fails one exits 4 and
+      applies nothing, but it does not leave the directory as it found it: a
+      state database file stays behind that no pointer references (measured,
+      151,552 bytes). It is not the applied state and nothing reads it —
+      `theurian index gc` will not reclaim it either, since that command only
+      considers `theurian-index-` files — so it sits there until someone deletes
+      it. Correcting the migration and applying again writes a *fresh* database
+      under the new state hash, which is why the successful run still reports
+      `databaseCreated: true`: that field follows the state hash (ADR-0017), not
+      anything the failed run did or did not leave.
    6. Rebuild the index, or the knowledge just approved is not searchable:
 
       ```sh
@@ -155,11 +191,20 @@ using commands that do exist.
       `stale: true` with the remedy ``Run `theurian index build`.``
       `/theurian:index` runs the same command.
 
+      **Ask first whether the project keeps a RAPTOR summary forest**, the way
+      `/theurian:reindex` step 1 does. A build writes zero summary nodes unless
+      it is given `--raptor`, so on a forest-bearing project the plain command
+      above publishes `nodes: 0` and the summary retriever goes quiet. On their
+      yes the command is `theurian index build --raptor --json`; never add
+      `--raptor` unasked (ADR-0008 decision 10).
+
 ## Rules
 
-- **You cannot approve knowledge.** There is no code path from this command to
-  approved state, and that is the point: approved knowledge is what an agent
-  will cite tomorrow as a team decision, so a human has to have said yes.
+- **You cannot approve knowledge.** No CLI or MCP surface offers an approval
+  call — approval is a human merging a pull request — so during this manual flow
+  the boundary is this rule and not a check Core performs. That is the point:
+  approved knowledge is what an agent will cite tomorrow as a team decision, so a
+  human has to have said yes.
 - Do not write into `.theurian/migrations/` or `.theurian/knowledge/` directly.
   Writing under `.theurian/proposals/` is the whole of your authority here — step
   4.2 is the human's act of approval, and performing it for them makes it yours.
