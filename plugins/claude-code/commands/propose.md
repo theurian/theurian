@@ -1,6 +1,6 @@
 ---
 description: Draft a knowledge change as a reviewable proposal. Never writes approved state.
-allowed-tools: Bash(theurian:*), Read, Write
+allowed-tools: Bash(theurian:*), Read, Write(.theurian/proposals/**)
 ---
 
 # /theurian:propose

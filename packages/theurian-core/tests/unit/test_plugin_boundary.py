@@ -209,9 +209,17 @@ PERMITTED_BASH_GRANTS = frozenset(
     {"Bash(theurian:*)", "Bash(git:*)", "Bash(curl:*)", "Bash(command -v:*)"}
 )
 
-#: Tools that write. `/theurian:propose` drafts a proposal, which is the one
-#: command whose whole purpose is to produce a file.
-PERMITTED_WRITE_TOOLS = {"propose": frozenset({"Write"})}
+#: Tools that write, scoped to what the document says it writes.
+#: ``/theurian:propose`` drafts a proposal, which is the one command whose whole
+#: purpose is to produce a file -- and its own rules say so: "Writing under
+#: ``.theurian/proposals/`` is the whole of your authority here", followed by
+#: "do not write into ``.theurian/migrations/`` or ``.theurian/knowledge/``
+#: directly". An unscoped ``Write`` pre-approves exactly the two directories the
+#: document forbids, plus the rest of the repository, plus the user's dotfiles.
+#: The scoped form is pinned rather than a bare ``Write.startswith`` check,
+#: because a grant that is *narrower than the document* is as wrong as one that
+#: is wider, and only a literal catches both.
+PERMITTED_WRITE_TOOLS = {"propose": frozenset({"Write(.theurian/proposals/**)"})}
 
 
 @pytest.mark.parametrize("command", REQUIRED_COMMANDS)
