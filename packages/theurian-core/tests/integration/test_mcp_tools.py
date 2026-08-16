@@ -1496,13 +1496,33 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     passing after hybrid retrieval shipped, which is how a capability
     declaration and its implementation drift apart unnoticed.
 
-    The drift runs the other way too, so every flag is pinned to the value it
-    actually holds rather than only the `True` ones. `reviewIngestion` and
-    `traceability` were both unpinned until #129: mutations flipping each of them
-    to `True` survived the whole suite, and both are what Milestone 7 flips.
+    The drift runs the other way too, so all seven entries of the capability
+    block are pinned to the value they actually hold rather than only the `True`
+    ones: `knowledgeSearch` and the six booleans. `reviewIngestion`,
+    `traceability` and `knowledgeSearch` were all unpinned until #129 -- mutations
+    flipping each boolean to `True` and rewriting `"hybrid"` to `"substring"`
+    survived the whole suite, and the first two are what Milestone 7 flips.
+    That the block holds *only* those seven is the sibling test below.
+
+    Two fields outside the block are deliberately not pinned here.
+    `schemaVersion` is asserted truthy rather than to a value, because the schema
+    version moves on its own schedule. `milestone` is not asserted at all: it
+    reads 5 in a build past Milestone 5, so pinning it now would freeze a value
+    already known to be wrong -- #206 owns deciding what that field should say
+    and pins it in the change that decides.
     """
     result = await _call(registry, "system.capabilities")
 
+    assert result["capabilities"]["knowledgeSearch"] == "hybrid", (
+        "this is the only capability that is not a boolean, and it names the "
+        "retrieval a client may ask for rather than whether a feature exists: "
+        "`hybrid` says lexical and vector results are fused. A response's own "
+        "`retrieval.mode` reports what actually ran, which stays `substring` "
+        "until a project has an index -- so a build that downgraded this to "
+        "`substring` would be indistinguishable, to a client, from every "
+        "un-indexed project it has ever seen. A mutation doing exactly that "
+        "survived the whole suite (#129)."
+    )
     assert result["capabilities"]["writeTools"] is False
     assert result["capabilities"]["hybridRetrieval"] is True
     assert result["capabilities"]["knowledgeGet"] is True
@@ -1531,6 +1551,43 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "ships the tool, not ahead of it."
     )
     assert result["schemaVersion"]
+
+
+@pytest.mark.asyncio
+async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
+    registry: ProjectRegistry,
+) -> None:
+    """Pinning every flag is a claim about a population, so the population is pinned too.
+
+    The test above asserts a value per key it knows about, and a parametrized
+    assertion over keys nobody enumerated cannot fail for a key that was added
+    after it was written. A new capability would ship declared-but-unasserted,
+    which is the state `reviewIngestion`, `traceability` and `knowledgeSearch`
+    were each found in (#129) -- and a capability flag is a security statement
+    when it is `reviewIngestion`, because T-7's threat-model entry cites its
+    `false` as what stands in for the repository allowlist.
+
+    So this fails when a flag is added *and* when one is removed, and its message
+    says what to do about it. The value of a new flag belongs in the test above;
+    this one only insists that a value exists to be argued about.
+    """
+    result = await _call(registry, "system.capabilities")
+
+    assert set(result["capabilities"]) == {
+        "knowledgeSearch",
+        "knowledgeGet",
+        "hybridRetrieval",
+        "raptor",
+        "reviewIngestion",
+        "traceability",
+        "writeTools",
+    }, (
+        f"system.capabilities declares {sorted(result['capabilities'])}. Each "
+        f"entry tells a client what it may rely on, so an unpinned one is a "
+        f"promise no test holds the server to: add the new flag to "
+        f"`test_capabilities_report_what_is_and_is_not_built` with the value it "
+        f"actually holds and the reason it holds it, then add it here."
+    )
 
 
 # -- Result shape ----------------------------------------------------------
