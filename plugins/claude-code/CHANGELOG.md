@@ -91,6 +91,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   including the one where it did restart the daemon. The delete-the-file branch
   carried the daemon half of that warning and nothing else; it now names every
   process that already read the value.
+- `/theurian:ingest` no longer offers review history as something it ingests.
+  Its `description` — visible in Claude Code's command list — said "Ingest
+  documents, specs, and review history", as did the command's row in the plugin
+  README, and the Rules illustrated evidence with an ingested review comment.
+  No review history is ingested: `system.capabilities` reports
+  `reviewIngestion: false` and `infrastructure/github/` holds no adapter, so an
+  agent reading the old description would have offered a source Core cannot
+  read. The document now says review ingestion is owed with Milestone 7, and
+  says the repository allowlist in `.theurian/config.yaml` is not protecting the
+  user yet, because nothing reads that file
+  ([#129](https://github.com/theurian/theurian/issues/129)).
+- `/theurian:ingest` describes what the command actually reads: local data —
+  files under `.theurian/`, plus `git` for the repository root, HEAD, the branch
+  name and the `origin` URL out of Git config. It previously said "local files
+  under `.theurian/` only", which omits the four `git` reads in
+  `cli/context.py`.
 
 ### Security
 

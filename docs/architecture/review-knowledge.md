@@ -3,10 +3,21 @@
 How Git review history becomes reusable team knowledge — and why the last step is
 always a human's.
 
-**None of this is built yet.** `system.capabilities` reports `reviewIngestion:
-false`, `infrastructure/github/` holds no adapter, and `theurian ingest` reads
-local files only. This page is the design Milestone 7 implements, so read its
-present tense as "will", not as "does".
+**The domain model is built; nothing collects into it yet.** `ReviewThread`,
+`PromotionGate` and `KnowledgeCandidate` live in
+[`domain/review.py`](../../packages/theurian-core/src/theurian/domain/review.py),
+and the promotion invariants below are enforced at construction: there is no
+`approve`, `promote` or `publish` member and no `AUTO_APPROVED` status, pinned by
+`test_candidate_has_no_self_approval_method` (ADR-0013, INV-7).
+
+What is missing is everything that would fill that model. `infrastructure/github/`
+holds no adapter, `theurian ingest` reads local files only, and no code path
+generates a candidate; `system.capabilities` reports `reviewIngestion: false`,
+pinned by `test_capabilities_report_what_is_and_is_not_built`. So the sections
+below that describe *collection* — the stages, classification, candidate
+generation, provider access and privacy handling — describe what Milestone 7
+([#129](https://github.com/theurian/theurian/issues/129)) implements, not what
+runs today.
 
 ## Evidence is not knowledge
 
@@ -173,6 +184,6 @@ or calls a model, so a provider adapter stays a thin, testable mapping.
 
 Repositories must be allowlisted in `.theurian/config.yaml` before one is
 contacted (SEC-10). That is the design obligation on the adapter, not current
-behaviour: no reader of `.theurian/config.yaml` exists, so building the allowlist
-reader is the first thing the ingestion work owes
+behaviour: no reader of `.theurian/config.yaml` exists in `src/`, so building the
+allowlist reader is the first thing the ingestion work owes
 ([#129](https://github.com/theurian/theurian/issues/129)).

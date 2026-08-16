@@ -12,6 +12,50 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Documents describing review ingestion as shipped, corrected together with
+  the tests that hold the corrected claims**
+  ([#129](https://github.com/theurian/theurian/issues/129)). The class is a
+  security control named in the present tense whose component does not exist:
+  T-7's SSRF entry, the `.theurian/config.yaml` repository allowlist (SEC-10),
+  the `providers.review.repositories` schema key, the sample project's config,
+  and the `review`/`infrastructure.github` package docstrings all read as if the
+  allowlist were in force. No reader of that file exists in `src/`, and
+  `infrastructure/github/` holds no adapter, so nothing consults it; each
+  now says what is owed and names Milestone 7.
+
+  **What the allowlist's absence rests on is now pinned.** T-7's stand-in
+  control is not a filter but the absence of any way to make the request, and
+  that absence was enforced by nothing: a mutation that left `_external_refs`
+  recording exactly as before and added a real `urllib.request.urlopen` beside
+  it survived the whole suite, because
+  `test_external_refs_are_recorded_never_fetched` reads the recorded output and
+  the recording did not change. `tests/unit/test_network_call_sites.py` adds the
+  missing half in two arms —
+  `test_no_module_outside_the_daemon_health_probe_reaches_a_network_client`
+  scans the shipped package and pins the permitted network-client sites to
+  `daemon/instance.py` alone, and
+  `test_parsing_a_document_with_an_external_ref_opens_no_socket` watches the
+  socket layer while the parser handles a hostile `$ref`. The threat model now
+  cites the recording pin and the never-fetched pins separately, rather than
+  crediting one test with both.
+
+- **`system.capabilities`' `reviewIngestion` and `traceability` flags pinned to
+  `false`** in `test_capabilities_report_what_is_and_is_not_built`. Both were
+  unpinned: mutations flipping either to `true` survived the suite, which is the
+  same drift that once let the test claim `hybridRetrieval is False` after
+  hybrid retrieval shipped. T-7 cites `reviewIngestion: false` as part of what
+  stands in for the missing allowlist, so the flag is a security-relevant
+  declaration and not a feature toggle.
+
+- **`$ref` recording fidelity stated rather than overclaimed.** T-7 said
+  `_external_refs` "records the target's scheme"; it records the scheme only
+  where the target's form carries one, so a protocol-relative (`//host/x.yaml`)
+  or UNC target records as `relative-file`, and a ref past the depth cap is
+  dropped from the count entirely. Fixing the recording is
+  [#203](https://github.com/theurian/theurian/issues/203).
+
 ## [0.1.0.dev4] - 2026-08-16
 
 ### Added

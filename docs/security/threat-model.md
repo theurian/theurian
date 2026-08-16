@@ -677,10 +677,18 @@ asking "can someone burn this daemon's CPU" to find two places.
 
 #### T-7 — A hostile Git or external URL triggers an internal request (SSRF, Medium)
 
-**Controls:** external `$ref` targets recorded as unresolved, never fetched —
+**Controls:** external `$ref` targets recorded as unresolved, never fetched.
 `_external_refs` in `infrastructure/filesystem/parsers/openapi.py` records the
-target's scheme instead of following it, pinned by
-`test_external_refs_are_recorded_never_fetched`.
+target instead of following it — with its scheme where the form carries one, so a
+protocol-relative or UNC target records as `relative-file` and a ref past the
+depth cap is dropped from the count entirely
+([#203](https://github.com/theurian/theurian/issues/203), pre-Milestone 7).
+Recording is pinned by `test_external_refs_are_recorded_never_fetched`; *never
+fetched* is pinned separately, because reading the recorded output cannot see a
+fetch performed beside it — structurally by
+`test_no_module_outside_the_daemon_health_probe_reaches_a_network_client` (no
+module in the package outside `daemon/instance.py` reaches a network client) and
+behaviourally by `test_parsing_a_document_with_an_external_ref_opens_no_socket`.
 
 *Future controls, not shipped:* the scheme allowlist, the rejection of
 private-network destinations, and the repository allowlist in
@@ -689,9 +697,14 @@ owed with review ingestion (Milestone 7,
 [#129](https://github.com/theurian/theurian/issues/129)). No reader of
 `.theurian/config.yaml` exists in `src/`, and `infrastructure/github/` is a
 docstring-only package with no HTTP client, so no code path performs any of the
-three. What stands in for them is the absence of the request: outside the
-daemon's health probe against its own loopback port, `src/` contains no HTTP
-client at all, and `system.capabilities` reports `reviewIngestion: false`.
+three.
+
+What stands in for all three is the absence of the request, and that absence is
+shipped: outside the daemon's health probe against its own loopback port, `src/`
+holds no network client at all — pinned by
+`test_no_module_outside_the_daemon_health_probe_reaches_a_network_client` — and
+`system.capabilities` reports `reviewIngestion: false`, pinned by
+`test_capabilities_report_what_is_and_is_not_built`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High)
 
@@ -3932,7 +3945,7 @@ fix.
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
 | T-6 | Resource exhaustion, at parse and at query | D | Medium | SEC-8 |
-| T-7 | SSRF via external URL | I | Medium | SEC-10 |
+| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with M7 ([#129](https://github.com/theurian/theurian/issues/129)) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
 | T-10 | Cross-sensitivity summary leak | I | High | SEC-14 |
