@@ -16,7 +16,8 @@ providers:
     adapter: sqlite-vec
   review:
     adapter: none
-    # A repository absent from this list is never contacted (SEC-10).
+    # The allowlist review ingestion will read (SEC-10). Nothing reads it today:
+    # the adapter is `none` and review ingestion is owed with Milestone 7.
     repositories:
       - acme/order-service
 

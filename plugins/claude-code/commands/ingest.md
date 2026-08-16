@@ -1,5 +1,5 @@
 ---
-description: Ingest sources — docs, specs, and Git review history — into Theurian.
+description: Ingest local sources — docs and specs — into Theurian.
 allowed-tools: Bash(theurian:*)
 ---
 
@@ -24,6 +24,9 @@ Report what was ingested by source type and how many documents changed.
 - If candidate generation fails (for example, no summarization provider is
   configured), raw ingestion still succeeds. Report the partial result rather
   than treating the whole run as failed.
-- If the user wants review history from GitHub, the repository must be on the
-  allowlist in `.theurian/config.yaml`. Theurian will not contact a repository
-  that is not listed.
+- Review history from GitHub is **not ingested yet**: `system.capabilities`
+  reports `reviewIngestion: false`, and `theurian ingest` reads local files under
+  `.theurian/` only. When it lands (Milestone 7) a repository will have to be on
+  the allowlist in `.theurian/config.yaml` before Theurian contacts it; nothing
+  reads that file today, so do not tell the user the allowlist is protecting
+  them.

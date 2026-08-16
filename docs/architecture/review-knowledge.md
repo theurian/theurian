@@ -3,6 +3,11 @@
 How Git review history becomes reusable team knowledge — and why the last step is
 always a human's.
 
+**None of this is built yet.** `system.capabilities` reports `reviewIngestion:
+false`, `infrastructure/github/` holds no adapter, and `theurian ingest` reads
+local files only. This page is the design Milestone 7 implements, so read its
+present tense as "will", not as "does".
+
 ## Evidence is not knowledge
 
 A review comment says:
@@ -166,5 +171,8 @@ GitHub first, behind `ReviewProvider`. GitLab and others are new adapters, no
 domain change. The port returns evidence only: it never classifies, generalizes,
 or calls a model, so a provider adapter stays a thin, testable mapping.
 
-Repositories must be allowlisted in `.theurian/config.yaml`. A repository not
-listed is never contacted (SEC-10).
+Repositories must be allowlisted in `.theurian/config.yaml` before one is
+contacted (SEC-10). That is the design obligation on the adapter, not current
+behaviour: no reader of `.theurian/config.yaml` exists, so building the allowlist
+reader is the first thing the ingestion work owes
+([#129](https://github.com/theurian/theurian/issues/129)).

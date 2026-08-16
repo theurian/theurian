@@ -677,9 +677,21 @@ asking "can someone burn this daemon's CPU" to find two places.
 
 #### T-7 — A hostile Git or external URL triggers an internal request (SSRF, Medium)
 
-**Controls:** scheme allowlist; private-network destinations rejected; repository
-allowlist in `.theurian/config.yaml` — a repository not listed is never
-contacted; external `$ref` targets recorded as unresolved, never fetched.
+**Controls:** external `$ref` targets recorded as unresolved, never fetched —
+`_external_refs` in `infrastructure/filesystem/parsers/openapi.py` records the
+target's scheme instead of following it, pinned by
+`test_external_refs_are_recorded_never_fetched`.
+
+*Future controls, not shipped:* the scheme allowlist, the rejection of
+private-network destinations, and the repository allowlist in
+`.theurian/config.yaml` — a repository not listed would never be contacted — are
+owed with review ingestion (Milestone 7,
+[#129](https://github.com/theurian/theurian/issues/129)). No reader of
+`.theurian/config.yaml` exists in `src/`, and `infrastructure/github/` is a
+docstring-only package with no HTTP client, so no code path performs any of the
+three. What stands in for them is the absence of the request: outside the
+daemon's health probe against its own loopback port, `src/` contains no HTTP
+client at all, and `system.capabilities` reports `reviewIngestion: false`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High)
 
