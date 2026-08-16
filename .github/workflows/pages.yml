@@ -65,7 +65,7 @@ jobs:
         run: pip install "mkdocs==1.6.1"
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Prepare documentation assets
         run: |
