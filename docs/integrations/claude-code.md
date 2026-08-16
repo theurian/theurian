@@ -139,7 +139,12 @@ SQLite database and ten index builders racing. That is corruption, not slowness.
 
 ## Commands
 
-All twelve are thin adapters over the CLI. None contains Theurian logic.
+Eleven of the twelve are thin adapters over the CLI and contain no Theurian
+logic. The exception is `/theurian:propose`: the `propose` subcommand
+[ADR-0013](../adr/0013-ai-writes-produce-proposals.md) describes is not
+registered yet ([#89](https://github.com/theurian/theurian/issues/89)), so until
+Milestone 7 builds it the command writes the proposal directory itself and the
+migration format lives in the command document rather than in Core.
 
 | Command | Underlying CLI |
 | :-- | :-- |
@@ -149,12 +154,29 @@ All twelve are thin adapters over the CLI. None contains Theurian logic.
 | `/theurian:register-project` | `theurian project register --json` |
 | `/theurian:unregister-project` | `theurian project unregister --json` |
 | `/theurian:index` | `theurian index build --json` |
-| `/theurian:reindex` | `theurian index rebuild --json` |
+| `/theurian:reindex` | `theurian index build [--raptor] --json`, `theurian index gc [--dry-run] --json` |
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
-| `/theurian:propose` | `theurian propose --json` |
+| `/theurian:propose` | — (see note) |
 | `/theurian:upgrade` | `theurian version --json`, `theurian compat check --json` |
 | `/theurian:uninstall` | `theurian uninstall [--dry-run] --json` |
+
+`/theurian:propose` has no CLI of its own to adapt. It writes
+`.theurian/proposals/<proposal-id>/` with a `Write` grant scoped to that
+directory (`Write(.theurian/proposals/**)`), and the commands in the flow are the
+user's: `theurian migrate validate --json` on the accepted migration, then
+`theurian migrate apply --json` and `theurian index build --json` after the pull
+request merges — `--raptor` on that last one where the project keeps a summary
+forest, since a plain build writes no summary nodes.
+
+The scoped `Write` bounds what the command writes; it does not bound what it may
+invoke. `allowed-tools` grants and never removes — the semantics, with the vendor
+citation, are stated once in
+[`upgrade.md`](../../plugins/claude-code/commands/upgrade.md) — so
+`Bash(theurian:*)` auto-approves `migrate apply` and `index gc` even in the very
+commands that reserve them for a human. During the manual flow that boundary is
+the command documents' rules rather than a check Core performs
+([#209](https://github.com/theurian/theurian/issues/209)).
 
 Setup logic exists once, in `SetupService`. `/theurian:setup` and `theurian
 setup` are the same code path with different presentation — duplicating it in the

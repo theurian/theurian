@@ -116,6 +116,118 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   result, so the instruction described a run that cannot happen. It now states
   FR-V5 as owed with review ingestion
   ([#129](https://github.com/theurian/theurian/issues/129)).
+- **`/theurian:propose` ran a command that does not exist.** Its step 2 shelled
+  out to a `propose` subcommand to generate the proposal, and its step 4 offered
+  a `propose accept` to approve it. The CLI registers neither, so a user running
+  the slash command was sent into `No such command`
+  ([#89](https://github.com/theurian/theurian/issues/89)). Same class as
+  `/theurian:upgrade` in 0.1.1, and the reachable member of it: the compatibility
+  remedy only fires once `coreCompatibility.minimum` is raised above the shipped
+  Core, whereas this one fired every time the command was used.
+
+  The command now runs
+  [ADR-0013](../../docs/adr/0013-ai-writes-produce-proposals.md) §4's flow by
+  hand. The agent writes `.theurian/proposals/<proposal-id>/` itself — the
+  unscoped `Write` grant it already held, and the reason it holds it — and the
+  approval steps are the user's: move the migration into `.theurian/migrations/`
+  and the body to the path its `contentFile` names, check it with
+  `theurian migrate validate --json`, open a pull request, and run
+  `theurian migrate apply --json` after the merge. Both of those are registered.
+
+  Two things the document now states because running the flow showed them.
+  `contentFile` resolves from `.theurian/migrations/` rather than from the
+  directory holding the migration file that names it, so a proposal whose path
+  is relative to itself stops resolving the moment it is moved into place. And
+  `theurian migrate validate` reads `.theurian/migrations/` only: while a
+  proposal sits under `.theurian/proposals/` it reports zero migrations and says
+  nothing about it, so nothing checks a proposal until a human has already
+  decided to accept it.
+
+  The `propose` subcommand is still the intended shape, and Milestone 7 builds
+  it. Until then the migration format is knowledge the plugin carries, which is
+  the boundary cost of the interim flow and why this plugin's README and
+  `docs/integrations/claude-code.md` now say eleven of the twelve commands are
+  thin adapters rather than all twelve.
+
+  Running the interim flow a second time then found three more things, all of
+  them in what the document tells the *user* to do. It named the proposal's
+  migration `migration.yaml`, while `.theurian/migrations/` names files
+  `<ulid>-<kebab-slug>.yaml`: accepting a second proposal moved that name over
+  the first, and nothing reported it — measured, `migrate validate` answered
+  `valid: true` with `migrationCount: 1` naming only the second migration, and
+  `migrate apply` exited 0 having applied only it. The proposal now carries the
+  final name, so accepting is a move that renames nothing, and the step says to
+  stop on a name that already exists. The document also said
+  `theurian migrate validate` was what enforced the schema, which read as though
+  passing it meant the migration would apply; validate checks schema conformance
+  only, and a revision missing `metadata.sourceAnchors` or reusing an applied
+  `revisionId` gets `valid: true` and then exit 4 from `migrate apply` — after
+  the pull request has merged
+  ([#36](https://github.com/theurian/theurian/issues/36)). And the flow ended at
+  `migrate apply`, which does not index what it applied: measured, `index status`
+  reports `stale: true` immediately afterwards, so the approved knowledge was not
+  searchable. There is now a step 4.6 that builds the index, and the pull request
+  step says to include the proposal directory, since `evidence.json` is read by
+  reviewers and never by Core.
+
+  Two corrections to that step 4.6 and to what step 4.5 claims. The rebuild was
+  unconditional, which walked into the RAPTOR trap the `/theurian:reindex` entry
+  below describes — a plain build publishes `nodes: 0`, so on a forest-bearing
+  project the summary retriever goes quiet — and it now asks about the forest
+  first and uses `--raptor` only on a yes, never unasked (ADR-0008 decision 10).
+  And step 4.5 said a failed apply "left no state database behind"; it does leave
+  one, measured at 151,552 bytes with no pointer referencing it. The successful
+  run's `databaseCreated: true` follows the changed state hash (ADR-0017), not
+  anything the failed run cleaned up. The step now says both. The shape section
+  also recommends `contentSha256` on every revision and `expectedRevision` on
+  updates — optional to the schema, and what makes an out-of-band body edit or a
+  concurrent change detectable rather than silent
+  ([#210](https://github.com/theurian/theurian/issues/210)).
+- **`/theurian:reindex` ran a command that does not exist**, the second live
+  face of the same root cause as the entry above: a user-facing instruction
+  naming a `theurian` subcommand that is not registered (#89). Its step 2
+  shelled out to an `index rebuild`, while the `index` group registers `build`,
+  `gc` and `status` — measured, `No such command 'rebuild'. Did you mean
+  'build'?` and exit 2. `docs/integrations/claude-code.md` mapped the command to
+  the same dead invocation.
+
+  It now runs `theurian index build --json` and then `theurian index gc --json`,
+  which is what the command was always describing. Measured on a scratch
+  project: two consecutive builds produce two different `indexBuildId` values,
+  the same chunk count, `published: true` both times, and **two files on disk** —
+  there is no already-built short-circuit, so a plain `index build` is the full
+  rebuild, and publishing does not reclaim what it replaced (ADR-0024 point 6).
+  `index gc` is the explicit reclamation ADR-0007 requires; in the same run it
+  removed exactly the superseded build, 159,744 bytes, and left the published one
+  in place. The document now shows `index gc --dry-run --json` first, because
+  step 3 is the only part of this command that deletes anything.
+
+  That flow then turned out to destroy a RAPTOR summary forest. `index build`
+  writes zero summary nodes unless it is given `--raptor`, and step 3 reclaims
+  the build the new one superseded — which is the build holding the forest.
+  Measured on a 128-chunk corpus: `--raptor` produced `nodes: 5`, a plain
+  rebuild of the same state produced `nodes: 0`, and `index gc` then reclaimed
+  the `--raptor` build, leaving the `nodes: 0` one alone on disk. The document
+  recommended this flow "after a change of summarization provider", which is
+  exactly when the forest matters. Step 1 now asks the user whether the project
+  keeps a forest — `index status` reports nothing about summaries, so there is
+  nothing to infer it from — and uses `--raptor` only on their yes, never
+  unasked (ADR-0008 decision 10). Step 3 warns that a build made without it by
+  mistake has to be redone *before* gc, not after. Three smaller corrections in
+  the same pass: the confirmation now comes after the `gc --dry-run` output rather
+  than before anything is shown, matching `/theurian:uninstall`; the step no
+  longer asks for a duration `index build --json` does not report; and the rules
+  name gc's two refusals — a pointer naming a missing build, and a pointer that
+  cannot be read — which exit 1 and reclaim nothing, `--dry-run` included.
+
+  Step 1 no longer says `/theurian:index` "handles the normal case
+  incrementally", and the front-matter description no longer claims this command
+  is "slower". No incremental path exists — every build re-derives from canonical
+  state — so both were describing a cost difference the code does not have. What
+  replaces them is the difference that is real: this command reclaims, and
+  `/theurian:index` does not. The remaining incremental claims in
+  `commands/index.md` are [#143](https://github.com/theurian/theurian/issues/143)
+  and are not touched here.
 
 ### Security
 
@@ -123,6 +235,26 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Bash(command -v:*)` and drops `Edit`. `command` is a shell builtin that runs
   its argument, so the prefix pattern pre-approved arbitrary execution; the
   document's own Rules section already forbade editing configuration files.
+- `/theurian:propose` narrows its `Write` grant to
+  `Write(.theurian/proposals/**)`. The command's whole purpose is writing a
+  proposal directory, and an unscoped `Write` auto-approved writes to
+  `.theurian/migrations/` and `.theurian/knowledge/` — the two directories its
+  own Rules section forbids it to touch.
+
+  **That narrowing bounds what the command writes, not what it may invoke, and
+  the documents now say so.** `/theurian:propose` claimed "There is no code path
+  from this command to approved state" while the same front-matter's
+  `Bash(theurian:*)` auto-approves `theurian migrate apply`, a canonical write;
+  `/theurian:reindex` carries the same grant over the irreversible
+  `theurian index gc`. `allowed-tools` grants and removes nothing — only
+  `disallowed-tools` removes — which this changelog already recorded for
+  `/theurian:upgrade` in 0.1.1 and which was reintroduced here from the other
+  side. Both documents now carry the residual statement: during the manual flow
+  containment is a documented rule plus a scoped grant, not a server-side check,
+  and the "You cannot approve knowledge" rule is what keeps approval with the
+  human. Narrowing the `Bash` grant itself is deliberately not done here and is
+  tracked as its own class
+  ([#209](https://github.com/theurian/theurian/issues/209)).
 
 ## [0.1.1] - 2026-08-09
 
