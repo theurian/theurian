@@ -33,21 +33,32 @@ Four readers over four file families, walked from the repository root:
 
 The first version of this file read three roots -- ``plugins/**/*.md``,
 ``docs/**/*.md`` and Core's ``src/**/*.py`` -- while its docstring claimed
-"every instructional surface". **193 sites lived outside it.** The key, because
-a count means nothing without one: occurrences of ``theurian`` followed by a
-lowercase word, in command position, by a raw line scan, in files those three
-roots did not open, over the walked tree, ``examples/`` included and both test
-trees excluded. The same scan gives 402 with the test trees, 187 without
-``examples/``, and 177 if lines are counted rather than occurrences -- so the
-number is only checkable beside the sentence above.
+"every instructional surface".
 
-Where they were, in full: Core's ``CHANGELOG.md`` (117), the README quickstart
-(19), ``SECURITY.md`` (9), ``CLAUDE.md`` (5), the sample project's README (5)
-and its ``config.yaml`` (1), the seven JSON schemas' remedy strings (19),
-``CONTRIBUTING.md`` (3), the bug-report issue template (3), the packaging
-READMEs (4), ``schemas/README.md`` (1), three release and CI workflows
-(``core.yml``, ``release-core.yml``, ``shared.yml``, 4), and the plugin's two
-shell scripts (3) -- which do not instruct anybody, they *execute*.
+**Measured at 27687e0, the commit that shipped those three roots: 193 sites
+lived outside them.** Everything in this passage is that one dated measurement
+and is deliberately not maintained -- the live claim is the class test below,
+which fails on a real defect rather than on a number drifting. Numbers here rot
+for reasons that are not defects: the merge that brought this branch up to date
+added one ``theurian ingest`` line to Core's CHANGELOG, and this file's own new
+test modules added sites of their own.
+
+Reproduce it with ``git archive 27687e0 | tar -x`` into an empty directory and
+this module's predicate over the result. The key, because a count means nothing
+without one: occurrences of ``theurian`` followed by a lowercase word, in
+command position, by a raw line scan, in files those three roots did not open,
+``examples/`` included and both test trees excluded. The same archive gives 368
+with the test trees, 187 without ``examples/``, and 177 counting lines rather
+than occurrences -- so the number is only checkable beside the sentence above.
+
+Where they were, in that tree, in full: Core's ``CHANGELOG.md`` (117), the
+README quickstart (19), ``SECURITY.md`` (9), ``CLAUDE.md`` (5), the sample
+project's README (5) and its ``config.yaml`` (1), the seven JSON schemas'
+remedy strings (19), ``CONTRIBUTING.md`` (3), the bug-report issue template
+(3), the packaging READMEs (4), ``schemas/README.md`` (1), three release and CI
+workflows (``core.yml``, ``release-core.yml``, ``shared.yml``, 4), and the
+plugin's two shell scripts (3) -- which do not instruct anybody, they
+*execute*. Twenty-four files, six file types.
 
 What is deliberately unread is listed in :data:`UNREAD`, and
 :func:`test_no_file_that_names_a_command_escapes_the_scan` walks every file in
@@ -493,13 +504,12 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
     """The population claim in the docstring, checked instead of asserted.
 
     The first version of this module read three roots and called itself "one
-    mechanism over every instructional surface". 193 command-position sites were
-    outside it -- the module docstring gives that count its key and its
-    breakdown -- spread over 24 files of six types: markdown, JSON, YAML, a
-    sample project's config, CI workflows, and the plugin's two shell scripts,
-    which *execute* theirs. Widening the roots fixes that once; this is what
-    keeps it fixed, because the next surface will be a file type nobody thought
-    of rather than a directory somebody forgot.
+    mechanism over every instructional surface". The module docstring records
+    what was outside them, measured at 27687e0: 24 files of six types --
+    markdown, JSON, YAML, a sample project's config, CI workflows, and the
+    plugin's two shell scripts, which *execute* theirs. Widening the roots
+    fixed that once; this is what keeps it fixed, because the next surface will
+    be a file type nobody thought of rather than a directory somebody forgot.
 
     Deliberately coarser than the readers: it asks only whether some reader opens
     the file, using a raw line scan with no notion of fences or quoting. A file

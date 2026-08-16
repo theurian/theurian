@@ -252,7 +252,47 @@ EXPECTED_BASH_GRANTS = {
 PERMITTED_WRITE_TOOLS = {"propose": frozenset({"Write(.theurian/proposals/**)"})}
 
 
-def _mismatch(command: str, kind: str, found: set[str], expected: frozenset[str]) -> str:
+#: The five documents that open a file, and what each opens. ``Read`` was the
+#: one grant with no check in either direction: it was subtracted out of the
+#: write comparison and never compared to anything, so deleting it from a
+#: document that has it, or adding it to one that does not, left the suite
+#: green. Measured from the twelve front-matters, not from a list somebody
+#: remembered.
+COMMANDS_THAT_READ_A_FILE = {
+    "setup": "probes the machine and reads the Claude Code configuration it is about to change",
+    "doctor": "reads the same configuration to diagnose it, and repairs nothing",
+    "migrate": "reads the migration files whose checksums it reports on",
+    "propose": "reads existing knowledge before drafting a proposal against it",
+    "upgrade": "opens `compatibility.yaml` in its step 2",
+}
+
+#: Why each kind of grant is bounded the way it is. Selected by kind rather than
+#: printed together: a failure on one half used to carry the other half's
+#: justification, which reads as if both were wrong and sends the reader to the
+#: table that was fine.
+_GRANT_RATIONALE = {
+    "Bash": (
+        "A prefix goes into PERMITTED_BASH_GRANTS only after someone has checked it "
+        "cannot be extended into another command -- `Bash(command:*)` matched "
+        "`command curl … | sh`."
+    ),
+    "Read": (
+        "`Read` is granted where the document tells the agent to open a file and "
+        "withheld where it does not. A missing one makes the user approve a prompt "
+        "the other file-reading commands do not raise; a spare one is a permission "
+        "the document never uses. COMMANDS_THAT_READ_A_FILE says which is which, and "
+        "why."
+    ),
+    "write": (
+        "Every configuration write belongs to `theurian setup` (CP-7); a command "
+        "document that edits one directly is the drift that rule exists to prevent."
+    ),
+}
+
+
+def _mismatch(
+    command: str, kind: str, found: set[str], expected: frozenset[str], note: str = ""
+) -> str:
     """Name what is extra and what is absent, separately.
 
     The two directions are different defects and read as opposites: an extra
@@ -266,9 +306,7 @@ def _mismatch(command: str, kind: str, found: set[str], expected: frozenset[str]
         f"/theurian:{command}'s {kind} grants do not match what this file records.\n"
         f"  granted but not permitted: {sorted(found - expected)}\n"
         f"  permitted but absent:      {sorted(expected - found)}\n"
-        f"Every configuration write belongs to `theurian setup` (CP-7), and a "
-        f"prefix goes into PERMITTED_BASH_GRANTS only after checking it cannot be "
-        f"extended into another command."
+        f"{_GRANT_RATIONALE[kind]}{note}"
     )
 
 
@@ -283,12 +321,19 @@ def test_command_grants_exactly_the_tools_it_uses(command: str) -> None:
     ``description`` is non-empty. A permission nothing holds is the weakest kind
     of fix.
 
-    Equality rather than a subset, on both halves. A subset check answers "did
-    anything unvetted get added" and is blind to "did something get removed" --
-    measured: deleting ``propose``'s ``Write`` grant, deleting the whole
-    ``allowed-tools`` key, and deleting ``index``'s ``Bash(theurian:*)`` each
-    left the suite green. Equality is behaviour-equivalent for what the twelve
-    carry today and catches presence, absence and exactness together.
+    Equality rather than a subset, and on every kind of grant rather than some
+    of them. A subset check answers "did anything unvetted get added" and is
+    blind to "did something get removed" -- measured: deleting ``propose``'s
+    ``Write`` grant, deleting the whole ``allowed-tools`` key, and deleting
+    ``index``'s ``Bash(theurian:*)`` each left the suite green. ``Read`` was
+    worse than a subset: it was subtracted out of the write comparison and
+    compared to nothing at all, so it moved in *either* direction unnoticed.
+
+    Three assertions rather than one over the whole set, so that a failure names
+    which kind of permission moved and carries only that kind's reasoning.
+    Together they partition ``granted``: anything that is neither a ``Bash``
+    prefix nor ``Read`` lands in ``writes`` and has to be permitted there, so a
+    grant of a kind nobody has thought of fails rather than escaping.
     """
     text = (PLUGIN / "commands" / f"{command}.md").read_text(encoding="utf-8")
     frontmatter = yaml.safe_load(text.split("---", 2)[1])
@@ -305,7 +350,18 @@ def test_command_grants_exactly_the_tools_it_uses(command: str) -> None:
         command, "Bash", bash, EXPECTED_BASH_GRANTS[command]
     )
 
-    writes = (granted - bash) - {"Read"}
+    read = granted & {"Read"}
+    why = COMMANDS_THAT_READ_A_FILE.get(command)
+    expected_read = frozenset({"Read"} if why else ())
+    assert read == expected_read, _mismatch(
+        command,
+        "Read",
+        read,
+        expected_read,
+        f"\nThis file records that /theurian:{command} {why}." if why else "",
+    )
+
+    writes = (granted - bash) - read
     permitted = PERMITTED_WRITE_TOOLS.get(command, frozenset())
     assert writes == permitted, _mismatch(command, "write", writes, permitted)
 
@@ -328,6 +384,11 @@ def test_every_expected_grant_is_one_of_the_vetted_prefixes() -> None:
         f"  vetted but unused:     {sorted(PERMITTED_BASH_GRANTS - used)}"
     )
     assert set(EXPECTED_BASH_GRANTS) == set(REQUIRED_COMMANDS)
+    assert set(COMMANDS_THAT_READ_A_FILE) <= set(REQUIRED_COMMANDS), (
+        "COMMANDS_THAT_READ_A_FILE names something that is not a shipped command, "
+        "so its `Read` grant is required of a document that does not exist: "
+        f"{sorted(set(COMMANDS_THAT_READ_A_FILE) - set(REQUIRED_COMMANDS))}"
+    )
 
 
 @pytest.mark.parametrize("command", ["uninstall", "unregister-project"])
