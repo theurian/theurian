@@ -91,6 +91,58 @@ def _write_migration(root: Path, migration: str = MIGRATION, body: str = BODY) -
     (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(migration)
 
 
+# -- issue #205: a contentFile that does not resolve ------------------------
+
+UNRESOLVABLE_MIGRATION_ID = "01K1EEEEEE01234567890ABCDE"
+UNRESOLVABLE_REVISION_ID = "01K1EEEREV01234567890ABCDE"
+
+#: The natural authoring mistake the issue names: a path that would have
+#: resolved against a proposal directory, left uncorrected after the migration
+#: moved into `.theurian/migrations/`, which is where `contentFile` actually
+#: resolves from (docs/protocol/migrations.md, "Path safety").
+UNRESOLVABLE_CONTENT_FILE = "content.md"
+
+UNRESOLVABLE_CONTENT_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {UNRESOLVABLE_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {UNRESOLVABLE_REVISION_ID}
+    contentFile: {UNRESOLVABLE_CONTENT_FILE}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _write_unresolvable_content_migration(root: Path) -> None:
+    """A migration referencing a ``contentFile`` that is never written to disk.
+
+    Reproduces issue #205: `resolve_context` loads every migration under
+    `.theurian/migrations/`, including this one, so any `--json` command that
+    calls it inherits the crash unless the loader itself converts the read
+    failure into a structured error.
+    """
+    (root / f".theurian/migrations/{UNRESOLVABLE_MIGRATION_ID}-repro.yaml").write_text(
+        UNRESOLVABLE_CONTENT_MIGRATION
+    )
+
+
 # -- init ------------------------------------------------------------------
 
 
@@ -131,6 +183,30 @@ def test_init_outside_a_git_repository_fails_clearly(
     code, payload = _invoke("init")
     assert code == 1
     assert "not inside a Git repository" in payload["error"]
+
+
+def test_init_reports_an_unresolvable_content_file_instead_of_crashing(project: Path) -> None:
+    """Issue #205: every ``--json`` command reaching ``resolve_context`` is a
+    member of this class, not only ``migrate validate``. ``init`` re-run against
+    a project whose migrations already hold one is the second measured member.
+    """
+    _invoke("init")
+    _write_unresolvable_content_migration(project)
+
+    # `catch_exceptions=False` re-raises anything Click's own `SystemExit`
+    # handling does not swallow, so a bare `FileNotFoundError` propagates out
+    # of `invoke` itself and fails this test at the call above -- which is
+    # exactly what it did before the fix. Reaching the assertions below is
+    # itself the "no traceback reached the caller" proof.
+    result = runner.invoke(app, ["init", "--json"], catch_exceptions=False)
+
+    assert result.exit_code != 0
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    assert "error" in payload
+    assert "remedy" in payload
+    assert UNRESOLVABLE_CONTENT_FILE in payload["error"]
+    assert "relative to the migration file" in payload["remedy"]
 
 
 # -- project ---------------------------------------------------------------
@@ -588,6 +664,40 @@ operations:
     assert code == EXIT_STATE_ERROR
     assert "Revision conflict" in error["error"]
     assert "does not merge knowledge automatically" in error["remedy"]
+
+
+def test_validate_reports_an_unresolvable_content_file_instead_of_crashing(project: Path) -> None:
+    """Issue #205: the CLI's own reproduction.
+
+    Before the fix, ``read_source_file``'s documented ``FileNotFoundError``
+    escaped `resolve_context` -- called from `_require_project` -- as a bare
+    `OSError` that none of `_require_project`'s `except` clauses caught,
+    reaching Typer as a Rich traceback: exit 1, empty stdout, no `{error,
+    remedy}` payload even under `--json` (CP-2).
+    """
+    _invoke("init")
+    _write_unresolvable_content_migration(project)
+
+    # `catch_exceptions=False` re-raises anything Click's own `SystemExit`
+    # handling does not swallow, so a bare `FileNotFoundError` propagates out
+    # of `invoke` itself and fails this test at the call above -- which is
+    # exactly what it did before the fix. Reaching the assertions below is
+    # itself the "no traceback reached the caller" proof.
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    assert "error" in payload
+    assert "remedy" in payload
+    # Names which migration and which unresolvable path, not only that
+    # something failed.
+    assert UNRESOLVABLE_MIGRATION_ID in payload["error"]
+    assert UNRESOLVABLE_CONTENT_FILE in payload["error"]
+    # The natural authoring mistake the issue names: contentFile written as if
+    # relative to a proposal directory, not to the migration file itself.
+    assert "relative to the migration file" in payload["remedy"]
+    assert "proposal directory" in payload["remedy"]
 
 
 def test_a_malformed_migration_names_the_offending_field(project: Path) -> None:

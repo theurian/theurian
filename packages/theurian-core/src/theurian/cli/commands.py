@@ -56,6 +56,7 @@ from theurian.cli.context import (
 )
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
+    MigrationContentUnreadableError,
     MigrationCycleError,
     MigrationError,
     RevisionConflictError,
@@ -285,6 +286,11 @@ def _context_remedy(exc: TheurianError, *, default: str) -> str:
         return exc.remedy
     if isinstance(exc, MigrationCycleError):
         return "Break the dependency cycle shown above, then retry."
+    # Checked ahead of the general `MigrationError` branch below: it is a
+    # subtype, and the general branch's fixed string would otherwise shadow
+    # the specific remedy naming what actually happened (issue #205).
+    if isinstance(exc, MigrationContentUnreadableError):
+        return exc.remedy
     if isinstance(exc, MigrationError):
         return "Fix the migration file, then retry."
     return default
@@ -1663,6 +1669,22 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
         _fail(
             str(exc),
             remedy="Break the dependency cycle shown above, then retry.",
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        raise
+    # Checked ahead of the general `MigrationError` clause below: it is a
+    # subtype, and Python matches the first `except` whose type fits, so
+    # leaving this after the general clause would report the generic "fix the
+    # migration file" string instead of naming which file, which path, and the
+    # resolves-relative-to-the-migration-file rule (issue #205). Graded the
+    # same `EXIT_STATE_ERROR` as every other `MigrationError`: a `contentFile`
+    # that does not resolve is a knowledge-state problem the user must fix, the
+    # same family as a checksum mismatch or a dependency cycle above.
+    except MigrationContentUnreadableError as exc:
+        _fail(
+            str(exc),
+            remedy=exc.remedy,
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )

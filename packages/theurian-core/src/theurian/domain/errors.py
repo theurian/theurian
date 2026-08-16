@@ -6,7 +6,7 @@ message that says only "conflict" forces the reader back into the code.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 if TYPE_CHECKING:
     from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
@@ -89,6 +89,46 @@ class MigrationDependencyMissingError(MigrationError):
         self.migration_id = migration_id
         self.missing = missing
         super().__init__(f"Migration {migration_id} depends on unknown migration {missing}")
+
+
+class MigrationContentUnreadableError(MigrationError):
+    """An ``upsertRevision`` operation's ``contentFile`` could not be read (issue #205).
+
+    Raised at the one place the read happens
+    (``infrastructure/filesystem/migration_loader.py::_parse_upsert``), translating
+    a bare ``OSError`` -- ``read_source_file``'s own docstring names
+    ``FileNotFoundError`` as one of the things it raises -- into a
+    :class:`TheurianError` subtype. That is the whole fix: every command that
+    reaches ``resolve_context`` already guards ``TheurianError`` or one of
+    ``MigrationError``'s existing subtypes around it, never a bare ``OSError``,
+    so converting here is what every one of those callers inherits without its
+    own patch (CP-2). Before this class existed, the read's `FileNotFoundError`
+    escaped through Typer as a Rich traceback: exit 1, empty stdout, no
+    ``{error, remedy}`` payload, even under ``--json`` -- reproduced against
+    both ``migrate validate`` and ``init``, re-run against a project whose
+    migrations already held one.
+    """
+
+    #: Shared by every instance because the cure does not depend on which OS
+    #: error caused the read to fail: `contentFile`'s resolution rule
+    #: (docs/protocol/migrations.md, "Path safety") is the one fact a reader
+    #: needs, and the natural way to get an unresolvable path is writing it as
+    #: if relative to a proposal directory, then moving the migration into
+    #: `.theurian/migrations/` without updating it.
+    REMEDY: Final = (
+        "contentFile resolves relative to the migration file, not to a proposal "
+        "directory (docs/protocol/migrations.md, 'Path safety'). The usual cause is "
+        "moving a migration out of a proposal directory without updating this path. "
+        "Fix the path, or restore the referenced file, then retry."
+    )
+
+    def __init__(self, migration_path: str, content_file: str, reason: str) -> None:
+        self.migration_path = migration_path
+        self.content_file = content_file
+        self.remedy = self.REMEDY
+        super().__init__(
+            f"{migration_path}: contentFile {content_file!r} could not be read: {reason}"
+        )
 
 
 class ScopeViolation(NamedTuple):

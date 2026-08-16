@@ -24,7 +24,11 @@ from theurian.domain.enums import (
     SpecificationStatus,
     TrustLevel,
 )
-from theurian.domain.errors import MigrationError, PathEscapeError
+from theurian.domain.errors import (
+    MigrationContentUnreadableError,
+    MigrationError,
+    PathEscapeError,
+)
 from theurian.domain.identifiers import ItemId, MigrationId, RevisionId, SpecId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.migration import (
@@ -273,7 +277,19 @@ def _parse_upsert(
 
     relative_posix = PurePosixPath(relative)
     resolve_within_root(project_root, relative_posix)
-    body_bytes = read_source_file(project_root, relative_posix)
+    try:
+        body_bytes = read_source_file(project_root, relative_posix)
+    except OSError as exc:
+        # `read_source_file`'s own docstring names `FileNotFoundError` as one of
+        # the things it raises, and a bare `OSError` is none of the types every
+        # `resolve_context` caller already guards (issue #205). Converting here,
+        # at the one call site the read happens, is what makes every one of
+        # those callers -- `migrate validate`, `init`, and the rest of
+        # `_require_project`'s seven call sites -- report the CP-2 `{error,
+        # remedy}` shape instead of a Rich traceback with an empty stdout.
+        raise MigrationContentUnreadableError(
+            str(path.relative_to(project_root)), content_file, exc.strerror or str(exc)
+        ) from exc
 
     try:
         body = body_bytes.decode("utf-8")
