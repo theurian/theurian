@@ -367,6 +367,30 @@ def test_an_exemption_covers_the_texts_it_lists_and_no_others() -> None:
     assert [found.line for found in unexcused(three, [])] == [2039, 2040, 2085]
 
 
+def test_two_exemptions_cannot_share_one_anchor() -> None:
+    """The guard on the permission table, which the table itself never trips.
+
+    :func:`unexcused` keys exemptions by ``(path, literal)``, so a second entry
+    for a pair already listed replaces the first and takes its ``excused`` texts
+    out of the requirement with it -- silently, and in the direction that grants
+    rather than refuses. ``KNOWN_UNREGISTERED`` has no duplicate today, which is
+    exactly why deleting the guard left the whole suite green: a check whose
+    condition the data never meets is indistinguishable from no check at all.
+    """
+    twin = Exemption(
+        path=_DEMONSTRATION.path,
+        literal=_DEMONSTRATION.literal,
+        excused=("theurian upgrade",),
+        reason="a second entry for a file and literal already listed",
+        reference="#42",
+    )
+
+    with pytest.raises(AssertionError, match="share a"):
+        unexcused([_occurrence(2039, "theurian upgrade")], [_DEMONSTRATION, twin])
+
+    assert unexcused([], [_DEMONSTRATION]) == [], "one entry per anchor stays legal"
+
+
 def test_the_text_an_exemption_is_matched_on_is_whitespace_normalised() -> None:
     """The matching key must not inherit whatever shape a reader left behind.
 
