@@ -37,9 +37,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   scans the shipped package and pins the permitted network-client sites to
   `daemon/instance.py` alone, resolving attribute chains and constant-string
   dynamic imports; `test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process`
-  does the same over `subprocess`, the `os.system`/`popen`/`spawn*`/`exec*`
-  family and `asyncio.create_subprocess_*`, because `curl` and `gh api` reach
-  the network with no client module in the diff; and
+  does the same over `subprocess`, the `os` spawn/exec family
+  (`system`, `popen`, `spawn*`, `posix_spawn*`, `exec*`) and
+  `asyncio.create_subprocess_*`, because `curl` and `gh api` reach the network
+  with no client module in the diff; and
   `test_parsing_a_hostile_document_opens_no_socket` watches the socket layer
   while *every* parser `default_parsers()` returns handles a hostile document,
   with `test_every_parser_the_registry_ships_has_a_hostile_document` failing
@@ -84,8 +85,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `remote get-url origin` — because `default_branch`
   (`symbolic-ref --short HEAD`) is reached only from `project register` and
   `migrate apply`. Measured by running the command against a `git` shim that
-  logs every invocation. The correction lands in the plugin's
-  `/theurian:ingest` document, which listed a read the command never makes.
+  logs every invocation. Recorded here because the count is a fact about
+  `cli/context.py`; the document it corrects is the plugin's `/theurian:ingest`,
+  whose own change is in
+  [the plugin changelog](../../plugins/claude-code/CHANGELOG.md).
 
 - **T-7's owed controls listed wherever the entry is summarised.** The threat
   table in `docs/architecture/requirements-analysis.md` named only the

@@ -29,7 +29,7 @@ Report what was ingested by source type and how many documents changed.
   to be on the allowlist in `.theurian/config.yaml` before Theurian contacts it;
   nothing reads that file today, so do not tell the user the allowlist is
   protecting them.
-- Nothing generates candidates or summarizes today, so there is no partial
-  result to report. When review ingestion lands (Milestone 7,
-  [#129](https://github.com/theurian/theurian/issues/129)), a failure in
-  candidate generation must not fail raw ingestion (FR-V5).
+- `theurian ingest` generates no candidates and runs no summarization stage, so
+  there is no partial result to report. When review ingestion lands
+  (Milestone 7, [#129](https://github.com/theurian/theurian/issues/129)), a
+  failure in candidate generation must not fail raw ingestion (FR-V5).

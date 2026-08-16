@@ -91,30 +91,31 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   including the one where it did restart the daemon. The delete-the-file branch
   carried the daemon half of that warning and nothing else; it now names every
   process that already read the value.
-- `/theurian:ingest` no longer offers review history as something it ingests.
-  Its `description` — visible in Claude Code's command list — said "Ingest
-  documents, specs, and review history", as did the command's row in the plugin
-  README, and the Rules illustrated evidence with an ingested review comment.
-  No review history is ingested: `system.capabilities` reports
-  `reviewIngestion: false` and `infrastructure/github/` holds no adapter, so an
-  agent reading the old description would have offered a source Core cannot
-  read. The document now says review ingestion is owed with Milestone 7, and
-  says the repository allowlist in `.theurian/config.yaml` is not protecting the
-  user yet, because nothing reads that file
-  ([#129](https://github.com/theurian/theurian/issues/129)).
-- `/theurian:ingest` describes what the command actually reads: local data —
-  files under `.theurian/`, plus the three `git` reads the ingest path performs,
-  `rev-parse --show-toplevel`, `rev-parse HEAD` and `remote get-url origin`. It
-  previously said "local files under `.theurian/` only", which omits the `git`
-  reads entirely. `cli/context.py` defines a fourth reader,
-  `default_branch` (`symbolic-ref --short HEAD`), but only `project register`
-  and `migrate apply` call it — measured by running `theurian ingest` against a
-  `git` shim that logs every invocation.
+- `/theurian:ingest` no longer offers review history as something it ingests,
+  and now says what the command does read
+  ([#129](https://github.com/theurian/theurian/issues/129)). Its `description` —
+  visible in Claude Code's command list — said "Ingest sources — docs, specs,
+  and Git review history", as did the command's row in the plugin README, and
+  the Rules illustrated evidence with an ingested review comment. No review
+  history is ingested: `system.capabilities` reports `reviewIngestion: false`
+  and `infrastructure/github/` holds no adapter, so an agent reading the old
+  description would have offered a source Core cannot read. The Rules also told
+  the user that "Theurian will not contact a repository that is not listed" in
+  `.theurian/config.yaml`, which reads as a control in force; nothing reads that
+  file, so the allowlist protects no one yet.
+
+  The document now says review ingestion is owed with Milestone 7, says the
+  allowlist is not protecting the user, and enumerates what `theurian ingest`
+  actually reads: files under `.theurian/`, plus three `git` reads —
+  `rev-parse --show-toplevel`, `rev-parse HEAD` and `remote get-url origin`.
+  Measured by running the command against a `git` shim that logs every
+  invocation.
 - `/theurian:ingest` no longer promises to report a partial result when
-  candidate generation fails (FR-V5). Nothing generates candidates or
-  summarizes, and the command's JSON has no field for one, so the instruction
-  described a run that cannot happen. It now states FR-V5 as owed with review
-  ingestion ([#129](https://github.com/theurian/theurian/issues/129)).
+  candidate generation fails (FR-V5). `theurian ingest` generates no candidates
+  and runs no summarization stage, and its JSON has no field for a partial
+  result, so the instruction described a run that cannot happen. It now states
+  FR-V5 as owed with review ingestion
+  ([#129](https://github.com/theurian/theurian/issues/129)).
 
 ### Security
 

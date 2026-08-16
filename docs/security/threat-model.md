@@ -710,8 +710,9 @@ in `tests/unit/test_network_call_sites.py` cover each other's blind spots.
   `test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process` asks
   the same question of the other way out of this process, since `curl`, `gh` and
   `git fetch` reach the network without Theurian importing a client. It watches
-  `subprocess`, the `os.system`/`popen`/`spawn*`/`exec*` family and
-  `asyncio.create_subprocess_*`, and permits two sites: the `git` context reads
+  `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
+  `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
+  two sites: the `git` context reads
   in `cli/context.py` and the service runner in
   `infrastructure/services/runner.py`, neither of which takes its argument
   vector from a document.

@@ -17,7 +17,9 @@ and the promotion invariants below are held by three different mechanisms
   rather than by a check, which makes one keyword load-bearing. Pinned by
   `test_a_candidate_cannot_be_constructed_with_a_trust_level`.
 - **Construction.** `__post_init__` rejects a candidate with no evidence, an
-  empty body, or an unmet promotion gate.
+  empty body, or an unmet promotion gate. Pinned by
+  `test_candidate_without_evidence_is_rejected_at_generation` and its two
+  siblings.
 
 What is missing is everything that would fill that model. `infrastructure/github/`
 holds no adapter, `theurian ingest` reads local files only, and no code path
