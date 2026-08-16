@@ -25,19 +25,29 @@ Four readers over four file families, walked from the repository root:
 ``*.md`` anywhere                  fenced blocks, inline code spans, YAML
                                    frontmatter values, and any line whose
                                    own content is a command
-``*.py`` under Core's ``src/``     ``#`` comment runs, string literals, and
-                                   f-strings
+``*.py`` under Core's ``src/``     ``#`` comment runs, and string literals with
+                                   f-strings and implicit concatenation resolved
 ``*.json`` anywhere                code spans inside string literals
 ``*.sh`` / ``*.yml`` / ``*.yaml``  every logical line
 =================================  ==========================================
 
 The first version of this file read three roots -- ``plugins/**/*.md``,
 ``docs/**/*.md`` and Core's ``src/**/*.py`` -- while its docstring claimed
-"every instructional surface". Measured against that claim, 193 command-position
-sites lived outside it: the README quickstart, ``SECURITY.md``, ``CLAUDE.md``,
-Core's ``CHANGELOG.md``, the packaging and schema READMEs, the JSON schemas'
-remedy strings, the issue templates, the release workflows, and the plugin's two
-shell scripts -- which do not instruct anybody, they *execute*.
+"every instructional surface". **193 sites lived outside it.** The key, because
+a count means nothing without one: occurrences of ``theurian`` followed by a
+lowercase word, in command position, by a raw line scan, in files those three
+roots did not open, over the walked tree, ``examples/`` included and both test
+trees excluded. The same scan gives 402 with the test trees, 187 without
+``examples/``, and 177 if lines are counted rather than occurrences -- so the
+number is only checkable beside the sentence above.
+
+Where they were, in full: Core's ``CHANGELOG.md`` (117), the README quickstart
+(19), ``SECURITY.md`` (9), ``CLAUDE.md`` (5), the sample project's README (5)
+and its ``config.yaml`` (1), the seven JSON schemas' remedy strings (19),
+``CONTRIBUTING.md`` (3), the bug-report issue template (3), the packaging
+READMEs (4), ``schemas/README.md`` (1), three release and CI workflows
+(``core.yml``, ``release-core.yml``, ``shared.yml``, 4), and the plugin's two
+shell scripts (3) -- which do not instruct anybody, they *execute*.
 
 What is deliberately unread is listed in :data:`UNREAD`, and
 :func:`test_no_file_that_names_a_command_escapes_the_scan` walks every file in
@@ -184,7 +194,7 @@ _ENV_ASSIGNMENT: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 #: capitalised or punctuation-led token -- ``CLI``, ``>>>`` from the
 #: ``# >>> theurian >>>`` marker, ``0.1.0.dev0`` -- is prose rather than a claim
 #: about the CLI. ``-`` and ``<`` lead a flag and a placeholder respectively,
-#: and ``{}`` is what :func:`_fstring_blocks` writes where an interpolation was.
+#: and ``{}`` is what :func:`_literal_blocks` writes where an interpolation was.
 _SUBCOMMAND: Final = re.compile(r"^[a-z][a-z0-9-]*$")
 
 #: Punctuation a command word picks up from the prose around it.
@@ -383,35 +393,56 @@ def markdown_command_lines(text: str) -> Iterator[Span]:
 
 
 def _comment_blocks(source: str) -> Iterator[tuple[int, str]]:
-    """String literals whole, and runs of ``#`` comments joined.
+    """Runs of ``#`` comment lines, joined.
 
     ``tokenize`` emits one token per comment *line*, so a code span wrapped over
     two of them -- ``mcp/search.py`` has ``theurian index`` on one line and
     ``gc`` on the next -- is not a span in either token. Joining the run first is
     what makes it one.
 
-    f-strings are not ``STRING`` tokens and are read by :func:`_fstring_blocks`.
+    String literals are :func:`_literal_blocks`'s, because they need joining of
+    a different kind.
     """
     block: list[str] = []
     start = 0
     previous = -2
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.COMMENT:
-            if token.start[0] != previous + 1:
-                if block:
-                    yield start, "\n".join(block)
-                block, start = [], token.start[0]
-            block.append(token.string)
-            previous = token.start[0]
-        elif token.type == tokenize.STRING:
-            yield token.start[0], token.string
+        if token.type != tokenize.COMMENT:
+            continue
+        if token.start[0] != previous + 1:
+            if block:
+                yield start, "\n".join(block)
+            block, start = [], token.start[0]
+        block.append(token.string)
+        previous = token.start[0]
     if block:
         yield start, "\n".join(block)
 
 
+#: A string literal's prefix letters and its opening quote run.
+_LITERAL_OPENER: Final = re.compile(r"[A-Za-z]*(?P<quote>'''|\"\"\"|'|\")")
+
+#: What may sit between two implicitly concatenated literals without ending the
+#: concatenation. A logical ``NEWLINE`` ends the statement and therefore does.
+_LITERAL_GLUE: Final = frozenset({tokenize.NL, tokenize.COMMENT})
+
+
+def _literal_body(raw: str) -> str:
+    """The source between a literal's delimiters, with its escapes left alone.
+
+    Deliberately not :func:`ast.literal_eval`. Decoding turns ``\\n`` into a real
+    newline, and every span after it in the same literal would then be reported
+    one line late for each escape it followed.
+    """
+    opener = _LITERAL_OPENER.match(raw)
+    if opener is None:  # pragma: no cover - tokenize emits no such STRING token
+        return raw
+    return raw[opener.end() : len(raw) - len(opener.group("quote"))]
+
+
 @dataclass
-class _FStringBuilder:
-    """One f-string being reassembled from its tokens."""
+class _Builder:
+    """Literal text being reassembled from the tokens that carry it."""
 
     line: int
     row: int
@@ -419,55 +450,109 @@ class _FStringBuilder:
     pending: bool = False
 
     def take(self, start_row: int, text: str, end_row: int) -> None:
-        """Append the next literal fragment, standing in for what preceded it."""
+        """Append the next fragment, standing in for whatever preceded it.
+
+        The rows between two fragments are kept as newlines whether what sat
+        there was an interpolation or the quotes, whitespace and ``f`` prefix
+        joining two adjacent literals. Without them every span after the gap is
+        reported at the line the literal *started* on.
+        """
         if self.pending:
-            self.parts.append("{}" + "\n" * (start_row - self.row))
+            self.parts.append("{}")
             self.pending = False
+        self.parts.append("\n" * (start_row - self.row))
         self.parts.append(text)
         self.row = end_row
 
+    @property
+    def text(self) -> str:
+        return "".join(self.parts)
 
-def _fstring_blocks(source: str) -> Iterator[tuple[int, str]]:
-    """Each f-string's literal text, with ``{}`` where an interpolation was.
 
-    PEP 701 changed the tokenizer in Python 3.12: an f-string is no longer one
-    ``STRING`` token but a ``FSTRING_START`` / ``FSTRING_MIDDLE`` /
-    ``FSTRING_END`` run. :func:`_comment_blocks` reads ``STRING``, so every one
-    of Core's 403 f-strings was invisible to it -- including 37 that carry a
-    backticked ``theurian <command>`` remedy to a user through an error message.
-    A mutation turning ``index_purge.py``'s ``theurian index build`` remedy into
-    ``theurian index rebuild`` survived the whole suite.
+def _literal_blocks(source: str) -> Iterator[tuple[int, str]]:
+    """Every string literal, with implicit concatenation and f-strings resolved.
 
-    An interpolation becomes ``{}`` rather than being dropped, because dropping
-    it invents commands: ``f"theurian {verb} build"`` would read as
-    ``theurian build``. ``{}`` is not a ``_SUBCOMMAND``, so the invocation is
+    Two joins, both of which were holes.
+
+    **f-strings.** PEP 701 changed the tokenizer in Python 3.12: an f-string is
+    no longer one ``STRING`` token but a ``FSTRING_START`` / ``FSTRING_MIDDLE`` /
+    ``FSTRING_END`` run. A reader of ``STRING`` alone saw none of Core's 403
+    f-strings, 37 of which carry a backticked remedy to a user through an error
+    message. An interpolation becomes ``{}`` rather than vanishing, because
+    vanishing invents commands: ``f"theurian {verb} build"`` would read as
+    ``theurian build``. ``{}`` is not a :data:`_SUBCOMMAND`, so the invocation is
     seen and refused, while ``f"theurian index build --project {pid}"`` still
-    resolves. The newlines an interpolation spanned are kept with it, so a span
-    after a multi-line interpolation is still reported at its own line.
+    resolves.
+
+    **Implicit concatenation.** Adjacent literals are one string to Python and
+    were two chunks here, so a code span that opened in one and closed in the
+    next was a span in neither. That is not hypothetical:
+    ``infrastructure/sqlite/index_purge.py`` ends a fragment with
+    ``Run `theurian index `` and opens the next with ``build` to rebuild it``,
+    and the remedy was invisible. Merging the run is what makes it one span.
+
+    A literal inside an f-string's interpolation is yielded on its own: it is not
+    part of the surrounding concatenation, and dropping it would lose a remedy
+    written as ``f"{'Run `theurian gc`' if stale else ''}"``.
     """
-    stack: list[_FStringBuilder] = []
+    group: _Builder | None = None
+    stack: list[_Builder] = []
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.FSTRING_START:
+        if stack:
+            if token.type == tokenize.STRING:
+                yield token.start[0], _literal_body(token.string)
+                continue
+            closed = _fstring_step(stack, token)
+            if closed is None:
+                continue
             if stack:
-                stack[-1].pending = True
-            stack.append(_FStringBuilder(line=token.start[0], row=token.end[0]))
-        elif not stack:
-            continue
-        elif token.type == tokenize.FSTRING_MIDDLE:
-            stack[-1].take(token.start[0], token.string, token.end[0])
-        elif token.type == tokenize.FSTRING_END:
-            done = stack.pop()
-            done.take(token.start[0], "", token.end[0])
-            yield done.line, "".join(done.parts)
-            if stack:
-                stack[-1].pending = True
-        else:
+                yield closed.line, closed.text
+            else:
+                group = _joined(group, closed.line, closed.text, token.end[0])
+        elif token.type == tokenize.STRING:
+            group = _joined(group, token.start[0], _literal_body(token.string), token.end[0])
+        elif token.type == tokenize.FSTRING_START:
+            stack.append(_Builder(line=token.start[0], row=token.end[0]))
+        elif token.type not in _LITERAL_GLUE and group is not None:
+            yield group.line, group.text
+            group = None
+    if group is not None:
+        yield group.line, group.text
+
+
+def _fstring_step(stack: list[_Builder], token: tokenize.TokenInfo) -> _Builder | None:
+    """Advance the innermost f-string, returning it on the token that closes it.
+
+    Anything that is not a literal fragment marks an interpolation as pending,
+    so the next fragment is preceded by ``{}`` and by the rows it spanned.
+    """
+    if token.type == tokenize.FSTRING_START:
+        stack[-1].pending = True
+        stack.append(_Builder(line=token.start[0], row=token.end[0]))
+    elif token.type == tokenize.FSTRING_MIDDLE:
+        stack[-1].take(token.start[0], token.string, token.end[0])
+    elif token.type == tokenize.FSTRING_END:
+        done = stack.pop()
+        done.take(token.start[0], "", token.end[0])
+        if stack:
             stack[-1].pending = True
+        return done
+    else:
+        stack[-1].pending = True
+    return None
+
+
+def _joined(group: _Builder | None, line: int, text: str, end_row: int) -> _Builder:
+    """Start a concatenation run, or add the next literal to the one open."""
+    if group is None:
+        group = _Builder(line=line, row=line)
+    group.take(line, text, end_row)
+    return group
 
 
 def python_command_lines(source: str) -> Iterator[Span]:
     """Every code span written inside a Python comment, string, or f-string."""
-    for line, chunk in sorted([*_comment_blocks(source), *_fstring_blocks(source)]):
+    for line, chunk in sorted([*_comment_blocks(source), *_literal_blocks(source)]):
         for span in _CODE_SPAN.finditer(chunk):
             body = _unwrap(span.group("body"), _COMMENT_MARKER)
             yield Span(line + chunk.count("\n", 0, span.start()), body)
@@ -716,7 +801,17 @@ class Invocation:
 
     @property
     def excerpt(self) -> str:
-        """The quoted text, whitespace-normalised, as an exemption records it."""
+        """The quoted text, whitespace-normalised, as an exemption records it.
+
+        This is the key an :class:`Exemption` is matched on, so it must not
+        depend on a reader arm's side effects. Every arm happens to hand back
+        single-spaced text today -- :func:`_unwrap` collapses a wrap and
+        :func:`_fence_lines` joins with one space -- which makes the
+        normalisation here look unreachable and makes deleting it survive the
+        whole suite. It is not unreachable: it is what stops a *future* arm, or
+        a reader that stops collapsing, from silently invalidating every
+        recorded permission at once.
+        """
         return " ".join(self.span.split())
 
 
@@ -874,7 +969,14 @@ def unexcused(
     nothing here knows which of four identical mentions is the new one -- and a
     failure that picks one anyway sends the reader to a line that was fine.
     """
-    permitted = {exemption.anchor: exemption for exemption in exemptions}
+    entries = list(exemptions)
+    permitted = {exemption.anchor: exemption for exemption in entries}
+    assert len(permitted) == len(entries), (
+        "two Exemptions share a (path, literal) anchor, so one silently replaces "
+        "the other and its `excused` texts stop being required: "
+        f"{sorted(a for a in permitted if sum(e.anchor == a for e in entries) > 1)}"
+    )
+
     offending: list[Invocation] = []
     for anchor, group in _by_anchor(invocations).items():
         exemption = permitted.get(anchor)
@@ -994,6 +1096,24 @@ def test_an_exemption_covers_the_texts_it_lists_and_no_others() -> None:
     assert [found.line for found in unexcused(three, [])] == [2039, 2040, 2085]
 
 
+def test_the_text_an_exemption_is_matched_on_is_whitespace_normalised() -> None:
+    """The matching key must not inherit whatever shape a reader left behind.
+
+    Every reader arm returns single-spaced text today, so this normalisation is
+    invisible in the real scan and deleting it survives the whole suite. That is
+    exactly why it is pinned here rather than left to be noticed: the day an arm
+    stops collapsing a wrap -- or a new arm is added that never did -- every
+    recorded permission stops matching at once, and the failure would read as
+    "the repository grew six new dead commands" instead of "the key moved".
+    """
+    wrapped = Invocation(
+        path="docs/example.md", line=1, command="upgrade", span="theurian\n  upgrade  --check"
+    )
+
+    assert wrapped.excerpt == "theurian upgrade --check"
+    assert Invocation("p", 1, "upgrade", "  theurian upgrade  ").excerpt == "theurian upgrade"
+
+
 def test_an_exemption_that_loses_one_of_its_texts_is_reported() -> None:
     """The other direction: a permission for three that now covers two.
 
@@ -1005,6 +1125,20 @@ def test_an_exemption_that_loses_one_of_its_texts_is_reported() -> None:
 
     assert unmatched(two, [_DEMONSTRATION]) == [(_DEMONSTRATION, "theurian upgrade")]
     assert unmatched([*two, _occurrence(2085, "theurian upgrade")], [_DEMONSTRATION]) == []
+
+    one = [_occurrence(2039, "theurian upgrade")]
+    assert unmatched(one, [_DEMONSTRATION]) == [
+        (_DEMONSTRATION, "theurian upgrade"),
+        (_DEMONSTRATION, "theurian upgrade"),
+    ], (
+        "two of the three excused mentions are gone, so the report has to say so "
+        "twice. One entry per *text* would read as a single stale permission and "
+        "leave a standing excuse for an occurrence that no longer exists -- and "
+        "the one-missing case above cannot tell the two apart, because one is "
+        "all it has to report"
+    )
+
+    assert unmatched([], [_DEMONSTRATION]) == [(_DEMONSTRATION, "theurian upgrade")] * 3
 
 
 def test_no_recorded_exception_outlives_the_text_it_excuses() -> None:
@@ -1065,11 +1199,12 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
 
     The first version of this module read three roots and called itself "one
     mechanism over every instructional surface". 193 command-position sites were
-    outside it, in ten markdown files, seven JSON schemas, four workflows and the
-    plugin's two shell scripts -- and the two scripts *execute* theirs. Widening
-    the roots fixes that once; this is what keeps it fixed, because the next
-    surface will be a file type nobody thought of rather than a directory
-    somebody forgot.
+    outside it -- the module docstring gives that count its key and its
+    breakdown -- spread over 24 files of six types: markdown, JSON, YAML, a
+    sample project's config, CI workflows, and the plugin's two shell scripts,
+    which *execute* theirs. Widening the roots fixes that once; this is what
+    keeps it fixed, because the next surface will be a file type nobody thought
+    of rather than a directory somebody forgot.
 
     Deliberately coarser than the readers: it asks only whether some reader opens
     the file, using a raw line scan with no notion of fences or quoting. A file
@@ -1397,11 +1532,14 @@ _MARKDOWN_FIXTURE_FINDINGS: Final = {
 
 #: The same, for Python. The comment run is the shape ``mcp/search.py`` has: one
 #: code span split over two ``#`` lines, which ``tokenize`` hands over as two
-#: separate tokens and which is therefore a span in neither of them. The last
-#: three are f-strings, which are not ``STRING`` tokens at all since PEP 701 and
-#: were read by nothing until they were: one plain, one whose command word is
-#: interpolated and must therefore *not* resolve, and one whose span follows an
-#: interpolation spread over three lines and must still report its own line.
+#: separate tokens and which is therefore a span in neither of them. Then three
+#: f-strings, which are not ``STRING`` tokens at all since PEP 701 and were read
+#: by nothing until they were: one plain, one whose command word is interpolated
+#: and must therefore *not* resolve, and one whose span follows an interpolation
+#: spread over three lines and must still report its own line. Last, the shape
+#: ``index_purge.py`` really has: a span that opens in one implicitly
+#: concatenated literal and closes in the next, so it is a span in neither
+#: unless the run is merged first.
 _PYTHON_FIXTURE: Final = '''\
 """A module docstring naming `theurian index build`."""
 
@@ -1414,13 +1552,32 @@ WRAPPED = f"""Run {
     "this"
     or "that"
 } and then `theurian propose accept`."""
+CONCATENATED = (
+    f"The index build being purged could not be read ({name}). Nothing "
+    f"was published, so retrieval still uses the current index. Run `theurian index "
+    f"rebuild` to rebuild it; the index is derived, so nothing authored is lost."
+)
+SEPARATE = [
+    "`theurian propose`",
+    "`theurian index rebuild`",
+]
 '''
 
+#: Line 14 is the one to read twice. The concatenation starts on line 13, and
+#: the span opens on 14 and closes on 15 -- so reporting it at 14 is what says
+#: the rows between two literals were kept as newlines when the run was merged.
+#: Drop that padding and every span in a concatenation collapses onto the line
+#: the *first* fragment started on. Lines 18 and 19 are the negative: a comma
+#: ends a concatenation, so those two are separate literals reported at their
+#: own lines rather than one merged blob.
 _PYTHON_FIXTURE_FINDINGS: Final = {
     (3, "index rebuild"),
     (5, "propose"),
     (6, "index rebuild"),
     (11, "propose"),
+    (14, "index rebuild"),
+    (18, "propose"),
+    (19, "index rebuild"),
 }
 
 #: A JSON schema's remedy strings, which reach a user through an MCP tool error.
@@ -1571,7 +1728,7 @@ def test_the_scan_reaches_every_arm_of_every_reader() -> None:
     naming a command, so requiring either here would be an assertion that can
     only ever be satisfied by a defect.
     """
-    counts = dict.fromkeys(("fenced", "inline", "comment", "fstring", "json", "plain"), 0)
+    counts = dict.fromkeys(("fenced", "inline", "comment", "literal", "json", "plain"), 0)
     for path in _files(REPO_ROOT, frozenset({".md"})):
         flattened = _flatten_blockquotes(_text(path))
         counts["fenced"] += _count_invocations(fenced_lines(flattened))
@@ -1579,7 +1736,7 @@ def test_the_scan_reaches_every_arm_of_every_reader() -> None:
     for path in _files(REPO_ROOT / "packages" / "theurian-core" / "src", frozenset({".py"})):
         source = _text(path)
         counts["comment"] += _count_spans(_comment_blocks(source))
-        counts["fstring"] += _count_spans(_fstring_blocks(source))
+        counts["literal"] += _count_spans(_literal_blocks(source))
     for path in _files(REPO_ROOT, frozenset({".json"})):
         counts["json"] += _count_invocations(json_command_lines(_text(path)))
     for path in _files(REPO_ROOT, frozenset({".sh", ".yml", ".yaml"})):
