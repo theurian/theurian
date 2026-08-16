@@ -103,10 +103,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   user yet, because nothing reads that file
   ([#129](https://github.com/theurian/theurian/issues/129)).
 - `/theurian:ingest` describes what the command actually reads: local data —
-  files under `.theurian/`, plus `git` for the repository root, HEAD, the branch
-  name and the `origin` URL out of Git config. It previously said "local files
-  under `.theurian/` only", which omits the four `git` reads in
-  `cli/context.py`.
+  files under `.theurian/`, plus the three `git` reads the ingest path performs,
+  `rev-parse --show-toplevel`, `rev-parse HEAD` and `remote get-url origin`. It
+  previously said "local files under `.theurian/` only", which omits the `git`
+  reads entirely. `cli/context.py` defines a fourth reader,
+  `default_branch` (`symbolic-ref --short HEAD`), but only `project register`
+  and `migrate apply` call it — measured by running `theurian ingest` against a
+  `git` shim that logs every invocation.
+- `/theurian:ingest` no longer promises to report a partial result when
+  candidate generation fails (FR-V5). Nothing generates candidates or
+  summarizes, and the command's JSON has no field for one, so the instruction
+  described a run that cannot happen. It now states FR-V5 as owed with review
+  ingestion ([#129](https://github.com/theurian/theurian/issues/129)).
 
 ### Security
 

@@ -6,9 +6,18 @@ always a human's.
 **The domain model is built; nothing collects into it yet.** `ReviewThread`,
 `PromotionGate` and `KnowledgeCandidate` live in
 [`domain/review.py`](../../packages/theurian-core/src/theurian/domain/review.py),
-and the promotion invariants below are enforced at construction: there is no
-`approve`, `promote` or `publish` member and no `AUTO_APPROVED` status, pinned by
-`test_candidate_has_no_self_approval_method` (ADR-0013, INV-7).
+and the promotion invariants below are held by three different mechanisms
+(ADR-0013, INV-7):
+
+- **Absence.** `KnowledgeCandidate` has no `approve`, `promote` or `publish`
+  member, and `CandidateStatus` has no `AUTO_APPROVED`. Pinned by
+  `test_candidate_has_no_self_approval_method`.
+- **The signature.** `trust_level` is `field(init=False)`, so a candidate cannot
+  be constructed claiming review-level trust at all — refused by the constructor
+  rather than by a check, which makes one keyword load-bearing. Pinned by
+  `test_a_candidate_cannot_be_constructed_with_a_trust_level`.
+- **Construction.** `__post_init__` rejects a candidate with no evidence, an
+  empty body, or an unmet promotion gate.
 
 What is missing is everything that would fill that model. `infrastructure/github/`
 holds no adapter, `theurian ingest` reads local files only, and no code path

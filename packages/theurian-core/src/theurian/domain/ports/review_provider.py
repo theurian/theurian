@@ -1,4 +1,4 @@
-"""ReviewProvider port: GitHub first (unbuilt -- Milestone 7), GitLab later (FR-V1)."""
+"""ReviewProvider port: GitHub adapter first (unbuilt -- M7), GitLab later (FR-V1)."""
 
 from __future__ import annotations
 

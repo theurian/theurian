@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://theurian.dev/schemas/config/project-config.schema.json",
   "title": "Theurian project configuration (.theurian/config.yaml)",
-  "description": "Per-repository configuration, Git-tracked. Contains no secrets: credentials live in ~/.theurian and the OS secret store (ADR-0011). No loader for this file exists yet, so no value in it takes effect today; the reader is owed with Milestone 7 (https://github.com/theurian/theurian/issues/129).",
+  "description": "Per-repository configuration, Git-tracked. Contains no secrets: credentials live in ~/.theurian and the OS secret store (ADR-0011). Nothing in src/ reads this file, so no value in it takes effect today: where a default here is also honoured by the product, the code carries its own copy. Milestone 7 owes a reader for the review-ingestion allowlist specifically (https://github.com/theurian/theurian/issues/129); the rest of the file simply has no loader yet.",
   "type": "object",
   "required": ["apiVersion", "projectId"],
   "additionalProperties": false,
@@ -71,7 +71,7 @@
             "repositories": {
               "type": "array",
               "items": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
-              "description": "Allowlist of `owner/repo` values that review ingestion must consult before contacting a repository (SEC-10). Owed with review ingestion in Milestone 7 (https://github.com/theurian/theurian/issues/129)."
+              "description": "Not in force. Allowlist of `owner/repo` values that review ingestion must consult before contacting a repository (SEC-10). Nothing reads it today; owed with review ingestion in Milestone 7 (https://github.com/theurian/theurian/issues/129)."
             }
           }
         }
