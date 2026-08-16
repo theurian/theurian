@@ -36,6 +36,7 @@ from theurian.application.forest_builder import ForestBuilder
 from theurian.domain.chunking import IndexableChunk, chunk_document
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import may_surface
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.ports.embedding import EmbeddingProvider
@@ -147,8 +148,38 @@ class IndexBuilder:
                 if item.current_revision_id is None:
                     continue
                 revision = store.get_revision(context, item.current_revision_id)
-                if revision is None:  # pragma: no cover - the pointer is a foreign key
+                if revision is None:  # pragma: no cover - a composite foreign key holds this (#24)
                     continue
+                if not item.owns(revision):
+                    # A `current_revision_id` naming a sibling item's revision is
+                    # type-valid, satisfies the composite foreign key, and moves
+                    # neither `#30` integrity count, so nothing upstream of this
+                    # loop refuses it. Read through here it is the one face of
+                    # that damage the query side cannot then catch:
+                    # `CanonicalVisibility._may_surface` clears a ranked row by
+                    # comparing the indexed `revision_id` against the live
+                    # pointer, and a build that followed the corrupt pointer
+                    # writes chunks the pointer *agrees* with -- so the withheld
+                    # revision's body would rank and be excerpted under this
+                    # item's approved status.
+                    #
+                    # Refused rather than skipped, and refused for the whole
+                    # build: skipping would drop an approved document out of the
+                    # index with nothing said, which reads as a relevance problem
+                    # rather than as damage. `IndexBuilder.build` unlinks what
+                    # this run wrote and `_run_build` converts this into
+                    # `{error, remedy}` at exit 1, so nothing is published and the
+                    # previous index still answers.
+                    #
+                    # Names no id and no cell: the message reaches the operator's
+                    # terminal through `theurian index build`, and the id it would
+                    # carry is the withheld item's.
+                    msg = (
+                        "This project's canonical state disagrees with its own records: an "
+                        "item points at a revision that belongs to a different item, so this "
+                        "build would index that revision's content under the wrong item."
+                    )
+                    raise InvariantViolationError(msg)
 
                 # The title is prepended to the body before splitting so that a
                 # query matching only the title still finds the document. A

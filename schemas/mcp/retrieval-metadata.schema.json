@@ -98,6 +98,10 @@
           "description": "The build records a different project id, or records none at all. Either way its content is out of scope for this query, and an index that matched nothing while reporting itself healthy would read as \"this team has made no such decision\". Neither `note` names the other id: this reply goes to an agent holding one project's id. Remedy: rebuild for this project."
         },
         {
+          "const": "index-unbuilt",
+          "description": "The index this pointer names was not built by this Theurian installation — it was delivered with the repository rather than rebuilt locally (ADR-0004, SEC-7). Its bytes are never read; the ranked path stands aside to the canonical scan, which is itself provenance-gated, so a doctored index cannot serve its own titles, bodies or excerpts. Remedy: delete `.theurian/state/` and rebuild locally with `theurian index build`."
+        },
+        {
           "const": "unapproved-not-indexed",
           "description": "The caller asked for unapproved knowledge and the index was built without it. Answering from the approved-only index would change the meaning of a published parameter without saying so. Remedy: `theurian index build --include-unapproved`."
         }

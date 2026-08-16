@@ -35,6 +35,8 @@ from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
+    UNBUILT_STATE_REMEDY,
+    BuildProvenance,
     ProjectPaths,
     read_active_index_pointer,
     write_active_index_pointer,
@@ -152,6 +154,11 @@ def index_build(
         project_id=context.project_id.value,
         indexes_unapproved=include_unapproved,
     )
+    # Record that this installation built this index, out of the repository tree,
+    # the instant it is published (ADR-0004, SEC-7). The serve-side index gate
+    # stands aside any build id it does not find here, so this is what lets the
+    # ranked path use the build that was just published.
+    BuildProvenance.default().record_index(paths.root, index_build_id)
     # Publishing does not reclaim (ADR-0024 point 6). Reaping the previous build
     # here is what made ADR-0022's "the previous build is not deleted" false, and
     # measured against a reader it cost 2,627 errors against 40 answered searches
@@ -185,6 +192,24 @@ def _require_buildable_state(paths: ProjectPaths, as_json: bool) -> ActiveState 
         _fail(
             "This Python's SQLite was built without FTS5, so lexical search is unavailable.",
             remedy="Install Python from python.org or your distribution's python3 package.",
+            as_json=as_json,
+            code=1,
+        )
+        return None
+
+    # Refuse to build an index *from* canonical state this installation did not
+    # produce (ADR-0004, SEC-7). Without this, a doctored `.theurian/state/`
+    # shipped in a repository launders through the build: `index build` reads its
+    # rows, writes them into a fresh index, and records *that* index as this
+    # install's -- so the serve-side index gate would then vouch for it. The
+    # canonical state must be one this install built before anything is derived
+    # from it.
+    if not BuildProvenance.default().has_state(paths.root, str(active.state_hash)):
+        _fail(
+            "This project's canonical state was not built by this Theurian installation, so "
+            "an index built from it cannot be trusted. It was delivered with the project "
+            "rather than rebuilt here from the Git-tracked migrations (ADR-0004).",
+            remedy=UNBUILT_STATE_REMEDY,
             as_json=as_json,
             code=1,
         )

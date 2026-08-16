@@ -168,6 +168,41 @@ class CanonicalStore(Protocol):
         """
         ...
 
+    def count_surfaceable_items(self, context: RequestContext) -> int:
+        """How many items in scope a caller may see, totalled in SQL.
+
+        The same population :meth:`count_surfaceable_by_status` groups, without
+        the breakdown. It exists because ``knowledge.search`` and
+        ``knowledge.get`` need the total and publish no breakdown: it is the live
+        half of the ``#30`` integrity comparison, checked against
+        :meth:`expected_surfaceable_count` on every request.
+
+        Retired rows -- deprecated, superseded, rejected -- are not counted, so
+        neither this number nor its comparison carries anything about content the
+        caller may not read (SEC-13, T-17). Its cost is ``O(surfaceable)`` over
+        the covering index, never ``O(total)``, so calling it per request reopens
+        none of the timing channels #158 and #19 closed.
+        """
+        ...
+
+    def expected_surfaceable_count(self, project_id: ProjectId) -> int | None:
+        """What the writer recorded that count should be, or ``None`` if absent.
+
+        Written once per ``theurian migrate apply`` that creates a database or
+        applies a migration, inside that transaction, from the rows it just wrote
+        (``#30`` PR2). Nothing on a query path computes it, which is what keeps
+        the comparison a single indexed lookup and keeps the expectation from
+        being recomputed by the very state it is meant to check.
+
+        ``None`` is not "no opinion". A build that can read this database is a
+        build whose schema version declares the table, so a project with rows and
+        no record is a project whose record was lost -- damage, and reported as
+        such. That inference is only available because
+        :func:`~theurian.infrastructure.sqlite.schema.is_supported` refuses every
+        older database outright rather than reinterpreting it.
+        """
+        ...
+
     # -- Relations, aliases, evidence --------------------------------------
 
     def add_relation(self, relation: KnowledgeRelation) -> None: ...

@@ -11,6 +11,7 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from typing import Final
 
 import pytest
 
@@ -541,6 +542,82 @@ def test_a_query_never_crosses_a_project_boundary(database: Path, lock: Path) ->
         assert store.get_item(RequestContext(project_id=other), ITEM) is None
         assert store.get_revision(RequestContext(project_id=other), REV_1) is None
         assert store.list_items(RequestContext(project_id=other)) == ()
+
+
+OTHER_PROJECT: Final = ProjectId("other-service")
+
+
+def test_a_revision_cannot_be_moved_out_from_under_the_item_pointing_at_it(
+    database: Path, lock: Path
+) -> None:
+    """#24. The item -> revision pointer is scoped the way every read of it is.
+
+    `knowledge_items.current_revision_id` used to reference `knowledge_revisions
+    (revision_id)` alone, while `get_revision` and `list_revisions` both filter on
+    `project_id` as well. The two never met: a revision whose `project_id` moved
+    -- what a project id changing over an unchanged root does -- left the item
+    pointing at a row its own project-scoped read could no longer see, and
+    `PRAGMA foreign_key_check` reported the database as satisfied. Schema version
+    3 makes the key composite, so SQLite refuses the move instead.
+
+    **Both arms, because "refused" alone is satisfied by a key that refuses
+    everything.** The stranding UPDATE must fail and the harmless one -- the same
+    statement over a revision no item points at -- must still succeed. Revert the
+    foreign key to `REFERENCES knowledge_revisions(revision_id)` and the first
+    arm goes RED; widen it to something that refuses any move and the second does.
+
+    **The destination project is registered first, and that is load-bearing
+    rather than tidy.** `knowledge_revisions.project_id` also references
+    `projects`, so an UPDATE to an unregistered id is refused by *that* key on
+    every build this repository has ever had -- the arm would pass with the
+    composite key reverted, testing nothing. Registering `other-service` leaves
+    the pointer's own key as the only thing that can refuse.
+
+    Run on a real writer connection through `write_transaction`, which is where
+    the enforcement has to hold: `foreign_keys` is a per-connection pragma in
+    SQLite, so a key the writer's own connection does not enforce is not enforced
+    at all.
+    """
+    stranded = _revision(REV_2, "nothing points at this one")
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.register_project(replace(_project(), project_id=OTHER_PROJECT))
+        pointed_at = _revision()
+        writer.append_revision(pointed_at)
+        writer.append_revision(stranded)
+        writer.put_item(_item().with_revision(pointed_at))
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1, (
+            "the writer's connection does not enforce foreign keys, so neither arm below "
+            "measures the schema"
+        )
+
+    with (
+        pytest.raises(sqlite3.IntegrityError),
+        write_transaction(database, lock) as connection,
+    ):
+        connection.execute(
+            "UPDATE knowledge_revisions SET project_id = ? WHERE revision_id = ?",
+            (OTHER_PROJECT.value, REV_1.value),
+        )
+
+    with write_transaction(database, lock) as connection:
+        moved = connection.execute(
+            "UPDATE knowledge_revisions SET project_id = ? WHERE revision_id = ?",
+            (OTHER_PROJECT.value, REV_2.value),
+        ).rowcount
+    assert moved == 1, (
+        "a revision no item points at must still be movable, or the arm above is satisfied by a "
+        "key that refuses every write to this column"
+    )
+
+    with SqliteCanonicalStore(database) as store:
+        item = store.get_item(RequestContext(project_id=PROJECT), ITEM)
+        assert item is not None and item.current_revision_id == REV_1
+        assert store.get_revision(RequestContext(project_id=PROJECT), REV_1) is not None, (
+            "the pointer must still resolve inside its own project -- the stranding this key "
+            "prevents is exactly a pointer whose project-scoped read comes back empty"
+        )
 
 
 # -- Migration history -----------------------------------------------------

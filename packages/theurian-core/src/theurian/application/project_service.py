@@ -78,6 +78,22 @@ ACTIVE_POINTER_REMEDY: Final = (
     "the pointer is derived, so nothing is lost."
 )
 
+#: The cure for derived state that this installation did not build. Names the
+#: whole `.theurian/state/` directory rather than the pointer alone: the
+#: databases there are what carry the untrusted bytes, they are named by a hash
+#: an attacker can compute, and `migrate apply` reuses a database file by name
+#: (`database_for`) -- so deleting the pointer alone leaves the untrusted
+#: database in place for the next apply to open. Also names the Git escape,
+#: because the shape this closes is a repository contributor who force-added the
+#: directory past its ADR-0004 ignore: a working-tree delete comes straight back
+#: on the next checkout until the file is untracked.
+UNBUILT_STATE_REMEDY: Final = (
+    "Delete .theurian/state/ and run `theurian migrate apply` (then "
+    "`theurian index build`) to rebuild it locally from the Git-tracked migrations. "
+    "If .theurian/state/ is tracked by Git, also run `git rm --cached -r .theurian/state`: "
+    "derived state must never be version-controlled (ADR-0004)."
+)
+
 #: The half of "rename a project" that is easy to omit and impossible to notice.
 #: Canonical rows are stamped with the id in force at `migrate apply`, and
 #: `migrate apply` is idempotent, so it will not restamp them. An id changed
@@ -1147,3 +1163,164 @@ class ProjectRegistry:
         temporary = self.path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, self.path)  # noqa: PTH105 -- atomic replace
+
+
+@dataclass(frozen=True, slots=True)
+class BuildProvenance:
+    """This installation's record of the derived state it built (ADR-0004, SEC-7).
+
+    The class this closes: everything under `.theurian/state/` -- the active
+    pointers and the SQLite databases they name -- is derived and git-ignored
+    (ADR-0004), but nothing stops a repository contributor from force-adding a
+    doctored copy (`git add -f`, past the ignore) and a victim who clones (or
+    downloads the ZIP/tarball) + `project register` + serves over MCP, *without
+    ever running `migrate apply`*, from being served the attacker's bytes. The
+    trust was filesystem presence: a database file whose name matched the
+    pointer's hash was opened and read as authoritative.
+
+    Presence cannot be the discriminator, because `active.json`'s ``stateHash``
+    binds the migration *set*, not the database bytes, and the database filename
+    is derived from that hash (:meth:`StateHash.database_filename`). A
+    self-consistent doctored pair -- status flipped, rows injected, every
+    integrity record recomputed to match -- has no internal inconsistency to
+    catch. The only thing an attacker who authored the repository cannot forge is
+    whether *this installation* built the artifact, so provenance is recorded
+    here, out of the repository tree, in ``THEURIAN_DATA_DIR`` beside the
+    registry -- the one place a repository contributor cannot write to.
+
+    **Delivery-independent by construction.** The discriminator is "did this
+    install build it", not "is it tracked by Git", so it refuses a clone, a ZIP
+    download and a repackaged tarball alike -- a `git ls-files` probe would catch
+    only the clone, since repackaging strips the tracking metadata and leaves the
+    file present-but-untracked.
+
+    **Keyed by resolved root path, not project id.** The resolution layer that
+    enforces the check holds the root (:attr:`ProjectPaths.root`) but not always
+    the id; the root is the physical location the victim's own machine chose for
+    the checkout; and two directories that would derive the same id from their
+    name (:func:`derive_project_id` collides on directory name) stay distinct
+    here.
+
+    **What it does not close, recorded rather than hidden.** The record vouches
+    for a *hash*, not for the database bytes -- verifying bytes would mean hashing
+    the whole database on every query. So an attacker who can replace a database
+    *after* this install built the matching hash (a tracked sidecar overwriting a
+    local build on the next `git pull`, or local filesystem write access) is out
+    of scope for this control and left to the read-back integrity guards (#30
+    PR2) and the schema-version and corruption checks. The primary vector -- a
+    build this installation never produced -- is closed outright, because no
+    record exists for it at all.
+    """
+
+    path: Path
+
+    @classmethod
+    def default(cls, data_dir: Path | None = None) -> BuildProvenance:
+        base = data_dir or Path(os.environ.get("THEURIAN_DATA_DIR", Path.home() / ".theurian"))
+        return cls(path=base / "provenance.json")
+
+    @classmethod
+    def for_registry(cls, registry: ProjectRegistry) -> BuildProvenance:
+        """The provenance store beside a registry, in the same data directory.
+
+        Derived from the registry rather than re-reading ``THEURIAN_DATA_DIR`` so
+        the serve-side check reads exactly the directory the registry it was
+        handed lives in, however that directory was resolved. The build side
+        (``migrate apply``, ``index build``) reaches the same file through
+        :meth:`default`, because both resolve the same environment variable.
+        """
+        return cls(path=registry.path.parent / "provenance.json")
+
+    def _load(self) -> dict[str, Any]:
+        """The recorded builds, or an empty map on any failure to read them.
+
+        **Fail closed.** A provenance file this process cannot read or parse
+        vouches for nothing, so every artifact is refused until a local build
+        rewrites it. The file is derived and lives in the user's own data
+        directory, so `migrate apply` is always the cure and losing it costs only
+        a re-apply -- the same trade the registry and the state pointer make.
+        """
+        if not self.path.exists():
+            return {}
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _built(self, raw: dict[str, Any], root: Path, kind: str) -> list[str]:
+        entry = raw.get(str(root.resolve()))
+        recorded = entry.get(kind) if isinstance(entry, dict) else None
+        if not isinstance(recorded, list):
+            return []
+        return [value for value in recorded if isinstance(value, str)]
+
+    def has_state(self, root: Path, state_hash: str) -> bool:
+        """Whether this installation built the canonical state named by ``state_hash``."""
+        return state_hash in self._built(self._load(), root, "state")
+
+    def has_index(self, root: Path, index_build_id: str) -> bool:
+        """Whether this installation built the retrieval index named by ``index_build_id``."""
+        return index_build_id in self._built(self._load(), root, "index")
+
+    def record_state(self, root: Path, state_hash: str) -> None:
+        """Record that this installation built the canonical state ``state_hash``."""
+        self._record(root, "state", state_hash)
+
+    def record_index(self, root: Path, index_build_id: str) -> None:
+        """Record that this installation built the retrieval index ``index_build_id``."""
+        self._record(root, "index", index_build_id)
+
+    def _record(self, root: Path, kind: str, value: str) -> None:
+        """Append one built artifact to a root's record, atomically.
+
+        Accumulates rather than replaces: a prior build's state may still be
+        served (a pinned snapshot, a not-yet-collected build), so the record
+        keeps every hash this installation produced rather than only the latest.
+        Read-modify-write with an :func:`os.replace` swap, the same discipline as
+        the registry; a lost update under concurrent writers drops a hash and so
+        fails closed -- the artifact is refused until the next build re-records
+        it -- rather than vouching for one this installation did not build.
+        """
+        raw = self._load()
+        key = str(root.resolve())
+        entry_value = raw.get(key)
+        entry = dict(entry_value) if isinstance(entry_value, dict) else {}
+        built = self._built(raw, root, kind)
+        if value not in built:
+            built = [*built, value]
+        entry[kind] = built
+        updated = dict(raw)
+        updated[key] = entry
+        self._write(updated)
+
+    def _write(self, entries: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, self.path)  # noqa: PTH105 -- atomic replace
+
+
+def verify_state_provenance(
+    paths: ProjectPaths, active: ActiveState, provenance: BuildProvenance
+) -> None:
+    """Refuse canonical state this installation did not build (ADR-0004, SEC-7).
+
+    The enforcement point for :class:`BuildProvenance`. Called on the serve path
+    (the MCP tools' ``_resolve``) and before an index is built from canonical
+    state (``theurian index build``), so a database that this installation never
+    produced never influences a served result -- whatever put it on disk.
+
+    Raises:
+        ProjectError: If no out-of-tree record shows this installation built the
+            state the in-tree pointer names. Carries :data:`UNBUILT_STATE_REMEDY`;
+            quotes no cell content, only the state directory's own path.
+    """
+    if not provenance.has_state(paths.root, str(active.state_hash)):
+        raise ProjectError(
+            f"The derived knowledge state under {paths.state} was not built by this "
+            f"Theurian installation, so it will not be served. It was delivered with the "
+            f"project rather than rebuilt here from the Git-tracked migrations, which is "
+            f"exactly what an untrusted repository must not be able to do (ADR-0004).",
+            remedy=UNBUILT_STATE_REMEDY,
+        )

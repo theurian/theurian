@@ -101,6 +101,19 @@ through a migration — not rescued from a git-ignored directory.
   unit test and is left to whichever milestone adds the fifth directory, because
   writing it now is the kind of change this PR is not making.
 
+- **Derived state is not merely git-ignored; it is refused at serve time unless
+  this installation built it** (`0.1.0.dev4`, threat-model T-19). The ignore keeps
+  derived state *out* of Git in the ordinary case, but a contributor can
+  force-add it past the ignore (`git add -f`) and ship it, and a ZIP or tarball
+  carries it with no tracking metadata at all. So the "never Git-tracked"
+  corollary is enforced at the point it protects: `theurian migrate apply` and
+  `theurian index build` record what this install built in
+  `THEURIAN_DATA_DIR/provenance.json` — out of the repository tree — and every MCP
+  read path refuses a `.theurian/state/` artifact whose hash is not in that record
+  (`BuildProvenance`, `verify_state_provenance`; `tests/integration/`
+  `test_state_provenance.py`). Delivery-independent by construction: it does not
+  ask Git what is tracked, so it holds for a clone and a repackaged tarball alike.
+
 Still owed, with the milestone that will satisfy it:
 
 - **Nothing rebuilds from an empty database and compares the result.** This

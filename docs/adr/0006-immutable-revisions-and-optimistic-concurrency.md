@@ -86,3 +86,29 @@ one.**
   the store's behaviour under a real transaction.
 - The `CanonicalStore` port exposes no revision-update method — the restriction is
   in the type signature, not only in the documentation.
+- `tests/integration/test_canonical_store.py::test_a_revision_cannot_be_moved_out_from_under_the_item_pointing_at_it`
+  — decision 2's pointer is scoped by the schema the way every read of it is
+  ([#24](https://github.com/theurian/theurian/issues/24), closed in Milestone 6).
+  Until then `knowledge_items.current_revision_id` referenced
+  `knowledge_revisions(revision_id)` alone, while the two reads that resolve the
+  pointer — `get_revision` and `list_revisions` — filter on `project_id` as well,
+  so a revision whose `project_id` moved left the item
+  pointing at a row its own project-scoped read could not see — and `PRAGMA
+  foreign_key_check` reported the file as satisfied. The key is composite over
+  `(project_id, revision_id)` since schema version 3 (ADR-0017), and the test
+  holds both arms: the stranding `UPDATE` is refused, and a revision no item
+  points at is still movable.
+
+**Where INV-2 is enforced, stated because #24 was exactly the mistake of
+assuming.** The composite key scopes the pointer to a *project*, and that is the
+whole of what the schema says. That the revision belongs to the same *item* is
+enforced above it, in two layers and never in the database: by
+`KnowledgeItem.with_revision` in the domain
+(`tests/unit/test_domain_invariants.py::test_item_rejects_a_revision_belonging_to_another_item`),
+and by `append_revision` and `put_item` in both `MigrationWriter` adapters, so a
+write constructing a `KnowledgeItem` directly rather than through that method is
+refused by the store rather than trusted
+(`tests/integration/test_writer_contract.py`, which binds the pair of adapters to
+one behaviour). Recorded here rather than left to read as though the foreign key
+covered it: revert those guards and the schema accepts a cross-item pointer
+inside one project without complaint.

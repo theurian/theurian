@@ -12,6 +12,273 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **The `integrity` signal takes a second measurement: how many items a caller
+  should be able to see, against the number `theurian migrate apply` recorded**
+  ([#30](https://github.com/theurian/theurian/issues/30) PR2). This is what makes
+  a response's *own* emptiness visible, where PR1 — shipped in `0.1.0.dev3` —
+  could only report damage elsewhere in the state. Three of the four positions
+  PR1 left now disclose, and `SILENTLY_EMPTIED` is deleted — #30's stated closure
+  condition.
+
+  The record is a new `project_integrity` table, one row per project, written by
+  `migrate apply` inside its own write transaction and counted over the rows that
+  transaction just wrote. Nothing on a query path computes it: the reader's half
+  is one `COUNT` over `idx_items_status`, catching a change in the *number* of
+  surfaceable rows — a row leaving or entering the surfaceable scope, in either
+  direction — so an expectation cannot be satisfied by the state it is meant to
+  check
+  (`CanonicalStore.count_surfaceable_items`,
+  `CanonicalStore.expected_surfaceable_count`, `SqliteWriter.record_expected_surfaceable_count`).
+
+  **A missing record is damage, not "not recorded", and a schema bump is what
+  makes that sound.** `SCHEMA_VERSION` went 2 → 3 for this table (below), and
+  `is_supported` is exact-match, so every database this build can open was written
+  by a build that records. `test_a_missing_integrity_record_is_damage_and_not_silence`
+  holds the inference and `test_a_pre_integrity_database_is_refused_unread_by_every_tool`
+  holds the premise on all three tools and over every version below the current
+  one — including that an old database is not reported as a damaged one.
+
+  **What it now catches, pinned by the corruption sweep against the real tools
+  over a real damaged database.** A sentinel in `knowledge_items.project_id`
+  takes every item out of the project scope, and one in `knowledge_items.status`
+  takes a row out of the
+  surfaceable scope: `knowledge.search` answers `count: 0, results: []` and
+  `knowledge.status` answers a shrunken `itemCount` **with the key beside them**,
+  where PR1 answered the same numbers alone; `knowledge.get` refuses those cells
+  as damage rather than reporting them as absence
+  (`test_a_lost_surfaceable_item_is_damage_on_every_read_tool`,
+  `test_a_lost_surfaceable_item_makes_get_refuse_an_absent_id_as_damage`). So an
+  agent can now tell "this project holds nothing" from "part of this project could
+  not be read", and `knowledge.status` no longer publishes a positive
+  `appliedMigrations` beside `itemCount: 0` without comment. The `status` cell is
+  the member `0.1.0.dev2` recorded as "the fifth `SILENTLY_EMPTIED` member,
+  carried to Milestone 6" when #19 stopped parsing every row: it still
+  under-reports, because no read tool can repair a row it cannot parse, but it no
+  longer does so in silence.
+
+  **`knowledge.get`'s damage refusal is reworded, and deliberately says less.**
+  `0.1.0.dev3` reported a project that "could not be fully read: its derived state
+  holds a different number of migration-history rows than its own records expect".
+  Either comparison now reaches that branch, so the text says only that the
+  derived state "disagrees with its own records about what it holds" and names no
+  record — a caller matching on the old substring stops matching. The SEC-13 rule
+  that a withheld id and an absent id get the same message as each other is
+  unchanged, and so is the pair that pins both directions
+  (`test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence`,
+  `test_an_absent_item_over_a_healthy_state_is_refused_as_absence`).
+
+  **One position stays silent and is named rather than rounded away.**
+  `(knowledge.search, knowledge_items, item_id)` moves neither count — the row
+  keeps its `project_id` and its `status`, so both sides still count it — while
+  the item → revision pointer the search walks is broken, and the tool answers one
+  result short with no key. A count is not a checksum, and that is the shape a
+  count cannot see. It is `UNDETECTED_UNDERREPORT` in
+  `tests/integration/test_canonical_store_corruption.py`, an exact set of exactly
+  one member: a second position appearing there is a failure, not an expectation
+  to update.
+
+  **`SILENTLY_EMPTIED` is replaced by three sets that partition the same
+  question**, so no position can slide between outcomes unremarked.
+  `DISCLOSED_AS_INTEGRITY` holds the nine positions that fire the key, keyed on
+  the key's presence and nothing else — six of them fire while every integer in
+  the response stays put, which is the detector's true shape;
+  `DISCLOSED_BESIDE_A_SHRUNKEN_COUNT` holds the three that also shrink a published
+  integer; `UNDETECTED_UNDERREPORT` holds the one that shrinks and says nothing.
+  The sweep asserts the whole shrinking class equals the union of the last two
+  (`test_exactly_these_positions_disclose_damage_as_integrity`,
+  `test_exactly_one_position_answers_with_less_than_the_file_holds_and_says_nothing`
+  — renamed and re-scoped from PR1's
+  `test_exactly_these_positions_disclose_migration_history_damage_as_integrity`
+  and `test_no_tool_answers_with_less_than_the_intact_database_holds`), which is
+  what closes the seam a pair of independently-keyed sets would leave. That
+  partition is over the swept single-cell positions, not a claim that the count
+  catches every wrong answer: a status moved *within* `SURFACEABLE_STATUSES`
+  changes the set's composition without its size and sets no key, and an item
+  whose `current_revision_id` names another item's revision would disclose rather
+  than under-report and is refused at read time by the read-back guard
+  (`61747b3`), a mechanism distinct from this detector.
+
+  **Neither side of the new comparison counts a row the caller may not read.**
+  Both count `SURFACEABLE_STATUSES` — at build time in the `INSERT … SELECT`, at
+  read time in the `COUNT` — so a `rejected`, `deprecated` or `superseded` row is
+  on neither side.
+  `test_the_integrity_signal_is_identical_across_a_withheld_only_difference` holds
+  that whether the key appears is identical across two corpora differing only in
+  twenty-five `rejected` items. Measured beyond what that pins: overwriting a
+  `deprecated` row's `status` produces no key on any tool, where the same
+  overwrite on an `approved` row fires it, and on a `draft` row it fires the key
+  while the default `knowledge.search` answer stays unchanged — a draft is
+  surfaceable even when the default answer omits it. The mirror of that is a
+  recorded residual: overwriting an `approved` row's `status` to another
+  surfaceable value moves neither count and sets no key, while the default answer
+  loses a row it used to surface — the count measures the size of the surfaceable
+  set, not its composition, and the moved row is caller-readable either way. The
+  read cost keeps PR1's
+  shape, `O(surfaceable)` over the covering index rather than `O(total)`, and
+  `knowledge.status` spends no extra query at all: it sums the breakdown it had
+  already read.
+
+  **The remedy's first step deliberately does not clear this shape, and the
+  residual is recorded.** `migrate apply` records only when it created the
+  database or applied a migration; an apply with nothing pending must not
+  re-record, because it is step one of the remedy this signal publishes and
+  re-recording from the damaged state would manufacture its own all-clear
+  (`test_a_pending_free_apply_does_not_re_record_over_a_damaged_state`,
+  `test_an_apply_that_changes_the_store_records_the_new_count`). What stays open,
+  recorded and not fixed: an apply that *does* have a migration to apply re-records
+  over the state as it then is, so damage already present becomes the new
+  expectation. It is the pointer's limit again — a count is not a checksum, and a
+  writer can record only what it can read.
+
+  The detector also found a defect in the test suite it does not own.
+  `tests/integration/test_absence_proof.py` built its pair by hand with a pointer
+  claiming one applied migration over a store holding none, so every response in
+  that file had carried `integrity` since PR1 and each equality was comparing two
+  damage reports. Both records are now written the way `migrate apply` writes
+  them, and `_assert_the_pair_bites` fails an example that answers as a damaged
+  project — the fifth way that file can be green while proving nothing.
+
+### Changed
+
+- **BREAKING — `SCHEMA_VERSION` 2 → 3: every existing state database is refused
+  once, and one `theurian migrate apply` rebuilds it**
+  ([#30](https://github.com/theurian/theurian/issues/30) PR2,
+  [#24](https://github.com/theurian/theurian/issues/24)). The DDL gains the
+  `project_integrity` table and makes the item → revision pointer a composite
+  foreign key; `knowledge.status` therefore publishes `schemaVersion: 3` where it
+  published `2`. A state database is derived and Git-ignored (ADR-0004) and is
+  rebuilt rather than migrated (ADR-0017), so nothing authored is lost — but the
+  rebuild is not automatic, and until it runs the three read tools refuse.
+  BREAKING for a state database on disk, not for the wire: a published value
+  moves and no field, type or tool name does, so `protocolVersion` stays
+  `theurian/v1` (see *Changing this contract* in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md)).
+
+  Measured end to end rather than argued, against a database `0.1.0.dev3` wrote
+  with the real CLI and then read by this build: `knowledge.search`,
+  `knowledge.get` and `knowledge.status` each refuse with
+
+  ```
+  theurian-state-f1711b98d302.sqlite was written at schema version 2, but this
+  build uses 3. State databases are derived; rebuild with `theurian migrate
+  apply` rather than migrating this file.
+  ```
+
+  and one `theurian migrate apply` answers `databaseCreated: true` with a new
+  state hash — the schema version is an input to that hash, so the rebuilt file is
+  `theurian-state-2e8880bf25be.sqlite` beside the old one — after which all three
+  tools answer, `schemaVersion` reads `3`, and no `integrity` key appears. The old
+  file is left on disk for `theurian index gc` (ADR-0017 decision 5), not deleted
+  under a pinned `snapshotId`.
+
+  A database written at *any* earlier version is refused *unread* rather than
+  reinterpreted, which is what lets the new detector read a missing
+  `project_integrity` row as damage rather than as "this file predates the table"
+  (`test_a_pre_integrity_database_is_refused_unread_by_every_tool`, parametrised
+  over every version below the current one).
+
+- **The item → revision pointer is scoped to its project by the schema, not only
+  by every read of it** ([#24](https://github.com/theurian/theurian/issues/24),
+  closed). `knowledge_items.current_revision_id` referenced
+  `knowledge_revisions(revision_id)` alone while `get_revision` and
+  `list_revisions` both filter on `project_id` as well, so the two never met: a
+  revision whose `project_id` moved — what a project id changing over an unchanged
+  root does — left the item pointing at a row its own project-scoped read could no
+  longer see, and `PRAGMA foreign_key_check` called the database satisfied.
+
+  The key is now composite, `(project_id, current_revision_id)` referencing
+  `knowledge_revisions(project_id, revision_id)` over a new unique index. Measured
+  on SQLite 3.51.2, before and after, against the stranding `UPDATE`: before, the
+  writer's own connection accepted it and `foreign_key_check` returned `[]`;
+  after, the same statement is refused, and forced through with foreign keys off
+  it is reported as `('knowledge_items', <rowid>, 'knowledge_revisions', 0)`.
+  `test_a_revision_cannot_be_moved_out_from_under_the_item_pointing_at_it` holds
+  both arms — the stranding move refused, a revision no item points at still
+  movable — so a key that refused every write to that column would fail it too.
+
+  A `NULL` `current_revision_id` still satisfies the key, because a composite
+  child key with a NULL component imposes no constraint in SQLite; an item exists
+  before its first revision is upserted. The four `# pragma: no cover` branches
+  whose justification was "the pointer is a foreign key" now say what actually
+  holds them, and the claim is true for the first time. INV-2's other half — that
+  the revision belongs to the same *item* — is enforced above the database and in
+  nothing the schema declares: by `KnowledgeItem.with_revision` in the domain, and
+  by `append_revision` and `put_item` in both `MigrationWriter` adapters.
+
+### Security
+
+- **Derived state under `.theurian/state/` is served only if this installation
+  built it (threat-model T-19, ADR-0004, SEC-7).** Everything there — the active
+  pointers and the SQLite databases they name — is derived and git-ignored, but a
+  repository contributor can force-add a doctored copy past that ignore (`git add
+  -f`), and a victim who clones (or downloads the ZIP/tarball), `theurian project
+  register`s, and serves over MCP **without ever running `theurian migrate
+  apply`** was served the attacker's bytes: a `rejected` body relabelled
+  `approved`, rows injected, titles and excerpts rewritten in the index.
+
+  This is the self-consistent face the read-back guards cannot catch. The #30 PR2
+  detector and the item → revision pointer guard above find a derived state that
+  *disagrees with its own records*; this attacker authors both sides, at the
+  current schema version, so there is no inconsistency to find. `active.json`'s
+  `stateHash` binds the migration *set*, not the database bytes, and the database
+  filename is derived from that hash, so the doctored pair is self-consistent by
+  construction. The only property a repository author cannot forge is whether
+  *this installation* built the artifact.
+
+  **Control: an out-of-tree build-provenance anchor.** `theurian migrate apply`
+  and `theurian index build` record the state hash and index build id this
+  install produced for each project root in `THEURIAN_DATA_DIR/provenance.json` —
+  beside the project registry, out of the repository tree where a contributor
+  cannot write (`BuildProvenance`). Every MCP read path checks it before a byte of
+  `.theurian/state/` reaches a caller: `_resolve` refuses a canonical state whose
+  hash this install did not build (`verify_state_provenance`, covering
+  `knowledge.get`, `knowledge.search`, `knowledge.status`); the ranked path stands
+  aside from an index build id this install did not build. Both paths that
+  generate an index are gated on source-index provenance, so neither launders a
+  committed one: `index build` refuses to build *from* an unprovenanced canonical
+  state, and — since commit `dc6aa79` — the withdrawal purge refuses to copy a
+  committed index forward and record it when this install did not build the source
+  index (`UNTRUSTED_SOURCE_INDEX`), the second laundering path review found. And
+  `migrate apply` discards an unprovenanced database and rebuilds from the
+  Git-tracked migrations; a committed `-wal` cannot replay because
+  `create_database` refuses to write over an existing file, so the rebuild deletes
+  the main database and creates a fresh one with no database for the sidecar to
+  replay into — the sidecars are removed too, redundant defense-in-depth.
+  Those migrations are vouched for by human PR review (T-1), not by FR-K5: on a
+  fresh clone nothing has been applied, so FR-K5 has no recorded checksum to
+  disagree with an attacker-authored migration, and re-derivation is safe because
+  a reviewer read the migration diff.
+
+  Delivery-independent by construction: the discriminator is "did this install
+  build it", not "is it tracked by Git", so a clone, a ZIP download and a
+  repackaged tarball are refused alike — which a `git ls-files` probe could not
+  do. Pinned by `tests/integration/test_state_provenance.py`, whose closure
+  invariant is one query against two checkouts: a checkout shipping derived state
+  and one shipping none produce identical served knowledge, both refused until the
+  state is built locally.
+
+  **Effect on existing installs, and it is deliberate.** A project already built
+  by a pre-`0.1.0.dev4` build has no provenance record, so the three read tools
+  refuse it until one `theurian migrate apply` (then `theurian index build`)
+  rebuilds it and records provenance — the same one-command rebuild the
+  `SCHEMA_VERSION` bump above already requires, and nothing authored is lost
+  (ADR-0004). The residual is recorded in T-19: provenance vouches for a hash, not
+  for the database bytes, so replacing a database *after* this install built the
+  matching hash is out of scope for this control and left to the schema gate, the
+  #30 read-back guards, and the corruption checks.
+
+  <!-- Advisory (GHSA) reference for T-19 to be filled at release, when the
+  advisory ships; embargoed until then. -->
+
+- **`knowledge.search` gains one `fallbackReason`, `index-unbuilt`**, emitted when
+  the published index was not built by this installation and the ranked path
+  therefore stands aside to the provenance-gated canonical scan. A new published
+  *value*, not a new field, type or tool, so `protocolVersion` stays `theurian/v1`
+  by the same rule the `SCHEMA_VERSION` entry above applies; the JSON Schema
+  `schemas/mcp/retrieval-metadata.schema.json` adds the `const`.
+
 ## [0.1.0.dev3] - 2026-08-15
 
 ### Added
@@ -179,6 +446,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   with is now a refusal. Only negative values are refused — a non-negative integer
   that is simply wrong is still accepted, which is the one-way limit recorded
   above and in the threat model.
+
+- **`knowledge.status` no longer refuses over a corrupt
+  `migration_history.migration_id` or `checksum`; it answers cleanly**
   ([#30](https://github.com/theurian/theurian/issues/30) PR1). The refusal was a
   side effect of parsing rows the tool no longer reads: it used to call
   `applied_migrations`, which converts both cells and raises on a damaged one,

@@ -254,6 +254,35 @@ class KnowledgeItem:
             validity=revision.validity,
         )
 
+    def owns(self, revision: KnowledgeRevision) -> bool:
+        """Whether ``revision`` is one of this item's, by INV-2's own rule.
+
+        The read-back half of :meth:`with_revision`. That method refuses to
+        *build* a pointer at another item's revision; this answers the same
+        question about a pointer that is already stored, which is the only form
+        the question takes on a read path — nothing in memory constructed it, so
+        the in-memory guarantee says nothing about what came back off disk.
+
+        It exists because ``current_revision_id`` is the one mutable cell in the
+        canonical store, and a type-valid value in it satisfies every structural
+        check the file has: a sibling item's revision id keeps the composite
+        foreign key, leaves ``PRAGMA foreign_key_check`` empty, and moves neither
+        of the ``#30`` integrity counts, because the row stays inside both the
+        project and the surfaceable-status scope. Measured before this guard
+        existed: one such ``UPDATE`` made ``knowledge.get`` publish a `rejected`
+        revision's title and full body under ``status: 'approved'`` with no
+        ``integrity`` key, and ``knowledge.search``'s scan path excerpt it —
+        which is where "the secret that caused the rejection still lives"
+        (:func:`~theurian.domain.enums.may_surface`).
+
+        **Both halves of INV-2, not the item alone.** A revision whose
+        ``project_id`` disagrees is another project's row reached through this
+        project's pointer (SEC-13), so a ``True`` from a comparison that skipped
+        it would be a claim this method is not entitled to make — even though
+        every read that calls it scopes its own query by project today.
+        """
+        return revision.item_id == self.item_id and revision.project_id == self.project_id
+
     def with_status(self, status: KnowledgeStatus) -> Self:
         return replace(self, status=status)
 

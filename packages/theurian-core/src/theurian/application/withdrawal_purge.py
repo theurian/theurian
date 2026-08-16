@@ -129,6 +129,16 @@ NO_PUBLISHED_INDEX: str = "no-published-index"
 INDEX_UNUSABLE: str = "index-unusable"
 NOTHING_TO_PURGE: str = "nothing-to-purge"
 
+#: The published build a purge would copy forward was not produced by this
+#: installation, so the composition root declines to purge it: copying an
+#: unprovenanced build's surviving rows into a fresh build and recording that
+#: build would launder a committed, doctored index into a provenanced one the
+#: serve path trusts. Reported (not raised) so the skip is visible, and named
+#: here because it is part of the ``reason`` vocabulary a command reports even
+#: though the gate that produces it lives at the composition root (ADR-0004,
+#: SEC-7).
+UNTRUSTED_SOURCE_INDEX: str = "untrusted-source-index"
+
 #: What an operator does when the purge itself failed. The index is derived
 #: (ADR-0004), so the cure is always a rebuild -- and it is the load-bearing half
 #: of the failure report, because the current build still holds the withdrawn
@@ -480,6 +490,7 @@ __all__ = [
     "NO_PUBLISHED_INDEX",
     "NO_WITHDRAWAL",
     "PURGE_FAILED_REMEDY",
+    "UNTRUSTED_SOURCE_INDEX",
     "ForestRecomputeStore",
     "PurgeableIndex",
     "WithdrawalPurge",

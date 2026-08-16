@@ -101,14 +101,15 @@ def _uv() -> str:
 
 
 def _child_env(tree: Path, cache_dir: Path) -> dict[str, str]:
-    """Environment for a suite run: isolated HOME, no inherited virtualenv."""
+    """Environment for a suite run: isolated HOME, TMPDIR, no inherited virtualenv."""
     env = dict(os.environ)
     for leaked in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
         env.pop(leaked, None)
     home = tree / ".mutate-home"
     data = tree / ".mutate-data"
-    home.mkdir(exist_ok=True)
-    data.mkdir(exist_ok=True)
+    tmp = tree / ".mutate-tmp"
+    for directory in (home, data, tmp):
+        directory.mkdir(exist_ok=True)
     env.update(
         {
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -116,6 +117,19 @@ def _child_env(tree: Path, cache_dir: Path) -> dict[str, str]:
             "THEURIAN_DATA_DIR": str(data),
             # Resolved before HOME moved, so the child still hits the warm cache.
             "UV_CACHE_DIR": str(cache_dir),
+            # A per-tree TMPDIR, so each worker's pytest gets its own
+            # `pytest-of-<user>` basetemp under `tempfile.gettempdir()`. The trees
+            # already isolate HOME and the data dir but shared the system TMPDIR,
+            # so four concurrent suites built their tmp_path trees under one
+            # basetemp -- and a pytest session removes all but the last few
+            # numbered dirs at start-up, so one worker's start-up could delete a
+            # tmp_path tree another worker was mid-test in. That surfaced as a
+            # control-red on the tmp_path-heavy `registry` fixture under
+            # `--workers 4` only; single-process never shared, so it was always
+            # green. TMP/TEMP set alongside for a collaborator that reads them.
+            "TMPDIR": str(tmp),
+            "TMP": str(tmp),
+            "TEMP": str(tmp),
         }
     )
     return env

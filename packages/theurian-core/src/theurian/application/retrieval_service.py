@@ -1018,8 +1018,11 @@ class ResultGate:
             if item is None or revision is None:  # pragma: no cover - a foreign key holds this
                 # `visible` cleared this candidate moments ago, in this session,
                 # against an item whose `current_revision_id` names this revision
-                # under a foreign key. Reaching here means the state database
-                # disagrees with itself, which is not something to answer around:
+                # under a foreign key -- composite over `(project_id,
+                # revision_id)` since #24, so the project-scoped read below cannot
+                # miss a revision the constraint calls present. Reaching here
+                # means the state database disagrees with itself, which is not
+                # something to answer around:
                 # a silently shorter answer would be indistinguishable from "we
                 # have no such decision".
                 msg = (

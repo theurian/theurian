@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Final
@@ -22,20 +23,24 @@ from theurian.application.ingestion_service import (
 )
 from theurian.application.migration_engine import (
     MigrationEngine,
+    WithdrawalCandidate,
     refuse_unenforceable_scope,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
+    BuildProvenance,
     ProjectError,
     ProjectPaths,
     ensure_gitignore,
     initialize_project,
+    read_active_index,
     read_active_state,
     write_active_state,
 )
 from theurian.application.withdrawal_purge import (
+    UNTRUSTED_SOURCE_INDEX,
     WithdrawalPurge,
     make_forest_recompute,
     publish_purge_for_withdrawal,
@@ -404,6 +409,20 @@ def _read_active(paths: ProjectPaths, as_json: bool) -> ActiveState | None:
             code=1,
         )
         raise
+
+
+def _discard_untrusted_state(database: Path) -> None:
+    """Delete a state database this installation did not build, sidecars and all.
+
+    A WAL-mode database (`PRAGMA journal_mode = WAL`) carries committed data in a
+    `-wal` sidecar and its shared-memory index in a `-shm` one, so deleting the
+    main file alone could leave a committed poisoned WAL to be replayed against
+    whatever is rebuilt in its place -- the same replay the read side opens
+    `mode=ro` to avoid. All three go; `missing_ok` covers the ordinary case where
+    a clean checkpoint already removed the sidecars.
+    """
+    for sidecar in ("", "-wal", "-shm"):
+        database.with_name(f"{database.name}{sidecar}").unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -990,7 +1009,24 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         )
         return
 
+    # This installation's record of the state it built, out of the repository
+    # tree (ADR-0004, SEC-7). Used twice below: to refuse to *apply into* a
+    # database this install did not build, and to record the one it does.
+    provenance = BuildProvenance.default()
+
     created = False
+    if database.exists() and not provenance.has_state(context.paths.root, str(context.state_hash)):
+        # A database file at the name this build would use, that this
+        # installation did not produce -- a doctored `.theurian/state/` shipped in
+        # the repository past its ADR-0004 ignore. Applying migrations *into* it
+        # would leave its injected rows untouched (an idempotent replay writes
+        # nothing) and then stamp the result as this install's build. Discard it,
+        # sidecars included, and rebuild from the Git-tracked migrations, which
+        # are the trusted source. `git rm --cached` is still the user's job for a
+        # tracked copy (the refusal on the serve side names it); this only stops
+        # the untrusted bytes from being adopted here.
+        _discard_untrusted_state(database)
+
     if not database.exists():
         create_database(database, str(context.state_hash), MIGRATION_ENGINE_VERSION)
         created = True
@@ -1011,6 +1047,35 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             writer.register_project(project)
             engine = MigrationEngine(context.clock, context.loaded.content_by_hash)
             report = engine.apply(writer, context.project_id, context.loaded.migration_set)
+            if created or report.changed:
+                # What a reader should be able to see after this apply, recorded
+                # by the writer that produced it and inside its transaction (#30
+                # PR2). Three MCP tools compare their own live count against it
+                # and disclose a difference as damage.
+                #
+                # **Not on every apply, and the condition is the honest half.**
+                # This command is step one of the remedy those tools publish. An
+                # apply with nothing pending writes nothing, so re-recording
+                # there would take the count *from the damaged state* and clear
+                # the signal while the damage stands -- the remedy would
+                # manufacture the all-clear it was run to earn. Recording only
+                # when this apply created the database or applied a migration
+                # leaves the signal up until the remedy's second step (delete
+                # `.theurian/state/`, apply again) rebuilds the database, which
+                # is the step that actually cures it.
+                #
+                # `created` is what keeps the other direction sound: a project
+                # with no migrations at all still gets a record, so "no row" can
+                # mean damage rather than "nothing has been applied yet".
+                #
+                # The residual, recorded rather than closed: an apply that *does*
+                # have a migration to apply re-records over whatever the state
+                # holds at that moment, so damage already present becomes the new
+                # expectation and the signal clears. It is the same shape as the
+                # pointer's -- a count is not a checksum, and the writer can only
+                # record what it can read. Curing it needs an expectation that
+                # does not live in the file it describes.
+                writer.record_expected_surfaceable_count(context.project_id)
     except MigrationChecksumMismatchError as exc:
         _fail(
             str(exc),
@@ -1064,6 +1129,15 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         context.paths, context.state_hash, len(context.loaded.migration_set), context.clock
     )
 
+    # Record that this installation built this canonical state, out of the
+    # repository tree, the instant the pointer that publishes it is written
+    # (ADR-0004, SEC-7). Nothing under `.theurian/state/` will be served for this
+    # project until this record exists, so it is what turns the just-built state
+    # from "present on disk" into "trusted to serve". Recorded on every apply,
+    # not only a changed one: an idempotent re-apply must keep the record so a
+    # daemon does not start refusing state it served a moment ago.
+    provenance.record_state(context.paths.root, str(context.state_hash))
+
     # After the write transaction has committed and released the lock, never
     # inside it: `purge_into` is a whole-file backup, delete and verify, and
     # holding that across a write transaction blocks every other writer (NFR-8,
@@ -1071,9 +1145,69 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     # state, so the committed withdrawal is all it needs -- and it is the same
     # application-layer use case a future daemon write path calls (ADR-0024
     # decision 5). A withdrawal-free apply skips it inside the use case.
-    purge = publish_purge_for_withdrawal(
+    purge = _purge_withdrawal(context, report.withdrawn_candidates, provenance)
+
+    # A withdrawal purge publishes a *new* index build (a copy with the withdrawn
+    # revisions removed), so its build id must be recorded as this install's or
+    # the serve path would stand the fresh, correct index aside as unbuilt. Only a
+    # purge that ran over a source this installation built reaches here published
+    # (`_purge_withdrawal` declines an unprovenanced source), so this never
+    # provenances a copy laundered out of a committed, doctored index.
+    if purge.published and purge.index_build_id is not None:
+        provenance.record_index(context.paths.root, purge.index_build_id)
+
+    _emit(
+        {
+            "stateHash": str(active.state_hash),
+            "databaseCreated": created,
+            "applied": [str(m) for m in report.applied],
+            "skipped": [str(m) for m in report.skipped],
+            "operationsApplied": report.operations_applied,
+            "changed": report.changed,
+            "indexPurge": _purge_fields(purge),
+        },
+        as_json=as_json,
+    )
+
+
+def _purge_withdrawal(
+    context: CommandContext,
+    withdrawal_candidates: Sequence[WithdrawalCandidate],
+    provenance: BuildProvenance,
+) -> WithdrawalPurge:
+    """Purge the published index for a withdrawal, but only if this install built it.
+
+    The purge copies the currently published index forward with the withdrawn
+    rows removed, and the caller records the copy as this installation's build.
+    That is sound only when the source it copies was itself built here. On a fresh
+    clone the published build can be a committed, doctored ``theurian-index-*``
+    shipped past its ADR-0004 ignore, and it is *unprovenanced*: copying it
+    forward and recording the copy would launder its surviving injected rows into
+    a build the serve path then trusts, when the serve-side ``has_index`` gate
+    (``mcp.search._UNBUILT_INDEX``) would otherwise have stood the doctored file
+    aside to the canonical scan. So the purge runs only over a provenanced source;
+    an unprovenanced published source is left in place for that serve-side gate to
+    degrade to the canonical state this apply just rebuilt and provenanced
+    (ADR-0004, SEC-7).
+
+    Gated here at the composition root, beside the ``has_state`` gate in
+    ``migrate_apply``: every provenance check in this codebase lives at a
+    composition root or a serve entry point, never inside a use case, so the
+    application-layer purge stays free of the installation's build record. A
+    withdrawal-free apply reads no pointer here -- it has nothing to launder -- and
+    the empty ``source_build_id`` (no pointer, or a pointer naming no build) falls
+    through to the use case, which reports the benign ``no-published-index`` state.
+    """
+    source_build_id = str((read_active_index(context.paths) or {}).get("indexBuildId", ""))
+    if (
+        withdrawal_candidates
+        and source_build_id
+        and not provenance.has_index(context.paths.root, source_build_id)
+    ):
+        return WithdrawalPurge(published=False, reason=UNTRUSTED_SOURCE_INDEX)
+    return publish_purge_for_withdrawal(
         context.paths,
-        withdrawal_candidates=report.withdrawn_candidates,
+        withdrawal_candidates=withdrawal_candidates,
         ids=context.ids,
         index_factory=SqliteIndexStore,
         # Re-derive each affected scope's forest over the surviving rows, so a
@@ -1090,19 +1224,6 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             forest_builder=ForestBuilder(summarizer=ExtractiveSummarizer()),
             embedder=HashingEmbedding(),
         ),
-    )
-
-    _emit(
-        {
-            "stateHash": str(active.state_hash),
-            "databaseCreated": created,
-            "applied": [str(m) for m in report.applied],
-            "skipped": [str(m) for m in report.skipped],
-            "operationsApplied": report.operations_applied,
-            "changed": report.changed,
-            "indexPurge": _purge_fields(purge),
-        },
-        as_json=as_json,
     )
 
 

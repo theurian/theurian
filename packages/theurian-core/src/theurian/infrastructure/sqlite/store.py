@@ -297,6 +297,65 @@ class SqliteCanonicalStore:
             lambda row: _revision_from_row(row, self._anchors_for(revision_id)),
         )
 
+    def current_revision(
+        self, context: RequestContext, item: KnowledgeItem
+    ) -> KnowledgeRevision | None:
+        """Dereference ``item``'s pointer, refusing a revision that is not its own.
+
+        **The read-side half of the pointer invariant, and the only half that
+        answers for a database nothing in this process wrote.**
+        :meth:`SqliteWriter._refuse_pointer_to_another_items_revision` stops this
+        store *recording* a ``current_revision_id`` that names a sibling item's
+        revision; it cannot stop a value already on the page from being one.
+        Every writer path in this build goes through that guard, and a state
+        database is a derived, unsigned, git-ignored file (ADR-0004, SEC-7) that
+        any local process can edit, so "no writer of ours produced this" is not
+        the same statement as "this cannot be read back".
+
+        A foreign pointer is the corruption with no structural evidence at all: a
+        sibling's revision id is type-valid, satisfies the composite foreign key
+        `(project_id, current_revision_id)`, leaves ``PRAGMA foreign_key_check``
+        empty, and moves neither ``#30`` integrity count -- the row keeps its
+        `project_id` and its `status`, so it stays inside both counted scopes.
+        Measured before this guard existed, one ``UPDATE`` of that one cell made
+        ``knowledge.get`` publish a `rejected` revision's title and full body
+        under ``status: 'approved'`` with no ``integrity`` key.
+
+        Reported as a damaged state database rather than as a missing item.
+        ``None`` here would hand a caller "not present" for a row that is present
+        and unreadable, which is the gap
+        ``tests/integration/test_canonical_store_corruption.py`` records for the
+        `item_id` cell; there the row genuinely cannot be located, while here it
+        can, and its content is exactly what must not be served.
+        :class:`~theurian.infrastructure.sqlite.connection.StateDatabaseUnreadableError`
+        is that answer, and it is the same one this cell already produces when it
+        holds something that is not an id at all -- so the two damage shapes are
+        indistinguishable to a caller, which is what stops the refusal itself
+        becoming a bit about which one happened.
+
+        One additional indexed lookup per dereference at worst, and usually none:
+        the revision row is the one this method was going to fetch anyway.
+        """
+        if item.current_revision_id is None:
+            return None
+        revision = self.get_revision(context, item.current_revision_id)
+        # Inside the guard because deciding this *is* an interpretation of bytes
+        # that came out of this file -- the same key :func:`_reading` applies
+        # everywhere else in this class -- and because the conversion is what
+        # keeps the ids out of the message a caller sees. The
+        # `InvariantViolationError` below names no cell and no id even so: it
+        # travels on ``__cause__``, and Typer renders the whole chain to whoever
+        # runs the CLI.
+        with _reading():
+            if revision is not None and not item.owns(revision):
+                msg = (
+                    "A knowledge_items.current_revision_id names a revision that belongs to "
+                    "another item, so the item and the revision disagree about which item "
+                    "this is."
+                )
+                raise InvariantViolationError(msg)
+        return revision
+
     def _anchors_for(self, revision_id: RevisionId) -> tuple[SourceAnchor, ...]:
         return self._read_all(
             "SELECT * FROM source_anchors WHERE revision_id = ? ORDER BY anchor_id",
@@ -408,6 +467,59 @@ class SqliteCanonicalStore:
         params = (context.project_id.value, *statuses)
         pairs = self._read_all(sql, params, lambda row: (str(row["status"]), int(row["n"])))
         return dict(pairs)
+
+    def count_surfaceable_items(self, context: RequestContext) -> int:
+        # The same population `count_surfaceable_by_status` groups, totalled in
+        # SQL for the tools that need only the total: `knowledge.search` and
+        # `knowledge.get` compare it against `project_integrity`'s recorded count
+        # on every request (#30 PR2) and publish no breakdown. `knowledge.status`
+        # calls neither for this -- it sums the breakdown it already read, which
+        # is the same predicate over the same rows and one query fewer.
+        #
+        # `INDEXED BY idx_items_status`, measured as `SEARCH knowledge_items
+        # USING COVERING INDEX idx_items_status (project_id=? AND status=?)` --
+        # the seek form, so the withheld rows are never read and the cost is
+        # O(surfaceable): 129 -> 130 -> 130 VM steps across 0, 50 and 300
+        # non-surfaceable rows, flat where the channel T-17 describes would grow.
+        #
+        # **The planner picks the same index unaided here, and the force is still
+        # not decoration.** Measured without it: the same plan, 133 -> 134 -> 134.
+        # `list_items_by_status` is where leaving the choice open was measured to
+        # go wrong -- its `ORDER BY item_id` made the primary key look cheaper, so
+        # the planner seeked on `project_id` alone and post-filtered `status`,
+        # reading every withheld row (75 -> 325 -> 1575). This query has no such
+        # pull today. The force is what keeps that a property of the statement
+        # rather than of a cost estimate: drop or rename the index and this fails
+        # loudly instead of quietly reopening the channel (SEC-13, #158).
+        statuses = tuple(sorted(s.value for s in SURFACEABLE_STATUSES))
+        placeholders = ", ".join("?" for _ in statuses)
+        count = self._read_one(
+            "SELECT COUNT(*) AS n FROM knowledge_items "  # noqa: S608 - placeholders only
+            f"INDEXED BY idx_items_status WHERE project_id = ? AND status IN ({placeholders})",
+            (context.project_id.value, *statuses),
+            lambda row: int(row["n"]),
+        )
+        # `COUNT(*)` always returns a row, so this never falls through; the guard
+        # is defensive, as in `count_migration_history`.
+        return 0 if count is None else count
+
+    def expected_surfaceable_count(self, project_id: ProjectId) -> int | None:
+        # The writer's own record of what a reader should be able to see, written
+        # inside the transaction that produced the rows (#30 PR2). `None` means
+        # the row is absent, which the detector reads as damage rather than as
+        # "not recorded": `migrate apply` writes it whenever it creates a
+        # database or applies a migration, and `is_supported` refuses every
+        # database written before this table existed.
+        #
+        # `int()` over the cell is an interpretation of this file like any other,
+        # so a cell that is not a number refuses through `_reading` with a remedy
+        # rather than being silently read as 0 -- which would fabricate a damage
+        # report, or hide one, depending on what the live count happens to be.
+        return self._read_one(
+            "SELECT expected_surfaceable_count AS n FROM project_integrity WHERE project_id = ?",
+            (project_id.value,),
+            lambda row: int(row["n"]),
+        )
 
     def list_relations(
         self, context: RequestContext, item_id: ItemId
@@ -932,6 +1044,36 @@ class SqliteWriter:
                 (project_id.value,),
             ).fetchall()
             return tuple(_applied_migration_from_row(row) for row in rows)
+
+    # -- Integrity ---------------------------------------------------------
+
+    def record_expected_surfaceable_count(self, project_id: ProjectId) -> None:
+        """Record how many items a reader should be able to see (#30 PR2).
+
+        Called inside ``migrate apply``'s write transaction, after the apply, so
+        the number is counted over the rows this transaction itself wrote and
+        no reader outside it can observe an intermediate value. It is the
+        expectation three MCP tools compare their own live count against; a
+        difference is damage they disclose rather than answer around.
+
+        **One statement, and nothing is read back.** The count is computed by the
+        ``INSERT ... SELECT`` rather than fetched and re-bound, so this method
+        interprets no stored cell -- there is no converter here that a damaged
+        page could reach, and therefore no ``_reading`` guard to place. The
+        ``COUNT`` runs over ``idx_items_status`` for the same reason the reader's
+        does, and the ``ON CONFLICT`` makes a re-apply overwrite rather than
+        raise on the primary key.
+        """
+        statuses = tuple(sorted(s.value for s in SURFACEABLE_STATUSES))
+        placeholders = ", ".join("?" for _ in statuses)
+        self._conn.execute(
+            "INSERT INTO project_integrity (project_id, expected_surfaceable_count) "  # noqa: S608 - placeholders only
+            "SELECT ?, COUNT(*) FROM knowledge_items INDEXED BY idx_items_status "
+            f"WHERE project_id = ? AND status IN ({placeholders}) "
+            "ON CONFLICT(project_id) DO UPDATE SET "
+            "expected_surfaceable_count = excluded.expected_surfaceable_count",
+            (project_id.value, project_id.value, *statuses),
+        )
 
     def get_item(self, project_id: ProjectId, item_id: ItemId) -> KnowledgeItem | None:
         """Read an item inside the write transaction.

@@ -69,6 +69,7 @@ from typing import Any, Final
 
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
+    BuildProvenance,
     ProjectPaths,
     read_active_index_pointer,
 )
@@ -104,6 +105,7 @@ INDEX_FILE_MISSING: Final = "index-file-missing"
 INDEX_SCHEMA_MISMATCH: Final = "index-schema-mismatch"
 INDEX_UNREADABLE: Final = "index-unreadable"
 INDEX_PROJECT_MISMATCH: Final = "index-project-mismatch"
+INDEX_UNBUILT: Final = "index-unbuilt"
 UNAPPROVED_NOT_INDEXED: Final = "unapproved-not-indexed"
 
 
@@ -183,6 +185,20 @@ _PROJECT_UNVERIFIED = Fallback(
     "cannot be shown to hold this project's knowledge and this is an unranked "
     "substring scan. Run `theurian index build`; one rebuild records the id, and "
     "the index is derived, so nothing is lost.",
+)
+#: The index this pointer names was not built by this installation (ADR-0004,
+#: SEC-7). Standing aside rather than refusing outright: the ranked path degrades
+#: to the unranked canonical scan, which is itself provenance-gated at
+#: `_resolve`, so a doctored index never serves its own bytes and a query on a
+#: legitimately-built project whose *index* was tampered with still answers from
+#: the trusted canonical store. Distinct from `index-project-mismatch`, which is
+#: about *which project* an index that this install did build was built for.
+_UNBUILT_INDEX = Fallback(
+    INDEX_UNBUILT,
+    "This project's retrieval index was not built by this Theurian installation, so "
+    "it will not be used and this is an unranked substring scan over the canonical "
+    "store. Run `theurian index build` to rebuild it locally; the index is derived, "
+    "so nothing is lost (ADR-0004).",
 )
 _NO_DRAFTS_INDEXED = Fallback(
     UNAPPROVED_NOT_INDEXED,
@@ -277,7 +293,7 @@ class _PublishedIndex:
 
 
 def _published_index(
-    paths: ProjectPaths, *, project_id: str, include_unapproved: bool
+    paths: ProjectPaths, *, project_id: str, include_unapproved: bool, provenance: BuildProvenance
 ) -> _PublishedIndex | Fallback:
     """Locate the index this project publishes, or say why there is not one.
 
@@ -298,6 +314,20 @@ def _published_index(
     path = _searchable_file(paths, build_id)
     if isinstance(path, Fallback):
         return path
+
+    # Ordered after `_searchable_file` so a *corrupt* pointer -- one naming a
+    # build id that escapes the project, or no file at all -- still gets its own
+    # structural diagnosis rather than this trust one. Reached only once the id
+    # names a real, in-project, readable index; the remaining question is whether
+    # this installation built it (ADR-0004, SEC-7). The index database carries
+    # titles, bodies and excerpts, so a doctored one shipped in a cloned or
+    # downloaded repository is a disclosure vector of its own, and the pointer
+    # that names it is derived and unsigned -- its own `stateHash` cannot vouch
+    # for it. Standing aside here degrades to the canonical scan, which
+    # `_resolve` has already provenance-gated, so the doctored index never serves
+    # its bytes.
+    if not provenance.has_index(paths.root, build_id):
+        return _UNBUILT_INDEX
 
     # Every chunk is stamped with the project id that built it and every
     # retrieval query scopes on that id, so an index built for another project
@@ -395,6 +425,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     budget_tokens: int,
     use_dense: bool,
     as_of: datetime | None,
+    provenance: BuildProvenance,
 ) -> dict[str, Any] | Fallback:
     """Answer from the retrieval index, or say why it could not.
 
@@ -415,7 +446,10 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     nothing, exactly as before this parameter existed.
     """
     published = _published_index(
-        paths, project_id=project_id, include_unapproved=include_unapproved
+        paths,
+        project_id=project_id,
+        include_unapproved=include_unapproved,
+        provenance=provenance,
     )
     if isinstance(published, Fallback):
         return published
@@ -848,11 +882,34 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     # `list_items` path this replaced materialised every row and raised `ValueError`
     # in `KnowledgeStatus(row["status"])` (store.py `_item_from_row`), so the whole
     # search errored with `StateDatabaseUnreadableError`. #158 converts that crash
-    # into a silent under-report of the one corrupt row, aligning this fallback to
-    # the #30/SILENTLY_EMPTIED silent drop `knowledge.search` already carries for
-    # other columns on the ranked path (recorded in #30). It is not detected here:
-    # detection would mean reading every row to inspect its status, which is the
-    # O(withheld) scan this change exists to remove.
+    # into a silent under-report of the one corrupt row, and *this scan* still does
+    # not detect it: detection would mean reading every row to inspect its status,
+    # which is the O(withheld) scan this change exists to remove.
+    #
+    # **The scan stays blind; the response no longer is.** #30 PR2 compares the live
+    # surfaceable-item count against the one `migrate apply` recorded, in the tool
+    # layer above (`mcp/tools.py`, `_measure_integrity`), and a status that has
+    # fallen out of `SURFACEABLE_STATUSES` moves that count. Measured against the
+    # real tool over an unindexed project, which is what makes this fallback the
+    # answering path: corrupt the approved row's status and the answer is `count: 0,
+    # results: []` *with* `integrity` present; corrupt a `draft` row's and the
+    # default answer is unchanged at `count: 1` and `integrity` is present anyway,
+    # because both sides count `SURFACEABLE_STATUSES` rather than the set
+    # `include_unapproved` resolved above; corrupt a `deprecated` row's and neither
+    # count moves and no key appears -- a retired row is on neither side, so the
+    # signal carries no bit about a row no flag surfaces (SEC-13, T-17).
+    #
+    # So this position is not in `UNDETECTED_UNDERREPORT`
+    # (`tests/integration/test_canonical_store_corruption.py`), the exact set that
+    # replaced `SILENTLY_EMPTIED` for "answers with less than the file holds and
+    # discloses nothing" -- its one member is a corrupt `knowledge_items.item_id`,
+    # which keeps the row inside both scopes and so moves neither count. Nor is it
+    # in that file's disclosing set, because the sweep's corpus is indexed and
+    # `knowledge.search` answers there through the ranked gate, where
+    # `CanonicalVisibility._may_surface` fetches each candidate's item and
+    # `_item_from_row` parses the cell: a corrupt status on a row the query ranks
+    # refuses the whole search, and a refusal carries no field. Ranked refuses, this
+    # fallback discloses, and `knowledge.status` is the sibling pinned as disclosing.
     surfaceable = frozenset(
         s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
     )
@@ -863,8 +920,14 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
                 continue
             if item.current_revision_id is None:
                 continue
-            revision = store.get_revision(context, item.current_revision_id)
-            if revision is None:  # pragma: no cover - the pointer is a foreign key
+            # The guarded dereference, for the reason `knowledge.get` uses it: a
+            # `current_revision_id` naming a sibling item's revision passes every
+            # structural check the file has, and this loop would then excerpt
+            # that revision's title and body under this item's status. Measured
+            # before the guard existed, a `rejected` body came back here to a
+            # default caller. See `SqliteCanonicalStore.current_revision`.
+            revision = store.current_revision(context, item)
+            if revision is None:  # pragma: no cover - a composite foreign key holds this (#24)
                 continue
             if needle not in f"{revision.title}\n{revision.body}".lower():
                 continue

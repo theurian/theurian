@@ -32,12 +32,17 @@ from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_D
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus, may_surface
+from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus, may_surface
 from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ranking import Ranked
 from theurian.infrastructure.sqlite import store as store_module
-from theurian.infrastructure.sqlite.connection import open_read_connection
-from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+from theurian.infrastructure.sqlite.connection import (
+    create_database,
+    open_read_connection,
+    write_transaction,
+)
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
@@ -5891,10 +5896,14 @@ async def test_a_lost_migration_row_surfaces_integrity_from_knowledge_search(
     `count: 0`. Losing a migration-history row does not empty a response: the
     `knowledge_items` rows are untouched, so the retrievers find what they always
     found, and nothing in the answer itself says the state that produced it is
-    damaged. The `integrity` key is the only thing that does. The corruptions
-    that *do* empty a response -- a sentinel in `knowledge_items.project_id` or
-    `item_id`, answering `count: 0, results: []` with `stale: false` -- leave this
-    key absent and are PR2's (the `SILENTLY_EMPTIED` positions, #30).
+    damaged. The `integrity` key is the only thing that does.
+
+    This test measures the migration comparison alone. PR2 added a second one --
+    the live surfaceable-item count against the count `migrate apply` recorded --
+    which is what now sets the key for a sentinel in `knowledge_items.project_id`,
+    the corruption that answers `count: 0, results: []` with `stale: false`. A
+    sentinel in `item_id` moves neither count and still leaves the key absent
+    (#30).
 
     RED the moment search's `integrity` emission is unplugged (return `answer`
     unconditionally, or force the detector to `None`), which is what proves PR1
@@ -6096,17 +6105,44 @@ async def test_a_corrupt_migration_project_id_is_disclosed_not_silently_emptied(
 async def test_the_integrity_signal_is_identical_across_a_withheld_only_difference(
     read_cost_corpora: _ReadCostCorpora,
 ) -> None:
-    """#30 PR1. The closure argument: `integrity` carries no bit about withheld content.
+    """#30. The closure argument: `integrity` carries no bit about withheld content.
 
     The two corpora hold the *same* one migration and the same three approved
     items, and differ only in the twenty-five `rejected` items the heavy one also
-    holds -- items a caller may not read. So `expected` (the pointer's
-    migration_count) and a healthy `live` (the migration-row count) are identical
-    between them, and the signal's presence must be identical too: absent in
-    both. Were the detector to read anything that scaled with withheld content --
-    counting `knowledge_items` rather than `migration_history`, say -- the heavy
-    corpus would diverge and the presence of `integrity` would leak the withheld
-    count. Measured across all three tools; mirrors the #19 status differential.
+    holds -- items a caller may not read. So whether the key appears must be
+    identical between them: absent in both. One query against two corpora, which
+    is the form of argument that closes a disclosure class rather than a field.
+
+    **Both comparisons are blind to a retired row, and for two different
+    reasons.** The migration comparison (PR1) reads `migration_history` against
+    the pointer's `migrationCount`, and neither knows an item exists. The
+    surfaceable comparison (PR2) *does* count `knowledge_items` -- so the
+    blindness there is not structural but a property of the predicate, and it has
+    to be the same predicate twice: `record_expected_surfaceable_count` counts
+    `SURFACEABLE_STATUSES` alone inside `migrate apply`'s transaction, and
+    `count_surfaceable_items` counts `SURFACEABLE_STATUSES` alone on the request.
+    A `rejected` row is on neither side. Measured on these two corpora: recorded
+    3 and live 3 in both, over stores holding 3 and 28 rows.
+
+    **So the mutation that would break it is a count over every row rather than
+    the surfaceable ones, and only on one side.** Widen both sides together and
+    the corpora stay healthy and the key stays absent; widen the *reader* alone
+    and the heavy corpus reads 28 against a record of 3 while the baseline reads
+    3 against 3 -- the key appears on exactly the project that holds withheld
+    content, which is the leak. Measured, on the two independent readers the
+    three surfaces use:
+
+    - dropping the status predicate from `count_surfaceable_items` -- the read
+      `knowledge.search` and `knowledge.get` share -- fails the equality below on
+      `knowledge.search`;
+    - dropping it from `count_surfaceable_by_status`, whose sum
+      `knowledge.status` passes in instead, fails the same equality on
+      `knowledge.status` with `itemsByStatus` carrying `rejected: 25`.
+
+    Both assertions are needed and they fail differently. The first is the
+    property; the second exists because a build where *both* corpora reported
+    damage would satisfy an equality of presence while saying nothing. Mirrors
+    the #19 status differential.
     """
     corpora = read_cost_corpora
 
@@ -6236,6 +6272,124 @@ async def test_the_search_integrity_count_is_answered_by_a_covering_index(
         )
 
 
+@pytest.mark.asyncio
+async def test_the_surfaceable_integrity_count_is_answered_by_a_covering_index(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """#30 PR2, SEC-13, T-17. The surfaceable COUNT does not read the withheld rows.
+
+    `knowledge.search` and `knowledge.get` compare a live surfaceable-item count
+    against `project_integrity` on every request (#30 PR2), and that count is read
+    by `count_surfaceable_items` -- the one integrity reader the two covering-index
+    tests above do not cover. Its cost must stay off the withheld rows: forced
+    through `idx_items_status(project_id, status)` as a covering-index *seek*, so a
+    retired row is never read and the response time cannot carry the withheld count
+    (#158, #19). Mirrors `test_status_count_is_answered_by_a_covering_index`.
+
+    Two halves, each RED on its own mutation:
+
+    * the captured statement carries `INDEXED BY idx_items_status`. Dropping the
+      hint is RED here even though SQLite picks the same index unaided (the store's
+      own measurement, 133 -> 134 -> 134): the hint is what makes a lost or renamed
+      index fail loudly rather than fall to a scan that reads the withheld rows;
+    * SQLite *seeks* into that covering index. Dropping or renaming the index makes
+      the hinted read raise `no such index`, so the store call below raises rather
+      than reaching the assertion; reversing the declared columns to
+      ``(status, project_id)`` keeps the phrase but plans ``(status=? AND
+      project_id=?)`` and fails the third fragment.
+    """
+    corpora = read_cost_corpora
+    paths = ProjectPaths.of(Path(corpora.registry.load()[READ_COST_HEAVY_ID]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    db_path = paths.state / active.database_filename
+    context = RequestContext(project_id=ProjectId(READ_COST_HEAVY_ID))
+
+    # The store is entered first so its connection opens before the capture is
+    # installed -- that open does not go through `_read_one`, so the one call the
+    # capture sees is `count_surfaceable_items`'s own statement.
+    with SqliteCanonicalStore(db_path) as store, _one_row_statement_the_store_runs() as captured:
+        store.count_surfaceable_items(context)
+
+    assert captured, (
+        "count_surfaceable_items ran no statement through _read_one, so the plan below would "
+        "describe a query the tool never runs -- the capture watches the wrong reader"
+    )
+    assert "INDEXED BY idx_items_status" in captured["sql"], (
+        "the surfaceable COUNT dropped its INDEXED BY hint; without it a dropped or renamed index "
+        "falls to a scan that reads the withheld rows rather than failing loudly, and the "
+        f"O(surfaceable) bound stops being structural. Statement:\n{captured['sql']}"
+    )
+    plan = _query_plan(db_path, captured["sql"], captured["params"])
+
+    for fragment in ("SEARCH", "USING COVERING INDEX idx_items_status", "(project_id=?"):
+        assert fragment in plan, (
+            f"count_surfaceable_items is no longer a seek into the covering index "
+            f"idx_items_status(project_id, status): {fragment!r} is missing. SQLite planned:\n"
+            f"{plan}\n"
+            "Without that seek the surfaceable count reads the project's withheld rows, and the "
+            "search / get response time carries the withheld count again (SEC-13, T-17, #158)."
+        )
+
+
+def test_the_recorded_surfaceable_count_is_written_through_the_covering_index(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2, SEC-13, T-17. The writer records the count through the covering index.
+
+    The writer half of the pair the readers above pin. `migrate apply` records the
+    surfaceable count with an `INSERT ... SELECT COUNT(*)`, and that `COUNT` runs
+    over `idx_items_status` for the same reason the readers' does: the force is
+    structural, so a dropped or renamed index fails the build loudly rather than
+    silently counting through a scan.
+
+    `record_expected_surfaceable_count` runs its statement straight on the
+    connection, not through `_read_one`/`_read_all`, so the reader spies cannot see
+    it. The statement is read off the connection's trace callback as it executes --
+    never restated -- and planned on that same connection, so the plan is the one
+    SQLite forms over the shipped schema.
+
+    Two halves, each RED on its own mutation, as in the reader siblings: the
+    captured statement carries `INDEXED BY idx_items_status`, and SQLite seeks into
+    the covering index (`SEARCH` + the index + `(project_id=?`). Reversing the
+    declared columns keeps the phrase but plans ``(status=? AND project_id=?)``.
+    """
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    database, _ = _state_database(registry)
+
+    captured: list[str] = []
+    with write_transaction(database, paths.write_lock) as connection:
+        # Installed after the connection is open and past its `BEGIN`, so the only
+        # statement it sees is the writer's own INSERT; unset before the plan below
+        # so the `EXPLAIN QUERY PLAN` probe is not captured back into it.
+        connection.set_trace_callback(captured.append)
+        SqliteWriter(connection).record_expected_surfaceable_count(ProjectId("demo"))
+        connection.set_trace_callback(None)
+        insert = next(
+            (
+                sql
+                for sql in captured
+                if "project_integrity" in sql and sql.lstrip().upper().startswith("INSERT")
+            ),
+            None,
+        )
+        assert insert is not None, (
+            f"record_expected_surfaceable_count ran no INSERT the trace could see: {captured}"
+        )
+        plan = "\n".join(str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + insert))
+
+    assert "INDEXED BY idx_items_status" in insert, (
+        "the recording COUNT dropped its INDEXED BY hint; a dropped or renamed index then counts "
+        f"through a scan at build time rather than failing loudly. Statement:\n{insert}"
+    )
+    for fragment in ("SEARCH", "USING COVERING INDEX idx_items_status", "(project_id=?"):
+        assert fragment in plan, (
+            f"record_expected_surfaceable_count no longer records through a seek into the covering "
+            f"index idx_items_status(project_id, status): {fragment!r} is missing. SQLite "
+            f"planned:\n{plan}"
+        )
+
+
 # -- #30 PR1: what `knowledge.get` says when the damage *is* the absence -----
 #
 # `knowledge.get` publishes no field on a refusal, so its half of the integrity
@@ -6249,7 +6403,13 @@ async def test_the_search_integrity_count_is_answered_by_a_covering_index(
 #: The phrase that distinguishes `get`'s damage refusal from its absence
 #: refusal. Matched as a substring of the published message, because `get` has
 #: no `integrity` field to read: the message *is* the signal.
-GET_DAMAGE_PHRASE = "a different number of migration-history rows"
+#:
+#: Face-independent since PR2 (#30). The detector now takes two measurements --
+#: migration rows against the pointer, surfaceable items against what the writer
+#: recorded -- and the message names neither, because a message that said which
+#: one fired would answer, over a damaged database, a question about what the
+#: state holds that this tool refuses to answer over a healthy one.
+GET_DAMAGE_PHRASE = "disagrees with its own records about what it holds"
 
 #: What `get` says for an id that is simply not there -- and, by SEC-13, for one
 #: it is withholding. Pinned here so the damage message can be asserted *unequal*
@@ -6727,3 +6887,590 @@ async def test_a_negative_migration_count_is_refused_by_every_read_tool(
     assert ACTIVE_POINTER_REMEDY in message, (
         f"{tool} refused a malformed pointer without the remedy that rebuilds it: {message!r}"
     )
+
+
+# -- #30 PR2: the surfaceable-item comparison and the record it reads --------
+#
+# PR1 compared one number against one number. PR2 adds a second: the live count
+# of `knowledge_items` whose status is surfaceable, against the count `migrate
+# apply` wrote into `project_integrity` inside its own write transaction. Damage
+# is either comparison differing, in either direction, and a project with no
+# record at all is damage too.
+#
+# Every test below is written so that **only the new comparison can fire**: the
+# migration operands are asserted equal first, so a signal that appeared for
+# PR1's reason would be a failure of the guard rather than a pass. Four claims,
+# each failing on its own mutation:
+#
+#   * the second comparison runs (a lost surfaceable item is disclosed on all
+#     three tools while the migration count is untouched);
+#   * a missing record is damage rather than "not recorded", which is what makes
+#     the schema-version bump load-bearing;
+#   * an apply that changes the store records the new count, so a healthy
+#     rebuild is silent;
+#   * an apply with nothing pending does *not* re-record, so the remedy's first
+#     step cannot manufacture the all-clear it was run to earn.
+
+
+def _expected_surfaceable_count(database: Path, project_id: str = "demo") -> int | None:
+    """The writer's own record, read straight from SQLite.
+
+    Never through `SqliteCanonicalStore.expected_surfaceable_count`, for the
+    reason `_live_and_expected` reads its row count with a bare connection: a
+    store method that started answering from the live count could otherwise make
+    the detector's two operands agree by construction, and every assertion below
+    would hold over a build that had stopped comparing anything.
+
+    ``None`` means the row is absent, which is the state the detector reads as
+    damage rather than as "not recorded".
+    """
+    connection = sqlite3.connect(database)
+    try:
+        row = connection.execute(
+            "SELECT expected_surfaceable_count FROM project_integrity WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return None if row is None else int(row[0])
+
+
+def _live_surfaceable_count(database: Path, project_id: str = "demo") -> int:
+    """How many items a reader should be able to see, counted now.
+
+    The other operand, read the same independent way. `draft` and `approved` are
+    both surfaceable, so the fixture's two items are the two this counts -- which
+    is asserted rather than assumed wherever it matters below.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        statuses = tuple(sorted(status.value for status in SURFACEABLE_STATUSES))
+        placeholders = ", ".join("?" for _ in statuses)
+        count = connection.execute(
+            "SELECT COUNT(*) FROM knowledge_items "  # noqa: S608 - placeholders only
+            f"WHERE project_id = ? AND status IN ({placeholders})",
+            (project_id, *statuses),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    return int(count)
+
+
+def _delete_the_draft_item(database: Path) -> int:
+    """Take one surfaceable item out of the store and change nothing else.
+
+    The minimal, unambiguous shape for the *second* comparison, and the mirror of
+    `_drop_one_migration_history_row` for the first: `migration_history` is
+    untouched, so PR1's operands stay equal and a signal can only have come from
+    the item count. The **draft** rather than the approved item, so
+    `knowledge.search`'s own `count` does not move either -- the response is
+    byte-identical to the healthy one but for the `integrity` key, which is the
+    sharpest form of "the answer looks fine and the state it came from is not".
+    """
+    connection = sqlite3.connect(database)
+    try:
+        changed = connection.execute(
+            "DELETE FROM knowledge_items WHERE project_id = ? AND item_id = ?",
+            ("demo", "architecture.caching-draft"),
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_lost_surfaceable_item_is_damage_on_every_read_tool(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The second comparison runs, and it is the only one that can fire.
+
+    PR1's detector reads `migration_history` and the pointer, and neither moves
+    here: the guard asserts they are still equal before the call, so a build that
+    kept only PR1's comparison answers all three of these calls clean and this
+    goes RED. That is the mutation this test exists for -- deleting the
+    `live_surfaceable == expected_surfaceable` term from `_integrity_signal`.
+
+    `knowledge.search` still answers `count: 1`, because the item that vanished
+    is the draft and no default search was ever going to return it. So the whole
+    of what distinguishes this response from a healthy one is the `integrity`
+    key: an agent reading the numbers alone has no way to know that the state it
+    is reading lost a row. `knowledge.status` does publish a smaller `itemCount`,
+    disclosed beside the signal rather than as a fact about the project.
+    """
+    database, active = _state_database(registry)
+    assert _live_and_expected(registry) == (2, 2), (
+        "the migration operands must be equal, or PR1's comparison could be what fires below "
+        "and this says nothing about PR2's"
+    )
+    assert _expected_surfaceable_count(database) == 2, (
+        "`migrate apply` must have recorded the fixture's two surfaceable items, or there is "
+        "no expectation for the live count to disagree with"
+    )
+    assert _delete_the_draft_item(database) == 1, "nothing was lost; the test is vacuous"
+    assert _live_surfaceable_count(database) == 1, "the deletion must move the live count"
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert search["integrity"]["damageDetected"] is True, (
+        "knowledge.search answered over a state holding fewer items than its own record says, "
+        "and said nothing -- the surfaceable comparison is not running"
+    )
+    assert search["count"] == 1, (
+        "the search answer itself must be unchanged, or the signal is riding on a response that "
+        "already looks wrong and this measures the wrong thing"
+    )
+    assert status["integrity"]["damageDetected"] is True, "knowledge.status disclosed nothing"
+    assert status["itemCount"] == 1, "the live count is what it is; the signal is what discloses it"
+    assert status["appliedMigrations"] == active.migration_count, (
+        "the migration count must not move, or the guard above stopped holding mid-test"
+    )
+    assert got["integrity"]["damageDetected"] is True, (
+        "knowledge.get's success path disclosed nothing"
+    )
+    for surface, published in (("search", search), ("status", status), ("get", got)):
+        assert INTEGRITY_REMEDY_ACTION in published["integrity"]["remedy"], (
+            f"knowledge.{surface} reported damage with no rebuild to run"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_missing_integrity_record_is_damage_and_not_silence(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. "No record" is damage, which is what the schema bump buys.
+
+    `expected_surfaceable_count` returning `None` could mean two things -- this
+    database was written before the record existed, or it has lost one -- and the
+    detector may only treat it as the second because `is_supported` refuses every
+    older file outright -- exact match, so versions 1 and 2 alike (ADR-0017,
+    `SCHEMA_VERSION` 3). Reading `None` as healthy is the tempting mutation, and
+    it is what this goes RED against.
+
+    Nothing else is touched: the migration operands are equal, the live
+    surfaceable count still equals the number that was recorded, and every
+    published integer is the one a healthy build produces. The record's *absence*
+    is the entire difference between this response and a clean one.
+    """
+    database, _ = _state_database(registry)
+    assert _live_and_expected(registry) == (2, 2), "the migration comparison must stay healthy"
+    recorded = _expected_surfaceable_count(database)
+    assert recorded == _live_surfaceable_count(database) == 2, (
+        f"the record and the live count must agree before the record is removed, or the signal "
+        f"below could be the ordinary count mismatch: recorded={recorded}"
+    )
+
+    connection = sqlite3.connect(database)
+    try:
+        removed = connection.execute(
+            "DELETE FROM project_integrity WHERE project_id = ?", ("demo",)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    assert removed == 1, (
+        "the record must exist to be removed, or this measures a database from before the table"
+    )
+    assert _expected_surfaceable_count(database) is None, "and it must really be gone"
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    for surface, published in (("search", search), ("status", status), ("get", got)):
+        assert published["integrity"]["damageDetected"] is True, (
+            f"knowledge.{surface} read a database with no integrity record and called it healthy; "
+            f"a readable database this build can open was written by a build that records"
+        )
+    assert (search["count"], status["itemCount"], got["itemId"]) == (
+        1,
+        2,
+        "architecture.auth-policy",
+    ), (
+        "every other published value must be the healthy one, or the signal above is riding on "
+        "damage this test did not write"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lost_surfaceable_item_makes_get_refuse_an_absent_id_as_damage(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The second comparison reaches `get`'s refusal branch, not only its
+    success path.
+
+    `knowledge.get` publishes no field on a refusal, so its half of the signal is
+    a different *message*, and the branch that chooses it is a separate call to
+    the detector from the one on the success path -- a fix applied to one would
+    leave the other reporting damage as absence. PR1 pinned that branch against a
+    lost migration row; this is the same branch reached by the comparison PR2
+    added, with the migration operands asserted equal so only the new one can
+    fire.
+
+    The distinction is the whole content: an agent told `'architecture.absent' is
+    not present in project 'demo'` concludes the decision does not exist, when
+    the truth is that the state which would hold it has lost a row. Both phrases
+    are asserted, because the two mutations fail differently -- forcing the
+    damage branch off drops through to absence, and reusing the absence text
+    keeps the branch and loses the signal.
+    """
+    database, _ = _state_database(registry)
+    assert _live_and_expected(registry) == (2, 2), (
+        "the migration operands must be equal, or PR1's comparison is what reaches this branch"
+    )
+    assert _delete_the_draft_item(database) == 1, "nothing was lost; the test is vacuous"
+
+    message = await _call_failing(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.absent"
+    )
+
+    assert GET_DAMAGE_PHRASE in message, (
+        f"`knowledge.get` refused over a state holding fewer items than its own record says, "
+        f"without saying so: {message!r}"
+    )
+    assert GET_ABSENCE_PHRASE not in message, (
+        f"`knowledge.get` reported the lost row as the absence of the id that was asked for, "
+        f"which is the #30 under-report on this surface: {message!r}"
+    )
+    assert INTEGRITY_REMEDY_ACTION in message, "a damage refusal must name the rebuild"
+
+
+@pytest.mark.asyncio
+async def test_an_apply_that_changes_the_store_records_the_new_count(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The recording half of `created or report.changed`, and its silence.
+
+    A third migration adds a third surfaceable item, and the apply that writes it
+    records three inside the same transaction -- into the *new* state database,
+    because the migration set moved and so did the state hash (ADR-0016). So the
+    detector's two operands are equal again and every tool is silent.
+
+    RED if the recording call is removed: the new database carries no record,
+    `expected_surfaceable_count` reads `None`, and all three tools report damage
+    on a project nobody damaged. That is the mutation this pins, and it is the
+    one a reader would otherwise call harmless -- the count is written by a
+    command nothing else asserts about.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    before, _ = _state_database(registry)
+    assert _expected_surfaceable_count(before) == 2, "the fixture must start with its two recorded"
+
+    slug, title, letter = "retry-policy", "Retry policy", "C"
+    (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+        f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
+    )
+    (root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml").write_text(
+        EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title)
+    )
+    report = _apply_returning_its_report(root)
+    assert report["changed"] is True, f"the apply must have had something to do: {report}"
+
+    after, _ = _state_database(registry)
+    assert _live_surfaceable_count(after) == 3, "the third item must really be in the new store"
+    assert _expected_surfaceable_count(after) == 3, (
+        "the apply that wrote the third item did not record what a reader should now see, so "
+        "every read of this fresh, healthy build reports damage"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.retry-policy"
+    )
+
+    assert "integrity" not in search, "a freshly rebuilt project must not report damage"
+    assert "integrity" not in status, "a freshly rebuilt project must not report damage"
+    assert "integrity" not in got, "a freshly rebuilt project must not report damage"
+    assert status["itemCount"] == 3, "and the count it publishes is the one that was recorded"
+
+
+@pytest.mark.asyncio
+async def test_a_pending_free_apply_does_not_re_record_over_a_damaged_state(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The *not*-recording half, which is the load-bearing one.
+
+    `migrate apply` is step one of the remedy the signal publishes. An apply with
+    nothing pending writes nothing, so re-recording there would count the rows
+    the damaged state currently holds and store that as the new expectation --
+    the signal would clear while the damage stood, and the remedy would
+    manufacture the all-clear it was run to earn. Only the second step of the
+    remedy (delete `.theurian/state/`, apply again) rebuilds the file, and that
+    is the step that actually cures it.
+
+    So the recording is conditioned on `created or report.changed`, and this is
+    what goes RED when that condition is removed: the record moves from 2 to 1
+    and all three tools fall silent over a store that is still missing a row.
+
+    Three applies rather than one, for the reason
+    `test_a_plain_apply_does_not_cure_a_surplus_migration_row` runs three: one
+    shows the command does not clear the signal, three show a caller cannot get
+    there by repeating it.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    database, _ = _state_database(registry)
+    assert _expected_surfaceable_count(database) == 2, (
+        "the fixture must start with its two recorded"
+    )
+    assert _delete_the_draft_item(database) == 1, "nothing was lost; the test is vacuous"
+
+    before = await _call(registry, "knowledge.status", projectId="demo")
+    assert "integrity" in before, (
+        "the lost item produced no signal, so there is nothing for an apply to fail to clear and "
+        "this test would pass over a healthy project"
+    )
+
+    for attempt in range(1, 4):
+        report = _apply_returning_its_report(root)
+
+        assert (report["applied"], report["changed"]) == ([], False), (
+            f"apply #{attempt} had something to do ({report['applied']}, "
+            f"changed={report['changed']}); a lost row is not a pending migration, so an apply "
+            f"that changes here is reconciling the store against its record -- a different "
+            f"behaviour than the condition is written for"
+        )
+        assert _expected_surfaceable_count(database) == 2, (
+            f"apply #{attempt} re-recorded the expectation from the damaged state: the record is "
+            f"now {_expected_surfaceable_count(database)}, taken from a store that is still "
+            f"missing a row, and the signal a caller ran this command to cure has been cleared "
+            f"rather than fixed"
+        )
+        after = await _call(registry, "knowledge.status", projectId="demo")
+        assert after.get("integrity") == before["integrity"], (
+            f"the integrity signal moved after apply #{attempt}: {before.get('integrity')} -> "
+            f"{after.get('integrity')}, over a store that still holds "
+            f"{_live_surfaceable_count(database)} of its 2 recorded items"
+        )
+
+
+# -- #30 PR2: an apply into an existing file records, and a surplus is damage ----
+
+
+def _reset_state_to_an_uncommitted_apply(database: Path, state_hash: str) -> None:
+    """Leave the state file present but empty of migrations, as an apply whose
+    schema was created and whose migration transaction never committed would.
+
+    `migrate apply` runs `create_database` *outside* its write transaction (#63),
+    so an apply interrupted before that transaction commits leaves a file at the
+    state hash's name holding the schema and nothing else -- no migration history
+    and no `project_integrity` record. The active pointer and this installation's
+    provenance for the hash are untouched, so the next apply finds the file present
+    and trusted (`created` is False) and applies the pending migrations into it
+    (`report.changed` is True): the arm of `created or report.changed` no other
+    fixture reaches, because a changing apply otherwise moves the state hash and so
+    writes a *new* file (`created` True).
+    """
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(database) + suffix).unlink(missing_ok=True)
+    create_database(database, state_hash, MIGRATION_ENGINE_VERSION)
+
+
+@pytest.mark.asyncio
+async def test_an_apply_into_an_existing_empty_database_re_records_the_count(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The `report.changed` half of `created or report.changed`.
+
+    The recording condition has two arms and only `created` was ever exercised:
+    every apply that changes the store also moves the state hash, so it writes a
+    *new* database (`created` True) and the `report.changed` arm never fires. So
+    `if created or report.changed:` -> `if created:` survives the whole suite, and
+    a future change that let an apply reach an existing file with pending
+    migrations would silently stop recording the count.
+
+    This builds that shape directly: the state file is reset to a created-but-
+    uncommitted apply -- schema present, no migration history, no
+    `project_integrity` -- with the pointer and provenance for the hash left in
+    place. The next `migrate apply` therefore reports `databaseCreated: false`,
+    `changed: true`, and must re-record the count, or the freshly, correctly
+    rebuilt project reports damage to every read tool.
+
+    RED under `if created:`: `created` is False, so the record is never written,
+    `expected_surfaceable_count` reads `None`, and all three tools report damage on
+    a healthy project.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    database, active = _state_database(registry)
+    assert _expected_surfaceable_count(database) == 2, (
+        "the fixture must start with its two recorded"
+    )
+
+    _reset_state_to_an_uncommitted_apply(database, str(active.state_hash))
+    assert _expected_surfaceable_count(database) is None, (
+        "the reset must leave no record, or this measures an apply that had one to read"
+    )
+
+    report = _apply_returning_its_report(root)
+    assert (report["databaseCreated"], report["changed"]) == (False, True), (
+        f"the apply must reach the `report.changed` arm -- an existing file with pending "
+        f"migrations -- or it exercises the `created` arm this test is not about: {report}"
+    )
+
+    after, _ = _state_database(registry)
+    assert _live_surfaceable_count(after) == 2, "the two items must be back in the rebuilt store"
+    assert _expected_surfaceable_count(after) == 2, (
+        "the apply that applied a migration into the existing file did not record the count, so "
+        "every read of this correctly rebuilt project reports damage"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+    assert "integrity" not in search, "a correctly rebuilt project must not report damage"
+    assert "integrity" not in status, "a correctly rebuilt project must not report damage"
+    assert "integrity" not in got, "a correctly rebuilt project must not report damage"
+
+
+def _add_a_surplus_surfaceable_item(database: Path, project_id: str = "demo") -> int:
+    """Add one surfaceable `knowledge_items` row, so `live > expected`.
+
+    The surfaceable mirror of `_add_a_foreign_migration_history_row`: the direction
+    no other fixture reaches. Every other surfaceable-count damage here *removes* a
+    row (`live < expected`), so `==` -> `>=` on the surfaceable comparison survives
+    the whole suite -- a surplus is called healthy. Copies an existing approved
+    row's enum-valued columns so every value is one the schema accepts, with a
+    fresh id and a NULL `current_revision_id` (a composite child key with a NULL
+    component imposes no constraint), so the row is counted but names no revision
+    and cannot itself be surfaced as a result.
+    """
+    connection = sqlite3.connect(database)
+    try:
+        changed = connection.execute(
+            "INSERT INTO knowledge_items "
+            "(item_id, project_id, namespace, kind, status, current_revision_id, owner, "
+            " trust_level, sensitivity, tenant_id, acl_group, valid_from, valid_to) "
+            "SELECT 'architecture.surplus', project_id, namespace, kind, status, NULL, owner, "
+            " trust_level, sensitivity, tenant_id, acl_group, valid_from, valid_to "
+            "FROM knowledge_items WHERE project_id = ? AND status = 'approved' LIMIT 1",
+            (project_id,),
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_surplus_surfaceable_item_is_damage_on_every_read_tool(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The surfaceable comparison is `!=`, so *more* items is damage too.
+
+    The state database is immutable once built, so a live surfaceable count above
+    what `migrate apply` recorded is not a project that grew -- it is a row that was
+    never applied here, and an answer assembled from it comes from a state nobody
+    recorded. `==` -> `>=` (or `<`) on the surfaceable term calls that healthy, and
+    no other fixture could tell: every other surfaceable damage in this suite
+    *removes* reach, so `live > expected` had never been built.
+
+    All three surfaces in one test, because the claim is one -- the direction of a
+    single comparison -- reaching a caller three ways: a field on `search` and
+    `status`, and `get`'s success path, which the surplus leaves intact (the
+    fetched item is still readable) so it publishes the field rather than a message.
+    """
+    database, _ = _state_database(registry)
+    assert _live_and_expected(registry) == (2, 2), (
+        "the migration operands must be equal, or PR1's comparison is what fires below"
+    )
+    assert _expected_surfaceable_count(database) == 2, "the fixture must start with two recorded"
+    assert _add_a_surplus_surfaceable_item(database) == 1, (
+        "the surplus row must land, or this is vacuous"
+    )
+    assert _live_surfaceable_count(database) == 3, (
+        "the surplus must move the live count above the record"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert search["integrity"]["damageDetected"] is True, (
+        "knowledge.search called a surplus surfaceable row healthy; the surfaceable comparison "
+        "has become a shortfall test and a row never applied here is answering queries"
+    )
+    assert status["integrity"]["damageDetected"] is True, (
+        "knowledge.status called a surplus healthy"
+    )
+    assert got["integrity"]["damageDetected"] is True, (
+        "knowledge.get's success path called a surplus healthy"
+    )
+    for surface, published in (("search", search), ("status", status), ("get", got)):
+        assert INTEGRITY_REMEDY_ACTION in published["integrity"]["remedy"], (
+            f"knowledge.{surface} reported damage with no rebuild to run"
+        )
+
+
+def _move_the_draft_to_approved(database: Path, project_id: str = "demo") -> int:
+    """Move the draft item to `approved`, a status still in `SURFACEABLE_STATUSES`.
+
+    A within-set status move: both `draft` and `approved` are surfaceable, so the
+    count `count_surfaceable_items` takes is unchanged (2 -> 2). It is the residual
+    the store's DDL comment and `_integrity_signal`'s docstring record as a class --
+    a type-valid, in-scope corruption the count cannot see -- and the direction they
+    separate from a status that *leaves* the set, which the count does see (the
+    sentinel a corruption sweep writes, disclosed as `integrity`).
+    """
+    connection = sqlite3.connect(database)
+    try:
+        changed = connection.execute(
+            "UPDATE knowledge_items SET status = 'approved' "
+            "WHERE project_id = ? AND status = 'draft'",
+            (project_id,),
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return changed
+
+
+@pytest.mark.asyncio
+async def test_a_within_surfaceable_status_move_moves_no_count_and_is_silent(
+    registry: ProjectRegistry,
+) -> None:
+    """#30 PR2. The silent direction of a `status` corruption, stated as a property.
+
+    A `knowledge_items.status` cell moves the surfaceable count only when the new
+    value *leaves* `SURFACEABLE_STATUSES`. A value that stays inside it (draft ->
+    approved) is counted either way, so the count -- which is not a checksum --
+    cannot see the move, and the `integrity` key stays absent while the response
+    reflects the new status. This is the residual `_integrity_signal`'s docstring
+    and the schema DDL comment record; without it that "silent" direction is a
+    claim no test holds, while the corruption sweep only ever covers the *leaving*
+    direction (its sentinel is not a surfaceable status).
+
+    The guard is `itemsByStatus`: it proves the move happened -- both items now
+    `approved` -- so the silence below is over a state that really changed, not a
+    corpus that never moved.
+    """
+    database, _ = _state_database(registry)
+    assert _live_and_expected(registry) == (2, 2), "the migration operands must stay equal"
+    assert _expected_surfaceable_count(database) == 2, "the fixture records two surfaceable items"
+    assert _move_the_draft_to_approved(database) == 1, "the draft must move, or this is vacuous"
+    assert _live_surfaceable_count(database) == 2, (
+        "a within-set move must not change the surfaceable count, or this is not the residual case"
+    )
+
+    search = await _call(registry, "knowledge.search", projectId="demo", query="token")
+    status = await _call(registry, "knowledge.status", projectId="demo")
+    got = await _call(
+        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert status["itemsByStatus"] == {"approved": 2}, (
+        f"the move did not take effect, so the silence below is over an unchanged corpus: "
+        f"{status['itemsByStatus']}"
+    )
+    assert "integrity" not in search, "a within-set status move moved no count and must be silent"
+    assert "integrity" not in status, "a within-set status move moved no count and must be silent"
+    assert "integrity" not in got, "a within-set status move moved no count and must be silent"

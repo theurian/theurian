@@ -259,6 +259,7 @@ from typer.testing import CliRunner
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import (
+    BuildProvenance,
     ProjectPaths,
     ProjectRegistry,
     read_active_index_pointer,
@@ -765,13 +766,22 @@ def _write_active_state(paths: ProjectPaths, state: StateHash, updated_at: datet
     would write a second file. What a search reads off the pointer -- the hash it
     reports as ``snapshotId``, and the one it compares the index's against -- is
     identical either way.
+
+    ``migration_count`` is **0** because this builder runs no migration engine
+    and writes no `migration_history` row. It read 1 until #30 PR2 measured it:
+    the integrity detector compares the pointer's count against the store's live
+    row count, so a pointer claiming one applied migration over a store holding
+    none made every response in this suite carry ``integrity`` -- leaving the
+    equalities below comparing two damaged responses, which they do perfectly
+    and pointlessly. Present since PR1 (`e62de35`); the value was chosen before
+    any pointer field was read back.
     """
     paths.active_pointer.write_text(
         json.dumps(
             ActiveState(
                 state_hash=state,
                 database_filename=STATE_NOW.database_filename,
-                migration_count=1,
+                migration_count=0,
                 updated_at=updated_at.isoformat(),
             ).to_json()
         ),
@@ -793,11 +803,20 @@ def _retire(item: KnowledgeItem) -> KnowledgeItem:
 def _retire_in_the_store(
     database: Path, paths: ProjectPaths, items: tuple[KnowledgeItem, ...]
 ) -> None:
-    """The canonical write the index never saw."""
+    """The canonical write the index never saw.
+
+    Re-records the expected surfaceable count for the reason the first write
+    records it at all (see :func:`_build_project`): a retirement takes rows out
+    of that count, and a real one arrives through ``migrate apply``, which
+    re-records inside the same transaction. Without this the pair would answer
+    every call with ``integrity`` present, and this suite would be comparing two
+    damage reports rather than two healthy responses.
+    """
     with write_transaction(database, paths.write_lock) as connection:
         writer = SqliteWriter(connection)
         for item in items:
             writer.put_item(item)
+        writer.record_expected_surfaceable_count(ProjectId(PROJECT_ID))
 
 
 def _build_project(
@@ -861,6 +880,13 @@ def _build_project(
         for document in documents:
             writer.append_revision(_revision(document, created_at))
             writer.put_item(_item(document, created_at))
+        # What `theurian migrate apply` records at the end of its own write
+        # transaction (#30 PR2), and this builder writes a store by hand instead
+        # of running it. Omitting it does not fail loudly: three tools read the
+        # record on every call and treat its absence as damage, so the whole pair
+        # would answer with `integrity` present and every equality below would
+        # compare two damaged responses and still pass.
+        writer.record_expected_surfaceable_count(ProjectId(PROJECT_ID))
 
     # The state this build sees. With nothing to retire it is already the final
     # state, so a search reports `stale: false`; with a retirement to come it is
@@ -921,6 +947,13 @@ def _build_project(
         ),
         encoding="utf-8",
     )
+    # This builder stands in for `migrate apply` + `index build`, so it records
+    # what those record: that this installation built the served state and index
+    # (ADR-0004, SEC-7). Without it the serve path refuses both -- the pointer's
+    # final hash is always `STATE_NOW`, and the one index is `INDEX_BUILD_ID`.
+    provenance = BuildProvenance.for_registry(registry)
+    provenance.record_state(paths.root, str(STATE_NOW))
+    provenance.record_index(paths.root, INDEX_BUILD_ID)
     return registry
 
 
@@ -1046,7 +1079,7 @@ def _offered_by_the_index(root: Path, case: _Case, *, include_unapproved: bool) 
 def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
     """Refuse to pass on an example that proved nothing.
 
-    Four ways a generated pair can be green while testing nothing. The third is
+    Five ways a generated pair can be green while testing nothing. The third is
     not hypothetical: this file's first version made every withheld document a
     ``draft``, whose chunks the retrievers' own ``WHERE`` refuses, so the
     canonical gate was never asked about them -- and deleting that gate outright
@@ -1059,7 +1092,18 @@ def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
     - the payloads are equal, so the two projects are the same project;
     - **no retriever offers the withheld row**, so nothing downstream had a
       chance to leak it;
-    - the withheld row is in the answer, which is a leak rather than a bad pair.
+    - the withheld row is in the answer, which is a leak rather than a bad pair;
+    - **the pair is answering as a damaged project**, so every equality below is
+      comparing two damage reports.
+
+    The last one is measured rather than imagined. Both #30 detectors read
+    records this builder writes by hand -- the active pointer's
+    ``migrationCount`` and `project_integrity`'s expected count -- and this file
+    got each of them wrong in turn: a pointer claiming one migration over a store
+    holding none (PR1), and no `project_integrity` row at all (PR2). Neither
+    failed anything. Every response simply carried ``integrity``, in both
+    corpora, and the equalities held perfectly over two damaged answers. Nothing
+    in this file reads that key, which is exactly why the guard has to.
 
     Asserted rather than filtered. ``hypothesis`` will happily generate a corpus
     of one empty document forever, and an example dropped by ``assume`` leaves no
@@ -1070,6 +1114,13 @@ def _assert_the_pair_bites(pair: _Pair, probe: dict[str, Any]) -> None:
     withheld_ids = {document.item_id for document in case.withheld(secret=True)}
 
     assert probe["count"] > 0, "two empty answers prove nothing about withholding"
+    assert "integrity" not in probe, (
+        f"the pair answers as a damaged project ({probe['integrity']}), so every equality in "
+        f"this file is comparing two damage reports rather than two healthy responses. The "
+        f"builder writes the records both #30 comparisons read -- the pointer's "
+        f"`migrationCount` and `project_integrity`'s expected surfaceable count -- and one of "
+        f"them has drifted from what `theurian migrate apply` would have written"
+    )
     assert all(secret != decoy for secret, decoy in case.payloads), (
         "the two projects must actually differ"
     )

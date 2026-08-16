@@ -87,6 +87,26 @@ loss. Because it is not, it is a cache miss.
   covers the adjacent case: it is reported as a version, not as corruption.
 - `tests/integration/test_canonical_store.py::test_schema_version_is_recorded_inside_the_database`
   — the version is stored in the database and matches the constant on creation.
+- `tests/integration/test_canonical_store_corruption.py::test_a_pre_integrity_database_is_refused_unread_by_every_tool`
+  — decision 3 and the rejected "compatibility window" alternative, asserted on
+  all three MCP read tools at once, because `_resolve` is shared and a window
+  opened for one would be open for the others. Parametrised over *every* version
+  below the current one, so the rule is held across the whole range rather than at
+  its far end. Landed in Milestone 6 with a bump of this constant (2 → 3,
+  `project_integrity` and the composite pointer key,
+  [#30](https://github.com/theurian/theurian/issues/30) PR2 and
+  [#24](https://github.com/theurian/theurian/issues/24)). The exact-match rule is
+  load-bearing for more than tidiness now: the #30 detector reads a *missing*
+  `project_integrity` row as damage, which is only sound while no database written
+  before that table existed can be opened at all.
+
+That bump was measured against a database the previous release really wrote, not
+only against a stamped version cell: `0.1.0.dev3` built a state database at
+version 2, after which all three read tools of this build refuse it with the
+message this ADR's decision 4 implies — rebuild rather than migrate — and one
+`theurian migrate apply` produces `databaseCreated: true` under a new state hash,
+after which the tools answer at version 3. The superseded file is left in place
+for `theurian index gc` (decision 5).
 
 Still owed, with the milestone that will satisfy it:
 

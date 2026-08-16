@@ -114,15 +114,22 @@ SCHEMA_SENTINEL: Final = re.sub(r"[^0-9A-Za-z]", "_", SENTINEL)
 #: Recorded here rather than asserted, because closing it is a change to
 #: `knowledge.get`, not to this store.
 #:
+#: **A fourth position left this tuple's reach in #30 PR2.** A sentinel in
+#: `knowledge_items.project_id` takes every item out of the project's surfaceable
+#: count, which the PR2 detector compares against the count `migrate apply`
+#: recorded -- so `knowledge.get` now refuses that cell with "could not be fully
+#: read", naming the rebuild, instead of reporting it as absence. The three that
+#: remain move neither count: a corrupt `item_id` keeps the row inside both the
+#: project and the status scope, and a corrupt `knowledge_revisions.revision_id`
+#: or `project_id` leaves `knowledge_items` untouched.
+#:
 #: **This tuple, and the exact set below, say nothing about a tool that does not
 #: refuse at all.** Both are read only where ``answer.refused`` holds, so the
-#: worse face of the same gap is invisible to them: corrupt
-#: `knowledge_items.project_id` and `knowledge.search` answers
-#: ``{"count": 0, "results": []}`` while `knowledge.status` answers
-#: ``{"itemCount": 0}`` -- each a successful, false statement to an agent, and
-#: neither a refusal. :data:`SILENTLY_EMPTIED` is where that class is stated;
-#: framing it here would have required a set of refusals to hold something that
-#: never refuses.
+#: worse face of the same gap is invisible to them: `knowledge.search` answers
+#: ``{"count": 0, "results": []}`` over a corrupt `knowledge_items.item_id` -- a
+#: successful, false statement to an agent, and not a refusal.
+#: :data:`UNDETECTED_UNDERREPORT` is where that class is stated; framing it here
+#: would have required a set of refusals to hold something that never refuses.
 _ID_RESOLUTION_REFUSALS: Final = (
     "is not present in project",
     "points at a missing revision",
@@ -137,54 +144,42 @@ _ID_RESOLUTION_REFUSALS: Final = (
 REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
     {
         ("knowledge.get", "knowledge_items", "item_id"),
-        ("knowledge.get", "knowledge_items", "project_id"),
         ("knowledge.get", "knowledge_revisions", "revision_id"),
         ("knowledge.get", "knowledge_revisions", "project_id"),
     }
 )
 
-#: Every (tool, table, column) where one damaged cell makes a tool answer
-#: **successfully with less than the database holds**, stated exactly.
+#: The one (tool, table, column) where a damaged cell makes a tool answer
+#: **successfully with less than the database holds and say nothing**, exactly.
 #:
-#: Not a leak and not a refusal, which is why nothing else in this file can see
-#: it: every other property here is read either over ``answer.refused`` or over
-#: the text of a message, and these four positions produce neither. A caller is
-#: told ``count: 0`` with ``stale: false``, or ``itemCount: 0``, and has no way
-#: to tell that from a project which genuinely holds nothing.
+#: #30's recorded residual, and the honest half of what closing the issue means.
+#: The detector takes two measurements -- the live `migration_history` row count
+#: against the pointer's `migrationCount`, and the live surfaceable-item count
+#: against the one `migrate apply` recorded in `project_integrity` -- and a
+#: sentinel here moves **neither**. The row keeps its `project_id` and its
+#: `status`, so it stays inside both scopes and is still counted; what breaks is
+#: the item -> revision pointer chain that `knowledge.search` walks to build a
+#: result. So the tool answers ``{"count": 0, "results": [], "retrieval":
+#: {"stale": false}}`` -- one result fewer than the file holds, no ``integrity``
+#: key, and nothing a caller can tell apart from a project that genuinely holds
+#: nothing. A count is not a checksum, and this is the shape a count cannot see.
 #:
-#: The fourth position -- `knowledge.status` over a corrupt
-#: `knowledge_items.status` -- arrived with the T-17 timing fix (#19).
-#: `knowledge.status` now counts the surfaceable statuses in SQL instead of
-#: parsing every row into a `KnowledgeStatus`, so a sentinel in the status column
-#: fails the ``IN`` predicate and is under-reported rather than raising. Detecting
-#: that corruption was a side effect of the O(total-rows) parse the fix removes:
-#: the two are coupled through row examination and cannot both hold in the store,
-#: and the silent 0 is also the confidentiality-correct answer, so this was
-#: accepted rather than reverted and carried with the rest of the class (#30).
+#: **A new member appearing here is a failure, not an expectation to update.**
+#: That is the whole guard, and it is the one the deleted `SILENTLY_EMPTIED`
+#: bought: the reach of the silent class may not grow without someone saying so.
+#: A member *leaving* is the improvement -- it means the position started
+#: disclosing, in which case it appears in :data:`DISCLOSED_AS_INTEGRITY` and
+#: that set fails too until it is moved by hand. Nothing else in this file can
+#: see either direction: every other property here is read over
+#: ``answer.refused`` or over the text of a message, and this position produces
+#: neither.
 #:
-#: **A fifth position left this set in #30 PR1.** `(knowledge.status,
-#: migration_history, project_id)` used to belong here: a sentinel in that column
-#: dropped every migration row out of the `WHERE`, so the tool answered
-#: `appliedMigrations: 0` against a project that had applied several. PR1 closes
-#: it -- `knowledge.status` now reports `appliedMigrations` from the active
-#: pointer's own `migrationCount` (so it no longer shrinks) and emits the
-#: `integrity` damage signal when the live migration-row count disagrees with it.
-#: The position therefore no longer answers with a smaller integer, so it is no
-#: longer a member of this set; it is caught rather than carried.
-#:
-#: The remaining four are recorded rather than fixed. Closing them means the
-#: retrieval path noticing that a row it walked past could not be interpreted,
-#: which is a change to the gate and the status tool rather than to this store;
-#: they are carried as a Milestone 6 issue (#30). What this set buys until then
-#: is that the reach cannot grow in silence -- a fifth position appears here as a
-#: failure, and each of the four disappears the moment its surface starts
-#: refusing, or emitting `integrity`, instead.
-SILENTLY_EMPTIED: Final = frozenset(
+#: `knowledge.get` is absent because it does not answer successfully at all over
+#: this cell -- it refuses, in :data:`REFUSALS_WITHOUT_A_REMEDY`, reporting the
+#: damage as absence. That is a different recorded gap on a different surface.
+UNDETECTED_UNDERREPORT: Final = frozenset(
     {
         ("knowledge.search", "knowledge_items", "item_id"),
-        ("knowledge.search", "knowledge_items", "project_id"),
-        ("knowledge.status", "knowledge_items", "project_id"),
-        ("knowledge.status", "knowledge_items", "status"),
     }
 )
 
@@ -194,7 +189,7 @@ SILENTLY_EMPTIED: Final = frozenset(
 #:
 #: The third face of the same question, and the one neither set above can hold.
 #: :data:`REFUSALS_WITHOUT_A_REMEDY` is read over refusals and
-#: :data:`SILENTLY_EMPTIED` over shrinking integers; these positions produce
+#: :data:`UNDETECTED_UNDERREPORT` over shrinking integers; these positions produce
 #: neither, because what changed is *upstream* of the answer: `knowledge.status`
 #: used to reach the migration history through ``applied_migrations``, which
 #: parses every row into a ``MigrationId`` and a ``ContentHash``, so a damaged
@@ -226,20 +221,130 @@ ANSWERED_CLEAN_OVER_A_DAMAGED_CELL: Final = frozenset(
     }
 )
 
-#: Every (tool, table, column) in the migration history where a damaged cell is
-#: disclosed through the present-only ``integrity`` object (#30 PR1), exactly.
+#: Every (tool, table, column) in the **whole schema** where a damaged cell is
+#: disclosed to a successful caller through the present-only ``integrity``
+#: object (#30), exactly.
 #:
-#: The counterpart of the set above, and the guard that stops it being vacuous: a
-#: build where the detector never fires would make *every* migration-history
-#: position "clean", and the set above would be a larger frozenset nobody read as
-#: a failure. One column reaches the detector -- `project_id`, whose sentinel
-#: drops every row out of the ``WHERE`` and takes the live count to zero -- and
-#: it reaches all three tools.
+#: The counterpart of :data:`UNDETECTED_UNDERREPORT` and the reason that set can
+#: be one position long: between them they partition every successful answer a
+#: damaged cell produces into *disclosed* and *silent*, so a position moving from
+#: one to the other fails both equalities rather than sliding across quietly.
+#:
+#: It is also the guard that stops :data:`ANSWERED_CLEAN_OVER_A_DAMAGED_CELL`
+#: being vacuous: a build where the detector never fires would make *every*
+#: position "clean", and that set would be a larger frozenset nobody read as a
+#: failure.
+#:
+#: **Keyed on the key's presence and on nothing else** -- deliberately not on
+#: "shrinks a count *and* discloses". Six of the nine publish `integrity` while
+#: every integer in the response stays where it was, which is the detector's own
+#: shape: a lost migration row or a lost `project_integrity` record damages the
+#: state a response was assembled from without changing anything the response
+#: says. A set keyed on the conjunction would have held three positions and
+#: called the other six a matter for no test.
+#:
+#: The nine, by what reaches the detector, all measured by the sweep below:
+#:
+#: - `migration_history.project_id` on all three tools (#30 PR1) -- the sentinel
+#:   drops every row out of the ``WHERE``, so the live migration count falls to
+#:   zero against a pointer recording one;
+#: - `project_integrity.project_id` on all three tools (#30 PR2) -- the same
+#:   mechanism against the other record: this project's row is no longer this
+#:   project's, `expected_surfaceable_count` reads ``None``, and a readable
+#:   database with no record has lost one;
+#: - `knowledge_items.project_id` on `knowledge.search` and `knowledge.status`,
+#:   and `knowledge_items.status` on `knowledge.status` (#30 PR2) -- the live
+#:   surfaceable-item count moves away from the recorded one. These three are the
+#:   members that also shrink a published integer, which is
+#:   :data:`DISCLOSED_BESIDE_A_SHRUNKEN_COUNT`.
+#:
+#: `knowledge.get` is absent from the last group because it never reaches a
+#: successful answer over those cells: it refuses, with the damage message and
+#: the rebuild remedy, and a refusal carries no field. That refusal is held by
+#: :func:`test_every_refusal_over_a_damaged_database_names_a_remedy` and, for its
+#: wording, by `test_mcp_tools.py`'s `GET_DAMAGE_PHRASE` pins.
 DISCLOSED_AS_INTEGRITY: Final = frozenset(
     {
         ("knowledge.search", "migration_history", "project_id"),
         ("knowledge.get", "migration_history", "project_id"),
         ("knowledge.status", "migration_history", "project_id"),
+        ("knowledge.search", "project_integrity", "project_id"),
+        ("knowledge.get", "project_integrity", "project_id"),
+        ("knowledge.status", "project_integrity", "project_id"),
+        ("knowledge.search", "knowledge_items", "project_id"),
+        ("knowledge.status", "knowledge_items", "project_id"),
+        ("knowledge.status", "knowledge_items", "status"),
+    }
+)
+
+#: The members of :data:`DISCLOSED_AS_INTEGRITY` that **also** answer with a
+#: smaller published integer than the intact database produced, exactly.
+#:
+#: Stated so that the two sets above have no seam between them. Each is keyed on
+#: one thing -- "the key is present", "a count shrank and the key is not" -- and
+#: a position already disclosing that *started* silently shrinking a count would
+#: move neither. Here it does: the sweep measures which disclosed positions
+#: shrink, and this is the answer, so the whole shrinking class is
+#: ``DISCLOSED_BESIDE_A_SHRUNKEN_COUNT | UNDETECTED_UNDERREPORT`` and nothing
+#: falls between them.
+#:
+#: These three are what #30 PR2 bought over PR1's state, where all three answered
+#: ``count: 0`` or ``itemCount: 0`` with no signal at all: the number is still
+#: wrong -- neither tool can repair a row it cannot read -- but it no longer
+#: arrives as a fact about the project.
+DISCLOSED_BESIDE_A_SHRUNKEN_COUNT: Final = frozenset(
+    {
+        ("knowledge.search", "knowledge_items", "project_id"),
+        ("knowledge.status", "knowledge_items", "project_id"),
+        ("knowledge.status", "knowledge_items", "status"),
+    }
+)
+
+#: Every (tool, table, column) where a damaged cell refuses the *whole* response on
+#: all three read tools, over the one integrity-record cell the detector reads back.
+#:
+#: `project_integrity.expected_surfaceable_count` is the first post-check cell the
+#: #30 PR2 detector *interprets*: every tool reads it on every request through
+#: `_measure_integrity`, and `int()` over a non-numeric cell refuses through
+#: `_reading` with a remedy rather than being read as a count. So a single damaged
+#: cell here turns all three tools' answers into a refusal -- distinct from
+#: `project_integrity.project_id`, whose damage the detector *discloses* through
+#: `integrity` (:data:`DISCLOSED_AS_INTEGRITY`), because a moved project id reads
+#: back as "no record", a damage the tool answers around rather than refusing over.
+#:
+#: An exact set, so it fails in both directions: a tool that stopped refusing here
+#: -- reading the cell as 0, which fabricates or hides a damage report depending on
+#: the live count -- drops its position, and a cell that started refusing all three
+#: joins it.
+REFUSES_THE_WHOLE_RESPONSE: Final = frozenset(
+    {
+        ("knowledge.search", "project_integrity", "expected_surfaceable_count"),
+        ("knowledge.get", "project_integrity", "expected_surfaceable_count"),
+        ("knowledge.status", "project_integrity", "expected_surfaceable_count"),
+    }
+)
+
+#: Every (tool, table, column) where a non-ISO `valid_to` refuses, stated exactly.
+#:
+#: `valid_to` is optional, so it is read by `_opt_dt` rather than `_dt`, and a
+#: tolerant `_opt_dt` -- one that swallowed `datetime.fromisoformat`'s `ValueError`
+#: and read a corrupt window as open-ended -- would slide these positions from
+#: refused to a clean serve. No other property here would fail: the disclosure and
+#: remedy sweeps read only over refusals, the clean-answer set is `migration_history`
+#: only, and `CONVERTER_FAMILIES` reaches `datetime.fromisoformat` through
+#: `knowledge_revisions.created_at` (a `_dt` read the mutation leaves refusing). So
+#: this pins the `_opt_dt` refusals directly; the set is measured, not asserted.
+#:
+#: Four positions, not two: over the indexed corpus `knowledge.search` reads
+#: canonical items and revisions on its ranked path to gate them, so it interprets
+#: both `valid_to` columns exactly as `knowledge.get` does. `knowledge.status`
+#: counts in SQL and builds neither, so it is absent.
+REFUSED_OVER_A_NON_ISO_VALID_TO: Final = frozenset(
+    {
+        ("knowledge.get", "knowledge_items", "valid_to"),
+        ("knowledge.get", "knowledge_revisions", "valid_to"),
+        ("knowledge.search", "knowledge_items", "valid_to"),
+        ("knowledge.search", "knowledge_revisions", "valid_to"),
     }
 )
 
@@ -251,13 +356,15 @@ UNPOPULATED_TABLES: Final = frozenset({"traceability_edges"})
 #: How many columns a single ``UPDATE`` can put a string into, across the whole
 #: populated schema. Arithmetic over the DDL, table by table, ``INTEGER PRIMARY
 #: KEY`` rowids and `traceability_edges` excluded: 4 + 8 + 24 + 13 + 4 + 6 + 11
-#: + 13 + 11 + 5.
+#: + 13 + 11 + 5 + 2.
+#:
+#: The last term is `project_integrity`, added with schema version 3 (#30 PR2).
 #:
 #: An exact number rather than a floor. ``len(columns) > 90`` -- what stood here
 #: -- let nine columns vanish from the sweep without a word, and a sweep that
 #: has quietly stopped covering a column asserts nothing about it while still
 #: reporting green.
-CORRUPTIBLE_COLUMN_COUNT: Final = 99
+CORRUPTIBLE_COLUMN_COUNT: Final = 101
 
 BODY: Final = "# Authentication policy\n\nEvery call carries a signed token.\n"
 DRAFT_BODY: Final = "# Caching draft\n\nA proposal nobody has reviewed.\n"
@@ -632,7 +739,17 @@ def corruptible_columns(database: Path) -> tuple[Column, ...]:
 _TABLE_BLOCK: Final = re.compile(r"CREATE TABLE (\w+) \((.*?)\n\);", re.DOTALL)
 
 #: Lines inside a table body that declare a constraint rather than a column.
-_CONSTRAINT_HEADS: Final = frozenset({"CHECK", "PRIMARY", "UNIQUE", "FOREIGN", "CONSTRAINT"})
+#:
+#: ``REFERENCES`` is here for the *continuation* of a multi-line table-level
+#: ``FOREIGN KEY`` clause, which `knowledge_items` gained with the composite
+#: pointer key (#24). Without it that line parses as a column named `REFERENCES`,
+#: and the two derivations of the population disagree over a column that does not
+#: exist. A column-level ``REFERENCES`` never starts a line, so nothing real is
+#: dropped -- and the same set equality this protects is what would report it if
+#: one ever were.
+_CONSTRAINT_HEADS: Final = frozenset(
+    {"CHECK", "PRIMARY", "UNIQUE", "FOREIGN", "CONSTRAINT", "REFERENCES"}
+)
 
 
 def declared_corruptible_columns() -> frozenset[Column]:
@@ -799,7 +916,9 @@ def cli_sweep(corpus: Corpus) -> dict[tuple[str, str, str], tuple[int, str]]:
 def cli_observations(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> dict[tuple[str, str, str], tuple[int, str]]:
-    """One CLI sweep -- 99 columns by eight commands -- read by three properties.
+    """One CLI sweep -- :data:`CORRUPTIBLE_COLUMN_COUNT` columns by eight commands.
+
+    Read by three properties.
 
     Module-scoped over its own corpus, never over the function-scoped one. The
     sweep is corpus-neutral by construction (every corruption is restored before
@@ -1845,6 +1964,98 @@ def test_an_unsupported_schema_version_is_reported_as_a_version_not_as_damage(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stamped_version", range(1, SCHEMA_VERSION))
+async def test_a_pre_integrity_database_is_refused_unread_by_every_tool(
+    corpus: Corpus, stamped_version: int
+) -> None:
+    """#30 PR2. The premise the "no record is damage" inference rests on.
+
+    :data:`~theurian.infrastructure.sqlite.schema.SCHEMA_VERSION` is 3 because no
+    earlier version held a `project_integrity` table -- neither version 1 nor the
+    version 2 that `0.1.0.dev3` shipped. The detector reads a missing record as
+    *damage* rather than as "not recorded", and that is only sound while no such
+    file can be opened at all -- otherwise "no record" means either "this state
+    lost one" or "this state predates the table", and the detector cannot tell
+    which. `is_supported` is exact-match for that reason (ADR-0017: state
+    databases are rebuilt, never migrated), so the ambiguity is unreachable
+    rather than merely unlikely.
+
+    Parametrised over *every* version below the current one rather than over the
+    first alone, because the inference needs the whole range closed and a
+    compatibility window would most plausibly be opened for the version
+    immediately behind -- the one a released build actually wrote. It widens by
+    itself on the next bump.
+
+    So this asserts the premise on the surface where it would be violated: not
+    one tool but all three, because `_resolve` is shared and a compatibility
+    window opened for one would open it for the others. Driven by stamping
+    `schema_metadata` rather than by building with an old build, so the file this
+    refuses is otherwise a perfectly readable current database -- which is what
+    makes the refusal attributable to the version and to nothing else. Confirmed
+    against a database `0.1.0.dev3` really wrote: all three tools refuse it with
+    "… was written at schema version 2, but this build uses 3".
+
+    Two assertions, and they fail separately. Every tool must refuse -- RED the
+    moment `is_supported` accepts anything below `SCHEMA_VERSION` -- and every
+    refusal must name a remedy the caller can run.
+
+    There is deliberately no third assertion that the refusals carry no
+    `integrity` key. A refused tool publishes no field at all, so "an old file is
+    not reported as damaged" is already contained in "an old file is refused":
+    asserting it separately reads a payload that, given the first assertion holds,
+    cannot exist -- a check that can never fail. Were `is_supported` to accept an
+    old version, the tool would answer and the first assertion is what catches it;
+    a separate `integrity` check would only report whether that (already failing)
+    answer also carried the key, so dropping it loses nothing. The population the
+    parametrization sweeps is pinned by
+    :func:`test_the_pre_integrity_schema_versions_are_exactly_one_and_two`, so a
+    `SCHEMA_VERSION` reversion that shrinks `range(1, SCHEMA_VERSION)` fails there
+    rather than silently narrowing this sweep to fewer cases.
+    """
+    connection = sqlite3.connect(corpus.database)
+    try:
+        changed = connection.execute(
+            "UPDATE schema_metadata SET schema_version = ? WHERE id = 1", (stamped_version,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    assert changed == 1, "schema_metadata must hold its single row, or nothing was stamped"
+
+    server = build_server(corpus.registry)
+    commands, tools = _command_paths(), _tool_names(corpus.registry)
+    answers = {tool: await call_tool(server, tool, args) for tool, args in TOOL_CALLS}
+
+    assert [tool for tool, answer in answers.items() if not answer.refused] == [], (
+        f"a tool answered from a database written at a schema version this build does not "
+        f"support, so 'no integrity record' can no longer mean damage: {answers}"
+    )
+    assert [
+        tool
+        for tool, answer in answers.items()
+        if not names_a_remedy(answer.text, commands=commands, tools=tools)
+    ] == [], f"a version refusal named nothing the caller can run: {answers}"
+
+
+def test_the_pre_integrity_schema_versions_are_exactly_one_and_two() -> None:
+    """#30 PR2. The population the refusal sweep above is parametrized over.
+
+    `test_a_pre_integrity_database_is_refused_unread_by_every_tool` is parametrized
+    over ``range(1, SCHEMA_VERSION)``, which loses a case *silently* when
+    ``SCHEMA_VERSION`` falls: ``3 -> 2`` drops version 2 -- the one `0.1.0.dev3`
+    shipped, and the one a compatibility window would most plausibly be opened for
+    -- from the sweep, and a parametrization with fewer cases still passes. So the
+    sweep alone cannot hold the range closed. This pins it: exactly versions 1 and
+    2 precede the `project_integrity` table, and a reversion that would reopen the
+    "no record means old, not damaged" ambiguity is RED here.
+    """
+    assert set(range(1, SCHEMA_VERSION)) == {1, 2}, (
+        f"the pre-integrity schema versions are now {sorted(range(1, SCHEMA_VERSION))}, so the "
+        f"refusal sweep no longer covers what it claims (SCHEMA_VERSION = {SCHEMA_VERSION})"
+    )
+
+
 # -- Answering successfully with less than the file holds -------------------
 
 
@@ -1880,77 +2091,19 @@ def _published_integers(text: str) -> dict[str, int]:
     return found
 
 
-@pytest.mark.asyncio
-async def test_no_tool_answers_with_less_than_the_intact_database_holds(
-    corpus: Corpus,
-) -> None:
-    """The face no property framed around refusals can see, stated as a set.
-
-    Both other sweeps read ``answer.refused`` before they assert anything, so a
-    tool that answers *successfully* and wrongly is structurally invisible to
-    them -- and that is the worse outcome, not the milder one. `knowledge.search`
-    replying ``{"count": 0, "results": [], "retrieval": {"stale": false}}`` over
-    a damaged `knowledge_items.project_id` tells an agent that the index is fresh
-    and this project holds no answer, which is a false statement it will act on;
-    a refusal at least stops it.
-
-    The comparison is against the same corpus one moment earlier, so a shrinking
-    count cannot be a property of the corpus or of the clock. Only shrinking is
-    read: a corrupted `title` changes what `knowledge.get` returns and that is
-    the caller's own content answered correctly, which is why this is not "the
-    answer changed".
-
-    :data:`SILENTLY_EMPTIED` is an exact set and the behaviour is carried to
-    Milestone 6. What must not happen in the meantime is the set growing without
-    anyone noticing, and an inequality here would have permitted exactly that.
-    """
-    server = build_server(corpus.registry)
-    intact = {
-        tool: _published_integers((await call_tool(server, tool, args)).text)
-        for tool, args in TOOL_CALLS
-    }
-    assert all(intact.values()), f"a tool published no integer to compare against: {intact}"
-
-    emptied: dict[tuple[str, str, str], dict[str, str]] = {}
-    for column in corruptible_columns(corpus.database):
-        assert corrupt(corpus.database, column), f"{column} took no value"
-        try:
-            for tool, args in TOOL_CALLS:
-                answer = await call_tool(server, tool, args)
-                if answer.refused:
-                    continue
-                published = _published_integers(answer.text)
-                shrunk = {
-                    field: f"{before} -> {published[field]}"
-                    for field, before in intact[tool].items()
-                    if field in published and published[field] < before
-                }
-                if shrunk:
-                    emptied[tool, column.table, column.name] = shrunk
-        finally:
-            restore(corpus)
-
-    assert set(emptied) == SILENTLY_EMPTIED, (
-        f"the set of positions where a tool answers successfully with less than it "
-        f"holds has moved. Newly emptied: "
-        f"{ {p: emptied[p] for p in set(emptied) - SILENTLY_EMPTIED} }; "
-        f"no longer emptied: {sorted(SILENTLY_EMPTIED - set(emptied))}"
-    )
-
-
-# -- Answering cleanly over a cell the tool stopped reading -----------------
-
-
 @dataclass(frozen=True, slots=True)
-class MigrationHistoryAnswer:
-    """One tool's answer over one damaged `migration_history` cell, classified.
+class DamagedCellAnswer:
+    """One tool's answer over one damaged cell, classified into four outcomes.
 
-    Three outcomes, and a position falls in exactly one of them: it refused, it
-    disclosed the damage through the present-only ``integrity`` object (#30 PR1),
-    or it answered clean. ``shrunk`` folds into "not clean" rather than into its
-    own state -- :data:`SILENTLY_EMPTIED` already states that class exactly, and
-    a migration-history cell that started emptying a count would have to appear
-    there rather than pass silently here.
+    A position falls in exactly one of them: it refused, it disclosed the damage
+    through the present-only ``integrity`` object (#30), it answered successfully
+    with a smaller integer and said nothing, or it answered clean.
+
+    ``integrity`` and ``shrunk`` are recorded separately rather than folded
+    together because the interesting position is the one that has ``shrunk``
+    without ``integrity`` -- the caller is handed a false number as a fact. That
+    is :data:`UNDETECTED_UNDERREPORT`; the two together are
+    :data:`DISCLOSED_BESIDE_A_SHRUNKEN_COUNT`.
     """
 
     refused: bool
@@ -1960,6 +2113,10 @@ class MigrationHistoryAnswer:
     @property
     def clean(self) -> bool:
         return not self.refused and not self.integrity and not self.shrunk
+
+    @property
+    def silently_underreports(self) -> bool:
+        return not self.refused and not self.integrity and bool(self.shrunk)
 
 
 def _integrity_reported(text: str) -> bool:
@@ -1972,22 +2129,28 @@ def _integrity_reported(text: str) -> bool:
 
 
 @pytest.fixture(scope="module")
-def migration_history_answers(
+def damaged_cell_answers(
     tmp_path_factory: pytest.TempPathFactory,
-) -> dict[tuple[str, str, str], MigrationHistoryAnswer]:
-    """Every tool's answer over every damaged `migration_history` cell, once.
+) -> dict[tuple[str, str, str], DamagedCellAnswer]:
+    """Every tool's answer over every damaged cell in the schema, classified, once.
 
     Its own corpus, for the reason :func:`cli_observations` builds one: the sweep
     restores the database between columns, so the *result* is safe to share while
     the corpus is not.
 
-    Scoped to `migration_history` because that is the whole of what the #30 PR1
-    detector reads. A sweep over the other nine tables would answer a different
-    question -- which cells a tool interprets at all -- and both properties below
-    are about the one table whose row count is the signal.
+    **Over the whole schema and not over `migration_history` alone.** It was
+    scoped to that table while the #30 PR1 detector read nothing else. PR2's
+    second comparison reads `knowledge_items` and `project_integrity`, and the
+    positions that matter most to :data:`UNDETECTED_UNDERREPORT` are in
+    `knowledge_items` -- a narrower sweep would have stated the silent class over
+    a population that cannot contain it.
+
+    The intact answers are captured before any corruption, so a shrinking count
+    is measured against the same corpus one moment earlier and cannot be a
+    property of the corpus or of the clock.
     """
     with pytest.MonkeyPatch.context() as patch:
-        corpus = _build_corpus(tmp_path_factory.mktemp("migration-history-sweep"), patch)
+        corpus = _build_corpus(tmp_path_factory.mktemp("damaged-cell-sweep"), patch)
         server = build_server(corpus.registry)
         intact = {
             tool: _published_integers(asyncio.run(call_tool(server, tool, args)).text)
@@ -1995,20 +2158,16 @@ def migration_history_answers(
         }
         assert all(intact.values()), f"a tool published no integer to compare against: {intact}"
 
-        observed: dict[tuple[str, str, str], MigrationHistoryAnswer] = {}
-        columns = [
-            column
-            for column in corruptible_columns(corpus.database)
-            if column.table == "migration_history"
-        ]
-        assert columns, "the corpus holds no migration_history row to damage"
+        observed: dict[tuple[str, str, str], DamagedCellAnswer] = {}
+        columns = corruptible_columns(corpus.database)
+        assert columns, "the corpus holds no row to damage"
         for column in columns:
             assert corrupt(corpus.database, column), f"{column} took no value"
             try:
                 for tool, args in TOOL_CALLS:
                     answer = asyncio.run(call_tool(server, tool, args))
                     published = _published_integers(answer.text)
-                    observed[tool, column.table, column.name] = MigrationHistoryAnswer(
+                    observed[tool, column.table, column.name] = DamagedCellAnswer(
                         refused=answer.refused,
                         integrity=_integrity_reported(answer.text),
                         shrunk={
@@ -2022,8 +2181,103 @@ def migration_history_answers(
         return observed
 
 
+def test_exactly_one_position_answers_with_less_than_the_file_holds_and_says_nothing(
+    damaged_cell_answers: dict[tuple[str, str, str], DamagedCellAnswer],
+) -> None:
+    """#30's recorded residual, stated as an exact set. The reach cannot grow silently.
+
+    The face no property framed around refusals can see. Both refusal sweeps in
+    this file read ``answer.refused`` before they assert anything, so a tool that
+    answers *successfully* and wrongly is structurally invisible to them -- and
+    that is the worse outcome, not the milder one. `knowledge.search` replying
+    ``{"count": 0, "results": [], "retrieval": {"stale": false}}`` over a damaged
+    `knowledge_items.item_id` tells an agent that the index is fresh and this
+    project holds no answer, which is a false statement it will act on; a refusal
+    at least stops it.
+
+    Only shrinking is read: a corrupted `title` changes what `knowledge.get`
+    returns and that is the caller's own content answered correctly, which is why
+    this is not "the answer changed".
+
+    Two equalities, because the pair of sets has to have no seam. The first is
+    the residual itself. The second states the *whole* shrinking class as
+    ``DISCLOSED_BESIDE_A_SHRUNKEN_COUNT | UNDETECTED_UNDERREPORT``, so a position
+    that is already disclosing and starts shrinking a count as well -- which
+    moves neither set on its own -- fails here.
+    """
+    silent = {
+        position
+        for position, answer in damaged_cell_answers.items()
+        if answer.silently_underreports
+    }
+    shrinking = {
+        position
+        for position, answer in damaged_cell_answers.items()
+        if not answer.refused and answer.shrunk
+    }
+
+    assert silent == UNDETECTED_UNDERREPORT, (
+        f"the set of positions where a tool answers successfully with less than it holds and "
+        f"discloses nothing has moved. Newly silent: "
+        f"{ {p: damaged_cell_answers[p].shrunk for p in silent - UNDETECTED_UNDERREPORT} }; "
+        f"no longer silent: {sorted(UNDETECTED_UNDERREPORT - silent)} -- if one of those "
+        f"started disclosing, move it into DISCLOSED_BESIDE_A_SHRUNKEN_COUNT rather than "
+        f"deleting it"
+    )
+    assert shrinking == DISCLOSED_BESIDE_A_SHRUNKEN_COUNT | UNDETECTED_UNDERREPORT, (
+        f"the set of positions that answer with a smaller integer has moved, in a way neither "
+        f"exact set above catches on its own. Newly shrinking: "
+        f"{sorted(shrinking - DISCLOSED_BESIDE_A_SHRUNKEN_COUNT - UNDETECTED_UNDERREPORT)}; "
+        f"no longer shrinking: "
+        f"{sorted((DISCLOSED_BESIDE_A_SHRUNKEN_COUNT | UNDETECTED_UNDERREPORT) - shrinking)}"
+    )
+
+
+def test_exactly_these_positions_disclose_damage_as_integrity(
+    damaged_cell_answers: dict[tuple[str, str, str], DamagedCellAnswer],
+) -> None:
+    """#30. The detector fires, on exactly these positions, over the whole schema.
+
+    The guard for the clean-answer set below, which a build with the detector
+    unplugged would satisfy with a *larger* clean set that nobody reads as a
+    failure -- every position would be "clean", and only this test says which of
+    them must not be. It is equally the
+    guard for the set above: a detector that stopped firing on
+    `knowledge_items.project_id` would move that position into the silent class
+    and fail there, and a detector that stopped firing on a position that shrinks
+    nothing would fail only here.
+
+    Both comparisons are represented, so a mutation that drops either one is RED:
+    the migration-row count against the pointer (PR1) is the
+    `migration_history.project_id` trio, and the surfaceable-item count against
+    what `migrate apply` recorded (PR2) is the `project_integrity` and
+    `knowledge_items` members. See :data:`DISCLOSED_AS_INTEGRITY` for what
+    reaches the detector at each one.
+    """
+    disclosed = {position for position, answer in damaged_cell_answers.items() if answer.integrity}
+    disclosed_and_shrunken = {
+        position
+        for position, answer in damaged_cell_answers.items()
+        if answer.integrity and answer.shrunk
+    }
+
+    assert disclosed == DISCLOSED_AS_INTEGRITY, (
+        f"the set of positions disclosed through `integrity` has moved. Newly disclosing: "
+        f"{sorted(disclosed - DISCLOSED_AS_INTEGRITY)}; no longer disclosing: "
+        f"{sorted(DISCLOSED_AS_INTEGRITY - disclosed)}"
+    )
+    assert disclosed_and_shrunken == DISCLOSED_BESIDE_A_SHRUNKEN_COUNT, (
+        f"which disclosed positions also publish a smaller integer has moved. Newly shrinking: "
+        f"{sorted(disclosed_and_shrunken - DISCLOSED_BESIDE_A_SHRUNKEN_COUNT)}; no longer "
+        f"shrinking: {sorted(DISCLOSED_BESIDE_A_SHRUNKEN_COUNT - disclosed_and_shrunken)}"
+    )
+
+
+# -- Answering cleanly over a cell the tool stopped reading -----------------
+
+
 def test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tampering(
-    migration_history_answers: dict[tuple[str, str, str], MigrationHistoryAnswer],
+    damaged_cell_answers: dict[tuple[str, str, str], DamagedCellAnswer],
     cli_observations: dict[tuple[str, str, str], tuple[int, str]],
 ) -> None:
     """#30 PR1. The cells the read tools stopped interpreting, stated exactly.
@@ -2032,6 +2286,12 @@ def test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tamper
     it is wrong when nothing else notices. So the population here is not "cells a
     tool ignores" but "cells a tool ignores *and the CLI refuses*": the two
     surfaces are read together, and the set is what remains.
+
+    Restricted to `migration_history` on both sides, which is where the trade was
+    made: `knowledge.status` used to reach that table through
+    ``applied_migrations`` and refuse on a damaged `migration_id` or `checksum`,
+    and PR1's bare ``COUNT(*)`` interprets neither. Every other table the sweep
+    now covers is a different question.
 
     Both halves are measured rather than assumed. The CLI half comes from the
     same sweep :func:`test_exactly_these_commands_notice_a_single_damaged_cell`
@@ -2052,7 +2312,7 @@ def test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tamper
     }
     clean_over_tampering = {
         position
-        for position, answer in migration_history_answers.items()
+        for position, answer in damaged_cell_answers.items()
         if answer.clean and (position[1], position[2]) in tampering
     }
 
@@ -2064,28 +2324,69 @@ def test_exactly_these_positions_answer_cleanly_over_a_cell_the_cli_calls_tamper
     )
 
 
-def test_exactly_these_positions_disclose_migration_history_damage_as_integrity(
-    migration_history_answers: dict[tuple[str, str, str], MigrationHistoryAnswer],
+# -- Refusing the whole response over a cell the detector interprets ----------
+
+
+def test_the_integrity_record_cell_refuses_the_whole_response_on_every_tool(
+    damaged_cell_answers: dict[tuple[str, str, str], DamagedCellAnswer],
 ) -> None:
-    """#30 PR1. The detector fires, and on exactly one column.
+    """#30 PR2. A non-numeric `expected_surfaceable_count` refuses, on all three tools.
 
-    The guard for the property above, which a build with the detector unplugged
-    would satisfy with a *larger* clean set that nobody reads as a failure --
-    every migration-history position would be "clean", and only this test says
-    which of them must not be.
+    This is the first post-check cell the detector *interprets*: `_measure_integrity`
+    reads `project_integrity.expected_surfaceable_count` on every request, and
+    `int()` over a cell that is not a number refuses through `_reading` -- because
+    reading it as 0 would fabricate a damage report, or hide one, depending on what
+    the live count happens to be. So every tool refuses the whole response, and the
+    refusal names a remedy (held by
+    :func:`test_every_refusal_over_a_damaged_database_names_a_remedy`); this pins
+    *which* positions refuse, which nothing else did.
 
-    One column reaches it: a sentinel in `migration_history.project_id` drops
-    every row out of the `WHERE`, so the live count falls to zero against a
-    pointer recording one. That is the position `knowledge.status` used to
-    publish as `appliedMigrations: 0` -- a successful, false statement -- and it
-    now arrives on all three tools as damage instead.
+    An exact set, so it fails in both directions: a tool that stopped refusing --
+    the tolerant read that turns the refusal into a fabricated or hidden signal --
+    drops its position and fails here, and a cell that started refusing all three
+    joins it.
     """
-    disclosed = {
-        position for position, answer in migration_history_answers.items() if answer.integrity
+    refused = {
+        position
+        for position, answer in damaged_cell_answers.items()
+        if answer.refused
+        and (position[1], position[2]) == ("project_integrity", "expected_surfaceable_count")
     }
 
-    assert disclosed == DISCLOSED_AS_INTEGRITY, (
-        f"the set of positions disclosed through `integrity` has moved. Newly disclosing: "
-        f"{sorted(disclosed - DISCLOSED_AS_INTEGRITY)}; no longer disclosing: "
-        f"{sorted(DISCLOSED_AS_INTEGRITY - disclosed)}"
+    assert refused == REFUSES_THE_WHOLE_RESPONSE, (
+        "which tools refuse over a non-numeric integrity-record cell has moved. "
+        f"Newly refusing: {sorted(refused - REFUSES_THE_WHOLE_RESPONSE)}; "
+        f"no longer refusing: {sorted(REFUSES_THE_WHOLE_RESPONSE - refused)} -- a tool that "
+        "stopped refusing reads the cell as a count and fabricates or hides a damage report"
+    )
+
+
+def test_a_non_iso_valid_to_refuses_rather_than_being_read_as_open_ended(
+    damaged_cell_answers: dict[tuple[str, str, str], DamagedCellAnswer],
+) -> None:
+    """#18, SEC-13. A corrupt optional timestamp refuses, it is not swallowed.
+
+    `valid_to` is optional, so `_opt_dt` reads it rather than `_dt`. A tolerant
+    `_opt_dt` -- one that caught `datetime.fromisoformat`'s `ValueError` and read a
+    corrupt window as open-ended -- would answer over a cell it could not interpret,
+    the failure this whole file exists to prevent, and *no other property here would
+    fail*: the disclosure and remedy sweeps read only over refusals, the clean-answer
+    set is `migration_history` only, and `CONVERTER_FAMILIES` reaches
+    `datetime.fromisoformat` through `knowledge_revisions.created_at`, a `_dt` read
+    the mutation leaves refusing. So this pins the `_opt_dt` refusals directly.
+
+    An exact set: the tolerant slide drops every position to a clean serve and fails
+    here, and a `valid_to` read that stopped refusing on any surface fails here too.
+    """
+    refused = {
+        position
+        for position, answer in damaged_cell_answers.items()
+        if answer.refused and position[2] == "valid_to"
+    }
+
+    assert refused == REFUSED_OVER_A_NON_ISO_VALID_TO, (
+        "which positions refuse a non-ISO `valid_to` has moved. "
+        f"Newly refusing: {sorted(refused - REFUSED_OVER_A_NON_ISO_VALID_TO)}; "
+        f"no longer refusing: {sorted(REFUSED_OVER_A_NON_ISO_VALID_TO - refused)} -- a position "
+        "that stopped refusing is reading a corrupt validity window as open-ended (#18)"
     )

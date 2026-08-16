@@ -153,13 +153,18 @@ which also records why two of them are what they are.
 ```json
 {
   "projectId": "demo",
-  "stateHash": "ee3ab796ab22f93691584839e376a00f23aa981ee10d27925586d53a62010f8f",
+  "stateHash": "4e640de8baeb1f70e293d88c0b1160f15e6d02df676574937a9557ac8f6d87af",
   "itemCount": 1,
   "itemsByStatus": { "approved": 1 },
   "appliedMigrations": 1,
-  "schemaVersion": 1
+  "schemaVersion": 3
 }
 ```
+
+Captured from a project the real CLI built, not written by hand. `schemaVersion`
+is **3** since #30 PR2 added the `project_integrity` table the damage check reads;
+a state hash covers the schema version (ADR-0017), so a reader's own `stateHash`
+differs from this one whatever else matches.
 
 | Key | Meaning |
 | :-- | :-- |
@@ -214,26 +219,64 @@ product knows, where an absent key claims nothing. `damageDetected` is therefore
 always `true` when the key is present; branch on the key, not on its value. This
 is the same present-only shape `raptorPath` already uses (ADR-0008 decision 8).
 
-What today's check measures, and the whole of it: the derived state holds a
-different number of `migration_history` rows for this project — fewer, or more —
-than the active pointer that chose that database records in its `migrationCount`.
-The state database is immutable once built, so the two agree on a healthy project
-and any difference is damage: fewer when a row is lost or falls out of a `WHERE`
-(a sentinel in `migration_history.project_id`), more when another project's rows
-reach this one. That is how a lost or corrupt pointer-chain cell used to make
-`knowledge.status` answer successfully with an `appliedMigrations` that had
-shrunk.
+What today's check measures, and the whole of it: **two counts, each compared
+against a record of what it should be.**
 
-**It does not detect a result-emptying corruption of `knowledge_items`.** A
-sentinel in `knowledge_items.project_id` or `item_id` drops a document out of every
-`knowledge.search` query, and one in `knowledge_items.project_id` or `status`
-under-reports `knowledge.status`, while the migration rows stay intact. So `search`
-answers `count: 0, results: []` and `status` answers `itemCount: 0` — a false "we
-have no such decision" — with this key *absent* and nothing else on the response
-saying otherwise: `retrieval.stale` reports `false` on the ranked path and `null`
-on the unranked one, and neither reports damage. Those four positions are the
-`SILENTLY_EMPTIED` members carried to PR2. Damage the migration count cannot see
-leaves the key absent exactly as a healthy project does.
+| Compared | The live number | The record it is checked against |
+| :-- | :-- | :-- |
+| Migrations | this project's rows in `migration_history` | the `migrationCount` in the active pointer that chose the database |
+| Surfaceable items | this project's `knowledge_items` whose status is `approved`, `draft` or `proposed` | `project_integrity.expected_surfaceable_count`, written by `theurian migrate apply` inside its own write transaction |
+
+Either pair disagreeing sets the key. The state database is immutable once built,
+so both pairs agree on a healthy project and a difference in *either* direction is
+damage: fewer when a row is lost or falls out of a `WHERE` (a sentinel in
+`migration_history.project_id`, `knowledge_items.project_id` or
+`knowledge_items.status`), more when another project's rows reach this one. This
+is a change in *how many* surfaceable rows there are, not in *which* surfaceable
+status a row holds: both counts include `approved`, `draft` and `proposed` alike,
+so a row moved from one of them to another leaves the counts equal and sets no
+key, even though the default answer surfaces only a subset of those statuses and
+can shrink — a recorded integrity residual, not a disclosure, since the row is
+caller-readable at either status. A
+*missing* `project_integrity` row is damage too rather than "not recorded": every
+database this build opens declares schema version 3 or is refused unread, and
+every apply that creates a database or applies a migration records the count, so a
+readable database with no record has lost one.
+
+The first comparison is why `knowledge.status` no longer answers with an
+`appliedMigrations` that has shrunk. The second is what makes a response's own
+emptiness visible, and the corruption sweep pins it against the real tools over a
+real damaged database: a sentinel in `knowledge_items.project_id` gets `count: 0,
+results: []` from `knowledge.search` and `itemCount: 0` from `knowledge.status`
+**with this key present**, where before PR2 it got those same numbers alone.
+
+**It still does not detect a corruption that leaves the row inside both counts.**
+A sentinel in `knowledge_items.item_id` keeps the row's `project_id` and its
+`status`, so neither count moves while the item → revision pointer
+`knowledge.search` walks is broken: the tool answers with one result fewer — `count:
+0, results: []` when it was the only match — with this key *absent* and nothing
+else on the response saying otherwise, since `retrieval.stale` reports `false` on
+the ranked path and `null` on the unranked one and neither reports damage. That is
+the single member of `UNDETECTED_UNDERREPORT` in
+`tests/integration/test_canonical_store_corruption.py`, an exact set: a second
+position appearing there is a test failure, not an expectation to update. A
+different pointer fault would *disclose* rather than under-report — an item whose
+`current_revision_id` names another item's revision, served as the wrong item's
+body — and that one is refused at read time by the item → revision consistency
+guard (#24, #30), not by this count. Neither
+count is a checksum, so two damaged cells that cancel out are invisible, as is a
+corrupt `title` or `body` the response hands over directly.
+
+**A corrupt `status` cell reaches the three tools differently, and a client
+should expect all three answers.** Measured on a sandbox project, one approved
+item's `status` overwritten: `knowledge.status` answers a shrunken `itemCount`
+with this key present; `knowledge.search` answers `count: 0` with the key present
+when the project has no published index and the substring fallback is answering,
+and *refuses* when a published index makes the ranked path answer, because the
+canonical gate parses each candidate's status and an uninterpretable one raises
+rather than being skipped; `knowledge.get` refuses for the same reason as soon as
+it reads that row. The refusals are the state-database message naming
+delete-and-rebuild, not the `integrity` key.
 
 **The remedy names a fallback because the first command does not cure every
 shape.** The state database is derived and Git-ignored
@@ -251,13 +294,21 @@ after the third. Following the string token by token takes a surplus row from
 `integrity` present to absent with ranked retrieval intact. The efficacy is
 measured, not yet pinned by a test.
 
+It clears nothing for a damaged item count either, and that is deliberate rather
+than an oversight: an apply with nothing pending records no new expected count,
+because re-recording it from the damaged state would clear the signal without
+repairing anything. The second step is what cures that shape
+(`test_a_pending_free_apply_does_not_re_record_over_a_damaged_state`, with
+`test_an_apply_that_changes_the_store_records_the_new_count` holding the other
+direction).
+
 `knowledge.get` refuses with a message rather than a payload when an item cannot
 be returned, so it carries the distinction in the text: over detected damage it
-reports a project that "could not be fully read: its derived state holds a
-different number of migration-history rows than its own records expect", instead
-of the message it gives for an item that is simply not present. A withheld id and
-an absent id still get the *same* message as each other (SEC-13) — what changed is
-that "the state disagrees with its own pointer" is no longer reported as absence.
+reports a project that "could not be fully read: its derived state disagrees with
+its own records about what it holds", instead of the message it gives for an item
+that is simply not present. A withheld id and an absent id still get the *same*
+message as each other (SEC-13) — what changed is that "the state disagrees with
+its own records" is no longer reported as absence.
 Both directions are pinned, since either alone is satisfied by a tool that says
 one thing always
 (`test_an_absent_item_over_a_damaged_state_is_refused_as_damage_not_absence`,
