@@ -154,7 +154,7 @@ migration format lives in the command document rather than in Core.
 | `/theurian:register-project` | `theurian project register --json` |
 | `/theurian:unregister-project` | `theurian project unregister --json` |
 | `/theurian:index` | `theurian index build --json` |
-| `/theurian:reindex` | `theurian index rebuild --json` |
+| `/theurian:reindex` | `theurian index build --json`, `theurian index gc --json` |
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
 | `/theurian:propose` | none yet — writes `.theurian/proposals/<id>/`; the gate is `theurian migrate validate --json` |

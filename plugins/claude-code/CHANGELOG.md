@@ -148,6 +148,33 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the boundary cost of the interim flow and why this README and
   `docs/integrations/claude-code.md` now say eleven of the twelve commands are
   thin adapters rather than all twelve.
+- **`/theurian:reindex` ran a command that does not exist**, the second live
+  face of the same root cause as the entry above: a user-facing instruction
+  naming a `theurian` subcommand that is not registered (#89). Its step 2
+  shelled out to an `index rebuild`, while the `index` group registers `build`,
+  `gc` and `status` — measured, `No such command 'rebuild'. Did you mean
+  'build'?` and exit 2. `docs/integrations/claude-code.md` mapped the command to
+  the same dead invocation.
+
+  It now runs `theurian index build --json` and then `theurian index gc --json`,
+  which is what the command was always describing. Measured on a scratch
+  project: two consecutive builds produce two different `indexBuildId` values,
+  the same chunk count, `published: true` both times, and **two files on disk** —
+  there is no already-built short-circuit, so a plain `index build` is the full
+  rebuild, and publishing does not reclaim what it replaced (ADR-0024 point 6).
+  `index gc` is the explicit reclamation ADR-0007 requires; in the same run it
+  removed exactly the superseded build, 159,744 bytes, and left the published one
+  in place. The document now shows `index gc --dry-run --json` first, because
+  step 3 is the only part of this command that deletes anything.
+
+  Step 1 no longer says `/theurian:index` "handles the normal case
+  incrementally", and the front-matter description no longer claims this command
+  is "slower". No incremental path exists — every build re-derives from canonical
+  state — so both were describing a cost difference the code does not have. What
+  replaces them is the difference that is real: this command reclaims, and
+  `/theurian:index` does not. The remaining incremental claims in
+  `commands/index.md` are [#143](https://github.com/theurian/theurian/issues/143)
+  and are not touched here.
 
 ### Security
 
