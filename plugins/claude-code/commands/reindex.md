@@ -21,11 +21,11 @@ lost build is recovered by building again, and only if the state it was built
 from still exists.
 
 Containment for that is a documented rule, not a server-side check.
-`allowed-tools` is a permission *grant*: it auto-approves matching invocations so
-this command does not prompt, and it removes nothing — only `disallowed-tools`
-does that. `Bash(theurian:*)` therefore auto-approves `theurian index gc`, the
-irreversible half, exactly as it does the harmless `--dry-run` form. What holds
-the deletion behind the user's confirmation is step 3 below, not the front-matter
+`allowed-tools` grants and removes nothing — [`upgrade.md`](upgrade.md) states
+those semantics with the vendor citation. `Bash(theurian:*)` therefore
+auto-approves `theurian index gc`, the irreversible half, exactly as it does the
+harmless `--dry-run` form. What holds the deletion behind the user's confirmation
+is step 3 below, not the front-matter
 ([#209](https://github.com/theurian/theurian/issues/209)).
 
 ## What to do

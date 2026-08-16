@@ -128,9 +128,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The command now runs
   [ADR-0013](../../docs/adr/0013-ai-writes-produce-proposals.md) §4's flow by
   hand. The agent writes `.theurian/proposals/<proposal-id>/` itself — the
-  `Write` grant it already held, and the reason it holds it — and the approval
-  steps are the user's: move the migration into `.theurian/migrations/` and the
-  body to the path its `contentFile` names, check it with
+  unscoped `Write` grant it already held, and the reason it holds it — and the
+  approval steps are the user's: move the migration into `.theurian/migrations/`
+  and the body to the path its `contentFile` names, check it with
   `theurian migrate validate --json`, open a pull request, and run
   `theurian migrate apply --json` after the merge. Both of those are registered.
 

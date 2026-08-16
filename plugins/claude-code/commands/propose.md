@@ -14,13 +14,13 @@ proposal directory with `Write`, and every approval step is performed by a perso
 using commands that do exist.
 
 **During this manual flow, containment is a documented rule plus a scoped
-permission grant, not a server-side check.** `allowed-tools` is a permission
-*grant*: it auto-approves matching invocations so this command does not prompt,
-and it removes nothing — only `disallowed-tools` does that. So the same
-front-matter that scopes `Write` to `.theurian/proposals/**` also auto-approves
-*every* `theurian` invocation, `theurian migrate apply` — a canonical write —
-included. What keeps approval with the human is the **"You cannot approve
-knowledge"** rule below, not the grant. Narrowing the grant is tracked separately
+permission grant, not a server-side check.** `allowed-tools` grants and removes
+nothing — [`upgrade.md`](upgrade.md) states those semantics with the vendor
+citation. So the same front-matter that scopes `Write` to
+`.theurian/proposals/**` also auto-approves *every* `theurian` invocation,
+`theurian migrate apply` — a canonical write — included. What keeps approval with
+the human is the **"You cannot approve knowledge"** rule below, not the grant.
+Narrowing the grant is tracked separately
 ([#209](https://github.com/theurian/theurian/issues/209)); reading it as a
 sandbox is how a document ends up trusting a boundary that is not there.
 
@@ -111,8 +111,10 @@ sandbox is how a document ends up trusting a boundary that is not there.
      compute it from the body file you wrote rather than copying one.
      `expectedRevision` is the optimistic concurrency guard on an update, and
      must equal the item's current revision id: *"A mismatch is reported, never
-     merged"* (ADR-0006). Neither is a Core default, so recommending them is this
-     document's job ([#210](https://github.com/theurian/theurian/issues/210)).
+     merged"* (`migration.schema.json`; cf. ADR-0006 decision 5, *"Conflicts are
+     surfaced, never auto-merged"*). Neither is a Core default, so recommending
+     them is this document's job
+     ([#210](https://github.com/theurian/theurian/issues/210)).
    - **`metadata.sourceAnchors` is optional to the schema and required by
      `theurian migrate apply`.** Do not drop it from the shape above to save
      space: a revision without one validates and then fails to apply (measured:
@@ -173,30 +175,44 @@ sandbox is how a document ends up trusting a boundary that is not there.
       This is where the invariants land. A migration that fails one exits 4 and
       applies nothing, but it does not leave the directory as it found it: a
       state database file stays behind that no pointer references (measured,
-      151,552 bytes). It is not the applied state and nothing reads it —
-      `theurian index gc` will not reclaim it either, since that command only
-      considers `theurian-index-` files — so it sits there until someone deletes
-      it. Correcting the migration and applying again writes a *fresh* database
-      under the new state hash, which is why the successful run still reports
-      `databaseCreated: true`: that field follows the state hash (ADR-0017), not
-      anything the failed run did or did not leave.
-   6. Rebuild the index, or the knowledge just approved is not searchable:
+      151,552 bytes). The serve path never opens it; its only reader is
+      `_applied_migration_ids`, which scans every state database in
+      `.theurian/state/` to choose between two error remedies and finds nothing
+      recorded in a rolled-back one (measured: `migration_history` and every
+      knowledge table at zero rows, only the schema version stamp written).
+      Nothing reclaims it either — `theurian index gc` considers
+      `theurian-index-` files only, and no command reclaims a stale state
+      database today, ADR-0017 decision 5's promise that `index gc` does being
+      unimplemented for them
+      ([#202](https://github.com/theurian/theurian/issues/202)). So it sits there
+      until someone deletes it. Correcting the migration and applying again
+      writes a *fresh* database under the new state hash, which is why the
+      successful run still reports `databaseCreated: true`: that field follows
+      the state hash (ADR-0017), not anything the failed run did or did not
+      leave.
+   6. Rebuild the index, or the knowledge just approved is not searchable.
+      **Ask first whether the project keeps a RAPTOR summary forest**, the way
+      `/theurian:reindex` step 1 does: a build writes zero summary nodes unless
+      it is given `--raptor`, so on a forest-bearing project a plain build
+      publishes `nodes: 0` and the summary retriever goes quiet. Never add
+      `--raptor` unasked (ADR-0008 decision 10).
+
+      Without the forest:
 
       ```sh
       theurian index build --json
       ```
 
+      With it, and only on their yes:
+
+      ```sh
+      theurian index build --raptor --json
+      ```
+
       `migrate apply` does not index what it applied. Measured immediately
       after a successful apply: `theurian index status --json` reports
       `stale: true` with the remedy ``Run `theurian index build`.``
-      `/theurian:index` runs the same command.
-
-      **Ask first whether the project keeps a RAPTOR summary forest**, the way
-      `/theurian:reindex` step 1 does. A build writes zero summary nodes unless
-      it is given `--raptor`, so on a forest-bearing project the plain command
-      above publishes `nodes: 0` and the summary retriever goes quiet. On their
-      yes the command is `theurian index build --raptor --json`; never add
-      `--raptor` unasked (ADR-0008 decision 10).
+      `/theurian:index` runs the plain form.
 
 ## Rules
 

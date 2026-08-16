@@ -14,8 +14,20 @@ and is replaced the same way; Theurian does not obtain its own artifacts.
 The control that enforces that is the **"Never run the upgrade"** rule below,
 not the front-matter. `allowed-tools` is a permission *grant*: it auto-approves
 `theurian` invocations and `Read` so this command does not prompt for them, and
-it removes nothing — only `disallowed-tools` does that. Reading it as a sandbox
-is how a document ends up trusting a boundary that is not there.
+it removes nothing — only `disallowed-tools` does that. The vendor documentation
+says so in as many words: `allowed-tools` "grants permission for the listed tools
+during the turn that invokes the skill … It does not restrict which tools are
+available: every tool remains callable, and your permission settings still govern
+tools that are not listed", while `disallowed-tools` names "Tools removed from
+Claude's available pool while this skill is active"
+([Extend Claude with skills](https://code.claude.com/docs/en/skills), accessed
+2026-08-17). The grant is also per-turn: it clears when the user sends their next
+message. Reading it as a sandbox is how a document ends up trusting a boundary
+that is not there.
+
+**This paragraph is the canonical statement of those semantics.** The other
+command documents that depend on it point here rather than restating it, so
+there is one place to correct if the vendor's behaviour changes.
 
 ## What to do
 

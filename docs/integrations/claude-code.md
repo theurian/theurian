@@ -170,10 +170,12 @@ request merges — `--raptor` on that last one where the project keeps a summary
 forest, since a plain build writes no summary nodes.
 
 The scoped `Write` bounds what the command writes; it does not bound what it may
-invoke. `allowed-tools` grants and never removes, so `Bash(theurian:*)`
-auto-approves `migrate apply` and `index gc` in exactly the commands that reserve
-them for a human. During the manual flow that boundary is the command documents'
-rules rather than a check Core performs
+invoke. `allowed-tools` grants and never removes — the semantics, with the vendor
+citation, are stated once in
+[`upgrade.md`](../../plugins/claude-code/commands/upgrade.md) — so
+`Bash(theurian:*)` auto-approves `migrate apply` and `index gc` even in the very
+commands that reserve them for a human. During the manual flow that boundary is
+the command documents' rules rather than a check Core performs
 ([#209](https://github.com/theurian/theurian/issues/209)).
 
 Setup logic exists once, in `SetupService`. `/theurian:setup` and `theurian
