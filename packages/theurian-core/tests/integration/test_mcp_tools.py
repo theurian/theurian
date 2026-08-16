@@ -1495,6 +1495,11 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     This assertion previously claimed `hybridRetrieval is False` and kept
     passing after hybrid retrieval shipped, which is how a capability
     declaration and its implementation drift apart unnoticed.
+
+    The drift runs the other way too, so every flag is pinned to the value it
+    actually holds rather than only the `True` ones. `reviewIngestion` and
+    `traceability` were both unpinned until #129: mutations flipping each of them
+    to `True` survived the whole suite, and both are what Milestone 7 flips.
     """
     result = await _call(registry, "system.capabilities")
 
@@ -1506,6 +1511,24 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "traverses `nodes_fts` to leaves and a surfaced leaf carries `raptorPath`, "
         "so this flag now says what a caller can get. A client reading `true` may "
         "ask for the `raptorPath` a ranked hit over a `--raptor` index carries."
+    )
+    assert result["capabilities"]["reviewIngestion"] is False, (
+        "no review history is ingested: `infrastructure/github/` holds no adapter "
+        "and `theurian ingest` reads local files only, so a client reading `true` "
+        "would offer a feature no code path performs. Flipping it is a "
+        "security-relevant change and not a feature flag -- the T-7 entry in "
+        "docs/security/threat-model.md cites this `false` as what stands in for "
+        "the repository allowlist while SEC-10's reader is owed (#129), so the "
+        "change that flips it owes the allowlist as well."
+    )
+    assert result["capabilities"]["traceability"] is False, (
+        "no tool answers FR-T3's questions -- which code implements a spec, which "
+        "tests verify one. `CanonicalStore.list_traceability_edges` is declared on "
+        "the port and called from nowhere in `src/`, and `knowledge.get`'s "
+        "`relations` come from `list_relations`, which walks knowledge-to-knowledge "
+        "relations rather than traceability edges. A client reading `true` would "
+        "offer a query the server cannot serve, so flip this in the change that "
+        "ships the tool, not ahead of it."
     )
     assert result["schemaVersion"]
 
