@@ -145,9 +145,30 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   The `propose` subcommand is still the intended shape, and Milestone 7 builds
   it. Until then the migration format is knowledge the plugin carries, which is
-  the boundary cost of the interim flow and why this README and
+  the boundary cost of the interim flow and why this plugin's README and
   `docs/integrations/claude-code.md` now say eleven of the twelve commands are
   thin adapters rather than all twelve.
+
+  Running the interim flow a second time then found three more things, all of
+  them in what the document tells the *user* to do. It named the proposal's
+  migration `migration.yaml`, while `.theurian/migrations/` names files
+  `<ulid>-<kebab-slug>.yaml`: accepting a second proposal moved that name over
+  the first, and nothing reported it — measured, `migrate validate` answered
+  `valid: true` with `migrationCount: 1` naming only the second migration, and
+  `migrate apply` exited 0 having applied only it. The proposal now carries the
+  final name, so accepting is a move that renames nothing, and the step says to
+  stop on a name that already exists. The document also said
+  `theurian migrate validate` was what enforced the schema, which read as though
+  passing it meant the migration would apply; validate checks schema conformance
+  only, and a revision missing `metadata.sourceAnchors` or reusing an applied
+  `revisionId` gets `valid: true` and then exit 4 from `migrate apply` — after
+  the pull request has merged
+  ([#36](https://github.com/theurian/theurian/issues/36)). And the flow ended at
+  `migrate apply`, which does not index what it applied: measured, `index status`
+  reports `stale: true` immediately afterwards, so the approved knowledge was not
+  searchable. There is now a step 4.6 that builds the index, and the pull request
+  step says to include the proposal directory, since `evidence.json` is read by
+  reviewers and never by Core.
 - **`/theurian:reindex` ran a command that does not exist**, the second live
   face of the same root cause as the entry above: a user-facing instruction
   naming a `theurian` subcommand that is not registered (#89). Its step 2
@@ -166,6 +187,24 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   removed exactly the superseded build, 159,744 bytes, and left the published one
   in place. The document now shows `index gc --dry-run --json` first, because
   step 3 is the only part of this command that deletes anything.
+
+  That flow then turned out to destroy a RAPTOR summary forest. `index build`
+  writes zero summary nodes unless it is given `--raptor`, and step 3 reclaims
+  the build the new one superseded — which is the build holding the forest.
+  Measured on a 128-chunk corpus: `--raptor` produced `nodes: 5`, a plain
+  rebuild of the same state produced `nodes: 0`, and `index gc` then reclaimed
+  the `--raptor` build, leaving the `nodes: 0` one alone on disk. The document
+  recommended this flow "after a change of summarization provider", which is
+  exactly when the forest matters. Step 1 now asks the user whether the project
+  keeps a forest — `index status` reports nothing about summaries, so there is
+  nothing to infer it from — and uses `--raptor` only on their yes, never
+  unasked (ADR-0008 decision 10). Step 3 warns that a build made without it by
+  mistake has to be redone *before* gc, not after. Three smaller corrections in
+  the same pass: the confirmation now comes after the `gc --dry-run` output rather
+  than before anything is shown, matching `/theurian:uninstall`; the step no
+  longer asks for a duration `index build --json` does not report; and the rules
+  name gc's two refusals — a pointer naming a missing build, and a pointer that
+  cannot be read — which exit 1 and reclaim nothing, `--dry-run` included.
 
   Step 1 no longer says `/theurian:index` "handles the normal case
   incrementally", and the front-matter description no longer claims this command

@@ -20,23 +20,33 @@ using commands that do exist.
    evidence is rejected, so if you cannot name a source, write nothing and say
    what is missing instead.
 
-2. Write the proposal directory yourself:
+2. Write the proposal directory yourself, giving the migration file the name it
+   will keep once it is accepted:
 
    ```text
    .theurian/proposals/<proposal-id>/
-   ├── migration.yaml
+   ├── <migration-id>-<kebab-slug>.yaml
    ├── content.md      (or .yaml / .json, matching the knowledge format)
    └── evidence.json
    ```
 
-   `<proposal-id>` is a ULID, as `migration.yaml`'s own `id` is.
+   `<proposal-id>` is a ULID, and `<migration-id>` is the migration's own `id`.
+   `.theurian/migrations/` names its files `<ulid>-<kebab-slug>.yaml`
+   ([migrations.md](../../../docs/protocol/migrations.md#naming-and-layout)), so
+   writing that name here makes step 4.2 a move that renames nothing. Do not
+   call it `migration.yaml`: every proposal would produce that same name, and
+   accepting a second one overwrites the first with nothing reported. Measured
+   on two proposals accepted in turn — after the second move
+   `theurian migrate validate --json` reported `valid: true` and
+   `migrationCount: 1`, naming only the second migration, and `migrate apply`
+   exited 0 having applied only it. The first change was gone from the set, and
+   its body file stayed in `.theurian/knowledge/` with nothing pointing at it.
 
-   `migration.yaml` has to be schema-valid and directly applicable: the gap
+   The migration has to be schema-valid and directly applicable: the gap
    between a proposal and approved knowledge is human review, not format
    conversion. `migration.schema.json` ships inside the installed Core rather
    than in the repository you are working in, so there is no file here to read
-   it from — `theurian migrate validate` in step 4.3 is what enforces it. A
-   change adding one knowledge item looks like this:
+   it from. A change adding one knowledge item looks like this:
 
    ```yaml
    apiVersion: theurian.dev/v1
@@ -80,11 +90,21 @@ using commands that do exist.
      directory holding the migration file that names it. Write the path the body
      will have *after* step 4.2 moves it; a path relative to the proposal
      directory parses and then fails to resolve once the migration is in place.
+   - **`metadata.sourceAnchors` is optional to the schema and required by
+     `theurian migrate apply`.** Do not drop it from the shape above to save
+     space: a revision without one validates and then fails to apply (measured:
+     `valid: true`, then apply exit 4, *"has no source anchor"*). The one
+     alternative Core accepts is `labels: [authored-in-theurian]` on the
+     revision, which declares the knowledge originates in Theurian and has no
+     external source — a claim to make deliberately, not a way around a missing
+     anchor.
    - **`evidence.json`** records where this came from: your agent and task
      identity, the model, the source anchors, and the reasoning that joins them
-     to the claim (ADR-0013 point 5).
+     to the claim (ADR-0013 point 5). It is read by the people reviewing the
+     pull request; Core never reads it, so the anchors that are actually
+     enforced are the ones in `metadata.sourceAnchors`.
 
-3. Show the user what was written — the tree above with the real id — and one
+3. Show the user what was written — the tree above with the real ids — and one
    sentence on what the migration would change.
 
 4. Give them the next steps. The judgement and the file moves are theirs; the
@@ -92,24 +112,48 @@ using commands that do exist.
    nothing.
 
    1. Read the proposal.
-   2. If they agree, move `migration.yaml` into `.theurian/migrations/` and the
-      body file to the path its `contentFile` names.
+   2. If they agree, move the migration file into `.theurian/migrations/` under
+      the name it already has, and the body file to the path its `contentFile`
+      names. If `.theurian/migrations/` already holds a file of that name, stop
+      and say so rather than overwriting it: the name carries the migration's
+      id, so a collision means that migration is already in place.
    3. Check it:
 
       ```sh
       theurian migrate validate --json
       ```
 
-      This is the first point at which anything is checked. The validator reads
-      `.theurian/migrations/` only, so while a proposal sits under
-      `.theurian/proposals/` it reports zero migrations and says nothing about
-      it.
-   4. Open a pull request. The merge is the approval.
+      This is the first point at which anything is checked, and what it checks
+      is schema conformance. The validator reads `.theurian/migrations/` only,
+      so while a proposal sits under `.theurian/proposals/` it reports zero
+      migrations and says nothing about it. It does not tell you the migration
+      will apply: the invariants `migrate apply` enforces are checked in step
+      4.5, after the pull request has already merged
+      ([#36](https://github.com/theurian/theurian/issues/36)).
+   4. Open a pull request, and put the proposal directory in it. The merge is
+      the approval, and `evidence.json` is read by the reviewers or by nobody —
+      `.theurian/proposals/` is not in the `.gitignore` block `theurian init`
+      writes (measured: `git check-ignore` exits 1 for a path under it), so the
+      directory commits as it stands.
    5. After it merges:
 
       ```sh
       theurian migrate apply --json
       ```
+
+      This is where the invariants land. A migration that failed one exits 4
+      and applies nothing — measured, the run that exited 4 left no state
+      database behind, and the corrected run reported `databaseCreated: true`.
+   6. Rebuild the index, or the knowledge just approved is not searchable:
+
+      ```sh
+      theurian index build --json
+      ```
+
+      `migrate apply` does not index what it applied. Measured immediately
+      after a successful apply: `theurian index status --json` reports
+      `stale: true` with the remedy ``Run `theurian index build`.``
+      `/theurian:index` runs the same command.
 
 ## Rules
 
@@ -119,6 +163,12 @@ using commands that do exist.
 - Do not write into `.theurian/migrations/` or `.theurian/knowledge/` directly.
   Writing under `.theurian/proposals/` is the whole of your authority here — step
   4.2 is the human's act of approval, and performing it for them makes it yours.
+- **Generate fresh ULIDs** for the proposal directory, for the migration's `id`,
+  and for every `revisionId`. The ids in the shape above are illustration. A
+  `revisionId` that has been applied already is rejected: a revision id names one
+  item for the life of the project, and reusing one gets `valid: true` from
+  `migrate validate` and then exit 4 from `migrate apply` (measured), after the
+  pull request has merged.
 - If the user asks you to skip review, explain that approval goes through a pull
   request by design, and offer to help write the proposal well instead.
 - Record uncertainty in the proposal rather than resolving it silently.

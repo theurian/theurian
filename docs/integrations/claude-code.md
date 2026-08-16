@@ -157,9 +157,15 @@ migration format lives in the command document rather than in Core.
 | `/theurian:reindex` | `theurian index build --json`, `theurian index gc --json` |
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
-| `/theurian:propose` | none yet — writes `.theurian/proposals/<id>/`; the gate is `theurian migrate validate --json` |
+| `/theurian:propose` | — (see note) |
 | `/theurian:upgrade` | `theurian version --json`, `theurian compat check --json` |
 | `/theurian:uninstall` | `theurian uninstall [--dry-run] --json` |
+
+`/theurian:propose` has no CLI of its own to adapt. It writes
+`.theurian/proposals/<proposal-id>/` with `Write`, and the commands in the flow
+are the user's: `theurian migrate validate --json` on the accepted migration,
+then `theurian migrate apply --json` and `theurian index build --json` after the
+pull request merges.
 
 Setup logic exists once, in `SetupService`. `/theurian:setup` and `theurian
 setup` are the same code path with different presentation — duplicating it in the
