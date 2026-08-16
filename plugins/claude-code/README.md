@@ -142,7 +142,7 @@ a tax you pay all day for a benefit you notice once.
 | `/theurian:index` | Incremental index update. |
 | `/theurian:reindex` | Full rebuild of derived index data. |
 | `/theurian:migrate` | Validate and apply knowledge migrations. |
-| `/theurian:ingest` | Ingest documents, specs, and review history. |
+| `/theurian:ingest` | Ingest local sources — docs and specs. |
 | `/theurian:propose` | Draft a reviewable knowledge change. |
 | `/theurian:upgrade` | Report whether Core needs upgrading, and print the command. Never upgrades. |
 | `/theurian:uninstall` | Remove Theurian, scope by scope. |

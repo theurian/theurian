@@ -3,6 +3,33 @@
 How Git review history becomes reusable team knowledge — and why the last step is
 always a human's.
 
+**The domain model is built; nothing collects into it yet.** `ReviewThread`,
+`PromotionGate` and `KnowledgeCandidate` live in
+[`domain/review.py`](../../packages/theurian-core/src/theurian/domain/review.py),
+and the promotion invariants below are held by three different mechanisms
+(ADR-0013, INV-7):
+
+- **Absence.** `KnowledgeCandidate` has no `approve`, `promote` or `publish`
+  member, and `CandidateStatus` has no `AUTO_APPROVED`. Pinned by
+  `test_candidate_has_no_self_approval_method`.
+- **The signature.** `trust_level` is `field(init=False)`, so a candidate cannot
+  be constructed claiming review-level trust at all — refused by the constructor
+  rather than by a check, which makes one keyword load-bearing. Pinned by
+  `test_a_candidate_cannot_be_constructed_with_a_trust_level`.
+- **Construction.** `__post_init__` rejects a candidate with no evidence, an
+  empty body, or an unmet promotion gate. Pinned by
+  `test_candidate_without_evidence_is_rejected_at_generation` and its two
+  siblings.
+
+What is missing is everything that would fill that model. `infrastructure/github/`
+holds no adapter, `theurian ingest` reads local files only, and no code path
+generates a candidate; `system.capabilities` reports `reviewIngestion: false`,
+pinned by `test_capabilities_report_what_is_and_is_not_built`. So the sections
+below that describe *collection* — the stages, classification, candidate
+generation, provider access and privacy handling — describe what Milestone 7
+([#129](https://github.com/theurian/theurian/issues/129)) implements, not what
+runs today.
+
 ## Evidence is not knowledge
 
 A review comment says:
@@ -166,5 +193,8 @@ GitHub first, behind `ReviewProvider`. GitLab and others are new adapters, no
 domain change. The port returns evidence only: it never classifies, generalizes,
 or calls a model, so a provider adapter stays a thin, testable mapping.
 
-Repositories must be allowlisted in `.theurian/config.yaml`. A repository not
-listed is never contacted (SEC-10).
+Repositories must be allowlisted in `.theurian/config.yaml` before one is
+contacted (SEC-10). That is the design obligation on the adapter, not current
+behaviour: no reader of `.theurian/config.yaml` exists in `src/`, so building the
+allowlist reader is the first thing the ingestion work owes
+([#129](https://github.com/theurian/theurian/issues/129)).

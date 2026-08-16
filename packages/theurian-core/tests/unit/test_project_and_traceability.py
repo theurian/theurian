@@ -407,6 +407,26 @@ def test_candidate_is_always_inferred_never_reviewed() -> None:
     assert _candidate().trust_level is TrustLevel.INFERRED
 
 
+def test_a_candidate_cannot_be_constructed_with_a_trust_level() -> None:
+    """The whole invariant above is one keyword, and nothing else defends it.
+
+    ``trust_level`` is ``field(init=False)`` and ``__post_init__`` never looks at
+    it, so a candidate claiming review-level trust is refused by the *signature*
+    rather than by a check. That makes the keyword load-bearing in a way a reader
+    of ``__post_init__`` would not guess, and it is exactly the sort of thing a
+    later edit relaxes to "make the constructor uniform": dropping ``init=False``
+    keeps the default and keeps the test above green, while
+    ``KnowledgeCandidate(trust_level=TrustLevel.REVIEWED)`` starts working. That
+    mutation survived the whole suite (#129).
+
+    ADR-0013 and INV-7: a candidate is evidence, and promotion to reviewed
+    knowledge is a human decision recorded in a migration. A generator that could
+    name its own trust level would make that decision for the human.
+    """
+    with pytest.raises(TypeError, match="trust_level"):
+        _candidate(trust_level=TrustLevel.REVIEWED)
+
+
 def test_candidate_starts_unapproved() -> None:
     assert _candidate().status is CandidateStatus.GENERATED
 

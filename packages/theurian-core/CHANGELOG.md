@@ -12,6 +12,97 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Documents describing review ingestion as shipped, corrected together with
+  the tests that hold the corrected claims**
+  ([#129](https://github.com/theurian/theurian/issues/129)). The class is a
+  security control named in the present tense whose component does not exist:
+  T-7's SSRF entry, the `.theurian/config.yaml` repository allowlist (SEC-10),
+  the `providers.review.repositories` schema key, the sample project's config,
+  and the `review`/`infrastructure.github` package docstrings all read as if the
+  allowlist were in force. No reader of that file exists in `src/`, and
+  `infrastructure/github/` holds no adapter, so nothing consults it; each
+  now says what is owed and names Milestone 7.
+
+  **What the allowlist's absence rests on is now pinned.** T-7's stand-in
+  control is not a filter but the absence of any way to make the request, and
+  that absence was enforced by nothing: a mutation that left `_external_refs`
+  recording exactly as before and added a real `urllib.request.urlopen` beside
+  it survived the whole suite, because
+  `test_external_refs_are_recorded_never_fetched` reads the recorded output and
+  the recording did not change. `tests/unit/test_network_call_sites.py` adds the
+  missing half in three arms —
+  `test_no_module_outside_the_daemon_health_probe_reaches_a_network_client`
+  scans the shipped package and pins the permitted network-client sites to
+  `daemon/instance.py` alone, resolving attribute chains and constant-string
+  dynamic imports; `test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process`
+  does the same over `subprocess`, the `os` spawn/exec family
+  (`system`, `popen`, `spawn*`, `posix_spawn*`, `exec*`) and
+  `asyncio.create_subprocess_*`, because `curl` and `gh api` reach the network
+  with no client module in the diff; and
+  `test_parsing_a_hostile_document_opens_no_socket` watches the socket layer
+  while *every* parser `default_parsers()` returns handles a hostile document,
+  with `test_every_parser_the_registry_ships_has_a_hostile_document` failing
+  when the registry gains a format the table does not know. The threat model now
+  cites the recording pin and the never-fetched pins separately, rather than
+  crediting one test with both, and states the residual all three share: a
+  fetch both spelled at runtime and issued from a child process.
+
+- **`system.capabilities`' `reviewIngestion`, `traceability` and
+  `knowledgeSearch` flags pinned** in
+  `test_capabilities_report_what_is_and_is_not_built`, with
+  `test_the_capability_block_holds_exactly_the_flags_that_are_pinned` holding
+  the key set so a flag added later cannot ship unasserted. All three were
+  unpinned: mutations flipping the first two to `true`, and rewriting
+  `knowledgeSearch` to `"substring"` — indistinguishable to a client from what
+  an un-indexed project reports — survived the suite. That is the same drift
+  that once let the test claim `hybridRetrieval is False` after hybrid retrieval
+  shipped. T-7 cites `reviewIngestion: false` as part of what stands in for the
+  missing allowlist, so the flag is a security-relevant declaration and not a
+  feature toggle.
+
+- **`KnowledgeCandidate.trust_level` cannot be set at construction**, pinned by
+  `test_a_candidate_cannot_be_constructed_with_a_trust_level`. The invariant is
+  one `field(init=False)` keyword and no test named it, so removing it kept the
+  default green while `KnowledgeCandidate(trust_level=REVIEWED)` became
+  constructible — a candidate granting itself the trust a human reviewer exists
+  to grant (ADR-0013, INV-7). `docs/architecture/review-knowledge.md` now names
+  the mechanism behind each promotion invariant rather than attributing all of
+  them to construction.
+
+- **`$ref` recording fidelity stated rather than overclaimed.** T-7 said
+  `_external_refs` "records the target's scheme"; it records the scheme only
+  where the target's form carries one, so a protocol-relative (`//host/x.yaml`)
+  or UNC target records as `relative-file`, and a ref past either walk cap —
+  `MAX_REFS` (5000) or `MAX_REF_DEPTH` (64), both now named — is dropped from
+  the count entirely. Fixing the recording is
+  [#203](https://github.com/theurian/theurian/issues/203).
+
+- **How many `git` reads `theurian ingest` performs, measured rather than
+  counted from the module.** `cli/context.py` defines four readers; the ingest
+  path runs three — `rev-parse --show-toplevel`, `rev-parse HEAD` and
+  `remote get-url origin` — because `default_branch`
+  (`symbolic-ref --short HEAD`) is reached only from `project register` and
+  `migrate apply`. Measured by running the command against a `git` shim that
+  logs every invocation. Recorded here because the count is a fact about
+  `cli/context.py`; the document it corrects is the plugin's `/theurian:ingest`,
+  whose own change is in
+  [the plugin changelog](../../plugins/claude-code/CHANGELOG.md).
+
+- **T-7's owed controls listed wherever the entry is summarised.** The threat
+  table in `docs/architecture/requirements-analysis.md` named only the
+  repository allowlist as owed, while SEC-10 also requires the scheme allowlist
+  and the rejection of private-network destinations; it now lists all three, as
+  the threat model itself already did. In the same sweep,
+  `schemas/config/project-config.schema.json` stops attributing every absent
+  loader to Milestone 7 — #129 owes the review-ingestion allowlist reader
+  specifically, and the rest of the file simply has no loader yet — and
+  restores "Not in force." to the head of the `repositories` description, since
+  an editor showing a field's hover text does not show the root note.
+  `ReviewProvider`'s docstring now says the GitHub *adapter* is unbuilt; the
+  port itself exists.
+
 ## [0.1.0.dev4] - 2026-08-16
 
 ### Added

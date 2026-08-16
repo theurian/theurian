@@ -677,9 +677,62 @@ asking "can someone burn this daemon's CPU" to find two places.
 
 #### T-7 — A hostile Git or external URL triggers an internal request (SSRF, Medium)
 
-**Controls:** scheme allowlist; private-network destinations rejected; repository
-allowlist in `.theurian/config.yaml` — a repository not listed is never
-contacted; external `$ref` targets recorded as unresolved, never fetched.
+**Controls:** external `$ref` targets recorded as unresolved, never fetched.
+`_external_refs` in `infrastructure/filesystem/parsers/openapi.py` records the
+target instead of following it — with its scheme where the form carries one, so a
+protocol-relative or UNC target records as `relative-file`, and a ref past either
+walk cap, `MAX_REFS` (5000) or `MAX_REF_DEPTH` (64), is dropped from the count
+entirely ([#203](https://github.com/theurian/theurian/issues/203),
+pre-Milestone 7). Recording is pinned by
+`test_external_refs_are_recorded_never_fetched`.
+
+*Future controls, not shipped:* the scheme allowlist, the rejection of
+private-network destinations, and the repository allowlist in
+`.theurian/config.yaml` are owed with review ingestion (Milestone 7,
+[#129](https://github.com/theurian/theurian/issues/129)). No reader of
+`.theurian/config.yaml` exists in `src/`, and `infrastructure/github/` is a
+docstring-only package with no HTTP client, so no code path performs any of the
+three.
+
+What stands in for all three is the absence of the request. *Never fetched* is
+pinned separately from the recording, because reading the recorded output cannot
+see a fetch performed beside it: a mutation that recorded every ref exactly as
+before and added a real `urlopen` beside it survived the whole suite. Three arms
+in `tests/unit/test_network_call_sites.py` cover each other's blind spots.
+
+- **Network names, structurally.**
+  `test_no_module_outside_the_daemon_health_probe_reaches_a_network_client`
+  scans every `*.py` in the imported package and pins the sites that may reach a
+  network client to `daemon/instance.py`'s loopback health probe alone. It
+  resolves attribute chains — `urllib.request.…` after a bare `import urllib` —
+  and constant-string dynamic imports such as `__import__("_socket")`.
+- **Process spawns, structurally.**
+  `test_no_module_outside_the_git_and_service_adapters_can_spawn_a_process` asks
+  the same question of the other way out of this process, since `curl`, `gh` and
+  `git fetch` reach the network without Theurian importing a client. It watches
+  `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
+  `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
+  two sites: the `git` context reads
+  in `cli/context.py` and the service runner in
+  `infrastructure/services/runner.py`, neither of which takes its argument
+  vector from a document.
+- **The socket layer, behaviourally.**
+  `test_parsing_a_hostile_document_opens_no_socket` watches
+  `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while
+  every parser the registry ships handles a document carrying an
+  attacker-chosen URL. One case per parser, held equal to
+  `ParserRegistry().parser_ids` — that is, `default_parsers()` — by
+  `test_every_parser_the_registry_ships_has_a_hostile_document`, so a parser
+  added later fails until someone writes it a hostile document.
+
+**These three are a floor on the review a new outbound call gets, not a proof
+that one cannot exist.** The measured residual: a fetch both spelled at runtime
+and issued from a child process is outside all three —
+`__import__("sub" + "process")` running `curl` survives the entire suite today,
+and the spawn arm's own docstring names and measures it.
+
+`system.capabilities` reports `reviewIngestion: false`, pinned by
+`test_capabilities_report_what_is_and_is_not_built`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High)
 
@@ -3920,7 +3973,7 @@ fix.
 | T-4 | Path traversal | I | Critical | SEC-7 |
 | T-5 | Symlink escape | I | Critical | SEC-7 |
 | T-6 | Resource exhaustion, at parse and at query | D | Medium | SEC-8 |
-| T-7 | SSRF via external URL | I | Medium | SEC-10 |
+| T-7 | SSRF via external URL | I | Medium | SEC-10 — `$ref` recorded-never-fetched only; scheme allowlist, private-network rejection and repository allowlist owed with M7 ([#129](https://github.com/theurian/theurian/issues/129)) |
 | T-8 | Token in a config file | I | High | SEC-5 |
 | T-9 | Token in a log | I | High | SEC-6 |
 | T-10 | Cross-sensitivity summary leak | I | High | SEC-14 |

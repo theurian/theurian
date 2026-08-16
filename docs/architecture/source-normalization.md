@@ -114,7 +114,7 @@ Size is re-checked after reading, because a file can grow between `stat` and
 | OpenAPI | summaries and descriptions | paths, operations, parameters, responses |
 | Git commit | subject and body | author, tree, parents, changed paths |
 | Git diff | hunk content | file paths, line ranges, change type |
-| GitHub review | comment bodies | thread structure, resolution, target lines, fix commit |
+| GitHub review — **not built**, owed with review ingestion (Milestone 7, [#129](https://github.com/theurian/theurian/issues/129)) | comment bodies | thread structure, resolution, target lines, fix commit |
 
 ## Ingestion pipeline
 
@@ -150,7 +150,8 @@ other 199 from being available. Failures are reported per document with the path
 and the reason, and the run's exit status reflects that some documents were
 skipped.
 
-The same principle applies further up: if LLM-based candidate generation fails,
-raw review ingestion still succeeds (FR-V5). Evidence collection and
-interpretation are separate steps precisely so the fragile one cannot take down
-the reliable one.
+The same principle is owed further up, when review ingestion lands (Milestone 7,
+[#129](https://github.com/theurian/theurian/issues/129)): if LLM-based candidate
+generation fails, raw review ingestion must still succeed (FR-V5). Evidence
+collection and interpretation are to stay separate steps precisely so the fragile
+one cannot take down the reliable one.
