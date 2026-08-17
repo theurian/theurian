@@ -57,10 +57,18 @@ def test_evidence_records_the_origin_a_reviewer_reads() -> None:
     assert evidence.anchors == (ANCHOR,)
 
 
-def test_a_proposal_with_no_anchors_is_rejected_at_construction() -> None:
-    """ADR-0013 point 5, the half a reviewer can check against a source."""
-    with pytest.raises(InvariantViolationError, match="no evidence"):
-        _evidence(anchors=())
+def test_evidence_without_an_anchor_is_valid_when_it_carries_reasoning() -> None:
+    """ADR-0013 point 5 requires the reasoning, not an anchor.
+
+    Knowledge that originates in Theurian has no external source to name -- it
+    carries the ``authored-in-theurian`` label (INV-8, enforced on the request)
+    and the reasoning that produced it. Requiring an anchor here made that case
+    impossible, which is what left ``--authored-here`` unreachable from the CLI.
+    """
+    evidence = _evidence(anchors=())
+
+    assert evidence.anchors == ()
+    assert evidence.reasoning
 
 
 def test_a_proposal_with_no_reasoning_is_rejected_at_construction() -> None:

@@ -284,12 +284,16 @@ def test_a_proposal_with_no_evidence_is_rejected_at_generation(
     """ADR-0013 point 5, and the third owed compliance item.
 
     The evidence is emptied *after* construction on purpose. ``Evidence``
-    refuses to exist without anchors and reasoning, so a test that called its
-    constructor would prove that one class holds the rule and say nothing about
-    whether the generation path does. Bypassing it is the only way to ask the
-    question this compliance item actually asks -- and the answer has to be the
-    same, because ADR-0013's promise is about what gets written, not about which
-    constructor a caller reached first.
+    refuses to exist without reasoning, so a test that called its constructor
+    would prove that one class holds the rule and say nothing about whether the
+    generation path does. Bypassing it is the only way to ask the question this
+    compliance item actually asks -- and the answer has to be the same, because
+    ADR-0013's promise is about what gets written, not about which constructor a
+    caller reached first.
+
+    The reasoning is what is emptied, because that is what ADR-0013 point 5
+    requires: a source anchor is INV-8's separate concern, and knowledge that
+    originates in Theurian has none.
 
     Asserted over the whole tree as well as the exception: a refusal that has
     already created the directory leaves a half-written proposal a reviewer may
@@ -302,7 +306,7 @@ def test_a_proposal_with_no_evidence_is_rejected_at_generation(
         reasoning="The review thread on #41 settled the retry budget.",
         anchors=(ANCHOR,),
     )
-    object.__setattr__(hollow, "anchors", ())
+    object.__setattr__(hollow, "reasoning", "   ")
     before = _tree(paths.root)
 
     with pytest.raises(InvariantViolationError, match="no evidence"):

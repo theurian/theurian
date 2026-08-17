@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from theurian.cli.main import app
@@ -135,6 +136,52 @@ def test_propose_refuses_a_proposal_with_no_reasoning(project: Path) -> None:
     assert code == EXIT_INVALID_INPUT
     assert "evidence" in payload["error"]
     assert payload["remedy"]
+
+
+def test_authored_here_drafts_without_a_source_uri_and_labels_the_revision(project: Path) -> None:
+    """HIGH-4: --authored-here declares Theurian-origin knowledge, no external source.
+
+    Before the fix it was unreachable: the CLI filled evidence's anchor from the
+    same --source-uri as the metadata anchor, so --authored-here without
+    --source-uri failed "no evidence" before the label path was reached. The
+    service always supported it; only the CLI could not express it.
+    """
+    code, payload = _invoke(
+        "propose",
+        "--item-id",
+        "convention.local",
+        "--title",
+        "Local convention",
+        "--kind",
+        "convention",
+        "--owner",
+        "team",
+        "--author",
+        "a@example.com",
+        "--description",
+        "Record a convention the team settled on with no external source.",
+        "--body-file",
+        str(project / "body.md"),
+        "--authored-here",
+        "--agent-id",
+        "claude-code",
+        "--task-id",
+        "task-9",
+        "--model",
+        "claude-opus-5",
+        "--reasoning",
+        "The team decided this in the 2026-08 architecture review.",
+    )
+
+    assert code == 0, payload
+    migration = (project / payload["proposalDirectory"] / payload["migrationFile"]).read_text()
+    document = yaml.safe_load(migration)
+    upsert = next(op for op in document["operations"] if op["op"] == "upsertRevision")
+    assert upsert["metadata"]["labels"] == ["authored-in-theurian"]
+    assert "sourceAnchors" not in upsert["metadata"]
+    # Accept it, so the whole authored-here path is exercised end to end.
+    accept_code, _ = _invoke("propose", "accept", payload["proposalId"])
+    assert accept_code == 0
 
 
 def test_propose_names_every_option_it_is_missing_at_once(project: Path) -> None:

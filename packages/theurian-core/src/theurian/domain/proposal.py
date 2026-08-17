@@ -54,9 +54,16 @@ class Evidence:
     validates and then fails to apply. The two are separate fields with separate
     readers, and this one is the one a person acts on.
 
-    ADR-0013 point 5: *a proposal with no evidence is rejected at generation*.
-    Enforced here, at construction, so that no code path can assemble a proposal
-    directory and discover the problem while writing the third file.
+    The two are separate *requirements*, too. ADR-0013 point 5 -- *a proposal
+    with no evidence is rejected at generation* -- is about the reasoning that
+    justifies the change, so that is what is required here. INV-8 -- a revision
+    must name a source or declare it has none -- is about where the knowledge
+    came from, and it is enforced on :class:`ProposalRequest`, not here. They
+    coincide for a change drawn from a commit or a review thread, and they come
+    apart for knowledge that originates in Theurian: it carries the reasoning
+    (evidence) and the ``authored-in-theurian`` label (INV-8) and no external
+    anchor at all. Requiring an anchor here made that case impossible to
+    express, which is why ``anchors`` is optional and the reasoning is not.
     """
 
     agent_id: AgentId
@@ -77,17 +84,22 @@ def require_evidence(evidence: Evidence) -> None:
     "rejected at generation" a property of the generation *path* rather than of
     one constructor, so that a caller holding an :class:`Evidence` built by any
     other route still cannot package a proposal out of it.
+
+    The requirement is the reasoning, not an anchor. Whether the change names a
+    source is INV-8's question, enforced on :class:`ProposalRequest` -- and
+    knowledge that originates in Theurian has no source to name, only the
+    reasoning that produced it.
     """
     if not evidence.model.strip():
         raise InvariantViolationError(
             "Evidence must name the model that produced the proposal. "
             "Pass the model identity, e.g. --model claude-opus-5."
         )
-    if not evidence.anchors or not evidence.reasoning.strip():
+    if not evidence.reasoning.strip():
         raise InvariantViolationError(
             "A proposal with no evidence is rejected at generation (ADR-0013). "
-            "Give at least one source anchor and the reasoning that joins it to "
-            "the claim: --source-uri and --reasoning."
+            "Give the reasoning that justifies the change: --reasoning. The source "
+            "it draws on goes in --source-uri, or --authored-here if it has none."
         )
 
 
