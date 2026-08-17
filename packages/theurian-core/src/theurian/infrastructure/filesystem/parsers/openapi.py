@@ -65,11 +65,16 @@ _SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
 _SEPARATORS: Final = frozenset("/\\")
 
 #: Dropped from a reference before it is classified -- tab, newline and carriage
-#: return anywhere, C0 controls and space at the ends. Exactly what Python's
-#: ``urlsplit`` and the WHATWG URL parser remove before *they* look at it, so
-#: classifying the raw string instead would read ``"\t//evil.test/x.json"`` as a
-#: relative path while everything that could ever fetch it sees the host
-#: ``evil.test`` (measured).
+#: return anywhere, C0 controls and space at the ends. Classifying the raw string
+#: instead would read ``"\t//evil.test/x.json"`` as a relative path while
+#: everything that could ever fetch it sees the host ``evil.test`` (measured).
+#:
+#: The removal *set* is the one ``urlsplit`` uses; the ends are not. ``urlsplit``
+#: strips leading C0-and-space only, while this strips both ends, which is the
+#: WHATWG side of the mapping. Deliberate, and safe in the direction that
+#: matters: trailing characters cannot move a classification from network to
+#: local, because every label here is decided by the *front* of the reference --
+#: the two separators, or the scheme that ends at the first colon.
 _REMOVED_ANYWHERE: Final = str.maketrans({"\t": None, "\n": None, "\r": None})
 _STRIPPED_AT_THE_ENDS: Final = "".join(chr(code) for code in range(0x21))
 
@@ -141,6 +146,14 @@ class OpenApiParser:
                 # a walk cap, which is the one answer a reader acts on (#203);
                 # `refWalkTruncated` says whether this number is a total or a
                 # floor.
+                #
+                # Both keys stop at this object. `IngestionService._to_document`
+                # carries `structured` into `IngestedDocument` and has no
+                # metadata field to carry these into, so the record that survives
+                # ingestion -- and the one a scheme allowlist will read (T-7,
+                # #129) -- is `structured["_index"]`: `externalRefs`, and
+                # `refWalkTruncations` non-empty for exactly the documents this
+                # flag calls truncated.
                 "unresolvedRefCount": str(
                     len(index["externalRefs"]) + len(index["refWalkTruncations"])
                 ),
@@ -310,14 +323,31 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
     def cut(reason: str, at: str, limit: int) -> None:
         truncations.setdefault(reason, {"reason": reason, "at": at, "limit": str(limit)})
 
+    def record(ref: object, path: str) -> None:
+        if not isinstance(ref, str) or ref in seen:
+            return
+        target = _as_a_fetcher_reads_it(ref)
+        if not target or target.startswith("#"):
+            return
+        seen.add(ref)
+        found.append({"ref": ref, "at": path, "scheme": _ref_scheme(target), "resolved": "false"})
+
     def walk(node: object, path: str, depth: int) -> None:
-        if not isinstance(node, dict | list):
-            # A scalar carries no `$ref` and no children, so a cap that lands on
-            # one has cut nothing and must not say it did. Measured: with the
-            # caps checked before this, a `$ref` sitting at exactly
-            # `MAX_REF_DEPTH` had its own string value marked as an uninspected
-            # subtree, and the document reported a truncation it had not
-            # suffered.
+        if not isinstance(node, dict | list) or not node:
+            # Neither cap may claim it cut something the node could not have
+            # held. A scalar has no children at all, and an empty container has
+            # none either -- emptiness is answerable without descending, which
+            # is the whole reason this check can sit in front of a cap that
+            # forbids descending. Both were measured claiming otherwise: a
+            # `$ref` at exactly `MAX_REF_DEPTH` had its own string value marked
+            # as an uninspected subtree, and an empty `{}` or `[]` one past the
+            # cap made a document with *no* external references publish
+            # `unresolvedRefCount` 1 and `refWalkTruncated` true.
+            #
+            # A non-empty container stays marked even when it happens to hold
+            # only scalars: knowing that requires reading its children, which is
+            # exactly the descent the cap refused, so "we did not look" remains
+            # the honest answer there.
             return
         if len(found) >= MAX_REFS:
             cut("refCount", path, MAX_REFS)
@@ -326,22 +356,10 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
             cut("depth", path, MAX_REF_DEPTH)
             return
         if isinstance(node, dict):
-            ref = node.get("$ref")
-            if isinstance(ref, str) and ref not in seen:
-                target = _as_a_fetcher_reads_it(ref)
-                if target and not target.startswith("#"):
-                    seen.add(ref)
-                    found.append(
-                        {
-                            "ref": ref,
-                            "at": path,
-                            "scheme": _ref_scheme(target),
-                            "resolved": "false",
-                        }
-                    )
+            record(node.get("$ref"), path)
             for key, child in node.items():
                 walk(child, f"{path}.{key}" if path else str(key), depth + 1)
-        elif isinstance(node, list):
+        else:
             for index, child in enumerate(node):
                 walk(child, f"{path}[{index}]", depth + 1)
 
@@ -406,7 +424,12 @@ def _ref_scheme(target: str) -> str:
       because what it shares with ``/etc/passwd`` is the property a gate cares
       about -- it resolves from a root, not from the referring document. But
       ``x://host/y`` keeps the scheme ``x``: a one-letter scheme that names an
-      authority is network-destined whatever else it is.
+      authority is network-destined whatever else it is. That rule is about the
+      authority, not about the letter, so ``C://foo`` and ``C:\\host\x`` record
+      the scheme ``c`` as well -- a drive letter *is* what they open with, and
+      the sentence above does not hold for those two spellings. Neither is in
+      :data:`LOCAL_PATH_SCHEMES` nor :data:`NETWORK_PATH_SCHEMES`, so an
+      allowlist of either group refuses them: wrong-looking, and fail-closed.
     - ``file://evil.test/share/x.json`` records ``file``, which is faithful and
       still network-destined. Nothing here decides that for the gate: allowing
       ``file`` at all obliges it to inspect the authority, exactly as it obliges

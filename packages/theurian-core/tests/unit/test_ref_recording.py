@@ -33,10 +33,12 @@ import json
 from typing import Any, Final, cast
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 
+from theurian.application.ingestion_service import _to_document
 from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.values import ContentHash
 from theurian.infrastructure.filesystem.parsers.openapi import (
     LOCAL_PATH_SCHEMES,
     MAX_REF_DEPTH,
@@ -104,6 +106,12 @@ SCHEME_CASES: Final[tuple[tuple[str, str], ...]] = (
     # A one-letter *scheme* that names an authority keeps its scheme, so the
     # drive-letter reading above cannot be used to smuggle a host past a gate.
     ("x://evil.test/y.json", "x"),
+    # The same rule applied to a drive letter, and deliberate: what follows the
+    # colon reads as an authority, so the drive restoration is suppressed and
+    # these keep `c`. `c` is in neither published group, so an allowlist of
+    # either refuses them -- wrong-looking, and fail-closed.
+    ("C:\\\\Windows\\x.json", "c"),
+    ("C://Windows/x.json", "c"),
     ("/etc/passwd", "absolute-file"),
     ("./local.yaml#/S", "relative-file"),
     ("../../secrets.yaml", "relative-file"),
@@ -165,40 +173,67 @@ def test_the_local_and_network_ref_labels_are_disjoint() -> None:
     assert not (LOCAL_PATH_SCHEMES & NETWORK_PATH_SCHEMES)
 
 
-#: Deterministic for the reason ``test_absence_proof.py`` gives: a generated
-#: example that only sometimes runs is a pin that only sometimes holds.
+#: ``derandomize`` alone is not determinism: hypothesis derives the corpus from
+#: the test's own identity, so *editing this docstring* reshuffles which examples
+#: run -- measured at 41 of 250 shared with the previous corpus. ``@seed`` is what
+#: makes the examples a property of the decorator instead, which is why
+#: ``test_absence_proof.py`` pins ``EXAMPLE_SEED`` rather than relying on
+#: ``derandomize``. The number is the issue, as it is there.
 _GENERATED = settings(deadline=None, derandomize=True, database=None, max_examples=250)
 
+#: The four spellings of RFC 3986 §3.2's authority prefix, including the two
+#: mixed forms Windows and browsers accept.
+_AUTHORITY_PREFIXES = ("//", "\\\\", "/\\", "\\/")
 
+
+@seed(203)
 @_GENERATED
-@given(ref=st.text(alphabet="/\\.:-aCx", min_size=1, max_size=6))
-def test_a_reference_opening_with_two_separators_is_never_local(ref: str) -> None:
+@given(
+    prefix=st.sampled_from(_AUTHORITY_PREFIXES),
+    tail=st.text(alphabet="/\\.:-aCx", min_size=0, max_size=6),
+)
+def test_a_reference_opening_with_two_separators_is_never_local(prefix: str, tail: str) -> None:
     """The classification is structural, so it must hold past the table above.
 
     An enumerated blocklist of ``//`` and ``\\`` would satisfy every case in
-    :data:`SCHEME_CASES` and still let the next spelling through. The alphabet
-    carries both separators, a colon, a dot, a dash and three letters -- one of
-    them a plausible drive letter -- so the generated corpus reaches the mixed
-    separators, the one-letter scheme, and the scheme-with-no-authority forms.
+    :data:`SCHEME_CASES` and still let the next spelling through.
 
-    Whitespace is deliberately *outside* the alphabet: this test states its
-    premise on the raw string, and it could not do that if the string it
-    generated had to be normalised first. The normalising cases are pinned by
-    name in :data:`SCHEME_CASES` instead.
+    The prefix is composed rather than generated so that **every** example bears
+    the claim. Drawing the whole reference from an alphabet reached the
+    two-separator branch in 10 of 250 examples, which left the other 240 paying
+    for a conditional that asserted nothing -- a corpus can be large and still
+    test one thing forty times.
+
+    Whitespace is deliberately outside the tail's alphabet: this test states its
+    premise on the raw string, and it could not do that if the string had to be
+    normalised first. The normalising cases are pinned by name in
+    :data:`SCHEME_CASES` instead.
+    """
+    ref = prefix + tail
+    scheme = _record(ref)["scheme"]
+
+    assert scheme in NETWORK_PATH_SCHEMES, (
+        f"{ref!r} opens with two separators, so it names an authority "
+        f"(RFC 3986 §3.2) -- it recorded {scheme!r}, which is not one of "
+        f"{sorted(NETWORK_PATH_SCHEMES)}."
+    )
+
+
+@seed(203)
+@_GENERATED
+@given(ref=st.text(alphabet="/\\.:-aCx", min_size=1, max_size=6))
+def test_every_reference_records_a_usable_scheme_label(ref: str) -> None:
+    """What holds for *any* reference, so every example bears this claim too.
+
+    A gate keying on an empty string, or on a label whose case depends on how the
+    document spelled it, is a gate keying on nothing. Separate from the test
+    above because these two claims have different populations, and folding them
+    together is what made 240 of 250 examples assert only this much.
     """
     scheme = _record(ref)["scheme"]
 
     assert scheme, f"{ref!r} recorded an empty scheme label"
     assert scheme == scheme.lower(), f"{ref!r} recorded {scheme!r}, which is not lowercased"
-    # Membership in a *tuple*, not in the string "/\\": `"" in "/\\"` is True,
-    # so the string spelling reads a one-character reference as opening with two
-    # separators. Hypothesis found that on the first run, against `ref="\\"`.
-    if ref[:1] in ("/", "\\") and ref[1:2] in ("/", "\\"):
-        assert scheme in NETWORK_PATH_SCHEMES, (
-            f"{ref!r} opens with two separators, so it names an authority "
-            f"(RFC 3986 §3.2) -- it recorded {scheme!r}, which is not one of "
-            f"{sorted(NETWORK_PATH_SCHEMES)}."
-        )
 
 
 def test_a_file_url_with_a_host_records_its_scheme_and_leaves_the_authority_alone() -> None:
@@ -244,12 +279,24 @@ def test_a_same_document_reference_is_not_recorded_as_external(ref: str) -> None
 # ==========================================================================
 
 
-def _nested(depth: int, ref: str) -> dict[str, Any]:
-    """A ``$ref`` buried under ``depth`` mappings."""
-    node: dict[str, Any] = {"$ref": ref}
+def _buried(depth: int, leaf: object) -> dict[str, Any]:
+    """``leaf`` under ``depth`` mappings.
+
+    Takes the leaf whole rather than always burying a ``$ref``: the cap tests
+    below turn on *what kind of node* the walk declines to enter, and a helper
+    that wrapped everything in ``{"$ref": ...}`` would hand an "empty container"
+    case a container holding one key. It did, on the first run of the HIGH-1
+    pins, and the product was right where the fixture was wrong.
+    """
+    node: object = leaf
     for _ in range(depth):
         node = {"x": node}
-    return node
+    return cast("dict[str, Any]", node)
+
+
+def _nested(depth: int, ref: str) -> dict[str, Any]:
+    """A ``$ref`` buried under ``depth`` mappings."""
+    return _buried(depth, {"$ref": ref})
 
 
 def test_a_ref_past_the_depth_cap_is_counted_rather_than_dropped() -> None:
@@ -290,6 +337,102 @@ def test_the_depth_cap_is_where_it_was_and_marks_nothing_below_it() -> None:
     assert _metadata(at_the_cap)["refWalkTruncated"] == "false"
 
     assert _index(past_it)["externalRefs"] == [], "one level deeper is still cut"
+
+
+@pytest.mark.parametrize(
+    ("leaf", "label"),
+    [({}, "empty dict"), ([], "empty list"), ("text", "scalar")],
+    ids=["empty-dict", "empty-list", "scalar"],
+)
+def test_a_cap_does_not_claim_it_cut_a_node_that_could_hide_nothing(
+    leaf: object, label: str
+) -> None:
+    """Round-one HIGH-1, reproduced: an empty container past the depth cap made a
+    document with *no* external references publish ``unresolvedRefCount`` 1 and
+    ``refWalkTruncated`` true -- a warning about a subtree that was provably
+    empty. The scalar case was already right, and is kept here so the three sit
+    under one statement: emptiness is answerable without descending, so it is
+    answerable in front of a cap that forbids descending."""
+    document = {"openapi": "3.1.0", "deep": _buried(MAX_REF_DEPTH, leaf)}
+
+    assert _index(document)["refWalkTruncations"] == [], f"an {label} hides nothing"
+    assert _metadata(document)["unresolvedRefCount"] == "0"
+    assert _metadata(document)["refWalkTruncated"] == "false"
+
+
+def test_a_non_empty_node_past_the_cap_is_still_marked() -> None:
+    """The other side of HIGH-1's fix, so it cannot be satisfied by never marking.
+
+    A container that holds *something* stays marked even when what it holds is a
+    scalar: knowing better means reading its children, which is the descent the
+    cap refused, so "we did not look" is the honest answer.
+    """
+    hiding_a_ref = {
+        "openapi": "3.1.0",
+        "deep": _buried(MAX_REF_DEPTH, {"$ref": "https://evil.test/x.json"}),
+    }
+    holding_only_a_scalar = {"openapi": "3.1.0", "deep": _buried(MAX_REF_DEPTH, {"a": 1})}
+
+    for document in (hiding_a_ref, holding_only_a_scalar):
+        assert [cut["reason"] for cut in _index(document)["refWalkTruncations"]] == ["depth"]
+        assert _metadata(document)["refWalkTruncated"] == "true"
+
+
+def _exactly_at_the_ref_cap(**extra: object) -> dict[str, Any]:
+    """A document holding exactly ``MAX_REFS`` references, plus ``extra`` keys.
+
+    The extra keys sort after ``components``, so the walk reaches them with the
+    cap already full -- which is the boundary M-3 asked for and the one the
+    round-one fix had to get right in both directions.
+    """
+    return {
+        "openapi": "3.1.0",
+        "components": {
+            "schemas": {
+                f"S{index}": {"$ref": f"https://evil.test/{index}.json"}
+                for index in range(MAX_REFS)
+            }
+        },
+        **extra,
+    }
+
+
+@pytest.mark.parametrize(
+    ("extra", "label"),
+    [({}, "nothing after"), ({"zz": "text"}, "trailing scalar"), ({"zz": {}}, "trailing empty")],
+    ids=["nothing-after", "trailing-scalar", "trailing-empty"],
+)
+def test_exactly_the_ref_cap_is_an_exact_count(extra: dict[str, object], label: str) -> None:
+    """``MAX_REFS`` refs and nothing that could hold a further one is a *total*.
+
+    Before the HIGH-1 fix the trailing-empty case reported 5001 and
+    ``refWalkTruncated`` true: the cap was full, the next node was an empty
+    mapping, and the marker fired on a subtree that could hide nothing.
+    """
+    document = _exactly_at_the_ref_cap(**extra)
+
+    index = _index(document)
+    metadata = _metadata(document)
+
+    assert len(index["externalRefs"]) == MAX_REFS
+    assert index["refWalkTruncations"] == [], f"with {label}, nothing was cut"
+    assert metadata["unresolvedRefCount"] == str(MAX_REFS)
+    assert metadata["refWalkTruncated"] == "false"
+
+
+def test_exactly_the_ref_cap_with_more_to_look_at_is_a_floor() -> None:
+    """The same boundary from the other side: a node that *could* hold a
+    reference is reached with the cap full, so the walk stopped without knowing,
+    and the count says so."""
+    document = _exactly_at_the_ref_cap(zz={"a": 1})
+
+    index = _index(document)
+    metadata = _metadata(document)
+
+    assert len(index["externalRefs"]) == MAX_REFS
+    assert [cut["reason"] for cut in index["refWalkTruncations"]] == ["refCount"]
+    assert metadata["unresolvedRefCount"] == str(MAX_REFS + 1)
+    assert metadata["refWalkTruncated"] == "true"
 
 
 def test_the_ref_cap_records_that_it_stopped_counting() -> None:
@@ -337,6 +480,50 @@ def test_a_document_within_both_caps_reports_an_exact_count() -> None:
     assert metadata["unresolvedRefCount"] == "2"
     assert metadata["refWalkTruncated"] == "false"
     assert _index(document)["refWalkTruncations"] == []
+
+
+def test_the_parser_metadata_stops_at_the_parser_boundary() -> None:
+    """A recorded decision, pinned so a future change has to face it.
+
+    ``unresolvedRefCount`` and ``refWalkTruncated`` are useful at the parser's
+    own boundary and go no further: ``_to_document`` carries ``structured`` into
+    an ``IngestedDocument`` that has no metadata field, and nothing in ``src/``
+    reads either value. Threading parser metadata through the ingestion port to
+    carry a value no consumer wants would widen that port for nothing, so the
+    downstream record is deliberately ``structured["_index"]`` --
+    ``refWalkTruncations`` is non-empty for exactly the documents the flag calls
+    truncated, which is the same fact in the form that survives.
+
+    If this goes red, the decision changed: say so in
+    ``docs/security/threat-model.md`` (T-7), which states it.
+    """
+    normalized = OpenApiParser().parse(
+        json.dumps({"openapi": "3.1.0", "deep": _buried(MAX_REF_DEPTH, {"a": 1})}).encode(),
+        media_type=OPENAPI,
+        anchor=ANCHOR,
+    )
+    assert normalized.metadata["refWalkTruncated"] == "true", (
+        "the parser must publish the flag for this fixture, or the assertion "
+        "below proves nothing by finding it absent downstream"
+    )
+
+    document = _to_document(
+        normalized,
+        path="openapi.yaml",
+        source_hash=ContentHash.of_text("raw bytes"),
+        parser=OpenApiParser(),
+        warnings=(),
+    )
+
+    assert not hasattr(document, "metadata"), (
+        "IngestedDocument grew a metadata field. If the parser's counts now "
+        "travel with it, T-7's statement that they stop at the parser boundary "
+        "is false and the threat model needs correcting in the same change."
+    )
+    index = cast("dict[str, Any]", document.structured)["_index"]
+    assert [cut["reason"] for cut in index["refWalkTruncations"]] == ["depth"], (
+        "the fact itself survives ingestion, in the field that does travel"
+    )
 
 
 def test_a_malformed_ipv6_ref_does_not_discard_the_document() -> None:
