@@ -6,4 +6,5 @@
 # Scopes: core plugin schemas docs ci packaging
 #
 # Every commit needs a DCO sign-off. `git commit -s` adds it.
+# Every commit also needs a cryptographic signature (config once; see CONTRIBUTING.md).
 # Refs ADR-NNNN when the change implements an architecture decision.

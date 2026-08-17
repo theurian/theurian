@@ -3,6 +3,11 @@
 Theurian requires a DCO sign-off on every commit. There is no CLA; see
 [ADR-0015](../adr/0015-dco-over-cla.md) for why.
 
+> **Sign-off is not the same as signing.** `main` also requires each commit to
+> carry a verified cryptographic *signature*, which `git commit -s` does not add.
+> Set that up once — see
+> [Signing your commits](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md#signing-your-commits).
+
 Sign off with `git commit -s`, which appends:
 
 ```text
