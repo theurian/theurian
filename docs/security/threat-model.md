@@ -707,12 +707,37 @@ asking "can someone burn this daemon's CPU" to find two places.
 
 **Controls:** external `$ref` targets recorded as unresolved, never fetched.
 `_external_refs` in `infrastructure/filesystem/parsers/openapi.py` records the
-target instead of following it — with its scheme where the form carries one, so a
-protocol-relative or UNC target records as `relative-file`, and a ref past either
-walk cap, `MAX_REFS` (5000) or `MAX_REF_DEPTH` (64), is dropped from the count
-entirely ([#203](https://github.com/theurian/theurian/issues/203),
-pre-Milestone 7). Recording is pinned by
-`test_external_refs_are_recorded_never_fetched`.
+target instead of following it, with the scheme a fetcher would use
+([#203](https://github.com/theurian/theurian/issues/203)). A reference carrying
+no scheme is classified by its structure rather than defaulted to a local one,
+because the scheme allowlist below will read this field and the default was the
+fail-open direction: `//evil.test/x.json` and `\\smb-host\share\x.json` both name
+a host and both used to record `relative-file`, while
+`C:\Windows\system32\x.json` recorded the scheme `c`, a drive letter `urlsplit`
+read as a scheme. RFC 3986 §4.2's forms now record as `protocol-relative`, `unc`,
+`absolute-file` and `relative-file`, and the split is structural — the mixed
+`/\host\x` that Windows and browsers accept lands on the network side without
+being enumerated. `NETWORK_PATH_SCHEMES` and `LOCAL_PATH_SCHEMES` in that module
+publish the two groups for the gate that will key on them.
+
+**The residual is a scheme that is faithful and still remote.**
+`file://evil.test/share/x.json` records `file`, correctly: the recording says
+what the reference *is*, and a gate that allows `file` at all must inspect the
+authority — as it must inspect the path of an equally local, equally unwanted
+`file:///etc/shadow`. Nothing decides that here.
+
+Both walk caps — `MAX_REFS` (5000) and `MAX_REF_DEPTH` (64) — still stop the
+walk, and each now records where it stopped, because a cut that left no trace
+reported the document as having *no* external references at all: a `$ref` nested
+past the depth cap gave `unresolvedRefCount` 0, which is the answer a reader
+acts on. One record per reason, so the marker cannot itself become the
+exhaustion vector the caps exist to prevent, and `refWalkTruncated` in the
+parser's metadata says whether the count is a total or a floor.
+
+Recording is pinned by `test_external_refs_are_recorded_never_fetched` and, for
+fidelity, by `tests/unit/test_ref_recording.py` — #203's repro table row by row,
+a generated property that a reference opening with two separators never records
+a local-file label, and each cap asserted on both sides of its boundary.
 
 *Future controls, not shipped:* the scheme allowlist, the rejection of
 private-network destinations, and the repository allowlist in

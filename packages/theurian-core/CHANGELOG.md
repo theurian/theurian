@@ -62,6 +62,52 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **An external `$ref` destined for a host no longer records as a local file,
+  and one past a walk cap no longer vanishes**
+  ([#203](https://github.com/theurian/theurian/issues/203)). `_external_refs`
+  recorded the scheme `urlsplit` found and defaulted to `relative-file` when it
+  found none, which put four measured shapes on the wrong side of the one field
+  Milestone 7's scheme allowlist (T-7, #129) will key on:
+
+  - `//evil.test/x.json` (a protocol-relative URL) and
+    `\\smb-host\share\x.json` (a UNC path) both name a host, and both recorded
+    `relative-file` — the label such a gate is most likely to accept, so the
+    error was in the fail-open direction;
+  - `C:\Windows\system32\x.json` recorded the scheme `c`, a drive letter
+    `urlsplit` reads as a scheme;
+  - a `$ref` nested past `MAX_REF_DEPTH` (64) was dropped in silence, and the
+    document reported `unresolvedRefCount` 0 — the same answer a document with
+    no external references gives;
+  - `http://[::1` made `urlsplit` raise `ValueError("Invalid IPv6 URL")` from
+    inside the recording branch. That exception escaped `parse`, so one
+    malformed reference discarded the *whole* document — every operation,
+    schema and other reference in it — with a message naming no remedy.
+
+  A reference carrying no scheme is now classified by its structure, following
+  RFC 3986 §4.2, into `protocol-relative`, `unc`, `absolute-file` or
+  `relative-file`; one that carries a scheme records that scheme, lowercased,
+  matched against RFC 3986 §3.1 rather than through `urllib.parse`. The split is
+  structural rather than a list of bad spellings, so the mixed `/\host\x` that
+  Windows and browsers accept lands on the network side without being
+  enumerated, and `x://host/y` keeps its one-letter *scheme* while
+  `C:\Windows\x` does not. `NETWORK_PATH_SCHEMES` and `LOCAL_PATH_SCHEMES`
+  publish the two groups for the gate that will read them.
+
+  **Both walk caps stay where they were** — `MAX_REFS` (5000) and
+  `MAX_REF_DEPTH` (64) — and each now records where it stopped, one record per
+  reason so the marker cannot become the exhaustion vector the caps exist to
+  prevent. The parser's metadata gains `refWalkTruncated`, which says whether
+  `unresolvedRefCount` is a total or a floor, and the index gains
+  `refWalkTruncations`. Nothing fetches, and the never-fetched pins in
+  `tests/unit/test_network_call_sites.py` are untouched.
+
+  **Not covered: a scheme that is faithful and still remote.**
+  `file://evil.test/share/x.json` records `file`, which is what it is. A gate
+  that allows `file` at all has to inspect the authority, exactly as it has to
+  inspect the path of an equally local `file:///etc/shadow`; the residual is
+  recorded in `docs/security/threat-model.md` (T-7) and pinned as a decision by
+  `test_a_file_url_with_a_host_records_its_scheme_and_leaves_the_authority_alone`.
+
 - **`--json` commands no longer crash with a raw traceback when a migration's
   content cannot be read**
   ([#205](https://github.com/theurian/theurian/issues/205)). Every CLI command
@@ -485,12 +531,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   them to construction.
 
 - **`$ref` recording fidelity stated rather than overclaimed.** T-7 said
-  `_external_refs` "records the target's scheme"; it records the scheme only
-  where the target's form carries one, so a protocol-relative (`//host/x.yaml`)
-  or UNC target records as `relative-file`, and a ref past either walk cap —
-  `MAX_REFS` (5000) or `MAX_REF_DEPTH` (64), both now named — is dropped from
-  the count entirely. Fixing the recording is
-  [#203](https://github.com/theurian/theurian/issues/203).
+  `_external_refs` "records the target's scheme"; it recorded the scheme only
+  where the target's form carried one, so a protocol-relative (`//host/x.yaml`)
+  or UNC target recorded as `relative-file`, and a ref past either walk cap —
+  `MAX_REFS` (5000) or `MAX_REF_DEPTH` (64), both now named — was dropped from
+  the count entirely. Stating it is what this entry did;
+  [#203](https://github.com/theurian/theurian/issues/203) then fixed the
+  recording itself, in the same release — see *Fixed* above, which is what T-7
+  now describes.
 
 - **How many `git` reads `theurian ingest` performs, measured rather than
   counted from the module.** `cli/context.py` defines four readers; the ingest
