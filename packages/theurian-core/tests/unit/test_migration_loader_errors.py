@@ -1,9 +1,10 @@
-"""``load_migrations``'s own raw-filesystem error translations (issue #205).
+"""``load_migrations``'s own raw-filesystem error translations (issues #205,
+#214, #217).
 
 Behavioural, not structural: every test here actually calls
 ``infrastructure/filesystem/migration_loader.py::load_migrations`` and
 asserts the specific ``TheurianError`` subclass it raises for a specific raw
-``OSError``/``ValueError``.
+``OSError``/``ValueError``/``yaml.YAMLError``.
 
 This replaces a prior test,
 ``test_the_loaders_read_errors_are_theurian_errors``
@@ -27,15 +28,19 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from theurian.cli.context import schema_root as real_schema_root
 from theurian.domain.errors import (
     MigrationContentUnreadableError,
+    MigrationError,
     MigrationFileUnreadableError,
     MigrationsDirectoryUnreadableError,
     SchemaUnreadableError,
 )
+from theurian.domain.migration import LoadedMigrations
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
+from theurian.security.yaml_loading import load_yaml_mapping
 
 pytestmark = pytest.mark.unit
 
@@ -200,6 +205,74 @@ def test_load_migrations_raises_migration_file_unreadable_error_for_an_unreadabl
     assert excinfo.value.remedy
 
 
+# -- MigrationError: a YAML syntax error propagating uncaught (issue #217) ----
+
+
+def test_load_migrations_raises_migration_error_for_a_malformed_migration_yaml(
+    project: Path,
+) -> None:
+    """``yaml.YAMLError`` is neither ``UnicodeDecodeError`` nor ``ValueError``
+    -- the two types ``_load_one``'s ``except`` clause around
+    ``load_yaml_mapping`` catches (``migration_loader.py``) -- so a migration
+    file with a YAML syntax error propagates uncaught through
+    ``resolve_context``: a raw Rich traceback under ``--json``, escaping
+    ``migrate validate``, ``migrate status``, and ``migrate apply`` alike.
+    Reproduced against the real CLI with ``id: [unclosed\\n  bad: {{{``.
+
+    The expected wrapped detail is derived from calling ``load_yaml_mapping``
+    on the identical text, rather than hardcoded, so this does not pin
+    PyYAML's own wording -- only that the fix's translation keeps naming
+    *which file* and *what went wrong parsing it*, the same contract
+    ``_load_one``'s adjacent ``ValueError`` branch (``f"{path.name}: {exc}"``)
+    already keeps for a document that parses but is not a mapping.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    malformed = "id: [unclosed\n  bad: {{{\n"
+    migration = migrations_dir / "01K1GGGGGG01234567890ABCDE-malformed.yaml"
+    migration.write_text(malformed)
+
+    with pytest.raises(yaml.YAMLError) as yaml_excinfo:
+        load_yaml_mapping(malformed)
+    expected_detail = str(yaml_excinfo.value)
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert migration.name in str(excinfo.value)
+    assert expected_detail in str(excinfo.value)
+
+
+def test_load_migrations_raises_migration_error_for_a_nul_byte_in_the_yaml_source(
+    project: Path,
+) -> None:
+    """The sibling crash: a raw NUL byte written directly into the YAML
+    *source* -- not the escaped ``\\0`` inside a ``contentFile`` string that
+    :class:`MigrationContentUnreadableError`'s own NUL-byte test above covers,
+    an unrelated call site one step later -- trips PyYAML's reader, not its
+    scanner: a ``yaml.reader.ReaderError``, also a ``yaml.YAMLError`` and also
+    uncaught by the same two-type ``except`` clause (issue #217). The byte
+    decodes as valid UTF-8 on its own, so this never reaches
+    ``UnicodeDecodeError`` in ``_load_one`` -- reaching ``load_yaml_mapping``
+    at all in the derivation below is itself the proof, since a
+    ``UnicodeDecodeError`` would raise one line earlier, at ``.decode("utf-8")``.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    raw = b"apiVersion: theurian.dev/v1\nid: \x00broken\n"
+    migration = migrations_dir / "01K1HHHHHH01234567890ABCDE-nul.yaml"
+    migration.write_bytes(raw)
+
+    text = raw.decode("utf-8")
+    with pytest.raises(yaml.YAMLError) as yaml_excinfo:
+        load_yaml_mapping(text)
+    expected_detail = str(yaml_excinfo.value)
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert migration.name in str(excinfo.value)
+    assert expected_detail in str(excinfo.value)
+
+
 # -- MigrationsDirectoryUnreadableError ---------------------------------------
 
 
@@ -210,9 +283,9 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_an_unr
     """``chmod 000`` on ``.theurian`` (``migrations_dir``'s parent), not on
     ``migrations_dir`` itself -- ``is_dir()`` needs only traversal permission
     on the parent to raise ``EACCES``; a directory `chmod 000`'d itself
-    leaves `is_dir()` succeeding, which is `glob`'s own, different, and
-    deliberately unfixed silent-empty-result case (documented at
-    `load_migrations`'s own call site, not this one).
+    leaves `is_dir()` succeeding, which is `glob`'s own, different,
+    previously-unfixed silent-empty-result case, closed by the tests below
+    (issue #214).
     """
     migrations_dir = project / ".theurian" / "migrations"
     (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
@@ -226,6 +299,126 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_an_unr
 
     assert "migrations" in str(excinfo.value)
     assert excinfo.value.remedy
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+@pytest.mark.parametrize("mode", [0o000, 0o111], ids=["000", "111"])
+def test_load_migrations_raises_migrations_directory_unreadable_error_for_the_directory_itself(
+    project: Path, mode: int
+) -> None:
+    """Issue #214: ``chmod``'d on ``migrations_dir`` *itself*, not its parent
+    (the sibling case above). ``is_dir()`` still succeeds under either mode --
+    stat needs only traversal permission on ancestors, not on the target
+    itself -- so the existing ``OSError`` conversion around ``is_dir()``
+    never runs. The failure instead happens inside ``pathlib.Path.glob``'s
+    own ``scandir``, which catches the ``PermissionError`` it raises
+    internally and yields nothing: today this returns an *empty*
+    ``LoadedMigrations`` rather than raising, so ``migrate validate --json``
+    reports ``valid: true`` with ``migrationCount: 0`` for a project whose
+    migrations were never read, and ``migrate apply --json`` goes on to
+    create a state database for that empty set. Measured directly against
+    ``load_migrations`` for both modes; 0o111 fails silently the identical way.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
+    migrations_dir.chmod(mode)
+    try:
+        with pytest.raises(MigrationsDirectoryUnreadableError) as excinfo:
+            load_migrations(project, migrations_dir, real_schema_root())
+    finally:
+        migrations_dir.chmod(0o700)
+
+    relative = str(migrations_dir.relative_to(project))
+    assert str(excinfo.value).startswith(f"{relative!r} could not be listed:")
+    assert excinfo.value.remedy == (
+        f"Confirm this user has read and execute permission on {relative!r} "
+        f"and its parent directories, then retry."
+    )
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_load_migrations_raises_migrations_directory_unreadable_error_when_entries_are_unstattable(
+    project: Path,
+) -> None:
+    """A third member of the same class, found while measuring #214 -- named
+    by neither issue. ``chmod 444`` leaves the directory *readable* (so
+    ``scandir`` can list its entries) but not *traversable*, so
+    ``Path.is_file()`` in the same comprehension that filters ``glob``'s
+    results (``paths = sorted(p for p in migrations_dir.glob("*.yaml") if
+    p.is_file())``, ``migration_loader.py``) needs to stat each entry and
+    raises ``EACCES`` -- and unlike the silent ``scandir`` failure above,
+    pathlib's glob selector does not catch that one: it escapes as a raw
+    ``PermissionError``, a raw Rich traceback under ``--json``, exit 1.
+    Measured directly against ``load_migrations``: mode 444 (and 400) raise;
+    mode 500 (execute restored) does not.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
+    migrations_dir.chmod(0o444)
+    try:
+        with pytest.raises(MigrationsDirectoryUnreadableError) as excinfo:
+            load_migrations(project, migrations_dir, real_schema_root())
+    finally:
+        migrations_dir.chmod(0o700)
+
+    relative = str(migrations_dir.relative_to(project))
+    assert str(excinfo.value).startswith(f"{relative!r} could not be listed:")
+    assert excinfo.value.remedy == (
+        f"Confirm this user has read and execute permission on {relative!r} "
+        f"and its parent directories, then retry."
+    )
+
+
+# -- issue #214 must not overreach: the legitimate "zero migrations" cases ----
+
+
+def test_load_migrations_on_an_ordinarily_readable_empty_directory_returns_an_empty_set(
+    project: Path,
+) -> None:
+    """Pins the member of the "zero migrations" family the #214 fix must
+    leave alone: an existing, ordinarily-readable, genuinely empty
+    ``migrations_dir`` is not a refusal, it is ``LoadedMigrations.empty()`` --
+    the same value ``load_migrations`` already returns when ``migrations_dir``
+    does not exist at all (``if not is_directory: return
+    LoadedMigrations.empty()``, ``migration_loader.py``). A fix that makes
+    *any* zero-migration read raise would pass every test above it in this
+    file and still be wrong.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+
+    assert loaded == LoadedMigrations.empty()
+
+
+def test_load_migrations_matches_pathlib_globs_own_dotfile_behaviour_today(
+    project: Path,
+) -> None:
+    """Enumeration parity pin -- deliberately the one green test in this batch.
+
+    Measured directly against CPython 3.13's stdlib, not assumed:
+    ``pathlib.Path.glob("*.yaml")`` -- unlike ``glob.glob()``, which hides a
+    leading dot by default -- does **not** treat ``.hidden.yaml`` as hidden,
+    so it is loaded today exactly like any other ``*.yaml`` sibling
+    (``sorted(Path(tmp).glob("*.yaml"))`` on CPython 3.13.11 returns both).
+    Whatever enumeration call the #214 fix substitutes for ``Path.glob``
+    (needed because ``glob`` itself swallows the very ``PermissionError``
+    that fix exists to surface -- see the tests above) must keep matching
+    this file too, or the fix silently narrows which migrations a project
+    has, in either direction, with nothing here to catch it.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
+    dotfile_migration_id = "01K1DDDDDD01234567890ABCDE"
+    dotfile_migration = _VALID_MIGRATION.replace(
+        "01K1KKKKKK01234567890ABCDE", dotfile_migration_id
+    ).replace("architecture.auth-policy", "architecture.dotfile-policy")
+    (migrations_dir / ".hidden.yaml").write_text(dotfile_migration)
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+
+    ids = {str(m.migration_id) for m in loaded.migration_set}
+    assert ids == {"01K1KKKKKK01234567890ABCDE", dotfile_migration_id}
 
 
 # -- SchemaUnreadableError -----------------------------------------------------

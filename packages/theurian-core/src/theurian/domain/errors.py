@@ -185,7 +185,7 @@ class MigrationFileUnreadableError(MigrationError):
 
     :class:`MigrationContentUnreadableError`'s sibling for the *other* raw read
     on the same load path -- the migration YAML itself, discovered by
-    ``migrations_dir.glob("*.yaml")`` and then opened in
+    ``migrations_dir.iterdir()`` and then opened in
     ``infrastructure/filesystem/migration_loader.py::_load_one``. Deliberately
     not the same class: there is no "resolves relative to" rule to restate
     here, because a migration file's own path is never author-chosen the way
@@ -208,18 +208,38 @@ class MigrationFileUnreadableError(MigrationError):
 
 
 class MigrationsDirectoryUnreadableError(MigrationError):
-    """``.theurian/migrations/`` itself could not be probed or listed (issue #205).
+    """``.theurian/migrations/`` itself could not be probed or listed (issues
+    #205 and #214).
 
-    ``pathlib.Path.is_dir()`` in this interpreter swallows ``ENOENT``/
-    ``ENOTDIR``/``ELOOP`` -- the well-formed "not a directory" case
-    ``load_migrations`` already answers by returning an empty migration set --
-    but re-raises ``EACCES``. That escaped every command that resolves a
-    project (`init`, `project register`, `project status`, and every one of
-    `_require_project`'s seven callers), `project status` included, even
-    though that command's whole contract is to answer at exit 0 rather than
-    crash. Measured against the real CLI: `chmod 000 .theurian` (also
-    `chmod 400`, missing only the execute bit) crashed all of them with a raw
-    `PermissionError` Rich traceback.
+    Three raw-IO shapes converge on this one class:
+
+    1. **A parent denies traversal (#205).** ``pathlib.Path.is_dir()`` in this
+       interpreter swallows ``ENOENT``/``ENOTDIR``/``ELOOP`` -- the well-formed
+       "not a directory" case ``load_migrations`` already answers by returning
+       an empty migration set -- but re-raises ``EACCES``. That escaped every
+       command that resolves a project (`init`, `project register`, `project
+       status`, and every one of `_require_project`'s seven callers), `project
+       status` included, even though that command's whole contract is to
+       answer at exit 0 rather than crash. Measured against the real CLI:
+       `chmod 000 .theurian` (also `chmod 400`, missing only the execute bit)
+       crashed all of them with a raw `PermissionError` Rich traceback.
+    2. **The directory itself denies listing (#214).** `chmod 000`/`0o111` on
+       `migrations_dir` itself -- not its parent -- leaves `is_dir()`
+       succeeding, since stat needs no permission on the target, only its
+       ancestors. `pathlib.Path.glob("*.yaml")`'s own `scandir` used to catch
+       the resulting `PermissionError` internally and yield nothing, so
+       `migrate validate --json` reported `valid: true` with
+       `migrationCount: 0` for a project whose migrations were never read, and
+       `migrate apply --json` went on to create a state database for that
+       empty set.
+    3. **The directory lists but denies stat (#214).** `chmod 0o444` leaves
+       `migrations_dir` readable -- `scandir` can list its entries -- but not
+       traversable, so stat-ing each entry to filter to regular files raises
+       `PermissionError` too, and unlike case 2 that one was never caught: it
+       escaped as a raw Rich traceback.
+
+    All three are now raised from one enumeration site in `load_migrations`,
+    wrapping both the directory open and the per-entry stat in a single `try`.
     """
 
     def __init__(self, migrations_path: str, reason: str) -> None:

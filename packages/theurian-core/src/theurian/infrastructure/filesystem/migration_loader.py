@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
+import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
@@ -145,23 +146,32 @@ def load_migrations(
     if not is_directory:
         return LoadedMigrations.empty()
 
-    # `glob` is a *different* raw-IO call than `is_dir` above, and does not
-    # belong to the class this file sweeps: `chmod 000` on `migrations_dir`
-    # *itself* (rather than its parent, above) leaves `is_dir()` on it
-    # succeeding -- stat needs no permission on the target, only on its
-    # ancestors -- while `pathlib.Path.glob` catches the `PermissionError` its
-    # own `scandir` hits internally and yields nothing, so this returns an
-    # *empty* migration set rather than crashing. `migrate validate --json`
-    # then reports `valid: true` with `migrationCount: 0` for a project whose
-    # migrations were never read. That is a different, quieter defect than the
-    # Rich-traceback crash this file's `MigrationFileUnreadableError`/
-    # `MigrationContentUnreadableError`/`MigrationsDirectoryUnreadableError`
-    # sites close, and sweeping it into a bare-`OSError` conversion here would
-    # do nothing, because there is no `OSError` to catch -- filed separately.
+    # Enumeration is `iterdir()`-based rather than `glob("*.yaml")`, and both
+    # the directory listing and the per-entry `is_file()` stat happen inside
+    # this one `try`, so that every raw-IO failure the enumeration can hit
+    # surfaces as `MigrationsDirectoryUnreadableError` rather than one of two
+    # divergent failure modes (issue #214): `chmod 000`/`0o111` on
+    # `migrations_dir` *itself* (rather than its parent, above -- `is_dir()`
+    # needs no permission on the target, only on its ancestors) makes
+    # `os.scandir` raise `PermissionError` when the listing starts, and
+    # `chmod 0o444` leaves the directory *listable* but not *traversable*, so
+    # `is_file()`'s own stat on each entry raises `PermissionError` instead.
+    # `pathlib.Path.glob` caught the first of those internally and yielded
+    # nothing -- a silent `migrationCount: 0` false positive -- while the
+    # second escaped as a raw traceback; both are one class now.
     #
     # Sorted so a failure reports the first file in a stable order rather than
-    # whichever the filesystem happened to yield first.
-    paths = sorted(p for p in migrations_dir.glob("*.yaml") if p.is_file())
+    # whichever the filesystem happened to yield first. `iterdir()` does not
+    # filter dotfiles (unlike `glob.glob()`), matching `Path.glob("*.yaml")`'s
+    # own measured behaviour that this enumeration replaces.
+    try:
+        paths = sorted(
+            p for p in migrations_dir.iterdir() if p.name.endswith(".yaml") and p.is_file()
+        )
+    except OSError as exc:
+        raise MigrationsDirectoryUnreadableError(
+            str(migrations_dir.relative_to(project_root)), exc.strerror or str(exc)
+        ) from exc
     if len(paths) > MAX_MIGRATIONS:
         raise MigrationError(f"{len(paths)} migration files exceeds the limit of {MAX_MIGRATIONS}")
 
@@ -204,6 +214,14 @@ def _load_one(
     except UnicodeDecodeError as exc:
         raise MigrationError(f"{path.name} is not valid UTF-8") from exc
     except ValueError as exc:
+        raise MigrationError(f"{path.name}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        # `load_yaml_mapping`'s own docstring names this as the type a parse
+        # failure raises -- a syntax error via the scanner, or an embedded NUL
+        # byte via the reader (`yaml.reader.ReaderError`, also a `YAMLError`
+        # subclass). Neither is a `UnicodeDecodeError` nor a `ValueError`, so
+        # both escaped the two clauses above uncaught until now, propagating
+        # as a raw Rich traceback through `resolve_context` (issue #217).
         raise MigrationError(f"{path.name}: {exc}") from exc
 
     try:
