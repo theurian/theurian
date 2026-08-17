@@ -371,9 +371,18 @@ and the outcomes must still exist as data
 
 `system.capabilities` exists so a client can degrade per feature rather than
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
-everything else should still work. The `capabilities` object's flags are the
-supported contract a client may rely on; the response's other top-level fields
-(`version`, `protocolVersion`, `schemaVersion`, `note`) are informational.
+everything else should still work.
+
+The response's fields serve different roles, not one uniform contract.
+`capabilities` is what a client degrades against, one feature at a time.
+`version` and `protocolVersion` identify the build and feed the CP-6
+compatibility gate in
+[plugin-core-compatibility.md](plugin-core-compatibility.md) — not optional to
+check. For a client that only calls MCP tools, this is the sole place
+`protocolVersion` is readable: liveness is served at the `/health` HTTP route,
+outside the MCP tool surface, with no callable-tool equivalent. `schemaVersion`
+reports the canonical store's schema version. `note` is prose, not a field a
+client parses.
 
 ### `project.list`
 

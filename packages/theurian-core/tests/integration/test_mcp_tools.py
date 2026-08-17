@@ -49,6 +49,10 @@ pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
+#: tests/integration/test_mcp_tools.py -> integration -> tests -> theurian-core
+#: -> packages -> repo root, matching test_wire_contract.py's own computation.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
 
 class _NothingWithheld:
     """A `Visibility` that withholds nothing.
@@ -1615,9 +1619,18 @@ async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_
     it was produced in exactly one place and consumed nowhere in this
     repository, `docs/protocol/mcp-tools.md` never defined what it meant, and
     it had drifted stale against the README's own milestone claim since
-    Milestone 6 closed. The `capabilities` booleans (and `knowledgeSearch`)
-    are the supported, tested contract; a client that wants build progress
-    reads `version`.
+    Milestone 6 closed. The response's other fields keep their own roles
+    instead of filling that gap: `capabilities` (with `knowledgeSearch`) is
+    the supported, tested contract a client degrades against; `version` and
+    `protocolVersion` feed the CP-6 compatibility gate
+    (`docs/protocol/plugin-core-compatibility.md`) rather than reporting
+    progress -- a milestone number, if a client wants one, lives in the
+    README roadmap, not in any wire field.
+
+    This also ties the doc to the pin: the paragraph in
+    `docs/protocol/mcp-tools.md` naming each of these fields' roles is read
+    below and checked against this same key set, so a field added to one
+    without the other fails here too.
     """
     result = await _call(registry, "system.capabilities")
 
@@ -1631,9 +1644,24 @@ async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_
         f"system.capabilities returned top-level keys {sorted(result)}. A "
         f"field a client can see is part of the wire contract, so an "
         f"unenumerated one is a promise nothing holds the server to: decide "
-        f"what it means, document it in docs/protocol/mcp-tools.md, then add "
-        f"it here."
+        f"what it means, document its role in the `system.capabilities` "
+        f'paragraph under "Project and system" in '
+        f"docs/protocol/mcp-tools.md, then add it here."
     )
+
+    doc_text = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
+    start = doc_text.index("`system.capabilities` exists so a client can degrade")
+    end = doc_text.index("### `project.list`", start)
+    field_role_paragraph = doc_text[start:end]
+
+    for key in result:
+        assert f"`{key}`" in field_role_paragraph, (
+            f"docs/protocol/mcp-tools.md's `system.capabilities` paragraph "
+            f"does not name `{key}` (backtick-quoted). That paragraph is the "
+            f"prose enumeration of this response's top-level fields, so it "
+            f"drifts silently from the key set above unless something reads "
+            f"both -- name {key}'s role there."
+        )
 
 
 # -- Result shape ----------------------------------------------------------
