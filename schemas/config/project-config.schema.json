@@ -149,7 +149,8 @@
           "type": "integer",
           "minimum": 1024,
           "maximum": 67108864,
-          "default": 8388608
+          "default": 8388608,
+          "description": "The default documents the shipped limit rather than setting it: `MAX_SOURCE_FILE_BYTES` in `security/paths.py` is 8388608 and is what ingestion enforces (SEC-8). Nothing reads this key, so changing the value here has no effect on that limit (https://github.com/theurian/theurian/issues/129)."
         }
       }
     }

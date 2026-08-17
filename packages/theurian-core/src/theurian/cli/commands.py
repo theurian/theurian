@@ -1515,8 +1515,10 @@ class _Resolver:
 def ingest_command(as_json: JsonOption = False) -> None:
     """Parse and normalize this project's knowledge and specification sources.
 
-    Ingestion stores *evidence*, never approved knowledge. Promotion still runs
-    through a migration and a human (ADR-0013).
+    Ingestion records a content-hash manifest and stores no body: parsed
+    documents live in memory for the run, and the only file written is
+    ``.theurian/knowledge/cache/ingestion.json``. It never writes approved
+    knowledge; promotion runs through a migration and a human (ADR-0013).
 
     A parse failure fails one document, not the run: a malformed file among two
     hundred must not make the other 199 unavailable. The exit code reflects

@@ -534,11 +534,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   (ADR-0013 — no registered MCP tool can reach a canonical write, and `theurian
   propose accept` moves files without approving), and supersede or retire with
   Milestone 6's withdrawal→purge trigger for removing a secret after the fact.
-  The residual is written where a reader meets it: a secret in a document reaches
-  the index unless a human notices it in the migration diff. The repository-side
+  Both entries record what neither control does: nothing enforces the merge —
+  `migrate apply` applies whatever is in `.theurian/migrations/`, committed or
+  not.
+
+  **The residual names the boundary the exposure actually starts at.** It is the
+  canonical write, not the index: a secret becomes readable through
+  `knowledge.search` and `knowledge.get` the moment `theurian migrate apply`
+  writes it, before any `index build`, because search degrades to a canonical
+  substring scan when no index can answer (`mcp/search.py`). The repository-side
   `Secret scan` job (OSS-9, gitleaks) is a different control and is unchanged —
   it scans this repository's Git history in CI and was never in a user project's
   ingestion path.
+
+- **`theurian ingest`'s docstring said it "stores evidence"**, which overstates
+  what the command persists: `IngestionService` has no write path, parsed bodies
+  live in memory for the run, and the only file written is the content-hash
+  manifest `.theurian/knowledge/cache/ingestion.json`. The docstring and T-15's
+  reference to it now say so. `schemas/config/project-config.schema.json`'s
+  `security.maxSourceFileBytes` gains the same treatment its annotated siblings
+  have: its default documents the shipped `MAX_SOURCE_FILE_BYTES` in
+  `security/paths.py` rather than setting it, and nothing reads the key (#129).
 
 ## [0.1.0.dev4] - 2026-08-16
 
