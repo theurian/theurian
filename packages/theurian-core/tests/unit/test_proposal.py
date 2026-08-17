@@ -119,6 +119,18 @@ def test_a_slug_is_bounded_and_never_ends_in_a_separator() -> None:
     assert not slug.endswith("-")
 
 
+def test_the_slug_bound_is_forty_eight() -> None:
+    """Pin the bound against itself, so a mutation to ``MAX_SLUG_LENGTH`` fails.
+
+    ``len(slug) <= MAX_SLUG_LENGTH`` above passes for any *larger* bound, so it
+    does not pin the value. A long, all-truncatable title produces a slug of
+    exactly the bound, which is what makes a change to it observable.
+    """
+    assert MAX_SLUG_LENGTH == 48
+    slug = kebab_slug("a" * 200, fallback="fallback")
+    assert len(slug) == 48
+
+
 def test_a_title_and_a_fallback_that_both_slugify_to_nothing_is_refused() -> None:
     with pytest.raises(InvariantViolationError, match="slug"):
         kebab_slug("署名", fallback="トークン")

@@ -386,10 +386,13 @@ class ProposalService:
         directory = self._require_directory(proposal_id)
         migration_file = self._require_migration(directory, proposal_id)
         migration_bytes = self._read_within_project(migration_file)
-        destination = self._paths.migrations / migration_file.name
-        self._refuse_if_migration_present(destination)
-
         document = _parse_migration(migration_bytes, migration_file)
+        destination = self._paths.migrations / migration_file.name
+        # "Already in place" is the harder stop and is reported first; the
+        # filename/id agreement is checked next, on a name nothing holds.
+        self._refuse_if_migration_present(destination)
+        _require_filename_matches_id(migration_file, document)
+
         moves = tuple(self._body_moves(directory, document))
         self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
 
@@ -678,6 +681,28 @@ class _BodyMove:
 
 def _last_segment(item_id: ItemId) -> str:
     return item_id.value.rpartition(".")[2]
+
+
+def _require_filename_matches_id(migration_file: Path, document: Mapping[str, object]) -> None:
+    """Refuse a migration whose filename ULID is not its own ``id``.
+
+    ``.theurian/migrations/`` names files ``<id>-<slug>.yaml`` and the ULID is
+    authoritative (``migrations.md``), but the loader keys migrations by the
+    *inner* ``id``. A file named for one ULID carrying another lands here as its
+    filename and is then read by the loader as its inner id -- so the "already in
+    place" check (which sees the filename) misses a real collision on the inner
+    id, and the set fails downstream with a duplicate-id error. The two must
+    agree, and ``_require_migration`` has already proved the name is
+    ``<ulid>-<slug>.yaml``.
+    """
+    inner = document.get("id")
+    prefix = migration_file.name.split("-", 1)[0]
+    if not isinstance(inner, str) or inner != prefix:
+        raise ProposalError(
+            f"The migration file is named for {prefix} but its id is {inner!r}; the "
+            "filename ULID must equal the migration id.",
+            remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
+        )
 
 
 def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:

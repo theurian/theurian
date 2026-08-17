@@ -123,13 +123,15 @@ def _tree(root: Path) -> set[str]:
 def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str) -> str:
     """A migration naming two bodies whose leaf names collide (`notes.<rev>.md`).
 
-    Only what ``accept`` reads -- the ``contentFile`` of each operation -- has to
-    be present; ``accept`` does not validate, so the metadata a real migration
-    carries is left out on purpose.
+    Only what ``accept`` reads -- the ``contentFile`` of each operation and the
+    ``id`` -- has to be present; ``accept`` does not validate, so the metadata a
+    real migration carries is left out on purpose. The ``id`` is quoted because
+    the seeded generator's ULIDs are all digits, which YAML would otherwise
+    coerce to an int (a real ULID contains letters and needs no quoting).
     """
     return (
         "apiVersion: theurian.dev/v1\n"
-        f"id: {migration_id}\n"
+        f"id: '{migration_id}'\n"
         "createdAt: '2026-08-02T12:00:00+00:00'\n"
         "author: a@example.com\n"
         "operations:\n"
@@ -184,6 +186,49 @@ def test_generation_writes_only_under_the_proposal_directory(
     assert written, "the draft wrote nothing at all"
     assert all(path.startswith(f"{directory}/") for path in written), written
     assert directory.startswith(".theurian/proposals/")
+
+
+def test_generation_modifies_no_file_outside_the_proposal_directory(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A new-file diff cannot see a *modified* existing file (adversarial b1).
+
+    ``_tree`` returns the set of paths, so a draft that overwrote a file already
+    present -- a knowledge body, another proposal's migration -- would leave the
+    set unchanged and pass the test above. This snapshots content, so a
+    modification outside the proposal directory is caught even when no path is
+    added or removed.
+    """
+    seeded = paths.knowledge / "architecture" / "retry-policy.md"
+    seeded.parent.mkdir(parents=True, exist_ok=True)
+    seeded.write_text("pre-existing, must be untouched\n", encoding="utf-8")
+    outside = {
+        path: path.read_bytes()
+        for path in paths.root.rglob("*")
+        if path.is_file() and ".theurian/proposals/" not in path.relative_to(paths.root).as_posix()
+    }
+
+    service.draft(_request())
+
+    assert {p: p.read_bytes() for p in outside} == outside, "a file outside the proposal changed"
+
+
+def test_a_generated_revision_is_status_approved_and_carries_no_trust_level(
+    service: ProposalService,
+) -> None:
+    """m07/b24: ``status: approved`` is fixed, and ``trustLevel`` is never smuggled in.
+
+    ``status: approved`` is right even though nobody has approved it: the file
+    applies only after a human has merged it, and ``draft`` would keep the
+    knowledge out of the default index. ``trustLevel: reviewed`` on an agent's
+    draft, by contrast, would claim a review that has not happened -- so the
+    generator omits ``trustLevel`` entirely and leaves it to a reviewer.
+    """
+    metadata = _upsert(service.draft(_request()).migration_file)["metadata"]
+    assert isinstance(metadata, dict)
+
+    assert metadata["status"] == "approved"
+    assert "trustLevel" not in metadata
 
 
 def test_a_generated_migration_validates_against_the_published_schema(
@@ -487,6 +532,99 @@ def test_accept_refuses_to_land_a_migration_on_an_existing_name(
     assert drafted.migration_file.is_file(), "a refused acceptance moves nothing"
     assert drafted.body_file.is_file()
     assert not drafted.body_destination.exists()
+
+
+def test_accept_moves_the_body_out_of_the_proposal_directory(
+    service: ProposalService,
+) -> None:
+    """m10: the body is moved, not copied -- the source is gone after a move.
+
+    A copy would leave the body in the proposal directory *and* under
+    ``knowledge/``, and a later index build would ingest a stray copy no
+    migration references. Asserting the source is gone is what a
+    ``copy``-instead-of-``move`` mutation fails.
+    """
+    drafted = service.draft(_request())
+
+    service.accept(drafted.proposal_id)
+
+    assert not drafted.body_file.exists()
+    assert not drafted.migration_file.exists()
+    assert drafted.body_destination.is_file()
+
+
+def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m05: the O_EXCL create, not the pre-check, is the real race guard.
+
+    ``test_accept_refuses_to_land_a_migration_on_an_existing_name`` is caught by
+    the pre-check that runs before any write. That leaves the O_EXCL create --
+    the guard for a name that appears in the window *after* the pre-check --
+    unexercised, so a mutation to ``O_TRUNC`` survives it. Here the pre-check is
+    neutered so the create is what has to refuse, and the bytes already at the
+    name must survive.
+    """
+    drafted = service.draft(_request())
+    landed = paths.migrations / drafted.migration_file.name
+
+    def _no_precheck(_self: ProposalService, _destination: Path) -> None:
+        return None
+
+    monkeypatch.setattr(ProposalService, "_refuse_if_migration_present", _no_precheck)
+    landed.write_text("EXISTING\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="appeared"):
+        service.accept(drafted.proposal_id)
+
+    assert landed.read_text() == "EXISTING\n", "O_EXCL must not overwrite the existing migration"
+    assert not drafted.body_destination.exists(), "the body write is rolled back"
+
+
+def test_the_write_primitive_refuses_to_follow_a_destination_symlink(tmp_path: Path) -> None:
+    """m09: ``_write_file`` never follows a symlink at its destination (O_NOFOLLOW).
+
+    A steady-state symlink at a body's ``contentFile`` is already handled before
+    the write -- ``_destination_of`` resolves it, so it either escapes
+    ``knowledge/`` (refused) or resolves to a name the proposal never authored
+    (refused). ``O_NOFOLLOW`` is the defence for the race that check cannot cover:
+    a symlink planted at the final destination between the resolve and the write.
+    Pinned on the primitive, where it is deterministic: without ``O_NOFOLLOW`` the
+    write follows the link and clobbers its target.
+    """
+    from theurian.application.proposal_service import _write_file
+
+    target = tmp_path / "keep.md"
+    target.write_text("do not clobber me\n", encoding="utf-8")
+    link = tmp_path / "link.md"
+    link.symlink_to(target)
+
+    with pytest.raises(OSError):  # ELOOP from O_NOFOLLOW
+        _write_file(link, b"clobber", exclusive=False)
+
+    assert target.read_text() == "do not clobber me\n"
+
+
+def test_accept_refuses_a_filename_that_does_not_match_the_inner_id(
+    service: ProposalService,
+) -> None:
+    """A file named for one ULID carrying another is refused.
+
+    The loader keys migrations by the inner ``id`` while the accept-time "already
+    in place" check sees the filename, so a mismatch slips a real id collision
+    past that check and fails downstream as a duplicate id. The two must agree.
+    """
+    drafted = service.draft(_request())
+    document = drafted.migration_file.read_text(encoding="utf-8")
+    # Replace the id's value in place, leaving whatever quoting the serialiser
+    # chose -- the value is the first place it appears, before the revision id.
+    drafted.migration_file.write_text(
+        document.replace(drafted.migration_id.value, "01K1AAAAAA01234567890ABCDE", 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProposalError, match="filename ULID must equal"):
+        service.accept(drafted.proposal_id)
 
 
 def test_accept_replaces_an_unpinned_file_at_the_destination(
