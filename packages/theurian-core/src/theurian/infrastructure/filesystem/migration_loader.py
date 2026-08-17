@@ -19,6 +19,8 @@ from typing import Any, Final
 import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
+from referencing import Registry
+from referencing.exceptions import NoSuchResource, Unresolvable, Unretrievable
 
 from theurian.domain.enums import (
     KnowledgeKind,
@@ -202,7 +204,7 @@ def _validator(schema_root: Path) -> Draft202012Validator:
     except RecursionError as exc:
         reason = "the schema nests past check_schema's safe recursion depth"
         raise SchemaUnreadableError(str(schema_path), reason) from exc
-    return Draft202012Validator(schema)
+    return Draft202012Validator(schema, registry=Registry())
 
 
 def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
@@ -225,6 +227,14 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
     except ValidationError as exc:
         location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
         raise MigrationError(f"invalid migration at {location}: {exc.message}") from exc
+    except (Unresolvable, NoSuchResource, Unretrievable) as exc:
+        raise SchemaUnreadableError(
+            str(schema_root / _SCHEMA_RELATIVE),
+            f"unresolvable schema reference: {exc}",
+        ) from exc
+    except RecursionError as exc:
+        reason = "the schema nests past safe recursion depth during validation"
+        raise SchemaUnreadableError(str(schema_root / _SCHEMA_RELATIVE), reason) from exc
 
 
 def load_migrations(
@@ -357,7 +367,9 @@ def load_migrations(
     content_by_hash: dict[str, str] = {}
 
     for path in paths:
-        migration = _load_one(path, project_root, migrations_dir, validator, content_by_hash)
+        migration = _load_one(
+            path, project_root, migrations_dir, validator, content_by_hash, schema_root
+        )
         migrations.append(migration)
 
     return LoadedMigrations(
@@ -512,12 +524,13 @@ def _entry_is_migration_file(entry: Path, project_root: Path) -> bool:
     return stat.S_ISREG(entry_stat.st_mode)
 
 
-def _load_one(
+def _load_one(  # noqa: PLR0913, PLR0917
     path: Path,
     project_root: Path,
     migrations_dir: Path,
     validator: Draft202012Validator,
     content_by_hash: dict[str, str],
+    schema_root: Path,
 ) -> Migration:
     try:
         raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
@@ -551,6 +564,14 @@ def _load_one(
     except ValidationError as exc:
         location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
         raise MigrationError(f"{path.name} is invalid at {location}: {exc.message}") from exc
+    except (Unresolvable, NoSuchResource, Unretrievable) as exc:
+        raise SchemaUnreadableError(
+            str(schema_root / _SCHEMA_RELATIVE),
+            f"unresolvable schema reference: {exc}",
+        ) from exc
+    except RecursionError as exc:
+        reason = "the schema nests past safe recursion depth during validation"
+        raise SchemaUnreadableError(str(schema_root / _SCHEMA_RELATIVE), reason) from exc
 
     if document["apiVersion"] != MIGRATION_API_VERSION:
         raise MigrationError(

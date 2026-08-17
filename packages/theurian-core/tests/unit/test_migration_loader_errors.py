@@ -43,7 +43,11 @@ from theurian.domain.errors import (
     SchemaUnreadableError,
 )
 from theurian.domain.migration import LoadedMigrations
-from theurian.infrastructure.filesystem.migration_loader import _validator, load_migrations
+from theurian.infrastructure.filesystem.migration_loader import (
+    _validator,
+    load_migrations,
+    validate_migration_document,
+)
 from theurian.security.yaml_loading import load_yaml_mapping
 
 pytestmark = pytest.mark.unit
@@ -1753,5 +1757,22 @@ def test_validator_accepts_the_vacuous_empty_object_schema(tmp_path: Path) -> No
     try:
         validator = _validator(schema_dir)
         validator.validate({"anything": "goes"})
+    finally:
+        _validator.cache_clear()
+
+
+def test_validate_translates_unresolvable_external_ref_to_schema_unreadable_error(
+    tmp_path: Path,
+) -> None:
+    """Unresolvable external refs fail closed and translate to SchemaUnreadableError (#235)."""
+    _validator.cache_clear()
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text('{"$ref": "http://127.0.0.1:9999/evil.json"}')
+
+    try:
+        with pytest.raises(SchemaUnreadableError, match="unresolvable schema reference"):
+            validate_migration_document({"anything": "goes"}, schema_dir)
     finally:
         _validator.cache_clear()
