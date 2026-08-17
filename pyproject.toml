@@ -15,7 +15,7 @@ dev = [
     #
     # A development dependency only. It is absent from the published wheel's
     # `dependencies` and from every extra, so nothing a user installs gains it.
-    "hypothesis==6.165.2",
+    "hypothesis==6.165.7",
     "mypy==2.3.0",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
