@@ -126,7 +126,26 @@ def _read_failure_remedy(
     any syscall runs -- and for that case ``missing_or_wrong_text`` is exactly
     right: a NUL byte in a path is a malformed-path problem, the same family as
     "this path does not exist."
+
+    ``ELOOP`` gets its own branch (round three), the file-level counterpart of
+    :func:`_directory_unreadable_remedy`'s identical one: a `chmod` fixes a
+    permission problem but does nothing about a symlink chain, so folding it
+    into the ``EACCES``/``EPERM`` branch would send a reader to check a
+    permission bit that was never wrong. A *dangling* symlink -- resolvable,
+    but pointing at nothing -- has no branch of its own: it raises ``ENOENT``,
+    which matches none of ``ELOOP``/``EACCES``/``EPERM``/``EISDIR`` above, so
+    it falls through to the final ``return missing_or_wrong_text`` -- the same
+    fallback every plain missing-file case already uses. What differs is only
+    *which* text that parameter carries:
+    :class:`MigrationFileUnreadableError`'s own ``missing_or_wrong_text``
+    keyword (not a separate ``remedy`` keyword, which briefly existed on that
+    class and was removed -- see its own docstring) lets its caller substitute
+    "restore the target or remove the link" for the generic "confirm this
+    still exists" text this function's default would otherwise return,
+    without this function needing a branch of its own for it.
     """
+    if errno_value == _errno.ELOOP:
+        return f"{target!r} is a loop of symbolic links. Point it at a real file, then retry."
     if errno_value in (_errno.EACCES, _errno.EPERM):
         return (
             f"Confirm this user has read permission on {target!r} and its "
@@ -185,7 +204,7 @@ class MigrationFileUnreadableError(MigrationError):
 
     :class:`MigrationContentUnreadableError`'s sibling for the *other* raw read
     on the same load path -- the migration YAML itself, discovered by
-    ``migrations_dir.glob("*.yaml")`` and then opened in
+    ``migrations_dir.iterdir()`` and then opened in
     ``infrastructure/filesystem/migration_loader.py::_load_one``. Deliberately
     not the same class: there is no "resolves relative to" rule to restate
     here, because a migration file's own path is never author-chosen the way
@@ -195,38 +214,165 @@ class MigrationFileUnreadableError(MigrationError):
     traceback, exit 1, empty stdout -- the identical escape
     `MigrationContentUnreadableError` closed for `contentFile`, one call site
     over.
+
+    Round three widened this past the open-and-read failure above to the
+    *enumeration* step that finds the path in the first place: a `*.yaml`
+    entry that is a symlink loop, or a symlink whose target is missing, is
+    also raised from here rather than silently dropped by
+    ``Path.is_file()``'s own errno-swallowing (see
+    ``infrastructure/filesystem/migration_loader.py``'s enumeration comment).
+    The loop case reuses :func:`_read_failure_remedy`'s ``ELOOP`` branch; the
+    dangling case passes ``missing_or_wrong_text`` explicitly, because
+    "restore the target or remove the link" is specific to a symlink whose
+    target is missing and does not fit the errno-keyed dispatch every other
+    case here shares. This is the same ``missing_or_wrong_text`` fallback hook
+    :func:`_read_failure_remedy` already exposes for
+    :class:`MigrationContentUnreadableError`'s own missing-file text -- not a
+    separate ``remedy`` keyword, which briefly existed here and silently
+    ignored ``errno_value`` whenever both were passed (two sources of truth
+    for the same string).
     """
 
-    def __init__(self, migration_path: str, reason: str, errno_value: int | None = None) -> None:
+    def __init__(
+        self,
+        migration_path: str,
+        reason: str,
+        errno_value: int | None = None,
+        *,
+        missing_or_wrong_text: str | None = None,
+    ) -> None:
         self.migration_path = migration_path
         self.remedy = _read_failure_remedy(
             migration_path,
             errno_value,
-            missing_or_wrong_text=f"Confirm {migration_path!r} still exists, then retry.",
+            missing_or_wrong_text=(
+                missing_or_wrong_text
+                if missing_or_wrong_text is not None
+                else f"Confirm {migration_path!r} still exists, then retry."
+            ),
         )
         super().__init__(f"{migration_path!r} could not be read: {reason}")
 
 
-class MigrationsDirectoryUnreadableError(MigrationError):
-    """``.theurian/migrations/`` itself could not be probed or listed (issue #205).
+def _directory_unreadable_remedy(
+    directory: str, errno_value: int | None, *, missing_or_wrong_text: str | None = None
+) -> str:
+    """The cure selected by *why* ``.theurian/migrations/`` could not be
+    probed or listed, the same errno-keyed shape :func:`_read_failure_remedy`
+    already gives the per-file siblings above.
 
-    ``pathlib.Path.is_dir()`` in this interpreter swallows ``ENOENT``/
-    ``ENOTDIR``/``ELOOP`` -- the well-formed "not a directory" case
-    ``load_migrations`` already answers by returning an empty migration set --
-    but re-raises ``EACCES``. That escaped every command that resolves a
-    project (`init`, `project register`, `project status`, and every one of
-    `_require_project`'s seven callers), `project status` included, even
-    though that command's whole contract is to answer at exit 0 rather than
-    crash. Measured against the real CLI: `chmod 000 .theurian` (also
-    `chmod 400`, missing only the execute bit) crashed all of them with a raw
-    `PermissionError` Rich traceback.
+    ``ELOOP`` gets its own remedy (round two): a `chmod` fixes a permission
+    problem but does nothing about a symlink chain, so folding it into the
+    ``EACCES``/``EPERM`` branch would send a reader to check a permission bit
+    that was never wrong. ``missing_or_wrong_text`` (round four) is the
+    directory-level counterpart of :class:`MigrationFileUnreadableError`'s
+    identically-named hook: a dangling ``migrations_dir`` symlink needs
+    "restore the target or remove the link", not the generic residual text,
+    and that text does not fit this function's single ``directory``-shaped
+    contract any more than it fit :func:`_read_failure_remedy`'s. The residual
+    branch -- neither a known permission errno, a loop, nor a caller-supplied
+    override -- covers whatever else the platform can raise at this probe
+    (round two's adversarial test injects ``ENAMETOOLONG``); it names no
+    specific cause, because there is no single one to name, only "this is not
+    a readable directory."
+    """
+    if errno_value == _errno.ELOOP:
+        return (
+            f"{directory!r} is a loop of symbolic links. Point it at a real directory, then retry."
+        )
+    if errno_value in (_errno.EACCES, _errno.EPERM):
+        return (
+            f"Confirm this user has read and execute permission on "
+            f"{directory!r} and its parent directories, then retry."
+        )
+    if missing_or_wrong_text is not None:
+        return missing_or_wrong_text
+    return f"Confirm {directory!r} resolves to a readable directory, then retry."
+
+
+class MigrationsDirectoryUnreadableError(MigrationError):
+    """``.theurian/migrations/`` itself could not be probed or listed (issues
+    #205, #214, round two's symlink-loop and residual-errno faces, and round
+    four's dangling-symlink face).
+
+    Six raw-IO shapes converge on this one class:
+
+    1. **A parent denies traversal (#205).** ``pathlib.Path.is_dir()`` in this
+       interpreter swallows ``ENOENT``/``ENOTDIR``/``ELOOP`` -- the well-formed
+       "not a directory" case ``load_migrations`` already answers by returning
+       an empty migration set -- but re-raises ``EACCES``. That escaped every
+       command that resolves a project (`init`, `project register`, `project
+       status`, and every one of `_require_project`'s seven callers), `project
+       status` included, even though that command's whole contract is to
+       answer at exit 0 rather than crash. Measured against the real CLI:
+       `chmod 000 .theurian` (also `chmod 400`, missing only the execute bit)
+       crashed all of them with a raw `PermissionError` Rich traceback.
+    2. **The directory itself denies listing (#214).** `chmod 000`/`0o111` on
+       `migrations_dir` itself -- not its parent -- leaves the directory probe
+       succeeding, since stat needs no permission on the target, only its
+       ancestors. `pathlib.Path.glob("*.yaml")`'s own `scandir` used to catch
+       the resulting `PermissionError` internally and yield nothing, so
+       `migrate validate --json` reported `valid: true` with
+       `migrationCount: 0` for a project whose migrations were never read, and
+       `migrate apply --json` went on to create a state database for that
+       empty set.
+    3. **The directory lists but denies stat (#214).** `chmod 0o444` leaves
+       `migrations_dir` readable -- `scandir` can list its entries -- but not
+       traversable, so stat-ing each entry to filter to regular files raises
+       `PermissionError` too, and unlike case 2 that one was never caught: it
+       escaped as a raw Rich traceback.
+    4. **The directory itself is a symlink loop (round two).** A chain longer
+       than the platform's loop limit at `migrations_dir` made the previous
+       `is_dir()`-based probe swallow `ELOOP` the same way it already swallows
+       `ENOENT`/`ENOTDIR`, misreporting a loop as "does not exist" -- an empty
+       migration set, and `migrate apply --json` seeding a state database for
+       it, rather than the refusal every other member of this class gets.
+    5. **A residual errno neither of the above names (round two).** Whatever
+       else the platform can raise at the probe or the listing --
+       `ENAMETOOLONG` is what round two's adversarial test injects, since it is
+       portable and does not depend on constructing a real over-length path --
+       still refuses, but with a remedy that does not misdiagnose it as a
+       permission problem: "confirm this resolves to a readable directory,"
+       not "check read and execute permission."
+    6. **`migrations_dir` itself is a dangling symlink (round four).** Distinct
+       from case 4's loop: a chain that terminates at nothing, rather than one
+       that never terminates, made the previous target-following probe raise
+       `ENOENT` -- the identical errno a directory that never existed at all
+       raises -- so a dangling `migrations_dir` used to fold into
+       `LoadedMigrations.empty()` right alongside it. `load_migrations` now
+       checks `migrations_dir.is_symlink()` (an `lstat`, checked before the
+       following probe) first, so a dangling link is told apart from a
+       genuinely absent directory before that probe ever runs, and refuses
+       with `missing_or_wrong_text` naming the link rather than the generic
+       residual text.
+
+    All six are now raised from ``load_migrations``'s ``is_symlink()`` check,
+    its explicit ``os.stat`` probe, and its enumeration `try`, all keying the
+    remedy on ``errno_value`` (or an explicit ``missing_or_wrong_text``) via
+    :func:`_directory_unreadable_remedy`. A `migrations_dir` symlink that
+    resolves *outside* `project_root` is not a member of this class -- see
+    :class:`PathEscapeError`, raised directly by the same `is_symlink()` check
+    rather than folded in here, since "escapes the root" is a different fault
+    from "cannot be read at all."
+
+    The ``is_symlink()`` check covers the *final* path component only. A
+    symlinked *ancestor* of `migrations_dir` -- `.theurian` itself being a
+    symlink -- is a different class again, keyed on the writer/context stack
+    trusting a resolved `.theurian` rather than on this read path, and is
+    tracked at issue #237, not here.
     """
 
-    def __init__(self, migrations_path: str, reason: str) -> None:
+    def __init__(
+        self,
+        migrations_path: str,
+        reason: str,
+        errno_value: int | None = None,
+        *,
+        missing_or_wrong_text: str | None = None,
+    ) -> None:
         self.migrations_path = migrations_path
-        self.remedy = (
-            f"Confirm this user has read and execute permission on "
-            f"{migrations_path!r} and its parent directories, then retry."
+        self.remedy = _directory_unreadable_remedy(
+            migrations_path, errno_value, missing_or_wrong_text=missing_or_wrong_text
         )
         super().__init__(f"{migrations_path!r} could not be listed: {reason}")
 
@@ -244,8 +390,20 @@ class SchemaUnreadableError(TheurianError):
     what stays importable from every layer regardless. This is "a candidate
     was found, but touching it failed" -- an ``.exists()`` probe or a
     ``read_text()`` that hit a permission problem on the installation, not on
-    any user's project. Not a :class:`MigrationError`: nothing about
-    migration *content* failed, the installation this build ships with did.
+    any user's project. Round two widened "touching it failed" past the read
+    itself: a read that *succeeds* can still hand back a schema this build
+    cannot use -- truncated or empty JSON, or non-UTF-8 bytes. Round three
+    widened it again to a read that parses cleanly but is not usable as a
+    schema: not a JSON object at all (a list, or a bare boolean -- both
+    otherwise-valid JSON, and the latter otherwise a valid top-level JSON
+    Schema too, refused anyway because it would build a validator that
+    accepts everything), or an object whose own keywords are structurally
+    malformed against the JSON Schema metaschema. All of these are translated
+    here rather than left to reach a migration author as a misattributed
+    :class:`MigrationError` (see ``_validator``'s own docstring,
+    ``infrastructure/filesystem/migration_loader.py``, for the full list).
+    Not a :class:`MigrationError`: nothing about migration *content* failed,
+    the installation this build ships with did.
     """
 
     def __init__(self, schema_path: str, reason: str) -> None:
