@@ -1,6 +1,6 @@
 ---
 description: Draft a knowledge change as a reviewable proposal. Never writes approved state.
-allowed-tools: Bash(theurian:*), Write
+allowed-tools: Bash(theurian:*), Read, Write(.theurian/proposals/**)
 ---
 
 # /theurian:propose
@@ -19,10 +19,13 @@ grants and removes nothing — [`upgrade.md`](upgrade.md) states those semantics
 with the vendor citation — so `Bash(theurian:*)` auto-approves *every* `theurian`
 invocation, `theurian migrate apply` (a canonical write) and `theurian propose
 accept` (which moves a migration into `.theurian/migrations/`) included. The
-`Write` grant is only for the body file you hand to `--body-file`; Core writes
-the proposal directory itself, under `.theurian/proposals/`, and nothing else.
-What keeps approval with the human is the **"You cannot approve knowledge"** rule
-below, not the front-matter
+`Write` grant stays scoped to `.theurian/proposals/**`, which is the whole of your
+write authority here (ADR-0013): you write the body file there and hand it to
+`--body-file`, and Core — not this command — writes the proposal directory and
+everything under it. An unscoped `Write` would pre-approve the two directories
+that authority forbids, `.theurian/migrations/` and `.theurian/knowledge/`, so it
+is deliberately not granted. What keeps approval with the human is the **"You
+cannot approve knowledge"** rule below, not the front-matter
 ([#209](https://github.com/theurian/theurian/issues/209)).
 
 ## What to do
@@ -32,9 +35,12 @@ below, not the front-matter
    reasoning is rejected at generation, so if you cannot name what justifies the
    change, write nothing and say what is missing instead.
 
-2. Write the body — the knowledge itself — to a file, in its native format: `.md`,
-   `.json`, or `.yaml`. That file is the only thing you write directly; Core reads
-   it and copies it into the proposal directory, so you can discard it afterward.
+2. Write the body — the knowledge itself — to a scratch file under
+   `.theurian/proposals/`, the one place your `Write` grant reaches, in its native
+   format: `.md`, `.json`, or `.yaml`. That scratch file is the only thing you
+   write directly; `theurian propose` reads it and copies its contents into the
+   proposal directory it creates, so the scratch file can be removed once the
+   draft exists.
 
 3. Draft the proposal. Every field is an option; nothing prompts:
 
@@ -46,7 +52,7 @@ below, not the front-matter
      --owner platform-team \
      --author platform-team@example.com \
      --description "Adopt exponential backoff for outbound calls." \
-     --body-file retry-policy.md \
+     --body-file .theurian/proposals/retry-policy.md \
      --source-uri https://github.com/acme/api/commit/0123456789abcdef \
      --source-commit 0123456789abcdef \
      --agent-id claude-code \
@@ -167,6 +173,10 @@ below, not the front-matter
   propose` and the body file it reads. `theurian propose accept` puts a migration
   where `migrate apply` will act on it, so run it only when the user has agreed,
   and never run `migrate apply` for them.
+- **Writing under `.theurian/proposals/` is the whole of your write authority.**
+  Do not write into `.theurian/migrations/` or `.theurian/knowledge/` directly —
+  `theurian propose` and `theurian propose accept` are the only things that put
+  files there, and doing it by hand is performing the move that is the human's.
 - If the user asks you to skip review, explain that approval goes through a pull
   request by design, and offer to help write the proposal well instead.
 - Record uncertainty in the proposal rather than resolving it silently.
