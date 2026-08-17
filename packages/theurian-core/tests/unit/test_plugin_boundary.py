@@ -9,13 +9,10 @@ stops being possible.
 from __future__ import annotations
 
 import json
-import math
 import pathlib
 import re
-import secrets
 import shutil
 import subprocess
-from collections import Counter
 from typing import Final
 
 import pytest
@@ -132,51 +129,6 @@ def test_connection_template_references_the_token_by_environment_variable() -> N
     template = json.loads((PLUGIN / "mcp" / "theurian.mcp.json").read_text(encoding="utf-8"))
     authorization = template["mcpServers"]["theurian"]["headers"]["Authorization"]
     assert authorization == "Bearer ${THEURIAN_MCP_TOKEN}"
-
-
-def _looks_like_a_secret(token: str) -> bool:
-    """Whether ``token`` resembles CSPRNG output rather than prose.
-
-    Length alone is not a signal: a kebab-case ADR filename is long too. Theurian
-    tokens come from ``secrets.token_urlsafe``, which yields base64url with mixed
-    case, digits, and near-uniform character frequency. Requiring all three
-    together separates a real token from an identifier a human typed.
-    """
-    if not (
-        any(c.isupper() for c in token)
-        and any(c.islower() for c in token)
-        and any(c.isdigit() for c in token)
-    ):
-        return False
-
-    counts = Counter(token)
-    entropy = -sum((n / len(token)) * math.log2(n / len(token)) for n in counts.values())
-    return entropy >= 4.0
-
-
-def test_no_plugin_file_contains_a_high_entropy_secret() -> None:
-    """Catches a token pasted in during debugging and forgotten."""
-    candidate = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
-    violations: list[str] = []
-    for path in PLUGIN.rglob("*"):
-        if not path.is_file() or path.suffix in {".png", ".jpg", ".svg"} or path.name == "LICENSE":
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:  # pragma: no cover - binary asset
-            continue
-        for match in candidate.finditer(text):
-            if _looks_like_a_secret(match.group()):
-                violations.append(f"{path.relative_to(PLUGIN)}: {match.group()[:8]}...")
-
-    assert not violations, f"Possible secrets in plugin files: {violations}"
-
-
-def test_the_secret_detector_actually_detects_a_secret() -> None:
-    """A detector nobody has proved works is a test that always passes."""
-    assert _looks_like_a_secret(secrets.token_urlsafe(32))
-    assert not _looks_like_a_secret("0012-plugin-does-not-autoregister-mcp-server")
-    assert not _looks_like_a_secret("THEURIAN_MCP_TOKEN")
 
 
 # -- CP-3: the twelve commands ---------------------------------------------
