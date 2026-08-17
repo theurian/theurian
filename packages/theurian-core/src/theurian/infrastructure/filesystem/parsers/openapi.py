@@ -33,8 +33,16 @@ _HTTP_METHODS: Final = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 )
 
-#: Caps the extracted index. A generated OpenAPI document can be enormous, and
-#: an unbounded walk is a resource-exhaustion vector (SEC-8).
+#: Cap the size of the extracted index -- how many operations and how many
+#: references this module will *record* from one document, which a generated
+#: OpenAPI document can otherwise make enormous.
+#:
+#: They do not cap what the extraction costs, and neither is a
+#: resource-exhaustion control. ``_external_refs`` revisits shared sub-objects
+#: instead of memoising them, so a document can make the traversal exponential
+#: while recording almost nothing and reaching neither cap
+#: (https://github.com/theurian/theurian/issues/245). SEC-8 is not discharged
+#: here, and an earlier version of this comment implied it was.
 MAX_OPERATIONS: Final = 5000
 MAX_REFS: Final = 5000
 
