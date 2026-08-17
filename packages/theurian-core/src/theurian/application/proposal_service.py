@@ -446,6 +446,16 @@ class ProposalService:
             )
         candidates = [path for path in entries if path.is_file()]
         if not candidates:
+            # An accepted proposal keeps its `evidence.json` and loses its
+            # migration to `.theurian/migrations/`, so that shape is "already
+            # accepted", not "draft it again" -- which would mint a second
+            # migration for a change that has already landed.
+            if (directory / EVIDENCE_FILE).is_file():
+                raise ProposalError(
+                    f"Proposal {proposal_id.value} appears to have been accepted already: "
+                    "its migration has been moved into .theurian/migrations/.",
+                    remedy="No action is needed. Review the change and open a pull request.",
+                )
             raise ProposalError(
                 f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file.",
                 remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "

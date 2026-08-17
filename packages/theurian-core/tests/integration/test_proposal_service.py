@@ -709,6 +709,26 @@ def test_accept_reports_an_unknown_proposal_rather_than_raising_from_the_filesys
         service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
 
 
+def test_re_accepting_an_already_accepted_proposal_says_no_action_is_needed(
+    service: ProposalService,
+) -> None:
+    """An accepted proposal keeps its evidence and loses its migration.
+
+    Re-accepting used to report "holds no migration file -- draft it again",
+    which would mint a second migration for a change that has already landed.
+    The evidence still in the directory marks it as accepted, so the remedy says
+    to review and open a pull request instead.
+    """
+    drafted = service.draft(_request())
+    service.accept(drafted.proposal_id)
+    assert drafted.evidence_file.is_file()
+
+    with pytest.raises(ProposalError, match="accepted already") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "pull request" in caught.value.remedy
+
+
 def test_accept_refuses_a_body_path_that_leaves_the_project(
     service: ProposalService, paths: ProjectPaths
 ) -> None:

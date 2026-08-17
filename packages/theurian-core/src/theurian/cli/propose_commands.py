@@ -50,10 +50,6 @@ from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 #: had the group shape allowed the options to be declared required.
 EXIT_INVALID_INPUT: Final = 2
 
-#: Exit code for a knowledge-state problem, matching `theurian migrate`: here,
-#: that the migration this proposal carries is already in place.
-EXIT_STATE_ERROR: Final = 4
-
 #: Body formats a proposal may carry, keyed by the extension the caller wrote.
 #: Read from the file name rather than taken as its own option so the extension
 #: and the declared ``contentType`` cannot disagree -- a body written as ``.md``
@@ -234,6 +230,11 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
         "--task-id": task_id,
         "--model": model,
         "--reasoning": reasoning,
+        # These two have non-``None`` defaults, so "was it passed" is "does it
+        # differ from the default": a bare ``git`` or ``False`` is indistinguishable
+        # from omission and is not treated as a stray option handed to a verb.
+        "--source-provider": source_provider if source_provider != "git" else None,
+        "--authored-here": authored_here or None,
     }
     if ctx.invoked_subcommand is not None:
         _refuse_stray_options(provided, subcommand=ctx.invoked_subcommand, as_json=as_json)
@@ -290,7 +291,12 @@ def propose_accept(
     Exit codes: 0 moved, 1 no such proposal, 2 malformed id, 4 that migration is
     already in place.
     """
-    from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        EXIT_STATE_ERROR,
+        _emit,
+        _fail,
+        _require_project,
+    )
 
     try:
         parsed = ProposalId.parse(proposal_id)

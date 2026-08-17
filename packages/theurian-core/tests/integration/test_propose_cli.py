@@ -235,6 +235,26 @@ def test_a_draft_option_handed_to_accept_is_refused_rather_than_ignored(project:
     assert payload["remedy"]
 
 
+def test_a_flag_valued_draft_option_handed_to_accept_is_refused(project: Path) -> None:
+    """``--authored-here`` and a non-default ``--source-provider`` are stray too.
+
+    Both have non-``None`` defaults, so an earlier version of the stray check
+    could not see them and dropped them silently. ``--authored-here`` is a flag,
+    so its presence is unambiguous.
+    """
+    _, drafted = _draft(project)
+
+    result = runner.invoke(
+        app,
+        ["propose", "--json", "--authored-here", "accept", drafted["proposalId"]],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stderr)
+
+    assert result.exit_code == EXIT_INVALID_INPUT
+    assert "--authored-here" in payload["error"]
+
+
 def test_propose_with_no_arguments_prints_its_help(project: Path) -> None:
     """Exit 2 with help, which is what every other group here already does.
 
