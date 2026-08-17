@@ -143,8 +143,7 @@
       "properties": {
         "secretScan": {
           "enum": ["block", "warn", "off"],
-          "default": "block",
-          "description": "What to do when a candidate revision appears to contain a secret (SEC-11)."
+          "description": "Not in force, and reserved. What a scanner would do when a candidate revision appears to contain a secret (SEC-11). No shipped code reads this key, and no scanner exists to read it, so no value here has any effect and no default is published: a default would state a policy nothing applies. Owed with the write-path work in Milestone 7 (https://github.com/theurian/theurian/issues/198)."
         },
         "maxSourceFileBytes": {
           "type": "integer",
