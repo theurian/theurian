@@ -732,9 +732,22 @@ Both walk caps — `MAX_REFS` (5000) and `MAX_REF_DEPTH` (64) — still stop the
 walk, and each now records where it stopped, because a cut that left no trace
 reported the document as having *no* external references at all: a `$ref` nested
 past the depth cap gave `unresolvedRefCount` 0, the same answer a document with
-no external references gives. One record per reason, so the marker cannot itself
-become the exhaustion vector the caps exist to prevent, and `refWalkTruncated`
-beside that count says whether it is a total or a floor.
+no external references gives. One record per reason and two reasons, so the
+marker list holds at most two entries however many nodes sit at a cap.
+
+**That bound is on the marker list, not on the walk, and neither cap is a
+resource-exhaustion control.** The traversal revisits shared sub-objects instead
+of memoising them, so a document can make it exponential without reaching either
+cap ([#245](https://github.com/theurian/theurian/issues/245)). SEC-8 is not
+discharged here.
+
+**`unresolvedRefCount` counts distinct `$ref` strings, and nothing else.** Not
+occurrences, not distinct targets — two spellings of one URL count twice — and
+not the other resolution keywords a specification can carry: `$dynamicRef`,
+`operationRef` and the rest are outside this walk entirely
+([#246](https://github.com/theurian/theurian/issues/246)), so a document can hold
+a remote reference this count does not see. It is a total when
+`refWalkTruncated` is false and a lower bound *for `$ref`* when it is true.
 
 **Neither cap marks a node that could not have held a reference.** A scalar has
 no children and an empty container has none either, and emptiness is answerable

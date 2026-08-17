@@ -117,12 +117,32 @@ SCHEME_CASES: Final[tuple[tuple[str, str], ...]] = (
     ("../../secrets.yaml", "relative-file"),
     ("evil.test/x.json", "relative-file"),
     ("HTTPS://EVIL.TEST/x", "https"),
+    # Every character of RFC 3986 §3.1's scheme production, each in a row of its
+    # own: dropping `-`, `+` or `.` from the class turns these into local labels.
+    ("x-scheme://evil.test/a.json", "x-scheme"),
+    ("coap+tcp://evil.test/a.json", "coap+tcp"),
+    ("soap.beep://evil.test/a.json", "soap.beep"),
+    # The scheme is matched at the *start* or not at all. Unanchored, the colon
+    # in the middle of this relative path reads as a scheme.
+    ("./a:b.yaml", "relative-file"),
+    # A single separator is a reference in its own right, and the check that
+    # decides it needs exact membership: `"" in "/\\"` is True, so a `_SEPARATORS`
+    # spelled as a string reads these as opening with two separators.
+    ("/", "absolute-file"),
+    ("\\", "absolute-file"),
     # Stripped by every URL parser before it looks, so stripped here before
     # anything classifies: each of these reaches the host `evil.test`.
     (" //evil.test/x.json", "protocol-relative"),
     ("\t//evil.test/x.json", "protocol-relative"),
     ("\n//evil.test/x.json", "protocol-relative"),
     ("/\t/evil.test/x.json", "protocol-relative"),
+    # Removed *anywhere*, not only at the ends and not only tab: a newline or a
+    # carriage return inside the reference is dropped by `urlsplit` too, so a
+    # fetcher sees the host and the scheme these spell out.
+    ("/\n/evil.test/x.json", "protocol-relative"),
+    ("/\r/evil.test/x.json", "protocol-relative"),
+    ("ht\ntps://evil.test/x.json", "https"),
+    ("ht\rtps://evil.test/x.json", "https"),
     # `urlsplit` raised `ValueError` on this one and took the document with it.
     ("http://[::1", "http"),
 )
@@ -168,9 +188,30 @@ def test_no_network_destined_ref_records_a_local_file_scheme(ref: str) -> None:
     )
 
 
-def test_the_local_and_network_ref_labels_are_disjoint() -> None:
-    """Two sets that overlap would make the assertion above unfalsifiable."""
+def test_the_published_label_groups_hold_exactly_their_labels() -> None:
+    """The contents, not only the disjointness.
+
+    Only ``NETWORK_PATH_SCHEMES`` is load-bearing through an ``in`` above, so
+    emptying ``LOCAL_PATH_SCHEMES`` -- or dropping ``absolute-file`` from it --
+    left every other test in this file green while the group a future gate reads
+    said something different. Both mutations are killed here.
+    """
+    assert sorted(LOCAL_PATH_SCHEMES) == ["absolute-file", "relative-file"]
+    assert sorted(NETWORK_PATH_SCHEMES) == ["protocol-relative", "unc"]
     assert not (LOCAL_PATH_SCHEMES & NETWORK_PATH_SCHEMES)
+
+
+def test_the_caps_are_the_numbers_the_documents_quote() -> None:
+    """Asserted as literals, because every other test reads them through the
+    symbol and so cannot see the cap move.
+
+    ``MAX_REF_DEPTH`` 64 and ``MAX_REFS`` 5000 are quoted as numbers in this
+    module's own comments, in `docs/security/threat-model.md` (T-7) and in the
+    CHANGELOG, and "both walk caps stay where they were" is a claim #203 makes
+    outright. Halving either kept the whole suite green.
+    """
+    assert MAX_REF_DEPTH == 64
+    assert MAX_REFS == 5000
 
 
 #: ``derandomize`` alone is not determinism: hypothesis derives the corpus from
@@ -234,6 +275,75 @@ def test_every_reference_records_a_usable_scheme_label(ref: str) -> None:
 
     assert scheme, f"{ref!r} recorded an empty scheme label"
     assert scheme == scheme.lower(), f"{ref!r} recorded {scheme!r}, which is not lowercased"
+
+
+@seed(203)
+@_GENERATED
+@given(
+    first=st.sampled_from("abcxzABXZ"),
+    rest=st.text(alphabet="abcxz019+-.", min_size=0, max_size=8),
+)
+def test_a_scheme_bearing_reference_records_that_scheme(first: str, rest: str) -> None:
+    """RFC 3986 §3.1's whole character class, generated rather than sampled.
+
+    The table pins one row per character; this pins the class. Dropping ``-``,
+    ``+`` or ``.`` from the pattern makes the scheme unmatchable and the whole
+    reference read as a local relative path -- which is the fail-open direction
+    for a hostile input, since these all name ``evil.test``.
+    """
+    scheme = first + rest
+    record = _record(f"{scheme}://evil.test/a.json")
+
+    assert record["scheme"] == scheme.lower(), (
+        f"a reference opening {scheme}:// recorded {record['scheme']!r}"
+    )
+    assert record["scheme"] not in LOCAL_PATH_SCHEMES, (
+        f"{scheme}://evil.test/a.json names a host and recorded a local-file label"
+    )
+
+
+def test_a_ref_inside_an_array_is_recorded_with_its_index_path() -> None:
+    """The list branch of the walk, which no other test drove.
+
+    ``parameters: [{"$ref": ...}]`` is the commonest place a real OpenAPI
+    document puts one, so deleting that branch removes recording for the shape
+    most likely to carry a hostile reference -- and every other test here kept
+    passing, because all of them put their ``$ref`` under a mapping.
+    """
+    document = {
+        "openapi": "3.1.0",
+        "paths": {
+            "/orders": {
+                "get": {"parameters": [{"$ref": "https://evil.test/param.json"}]},
+            }
+        },
+        "nested": [[{"$ref": "https://evil.test/deep.json"}]],
+    }
+
+    by_ref = {record["ref"]: record for record in _index(document)["externalRefs"]}
+
+    assert set(by_ref) == {"https://evil.test/param.json", "https://evil.test/deep.json"}
+    assert by_ref["https://evil.test/param.json"]["at"] == "paths./orders.get.parameters[0]"
+    assert by_ref["https://evil.test/deep.json"]["at"] == "nested[0][0]", (
+        "an index appears per level, so a reader can find the reference again"
+    )
+
+
+def test_the_same_reference_written_twice_is_recorded_once() -> None:
+    """The record is per distinct reference string, which is what
+    ``unresolvedRefCount`` counts. Without the dedup a document repeating one
+    ``$ref`` inflates the count and fills the cap with copies."""
+    repeated = "https://evil.test/x.json"
+    document = {
+        "openapi": "3.1.0",
+        "components": {"schemas": {"A": {"$ref": repeated}, "B": {"$ref": repeated}}},
+    }
+
+    recorded = _index(document)["externalRefs"]
+
+    assert [record["ref"] for record in recorded] == [repeated]
+    assert recorded[0]["at"] == "components.schemas.A", "the first occurrence is the one kept"
+    assert _metadata(document)["unresolvedRefCount"] == "1"
 
 
 def test_a_file_url_with_a_host_records_its_scheme_and_leaves_the_authority_alone() -> None:

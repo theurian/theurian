@@ -95,15 +95,22 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **Both walk caps stay where they were** — `MAX_REFS` (5000) and
   `MAX_REF_DEPTH` (64) — and each now records where it stopped, one record per
-  reason so the marker cannot become the exhaustion vector the caps exist to
-  prevent. Neither marks a node that could not have held a reference: a scalar
+  reason and two reasons, so the marker list holds at most two entries however
+  many nodes sit at a cap. That bound is on the marker list and not on the walk:
+  the traversal revisits shared sub-objects rather than memoising them, so
+  neither cap is a resource-exhaustion control
+  ([#245](https://github.com/theurian/theurian/issues/245)).
+  Neither marks a node that could not have held a reference: a scalar
   has no children and an empty container has none either, and emptiness is
   answerable without descending, which is what lets the check sit in front of a
   cap that forbids descending. A non-empty container stays marked even when it
   holds only scalars, because knowing better means reading the children the cap
   refused. The parser's metadata gains `refWalkTruncated`, which says whether
-  `unresolvedRefCount` is a total or a floor, and the index gains
-  `refWalkTruncations`. Both counts stop at the parser boundary — `IngestedDocument`
+  `unresolvedRefCount` is a total or a lower bound, and the index gains
+  `refWalkTruncations`. That count is over the document's distinct `$ref`
+  strings only — not occurrences, not distinct targets, and not the other
+  resolution keywords a specification can carry, which this walk does not visit
+  ([#246](https://github.com/theurian/theurian/issues/246)). Both counts stop at the parser boundary — `IngestedDocument`
   has no metadata field, so what survives ingestion is `_index`'s
   `externalRefs` and `refWalkTruncations`, which is where a Milestone 7 gate
   should read. Nothing fetches, and the never-fetched pins in

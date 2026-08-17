@@ -140,12 +140,17 @@ class OpenApiParser:
             metadata={
                 "parser": self.parser_id,
                 "operationCount": str(len(index["operations"])),
-                # A truncation record counts here because it stands for a subtree
-                # nobody looked at. Reporting only the refs found would answer
-                # "no external references" for a document whose refs all sit past
-                # a walk cap, which is the one answer a reader acts on (#203);
-                # `refWalkTruncated` says whether this number is a total or a
-                # floor.
+                # A count of this document's *distinct `$ref` strings*, and only
+                # those: not occurrences, not distinct targets (two spellings of
+                # one URL count twice), and not the other resolution keywords a
+                # specification can carry -- `$dynamicRef`, `operationRef` and
+                # the rest are outside this walk entirely (#246). A truncation
+                # record counts too, because it stands for a subtree nobody
+                # looked at; without it a document whose refs all sit past a walk
+                # cap answered "no external references" (#203).
+                #
+                # So: a total when `refWalkTruncated` is false, and a lower bound
+                # for `$ref` when it is true.
                 #
                 # Both keys stop at this object. `IngestionService._to_document`
                 # carries `structured` into `IngestedDocument` and has no
@@ -309,12 +314,18 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
     reference RFC 3986 §4.4 defines as "this document", both resolve inside the
     bytes already in hand.
 
-    Both caps stop the walk, and each records where it stopped. A cut that leaves
-    no trace is worse than a low cap, because the document then reports *no*
-    external references at all (#203). One record per reason rather than one per
-    cut point: a document can hold thousands of nodes at the depth limit, and an
-    unbounded list of markers would be the exhaustion vector the limit exists to
-    prevent (SEC-8).
+    Both caps stop the walk where they are checked, and each records where it
+    stopped. A cut that leaves no trace is worse than a low cap, because the
+    document then reports *no* external references at all (#203).
+
+    **What is bounded here is the marker list, not the traversal.** One record
+    per reason and two reasons, so ``truncations`` holds at most two entries
+    however many nodes sit at a cap -- a document can hold thousands, and one
+    marker each would be a list the caller never asked for. That is the whole of
+    the claim: this walk revisits shared sub-objects rather than memoising them,
+    so its cost is *not* bounded by these caps, and neither cap fires on the
+    shape that makes it expensive (#245). Nothing in this function is a
+    resource-exhaustion control.
     """
     found: list[dict[str, str]] = []
     truncations: dict[str, dict[str, str]] = {}
