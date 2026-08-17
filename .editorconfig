@@ -13,3 +13,7 @@ indent_size = 2
 
 [*.md]
 trim_trailing_whitespace = false
+
+# Google generates this file and matches its contents; do not reformat it.
+[docs/google150fa28bebf014f3.html]
+insert_final_newline = false
