@@ -122,7 +122,13 @@ def _tree(root: Path) -> set[str]:
 
 
 def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str) -> str:
-    """A migration naming two bodies whose leaf names collide (`notes.<rev>.md`).
+    """A migration naming two bodies whose leaf names collide (both `notes.md`).
+
+    The two ``contentFile`` paths differ only in namespace -- ``alpha/notes.md``
+    and ``beta/notes.md`` -- so they share the leaf ``notes.md``. That is the
+    exact shape a leaf-name lookup conflated: it found one file for both. The
+    revisions still differ (``rev_a`` / ``rev_b``), so the two are genuinely two
+    changes, not one written twice.
 
     Only what ``accept`` reads -- the ``contentFile`` of each operation and the
     ``id`` -- has to be present; ``accept`` does not validate, so the metadata a
@@ -139,11 +145,11 @@ def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str)
         "- op: upsertRevision\n"
         "  itemId: alpha.notes\n"
         f"  revisionId: {rev_a}\n"
-        f"  contentFile: ../knowledge/alpha/notes.{rev_a}.md\n"
+        "  contentFile: ../knowledge/alpha/notes.md\n"
         "- op: upsertRevision\n"
         "  itemId: beta.notes\n"
         f"  revisionId: {rev_b}\n"
-        f"  contentFile: ../knowledge/beta/notes.{rev_b}.md\n"
+        "  contentFile: ../knowledge/beta/notes.md\n"
     )
 
 
@@ -356,6 +362,35 @@ def test_expected_revision_on_a_new_item_is_refused_at_generation(
     """A first revision has nothing to replace, so the guard is a mistake."""
     with pytest.raises(ProposalError, match="does not exist yet"):
         service.draft(_request(expected_revision=RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")))
+
+
+def test_the_update_guard_checks_against_the_latest_of_several_revisions(
+    service: ProposalService,
+) -> None:
+    """HIGH-5's foundation: ``current_revision_in`` is the *last* upsert (FR-K4).
+
+    The draft guard derives an item's current revision from the approved
+    migration set, where the last upsert for the item is the current one -- the
+    same rule ``migrate apply`` follows to set ``current_revision_id``. With only
+    one approved revision, a first-vs-last mix-up is invisible; it shows only
+    once an item has two. So two revisions are approved here and a third drafted:
+    the guard must accept ``--expected-revision`` naming the *second* (the
+    current) and refuse it naming the *first* (stale). A first-upsert regression
+    flips both assertions.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(_request(expected_revision=first.revision_id, body="# Two.\n"))
+    service.accept(second.proposal_id)
+
+    # Naming the first (now stale) revision must be refused.
+    with pytest.raises(ProposalError, match="expected-revision names"):
+        service.draft(_request(expected_revision=first.revision_id, body="# Three.\n"))
+
+    # Naming the second (the current) revision must be accepted.
+    third = service.draft(_request(expected_revision=second.revision_id, body="# Three.\n"))
+    assert third.expected_revision == second.revision_id
+    assert _upsert(third.migration_file)["expectedRevision"] == second.revision_id.value
 
 
 def test_a_new_item_is_created_before_its_first_revision(service: ProposalService) -> None:
@@ -1006,16 +1041,19 @@ def test_two_content_files_sharing_a_leaf_name_do_not_collide(
     migration = _hand_authored_two_body_migration(drafted.migration_id.value, rev_a, rev_b)
     drafted.migration_file.write_text(migration, encoding="utf-8")
     drafted.body_file.unlink()
-    for namespace, rev, text in (("alpha", rev_a, "A\n"), ("beta", rev_b, "B\n")):
-        body = drafted.directory / namespace / f"notes.{rev}.md"
+    # Both bodies are named `notes.md` -- the collision -- and told apart only by
+    # their subdirectory, which is what a leaf lookup threw away.
+    for namespace, text in (("alpha", "A\n"), ("beta", "B\n")):
+        body = drafted.directory / namespace / "notes.md"
         body.parent.mkdir(parents=True, exist_ok=True)
         body.write_text(text, encoding="utf-8")
 
     accepted = service.accept(drafted.proposal_id)
 
     assert {m.destination.parent.name for m in accepted.bodies} == {"alpha", "beta"}
-    assert (paths.knowledge / "alpha" / f"notes.{rev_a}.md").read_text() == "A\n"
-    assert (paths.knowledge / "beta" / f"notes.{rev_b}.md").read_text() == "B\n"
+    assert {m.destination.name for m in accepted.bodies} == {"notes.md"}
+    assert (paths.knowledge / "alpha" / "notes.md").read_text() == "A\n"
+    assert (paths.knowledge / "beta" / "notes.md").read_text() == "B\n"
 
 
 def test_a_failing_body_write_rolls_the_migration_set_back(
