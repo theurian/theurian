@@ -29,7 +29,7 @@ from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId,
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
-from theurian.domain.values import MARKDOWN
+from theurian.domain.values import JSON, MARKDOWN, YAML
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
@@ -109,6 +109,30 @@ def _upsert(path: Path) -> Mapping[str, object]:
 
 def _tree(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+
+def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str) -> str:
+    """A migration naming two bodies whose leaf names collide (`notes.<rev>.md`).
+
+    Only what ``accept`` reads -- the ``contentFile`` of each operation -- has to
+    be present; ``accept`` does not validate, so the metadata a real migration
+    carries is left out on purpose.
+    """
+    return (
+        "apiVersion: theurian.dev/v1\n"
+        f"id: {migration_id}\n"
+        "createdAt: '2026-08-02T12:00:00+00:00'\n"
+        "author: a@example.com\n"
+        "operations:\n"
+        "- op: upsertRevision\n"
+        "  itemId: alpha.notes\n"
+        f"  revisionId: {rev_a}\n"
+        f"  contentFile: ../knowledge/alpha/notes.{rev_a}.md\n"
+        "- op: upsertRevision\n"
+        "  itemId: beta.notes\n"
+        f"  revisionId: {rev_b}\n"
+        f"  contentFile: ../knowledge/beta/notes.{rev_b}.md\n"
+    )
 
 
 def _tree_bytes(root: Path) -> str:
@@ -403,20 +427,40 @@ def test_accept_refuses_to_land_a_migration_on_an_existing_name(
     assert not drafted.body_destination.exists()
 
 
-def test_accept_replaces_the_body_because_a_proposal_may_mean_to(
+def test_accept_replaces_an_unpinned_file_at_the_destination(
+    service: ProposalService,
+) -> None:
+    """The narrow permissive case: a body may replace a file nothing pins.
+
+    A generated proposal's body path carries a fresh revision id, so it never
+    lands on an existing file. What can is a stray file already sitting at the
+    destination that no migration references -- replacing it is safe, because no
+    pin depends on its bytes -- and ``replaced`` records that it happened.
+    """
+    drafted = service.draft(_request())
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_destination.write_text("stale, pinned by nothing\n", encoding="utf-8")
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.bodies[0].replaced
+    assert drafted.body_destination.read_text() == BODY
+
+
+def test_accept_refuses_a_replacement_that_would_break_an_existing_pin(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """The permissive half of the asymmetry, on the case that still reaches it.
+    """HIGH-1: a body replacement that invalidates an applied migration's pin.
 
-    ``accept`` never refuses a body: a proposal that targets a path already
-    holding a file is replacing it on purpose, and refusing would make that
-    unstateable. The *generated* path carries a fresh revision id, so a
-    generated proposal no longer produces this collision -- what does is a
-    hand-written one, which is exactly the flow ADR-0013 §4 describes and
-    ``plugins/claude-code/commands/propose.md`` walks a human through.
+    Reproduced before the fix (adversarial e19): accept proposal 1 -- validate
+    and apply green -- then accept a second proposal whose hand-authored
+    ``contentFile`` reuses proposal 1's body path. The overwrite made proposal
+    1's pinned ``contentSha256`` wrong, and ``migrate validate`` then exited 4
+    for the whole project with no undo command.
 
-    So the collision is built the way a hand-written proposal builds it: by
-    naming a ``contentFile`` that already exists.
+    ``accept`` must never leave the set unable to validate, so it refuses the
+    replacement -- and refusing breaks nothing legitimate, because a generated
+    update never reuses a ``contentFile`` (its revision id makes the path fresh).
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
@@ -427,12 +471,17 @@ def test_accept_replaces_the_body_because_a_proposal_may_mean_to(
         ),
         encoding="utf-8",
     )
-    (second.directory / first.body_file.name).write_bytes(second.body_file.read_bytes())
+    tail = first.body_destination.relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
 
-    accepted = service.accept(second.proposal_id)
+    with pytest.raises(ProposalError, match="pins"):
+        service.accept(second.proposal_id)
 
-    assert accepted.bodies[0].replaced
-    assert first.body_destination.read_text().endswith("Five attempts.\n")
+    # The first body is untouched and the whole set still loads.
+    assert first.body_destination.read_text() == BODY
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
 def test_accept_leaves_the_evidence_where_a_reviewer_will_read_it(
@@ -626,3 +675,115 @@ def test_accept_refuses_a_proposal_directory_holding_two_migrations(
 
     with pytest.raises(ProposalError, match="two"):
         service.accept(drafted.proposal_id)
+
+
+def test_a_yaml_body_can_be_drafted_and_accepted(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-3: a YAML body's file is also a `*.yaml`, and used to look like a migration.
+
+    Globbing `*.yaml` for the migration counted the body, so `accept` reported
+    "two or more migration files" and a YAML-bodied proposal could never be
+    accepted. The migration is identified by its `<ulid>-<slug>.yaml` name now,
+    which a `<leaf>.<revision>.yaml` body does not match.
+    """
+    drafted = service.draft(
+        _request(item_id=ItemId("api.limits"), body="max: 3\n", content_type=YAML)
+    )
+    assert drafted.body_file.suffix == ".yaml"
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.migration.destination.name == drafted.migration_file.name
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_a_json_body_can_be_drafted_and_accepted(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The other structured format `--help` promises, exercised end to end."""
+    drafted = service.draft(
+        _request(item_id=ItemId("api.schema"), body='{"max": 3}\n', content_type=JSON)
+    )
+
+    service.accept(drafted.proposal_id)
+
+    assert drafted.body_destination.read_text() == '{"max": 3}\n'
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_translates_a_malformed_migration_rather_than_crashing(
+    service: ProposalService,
+) -> None:
+    """HIGH-2: a malformed migration YAML must be a `{error, remedy}`, not a traceback.
+
+    `load_yaml_mapping` raises `yaml.YAMLError`, which is not a `ValueError`, so
+    it escaped the translation and reached `--json` as a bare traceback (the
+    unguarded-YAMLError class filed as #217, here on the accept path).
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.write_text("operations: [ : : ]\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="could not be read as a migration"):
+        service.accept(drafted.proposal_id)
+
+
+def test_two_content_files_sharing_a_leaf_name_do_not_collide(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-2(a): `alpha/notes.md` and `beta/notes.md` are two bodies, not one.
+
+    A flat, leaf-named layout found one file for both, consumed the first, and
+    raised a bare `FileNotFoundError` on the second -- leaving an orphan in
+    `knowledge/` and a half-consumed proposal. The mirrored sub-path layout
+    finds each by its full relative path.
+    """
+    drafted = service.draft(_request())
+    rev_a = "01K9AAAAAA0000000000000001"
+    rev_b = "01K9AAAAAA0000000000000002"
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, rev_a, rev_b)
+    drafted.migration_file.write_text(migration, encoding="utf-8")
+    drafted.body_file.unlink()
+    for namespace, rev, text in (("alpha", rev_a, "A\n"), ("beta", rev_b, "B\n")):
+        body = drafted.directory / namespace / f"notes.{rev}.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(text, encoding="utf-8")
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert {m.destination.parent.name for m in accepted.bodies} == {"alpha", "beta"}
+    assert (paths.knowledge / "alpha" / f"notes.{rev_a}.md").read_text() == "A\n"
+    assert (paths.knowledge / "beta" / f"notes.{rev_b}.md").read_text() == "B\n"
+
+
+def test_a_failing_body_write_rolls_the_migration_set_back(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HIGH-2: a mid-move failure leaves knowledge/ and migrations/ as they were.
+
+    A partial move used to strand an orphan body in `knowledge/` and, on the
+    O_EXCL migration refusal, leave a wrong-body first migration. The commit is
+    staged and rolled back now, so a failure part way through the writes lands
+    nothing.
+    """
+    from theurian.application import proposal_service as module
+
+    drafted = service.draft(_request())
+    before = _tree(paths.root)
+
+    real_write = module._write_file
+    calls = {"n": 0}
+
+    def failing_write(destination: Path, data: bytes, *, exclusive: bool) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real_write(destination, data, exclusive=exclusive)  # body lands
+            raise OSError("disk full")
+        real_write(destination, data, exclusive=exclusive)
+
+    monkeypatch.setattr(module, "_write_file", failing_write)
+
+    with pytest.raises(ProposalError, match="could not write"):
+        service.accept(drafted.proposal_id)
+
+    assert _tree(paths.root) == before, "a failed accept leaves the tree exactly as it was"

@@ -24,10 +24,14 @@ asymmetry is the whole of what #89 measured:
   first and reported nothing; validation then found one migration and applying
   it applied only that one, with the first change gone from the set and its body
   file left in ``.theurian/knowledge/`` with nothing pointing at it.
-* The **body** file may replace what is at its ``contentFile`` path, because on
-  an update to existing knowledge that is exactly the intent. What keeps the
-  replacement a stated one is the ``contentSha256`` and ``expectedRevision``
-  that :meth:`ProposalService.draft` pins.
+* The **body** file may replace what is at its ``contentFile`` path -- but only
+  where no migration already in place pins those bytes. A body a migration
+  references is immutable: the loader compares it against the pinned
+  ``contentSha256`` on every load, so replacing it would make an applied
+  migration's pin wrong and take the whole set out of ``migrate validate``. A
+  generated proposal never reaches that case, because its ``contentFile`` carries
+  a fresh revision id; a hand-authored one that reuses an existing body's path is
+  refused, and the honest way to change a body is a new revision at a new path.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ from theurian.domain.ports import Clock, IdGenerator
 from theurian.domain.proposal import (
     Evidence,
     body_relative_path,
+    is_migration_file_name,
     kebab_slug,
     migration_file_name,
     require_evidence,
@@ -263,7 +268,15 @@ class ProposalService:
 
         directory = self._paths.proposals / proposal_id.value
         directory.mkdir(parents=True)
-        body_file = directory / relative_body.name
+        # The body mirrors the sub-path it will occupy under `knowledge/`, not a
+        # flat leaf name. Two content files that differ only in namespace --
+        # `../knowledge/alpha/notes.md` and `../knowledge/beta/notes.md` -- share
+        # the leaf `notes.md`, and a flat layout made `accept` find one file for
+        # both: it consumed the first and raised a bare `FileNotFoundError` on
+        # the second, leaving an orphan in `knowledge/`. Mirroring the sub-path
+        # here is what lets `accept` find each body by its full relative path.
+        body_file = directory / relative_body
+        body_file.parent.mkdir(parents=True, exist_ok=True)
         body_file.write_bytes(body_bytes)
         evidence_file = directory / EVIDENCE_FILE
         evidence_file.write_text(
@@ -323,14 +336,9 @@ class ProposalService:
 
         document = _parse_migration(migration_bytes, migration_file)
         moves = tuple(self._body_moves(directory, document))
+        self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
 
-        self._paths.migrations.mkdir(parents=True, exist_ok=True)
-        bodies = tuple(_write_body(move) for move in moves)
-        return AcceptedProposal(
-            proposal_id=proposal_id,
-            migration=_create_migration(migration_file, destination, migration_bytes),
-            bodies=bodies,
-        )
+        return self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
 
     def _require_directory(self, proposal_id: ProposalId) -> Path:
         # Built from a validated ULID, so no caller-supplied text reaches the
@@ -355,13 +363,21 @@ class ProposalService:
 
     @staticmethod
     def _require_migration(directory: Path, proposal_id: ProposalId) -> Path:
-        # A `*.yaml` that is a symlink is rejected by name, not filtered away:
-        # `is_file()` follows the link, so a link to an out-of-project file would
-        # otherwise count as the migration and have its target's bytes read and
-        # written into a tracked migration file. Filtering it silently would
-        # report "holds no migration file" and send the reader to draft again,
-        # when the real fault is the link.
-        entries = sorted(directory.glob("*.yaml"))
+        # The migration is identified by its `<ulid>-<slug>.yaml` name, not by
+        # globbing `*.yaml`: a YAML or YML *body* is a `*.yaml` too, so globbing
+        # counted the body as a second migration and a YAML-bodied proposal could
+        # never be accepted ("holds two or more migration files"). Body files
+        # also mirror their `knowledge/` sub-path and so sit in a subdirectory,
+        # while the migration is always at the top level -- another reason a
+        # top-level, name-matched lookup finds exactly the migration.
+        entries = sorted(
+            path for path in directory.glob("*.yaml") if is_migration_file_name(path.name)
+        )
+        # `is_file()` follows a symlink, so a name-matching link to an
+        # out-of-project file would otherwise count as the migration and have its
+        # target's bytes read into a tracked file. It is rejected by name rather
+        # than filtered, so the reader is told about the link, not sent to draft
+        # again over a "missing" migration.
         symlinked = [path.name for path in entries if path.is_symlink()]
         if symlinked:
             raise ProposalError(
@@ -373,8 +389,8 @@ class ProposalService:
         candidates = [path for path in entries if path.is_file()]
         if not candidates:
             raise ProposalError(
-                f"Proposal {proposal_id.value} holds no migration file.",
-                remedy="A proposal directory holds one <migration-id>-<slug>.yaml. "
+                f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file.",
+                remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "
                 "Draft the proposal again.",
             )
         if len(candidates) > 1:
@@ -403,15 +419,21 @@ class ProposalService:
         The destination is resolved against ``.theurian/migrations/`` because
         that is where the migration file will be once this call finishes -- the
         same resolution the loader performs -- and it is confined to
-        ``.theurian/knowledge/``. The source is read through the security layer
-        here, once, so the bytes written later are the bytes that were checked.
+        ``.theurian/knowledge/``. The body is then found in the proposal
+        directory at the **same sub-path** it will occupy under ``knowledge/``,
+        not by its leaf name: two content files that differ only in namespace
+        share a leaf, and a leaf lookup found one file for both. The source is
+        read through the security layer here, once, so the bytes written later
+        are the bytes that were checked.
         """
+        knowledge = self._paths.knowledge.resolve()
         for content_file in _content_files(document):
             destination = self._destination_of(content_file)
-            source = directory / PurePosixPath(content_file).name
+            tail = destination.relative_to(knowledge)
+            source = directory / tail
             if not source.exists():
                 raise ProposalError(
-                    f"The migration names {content_file}, but {source.name} is not in "
+                    f"The migration names {content_file}, but {tail.as_posix()} is not in "
                     f"the proposal directory.",
                     remedy="Restore the body file, or draft the proposal again.",
                 )
@@ -439,6 +461,131 @@ class ProposalService:
                 remedy="A proposal's migration and body are real files. Remove the link.",
             )
         return read_source_file(self._paths.root, PurePosixPath(path.relative_to(self._paths.root)))
+
+    def _refuse_if_a_replacement_breaks_an_existing_pin(self, moves: Iterable[_BodyMove]) -> None:
+        """Refuse a body replacement that would invalidate an applied migration.
+
+        The invariant ``accept`` must hold is that it never leaves the migration
+        set unable to validate. A body file a migration references is immutable:
+        the loader re-reads it and compares it against the ``contentSha256`` that
+        migration pinned. Replacing that body with different bytes makes the pin
+        wrong, and ``migrate validate`` / ``apply`` / ``status`` then all exit 4
+        for the whole project -- reproduced: *"hashes to abc7cdb70713 but the
+        migration pins 4f9c5503e198"*, with no undo command.
+
+        A generated proposal never reaches this: its ``contentFile`` carries a
+        fresh revision id, so no two of them target one path. What reaches it is
+        a hand-authored ``contentFile`` that reuses an existing body's path --
+        exactly the manual flow -- and refusing there breaks nothing legitimate,
+        because the honest way to change a body is a new revision at a new path.
+        """
+        for move in moves:
+            if not move.replaced:
+                continue
+            pin = self._pinned_digest_at(move.destination)
+            if pin is None:
+                continue
+            current = ContentHash.of_bytes(move.destination.read_bytes()).value
+            replacement = ContentHash.of_bytes(move.data).value
+            # A pin that already fails to match its body is a project that does
+            # not validate now; only refuse where a *currently valid* pin would
+            # be broken. And a byte-identical replacement changes nothing.
+            if pin == current and replacement != current:
+                relative = move.destination.relative_to(self._paths.knowledge.resolve())
+                raise ProposalError(
+                    f"Accepting this would overwrite {relative.as_posix()}, whose bytes an "
+                    "existing migration pins with contentSha256; the whole migration set "
+                    "would then fail to validate.",
+                    remedy="Draft this as a new revision -- a fresh contentFile -- rather than "
+                    "a replacement of an existing body.",
+                )
+
+    def _pinned_digest_at(self, destination: Path) -> str | None:
+        """The ``contentSha256`` an existing migration pins for ``destination``, if any.
+
+        Reads the migrations already in ``.theurian/migrations/`` -- not the
+        proposal -- so it can say whether landing this body would break one. A
+        malformed existing migration is skipped: it fails ``migrate validate``
+        regardless, and is not this command's to diagnose.
+        """
+        resolved_destination = destination.resolve()
+        for migration in sorted(self._paths.migrations.glob("*.yaml")):
+            if migration.is_symlink() or not migration.is_file():
+                continue
+            try:
+                document = load_yaml_mapping(migration.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
+                continue
+            for content_file, pin in _pinned_content_files(document):
+                if (self._paths.migrations / content_file).resolve() == resolved_destination:
+                    return pin
+        return None
+
+    def _commit(
+        self,
+        proposal_id: ProposalId,
+        moves: tuple[_BodyMove, ...],
+        migration_file: Path,
+        migration_bytes: bytes,
+        migration_destination: Path,
+    ) -> AcceptedProposal:
+        """Write every body and the migration, or leave the tree as it was.
+
+        Atomic in the sense that matters here: either the migration and all its
+        bodies land, or ``.theurian/migrations/`` and ``.theurian/knowledge/``
+        are exactly as they were. The move is a copy-then-delete -- every
+        destination is written first, and the proposal's own files are removed
+        only once the migration has landed, so a failure part way through rolls
+        the destinations back and leaves the proposal directory whole. The
+        migration is written last and with ``O_EXCL``: if its name was taken in
+        the window since the check, the bodies already written are rolled back
+        rather than left as orphans a previous version stranded in
+        ``knowledge/``.
+        """
+        self._paths.migrations.mkdir(parents=True, exist_ok=True)
+        created: list[Path] = []
+        restored: list[tuple[Path, bytes]] = []
+        try:
+            for move in moves:
+                move.destination.parent.mkdir(parents=True, exist_ok=True)
+                if move.replaced:
+                    restored.append((move.destination, move.destination.read_bytes()))
+                else:
+                    created.append(move.destination)
+                _write_file(move.destination, move.data, exclusive=False)
+            try:
+                _write_file(migration_destination, migration_bytes, exclusive=True)
+            except FileExistsError as exc:
+                raise MigrationNameTakenError(
+                    f"{migration_destination.name} appeared in .theurian/migrations/ while "
+                    "this proposal was being accepted, so accepting it would overwrite that "
+                    "migration.",
+                    remedy="Read what is there, then draft this proposal again for a new id.",
+                ) from exc
+            created.append(migration_destination)
+        except MigrationNameTakenError:
+            _roll_back(created, restored)
+            raise
+        except OSError as exc:
+            _roll_back(created, restored)
+            raise ProposalError(
+                f"accept could not write a file: {exc}.",
+                remedy="Check the contentFile the migration names, then accept it again.",
+            ) from exc
+
+        for move in moves:
+            move.source.unlink(missing_ok=True)
+        migration_file.unlink(missing_ok=True)
+        return AcceptedProposal(
+            proposal_id=proposal_id,
+            migration=MovedFile(
+                source=migration_file, destination=migration_destination, replaced=False
+            ),
+            bodies=tuple(
+                MovedFile(source=m.source, destination=m.destination, replaced=m.replaced)
+                for m in moves
+            ),
+        )
 
     def _destination_of(self, content_file: str) -> Path:
         """Where one ``contentFile`` points, proved to be inside ``knowledge/``.
@@ -488,7 +635,7 @@ def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
     """
     try:
         return load_yaml_mapping(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         raise ProposalError(
             f"{path.name} could not be read as a migration: {exc}",
             remedy="Fix the migration file in the proposal directory, then accept it again.",
@@ -507,43 +654,37 @@ def _content_files(document: Mapping[str, object]) -> Iterable[str]:
             yield content_file
 
 
-def _write_body(move: _BodyMove) -> MovedFile:
-    """Write a body onto its destination, replacing whatever is there.
+def _pinned_content_files(document: Mapping[str, object]) -> Iterable[tuple[str, str]]:
+    """Every ``(contentFile, contentSha256)`` an existing migration pins."""
+    operations = document.get("operations")
+    if not isinstance(operations, list):
+        return
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        content_file = operation.get("contentFile")
+        pin = operation.get("contentSha256")
+        if isinstance(content_file, str) and content_file and isinstance(pin, str) and pin:
+            yield content_file, pin
 
-    The permissive half of the asymmetry: a second revision of an item targets
-    the same ``contentFile``, so refusing here would make an update impossible.
 
-    The write is ``O_NOFOLLOW`` with an explicit mode, never a rename. A rename
-    preserves the source file's permission bits, so a body chmod 0755 in the
-    proposal directory would land an executable file in ``knowledge/``; and it
-    follows a planted destination symlink, writing through it to wherever the
-    link points. Neither survives an explicit-mode create that refuses to open a
-    symlink.
+def _roll_back(created: Iterable[Path], restored: Iterable[tuple[Path, bytes]]) -> None:
+    """Undo a partial commit: remove what was created, restore what was replaced.
+
+    Best effort, and deliberately silent on its own failures: it runs while an
+    exception is already propagating, and a raise here would mask the failure
+    the caller is trying to report.
     """
-    move.destination.parent.mkdir(parents=True, exist_ok=True)
-    _write_file(move.destination, move.data, exclusive=False)
-    move.source.unlink()
-    return MovedFile(source=move.source, destination=move.destination, replaced=move.replaced)
-
-
-def _create_migration(source: Path, destination: Path, data: bytes) -> MovedFile:
-    """Create the migration at a name nothing holds, refusing to overwrite.
-
-    ``O_EXCL`` and not an ``exists()`` check followed by a write: the check is
-    already done in :meth:`ProposalService._refuse_if_migration_present`, and
-    this is the guard against something creating the name in the window between,
-    which a check-then-write cannot close.
-    """
-    try:
-        _write_file(destination, data, exclusive=True)
-    except FileExistsError as exc:
-        raise MigrationNameTakenError(
-            f"{destination.name} appeared in .theurian/migrations/ while this proposal "
-            "was being accepted, so accepting it would overwrite that migration.",
-            remedy="Read what is there, then draft this proposal again for a new id.",
-        ) from exc
-    source.unlink()
-    return MovedFile(source=source, destination=destination, replaced=False)
+    for path in created:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - defensive; the file was just written
+            continue
+    for path, data in restored:
+        try:
+            _write_file(path, data, exclusive=False)
+        except OSError:  # pragma: no cover - defensive; the file was just read
+            continue
 
 
 def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
@@ -551,9 +692,11 @@ def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
 
     ``O_NOFOLLOW`` on the final component: a destination that is a symlink is
     refused rather than written through, so a body cannot be redirected out of
-    ``knowledge/`` by planting a link at its path. ``O_EXCL`` additionally
-    refuses a destination that exists at all, for the migration, whose name must
-    never land on another file.
+    ``knowledge/`` by planting a link at its path. The write carries an explicit
+    ``0o644`` and never a rename, so a body chmod 0755 in the proposal directory
+    does not land executable in ``knowledge/``. ``O_EXCL`` additionally refuses a
+    destination that exists at all, for the migration, whose name must never land
+    on another file.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
     flags |= os.O_EXCL if exclusive else os.O_TRUNC

@@ -96,15 +96,20 @@ def test_propose_writes_a_proposal_directory_a_reviewer_can_read(project: Path) 
     assert code == 0, payload
     directory = project / payload["proposalDirectory"]
     body = f"retry-policy.{payload['revisionId']}.md"
+    # The migration and evidence sit at the top; the body mirrors its knowledge
+    # sub-path, so it is under `architecture/` rather than flat -- which is what
+    # lets accept find two same-leaf bodies apart.
     assert sorted(p.name for p in directory.iterdir()) == [
         payload["migrationFile"],
+        "architecture",
         "evidence.json",
-        body,
     ]
+    assert (directory / "architecture" / body).is_file()
     # Written for where the migration will be after acceptance, not for the
     # directory it sits in now -- and named so the move renames nothing.
     assert payload["contentFile"] == f"../knowledge/architecture/{body}"
     assert payload["bodyDestination"] == f".theurian/knowledge/architecture/{body}"
+    assert payload["bodyFile"] == f"{payload['proposalDirectory']}/architecture/{body}"
     assert payload["migrationFile"].startswith(payload["migrationId"])
 
 

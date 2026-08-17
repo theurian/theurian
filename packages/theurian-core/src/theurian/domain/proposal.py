@@ -130,6 +130,26 @@ def migration_file_name(migration_id: MigrationId, slug: str) -> str:
     return f"{migration_id.value}-{slug}.yaml"
 
 
+#: The exact shape :func:`migration_file_name` produces: a ULID, a hyphen, a
+#: kebab slug, ``.yaml``. Anchored so a body file that also ends ``.yaml`` --
+#: ``glossary.<revision-ulid>.yaml`` for a YAML-bodied namespace-less item --
+#: does not match, since it opens with a lowercase word rather than a ULID.
+_MIGRATION_FILE_NAME: Final = re.compile(
+    r"\A[0-7][0-9A-HJKMNP-TV-Z]{25}-[a-z0-9]+(?:-[a-z0-9]+)*\.yaml\Z"
+)
+
+
+def is_migration_file_name(name: str) -> bool:
+    """Whether ``name`` is a generated migration file name (``<ulid>-<slug>.yaml``).
+
+    ``accept`` uses this to pick the migration out of a proposal directory
+    rather than globbing ``*.yaml``: a YAML or YML *body* is a ``*.yaml`` too,
+    and globbing counted it as a second migration, so a YAML-bodied proposal
+    could never be accepted (it "held two or more migration files").
+    """
+    return _MIGRATION_FILE_NAME.match(name) is not None
+
+
 def body_extension(content_type: MediaType) -> str:
     """The filename extension a body of this media type is written with.
 
