@@ -162,13 +162,6 @@ class Exemption:
 #: or :func:`test_no_recorded_exception_outlives_the_text_it_excuses` removes it.
 KNOWN_UNREGISTERED: Final = (
     Exemption(
-        path="docs/adr/0013-ai-writes-produce-proposals.md",
-        literal="theurian propose",
-        excused=("theurian propose accept",),
-        reason="the accepted design for a flow Milestone 7 builds; not an instruction yet",
-        reference="#89",
-    ),
-    Exemption(
         path="docs/security/threat-model.md",
         literal="theurian upgrade",
         excused=(
@@ -180,13 +173,6 @@ KNOWN_UNREGISTERED: Final = (
         reason="the corrected-entry history quoting the remedy it replaced, and the note "
         "recording that implementing it was the rejected alternative",
         reference="#42",
-    ),
-    Exemption(
-        path="docs/security/threat-model.md",
-        literal="theurian propose",
-        excused=("theurian propose",),
-        reason="the defect-class description naming the reachable member of the class",
-        reference="#89",
     ),
     Exemption(
         path="packages/theurian-core/CHANGELOG.md",
@@ -627,15 +613,16 @@ def test_the_authority_reports_groups_with_their_verbs() -> None:
 def test_the_commands_the_defect_class_was_found_through_are_still_absent() -> None:
     """The premise the whole module rests on, kept honest against Milestone 7.
 
-    ``propose`` is planned (ADR-0013), and the day it is registered the entries
-    excusing ADR-0013 and the threat model become wrong rather than merely
-    stale. This fails then, which is the signal to delete them.
+    ``propose`` used to be here. #212 registered it, which is exactly what this
+    test was watching for: the ADR-0013 and threat-model exemptions became wrong
+    rather than merely stale, and both are gone from
+    :data:`KNOWN_UNREGISTERED` above. ``propose`` is now a live group, so
+    ``theurian propose accept`` resolves like any other verb and needs no
+    permission -- while ``/theurian:propose`` still writes the proposal by hand
+    and is a separate correction (#89, #212).
+
+    ``upgrade`` is what is left, and it is the one that has never existed.
     """
-    assert "propose" not in REGISTERED, (
-        "`theurian propose` is now registered. Remove the ADR-0013 and threat-model "
-        "exemptions, and revisit `/theurian:propose`, which writes the proposal by "
-        "hand because the subcommand did not exist (#89)."
-    )
     assert "upgrade" not in REGISTERED, (
         "`theurian upgrade` is now registered. The remedy in `domain/compatibility.py` "
         "delegates to `uv tool upgrade` / `pipx upgrade` precisely because it was not (#42)."

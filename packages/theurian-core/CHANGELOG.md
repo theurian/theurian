@@ -12,6 +12,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`theurian propose` drafts a knowledge change, `theurian propose accept`
+  moves it into place** ([#212](https://github.com/theurian/theurian/issues/212)).
+  Packages ADR-0013 §4's previously manual flow into the CLI: `theurian propose`
+  writes a proposal directory under `.theurian/proposals/<id>/` — a schema-valid,
+  directly applicable migration named `<migration-ulid>-<slug>.yaml`, the body in
+  its native format under a sub-path mirroring its knowledge namespace, and
+  `evidence.json` — and writes nowhere else. `theurian propose accept <id>` moves
+  the migration into `.theurian/migrations/` and the body to the path its
+  `contentFile` names. Neither approves anything: `accept` moves files and stops
+  short of the judgement, and approval is a human merging the pull request that
+  carries the proposal (ADR-0013 point 4). There is no CLI or MCP surface that
+  stands in for that merge.
+
 ### Removed
 
 - **BREAKING — `system.capabilities` no longer publishes `milestone`**

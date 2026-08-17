@@ -37,9 +37,11 @@ from command_extraction import (
 #: faces of #42 and #89. Written as data so a reader can see the oracle rather
 #: than infer it from a regex.
 _EXTRACTION_ORACLE: Final = (
-    pytest.param("theurian propose --json", ("propose",), id="the-fenced-propose-face"),
+    pytest.param("theurian upgrade --json", ("upgrade",), id="the-fenced-upgrade-face"),
     pytest.param(
-        "theurian propose accept <proposal-id>", ("propose",), id="the-propose-accept-face"
+        "theurian frobnicate status --json",
+        ("frobnicate",),
+        id="a-dead-command-whose-next-word-is-a-verb",
     ),
     pytest.param("theurian index rebuild --json", ("index rebuild",), id="the-reindex-face"),
     pytest.param("theurian index build --json", (), id="a-live-command"),
@@ -161,9 +163,15 @@ def test_the_extractor_reads_a_frontmatter_value_as_prose(
 #: kept the whole module green. That mutation is what this fixture exists for --
 #: ``propose.md``'s dead ``theurian propose --json`` sat in a fence, so the fence
 #: path is the one that carried the motivating face of #89.
+#:
+#: The sample dead command is ``theurian upgrade``, #42's face, because #212
+#: registered ``propose`` and a fixture's dead command has to still be dead --
+#: ``test_the_commands_the_defect_class_was_found_through_are_still_absent``
+#: is what keeps this one so. Every line number and every quoting shape below is
+#: the one ``propose`` occupied.
 _MARKDOWN_FIXTURE: Final = """\
 ---
-description: Runs theurian propose, then waits for review.
+description: Runs theurian upgrade, then waits for review.
 allowed-tools: Bash(theurian:*), Read, Write(.theurian/proposals/**)
 ---
 
@@ -172,14 +180,14 @@ allowed-tools: Bash(theurian:*), Read, Write(.theurian/proposals/**)
 Prose naming the `theurian` binary, plus a live `theurian index build --json`.
 
 ```sh
-theurian propose --json
+theurian upgrade --json
 theurian index \\
     rebuild --json
 ```
 
 The integrations table's dead row: `theurian index rebuild --json`, and one
 the line wrap split: `theurian
-propose accept <proposal-id>`.
+upgrade --check <core-version>`.
 
 > > A nested blockquote wraps one too: `theurian index
 > > rebuild --json`.
@@ -188,7 +196,7 @@ A fence inside a blockquote is a fence, not one long line:
 
 > ```sh
 > theurian index build --json
-> theurian propose accept
+> theurian upgrade --check
 > ```
 
 An indented block, which no fence encloses:
@@ -213,13 +221,13 @@ S["Session starts"] --> A{"theurian on PATH?"}
 #: is indented four spaces and quoted by nothing at all. Nothing comes from the
 #: Mermaid block, from ``allowed-tools``, or from the live invocation on line 8.
 _MARKDOWN_FIXTURE_FINDINGS: Final = {
-    (2, "propose"),
-    (11, "propose"),
+    (2, "upgrade"),
+    (11, "upgrade"),
     (12, "index rebuild"),
     (16, "index rebuild"),
-    (17, "propose"),
+    (17, "upgrade"),
     (20, "index rebuild"),
-    (27, "propose"),
+    (27, "upgrade"),
     (32, "index rebuild"),
 }
 
@@ -238,20 +246,20 @@ _PYTHON_FIXTURE: Final = '''\
 
 #: A comment run whose code span the line wrap split: `theurian index
 #: rebuild` is the face #89 fixed.
-REMEDY = "Run `theurian propose` to draft one."
+REMEDY = "Run `theurian upgrade` to fix it."
 DETAILED = f"Run `theurian index rebuild --project {name}` to fix it."
 GUESSED = f"Run `theurian {verb} --json`, whatever it turns out to be."
 WRAPPED = f"""Run {
     "this"
     or "that"
-} and then `theurian propose accept`."""
+} and then `theurian upgrade --check`."""
 CONCATENATED = (
     f"The index build being purged could not be read ({name}). Nothing "
     f"was published, so retrieval still uses the current index. Run `theurian index "
     f"rebuild` to rebuild it; the index is derived, so nothing authored is lost."
 )
 SEPARATE = [
-    "`theurian propose`",
+    "`theurian upgrade`",
     "`theurian index rebuild`",
 ]
 '''
@@ -265,11 +273,11 @@ SEPARATE = [
 #: own lines rather than one merged blob.
 _PYTHON_FIXTURE_FINDINGS: Final = {
     (3, "index rebuild"),
-    (5, "propose"),
+    (5, "upgrade"),
     (6, "index rebuild"),
-    (11, "propose"),
+    (11, "upgrade"),
     (14, "index rebuild"),
-    (18, "propose"),
+    (18, "upgrade"),
     (19, "index rebuild"),
 }
 
@@ -293,10 +301,10 @@ theurian daemon start >/dev/null 2>&1 || true
 status="$(theurian project status --json)" || return 0
 theurian index rebuild \\
     --json || true
-# A comment naming `theurian propose accept` as the flow to come.
+# A comment naming `theurian upgrade --check` as the remedy that never existed.
 """
 
-_SHELL_FIXTURE_FINDINGS: Final = {(4, "index rebuild"), (6, "propose")}
+_SHELL_FIXTURE_FINDINGS: Final = {(4, "index rebuild"), (6, "upgrade")}
 
 
 def _read(document: str, reader: Reader) -> set[tuple[int, str]]:
@@ -335,7 +343,7 @@ def test_one_occurrence_is_one_finding_even_when_two_arms_could_see_it() -> None
     stay green -- which is a standing permission for a second occurrence nobody
     has written, and the exemption bound is precisely what this round added.
     """
-    document = "---\ndescription: Run `theurian propose` first.\n---\n\nBody.\n"
+    document = "---\ndescription: Run `theurian upgrade` first.\n---\n\nBody.\n"
 
     found = [
         (span.line, command)
@@ -343,7 +351,7 @@ def test_one_occurrence_is_one_finding_even_when_two_arms_could_see_it() -> None
         for command in unregistered_in(span.text, prose=span.prose)
     ]
 
-    assert found == [(2, "propose")]
+    assert found == [(2, "upgrade")]
 
 
 def test_a_python_module_yields_dead_commands_from_comments_strings_and_fstrings() -> None:

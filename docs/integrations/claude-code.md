@@ -139,12 +139,13 @@ SQLite database and ten index builders racing. That is corruption, not slowness.
 
 ## Commands
 
-Eleven of the twelve are thin adapters over the CLI and contain no Theurian
-logic. The exception is `/theurian:propose`: the `propose` subcommand
-[ADR-0013](../adr/0013-ai-writes-produce-proposals.md) describes is not
-registered yet ([#89](https://github.com/theurian/theurian/issues/89)), so until
-Milestone 7 builds it the command writes the proposal directory itself and the
-migration format lives in the command document rather than in Core.
+All twelve are thin adapters over the CLI and contain no Theurian logic.
+`/theurian:propose` was the exception until Milestone 7 registered the `propose`
+subcommand [ADR-0013](../adr/0013-ai-writes-produce-proposals.md) describes
+([#212](https://github.com/theurian/theurian/issues/212), closing
+[#89](https://github.com/theurian/theurian/issues/89)); the command now shells out
+to `theurian propose` / `theurian propose accept` like the rest, so the migration
+format lives in Core rather than in the command document.
 
 | Command | Underlying CLI |
 | :-- | :-- |
@@ -157,25 +158,27 @@ migration format lives in the command document rather than in Core.
 | `/theurian:reindex` | `theurian index build [--raptor] --json`, `theurian index gc [--dry-run] --json` |
 | `/theurian:migrate` | `theurian migrate validate\|apply --json` |
 | `/theurian:ingest` | `theurian ingest --json` |
-| `/theurian:propose` | — (see note) |
+| `/theurian:propose` | `theurian propose --json`, `theurian propose accept --json` |
 | `/theurian:upgrade` | `theurian version --json`, `theurian compat check --json` |
 | `/theurian:uninstall` | `theurian uninstall [--dry-run] --json` |
 
-`/theurian:propose` has no CLI of its own to adapt. It writes
-`.theurian/proposals/<proposal-id>/` with a `Write` grant scoped to that
-directory (`Write(.theurian/proposals/**)`), and the commands in the flow are the
-user's: `theurian migrate validate --json` on the accepted migration, then
+`/theurian:propose` shells out to `theurian propose` to draft the proposal and
+`theurian propose accept` to move it into place. Core writes
+`.theurian/proposals/<proposal-id>/`; the command's own `Write` grant is only for
+the body file it hands to `--body-file`. Accepting and the commands after it are
+the user's: `theurian migrate validate --json` on the accepted migration, then
 `theurian migrate apply --json` and `theurian index build --json` after the pull
 request merges — `--raptor` on that last one where the project keeps a summary
 forest, since a plain build writes no summary nodes.
 
-The scoped `Write` bounds what the command writes; it does not bound what it may
-invoke. `allowed-tools` grants and never removes — the semantics, with the vendor
-citation, are stated once in
+The `Write` grant does not bound what the command may invoke. `allowed-tools`
+grants and never removes — the semantics, with the vendor citation, are stated
+once in
 [`upgrade.md`](https://github.com/theurian/theurian/blob/main/plugins/claude-code/commands/upgrade.md) — so
-`Bash(theurian:*)` auto-approves `migrate apply` and `index gc` even in the very
-commands that reserve them for a human. During the manual flow that boundary is
-the command documents' rules rather than a check Core performs
+`Bash(theurian:*)` auto-approves `migrate apply`, `index gc`, and now `propose
+accept` (which moves a migration into `.theurian/migrations/`) even in the very
+commands that reserve them for a human. That boundary is the command documents'
+rules rather than a check Core performs
 ([#209](https://github.com/theurian/theurian/issues/209)).
 
 Setup logic exists once, in `SetupService`. `/theurian:setup` and `theurian

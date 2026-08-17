@@ -393,6 +393,34 @@ followed before the containment check. Intermediate components are checked too,
 not only the final target. A symlinked *root* — `/tmp` on macOS, a symlinked home
 directory — still works, because the root is resolved as well.
 
+**A second path resolves an untrusted `contentFile`: `theurian propose accept`.**
+A proposal directory may be committed and delivered through a pull request
+(ADR-0013 point 7), so the `contentFile` its migration names and the body it
+carries are input from whoever can open a PR — the same trust level as an
+ingested migration. `accept` reads through the same resolve-then-compare path as
+`migrate apply`, and adds what the move needs on top: it refuses a proposal
+directory that *is* or *contains* a symlink anywhere in its read chain — not only
+the final component, since a committed proposal is real files and directories by
+construction — and it confines every write to `.theurian/knowledge/` (a body) or
+`.theurian/migrations/` (the migration), opening each with `O_NOFOLLOW` and an
+explicit `0644` mode so neither a source symlink nor a symlink planted at a
+destination survives the move. Tested:
+`tests/integration/test_proposal_service.py::test_accept_refuses_a_symlinked_proposal_directory`,
+`::test_accept_refuses_an_in_project_intermediate_directory_symlink`, and
+`::test_accept_refuses_a_content_file_inside_the_root_but_outside_knowledge`.
+
+**Residual (accepted, and it belongs to T-1, not a gap here): a hardlinked body.**
+`O_NOFOLLOW` does not see a hardlink — a hardlink is a second name for one inode,
+not a symlink — so a body file hardlinked to `~/.ssh/id_ed25519` would copy that
+file's bytes into `.theurian/knowledge/` on accept. It is not reachable through
+the committed-proposal channel this entry is about: Git cannot store a live
+hardlink, so a fresh clone of the PR gets a distinct inode holding the committed
+blob, not a link to anything outside the checkout. Reaching it needs local write
+access to the working tree at accept time — the T-1 boundary, where the actor can
+already read the secret directly — so it is recorded there as an accepted residual
+rather than closed here with an `st_nlink` check that would refuse legitimate
+files.
+
 #### T-6 — A zip or YAML bomb at ingestion, or a search query that burns seconds of CPU (DoS, Medium)
 
 **Controls at ingestion:** max file size, max nesting depth, max archive
@@ -1186,8 +1214,12 @@ released pair reaches this remedy. It becomes reachable the moment
 `coreCompatibility.minimum` is raised. "Reached users" and "the one most likely
 to be read" are therefore true of the *shape* of the defect and false of any
 user today — which downgrades it from shipped-and-wrong to correct-but-
-unreachable, and is why the reachable member of the class is `theurian propose`
-rather than this one ([#89](https://github.com/theurian/theurian/issues/89)).
+unreachable, and is why the reachable member of the class *was* `theurian propose`
+rather than this one. That member has since closed:
+[#212](https://github.com/theurian/theurian/issues/212) registered `theurian
+propose` and `theurian propose accept` (closing
+[#89](https://github.com/theurian/theurian/issues/89)), so the plugin command now
+shells out to a command that exists rather than documenting one that does not.
 
 **That printing is true only from [#90](https://github.com/theurian/theurian/pull/90).**
 Before it, `lib.sh` opened `set -euo pipefail` and `session-start.sh` sources it,
