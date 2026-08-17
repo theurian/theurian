@@ -133,8 +133,13 @@ def _call_sites(path: pathlib.Path) -> list[tuple[str, str, str]]:
 #: Every ``(module path under theurian/, enclosing function, callee)`` triple
 #: that calls ``resolve_context`` or ``_require_project``, read off the
 #: shipped source with:
-#: ``grep -rn "resolve_context(\\|_require_project(" src/theurian/cli/*.py``
+#: ``grep -rn "resolve_context(\\|_require_project(" src/theurian/``
 #: on 2026-08-17 against ``fix/205-json-crash-on-unresolvable-content-file``.
+#: Recursive over the whole package, not scoped to ``cli/`` -- matching
+#: :data:`_LIVE_SITES`'s own ``SRC.rglob("*.py")`` below, so a future call
+#: site under ``mcp/`` or ``daemon/`` is caught by regenerating this set the
+#: same way the live scan already finds it, rather than by a narrower grep
+#: that would silently miss it.
 RESOLVE_CONTEXT_CALL_SITES = {
     ("cli/commands.py", "init_command", "resolve_context"),
     ("cli/commands.py", "project_register", "resolve_context"),

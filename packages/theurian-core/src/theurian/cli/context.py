@@ -186,6 +186,11 @@ def resolve_context(
             an entry that cannot be read and no explicit ``project_id`` was
             given.
         MigrationError: If the migrations under it do not load or validate.
+        SchemaUnreadableError: If probing for the installed package's JSON
+            Schema raised (``schema_root``), or the schema was found but a
+            read of it failed (``_validator`` in
+            ``infrastructure/filesystem/migration_loader.py``). Not a
+            ``MigrationError``: install-integrity, not migration content.
     """
     cwd = (start or Path.cwd()).resolve()
     root = find_git_root(cwd)
