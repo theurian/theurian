@@ -24,7 +24,7 @@ from pathlib import PurePosixPath
 from typing import Final
 
 from theurian.domain.errors import InvariantViolationError
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, TaskId
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, RevisionId, TaskId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.values import JSON, MARKDOWN, YAML, MediaType
 
@@ -147,13 +147,37 @@ def body_extension(content_type: MediaType) -> str:
     return extension
 
 
-def body_relative_path(item_id: ItemId, content_type: MediaType) -> PurePosixPath:
-    """Where a body file lives under the knowledge directory.
+def body_relative_path(
+    item_id: ItemId, revision_id: RevisionId, content_type: MediaType
+) -> PurePosixPath:
+    """Where one revision's body file lives under the knowledge directory.
 
     Derived from the **item id**, never from ``namespace``. The two would
     usually agree, but ``namespace`` is free text bounded only by a control-
     character exclusion, so using it as a path component would make ``../`` a
     spellable value in a field nothing treats as a path. ``ItemId`` is dotted
     lowercase kebab-case, which cannot express a traversal at all.
+
+    **The revision id is in the name, and that is not decoration.** A body file
+    a migration references is immutable: the loader re-reads it on every load
+    and compares it against the digest the migration pinned, and applying the
+    whole set to an empty database has to reproduce the same canonical state
+    (FR-K4). One path per *item* satisfies neither. Measured on this branch,
+    with two generated proposals for one item accepted in turn:
+    ``theurian migrate validate`` exited 4 for the whole project --
+    *"../knowledge/architecture/retry-policy.md hashes to abc7cdb70713 but the
+    migration pins 4f9c5503e198"* -- and no migration could be applied
+    afterwards, because the second acceptance had replaced the body the first
+    migration still names.
+
+    Unpinning the digest would have hidden it rather than fixed it: replaying
+    the first migration would then read the *second* revision's body and record
+    it under the first revision's id. A fresh ULID per revision is what makes
+    the file the migration named stay the file it named.
     """
-    return PurePosixPath(*item_id.value.split(".")).with_suffix(body_extension(content_type))
+    leaf = item_id.value.rpartition(".")[2]
+    name = f"{leaf}.{revision_id.value}{body_extension(content_type)}"
+    namespace = item_id.namespace
+    if not namespace:
+        return PurePosixPath(name)
+    return PurePosixPath(*namespace.split(".")) / name

@@ -304,7 +304,35 @@ def test_the_content_file_resolves_from_the_migrations_directory_after_acceptanc
     loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
 
     assert len(loaded.migration_set) == 1
-    assert (paths.knowledge / "architecture" / "retry-policy.md").read_text() == BODY
+    assert drafted.body_destination.read_text() == BODY
+    assert drafted.body_destination.parent == paths.knowledge / "architecture"
+
+
+def test_two_accepted_proposals_for_one_item_leave_a_set_that_still_loads(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The defect a run found and no test did, pinned where it was introduced.
+
+    Generating both proposals into ``architecture/retry-policy.md`` made the
+    second acceptance replace the body the *first* migration had pinned. The
+    loader re-reads every ``contentFile`` on every load, so the whole set
+    stopped loading -- ``theurian migrate validate`` exited 4 with *"hashes to
+    abc7cdb70713 but the migration pins 4f9c5503e198"*, and no migration in the
+    project could be applied afterwards.
+
+    Loading the set is the assertion, not the file names: a future change that
+    keeps the names distinct by some other means still passes, and any change
+    that reintroduces a shared body path fails here whatever it calls it.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(_request(expected_revision=first.revision_id, body="# Five.\n"))
+    service.accept(second.proposal_id)
+
+    loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+
+    assert len(loaded.migration_set) == 2
+    assert first.body_destination.read_text() == BODY, "the first body is still what it pinned"
 
 
 def test_accept_refuses_to_land_a_migration_on_an_existing_name(
@@ -332,28 +360,36 @@ def test_accept_refuses_to_land_a_migration_on_an_existing_name(
     assert not drafted.body_destination.exists()
 
 
-def test_accept_replaces_the_body_because_an_update_means_to(
+def test_accept_replaces_the_body_because_a_proposal_may_mean_to(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """The two moves are deliberately asymmetric.
+    """The permissive half of the asymmetry, on the case that still reaches it.
 
-    A second revision of an item necessarily targets the same ``contentFile``,
-    so refusing to replace the body would make an update impossible. What keeps
-    the replacement a stated one rather than a silent one is the
-    ``contentSha256`` and ``expectedRevision`` the generator pins.
+    ``accept`` never refuses a body: a proposal that targets a path already
+    holding a file is replacing it on purpose, and refusing would make that
+    unstateable. The *generated* path carries a fresh revision id, so a
+    generated proposal no longer produces this collision -- what does is a
+    hand-written one, which is exactly the flow ADR-0013 §4 describes and
+    ``plugins/claude-code/commands/propose.md`` walks a human through.
+
+    So the collision is built the way a hand-written proposal builds it: by
+    naming a ``contentFile`` that already exists.
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
     second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(
+            second.content_file, first.content_file
+        ),
+        encoding="utf-8",
+    )
+    (second.directory / first.body_file.name).write_bytes(second.body_file.read_bytes())
 
     accepted = service.accept(second.proposal_id)
 
     assert accepted.bodies[0].replaced
-    assert (
-        (paths.knowledge / "architecture" / "retry-policy.md")
-        .read_text()
-        .endswith("Five attempts.\n")
-    )
+    assert first.body_destination.read_text().endswith("Five attempts.\n")
 
 
 def test_accept_leaves_the_evidence_where_a_reviewer_will_read_it(
@@ -385,9 +421,9 @@ def test_accept_refuses_a_body_path_that_leaves_the_project(
     """
     drafted = service.draft(_request())
     document = drafted.migration_file.read_text(encoding="utf-8")
+    assert drafted.content_file in document
     drafted.migration_file.write_text(
-        document.replace("../knowledge/architecture/retry-policy.md", "../../../../escaped.md"),
-        encoding="utf-8",
+        document.replace(drafted.content_file, "../../../../escaped.md"), encoding="utf-8"
     )
 
     with pytest.raises(PathEscapeError):
@@ -402,7 +438,7 @@ def test_accept_names_the_body_it_cannot_find(
     drafted = service.draft(_request())
     drafted.body_file.unlink()
 
-    with pytest.raises(ProposalError, match=r"retry-policy\.md"):
+    with pytest.raises(ProposalError, match=r"retry-policy\."):
         service.accept(drafted.proposal_id)
 
 

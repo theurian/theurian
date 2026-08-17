@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from theurian.domain.errors import InvariantViolationError
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, TaskId
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, RevisionId, TaskId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.proposal import (
     MAX_SLUG_LENGTH,
@@ -28,6 +28,8 @@ ANCHOR = SourceAnchor(
     source_uri="https://github.com/acme/api/commit/0123456789abcdef",
     commit_sha="0123456789abcdef",
 )
+
+REVISION = RevisionId("01K9C7VN4TQZB2M8XR5HD3JFEW")
 
 
 def _evidence(
@@ -157,10 +159,30 @@ def test_a_body_path_comes_from_the_item_id_and_never_from_free_text() -> None:
     ``ItemId`` is dotted lowercase kebab-case, so every segment of the path below
     is already bounded by its pattern -- ``../`` cannot be spelled in one.
     """
-    path = body_relative_path(ItemId("architecture.retry-policy"), MARKDOWN)
+    path = body_relative_path(ItemId("architecture.retry-policy"), REVISION, MARKDOWN)
 
-    assert path.as_posix() == "architecture/retry-policy.md"
+    assert path.as_posix() == f"architecture/retry-policy.{REVISION.value}.md"
 
 
 def test_a_single_segment_item_lands_at_the_knowledge_root() -> None:
-    assert body_relative_path(ItemId("glossary"), MARKDOWN).as_posix() == "glossary.md"
+    path = body_relative_path(ItemId("glossary"), REVISION, MARKDOWN)
+
+    assert path.as_posix() == f"glossary.{REVISION.value}.md"
+
+
+def test_two_revisions_of_one_item_never_share_a_body_file() -> None:
+    """The measured reason the revision id is in the name.
+
+    A body a migration references is immutable -- the loader re-reads it and
+    compares it against the pinned digest on every load. Two generated
+    proposals for one item, accepted in turn, shared ``retry-policy.md`` and
+    took ``theurian migrate validate`` to exit 4 for the whole project:
+    *"hashes to abc7cdb70713 but the migration pins 4f9c5503e198"*. No
+    migration could be applied afterwards.
+    """
+    item = ItemId("architecture.retry-policy")
+    first = body_relative_path(item, REVISION, MARKDOWN)
+    second = body_relative_path(item, RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM"), MARKDOWN)
+
+    assert first != second
+    assert first.parent == second.parent, "one item's revisions stay in one directory"

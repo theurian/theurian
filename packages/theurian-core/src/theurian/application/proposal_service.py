@@ -84,6 +84,16 @@ class ProposalError(TheurianError):
         super().__init__(message)
 
 
+class MigrationNameTakenError(ProposalError):
+    """``.theurian/migrations/`` already holds a file of that name.
+
+    Its own type rather than a message a caller matches on: this is the one
+    refusal here that says something about the project's *knowledge state* --
+    that migration is already in place -- so a caller reports it under the exit
+    code it reserves for that, and a reworded message cannot silently move it.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ProposalRequest:
     """One proposed change, before any identifier or path has been chosen.
@@ -215,6 +225,11 @@ class ProposalService:
         reusing an applied one is accepted by ``migrate validate`` and then
         refused by ``migrate apply`` -- after the pull request has merged.
 
+        The body path carries the revision id for a reason measured on this
+        branch (see :func:`body_relative_path`): one path per item made the
+        second accepted proposal invalidate the first migration's pinned digest,
+        and the project stopped validating entirely.
+
         Raises:
             ProposalError: If the request cannot be packaged, or if the built
                 migration does not satisfy the published schema. Nothing is
@@ -224,7 +239,7 @@ class ProposalService:
         migration_id = MigrationId(self._ids.new_ulid().value)
         revision_id = RevisionId(self._ids.new_ulid().value)
 
-        relative_body = body_relative_path(request.item_id, request.content_type)
+        relative_body = body_relative_path(request.item_id, revision_id, request.content_type)
         # `..` and the sibling's name rather than `os.path.relpath`: both
         # directories are children of `.theurian/`, so the relative path is
         # exact by construction and stays POSIX-shaped on any platform.
@@ -292,7 +307,7 @@ class ProposalService:
         migration_file = self._require_migration(directory, proposal_id)
         destination = self._paths.migrations / migration_file.name
         if destination.exists():
-            raise ProposalError(
+            raise MigrationNameTakenError(
                 f"{destination.name} is already in .theurian/migrations/. The name "
                 "carries the migration's id, so that migration is already in place.",
                 remedy=(
@@ -434,7 +449,7 @@ def _move_without_replacing(source: Path, destination: Path) -> MovedFile:
     try:
         handle = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     except FileExistsError as exc:
-        raise ProposalError(
+        raise MigrationNameTakenError(
             f"{destination.name} appeared in .theurian/migrations/ while this proposal "
             "was being accepted, so accepting it would overwrite that migration.",
             remedy="Read what is there, then draft this proposal again for a new id.",

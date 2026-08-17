@@ -473,11 +473,15 @@ def _command_paths() -> frozenset[str]:
 
     def walk(command: Any, prefix: tuple[str, ...] = ()) -> Iterator[str]:
         children = getattr(command, "commands", None)
+        # A group that runs its own callback is a command as well as a parent.
+        # `theurian propose` is one (#212): reading "has children" as "not a
+        # command" hid it from the partition below entirely, which is the one
+        # failure this file exists to make impossible.
+        if prefix and (not children or getattr(command, "invoke_without_command", False)):
+            yield " ".join(prefix)
         if children:
             for name, child in children.items():
                 yield from walk(child, (*prefix, name))
-        elif prefix:
-            yield " ".join(prefix)
 
     return frozenset(walk(typer.main.get_command(app)))
 
@@ -550,6 +554,10 @@ CLI_NOT_SWEPT: Final = {
     "init": "writes .theurian/ and appends to .gitignore in the working directory",
     "project register": "rewrites the registry the corpus was built from",
     "project unregister": "deletes the registration every other command resolves",
+    "propose": "writes a fresh proposal directory on every invocation, and needs eleven "
+    "options to reach the point where it would write anything",
+    "propose accept": "moves a migration file into .theurian/migrations/, which moves the "
+    "state hash and so the database -- the same reason as `ingest`",
     "setup": "writes ~/.claude.json and a LaunchAgent on the developer's own machine",
     "uninstall": "removes what `setup` installed, on the developer's own machine",
 }
