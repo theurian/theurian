@@ -91,14 +91,60 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   permissions, `EISDIR` at "this names a directory, not a file." `project status
   --json` now surfaces the remedy in its unresolved-project payload too.
 
-  **Not covered — two adjacent defects share this symptom but not its root
-  cause, and both remain open.** A `.theurian/migrations/` directory that
-  `Path.glob` cannot list swallows the `PermissionError` and reports
+  **Not covered when this entry was written — two adjacent defects shared this
+  symptom but not its root cause.** A `.theurian/migrations/` directory that
+  `Path.glob` cannot list swallowed the `PermissionError` and reported
   `valid: true, migrationCount: 0` — a silent false-negative, because nothing
-  raises ([#214](https://github.com/theurian/theurian/issues/214)). A malformed
-  migration YAML raises `yaml.YAMLError` at parse time, which the loader does not
-  catch, so it still escapes as a traceback under `--json`
-  ([#217](https://github.com/theurian/theurian/issues/217)).
+  raised ([#214](https://github.com/theurian/theurian/issues/214)). A malformed
+  migration YAML raised `yaml.YAMLError` at parse time, which the loader did not
+  catch, so it still escaped as a traceback under `--json`
+  ([#217](https://github.com/theurian/theurian/issues/217)). Both are fixed
+  below.
+
+- **`migrate validate|status|apply --json` (and every other `resolve_context`
+  consumer) refuse a malformed migration or an unreadable migrations
+  directory with the structured `{error, remedy}` shape, instead of a raw
+  traceback or a silent false positive**
+  ([#214](https://github.com/theurian/theurian/issues/214),
+  [#217](https://github.com/theurian/theurian/issues/217)). Closes the two
+  defects the `#205` fix above named as not covered, plus a third face of
+  #214 that reproducing it found and that neither issue had named.
+
+  - **#217 — a YAML syntax error, or a NUL byte in the migration source, no
+    longer crashes.** `load_yaml_mapping` raises `yaml.YAMLError` on either —
+    a scanner syntax error, and a reader NUL-byte error
+    (`yaml.reader.ReaderError`, also a `YAMLError` subclass) — neither of
+    which is the `UnicodeDecodeError` or `ValueError` that `_load_one`'s
+    `except` clause around it caught. Both now convert to `MigrationError`
+    naming the file and the parse problem, the same translation
+    `proposal_service.py`'s own two `load_yaml_mapping` call sites already
+    applied.
+  - **#214 — an unreadable `migrations_dir` no longer reports the never-read
+    set as an empty one.** `chmod 000`/`0o111` on `.theurian/migrations/`
+    itself, not its parent (`is_dir()` needs no permission on the target,
+    only its ancestors), left `Path.glob("*.yaml")`'s own `scandir` catching
+    the `PermissionError` internally and yielding nothing: `migrate validate
+    --json` reported `valid: true` with `migrationCount: 0`, and `migrate
+    apply --json` went on to create a state database for the set it wrongly
+    believed was the whole story. Enumeration is now `iterdir()`-based, with
+    the directory listing and every entry's `is_file()` stat inside one
+    `try`, so any `OSError` there raises `MigrationsDirectoryUnreadableError`.
+  - **A third face of #214, found while reproducing it and named in neither
+    issue.** `chmod 0o444` leaves the directory listable but not traversable,
+    so the same per-entry `is_file()` stat raised an uncaught
+    `PermissionError` instead — a raw traceback, not the silent false
+    positive above. Same root cause, same fix: caught by the same `try`.
+
+  **The legitimate empty shapes are unchanged.** A project with no
+  `.theurian/migrations/` directory, and an existing, ordinarily-readable,
+  genuinely empty one, both still validate as an empty set —
+  `test_load_migrations_on_an_ordinarily_readable_empty_directory_returns_an_empty_set`
+  pins the one a fix that raised on every zero-migration read would still
+  pass without.
+
+  Reproduced against the real CLI for all three faces; covered by
+  `tests/unit/test_migration_loader_errors.py` and
+  `tests/integration/test_cli_commands.py`.
 
 ### Documentation
 
