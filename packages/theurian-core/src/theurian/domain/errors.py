@@ -131,6 +131,33 @@ class MigrationContentUnreadableError(MigrationError):
         )
 
 
+class MigrationFileUnreadableError(MigrationError):
+    """A migration file itself could not be read from disk (issue #205).
+
+    :class:`MigrationContentUnreadableError`'s sibling for the *other* raw read
+    on the same load path -- the migration YAML itself, discovered by
+    ``migrations_dir.glob("*.yaml")`` and then opened in
+    ``infrastructure/filesystem/migration_loader.py::_load_one``. Deliberately
+    not the same class: there is no "resolves relative to" rule to restate
+    here, because a migration file's own path is never author-chosen the way
+    ``contentFile`` is -- it is whatever `.theurian/migrations/` already holds.
+    A permission bit or a deleted file is the usual cause, so the remedy names
+    that instead. Reproduced against the real CLI: a schema-valid migration
+    `chmod 000`'d crashed `migrate validate --json` with a raw
+    `PermissionError` Rich traceback, exit 1, empty stdout -- the identical
+    escape `MigrationContentUnreadableError` closed for `contentFile`, one
+    call site over.
+    """
+
+    def __init__(self, migration_path: str, reason: str) -> None:
+        self.migration_path = migration_path
+        self.remedy = (
+            f"Confirm {migration_path} still exists and that this user has read "
+            f"permission on it and its parent directory, then retry."
+        )
+        super().__init__(f"{migration_path} could not be read: {reason}")
+
+
 class ScopeViolation(NamedTuple):
     """One field on a revision naming a value nothing can yet enforce (issue #63).
 

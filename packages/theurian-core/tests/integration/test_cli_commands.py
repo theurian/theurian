@@ -8,9 +8,11 @@ able to assert on the exact JSON a caller receives.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,11 @@ pytestmark = pytest.mark.integration
 runner = CliRunner()
 
 EXIT_STATE_ERROR = 4
+
+#: A `chmod` cannot refuse root, and Windows has no POSIX mode bits at all --
+#: the same guard `test_auth_rotate.py` and `test_setup_journal.py` use before
+#: a permission-refusal test.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID = "01K1AAAREV01234567890ABCDE"
@@ -698,6 +705,53 @@ def test_validate_reports_an_unresolvable_content_file_instead_of_crashing(proje
     # relative to a proposal directory, not to the migration file itself.
     assert "relative to the migration file" in payload["remedy"]
     assert "proposal directory" in payload["remedy"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_validate_reports_an_unreadable_migration_file_instead_of_crashing(project: Path) -> None:
+    """Issue #205's second face: the migration *file* itself, not a `contentFile`
+    it names.
+
+    `read_source_file`'s raw `PermissionError` used to escape from
+    `_load_one`'s own read (`migration_loader.py`), the sibling of the
+    `contentFile` escape closed above -- same seam, same root cause, one call
+    site over. Measured against the real CLI before the fix: a `chmod 000`'d,
+    schema-valid migration crashed `migrate validate --json` with a raw
+    `PermissionError` Rich traceback, exit 1, empty stdout.
+    """
+    _invoke("init")
+    migration = project / f".theurian/migrations/{MIGRATION_ID}-unreadable.yaml"
+    migration.write_text(
+        f"""apiVersion: theurian.dev/v1
+id: {MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+"""
+    )
+    migration.chmod(0o000)
+    try:
+        result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+    finally:
+        # Restored unconditionally: pytest's own `tmp_path` cleanup walks the
+        # tree afterward, and a mode-000 file left behind fails *that* instead
+        # of this test, which reads as an unrelated, confusing failure.
+        migration.chmod(0o644)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    assert "error" in payload
+    assert "remedy" in payload
+    assert f"{MIGRATION_ID}-unreadable.yaml" in payload["error"]
+    # The permission-check remedy, not the contentFile-resolution one: this
+    # error has no notion of "relative to the migration file" to restate.
+    assert "permission" in payload["remedy"]
 
 
 def test_a_malformed_migration_names_the_offending_field(project: Path) -> None:

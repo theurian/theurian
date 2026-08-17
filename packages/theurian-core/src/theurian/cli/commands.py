@@ -59,6 +59,7 @@ from theurian.domain.errors import (
     MigrationContentUnreadableError,
     MigrationCycleError,
     MigrationError,
+    MigrationFileUnreadableError,
     RevisionConflictError,
     TheurianError,
     UnenforceableScopeError,
@@ -286,10 +287,10 @@ def _context_remedy(exc: TheurianError, *, default: str) -> str:
         return exc.remedy
     if isinstance(exc, MigrationCycleError):
         return "Break the dependency cycle shown above, then retry."
-    # Checked ahead of the general `MigrationError` branch below: it is a
-    # subtype, and the general branch's fixed string would otherwise shadow
+    # Checked ahead of the general `MigrationError` branch below: both are
+    # subtypes, and the general branch's fixed string would otherwise shadow
     # the specific remedy naming what actually happened (issue #205).
-    if isinstance(exc, MigrationContentUnreadableError):
+    if isinstance(exc, MigrationContentUnreadableError | MigrationFileUnreadableError):
         return exc.remedy
     if isinstance(exc, MigrationError):
         return "Fix the migration file, then retry."
@@ -1673,15 +1674,21 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
             code=EXIT_STATE_ERROR,
         )
         raise
-    # Checked ahead of the general `MigrationError` clause below: it is a
-    # subtype, and Python matches the first `except` whose type fits, so
-    # leaving this after the general clause would report the generic "fix the
-    # migration file" string instead of naming which file, which path, and the
-    # resolves-relative-to-the-migration-file rule (issue #205). Graded the
-    # same `EXIT_STATE_ERROR` as every other `MigrationError`: a `contentFile`
-    # that does not resolve is a knowledge-state problem the user must fix, the
-    # same family as a checksum mismatch or a dependency cycle above.
-    except MigrationContentUnreadableError as exc:
+    # Checked ahead of the general `MigrationError` clause below: both are
+    # subtypes, and Python matches the first `except` whose type fits, so
+    # leaving either after the general clause would report the generic "fix
+    # the migration file" string instead of the specific remedy naming what
+    # actually happened (issue #205: `contentFile` resolves relative to the
+    # migration file for the first, a permission or missing-file check for the
+    # second). Graded the same `EXIT_STATE_ERROR` as every other
+    # `MigrationError`: an unreadable migration is a knowledge-state problem
+    # the user must fix, the same family as a checksum mismatch or a
+    # dependency cycle above.
+    # A tuple, not `A | B`: `except` does not accept `types.UnionType`, only a
+    # single type or a tuple of types (confirmed against this interpreter --
+    # `except A | B:` raises `TypeError: catching classes that do not inherit
+    # from BaseException is not allowed` when it actually fires).
+    except (MigrationContentUnreadableError, MigrationFileUnreadableError) as exc:
         _fail(
             str(exc),
             remedy=exc.remedy,

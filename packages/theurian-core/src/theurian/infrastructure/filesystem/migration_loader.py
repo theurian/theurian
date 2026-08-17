@@ -27,6 +27,7 @@ from theurian.domain.enums import (
 from theurian.domain.errors import (
     MigrationContentUnreadableError,
     MigrationError,
+    MigrationFileUnreadableError,
     PathEscapeError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, RevisionId, SpecId
@@ -67,6 +68,14 @@ _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 
 @lru_cache(maxsize=1)
 def _validator(schema_root: Path) -> Draft202012Validator:
+    # Not a member of issue #205's class: this reads the *installed package's*
+    # schema, never a path under a user's project. A read failure here means
+    # this build is incomplete or corrupted -- `schema_root()`
+    # (`cli/context.py`) already raises `ProjectError` (a `TheurianError`) when
+    # the packaged copy is missing, and a `read_text` failure on a copy it did
+    # find is install-integrity, not user-project state, so it is left as a
+    # bare `OSError` rather than given a migration-shaped remedy that would
+    # send a reader to fix a project file that was never the problem.
     schema = json.loads((schema_root / _SCHEMA_RELATIVE).read_text(encoding="utf-8"))
     return Draft202012Validator(schema)
 
@@ -89,6 +98,19 @@ def load_migrations(
     if not migrations_dir.is_dir():
         return LoadedMigrations.empty()
 
+    # `glob` does not belong to the raw-IO population issue #205 swept
+    # (`_load_one`'s and `_parse_upsert`'s `read_source_file` calls below): an
+    # unreadable `migrations_dir` (measured: `chmod 000` on the directory, real
+    # CLI) does not raise here at all. `pathlib.Path.glob` catches the
+    # `PermissionError` its own `scandir` hits internally and yields nothing,
+    # so this returns an *empty* migration set rather than crashing --
+    # `migrate validate --json` then reports `valid: true` with
+    # `migrationCount: 0` for a project whose migrations were never read. That
+    # is a different, quieter defect than the Rich-traceback crash this file's
+    # two `MigrationFileUnreadableError`/`MigrationContentUnreadableError`
+    # sites close, and sweeping it into a bare-`OSError` conversion here would
+    # do nothing, because there is no `OSError` to catch -- filed separately.
+    #
     # Sorted so a failure reports the first file in a stable order rather than
     # whichever the filesystem happened to yield first.
     paths = sorted(p for p in migrations_dir.glob("*.yaml") if p.is_file())
@@ -117,7 +139,18 @@ def _load_one(
     validator: Draft202012Validator,
     content_by_hash: dict[str, str],
 ) -> Migration:
-    raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
+    try:
+        raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
+    except OSError as exc:
+        # The sibling of `_parse_upsert`'s conversion below, for the *other*
+        # raw read on this load path: the migration file itself, not a
+        # `contentFile` it names. Measured against the real CLI: a
+        # `chmod 000`'d, schema-valid migration crashed `migrate validate
+        # --json` with a raw `PermissionError` Rich traceback, exit 1, empty
+        # stdout -- issue #205's identical escape, one call site over.
+        raise MigrationFileUnreadableError(
+            str(path.relative_to(project_root)), exc.strerror or str(exc)
+        ) from exc
     checksum = ContentHash.of_bytes(raw)
 
     try:
