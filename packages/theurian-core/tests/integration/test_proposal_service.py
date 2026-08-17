@@ -23,7 +23,7 @@ from theurian.application.proposal_service import (
     ProposalService,
 )
 from theurian.domain.enums import KnowledgeKind
-from theurian.domain.errors import InvariantViolationError, PathEscapeError
+from theurian.domain.errors import InvariantViolationError, MigrationError, PathEscapeError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
@@ -142,6 +142,31 @@ def test_a_generated_migration_validates_against_the_published_schema(
     drafted = service.draft(_request())
 
     validate_migration_document(_document(drafted.migration_file), SCHEMAS)
+
+
+def test_a_migration_that_would_not_validate_is_never_written(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The check above passes whether or not the generator performs one.
+
+    Measured: deleting the service's own ``self._validate(document)`` call left
+    ``test_a_generated_migration_validates_against_the_published_schema`` green,
+    because it validates the file that was written rather than asking whether
+    anything refused to write it. This is the test that goes RED for that
+    deletion, and it needs an input the *schema* rejects while every check
+    before it passes -- a title past ``revisionMetadata.title``'s 300, which is
+    caller-supplied text and not a shape the generator controls.
+
+    Writing it anyway would be the worse failure of the two: the proposal reads
+    as reviewable, and the schema error arrives once a human has already read
+    it and moved it into place.
+    """
+    before = _tree(paths.root)
+
+    with pytest.raises(MigrationError, match="title"):
+        service.draft(_request(title="x" * 400))
+
+    assert _tree(paths.root) == before
 
 
 def test_the_generated_migration_file_is_named_for_its_own_id(
