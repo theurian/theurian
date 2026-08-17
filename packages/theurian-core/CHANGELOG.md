@@ -102,13 +102,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   below.
 
 - **`migrate validate|status|apply --json` (and every other `resolve_context`
-  consumer) refuse a malformed migration or an unreadable migrations
-  directory with the structured `{error, remedy}` shape, instead of a raw
-  traceback or a silent false positive**
+  consumer) refuse a malformed migration, an unreadable migrations directory,
+  or a corrupted installed schema with the structured `{error, remedy}`
+  shape, instead of a raw traceback or a silent false positive**
   ([#214](https://github.com/theurian/theurian/issues/214),
   [#217](https://github.com/theurian/theurian/issues/217)). Closes the two
-  defects the `#205` fix above named as not covered, plus a third face of
-  #214 that reproducing it found and that neither issue had named.
+  defects the `#205` fix above named as not covered, a third face of #214
+  that reproducing it found and that neither issue had named, and three more
+  members of the same class that this branch's own review round two found on
+  the same load path — not new issues, escapes the round-one fix left open.
 
   - **#217 — a YAML syntax error, or a NUL byte in the migration source, no
     longer crashes.** `load_yaml_mapping` raises `yaml.YAMLError` on either —
@@ -116,9 +118,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     (`yaml.reader.ReaderError`, also a `YAMLError` subclass) — neither of
     which is the `UnicodeDecodeError` or `ValueError` that `_load_one`'s
     `except` clause around it caught. Both now convert to `MigrationError`
-    naming the file and the parse problem, the same translation
-    `proposal_service.py`'s own two `load_yaml_mapping` call sites already
-    applied.
+    naming the file and the parse problem. `proposal_service.py`'s own two
+    `load_yaml_mapping` call sites already catch `yaml.YAMLError`, but not
+    identically: `_parse_migration` (the `propose accept` path) already
+    translated it into a `ProposalError`, while `_pinned_digest_at` catches it
+    only to skip a malformed *existing* migration silently — documented there
+    as deliberate, since that migration already fails `migrate validate` on
+    its own and diagnosing it is not `propose accept`'s job.
   - **#214 — an unreadable `migrations_dir` no longer reports the never-read
     set as an empty one.** `chmod 000`/`0o111` on `.theurian/migrations/`
     itself, not its parent (`is_dir()` needs no permission on the target,
@@ -134,16 +140,53 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     so the same per-entry `is_file()` stat raised an uncaught
     `PermissionError` instead — a raw traceback, not the silent false
     positive above. Same root cause, same fix: caught by the same `try`.
+  - **Round two — a YAML document nested past PyYAML's recursion limit no
+    longer crashes.** `RecursionError` is a `BaseException` subclass, not an
+    `Exception`, so none of `load_yaml_mapping`'s six call sites — the two on
+    `proposal_service.py` above included — caught it, and it reached
+    `resolve_context` as a raw traceback under `--json`. About 1 KB of
+    nested YAML is already enough to trigger it (measured:
+    `"["*495 + "]"*495`, 1,023 bytes). `load_yaml` and `load_yaml_mapping` now
+    catch `RecursionError` and raise `ValueError` in its place — the type
+    every consumer on this path already handles — closing all of them at the
+    one seam instead of adding a catch clause at each.
+  - **Round two — a symlink chain at `.theurian/migrations` longer than the
+    platform's loop limit no longer reports real migrations as an empty
+    set.** `Path.is_dir()` swallows every `OSError` it hits internally,
+    `ELOOP` included, and reports `False` — the same convenience the #214 fix
+    above relies on for the genuinely-absent case — so a directory that was
+    actually a loop was misreported as "does not exist": `migrate validate
+    --json` reported `valid: true` with `migrationCount: 0`, and `migrate
+    apply --json` seeded a state database for the empty set it wrongly
+    believed was the whole story. The probe is now an explicit `os.stat`:
+    `ENOENT`/`ENOTDIR` still answer the legitimate empty case, but `ELOOP`
+    and every other errno now raise `MigrationsDirectoryUnreadableError`,
+    whose remedy is keyed on `errno` (the loop, a permission problem, or an
+    unnamed residual case) rather than one permission-shaped message for all
+    three. **This is a behaviour change, not only a fix**: a symlink loop at
+    this path used to validate as an empty migration set by accident, and now
+    refuses instead — any earlier description of a symlink loop as a
+    legitimate empty shape no longer holds.
+  - **Round two — a corrupted installed schema no longer crashes
+    `_validator`.** Truncated or empty JSON raised `json.JSONDecodeError`;
+    non-UTF-8 bytes raised `UnicodeDecodeError` at the same
+    `read_text(encoding="utf-8")` call; and a schema that parses but is a
+    JSON list rather than an object raised `AttributeError` one line later,
+    at `Draft202012Validator` construction (`jsonschema` calls
+    `schema.get(...)` internally, and a list has no `.get`). All three, and
+    the original `OSError`, now convert to `SchemaUnreadableError`.
 
   **The legitimate empty shapes are unchanged.** A project with no
   `.theurian/migrations/` directory, and an existing, ordinarily-readable,
   genuinely empty one, both still validate as an empty set —
   `test_load_migrations_on_an_ordinarily_readable_empty_directory_returns_an_empty_set`
   pins the one a fix that raised on every zero-migration read would still
-  pass without.
+  pass without. A symlink loop is deliberately not a third member of this
+  list — see round two above.
 
-  Reproduced against the real CLI for all three faces; covered by
-  `tests/unit/test_migration_loader_errors.py` and
+  Reproduced against the real CLI for all six faces; covered by
+  `tests/unit/test_migration_loader_errors.py`,
+  `tests/unit/test_yaml_loading.py`, and
   `tests/integration/test_cli_commands.py`.
 
 ### Documentation
