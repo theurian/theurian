@@ -31,7 +31,6 @@ from theurian.application.migration_engine import (
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     BuildProvenance,
-    ProjectError,
     ProjectPaths,
     ensure_gitignore,
     initialize_project,
@@ -758,12 +757,21 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     routine "you haven't set this up" status look like a crash.
 
     But an ambiguous registry is not a routine "nothing here yet": it is a
-    problem only the user can fix, and ``ProjectError.remedy`` is the only place
+    problem only the user can fix, and ``exc.remedy`` is the only place
     the ``project unregister`` invocations that fix it are named. Dropping it
     left the command a confused user reaches for *first* reporting a problem with
     no way out. Exit code stays 0; the remedy travels into the payload instead,
     where both a human reading the rendered output and a script reading JSON can
     find it.
+
+    ``if exc.remedy:``, not ``isinstance(exc, ProjectError) and exc.remedy``:
+    the narrower check was this function's own copy of the enumeration
+    :func:`_context_remedy` was rewritten to stop needing, missed when that
+    refactor landed because this is a *third*, separate caller of
+    ``resolve_context`` with its own handling rather than a call to
+    `_context_remedy` -- so `MigrationsDirectoryUnreadableError` and its
+    siblings reached this payload with `reason` but no `remedy`, narrower than
+    every other command surfacing the same exception (issue #205).
 
     ``statePointerCorrupt`` is deliberately absent here rather than ``false``.
     Nothing on this branch has resolved a project, so no state pointer was
@@ -771,7 +779,7 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     asked -- the same reason ``registered`` refuses to be ``False`` above.
     """
     payload: dict[str, Any] = {"registered": False, "reason": str(exc), "indexStale": False}
-    if isinstance(exc, ProjectError) and exc.remedy:
+    if exc.remedy:
         payload["remedy"] = exc.remedy
 
     # `resolve_context` never got as far as asking the registry whether this root

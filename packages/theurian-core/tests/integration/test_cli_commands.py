@@ -369,6 +369,43 @@ def test_status_outside_a_repository_reports_unregistered(
     assert not status["registered"]
 
 
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_status_surfaces_a_remedy_for_an_unresolved_project_not_only_a_reason(
+    project: Path,
+) -> None:
+    """``_unresolved_status``'s own docstring promise, held to the unified attribute.
+
+    Round-two's refactor moved `_context_remedy` and `_require_project` to a
+    single ``if exc.remedy:`` check, replacing a type-keyed
+    ``isinstance``/``except`` enumeration -- but `_unresolved_status` (this
+    command's own exit-0 handler) was a *third*, separate caller that still
+    read ``isinstance(exc, ProjectError) and exc.remedy``, so
+    `MigrationsDirectoryUnreadableError` and its siblings reached this payload
+    with `reason` but no `remedy`, silently narrower than every other command
+    reporting the same exception. `chmod 000 .theurian` -- `is_dir()` must
+    traverse it to stat `migrations_dir` -- drives exactly that exception
+    through `resolve_context` into this handler.
+    """
+    _invoke("init")
+    theurian_dir = project / ".theurian"
+    theurian_dir.chmod(0o000)
+    try:
+        code, status = _invoke("project", "status")
+    finally:
+        theurian_dir.chmod(0o700)
+
+    assert code == 0, "status must report, not fail, on an unresolved project"
+    assert status["registered"] is False
+    assert "could not be listed" in status["reason"]
+    assert "remedy" in status, (
+        "MigrationsDirectoryUnreadableError sets .remedy; _unresolved_status must surface it"
+    )
+    assert status["remedy"] == (
+        f"Confirm this user has read and execute permission on {'.theurian/migrations'!r} "
+        f"and its parent directories, then retry."
+    )
+
+
 # -- project list, when the registry file is not what it should be ----------
 #
 # `project list` is the command every other surface names when it wants a user
