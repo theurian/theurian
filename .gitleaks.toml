@@ -12,6 +12,23 @@
 [extend]
 useDefault = true
 
+# What this scan does NOT catch, so that nobody plans around a coverage it has
+# not got. Measured 2026-08-18 against gitleaks 8.30.1 with this file, on commit
+# 6a750e0, using a 43-character base64url token in eight literal forms: four were
+# reported and four were not. `NAME: Final = "<token>"` is among the four that are
+# not, because `generic-api-key` looks for its keyword within a few characters of
+# the separator and a type annotation pushes it out of range; the same token as
+# `api_token = "<token>"`, in a dict beside a `"token"` key, or in a comment after
+# the word `secret`, is reported. A Python constant with a type annotation is
+# ordinary style in this repository, so a real credential pasted into one would
+# pass this job.
+#
+# This is why the secret fixtures in
+# `packages/theurian-core/tests/unit/test_secret_detector.py` are derived from a
+# SHA-256 digest at run time rather than pasted and allowlisted here: the reason is
+# that no reviewer can tell a fixture from a leak by looking, not that a literal
+# would have tripped this scan. Threat model T-8 records the same measurement.
+
 # ---------------------------------------------------------------------------
 # Two test fixtures are deliberately shaped like credentials.
 #

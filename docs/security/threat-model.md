@@ -170,10 +170,19 @@ config contains no high-entropy string.
 letter and a digit, so a real `secrets.token_urlsafe(32)` containing no digit is
 not reported — 0.065% of tokens, `(54/64)**42 × 13/16`, because the 43rd
 character carries only four bits and three of its sixteen symbols are digits;
-measured 10,315 in 16,000,000 samples on 2026-08-18. Whether the repository's
-gitleaks scan catches such a token has not been measured and is not claimed
-here. The detector and its own self-tests are in
+measured 10,315 in 16,000,000 samples (0.0645%) on 2026-08-18. The detector and
+its own self-tests are in
 `packages/theurian-core/tests/unit/test_secret_detector.py` (#201, #43).
+
+Do not read the `Secret scan` job as covering that residual, or paste accidents
+generally. Measured on 2026-08-18 with gitleaks 8.30.1 and this repository's
+`.gitleaks.toml`, a 43-character base64url token written as
+`NAME: Final = "<token>"` is **not** reported — `generic-api-key` wants its
+keyword within a few characters of the separator, and a type annotation pushes it
+out of range — while the same token in an unannotated assignment beside a keyword
+is. Four of eight literal forms tried were reported and four were not. Whether
+gitleaks would catch a *real* leaked token depends on how the line around it is
+written, and that has not been characterised.
 
 #### T-9 — The token appears in a log or crash report (Information disclosure, High)
 

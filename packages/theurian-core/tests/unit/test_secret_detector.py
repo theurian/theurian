@@ -74,6 +74,24 @@ _CANDIDATE: Final = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
 _UNSCANNED_SUFFIXES: Final = frozenset({".png", ".jpg"})
 
 
+def _readable_text(path: pathlib.Path) -> str | None:
+    """``path``'s text, or ``None`` where it is not UTF-8.
+
+    The one decode policy, used by both walks in this file. They are deliberately
+    *separate* walks -- see
+    :func:`test_this_file_still_knows_what_the_scan_meets` -- but a file that is
+    unreadable to one and readable to the other is a difference with no reason, and
+    there was one: the scan skipped on ``UnicodeDecodeError`` while the pin test
+    read with ``errors="ignore"``. Nothing in the tree decodes badly today, so the
+    two agreed by luck; the day a binary lands they would have disagreed about what
+    the tree contains.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:  # pragma: no cover - no such file in the tree today
+        return None
+
+
 def _secrets_in(tree: pathlib.Path) -> list[str]:
     """Every candidate under ``tree`` that :func:`_looks_like_a_secret` accepts.
 
@@ -90,9 +108,8 @@ def _secrets_in(tree: pathlib.Path) -> list[str]:
     for path in tree.rglob("*"):
         if not path.is_file() or path.suffix in _UNSCANNED_SUFFIXES or path.name == "LICENSE":
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:  # pragma: no cover - binary asset
+        text = _readable_text(path)
+        if text is None:
             continue
         violations.extend(
             f"{path.relative_to(tree)}: {match.group()[:8]}..."
@@ -100,6 +117,22 @@ def _secrets_in(tree: pathlib.Path) -> list[str]:
             if _looks_like_a_secret(match.group())
         )
     return violations
+
+
+def _suffixes_present_in(tree: pathlib.Path) -> tuple[str, ...]:
+    """Every file suffix under ``tree``, whether or not the scan opens it.
+
+    Deliberately not filtered by :data:`_UNSCANNED_SUFFIXES`. Deriving the planting
+    sites from the scan's own skip list would make the two agree by construction --
+    one edit would add a suffix to the skip list and delete its planting site in the
+    same stroke, and both would go quiet together.
+
+    That is not hypothetical. The site list was written by hand as ``.sh``, ``.md``,
+    ``.json`` and ``.svg`` while the tree carries ``.md``, ``.json``, ``.sh`` and
+    ``.yaml``; measured, adding ``.yaml`` to the skip list then left all twenty
+    tests green with a token sitting in the real ``compatibility.yaml``.
+    """
+    return tuple(sorted({path.suffix for path in tree.rglob("*") if path.is_file()}))
 
 
 def test_no_plugin_file_contains_a_high_entropy_secret() -> None:
@@ -110,7 +143,7 @@ def test_no_plugin_file_contains_a_high_entropy_secret() -> None:
     contain no digit is invisible here. That is 0.065% of tokens --
     ``(54/64)**42 * 13/16``, because the 43rd character carries only four bits, so
     it draws from sixteen symbols of which three are digits -- measured at 10,315
-    in 16,000,000 samples (0.0644%). Whether this repository's gitleaks scan would
+    in 16,000,000 samples (0.0645%). Whether this repository's gitleaks scan would
     catch such a token has not been measured, so nothing here claims it does.
     Threat model T-8 carries the same note.
     """
@@ -121,17 +154,34 @@ def test_no_plugin_file_contains_a_high_entropy_secret() -> None:
 
 # -- The detector's own self-tests (#201, #43) -----------------------------
 #
-# What the single random assertion left unpinned. Measured on c872ab9 by changing
-# one thing in the detector at a time and running this file:
+# What the single random assertion left unpinned. Measured on c872ab9, when this
+# section still lived in `test_plugin_boundary.py`, by changing one thing in the
+# detector at a time and running that file:
 #
 #   drop the digit requirement            SURVIVED
 #   drop the lower-case requirement       SURVIVED
 #   drop the upper-case requirement       KILLED, by an ADR filename that clears
 #                                         the entropy floor by 0.064 bits
 #   lower the floor from 4.0 to 0.0       SURVIVED
-#   move the floor anywhere in 1.6 .. 4.8 SURVIVED
+#   lower the floor to anything above 1.6 SURVIVED
+#   raise the floor                       NO DETERMINISTIC VERDICT -- see below
 #
-# Every fixture below exists to turn one of those red, and each docstring names
+# The last row is the one that has to be said carefully, because c872ab9's positive
+# fixture was a fresh `secrets.token_urlsafe(32)` on every run and its entropy is a
+# draw, so a raised floor makes the *verdict itself* random rather than making the
+# mutation survive. Over 200,000 draws (2026-08-18): minimum 4.1711, median 4.8506,
+# maximum 5.2867, so a floor at 4.18 reddened 1 run in 200,000, one at 4.5 reddened
+# 0.43%, and one at 4.8 reddened 33.13% -- a coin flip reported as a verdict. The
+# minimum is a sample minimum and not a bound; #201's own 200,000-draw run put it at
+# 4.190. Recording "survived up to 4.8" as though it were deterministic would be
+# precisely the defect this file exists to remove, so it is not recorded that way.
+#
+# In the present tense, and deterministically: `_AT_THE_FLOOR` and
+# `_UNDER_THE_FLOOR` pin the threshold to the half-open window (log2(15), 4.0] --
+# 3.9069 exclusive to 4.0 inclusive -- for every run, because no fixture below is
+# drawn.
+#
+# Every fixture below exists to turn one of those rows red, and each docstring names
 # which rather than restating this table.
 
 
@@ -153,7 +203,7 @@ def _deterministic_token(seed: bytes) -> str:
     256 bits and 43 base64url characters hold 258, so the *last* character carries
     only four bits and draws from sixteen symbols -- measured, exactly
     ``048AEIMQUYcgkosw`` -- of which three are digits. Observed 10,315 in 16,000,000
-    samples (0.0644%) against 10,350 predicted; the superseded model predicted
+    samples (0.0645%) against 10,350 predicted; the superseded model predicted
     10,748, which the same data rejects at 4.2 standard deviations. Every failure
     was the missing digit; the entropy floor never fired.
 
@@ -253,13 +303,20 @@ _TREE_CANDIDATES: Final = (
     "test_upgrade_command_placeholders_name_keys_the_schema_declares",
 )
 
-#: One planted token per text format the plugin tree carries. ``.svg`` is the row
-#: that fails if the skip list takes it back.
-_PLANTING_SITES: Final = (
-    "scripts/leaked.sh",
-    "commands/leaked.md",
-    "mcp/leaked.json",
-    "assets/diagram.svg",
+#: One planted token per suffix the plugin tree actually carries -- measured at
+#: import rather than listed -- plus ``.svg``, which the tree does not carry and
+#: which is kept as the regression pin for the skip list that once hid it.
+#:
+#: Derived, so that adding *any* present format to :data:`_UNSCANNED_SUFFIXES`
+#: reddens a planting case. The hand-written version covered four suffixes and the
+#: tree carries a fifth, so the claim "adding a text format reddens the planting
+#: test" was false for every format nobody had thought of, ``.yaml`` included.
+#:
+#: A suffix-less site is included because the tree has one file with no suffix
+#: (``LICENSE``, skipped by *name*), so this also pins that a suffix-less file that
+#: is not the licence is still read.
+_PLANTING_SITES: Final = tuple(
+    f"planted/leaked{suffix}" for suffix in sorted({*_suffixes_present_in(PLUGIN), ".svg"})
 )
 
 
@@ -378,14 +435,24 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
 
     The population above decides what the test before it proves; if an ADR is
     renamed or a document quotes a new long identifier, the negative cases silently
-    stop describing the tree. Comparing as a set rather than asserting a count,
-    because "five" is the part a reader can check and the part that rots first.
+    stop describing the tree. Compared as a set rather than as a count, because
+    "five" is the part a reader can check and the part that rots first.
+
+    This walk is deliberately its own rather than :func:`_secrets_in`'s. A shared
+    walker would be a shared blind spot, and the one piece of state the two did
+    share -- :data:`_UNSCANNED_SUFFIXES` -- is exactly where one edit blinded both at
+    once: adding ``.yaml`` to it hid a token in the real ``compatibility.yaml`` from
+    the scan *and* from this test together. So this reads every file in the tree
+    with no skip list at all, which is measured to change nothing today: ``LICENSE``
+    and the skipped suffixes contribute no candidates, and the set is the same five
+    either way. What the two walks do share is :func:`_readable_text`, which is a
+    rule about how one file is decoded rather than about which files exist.
     """
     measured = {
         match.group()
         for path in PLUGIN.rglob("*")
-        if path.is_file() and path.suffix not in _UNSCANNED_SUFFIXES and path.name != "LICENSE"
-        for match in _CANDIDATE.finditer(path.read_text(encoding="utf-8", errors="ignore"))
+        if path.is_file() and (text := _readable_text(path)) is not None
+        for match in _CANDIDATE.finditer(text)
     }
 
     assert measured == set(_TREE_CANDIDATES), (
@@ -433,10 +500,18 @@ def test_the_scan_reports_a_token_planted_in_any_text_file(
     holds all stop at the detector's class gate. This is the only test that makes
     the scan execute the branch it exists for.
 
-    The token is planted in a temporary tree, never in the repository. ``.svg`` is
-    among the sites because it used to be skipped as though it were an image: a
-    planted token there was not reported, which is a text file the scan claimed to
-    have cleared.
+    The token is planted in a temporary tree, never in the repository. The sites
+    are derived from the suffixes the plugin tree really carries
+    (:func:`_suffixes_present_in`), so every format the scan can meet has a case
+    here whether or not anyone remembered it -- which is how ``.yaml`` was missed.
+    ``.svg`` is kept on top of those as the pin for the skip list that once hid it.
+
+    One consequence, stated because it is a failure someone will meet: adding a
+    genuinely binary format to the plugin tree reddens this test, because the site
+    list follows the tree while :data:`_UNSCANNED_SUFFIXES` does not. That is the
+    decision it should force -- either the format is text and the scan must read it,
+    or it is binary and belongs on the skip list beside
+    :func:`test_the_scan_deliberately_does_not_open_binary_assets`.
     """
     planted = tmp_path / relative_path
     planted.parent.mkdir(parents=True, exist_ok=True)
@@ -457,8 +532,13 @@ def test_the_scan_deliberately_does_not_open_binary_assets(tmp_path: pathlib.Pat
     scan answers "no secrets" about a file it never opened. A real binary would be
     skipped by the ``UnicodeDecodeError`` guard anyway, which is why the cost is
     nil today -- but the suffix list is the part a future asset format gets added
-    to, and ``.svg`` shows how that goes. Deleting a suffix from the list reddens
-    nothing; adding a text format to it reddens the planting test above.
+    to, and ``.svg`` shows how that goes.
+
+    Deleting a suffix from the list reddens nothing. Adding one reddens the planting
+    test above for every suffix the plugin tree carries -- which is true by
+    construction now that the sites are derived from the tree, and was false before:
+    the hand-written sites made that claim hold for four suffixes and fail for
+    ``.yaml``, which the tree does carry.
     """
     planted = tmp_path / "logo.png"
     planted.write_text(f"TOKEN={_TOKEN_SHAPED}\n", encoding="utf-8")
@@ -518,8 +598,12 @@ def test_the_deterministic_fixture_keeps_the_shape_of_a_real_token() -> None:
         f"the fixture holds {len(set(_TOKEN_SHAPED))} distinct characters, not the 32 "
         f"recorded beside _TOKEN_SHAPED; re-measure that comment"
     )
-    assert _shannon_entropy(_TOKEN_SHAPED) >= 4.8, (
-        f"the fixture carries {_shannon_entropy(_TOKEN_SHAPED):.4f} bits, under the "
+    assert round(_shannon_entropy(_TOKEN_SHAPED), 4) == 4.8307, (
+        f"the fixture carries {_shannon_entropy(_TOKEN_SHAPED):.4f} bits, not the "
         f"4.8307 recorded beside _TOKEN_SHAPED and quoted by the detection test's "
-        f"failure message; re-measure both"
+        f"failure message; re-measure both. Pinned to the exact recorded value rather "
+        f"than to a floor, because a floor of 4.8 leaves a seed yielding 4.81 green "
+        f"while the recorded figure goes false -- which is the class of drift this "
+        f"file exists to catch. Rounded to four places so that a libm differing in "
+        f"the last ulp of log2 does not decide it."
     )
