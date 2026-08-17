@@ -415,17 +415,24 @@ class ProposalService:
         # of the project would pull that target's `*.yaml` into the accept path.
         # `is_dir()` follows the link, so it is checked separately.
         directory = self._paths.proposals / proposal_id.value
-        if directory.is_symlink():
+        try:
+            if directory.is_symlink():
+                raise ProposalError(
+                    f"Proposal {proposal_id.value} is a symlink, not a directory.",
+                    remedy="A proposal is a real directory under .theurian/proposals/. "
+                    "Remove the link and commit the directory itself.",
+                )
+            if not directory.is_dir():
+                raise ProposalError(
+                    f"No proposal {proposal_id.value} under .theurian/proposals/.",
+                    remedy="List .theurian/proposals/ to see which proposals are waiting.",
+                )
+        except OSError as exc:
             raise ProposalError(
-                f"Proposal {proposal_id.value} is a symlink, not a directory.",
-                remedy="A proposal is a real directory under .theurian/proposals/. "
-                "Remove the link and commit the directory itself.",
-            )
-        if not directory.is_dir():
-            raise ProposalError(
-                f"No proposal {proposal_id.value} under .theurian/proposals/.",
-                remedy="List .theurian/proposals/ to see which proposals are waiting.",
-            )
+                f"Proposal directory for {proposal_id.value} could not be accessed: "
+                f"{exc.strerror or exc}.",
+                remedy=f"Grant read and execute permissions on {directory} and its contents.",
+            ) from exc
         return directory
 
     @staticmethod
@@ -437,46 +444,55 @@ class ProposalService:
         # also mirror their `knowledge/` sub-path and so sit in a subdirectory,
         # while the migration is always at the top level -- another reason a
         # top-level, name-matched lookup finds exactly the migration.
-        entries = sorted(
-            path for path in directory.glob("*.yaml") if is_migration_file_name(path.name)
-        )
-        # `is_file()` follows a symlink, so a name-matching link to an
-        # out-of-project file would otherwise count as the migration and have its
-        # target's bytes read into a tracked file. It is rejected by name rather
-        # than filtered, so the reader is told about the link, not sent to draft
-        # again over a "missing" migration.
-        symlinked = [path.name for path in entries if path.is_symlink()]
-        if symlinked:
-            raise ProposalError(
-                f"Proposal {proposal_id.value} holds a symlinked migration file: "
-                f"{', '.join(symlinked)}.",
-                remedy="A proposal's migration is a real file. Remove the link and commit "
-                "the migration itself.",
+        try:
+            entries = sorted(
+                path
+                for path in directory.iterdir()
+                if path.name.endswith(".yaml") and is_migration_file_name(path.name)
             )
-        candidates = [path for path in entries if path.is_file()]
-        if not candidates:
-            # An accepted proposal keeps its `evidence.json` and loses its
-            # migration to `.theurian/migrations/`, so that shape is "already
-            # accepted", not "draft it again" -- which would mint a second
-            # migration for a change that has already landed.
-            if (directory / EVIDENCE_FILE).is_file():
+            # `is_file()` follows a symlink, so a name-matching link to an
+            # out-of-project file would otherwise count as the migration and have its
+            # target's bytes read into a tracked file. It is rejected by name rather
+            # than filtered, so the reader is told about the link, not sent to draft
+            # again over a "missing" migration.
+            symlinked = [path.name for path in entries if path.is_symlink()]
+            if symlinked:
                 raise ProposalError(
-                    f"Proposal {proposal_id.value} appears to have been accepted already: "
-                    "its migration has been moved into .theurian/migrations/.",
-                    remedy="No action is needed. Review the change and open a pull request.",
+                    f"Proposal {proposal_id.value} holds a symlinked migration file: "
+                    f"{', '.join(symlinked)}.",
+                    remedy="A proposal's migration is a real file. Remove the link and commit "
+                    "the migration itself.",
                 )
+            candidates = [path for path in entries if path.is_file()]
+            if not candidates:
+                # An accepted proposal keeps its `evidence.json` and loses its
+                # migration to `.theurian/migrations/`, so that shape is "already
+                # accepted", not "draft it again" -- which would mint a second
+                # migration for a change that has already landed.
+                if (directory / EVIDENCE_FILE).is_file():
+                    raise ProposalError(
+                        f"Proposal {proposal_id.value} appears to have been accepted already: "
+                        "its migration has been moved into .theurian/migrations/.",
+                        remedy="No action is needed. Review the change and open a pull request.",
+                    )
+                raise ProposalError(
+                    f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file.",
+                    remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "
+                    "Draft the proposal again.",
+                )
+            if len(candidates) > 1:
+                raise ProposalError(
+                    f"Proposal {proposal_id.value} holds two or more migration files: "
+                    f"{', '.join(path.name for path in candidates)}.",
+                    remedy="One proposal is one change. Split them, or delete the extra file.",
+                )
+            return candidates[0]
+        except OSError as exc:
             raise ProposalError(
-                f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file.",
-                remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "
-                "Draft the proposal again.",
-            )
-        if len(candidates) > 1:
-            raise ProposalError(
-                f"Proposal {proposal_id.value} holds two or more migration files: "
-                f"{', '.join(path.name for path in candidates)}.",
-                remedy="One proposal is one change. Split them, or delete the extra file.",
-            )
-        return candidates[0]
+                f"Proposal directory for {proposal_id.value} could not be read: "
+                f"{exc.strerror or exc}.",
+                remedy=f"Grant read and execute permissions on {directory} and its contents.",
+            ) from exc
 
     def _refuse_if_migration_present(self, destination: Path) -> None:
         if destination.exists() or destination.is_symlink():
