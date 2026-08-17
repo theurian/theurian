@@ -8,12 +8,14 @@ stops being possible.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import pathlib
 import re
-import secrets
 import shutil
+import string
 import subprocess
 from collections import Counter
 from typing import Final
@@ -172,11 +174,255 @@ def test_no_plugin_file_contains_a_high_entropy_secret() -> None:
     assert not violations, f"Possible secrets in plugin files: {violations}"
 
 
+#: A fixed byte string, hashed into :data:`_TOKEN_SHAPED` below. Nothing about the
+#: value matters except that it never changes; it names the issues so that whoever
+#: edits it knows which measurements go stale.
+_FIXTURE_SEED: Final = b"theurian plugin-boundary secret-detector fixture (#201, #43)"
+
+
+def _deterministic_token(seed: bytes) -> str:
+    """A 43-character base64url string derived from ``seed`` rather than drawn.
+
+    The two obvious alternatives fail in opposite ways.
+
+    ``secrets.token_urlsafe(32)`` -- what the self-test below used until #201 --
+    draws 43 characters from a 64-symbol alphabet, and ``(54/64)**43`` = 0.067% of
+    draws contain no digit at all: 134 failures in 200,000 samples measured in
+    #201, and 140 in 200,000 measured again on 2026-08-17. Every one of those was
+    the missing digit; the entropy floor never fired. :func:`_looks_like_a_secret`
+    requires a digit, so the assertion reddened on roughly one full-suite run in
+    1,500 with nothing wrong. That is worse than noise here, because
+    ``tools/mutate.py`` reads a red suite as a killed mutant: #43 caught one such
+    red inside a seventeen-run mutation sweep, where it would otherwise have
+    turned a *surviving* mutant into a false claim that something is pinned.
+
+    A pasted literal token is deterministic, and unreadable as a fixture. CI's
+    `Secret scan` job runs gitleaks over the full history, where
+    ``generic-api-key`` fires on a high-entropy string near a keyword such as
+    ``secret`` or ``token`` -- and this section is nothing but those two words --
+    so ``.gitleaks.toml`` would owe a third allowlist entry for a value that
+    demonstrates nothing. A human reviewer has no better test available: nothing
+    distinguishes a fixture from a credential somebody leaked. Deriving the
+    characters at run time means no credential-shaped string is committed at all,
+    so neither the scanner nor the reviewer has to judge.
+
+    A SHA-256 digest is 32 bytes -- exactly what ``token_urlsafe(32)`` encodes --
+    so base64url of one carries the length and alphabet of a real Theurian token.
+    ``hexdigest()`` would not, and the difference is not cosmetic: 64 characters
+    over 16 symbols measures 3.8369 bits for this seed, *below* the detector's own
+    floor.
+    """
+    return base64.urlsafe_b64encode(hashlib.sha256(seed).digest()).decode().rstrip("=")
+
+
+#: Every condition :func:`_looks_like_a_secret` imposes, satisfied at once: an
+#: upper-case letter, a lower-case letter, a digit, and 32 distinct characters over
+#: 43 positions giving 4.8307 bits against a floor of 4.0. Those numbers are a pure
+#: function of :data:`_FIXTURE_SEED` and were measured on 2026-08-18; the shape is
+#: pinned by :func:`test_the_deterministic_fixture_keeps_the_shape_of_a_real_token`.
+_TOKEN_SHAPED: Final = _deterministic_token(_FIXTURE_SEED)
+
+#: One candidate per character class the detector requires, each missing that class
+#: and nothing else. Pinning a requirement takes a candidate that satisfies every
+#: *other* condition, so that deleting the requirement is the only thing that could
+#: change its verdict -- and neither negative this file shipped with was one: an ADR
+#: filename is refused on its missing upper case whatever the digit rule says, and
+#: ``THEURIAN_MCP_TOKEN`` is refused three ways at once (no lower case, no digit,
+#: 3.7255 bits). Measured on c872ab9, dropping the digit requirement or the
+#: lower-case requirement from the detector left this file green.
+#:
+#: Each candidate holds 32 distinct characters exactly once, so its entropy is
+#: exactly ``log2(32)`` = 5.0 bits: over the floor *by construction*, which is what
+#: makes the missing class provably the only thing that can refuse it.
+_MISSING_ONE_CLASS: Final = {
+    "no digit": string.ascii_uppercase[:16] + string.ascii_lowercase[:16],
+    "no upper-case letter": string.ascii_lowercase[:22] + string.digits,
+    "no lower-case letter": string.ascii_uppercase[:22] + string.digits,
+}
+
+#: Upper, lower and digit all present, so the character-class gate passes and the
+#: entropy floor is the only thing left that can refuse it: three distinct
+#: characters repeated twelve times is ``log2(3)`` = 1.585 bits. No fixture was ever
+#: *refused* by that branch -- the random token cleared it and both negatives stop at
+#: the class gate above -- so lowering the floor from 4.0 to 0.0 on c872ab9 changed
+#: no verdict here and the file stayed green.
+_LOW_ENTROPY: Final = "Aa1" * 12
+
+#: The floor from both sides, one step apart. :data:`_LOW_ENTROPY` proves a floor
+#: exists; it does not say *where*, and a threshold nothing pins is a threshold that
+#: drifts in a refactor -- measured, any value from 1.6 to 4.8 bits leaves every
+#: other fixture here green.
+#:
+#: Sixteen distinct characters twice each is uniform over sixteen symbols, so its
+#: entropy is exactly ``log2(16)`` = 4.0 -- exactly, in binary floating point too,
+#: because 1/16 and its logarithm are both representable, so nothing here rests on a
+#: tolerance. Fifteen gives ``log2(15)`` = 3.9069. Together they pin the constant to
+#: 0.093 bits and pin the comparison as ``>=`` rather than ``>``.
+_AT_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:6] + "0123") * 2
+_UNDER_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:6] + "012") * 2
+
+#: The two long mixed strings the scan above actually meets, kept from the
+#: self-test #201 and #43 replaced. The ADR filename is the instructive one: 44
+#: characters at 4.0643 bits, *over* the floor, so it is refused on its missing
+#: upper-case letter by a margin of 0.064 bits. Rename one ADR and it may stop
+#: testing what it appears to test, which is why the no-upper-case row above is
+#: constructed rather than left to this one.
+_HUMAN_TYPED: Final = {
+    "an ADR filename": "0012-plugin-does-not-autoregister-mcp-server",
+    "the environment variable named in the connection template": "THEURIAN_MCP_TOKEN",
+}
+
+
 def test_the_secret_detector_actually_detects_a_secret() -> None:
-    """A detector nobody has proved works is a test that always passes."""
-    assert _looks_like_a_secret(secrets.token_urlsafe(32))
-    assert not _looks_like_a_secret("0012-plugin-does-not-autoregister-mcp-server")
-    assert not _looks_like_a_secret("THEURIAN_MCP_TOKEN")
+    """A detector nobody has proved works is a test that always passes.
+
+    :func:`test_no_plugin_file_contains_a_high_entropy_secret` is worth exactly as
+    much as :func:`_looks_like_a_secret`: a detector that answered ``False`` for
+    everything would report a clean plugin tree over a pasted token for as long as
+    anyone cared to look. This is the assertion that stops it.
+    """
+    detected = _looks_like_a_secret(_TOKEN_SHAPED)
+
+    assert detected, (
+        "the detector no longer fires on a 43-character base64url string with "
+        "mixed case, a digit and 4.83 bits of entropy per character -- the shape "
+        "of `secrets.token_urlsafe(32)`, which is what a leaked Theurian token in "
+        "the plugin tree would look like. If this reddened because _FIXTURE_SEED "
+        "changed, re-measure the fixture before suspecting the detector: 0.067% of "
+        "base64url strings of this length contain no digit (#201)."
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "candidate"),
+    list(_MISSING_ONE_CLASS.items()),
+    ids=list(_MISSING_ONE_CLASS),
+)
+def test_the_secret_detector_refuses_a_candidate_missing_one_character_class(
+    missing: str, candidate: str
+) -> None:
+    """Mixed case and a digit together are what separate a token from a name.
+
+    The detector's own docstring says why: length alone is not a signal, because a
+    kebab-case ADR filename is long too. Each of the three requirements therefore
+    has to be load-bearing on its own -- and two were not. Measured on c872ab9,
+    deleting the digit requirement or the lower-case requirement from the detector
+    left this file green; only the upper-case one was pinned, by an ADR filename
+    that clears the entropy floor by 0.064 bits.
+
+    A detector that stops requiring a class does not go quiet, it goes loud: it
+    begins reporting ordinary identifiers as secrets, and a scan that cries wolf is
+    a scan people learn to override.
+    """
+    detected = _looks_like_a_secret(candidate)
+
+    assert not detected, (
+        f"a 32-character candidate with {missing} -- entropy 5.0 bits, so the floor "
+        f"is not what refuses it -- is reported as a secret: {candidate!r}"
+    )
+
+
+def test_the_secret_detector_refuses_a_low_entropy_candidate() -> None:
+    """The entropy floor is the half of the detector that no fixture ever reached.
+
+    Character classes alone would call any capitalised word with a digit on the end
+    a secret. The floor is what makes the answer a statement about *randomness*,
+    and it was the one condition nothing here tested: lowering it from 4.0 to 0.0
+    on c872ab9 changed no verdict in this file, because every negative fixture was
+    already refused at the class gate above.
+    """
+    detected = _looks_like_a_secret(_LOW_ENTROPY)
+
+    assert not detected, (
+        f"{_LOW_ENTROPY!r} carries three distinct characters -- 1.585 bits, far "
+        "under the 4.0 floor -- and is reported as CSPRNG output, so the detector "
+        "has stopped measuring entropy and is judging character classes alone"
+    )
+
+
+def test_the_entropy_floor_is_where_the_detector_says_it_is() -> None:
+    """Where the floor sits is a tuning decision, so moving it should take one.
+
+    The test above proves a floor exists. It cannot say where, and neither can
+    anything else here: measured, any threshold between 1.6 and 4.8 bits leaves
+    every other fixture in this file green, so ``4.0`` was a number a refactor could
+    have carried off. These two candidates differ by one distinct character --
+    exactly 4.0 bits against 3.9069 -- which pins the constant to 0.093 bits and
+    pins the comparison as inclusive.
+
+    Deliberately tight. A heuristic threshold is exactly the kind of value that gets
+    nudged to silence a false positive, and nudging it silences true positives too;
+    that belongs in a diff someone reads, not in a green suite.
+    """
+    at_the_floor = _looks_like_a_secret(_AT_THE_FLOOR)
+    under_the_floor = _looks_like_a_secret(_UNDER_THE_FLOOR)
+
+    assert at_the_floor, (
+        f"{_AT_THE_FLOOR!r} carries exactly 4.0 bits, which the detector documents "
+        "as detectable (`entropy >= 4.0`); it is now refused, so either the floor "
+        "has been raised or the comparison has become exclusive"
+    )
+    assert not under_the_floor, (
+        f"{_UNDER_THE_FLOOR!r} carries 3.9069 bits, under the documented 4.0 floor, "
+        "and is reported as a secret; the floor has been lowered"
+    )
+
+
+@pytest.mark.parametrize(
+    ("what", "candidate"),
+    list(_HUMAN_TYPED.items()),
+    ids=list(_HUMAN_TYPED),
+)
+def test_the_secret_detector_ignores_the_identifiers_it_actually_meets(
+    what: str, candidate: str
+) -> None:
+    """A false positive costs the same as a false negative, in trust.
+
+    These are the two shapes the scan above meets in the plugin tree on every run:
+    a kebab-case ADR filename quoted in a document, and the name of the environment
+    variable that holds the real token (SEC-5, ADR-0011). Either one reported as a
+    secret makes the whole scan noise, and a noisy scan gets switched off.
+    """
+    detected = _looks_like_a_secret(candidate)
+
+    assert not detected, f"{what} is reported as a secret: {candidate!r}"
+
+
+def test_the_deterministic_fixture_keeps_the_shape_of_a_real_token() -> None:
+    """A stand-in stands in only while it is shaped like the thing it replaces.
+
+    Every claim the tests above make is a claim about what the detector does to a
+    real Theurian token, which ``security.tokens`` mints as
+    ``secrets.token_urlsafe(TOKEN_BYTES)``: 32 CSPRNG bytes, base64url, padding
+    stripped. :func:`_deterministic_token` reproduces that shape because a SHA-256
+    digest is also 32 bytes.
+
+    Both halves are read from Core rather than written down here, because a written
+    constant cannot notice the thing it copies moving. ``TOKEN_BYTES`` is compared
+    through ``base64`` rather than through the number 43, so raising it to 64 fails
+    here -- where the message says to re-derive the fixture -- instead of leaving a
+    fixture that is the shape of a token Theurian no longer issues. ``is_well_formed``
+    is Core's own shape check, so the alphabet is whatever it accepts rather than
+    whatever this file believes base64url to be.
+
+    Measured: swapping the derivation to ``hexdigest()`` reddens this test and the
+    detection test together -- 64 characters over 16 symbols is 3.8369 bits, under
+    the detector's own floor, so the self-test would fail while the detector was
+    entirely correct. That is #201's failure arriving from the other direction.
+    """
+    from theurian.security.tokens import TOKEN_BYTES, is_well_formed
+
+    real_length = len(base64.urlsafe_b64encode(bytes(TOKEN_BYTES)).rstrip(b"="))
+
+    assert len(_TOKEN_SHAPED) == real_length, (
+        f"the fixture is {len(_TOKEN_SHAPED)} characters, but a token from "
+        f"`secrets.token_urlsafe(TOKEN_BYTES)` is {real_length}; re-derive it so the "
+        f"tests above keep saying something about the shape Theurian actually issues"
+    )
+    assert is_well_formed(_TOKEN_SHAPED), (
+        "Core's own token shape check rejects the fixture, so the detection test "
+        f"above is no longer about anything Theurian would issue: {_TOKEN_SHAPED!r}"
+    )
 
 
 # -- CP-3: the twelve commands ---------------------------------------------
