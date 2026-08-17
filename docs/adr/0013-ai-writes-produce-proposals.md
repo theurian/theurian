@@ -81,19 +81,25 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 > places, and both divergences are load-bearing.**
 >
 > **The migration file is named `<migration-ulid>-<slug>.yaml`, not the literal
-> `migration.yaml` the tree shows.** A fixed name collides: two proposals both
-> called `migration.yaml` land on one path under `.theurian/migrations/`, and the
-> second `propose accept` overwrites the first with nothing reported. Measured on
-> this branch — after the second move, `theurian migrate validate` reported one
-> migration and applying it applied only that one, with the first change gone from
-> the set and its body left in `.theurian/knowledge/` with nothing pointing at it.
-> Naming the file for its own migration id from the moment it is generated makes
-> two proposals two files, and makes `propose accept` a move that renames nothing.
+> `migration.yaml` the tree shows** (`<slug>` is derived from the revision title).
+> A fixed name collides: two proposals both called `migration.yaml` would land on
+> one path under `.theurian/migrations/`, and the second acceptance overwrites the
+> first with nothing reported. Measured on #89's manual `mv` flow — after the
+> second move, validation reported one migration and applying it applied only that
+> one, with the first change gone from the set and its body left in
+> `.theurian/knowledge/` with nothing pointing at it. Naming the file for its own
+> migration id from the moment it is generated makes two proposals two distinct
+> files, so acceptance never reaches that collision — and `propose accept` on this
+> branch refuses one outright rather than overwriting: it writes the migration with
+> `O_EXCL` and checks the destination name first, raising `MigrationNameTakenError`.
 > The name matches `.theurian/migrations/`'s own `<ulid>-<kebab-slug>.yaml`
 > convention ([migrations.md](../protocol/migrations.md#naming-and-layout)).
 >
-> **The body is written to `<namespace>/<slug>.<revisionId>.<ext>`, one file per
-> revision, not the single `content.md` per item the tree shows.** The reason is
+> **The body is written to `<namespace>/<item-leaf>.<revisionId>.<ext>`, one file
+> per revision, not the single `content.md` per item the tree shows.** `<item-leaf>`
+> is the item id's last dotted segment — not the title-derived `<slug>` of the
+> migration filename above; the two coincide when a title slugifies to the item
+> leaf and diverge otherwise. The reason for the per-revision path is
 > the digest pin. Every generated revision pins `contentSha256`
 > ([#210](https://github.com/theurian/theurian/issues/210)), and the loader
 > re-reads a referenced body on every load and compares it against that pin, so a
@@ -118,8 +124,11 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 > uses (SEC-7, T-5), and writes every file with `O_NOFOLLOW` and an explicit
 > `0644` mode — so no source symlink, and no symlink planted at a destination,
 > turns a file a human will read into a read or a write outside the project. This
-> was proved before merge, not in production: the one defect that would have
-> broken the guarantee was caught in review and never shipped in a release.
+> was proved before merge, not in production: the one *class* of defect that would
+> have broken the guarantee — three reproduced faces, one of which read an
+> out-of-project secret (`~/.claude.json`, `~/.kube/config`) into a git-tracked
+> file, an exfiltration channel — was caught in review and never shipped in a
+> release.
 
 ## Consequences
 
