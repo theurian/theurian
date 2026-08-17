@@ -12,6 +12,46 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--json` commands no longer crash with a raw traceback when a migration's
+  content cannot be read**
+  ([#205](https://github.com/theurian/theurian/issues/205)). Every CLI command
+  that resolves a project loads and validates its migrations first, and a raw
+  filesystem-call failure on that path escaped through Typer as a Rich traceback
+  — exit 1, empty stdout, no `{error, remedy}` document — even under `--json`.
+  Reproduced against `migrate validate --json` and `init`; it reached all eleven
+  `resolve_context`/`_require_project` call sites, `project status` included,
+  whose contract is to answer rather than crash. Each read failure now raises a
+  `TheurianError` subtype that those call sites already guard, so it renders as a
+  structured `{error, remedy}` failure at exit 1 instead. The class covered is
+  filesystem-call failures that *raise*:
+
+  - a `contentFile` that cannot be resolved or read — missing, a permission
+    problem, a directory, or a path holding a NUL byte, which makes
+    `Path.resolve()` raise `ValueError` before any syscall, one call site earlier
+    than the read;
+  - a migration file the loader cannot read;
+  - a `.theurian/migrations/` directory whose probe (`Path.is_dir()`) re-raises
+    `EACCES` — for example its execute bit removed;
+  - a project registry — data directory or registry file — that cannot be read;
+  - the installed package's JSON Schema, when a candidate is found but reading it
+    fails.
+
+  Each remedy is selected by *why* the read failed, not one guess per `OSError`:
+  a missing or malformed path points at path resolution, `EACCES`/`EPERM` at
+  permissions, `EISDIR` at "this names a directory, not a file." `project status
+  --json` now surfaces the remedy in its unresolved-project payload too.
+
+  **Not covered — two adjacent defects share this symptom but not its root
+  cause, and both remain open.** A `.theurian/migrations/` directory that
+  `Path.glob` cannot list swallows the `PermissionError` and reports
+  `valid: true, migrationCount: 0` — a silent false-negative, because nothing
+  raises ([#214](https://github.com/theurian/theurian/issues/214)). A malformed
+  migration YAML raises `yaml.YAMLError` at parse time, which the loader does not
+  catch, so it still escapes as a traceback under `--json`
+  ([#217](https://github.com/theurian/theurian/issues/217)).
+
 ### Documentation
 
 - **Documents describing review ingestion as shipped, corrected together with
