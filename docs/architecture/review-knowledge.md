@@ -5,7 +5,7 @@ always a human's.
 
 **The domain model is built; nothing collects into it yet.** `ReviewThread`,
 `PromotionGate` and `KnowledgeCandidate` live in
-[`domain/review.py`](../../packages/theurian-core/src/theurian/domain/review.py),
+[`domain/review.py`](https://github.com/theurian/theurian/blob/main/packages/theurian-core/src/theurian/domain/review.py),
 and the promotion invariants below are held by three different mechanisms
 (ADR-0013, INV-7):
 

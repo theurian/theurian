@@ -373,6 +373,23 @@ and the outcomes must still exist as data
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
 everything else should still work.
 
+<!-- capabilities-fields:begin -->
+The response's fields serve different roles, not one uniform contract.
+`capabilities` is what a client degrades against, one feature at a time.
+`version` and `protocolVersion` re-publish the same two process constants
+`theurian compat check` reads directly when it resolves CP-6
+(`docs/architecture/requirements-analysis.md`, "Claude Code plugin
+requirements") — the gate itself never reads this response, so a client does
+not compare these two fields to decide compatibility; that comparison already
+happened before either surface answered. If the two ever disagree, a client
+that already passed the gate sees a different build reported here than the
+one it was checked against. For a client that only calls MCP tools, this is
+still the sole place `protocolVersion` is readable at all: liveness is served
+at the `/health` HTTP route, outside the MCP tool surface, with no
+callable-tool equivalent in this build. `schemaVersion` reports the canonical
+store's schema version. `note` is prose, not a field a client parses.
+<!-- capabilities-fields:end -->
+
 ### `project.list`
 
 Four keys, all four always present. The contract is
@@ -468,16 +485,38 @@ Additive changes (a new optional field, a new tool) are MINOR and do not bump
 or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
 
-**`protocolVersion` is still `theurian/v1` after Milestone 5, which made three
-breaking changes to this contract.** That is a decision, recorded here because
-the alternative reading is that somebody forgot. The rule above governs changes
-*from a released protocol*: no published version of Core has ever lacked them,
-so no client can be pinned to a `v1` that lacks them, and bumping would publish
-a `theurian/v2` whose `v1` never shipped. Milestone 5's breaking set is the
-*content* of `v1`, not a departure from it.
+**`protocolVersion` is still `theurian/v1` after Milestone 5 and #206, which
+between them made four breaking changes to this contract.** That is a
+decision, recorded here because the alternative reading is that somebody
+forgot. The rule above governs changes *from a released protocol*, and
+Milestone 5's three qualify outright: no published version of Core has ever
+lacked them, so no client was ever pinned to a `v1` that lacked them, and
+bumping would publish a `theurian/v2` whose `v1` never shipped. Milestone 5's
+breaking set is the *content* of `v1`, not a departure from it. `milestone`'s
+removal is the fourth, and it does not qualify the same way — its own ground
+is below.
 
-The three, so that "breaking but unbumped" is checkable rather than asserted:
+The four, so that "breaking but unbumped" is checkable rather than asserted:
 the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
-and the two required fields `project.list` gained. Each is named as BREAKING in
-the changelog, which is what protects an integrator. The first bump is the
+and the two required fields `project.list` gained (all Milestone 5), and the
+removal of `system.capabilities.milestone` (#206). Each is named as BREAKING
+in the changelog, which is what protects an integrator. The first bump is the
 first breaking change after the version that first carries `theurian/v1`.
+
+**`milestone`'s exemption rests on different ground.** Measured across
+`core-v0.1.0.dev0` through `core-v0.1.0.dev4`, the field shipped in every
+released tag, all under `theurian/v1` — unlike Milestone 5's three, which
+never shipped under a released `v1` at all before the milestone that changed
+them, so a client *could*, in principle, have been built against
+`milestone`'s presence. The exemption is granted anyway, on grounds specific
+to this one field: it was never defined in this document or in any schema
+under `schemas/mcp/`, it has zero consumers — search-verified across this
+repository, plugins included — and the project is pre-1.0 on a `dev` line
+with no known external integration to break. Publishing `theurian/v2` over a
+field nothing reads would trip CP-6's compatibility gate
+(`docs/architecture/requirements-analysis.md`, "Claude Code plugin
+requirements") for a change no known integrator consumes. **This exemption is
+scoped to `milestone` alone**: it says nothing about `version` or
+`protocolVersion`, which re-publish the same constants the gate itself reads
+directly, never through this response (see the `system.capabilities`
+paragraph under "Project and system" above).
