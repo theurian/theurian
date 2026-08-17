@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -1185,7 +1185,7 @@ wheels = [
 
 [[package]]
 name = "theurian"
-version = "0.1.0.dev3"
+version = "0.1.0.dev4"
 source = { editable = "packages/theurian-core" }
 dependencies = [
     { name = "jsonschema" },
