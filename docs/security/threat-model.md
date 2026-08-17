@@ -173,7 +173,7 @@ character carries only four bits and three of its sixteen symbols are digits;
 measured 10,315 in 16,000,000 samples on 2026-08-18. Whether the repository's
 gitleaks scan catches such a token has not been measured and is not claimed
 here. The detector and its own self-tests are in
-`packages/theurian-core/tests/unit/test_plugin_boundary.py` (#201, #43).
+`packages/theurian-core/tests/unit/test_secret_detector.py` (#201, #43).
 
 #### T-9 — The token appears in a log or crash report (Information disclosure, High)
 
