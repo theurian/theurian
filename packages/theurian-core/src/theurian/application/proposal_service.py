@@ -56,7 +56,11 @@ from theurian.domain.proposal import (
     require_evidence,
 )
 from theurian.domain.values import ContentHash, MediaType
-from theurian.security.paths import assert_no_symlink_escape, resolve_within_root
+from theurian.security.paths import (
+    assert_no_symlink_escape,
+    read_source_file,
+    resolve_within_root,
+)
 from theurian.security.yaml_loading import load_yaml_mapping
 
 #: The evidence file's name. Fixed, unlike the migration's: nothing moves it, so
@@ -290,48 +294,58 @@ class ProposalService:
     def accept(self, proposal_id: ProposalId) -> AcceptedProposal:
         """Move a proposal's migration and body into place. Nothing else.
 
-        The order is chosen for what a partial failure leaves behind. The
-        collision check runs first, so a refusal touches nothing at all. Bodies
-        move next and the migration last: a failure part-way leaves
-        ``.theurian/migrations/`` exactly as it was, so ``migrate validate``
-        still loads. Moving the migration first and failing on a body would
-        publish a migration whose ``contentFile`` does not exist, which breaks
-        every migration command in the project rather than this one change.
+        Every file this reads is proved to be a regular file inside the project
+        with no symlink anywhere in its chain, and every file it writes lands
+        inside ``.theurian/knowledge/`` (a body) or ``.theurian/migrations/``
+        (the migration). A proposal directory is committed and so arrives
+        through a contributor's pull request (ADR-0013 point 7) -- it is
+        untrusted input, and a hand-authored ``contentFile`` or a symlinked
+        body would otherwise make ``accept`` read a file outside the project or
+        write one outside ``knowledge/``. The reads route through
+        :func:`read_source_file` (SEC-7, T-5, and the size cap SEC-8); the
+        writes use ``O_NOFOLLOW`` with an explicit mode, so no source bit and no
+        planted destination symlink survives the move.
 
         Raises:
-            ProposalError: If the proposal is unknown, ambiguous, incomplete, or
-                names a migration already in place.
-            PathEscapeError: If a ``contentFile`` resolves outside the project.
+            ProposalError: If the proposal is unknown, ambiguous, incomplete,
+                names a migration already in place, or names a file the security
+                layer refuses.
+            PathEscapeError: If a ``contentFile`` resolves outside
+                ``.theurian/knowledge/``.
+            InputTooLargeError: If a file the accept path reads exceeds SEC-8's
+                size cap.
         """
         directory = self._require_directory(proposal_id)
         migration_file = self._require_migration(directory, proposal_id)
+        migration_bytes = self._read_within_project(migration_file)
         destination = self._paths.migrations / migration_file.name
-        if destination.exists():
-            raise MigrationNameTakenError(
-                f"{destination.name} is already in .theurian/migrations/. The name "
-                "carries the migration's id, so that migration is already in place.",
-                remedy=(
-                    "Read the migration that is already there. If this proposal is a "
-                    "different change, draft it again to mint a new migration id; if it "
-                    "is the same one, delete the proposal directory."
-                ),
-            )
+        self._refuse_if_migration_present(destination)
 
-        document = _read_document(migration_file)
+        document = _parse_migration(migration_bytes, migration_file)
         moves = tuple(self._body_moves(directory, document))
 
         self._paths.migrations.mkdir(parents=True, exist_ok=True)
-        bodies = tuple(_replace_body(move) for move in moves)
+        bodies = tuple(_write_body(move) for move in moves)
         return AcceptedProposal(
             proposal_id=proposal_id,
-            migration=_move_without_replacing(migration_file, destination),
+            migration=_create_migration(migration_file, destination, migration_bytes),
             bodies=bodies,
         )
 
     def _require_directory(self, proposal_id: ProposalId) -> Path:
         # Built from a validated ULID, so no caller-supplied text reaches the
         # path: `ProposalId` cannot spell a separator, let alone a traversal.
+        # But the name being safe says nothing about what it resolves *to*: a
+        # committed proposal directory that is itself a symlink to somewhere out
+        # of the project would pull that target's `*.yaml` into the accept path.
+        # `is_dir()` follows the link, so it is checked separately.
         directory = self._paths.proposals / proposal_id.value
+        if directory.is_symlink():
+            raise ProposalError(
+                f"Proposal {proposal_id.value} is a symlink, not a directory.",
+                remedy="A proposal is a real directory under .theurian/proposals/. "
+                "Remove the link and commit the directory itself.",
+            )
         if not directory.is_dir():
             raise ProposalError(
                 f"No proposal {proposal_id.value} under .theurian/proposals/.",
@@ -341,7 +355,22 @@ class ProposalService:
 
     @staticmethod
     def _require_migration(directory: Path, proposal_id: ProposalId) -> Path:
-        candidates = sorted(path for path in directory.glob("*.yaml") if path.is_file())
+        # A `*.yaml` that is a symlink is rejected by name, not filtered away:
+        # `is_file()` follows the link, so a link to an out-of-project file would
+        # otherwise count as the migration and have its target's bytes read and
+        # written into a tracked migration file. Filtering it silently would
+        # report "holds no migration file" and send the reader to draft again,
+        # when the real fault is the link.
+        entries = sorted(directory.glob("*.yaml"))
+        symlinked = [path.name for path in entries if path.is_symlink()]
+        if symlinked:
+            raise ProposalError(
+                f"Proposal {proposal_id.value} holds a symlinked migration file: "
+                f"{', '.join(symlinked)}.",
+                remedy="A proposal's migration is a real file. Remove the link and commit "
+                "the migration itself.",
+            )
+        candidates = [path for path in entries if path.is_file()]
         if not candidates:
             raise ProposalError(
                 f"Proposal {proposal_id.value} holds no migration file.",
@@ -356,49 +385,100 @@ class ProposalService:
             )
         return candidates[0]
 
-    def _body_moves(self, directory: Path, document: Mapping[str, object]) -> Iterable[MovedFile]:
+    def _refuse_if_migration_present(self, destination: Path) -> None:
+        if destination.exists() or destination.is_symlink():
+            raise MigrationNameTakenError(
+                f"{destination.name} is already in .theurian/migrations/. The name "
+                "carries the migration's id, so that migration is already in place.",
+                remedy=(
+                    "Read the migration that is already there. If this proposal is a "
+                    "different change, draft it again to mint a new migration id; if it "
+                    "is the same one, delete the proposal directory."
+                ),
+            )
+
+    def _body_moves(self, directory: Path, document: Mapping[str, object]) -> Iterable[_BodyMove]:
         """Pair each ``contentFile`` the migration names with the file to move.
 
-        Resolved against ``.theurian/migrations/`` rather than against the
-        proposal directory, because that is where the migration file will be
-        once this call finishes -- and the same resolution the loader performs.
+        The destination is resolved against ``.theurian/migrations/`` because
+        that is where the migration file will be once this call finishes -- the
+        same resolution the loader performs -- and it is confined to
+        ``.theurian/knowledge/``. The source is read through the security layer
+        here, once, so the bytes written later are the bytes that were checked.
         """
         for content_file in _content_files(document):
             destination = self._destination_of(content_file)
             source = directory / PurePosixPath(content_file).name
-            if not source.is_file():
+            if not source.exists():
                 raise ProposalError(
                     f"The migration names {content_file}, but {source.name} is not in "
                     f"the proposal directory.",
                     remedy="Restore the body file, or draft the proposal again.",
                 )
-            yield MovedFile(source=source, destination=destination, replaced=destination.exists())
+            data = self._read_within_project(source)
+            yield _BodyMove(
+                source=source,
+                destination=destination,
+                data=data,
+                replaced=destination.exists(),
+            )
+
+    def _read_within_project(self, path: Path) -> bytes:
+        """Read one accept-path file, or refuse it.
+
+        A regular file, no symlink on the final component, inside the project
+        root, under SEC-8's size cap. :func:`read_source_file` enforces the last
+        two -- and rejects a symlink that *escapes* the root -- while the
+        ``is_symlink`` check rejects a symlink that resolves back inside it,
+        which the security layer permits but the accept path must not follow:
+        that link's target is an in-project file the proposal never authored.
+        """
+        if path.is_symlink():
+            raise ProposalError(
+                f"{path.name} is a symlink, not a regular file.",
+                remedy="A proposal's migration and body are real files. Remove the link.",
+            )
+        return read_source_file(self._paths.root, PurePosixPath(path.relative_to(self._paths.root)))
 
     def _destination_of(self, content_file: str) -> Path:
-        """Where one ``contentFile`` points, proved to be inside the project.
+        """Where one ``contentFile`` points, proved to be inside ``knowledge/``.
 
         The ``..`` in ``../knowledge/x.md`` is legitimate and load-bearing, so
         containment cannot be a check on the string: the path is resolved first
         -- symlinks and all -- and the resolved result is what must stay inside
-        the root (SEC-7, T-4, T-5). ``relative_to`` raising is the escape, which
-        is why it is converted rather than propagated.
+        ``.theurian/knowledge/`` (SEC-7, T-4, T-5). The boundary is
+        ``knowledge/`` and not the project root, because a body has no
+        legitimate destination outside it: a generated ``contentFile`` is always
+        ``../knowledge/...``, and confining to the root instead would let a
+        hand-authored ``../../.git/hooks/pre-commit`` write an executable git
+        hook that runs on the maintainer's next commit.
         """
+        knowledge = self._paths.knowledge.resolve()
         resolved = (self._paths.migrations / content_file).resolve()
-        root = self._paths.root.resolve()
         try:
-            relative = resolved.relative_to(root)
+            relative = resolved.relative_to(knowledge)
         except ValueError as exc:
-            raise PathEscapeError(content_file, str(root)) from exc
-        destination = resolve_within_root(self._paths.root, PurePosixPath(relative))
-        assert_no_symlink_escape(self._paths.root, destination)
+            raise PathEscapeError(content_file, str(knowledge)) from exc
+        destination = resolve_within_root(self._paths.knowledge, PurePosixPath(relative))
+        assert_no_symlink_escape(self._paths.knowledge, destination)
         return destination
+
+
+@dataclass(frozen=True, slots=True)
+class _BodyMove:
+    """One body the accept path will write, with the bytes it already checked."""
+
+    source: Path
+    destination: Path
+    data: bytes
+    replaced: bool
 
 
 def _last_segment(item_id: ItemId) -> str:
     return item_id.value.rpartition(".")[2]
 
 
-def _read_document(path: Path) -> Mapping[str, object]:
+def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
     """Parse an accepted proposal's migration, for its ``contentFile`` alone.
 
     Deliberately not a validation pass. ``accept`` moves files; whether the
@@ -407,8 +487,8 @@ def _read_document(path: Path) -> Mapping[str, object]:
     command had checked something it has not.
     """
     try:
-        return load_yaml_mapping(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return load_yaml_mapping(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
         raise ProposalError(
             f"{path.name} could not be read as a migration: {exc}",
             remedy="Fix the migration file in the proposal directory, then accept it again.",
@@ -427,37 +507,59 @@ def _content_files(document: Mapping[str, object]) -> Iterable[str]:
             yield content_file
 
 
-def _replace_body(move: MovedFile) -> MovedFile:
-    """Move a body onto its destination, replacing whatever is there.
+def _write_body(move: _BodyMove) -> MovedFile:
+    """Write a body onto its destination, replacing whatever is there.
 
     The permissive half of the asymmetry: a second revision of an item targets
     the same ``contentFile``, so refusing here would make an update impossible.
+
+    The write is ``O_NOFOLLOW`` with an explicit mode, never a rename. A rename
+    preserves the source file's permission bits, so a body chmod 0755 in the
+    proposal directory would land an executable file in ``knowledge/``; and it
+    follows a planted destination symlink, writing through it to wherever the
+    link points. Neither survives an explicit-mode create that refuses to open a
+    symlink.
     """
     move.destination.parent.mkdir(parents=True, exist_ok=True)
-    move.source.replace(move.destination)
-    return move
+    _write_file(move.destination, move.data, exclusive=False)
+    move.source.unlink()
+    return MovedFile(source=move.source, destination=move.destination, replaced=move.replaced)
 
 
-def _move_without_replacing(source: Path, destination: Path) -> MovedFile:
-    """Move a file onto a name nothing holds, refusing rather than overwriting.
+def _create_migration(source: Path, destination: Path, data: bytes) -> MovedFile:
+    """Create the migration at a name nothing holds, refusing to overwrite.
 
-    ``O_EXCL`` and not an ``exists()`` check followed by a rename: a rename
-    replaces silently, which is the exact failure this refusal exists to
-    prevent, and the check-then-rename form still does so whenever anything
-    creates the name in between.
+    ``O_EXCL`` and not an ``exists()`` check followed by a write: the check is
+    already done in :meth:`ProposalService._refuse_if_migration_present`, and
+    this is the guard against something creating the name in the window between,
+    which a check-then-write cannot close.
     """
     try:
-        handle = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        _write_file(destination, data, exclusive=True)
     except FileExistsError as exc:
         raise MigrationNameTakenError(
             f"{destination.name} appeared in .theurian/migrations/ while this proposal "
             "was being accepted, so accepting it would overwrite that migration.",
             remedy="Read what is there, then draft this proposal again for a new id.",
         ) from exc
-    with os.fdopen(handle, "wb") as opened:
-        opened.write(source.read_bytes())
     source.unlink()
     return MovedFile(source=source, destination=destination, replaced=False)
+
+
+def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
+    """Write ``data`` to ``destination`` with an explicit mode, never following a link.
+
+    ``O_NOFOLLOW`` on the final component: a destination that is a symlink is
+    refused rather than written through, so a body cannot be redirected out of
+    ``knowledge/`` by planting a link at its path. ``O_EXCL`` additionally
+    refuses a destination that exists at all, for the migration, whose name must
+    never land on another file.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+    flags |= os.O_EXCL if exclusive else os.O_TRUNC
+    handle = os.open(destination, flags, 0o644)
+    with os.fdopen(handle, "wb") as opened:
+        opened.write(data)
 
 
 def _migration_document(  # noqa: PLR0913 -- the fields a migration has; all keyword-only

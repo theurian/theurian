@@ -8,6 +8,7 @@ it directly, so a defect is located in the packaging rather than in Typer.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -108,6 +109,23 @@ def _upsert(path: Path) -> Mapping[str, object]:
 
 def _tree(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+
+def _tree_bytes(root: Path) -> str:
+    """Every regular file's text under ``root``, concatenated.
+
+    A leak check reads the *content* of the tree, not its shape: a symlinked
+    read that exfiltrates a secret lands the secret's bytes in a real file, and
+    that is what must be absent -- searching filenames would miss it.
+    """
+    out: list[str] = []
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            try:
+                out.append(path.read_text(encoding="utf-8"))
+            except (UnicodeDecodeError, OSError):
+                continue
+    return "\n".join(out)
 
 
 # -- generation ------------------------------------------------------------
@@ -455,6 +473,138 @@ def test_accept_refuses_a_body_path_that_leaves_the_project(
         service.accept(drafted.proposal_id)
 
     assert not (paths.root.parent / "escaped.md").exists()
+
+
+# -- accept trusts nothing in the proposal directory (CRITICAL) ------------
+#
+# A proposal directory is committed and arrives through a contributor's pull
+# request (ADR-0013 point 7), so every path in it is untrusted. Each test below
+# is one face of "accept read or wrote a file it should not have", reproduced
+# against this service before the fix: a symlink exfiltrated an out-of-project
+# secret into a tracked migration, and an in-root `contentFile` outside
+# `knowledge/` wrote an executable git hook.
+
+
+def test_accept_refuses_a_symlinked_migration_and_leaks_nothing(
+    service: ProposalService, paths: ProjectPaths, tmp_path: Path
+) -> None:
+    """Face A: a `*.yaml` symlink to an out-of-project secret must not be read.
+
+    `is_file()` follows the link, so before the fix the target's bytes were read
+    and written into a tracked `.theurian/migrations/*.yaml`, exit 0. The secret
+    is mapping-shaped (a real `~/.claude.json` is valid JSON, hence valid YAML),
+    so it is the *content*, not a parse error, that the old path would have
+    surfaced.
+    """
+    drafted = service.draft(_request())
+    secret = tmp_path / "claude.json"
+    secret.write_text('{"token": "SUPER-SECRET", "org": "acme"}\n', encoding="utf-8")
+    landed = paths.migrations / drafted.migration_file.name
+    drafted.migration_file.unlink()
+    drafted.migration_file.symlink_to(secret)
+
+    with pytest.raises(ProposalError, match="symlink"):
+        service.accept(drafted.proposal_id)
+
+    assert not landed.exists(), "the migration name must hold nothing"
+    assert "SUPER-SECRET" not in _tree_bytes(paths.root)
+
+
+def test_accept_refuses_a_symlinked_proposal_directory(
+    service: ProposalService, paths: ProjectPaths, tmp_path: Path
+) -> None:
+    """Face B: the ULID name is safe, but not what it resolves to.
+
+    The proposal directory itself is a symlink to an out-of-project directory
+    whose `*.yaml` would otherwise be pulled onto the accept path.
+    """
+    drafted = service.draft(_request())
+    elsewhere = tmp_path / "elsewhere"
+    drafted.directory.rename(elsewhere)
+    drafted.directory.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(ProposalError, match="symlink"):
+        service.accept(drafted.proposal_id)
+
+
+def test_accept_refuses_a_symlinked_body_source(
+    service: ProposalService, paths: ProjectPaths, tmp_path: Path
+) -> None:
+    """A body that is a link to an out-of-project file must not be copied in."""
+    drafted = service.draft(_request())
+    secret = tmp_path / "id_ed25519"
+    secret.write_text("PRIVATE-KEY-MATERIAL\n", encoding="utf-8")
+    drafted.body_file.unlink()
+    drafted.body_file.symlink_to(secret)
+
+    with pytest.raises(ProposalError, match="symlink"):
+        service.accept(drafted.proposal_id)
+
+    assert not drafted.body_destination.exists()
+    assert "PRIVATE-KEY-MATERIAL" not in _tree_bytes(paths.root)
+
+
+def test_accept_refuses_a_content_file_inside_the_root_but_outside_knowledge(
+    service: ProposalService,
+    paths: ProjectPaths,
+) -> None:
+    """Face C: `../../.git/hooks/pre-commit` is inside the root and must be refused.
+
+    Reproduced end to end before the fix: `accept` wrote an executable git hook
+    that runs on the maintainer's next commit, invisible to `git status`. The
+    destination boundary is `.theurian/knowledge/`, not the project root, so an
+    in-root escape from `knowledge/` is refused like an out-of-root one.
+    """
+    (paths.root / ".git" / "hooks").mkdir(parents=True)
+    drafted = service.draft(_request())
+    document = drafted.migration_file.read_text(encoding="utf-8")
+    drafted.migration_file.write_text(
+        document.replace(drafted.content_file, "../../.git/hooks/pre-commit"), encoding="utf-8"
+    )
+    (drafted.directory / "pre-commit").write_text("#!/bin/sh\necho pwned\n", encoding="utf-8")
+
+    with pytest.raises(PathEscapeError):
+        service.accept(drafted.proposal_id)
+
+    assert not (paths.root / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_accept_never_lands_an_executable_body(
+    service: ProposalService,
+) -> None:
+    """A body chmod 0755 in the proposal directory must not land executable.
+
+    `Path.replace` preserves the source's permission bits; the fix writes with
+    an explicit mode instead, so the executable bit never survives the move.
+    """
+    drafted = service.draft(_request())
+    os.chmod(drafted.body_file, 0o755)  # noqa: S103 - the executable bit is the input under test
+
+    service.accept(drafted.proposal_id)
+
+    assert drafted.body_destination.stat().st_mode & 0o111 == 0
+
+
+def test_accept_does_not_write_through_a_destination_symlink(
+    service: ProposalService, paths: ProjectPaths, tmp_path: Path
+) -> None:
+    """A body destination that is a planted symlink must be refused, not followed.
+
+    The destination resolves inside `knowledge/`, so containment passes; the
+    `O_NOFOLLOW` write is what stops the body being written through the link to
+    wherever it points.
+    """
+    outside = tmp_path / "outside.md"
+    drafted = service.draft(_request())
+    drafted.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    drafted.body_destination.symlink_to(outside)
+
+    # An out-of-knowledge target is caught by containment on the resolved path;
+    # an in-knowledge one would reach the O_NOFOLLOW write. Either is a refusal.
+    with pytest.raises((ProposalError, PathEscapeError, OSError)):
+        service.accept(drafted.proposal_id)
+
+    assert not outside.exists()
 
 
 def test_accept_names_the_body_it_cannot_find(
