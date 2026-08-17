@@ -105,13 +105,17 @@ jobs:
       - name: Check the mermaid bundle reached the site intact
         run: echo "${MERMAID_SHA256}  site/js/mermaid.min.js" | sha256sum -c -
 
-      # The same failure shape, for a file nothing in mkdocs.yml names: whether
+      # The same failure shape, for a file no key in mkdocs.yml names: whether
       # MkDocs copied docs/google150fa28bebf014f3.html into the site is not
-      # something the build reports. It is Google's ownership-verification token
-      # for the site, and if it stops being served at the site root Google
-      # withdraws the verification, with an email as the only signal. cmp rather
-      # than test -f because Google matches the file's exact bytes, so a
-      # reformatted copy fails verification as surely as a missing one.
+      # something the build reports. It is Google's ownership-verification
+      # token for the site, and Search Console periodically re-checks it: if it
+      # can no longer be confirmed, the owners are notified and permissions
+      # expire after a grace period.
+      #
+      # cmp rather than test -f: Google's instruction is to upload the file
+      # without any modifications, and it states that verification fails if the
+      # file name or content does not match. Whether a single trailing newline
+      # is tolerated is untested here; cmp avoids depending on the answer.
       - name: Check the verification token reached the site intact
         run: cmp docs/google150fa28bebf014f3.html site/google150fa28bebf014f3.html
 
