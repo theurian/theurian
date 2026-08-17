@@ -150,6 +150,35 @@ def test_load_migrations_raises_migration_content_unreadable_error_for_a_nul_byt
     assert "embedded null character" in str(excinfo.value)
 
 
+def test_load_migrations_names_the_directory_remedy_for_a_content_file_that_is_a_directory(
+    project: Path,
+) -> None:
+    """The last unproven arm of ``_read_failure_remedy`` (``domain/errors.py``).
+
+    Round-two review measured the ``EISDIR`` arm surviving reversion to the
+    generic ``missing_or_wrong_text``: nothing drove a ``contentFile`` that
+    resolves to an existing *directory* rather than a missing or
+    permission-denied file, so a regression collapsing that branch back to
+    "resolves relative to the migration file, not a proposal directory" --
+    the very "make the reader check two irrelevant things" defect that
+    docstring says selecting by ``errno`` fixes -- would have passed silently.
+    ``ENOENT`` (missing file, above) and ``EACCES``
+    (`test_load_migrations_raises_migration_file_unreadable_error_for_an_
+    unreadable_migration`, the sibling error's own arm) were already proven;
+    this is the third and last.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "adirectory").mkdir()
+    (migrations_dir / "01K1NNNNNN01234567890ABCDE-eisdir.yaml").write_text(
+        _UPSERT_MIGRATION.format(content_file="adirectory")
+    )
+
+    with pytest.raises(MigrationContentUnreadableError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert excinfo.value.remedy == "'adirectory' names a directory, not a file."
+
+
 # -- MigrationFileUnreadableError ---------------------------------------------
 
 
