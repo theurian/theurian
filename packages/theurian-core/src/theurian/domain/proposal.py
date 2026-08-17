@@ -66,17 +66,29 @@ class Evidence:
     anchors: tuple[SourceAnchor, ...]
 
     def __post_init__(self) -> None:
-        if not self.model.strip():
-            raise InvariantViolationError(
-                "Evidence must name the model that produced the proposal. "
-                "Pass the model identity, e.g. --model claude-opus-5."
-            )
-        if not self.anchors or not self.reasoning.strip():
-            raise InvariantViolationError(
-                "A proposal with no evidence is rejected at generation (ADR-0013). "
-                "Give at least one source anchor and the reasoning that joins it to "
-                "the claim: --source-uri and --reasoning."
-            )
+        require_evidence(self)
+
+
+def require_evidence(evidence: Evidence) -> None:
+    """Raise unless ``evidence`` evidences anything (ADR-0013 point 5).
+
+    Stated once and called from two places -- here, and again where a proposal
+    request is assembled. The second call is not redundant: it is what makes
+    "rejected at generation" a property of the generation *path* rather than of
+    one constructor, so that a caller holding an :class:`Evidence` built by any
+    other route still cannot package a proposal out of it.
+    """
+    if not evidence.model.strip():
+        raise InvariantViolationError(
+            "Evidence must name the model that produced the proposal. "
+            "Pass the model identity, e.g. --model claude-opus-5."
+        )
+    if not evidence.anchors or not evidence.reasoning.strip():
+        raise InvariantViolationError(
+            "A proposal with no evidence is rejected at generation (ADR-0013). "
+            "Give at least one source anchor and the reasoning that joins it to "
+            "the claim: --source-uri and --reasoning."
+        )
 
 
 def kebab_slug(text: str, *, fallback: str) -> str:

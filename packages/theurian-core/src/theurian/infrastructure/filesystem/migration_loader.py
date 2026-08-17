@@ -8,6 +8,7 @@ check that keeps that safe lives here.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -65,6 +66,25 @@ _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 def _validator(schema_root: Path) -> Draft202012Validator:
     schema = json.loads((schema_root / _SCHEMA_RELATIVE).read_text(encoding="utf-8"))
     return Draft202012Validator(schema)
+
+
+def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
+    """Check a migration *document* against the published schema, without a file.
+
+    The loader's own check reads a path; this one takes the parsed mapping, so
+    a generator can refuse to write a migration it has just built wrong rather
+    than leaving one on disk for a reviewer to discover. ADR-0013 point 3 is the
+    reason it belongs at generation: the gap between a proposal and approved
+    knowledge is human review, not format conversion.
+
+    Raises:
+        MigrationError: If the document does not satisfy the schema.
+    """
+    try:
+        _validator(schema_root).validate(document)
+    except ValidationError as exc:
+        location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
+        raise MigrationError(f"invalid migration at {location}: {exc.message}") from exc
 
 
 def load_migrations(

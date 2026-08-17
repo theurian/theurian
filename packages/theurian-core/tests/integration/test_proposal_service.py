@@ -1,0 +1,417 @@
+"""Packaging and accepting a proposal (ADR-0013 §4).
+
+The service is the half both composition roots share: the CLI drives it today
+and Milestone 7's write-intent MCP tools drive the same calls. These tests use
+it directly, so a defect is located in the packaging rather than in Typer.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator, Mapping
+from pathlib import Path
+
+import pytest
+import yaml
+from fakes.clock import FrozenClock
+from fakes.ids import SeededIdGenerator
+
+from theurian.application.project_service import ProjectPaths, initialize_project
+from theurian.application.proposal_service import (
+    ProposalError,
+    ProposalRequest,
+    ProposalService,
+)
+from theurian.domain.enums import KnowledgeKind
+from theurian.domain.errors import InvariantViolationError, PathEscapeError
+from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
+from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
+from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
+from theurian.domain.proposal import Evidence
+from theurian.domain.values import MARKDOWN
+from theurian.infrastructure.filesystem.migration_loader import (
+    load_migrations,
+    validate_migration_document,
+)
+
+pytestmark = pytest.mark.integration
+
+SCHEMAS = Path(__file__).resolve().parents[4] / "schemas"
+
+ANCHOR = SourceAnchor(
+    provider="git",
+    source_uri="https://github.com/acme/api/commit/0123456789abcdef",
+    commit_sha="0123456789abcdef",
+)
+
+EVIDENCE = Evidence(
+    agent_id=AgentId("claude-code"),
+    task_id=TaskId("task-7"),
+    model="claude-opus-5",
+    reasoning="The review thread on #41 settled the retry budget at three attempts.",
+    anchors=(ANCHOR,),
+)
+
+BODY = "# Retry policy\n\nThree attempts, then fail loudly.\n"
+
+
+def _request(**overrides: object) -> ProposalRequest:
+    fields: dict[str, object] = {
+        "item_id": ItemId("architecture.retry-policy"),
+        "title": "Retry policy",
+        "kind": KnowledgeKind.ARCHITECTURE,
+        "owner": "platform-team",
+        "author": "platform-team@example.com",
+        "description": "Record the retry budget the API review settled on.",
+        "body": BODY,
+        "content_type": MARKDOWN,
+        "evidence": EVIDENCE,
+        "source_anchors": (ANCHOR,),
+    }
+    return ProposalRequest(**{**fields, **overrides})  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
+    root = tmp_path / "demo"
+    root.mkdir()
+    project = ProjectPaths(root=root, knowledge_dir=root / DEFAULT_KNOWLEDGE_DIRECTORY)
+    initialize_project(project)
+    yield project
+
+
+@pytest.fixture
+def service(paths: ProjectPaths) -> ProposalService:
+    return ProposalService(
+        paths=paths,
+        clock=FrozenClock(),
+        ids=SeededIdGenerator(),
+        validate=_validator,
+    )
+
+
+def _validator(document: Mapping[str, object]) -> None:
+    validate_migration_document(document, SCHEMAS)
+
+
+def _document(path: Path) -> Mapping[str, object]:
+    parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def _upsert(path: Path) -> Mapping[str, object]:
+    operations = _document(path)["operations"]
+    assert isinstance(operations, list)
+    return next(op for op in operations if op["op"] == "upsertRevision")
+
+
+def _tree(root: Path) -> set[str]:
+    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+
+# -- generation ------------------------------------------------------------
+
+
+def test_generation_writes_only_under_the_proposal_directory(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """ADR-0013's first owed compliance item, checked over the whole tree.
+
+    Scoped to files rather than to the three names the generator writes: the
+    property ADR-0013 states is about everything a write-intent path may touch,
+    and a version that wrote the body straight into ``.theurian/knowledge/``
+    would satisfy any assertion phrased over the proposal directory alone.
+    """
+    before = _tree(paths.root)
+
+    drafted = service.draft(_request())
+
+    written = _tree(paths.root) - before
+    directory = drafted.directory.relative_to(paths.root).as_posix()
+
+    assert written, "the draft wrote nothing at all"
+    assert all(path.startswith(f"{directory}/") for path in written), written
+    assert directory.startswith(".theurian/proposals/")
+
+
+def test_a_generated_migration_validates_against_the_published_schema(
+    service: ProposalService,
+) -> None:
+    """ADR-0013 point 3: the gap is human review, not format conversion."""
+    drafted = service.draft(_request())
+
+    validate_migration_document(_document(drafted.migration_file), SCHEMAS)
+
+
+def test_the_generated_migration_file_is_named_for_its_own_id(
+    service: ProposalService,
+) -> None:
+    """Two proposals for the same item produce two files, not one overwrite."""
+    first = service.draft(_request())
+    second = service.draft(_request(expected_revision=first.revision_id))
+
+    assert first.migration_file.name.startswith(first.migration_id.value)
+    assert first.migration_file.name.endswith("-retry-policy.yaml")
+    assert first.migration_file.name != second.migration_file.name
+
+
+def test_a_generated_migration_always_pins_the_body_digest(
+    service: ProposalService,
+) -> None:
+    """#210's acceptance item. Optional to the schema; never omitted here.
+
+    The generator has the body in hand, so computing the digest costs nothing
+    and it is what makes an out-of-band edit to the body detectable.
+    """
+    drafted = service.draft(_request())
+
+    assert _upsert(drafted.migration_file)["contentSha256"] == drafted.content_sha256.value
+
+
+def test_a_generated_migration_pins_the_expected_revision_on_an_update(
+    service: ProposalService,
+) -> None:
+    """The other half of #210: an update states which revision it replaces."""
+    revision = RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")
+
+    drafted = service.draft(_request(expected_revision=revision))
+
+    assert _upsert(drafted.migration_file)["expectedRevision"] == revision.value
+
+
+def test_a_new_item_carries_no_expected_revision(service: ProposalService) -> None:
+    """Absent means "this creates the first revision"; a value would conflict."""
+    drafted = service.draft(_request())
+
+    assert "expectedRevision" not in _upsert(drafted.migration_file)
+
+
+def test_a_new_item_is_created_before_its_first_revision(service: ProposalService) -> None:
+    document = _document(service.draft(_request()).migration_file)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+
+    assert [op["op"] for op in operations] == ["createItem", "upsertRevision"]
+
+
+def test_the_evidence_file_records_the_origin_a_reviewer_reads(
+    service: ProposalService,
+) -> None:
+    """Never read by Core, which is why nothing else asserts on its contents."""
+    drafted = service.draft(_request())
+
+    evidence = json.loads(drafted.evidence_file.read_text(encoding="utf-8"))
+
+    assert evidence["agentId"] == "claude-code"
+    assert evidence["taskId"] == "task-7"
+    assert evidence["model"] == "claude-opus-5"
+    assert evidence["reasoning"].startswith("The review thread")
+    assert evidence["sourceAnchors"][0]["commitSha"] == "0123456789abcdef"
+    assert evidence["proposalId"] == drafted.proposal_id.value
+
+
+def test_a_proposal_with_no_evidence_is_rejected_at_generation(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """ADR-0013 point 5, and the third owed compliance item.
+
+    The evidence is emptied *after* construction on purpose. ``Evidence``
+    refuses to exist without anchors and reasoning, so a test that called its
+    constructor would prove that one class holds the rule and say nothing about
+    whether the generation path does. Bypassing it is the only way to ask the
+    question this compliance item actually asks -- and the answer has to be the
+    same, because ADR-0013's promise is about what gets written, not about which
+    constructor a caller reached first.
+
+    Asserted over the whole tree as well as the exception: a refusal that has
+    already created the directory leaves a half-written proposal a reviewer may
+    find and read as though somebody meant it.
+    """
+    hollow = Evidence(
+        agent_id=AgentId("claude-code"),
+        task_id=TaskId("task-7"),
+        model="claude-opus-5",
+        reasoning="The review thread on #41 settled the retry budget.",
+        anchors=(ANCHOR,),
+    )
+    object.__setattr__(hollow, "anchors", ())
+    before = _tree(paths.root)
+
+    with pytest.raises(InvariantViolationError, match="no evidence"):
+        service.draft(_request(evidence=hollow))
+
+    assert _tree(paths.root) == before
+    assert not [path for path in paths.proposals.iterdir() if path.is_dir()]
+
+
+def test_a_revision_with_no_anchor_and_no_label_is_refused_at_generation(
+    service: ProposalService,
+) -> None:
+    """INV-8 is what ``migrate apply`` enforces, and validation cannot see it.
+
+    Measured on the shipped sample project (#36): a revision with no anchor
+    validates and then exits 4 with "has no source anchor". Refusing here means
+    the failure arrives before a human reviews the proposal rather than after
+    the pull request has merged.
+    """
+    with pytest.raises(ProposalError, match="source anchor"):
+        service.draft(_request(source_anchors=()))
+
+
+def test_knowledge_that_originates_here_may_declare_it_instead_of_anchoring(
+    service: ProposalService,
+) -> None:
+    drafted = service.draft(_request(source_anchors=(), labels=(AUTHORED_IN_THEURIAN,)))
+
+    metadata = _upsert(drafted.migration_file)["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["labels"] == [AUTHORED_IN_THEURIAN]
+
+
+def test_a_body_that_is_not_the_declared_format_is_refused(service: ProposalService) -> None:
+    with pytest.raises(ProposalError, match="empty"):
+        service.draft(_request(body="   \n"))
+
+
+# -- acceptance ------------------------------------------------------------
+
+
+def test_accept_moves_the_migration_under_the_name_it_already_had(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    drafted = service.draft(_request())
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.migration.destination == paths.migrations / drafted.migration_file.name
+    assert accepted.migration.destination.is_file()
+    assert not drafted.migration_file.exists()
+
+
+def test_the_content_file_resolves_from_the_migrations_directory_after_acceptance(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The path is written for where the file will be, not where it sits now.
+
+    ``contentFile`` is resolved relative to the migration file, and after
+    acceptance that file is in ``.theurian/migrations/``. A proposal-relative
+    path parses and then fails to resolve after the move, which is #205.
+    """
+    drafted = service.draft(_request())
+    service.accept(drafted.proposal_id)
+
+    loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+
+    assert len(loaded.migration_set) == 1
+    assert (paths.knowledge / "architecture" / "retry-policy.md").read_text() == BODY
+
+
+def test_accept_refuses_to_land_a_migration_on_an_existing_name(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The name carries the id, so a collision means that migration is in place.
+
+    The refusal is what #89 measured the absence of: the second acceptance
+    replaced the first migration and reported nothing, and the change it
+    replaced was gone from the set with its body file orphaned.
+    """
+    drafted = service.draft(_request())
+    landed = paths.migrations / drafted.migration_file.name
+    landed.write_text("apiVersion: theurian.dev/v1\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="already"):
+        service.accept(drafted.proposal_id)
+
+    assert landed.read_text() == "apiVersion: theurian.dev/v1\n"
+    # The body too, and it is the half a weaker check misses: the collision is
+    # also caught by the `O_EXCL` move itself, but by then the body has already
+    # been replaced. Asserting only on the migration leaves that reachable.
+    assert drafted.migration_file.is_file(), "a refused acceptance moves nothing"
+    assert drafted.body_file.is_file()
+    assert not drafted.body_destination.exists()
+
+
+def test_accept_replaces_the_body_because_an_update_means_to(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The two moves are deliberately asymmetric.
+
+    A second revision of an item necessarily targets the same ``contentFile``,
+    so refusing to replace the body would make an update impossible. What keeps
+    the replacement a stated one rather than a silent one is the
+    ``contentSha256`` and ``expectedRevision`` the generator pins.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+
+    accepted = service.accept(second.proposal_id)
+
+    assert accepted.bodies[0].replaced
+    assert (
+        (paths.knowledge / "architecture" / "retry-policy.md")
+        .read_text()
+        .endswith("Five attempts.\n")
+    )
+
+
+def test_accept_leaves_the_evidence_where_a_reviewer_will_read_it(
+    service: ProposalService,
+) -> None:
+    """Proposal directories are committed; ``evidence.json`` is review input."""
+    drafted = service.draft(_request())
+
+    service.accept(drafted.proposal_id)
+
+    assert drafted.evidence_file.is_file()
+
+
+def test_accept_reports_an_unknown_proposal_rather_than_raising_from_the_filesystem(
+    service: ProposalService,
+) -> None:
+    with pytest.raises(ProposalError, match="No proposal"):
+        service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
+
+
+def test_accept_refuses_a_body_path_that_leaves_the_project(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A proposal directory may be committed, so its migration is untrusted input.
+
+    ``accept`` is the one point where a hand-edited ``contentFile`` chooses a
+    write destination, and SEC-7 covers every path rather than the ones that
+    look like user input.
+    """
+    drafted = service.draft(_request())
+    document = drafted.migration_file.read_text(encoding="utf-8")
+    drafted.migration_file.write_text(
+        document.replace("../knowledge/architecture/retry-policy.md", "../../../../escaped.md"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PathEscapeError):
+        service.accept(drafted.proposal_id)
+
+    assert not (paths.root.parent / "escaped.md").exists()
+
+
+def test_accept_names_the_body_it_cannot_find(
+    service: ProposalService,
+) -> None:
+    drafted = service.draft(_request())
+    drafted.body_file.unlink()
+
+    with pytest.raises(ProposalError, match=r"retry-policy\.md"):
+        service.accept(drafted.proposal_id)
+
+
+def test_accept_refuses_a_proposal_directory_holding_two_migrations(
+    service: ProposalService,
+) -> None:
+    """One proposal is one change; two files make "the migration" ambiguous."""
+    drafted = service.draft(_request())
+    (drafted.directory / "01K1AAAAAA01234567890ABCDE-other.yaml").write_text("{}\n")
+
+    with pytest.raises(ProposalError, match="two"):
+        service.accept(drafted.proposal_id)

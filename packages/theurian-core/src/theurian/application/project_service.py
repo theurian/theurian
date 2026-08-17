@@ -263,6 +263,16 @@ class ProjectPaths:
         return self.knowledge_dir / "specifications"
 
     @property
+    def proposals(self) -> Path:
+        """Where agent-drafted, unapproved changes wait for a human (ADR-0013).
+
+        Not derived, and so not git-ignored: a proposal directory is review
+        input, and it is the one thing under ``.theurian/`` written by an agent
+        and read by a person.
+        """
+        return self.knowledge_dir / "proposals"
+
+    @property
     def state(self) -> Path:
         return self.knowledge_dir / "state"
 
