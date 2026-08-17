@@ -204,9 +204,9 @@ Bump `protocolVersion` when the change is breaking:
 | Changing an exit code's meaning | **Yes** |
 | Renaming a tool | **Yes** |
 
-`system.capabilities.milestone`'s removal (#206) was breaking by this table
-and shipped unbumped anyway -- a recorded, narrowly-scoped exemption, not a
-silent exception. See "Changing this contract" in
+`system.capabilities.milestone`'s removal (#206) is breaking by this table;
+`protocolVersion` is not bumped for it — a recorded, narrowly-scoped
+exemption, not a silent exception. See "Changing this contract" in
 [mcp-tools.md](mcp-tools.md) for the reasoning.
 
 On a bump: raise `CURRENT_PROTOCOL_VERSION` in Core, release Core, then update
