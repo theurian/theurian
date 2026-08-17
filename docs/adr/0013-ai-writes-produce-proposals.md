@@ -76,6 +76,51 @@ A rejected proposal is itself worth keeping: "we considered this and did not do
 it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 `rejects` relation.
 
+> **Amended in Milestone 7, by the `theurian propose` CL. The layout in point 2
+> is illustrative; the generator's real filenames diverge from it in two measured
+> places, and both divergences are load-bearing.**
+>
+> **The migration file is named `<migration-ulid>-<slug>.yaml`, not the literal
+> `migration.yaml` the tree shows.** A fixed name collides: two proposals both
+> called `migration.yaml` land on one path under `.theurian/migrations/`, and the
+> second `propose accept` overwrites the first with nothing reported. Measured on
+> this branch — after the second move, `theurian migrate validate` reported one
+> migration and applying it applied only that one, with the first change gone from
+> the set and its body left in `.theurian/knowledge/` with nothing pointing at it.
+> Naming the file for its own migration id from the moment it is generated makes
+> two proposals two files, and makes `propose accept` a move that renames nothing.
+> The name matches `.theurian/migrations/`'s own `<ulid>-<kebab-slug>.yaml`
+> convention ([migrations.md](../protocol/migrations.md#naming-and-layout)).
+>
+> **The body is written to `<namespace>/<slug>.<revisionId>.<ext>`, one file per
+> revision, not the single `content.md` per item the tree shows.** The reason is
+> the digest pin. Every generated revision pins `contentSha256`
+> ([#210](https://github.com/theurian/theurian/issues/210)), and the loader
+> re-reads a referenced body on every load and compares it against that pin, so a
+> body a migration references is immutable. With one body path per item, replacing
+> that body to record a new revision permanently invalidates the *earlier*
+> migration's pin, and the whole set stops validating. Measured on two proposals
+> for one item accepted in turn: `theurian migrate validate` exited 4 for the
+> whole project — *"…retry-policy.md hashes to abc7cdb70713 but the migration pins
+> 4f9c5503e198"* — and no migration could be applied afterward. Unpinning the
+> digest would hide the failure, not fix it: replaying the first migration would
+> then read the *second* revision's body under the first revision's id. A fresh
+> revision id in the body's own name is what makes the file a migration named stay
+> the file it named, so applying the whole set to an empty database still
+> reproduces the exact canonical state (FR-K4).
+>
+> **The Consequences guarantee below — "prompt injection can, at worst, create a
+> file a human will read" — holds for what merges, and `propose accept` is where
+> it is kept.** A committed proposal directory is PR-delivered input (point 7), so
+> its migration's `contentFile` and its body are untrusted. `accept` rejects a
+> proposal directory that is or contains a symlink anywhere in its read chain,
+> reads through the same size-capped, containment-checked path `migrate apply`
+> uses (SEC-7, T-5), and writes every file with `O_NOFOLLOW` and an explicit
+> `0644` mode — so no source symlink, and no symlink planted at a destination,
+> turns a file a human will read into a read or a write outside the project. This
+> was proved before merge, not in production: the one defect that would have
+> broken the guarantee was caught in review and never shipped in a release.
+
 ## Consequences
 
 ### Positive
@@ -121,12 +166,30 @@ Landed in Milestone 3:
 - `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only`
   pins the tool list a real client sees over the wire.
 
+Landed in Milestone 7, by the `theurian propose` CL:
+
+- Proposal generation writes only under `.theurian/proposals/<id>/`.
+  `tests/integration/test_proposal_service.py::test_generation_writes_only_under_the_proposal_directory`
+  diffs the whole tree, and
+  `::test_generation_modifies_no_file_outside_the_proposal_directory` snapshots
+  the content of every file outside the proposal directory, so an overwrite that
+  adds no new path is caught too.
+- A generated migration validates against the published migration schema.
+  `::test_a_generated_migration_validates_against_the_published_schema` checks the
+  written file, and `::test_a_migration_that_would_not_validate_is_never_written`
+  drives the generator with schema-rejected input and asserts nothing is written —
+  the test that goes RED if the generator's own validation call is deleted. (The
+  file is named `<migration-ulid>-<slug>.yaml`, not `migration.yaml`; see the
+  amendment above.)
+- A proposal with empty evidence is rejected at generation.
+  `::test_a_proposal_with_no_evidence_is_rejected_at_generation`, with
+  `tests/unit/test_proposal.py::test_a_proposal_with_no_reasoning_is_rejected_at_construction`
+  and `::test_a_proposal_with_no_model_identity_is_rejected_at_construction`
+  pinning the two halves of "evidences nothing."
+
 Still owed, with the milestone that brings the feature under test:
 
-- Proposal generation writes only under `.theurian/proposals/<id>/` (M6).
-- A generated `migration.yaml` validates against
-  `schemas/migrations/migration.schema.json` (M6).
-- A proposal with empty evidence is rejected at generation (M6).
-- An E2E test asserting approved knowledge is unchanged after a full agent
-  session that calls every write-intent tool (M6). Milestone 3 registers no
-  write-intent tool at all, so the property holds vacuously today.
+- An E2E test asserting approved knowledge is unchanged after a full agent session
+  that calls every write-intent tool (M7). The CLI's `propose` shares the
+  `ProposalService` those tools will use, but no write-intent MCP tool is
+  registered yet, so the property still holds vacuously today.
