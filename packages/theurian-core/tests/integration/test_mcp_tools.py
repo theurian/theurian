@@ -1515,8 +1515,11 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     (ADR-0013's "no write-intent tool exists"). Before this, mutations on all
     three -- including inverting `note`'s meaning -- survived the whole suite,
     which is a wider gap than it looks: `version` and `protocolVersion` are
-    CP-6 compatibility-gate inputs (docs/protocol/plugin-core-compatibility.md),
-    not incidental metadata. Only `schemaVersion` stays unpinned to a value by
+    not incidental metadata either -- they re-publish the same two process
+    constants `theurian compat check` reads directly for CP-6
+    (docs/architecture/requirements-analysis.md), so a divergence here is
+    invisible to that gate and visible only through this response. Only
+    `schemaVersion` stays unpinned to a value by
     design, asserted truthy rather than to a constant, because the schema
     version moves on its own schedule.
 
@@ -1568,18 +1571,25 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "ships the tool, not ahead of it."
     )
     assert result["version"] == __version__, (
-        "identifies the build for the CP-6 compatibility gate "
-        "(docs/protocol/plugin-core-compatibility.md); a mutation that stales "
-        "this against the package's own `__version__` is exactly the drift "
-        "that gate exists to catch before a client does."
+        "re-publishes the same `__version__` process constant `theurian "
+        "compat check` reads directly for CP-6 "
+        "(docs/architecture/requirements-analysis.md) -- that gate never "
+        "reads this response, so a mutation here would not make `compat "
+        "check` refuse anything. It would only let a client that already "
+        "passed the gate see a stale build reported on the MCP face, which "
+        "is the drift this pin catches instead."
     )
     assert result["protocolVersion"] == __protocol_version__, (
-        "for a client that only calls MCP tools, `system.capabilities` is the "
-        "sole place this is readable -- `/health` is an HTTP route outside "
-        "the MCP tool surface, not a tool. `resolve_compatibility` "
-        "(theurian.domain.compatibility) returns a terminal `protocol-mismatch` "
-        "on exactly this value, so a mutation here is a client refusing to "
-        "run, or worse, one that should refuse and does not."
+        "for a client that only calls MCP tools, `system.capabilities` is "
+        "the sole place this is readable at all -- `/health` is an HTTP "
+        "route outside the MCP tool surface, not a tool in this build. It "
+        "re-publishes the same `__protocol_version__` constant "
+        "`resolve_compatibility` (theurian.domain.compatibility) reads "
+        "directly through `cli/main.py`'s `compat_check`, never through "
+        "this response, so a mutation here would not move that gate's "
+        "outcome -- it would only make a client that already passed the "
+        "gate see a different protocol reported here than the one it was "
+        "actually checked against."
     )
     assert "No write-intent tool exists" in result["note"], (
         "the response's only prose statement of ADR-0013 -- ADR-0013 is why "
@@ -1651,10 +1661,10 @@ async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_
     Milestone 6 closed. The response's other fields keep their own roles
     instead of filling that gap: `capabilities` (with `knowledgeSearch`) is
     the supported, tested contract a client degrades against; `version` and
-    `protocolVersion` feed the CP-6 compatibility gate
-    (`docs/protocol/plugin-core-compatibility.md`) rather than reporting
-    progress -- a milestone number, if a client wants one, lives in the
-    README roadmap, not in any wire field.
+    `protocolVersion` re-publish the same two constants `theurian compat
+    check` reads directly for CP-6 (docs/architecture/requirements-analysis.md)
+    rather than reporting progress -- a milestone number, if a client wants
+    one, lives in the README roadmap, not in any wire field.
 
     This also ties the doc to the pin: the paragraph in
     `docs/protocol/mcp-tools.md` naming each of these fields' roles is read
