@@ -44,6 +44,7 @@ from theurian.infrastructure.sqlite.connection import (
     open_read_connection,
     write_transaction,
 )
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
 
@@ -1564,19 +1565,24 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     survived the whole suite, and the first two are what Milestone 7 flips.
     That the block holds *only* those seven is the sibling test below.
 
-    Four fields sit outside the block. Three are now pinned to a value here
-    too: `version` and `protocolVersion` against the package's own constants,
-    and `note` to the substring that carries its one load-bearing claim
-    (ADR-0013's "no write-intent tool exists"). Before this, mutations on all
-    three -- including inverting `note`'s meaning -- survived the whole suite,
-    which is a wider gap than it looks: `version` and `protocolVersion` are
-    not incidental metadata either -- they re-publish the same two process
-    constants `theurian compat check` reads directly for CP-6
-    (docs/architecture/requirements-analysis.md), so a divergence here is
-    invisible to that gate and visible only through this response. Only
-    `schemaVersion` stays unpinned to a value by
-    design, asserted truthy rather than to a constant, because the schema
-    version moves on its own schedule.
+    Four fields sit outside the block, and all four are now pinned to a
+    value here. `version` and `protocolVersion` are pinned against the
+    package's own constants; `schemaVersion` against `SCHEMA_VERSION`, the
+    same precedent `test_wire_contract.py` already set for
+    `knowledge.status`; and `note` to the substring that carries its one
+    load-bearing claim (ADR-0013's "no write-intent tool exists"), plus a
+    second assertion ruling out the note also asserting the opposite while
+    that substring stays intact. Before this, mutations on all four --
+    including inverting `note`'s meaning -- survived the whole suite.
+    `version` and `protocolVersion` are not incidental metadata either --
+    they re-publish the same two process constants `theurian compat check`
+    reads directly for CP-6 (docs/architecture/requirements-analysis.md), so
+    a divergence here is invisible to that gate and visible only through
+    this response. `schemaVersion` moving on its own schedule, unlike
+    `version`, was the reasoning this docstring used to give for leaving it
+    unpinned -- `version` moves on its own schedule too, and was pinned with
+    a constant comparison regardless, so that was never a real distinction
+    and this closes it rather than repeating it.
 
     A `milestone` field used to sit beside them, reporting a build progress
     integer that had drifted stale against the README since Milestone 6
@@ -1654,7 +1660,24 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "pins the load-bearing substring rather than the sentence's exact "
         "wording, which is free to change around it."
     )
-    assert result["schemaVersion"]
+    assert "A write-intent tool" not in result["note"], (
+        "closes the gap the substring pin above leaves open on its own: a "
+        "mutation that appends a contradicting clause -- 'No write-intent "
+        "tool exists, except a write-intent tool exists for admins' -- keeps "
+        "the first substring intact and would otherwise survive. The pair "
+        "still permits wording that neither negates the first substring nor "
+        "introduces this one, so this is a substring pin against the two "
+        "meanings that matter, not a pin on the sentence's exact wording."
+    )
+    assert result["schemaVersion"] == SCHEMA_VERSION, (
+        "`schemaVersion` moves on its own schedule too, the same reasoning "
+        "this test used to leave it unpinned -- but `version` moves on its "
+        "own schedule and is pinned above with a constant comparison "
+        "regardless, so schedule was never a reason to leave a field "
+        "unpinned, only a reason to pin it against the right constant. "
+        "`test_wire_contract.py` already sets this precedent for "
+        "`knowledge.status` (`== SCHEMA_VERSION`, not merely truthy)."
+    )
 
 
 @pytest.mark.asyncio
