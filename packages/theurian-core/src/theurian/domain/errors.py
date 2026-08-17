@@ -132,12 +132,17 @@ def _read_failure_remedy(
     permission problem but does nothing about a symlink chain, so folding it
     into the ``EACCES``/``EPERM`` branch would send a reader to check a
     permission bit that was never wrong. A *dangling* symlink -- resolvable,
-    but pointing at nothing -- is not handled here at all: unlike a loop, its
-    remedy text ("restore the target or remove the link") does not fit the
-    single ``target`` this function names, so
-    :class:`MigrationFileUnreadableError`'s own ``remedy`` keyword lets that
-    one caller build it directly instead of stretching this function's
-    ``target``-shaped contract to cover it.
+    but pointing at nothing -- has no branch of its own: it raises ``ENOENT``,
+    which matches none of ``ELOOP``/``EACCES``/``EPERM``/``EISDIR`` above, so
+    it falls through to the final ``return missing_or_wrong_text`` -- the same
+    fallback every plain missing-file case already uses. What differs is only
+    *which* text that parameter carries:
+    :class:`MigrationFileUnreadableError`'s own ``missing_or_wrong_text``
+    keyword (not a separate ``remedy`` keyword, which briefly existed on that
+    class and was removed -- see its own docstring) lets its caller substitute
+    "restore the target or remove the link" for the generic "confirm this
+    still exists" text this function's default would otherwise return,
+    without this function needing a branch of its own for it.
     """
     if errno_value == _errno.ELOOP:
         return f"{target!r} is a loop of symbolic links. Point it at a real file, then retry."
@@ -349,6 +354,12 @@ class MigrationsDirectoryUnreadableError(MigrationError):
     :class:`PathEscapeError`, raised directly by the same `is_symlink()` check
     rather than folded in here, since "escapes the root" is a different fault
     from "cannot be read at all."
+
+    The ``is_symlink()`` check covers the *final* path component only. A
+    symlinked *ancestor* of `migrations_dir` -- `.theurian` itself being a
+    symlink -- is a different class again, keyed on the writer/context stack
+    trusting a resolved `.theurian` rather than on this read path, and is
+    tracked at issue #237, not here.
     """
 
     def __init__(

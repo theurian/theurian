@@ -1308,9 +1308,10 @@ def test_load_migrations_names_the_lexicographically_first_entry_when_classifica
     dangling or looping entry) called *inline*, before the collected names
     are ever sorted. A multi-failure raise therefore names whichever failing
     entry ``iterdir()`` happens to yield first on this filesystem -- APFS and
-    ext4 disagree (APFS is measured to walk in creation order; ext4 in hash
-    order) -- not the lexicographically-first one. The new contract: names
-    are sorted *before* classification runs, so the refusal is the same
+    ext4 disagree (APFS is measured here to walk in creation order; ext4's
+    documented ``dir_index`` hashing walks in hash order, not measured on
+    this non-Linux machine) -- not the lexicographically-first one. The new
+    contract: names are sorted *before* classification runs, so the refusal is the same
     regardless of physical enumeration order.
 
     Measured directly with two failing entries, injected in REVERSED order
@@ -1630,6 +1631,18 @@ def test_validator_raises_schema_unreadable_error_for_a_schema_nested_past_the_r
     reaches `_validator` through `load_migrations`) with a raw traceback,
     the identical CP-2 escape every other member of this class was closed
     for.
+
+    The reason is now pinned exactly, not merely the exception type: `_validator`
+    has two separate `except RecursionError` clauses -- this one around
+    `check_schema`, and a second around the earlier `json.loads` call
+    (:func:`test_validator_raises_schema_unreadable_error_for_json_nested_past_the_recursion_limit`
+    below) -- each with its own reason text, and a bare
+    `pytest.raises(SchemaUnreadableError)` cannot tell them apart: deleting
+    either clause on its own leaves *this* test green as long as the other
+    still raises the same type, so the exact string is what actually pins
+    which branch fired. 400 levels is confirmed below to still let
+    `json.loads` itself succeed, so this genuinely drives `check_schema`'s own
+    recursion and not the earlier parse.
     """
     _validator.cache_clear()
     schema_dir = tmp_path / "schema"
@@ -1640,13 +1653,83 @@ def test_validator_raises_schema_unreadable_error_for_a_schema_nested_past_the_r
     nested: dict[str, Any] = {"type": "string"}
     for _ in range(depth):
         nested = {"not": nested}
-    schema_file.write_text(json.dumps(nested))
+    text = json.dumps(nested)
+    schema_file.write_text(text)
 
     try:
-        with pytest.raises(SchemaUnreadableError):
+        json.loads(text)
+    except RecursionError:
+        pytest.fail("fixture must let json.loads succeed, so only check_schema recurses")
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
             _validator(schema_dir)
     finally:
         _validator.cache_clear()
+
+    assert str(excinfo.value) == (
+        f"{str(schema_file)!r} could not be read: "
+        f"the schema nests past check_schema's safe recursion depth"
+    )
+
+
+def test_validator_raises_schema_unreadable_error_for_json_nested_past_the_recursion_limit(
+    tmp_path: Path,
+) -> None:
+    """Mutation survivor: `_validator`'s *other* `RecursionError` clause --
+    the one wrapping `json.loads(text)` itself, item 4's `json.loads` leg in
+    `_validator`'s own docstring -- had no test reaching it specifically.
+    Every existing recursion test in this file drives `check_schema`'s
+    recursion (the sibling test immediately above, confirmed there to leave
+    `json.loads` succeeding at that depth) or a *migration* document's own
+    recursion one call site over
+    (`test_load_migrations_raises_migration_error_for_a_migration_nested_past_the_recursion_limit`),
+    never the schema file's own JSON parse. Deleting the `except
+    RecursionError` clause around `json.loads` entirely left the whole suite
+    green, because nothing here ever fed `_validator` a document whose
+    *parse* -- not its `check_schema` walk -- exhausts the recursion limit.
+
+    20,000 levels of bare `[`/`]` mirrors the depth
+    `test_parsers.py::test_json_parser_names_the_source_uri_for_a_document_nested_past_the_recursion_limit`
+    already uses to drive the identical `json.loads` `RecursionError` one
+    layer down, well past the 400 levels that trip `check_schema` on this
+    interpreter. A JSON array, not an object: `_validator`'s
+    `isinstance(schema, dict)` check runs only after `json.loads` returns, so
+    a document that never finishes parsing never reaches it -- this exercises
+    the parse itself, not the object-type refusal item 3 covers.
+
+    The reason is pinned exactly to this branch's own text ("the JSON
+    document nests past the parser's safe recursion depth"), distinct from
+    `check_schema`'s branch ("the schema nests past check_schema's safe
+    recursion depth") the sibling test above now pins with the identical
+    exactness -- the two `except RecursionError` clauses are otherwise
+    indistinguishable by exception type alone, which is exactly how a
+    mutation deleting either one survived.
+    """
+    _validator.cache_clear()
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+
+    deep = "[" * 20_000 + "]" * 20_000
+    schema_file.write_text(deep)
+
+    try:
+        json.loads(deep)
+        pytest.fail("fixture must actually reproduce json.loads RecursionError")
+    except RecursionError:
+        pass
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            _validator(schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert str(excinfo.value) == (
+        f"{str(schema_file)!r} could not be read: "
+        f"the JSON document nests past the parser's safe recursion depth"
+    )
 
 
 def test_validator_accepts_the_vacuous_empty_object_schema(tmp_path: Path) -> None:

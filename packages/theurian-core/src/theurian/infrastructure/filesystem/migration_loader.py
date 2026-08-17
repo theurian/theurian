@@ -73,15 +73,19 @@ from theurian.security.yaml_loading import load_yaml_mapping
 #: HEAD (round four), 5-run minimum, APFS/CPython 3.13.11: 10,000 `.yaml`
 #: files, `glob` 13.8-14.5 ms vs classify 114.0-125.9 ms (7.9-9.1x); 1,000
 #: `.yaml` mixed with 9,000 non-matching entries, 6.6-7.3 ms vs 35.6-37.2 ms
-#: (4.9-5.6x). The earlier bcdec22 measurement this comment carried (1.27x,
-#: 2.71x) understated both: that commit's loop classified with a bare
+#: (4.9-5.6x). Both `glob` figures are `sorted(glob(...))`, paying the same
+#: sort this loop's own `sorted(...)` pays, so the two sides are compared
+#: apples to apples. The earlier bcdec22 measurement this comment carried
+#: (1.27x, 2.71x) understated both: that commit's loop classified with a bare
 #: `is_file()`, before `_entry_is_migration_file`'s own unguarded
 #: `is_symlink()` lstat -- one extra syscall per entry -- existed to widen
 #: the gap. Ratios vary by machine and directory shape; the direction --
-#: classification costlier, more so the larger the non-matching fraction --
-#: is what this comment is pinning, not the exact multiples. A pathological
-#: or generated directory still pays for the full walk before this refuses
-#: to load what it found; it does not bound the walk's own cost.
+#: costlier, and the multiple is largest when most entries match, since the
+#: `endswith(".yaml")` name filter runs before classification and thins the
+#: classified set first the larger the non-matching fraction is -- is what
+#: this comment is pinning, not the exact multiples. A pathological or
+#: generated directory still pays for the full walk before this refuses to
+#: load what it found; it does not bound the walk's own cost.
 MAX_MIGRATIONS: Final = 10_000
 
 _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
@@ -332,7 +336,7 @@ def load_migrations(
     # already-sorted list, so a classification failure (a dangling or looping
     # entry) also reports the lexicographically-first offender rather than
     # whichever entry `iterdir()` happened to yield first -- APFS and ext4
-    # disagree on that order, and the two candidly used to disagree on which
+    # disagree on that order, and the two candidates used to disagree on which
     # of two simultaneous failures got named. `iterdir()` does not filter
     # dotfiles (unlike `glob.glob()`), matching `Path.glob("*.yaml")`'s own
     # measured behaviour that this enumeration replaces.
@@ -383,11 +387,15 @@ def _refuse_unusable_migrations_directory_symlink(migrations_dir: Path, project_
     final component) is checked first, the identical shape
     :func:`_entry_is_migration_file` already uses for the per-entry case: a
     non-symlink ``migrations_dir`` returns immediately, leaving the probe's
-    existing, unwidened policy as the only check that runs for it. Called
-    unguarded, like that function's own ``is_symlink()`` call: any ``OSError``
-    it raises (``EACCES`` from a parent that denies traversal) is translated
-    the same way a resolution failure below is, since there is nothing more
-    specific to say about it.
+    existing, unwidened policy as the only check that runs for it. Wrapped in
+    its own ``try``/``except OSError`` here, translating whatever it raises
+    (``EACCES`` from a parent that denies traversal) directly -- unlike that
+    function's own ``is_symlink()`` call, which is genuinely unguarded: this
+    function is invoked from ``load_migrations`` before that function's own
+    ``try`` block begins, so nothing upstream catches an ``OSError`` raised
+    here, while ``_entry_is_migration_file``'s ``is_symlink()`` call runs
+    inside the enumeration loop's own ``try``, whose surrounding ``except
+    OSError`` (``load_migrations``) is what catches a failure there instead.
 
     Raises:
         MigrationsDirectoryUnreadableError: If the symlink is dangling

@@ -323,8 +323,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     it was still evaluated in whatever order `iterdir()` yielded, before
     sorting ever ran. Two failing entries therefore named
     whichever one the filesystem happened to enumerate first — APFS is
-    measured to walk in creation order, ext4 in hash order, so the identical
-    fixture could name a different offender on each. Enumeration now
+    measured here to walk in creation order; ext4's documented `dir_index`
+    hashing walks in hash order (not measured on this machine, which is not
+    Linux), so the identical fixture could name a different offender on
+    each. Enumeration now
     collects and sorts the `*.yaml` names first, then runs classification
     over the already-sorted list.
     `test_load_migrations_names_the_lexicographically_first_entry_when_classification_fails`
@@ -402,6 +404,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `*.yaml` files never reached the containment check that would otherwise
   catch it. The round-four directory-level bullet above closes both; any
   earlier description of either as a legitimate empty shape no longer holds.
+
+  **Scope of the directory-level symlink check: the final path component
+  only.** Round four's check is an `lstat` on `migrations_dir` itself, so a
+  symlinked *ancestor* — most visibly `.theurian` being a symlink — is not
+  covered: a dangling `.theurian`, or one pointing at an empty outside
+  directory, still validates as an empty set, and a `.theurian` symlink
+  committed to a repository makes `migrate apply` write state through it,
+  outside the working tree, on `git clone` alone. That is a distinct class
+  from this one — its root cause is the writer/context stack trusting a
+  resolved `.theurian` for every consumer, not the migration load path's
+  error surfacing — and it is tracked separately at
+  [#237](https://github.com/theurian/theurian/issues/237), not closed here.
 
   Every fault named above — across all four rounds, not counting the
   enumeration-race policy note, which documents a round-two decision rather
