@@ -547,6 +547,25 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   it scans this repository's Git history in CI and was never in a user project's
   ingestion path.
 
+  **Each correction is now pinned, because a corrected claim with no test is a
+  claim that can quietly become false again.** `test_the_secret_scan_policy_publishes_no_default`
+  holds the dropped schema default, with the enum asserted beside it so the
+  no-default assertion cannot pass vacuously against a renamed or deleted key.
+  `tests/unit/test_config_key_call_sites.py` is new and holds the claim the other
+  five surfaces rest on — that no shipped code reads the key:
+  `test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force`
+  parses every `.py` under the imported package and matches whole identifiers and
+  whole string constants, which is what separates a reader from the six places
+  `repositories` appears in `src/` as English prose;
+  `test_each_reserved_key_still_publishes_the_absence_the_scan_enforces` closes the
+  reverse direction, where the description moves and no reader is added; and
+  `test_the_config_key_scan_sees_each_naming_form_and_no_other` guards the scanner
+  itself, since a scan that resolves nothing and a package with no reader produce
+  the same green. `test_a_key_the_example_sets_but_nothing_reads_stays_marked_not_in_force`
+  holds the sample project's annotation, which no schema validates. The same
+  three pins cover `providers.review.repositories` (#129), whose schema
+  description makes the identical not-in-force claim.
+
 - **`theurian ingest`'s docstring said it "stores evidence"**, which overstates
   what the command persists: `IngestionService` has no write path, parsed bodies
   live in memory for the run, and the only file written is the content-hash
