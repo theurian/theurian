@@ -38,6 +38,7 @@ from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
+from theurian.domain.migration import current_revision_in
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML, MediaType
 from theurian.infrastructure.filesystem.migration_loader import validate_migration_document
@@ -208,9 +209,13 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
     body in hand, and an update that does not name the revision it replaces is
     the race #210 describes.
 
-    ``--expected-revision`` is the only way to propose an update, deliberately.
-    An update that omits the guard is precisely what #210 asks a generator never
-    to emit, so no combination of options produces one.
+    An update to an item that already exists **must** carry ``--expected-revision``.
+    The generator derives the item's current revision from the approved migration
+    set -- which is the canonical state -- and refuses a draft that would produce
+    an unguarded update, rather than emitting one that validates and then fails at
+    ``migrate apply`` after the pull request has merged (#210). ``--expected-revision``
+    on an item that does not exist yet is refused for the same reason: a first
+    revision has nothing to replace.
     """
     provided: dict[str, object] = {
         "--item-id": item_id,
@@ -485,13 +490,20 @@ def _read_body(path: Path, *, as_json: bool) -> tuple[str, MediaType]:
 
 
 def _service(context: CommandContext) -> ProposalService:
-    """Wire the service. The schema check is an adapter, injected (ADR-0003)."""
+    """Wire the service. The schema check is an adapter, injected (ADR-0003).
+
+    The current-revision lookup reads the approved migration set, which is the
+    canonical state (FR-K4), so the generator can require ``--expected-revision``
+    on a known item without opening the state database.
+    """
     schemas = schema_root()
+    migrations = context.loaded.migration_set
     return ProposalService(
         paths=context.paths,
         clock=context.clock,
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
+        current_revision=lambda item_id: current_revision_in(migrations, item_id),
     )
 
 

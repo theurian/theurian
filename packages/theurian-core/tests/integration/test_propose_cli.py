@@ -316,6 +316,25 @@ def test_two_proposals_for_one_item_both_land_and_both_apply(project: Path) -> N
     assert (project / first["bodyDestination"]).read_text() == BODY
 
 
+def test_an_update_without_expected_revision_is_refused_at_the_cli(project: Path) -> None:
+    """HIGH-5 (#210) at the process edge: no unguarded update reaches a file.
+
+    After the first proposal is accepted and applied, the item exists in
+    approved state. A second draft for it with no ``--expected-revision`` used
+    to write an update that validated and then failed at ``migrate apply`` --
+    after merge. It is refused at draft now, exit 2 with the revision to pass.
+    """
+    _, first = _draft(project)
+    _invoke("propose", "accept", first["proposalId"])
+    _invoke("migrate", "apply")
+
+    code, payload = _draft(project)
+
+    assert code == EXIT_INVALID_INPUT
+    assert "already exists" in payload["error"]
+    assert first["revisionId"] in payload["remedy"]
+
+
 def test_accepting_the_same_proposal_twice_is_refused(project: Path) -> None:
     _, drafted = _draft(project)
     _invoke("propose", "accept", drafted["proposalId"])

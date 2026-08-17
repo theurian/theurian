@@ -78,6 +78,13 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: ``schemas/`` is an adapter's job (ADR-0003).
 MigrationDocumentValidator = Callable[[Mapping[str, object]], None]
 
+#: Returns an item's current revision in approved canonical state, or ``None`` if
+#: it does not exist. Injected so the generator can require ``--expected-revision``
+#: on a known item without opening the state database: the CLI derives it from
+#: the loaded migration set (:func:`current_revision_in`), and Milestone 7's MCP
+#: tools supply their own view of the same state.
+CurrentRevisionLookup = Callable[[ItemId], RevisionId | None]
+
 
 class ProposalError(TheurianError):
     """A proposal could not be drafted or accepted.
@@ -218,11 +225,13 @@ class ProposalService:
         clock: Clock,
         ids: IdGenerator,
         validate: MigrationDocumentValidator,
+        current_revision: CurrentRevisionLookup,
     ) -> None:
         self._paths = paths
         self._clock = clock
         self._ids = ids
         self._validate = validate
+        self._current_revision = current_revision
 
     # -- generation --------------------------------------------------------
 
@@ -239,11 +248,20 @@ class ProposalService:
         second accepted proposal invalidate the first migration's pinned digest,
         and the project stopped validating entirely.
 
+        An update states which revision it replaces, or it is refused here rather
+        than at ``migrate apply`` after the pull request has merged (#210). The
+        generator does not have to be told the item already exists: it derives
+        the item's current revision from the approved migration set (which is the
+        canonical state), so ``--expected-revision`` is required exactly when the
+        item is real and forbidden when it is not.
+
         Raises:
-            ProposalError: If the request cannot be packaged, or if the built
-                migration does not satisfy the published schema. Nothing is
-                written in either case.
+            ProposalError: If the request cannot be packaged, if an update omits
+                or misplaces its ``expectedRevision``, or if the built migration
+                does not satisfy the published schema. Nothing is written in any
+                case.
         """
+        self._check_expected_revision(request)
         proposal_id = ProposalId(self._ids.new_ulid().value)
         migration_id = MigrationId(self._ids.new_ulid().value)
         revision_id = RevisionId(self._ids.new_ulid().value)
@@ -301,6 +319,43 @@ class ProposalService:
             content_sha256=digest,
             body_destination=self._paths.knowledge / relative_body,
         )
+
+    def _check_expected_revision(self, request: ProposalRequest) -> None:
+        """Refuse an update with no guard, and a first revision with a stale one.
+
+        ``expectedRevision`` is optimistic concurrency (ADR-0006): present, it
+        must equal the item's current revision; absent, the revision is the
+        item's first. Both are checkable at generation from the approved set,
+        and checking here is what stops #210's unguarded update -- a second
+        proposal for an existing item with no ``--expected-revision`` -- from
+        validating and then failing at ``migrate apply`` after the pull request
+        has merged.
+        """
+        current = self._current_revision(request.item_id)
+        expected = request.expected_revision
+        if current is None:
+            if expected is not None:
+                raise ProposalError(
+                    f"{request.item_id.value} does not exist yet, so its first revision "
+                    f"cannot replace {expected.value}.",
+                    remedy="Drop --expected-revision to create the item, or correct --item-id.",
+                )
+            return
+        if expected is None:
+            raise ProposalError(
+                f"{request.item_id.value} already exists at revision {current.value}; an "
+                "update must state which revision it replaces, or it validates and then "
+                "fails at apply after the pull request has merged.",
+                remedy=f"Pass --expected-revision {current.value} to update it, or a new "
+                "--item-id to create a different item.",
+            )
+        if expected != current:
+            raise ProposalError(
+                f"{request.item_id.value} is at revision {current.value}, but "
+                f"--expected-revision names {expected.value}; the update would conflict at "
+                "apply.",
+                remedy=f"Pass --expected-revision {current.value}.",
+            )
 
     # -- acceptance --------------------------------------------------------
 

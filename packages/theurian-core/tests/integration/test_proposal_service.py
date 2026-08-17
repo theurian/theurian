@@ -27,6 +27,7 @@ from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import InvariantViolationError, MigrationError, PathEscapeError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
+from theurian.domain.migration import current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML
@@ -83,11 +84,19 @@ def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
 
 @pytest.fixture
 def service(paths: ProjectPaths) -> ProposalService:
+    # The current-revision lookup reads the project's *approved* migrations, so a
+    # second draft for an item whose first proposal has been accepted sees it as
+    # existing -- which is what exercises the #210 update guard end to end.
+    def current_revision(item_id: ItemId) -> RevisionId | None:
+        loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+        return current_revision_in(loaded.migration_set, item_id)
+
     return ProposalService(
         paths=paths,
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=_validator,
+        current_revision=current_revision,
     )
 
 
@@ -214,9 +223,14 @@ def test_a_migration_that_would_not_validate_is_never_written(
 def test_the_generated_migration_file_is_named_for_its_own_id(
     service: ProposalService,
 ) -> None:
-    """Two proposals for the same item produce two files, not one overwrite."""
+    """Two proposals for the same item produce two files, not one overwrite.
+
+    Neither is accepted, so the item does not yet exist in approved state and
+    both are first-revision proposals -- two competing drafts to create the same
+    item, only one of which a human will merge.
+    """
     first = service.draft(_request())
-    second = service.draft(_request(expected_revision=first.revision_id))
+    second = service.draft(_request())
 
     assert first.migration_file.name.startswith(first.migration_id.value)
     assert first.migration_file.name.endswith("-retry-policy.yaml")
@@ -239,12 +253,17 @@ def test_a_generated_migration_always_pins_the_body_digest(
 def test_a_generated_migration_pins_the_expected_revision_on_an_update(
     service: ProposalService,
 ) -> None:
-    """The other half of #210: an update states which revision it replaces."""
-    revision = RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")
+    """The other half of #210: an update states which revision it replaces.
 
-    drafted = service.draft(_request(expected_revision=revision))
+    The item has to exist first for an update to be legal, so the first proposal
+    is accepted before the second is drafted against its revision.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
 
-    assert _upsert(drafted.migration_file)["expectedRevision"] == revision.value
+    drafted = service.draft(_request(expected_revision=first.revision_id))
+
+    assert _upsert(drafted.migration_file)["expectedRevision"] == first.revision_id.value
 
 
 def test_a_new_item_carries_no_expected_revision(service: ProposalService) -> None:
@@ -252,6 +271,45 @@ def test_a_new_item_carries_no_expected_revision(service: ProposalService) -> No
     drafted = service.draft(_request())
 
     assert "expectedRevision" not in _upsert(drafted.migration_file)
+
+
+def test_an_update_with_no_expected_revision_is_refused_at_generation(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-5 (#210): the generator must not emit an unguarded update.
+
+    Reproduced before the fix: a second proposal for an existing item with no
+    ``--expected-revision`` wrote an update with no guard, passed
+    ``migrate validate``, and failed only at ``migrate apply`` -- after the pull
+    request had merged -- with *"expected <none>, store holds ..."*. The
+    generator derives the current revision from the approved migration set and
+    refuses the draft instead.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    before = _tree(paths.root)
+
+    with pytest.raises(ProposalError, match="already exists"):
+        service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+
+    assert _tree(paths.root) == before, "a refused update writes nothing"
+
+
+def test_a_stale_expected_revision_is_refused_at_generation(service: ProposalService) -> None:
+    """A guard that names the wrong revision conflicts at apply just as surely."""
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+
+    with pytest.raises(ProposalError, match="expected-revision names"):
+        service.draft(_request(expected_revision=RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")))
+
+
+def test_expected_revision_on_a_new_item_is_refused_at_generation(
+    service: ProposalService,
+) -> None:
+    """A first revision has nothing to replace, so the guard is a mistake."""
+    with pytest.raises(ProposalError, match="does not exist yet"):
+        service.draft(_request(expected_revision=RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")))
 
 
 def test_a_new_item_is_created_before_its_first_revision(service: ProposalService) -> None:
@@ -465,10 +523,17 @@ def test_accept_refuses_a_replacement_that_would_break_an_existing_pin(
     ``accept`` must never leave the set unable to validate, so it refuses the
     replacement -- and refusing breaks nothing legitimate, because a generated
     update never reuses a ``contentFile`` (its revision id makes the path fresh).
+
+    The second proposal is drafted for a *different* item so the draft-side
+    guard does not fire, then its ``contentFile`` is hand-repointed at the first
+    item's body path -- which is how a committed, contributor-authored proposal
+    directory reaches this check.
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
-    second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
     second.migration_file.write_text(
         second.migration_file.read_text(encoding="utf-8").replace(
             second.content_file, first.content_file

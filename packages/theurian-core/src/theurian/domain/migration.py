@@ -7,7 +7,7 @@ application layer's job, and loading one from disk is the infrastructure's.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -424,6 +424,29 @@ class MigrationSet:
         if current in path:
             return (*path[path.index(current) :], current)
         return tuple(path)
+
+
+def current_revision_in(migrations: Iterable[Migration], item_id: ItemId) -> RevisionId | None:
+    """The revision an item currently has after applying ``migrations`` in order.
+
+    The approved migration set *is* the canonical state -- applying it to an
+    empty database reproduces the state exactly (FR-K4) -- so a reader that needs
+    to know an item's current revision without opening the state database can
+    derive it here. Only :class:`UpsertRevision` moves ``current_revision_id``;
+    a deprecate or a status change does not, which is why nothing else is
+    consulted.
+
+    ``migrations`` must already be in application order (a :class:`MigrationSet`
+    iterates in that order): the *last* upsert for the item is the current one.
+    Returns ``None`` when no migration ever revised the item -- it does not yet
+    exist, so a proposal that creates it is a first revision, not an update.
+    """
+    current: RevisionId | None = None
+    for migration in migrations:
+        for operation in migration.operations:
+            if isinstance(operation, UpsertRevision) and operation.item_id == item_id:
+                current = operation.revision_id
+    return current
 
 
 @dataclass(frozen=True, slots=True)
