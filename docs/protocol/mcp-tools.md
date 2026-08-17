@@ -373,6 +373,7 @@ and the outcomes must still exist as data
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
 everything else should still work.
 
+<!-- capabilities-fields:begin -->
 The response's fields serve different roles, not one uniform contract.
 `capabilities` is what a client degrades against, one feature at a time.
 `version` and `protocolVersion` re-publish the same two process constants
@@ -387,6 +388,7 @@ still the sole place `protocolVersion` is readable at all: liveness is served
 at the `/health` HTTP route, outside the MCP tool surface, with no
 callable-tool equivalent in this build. `schemaVersion` reports the canonical
 store's schema version. `note` is prose, not a field a client parses.
+<!-- capabilities-fields:end -->
 
 ### `project.list`
 

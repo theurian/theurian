@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator, Sequence
@@ -53,6 +54,60 @@ runner = CliRunner()
 #: tests/integration/test_mcp_tools.py -> integration -> tests -> theurian-core
 #: -> packages -> repo root, matching test_wire_contract.py's own computation.
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+#: HTML-comment sentinels bounding the `system.capabilities` field-role
+#: paragraph in mcp-tools.md, read by
+#: `test_the_system_capabilities_response_holds_exactly_the_keys_that_are_pinned`.
+#: A sentinel line, not a marker *sentence* matched by `.index()`: a sentence
+#: duplicated earlier in the document still `.index()`es successfully at its
+#: first occurrence, silently widening the slice to everything in between
+#: (measured: duplicating the old start sentence widened the slice from ~830
+#: to ~20,082 chars, pulling in `knowledge.status`'s own `protocolVersion`
+#: and `schemaVersion` mentions and making the doc-tie a no-op -- #206 round
+#: two). An HTML comment is not prose a heading rename or an added example
+#: reproduces by accident.
+CAPABILITIES_FIELDS_BEGIN = "<!-- capabilities-fields:begin -->"
+CAPABILITIES_FIELDS_END = "<!-- capabilities-fields:end -->"
+
+
+def _capabilities_field_role_paragraph(doc_text: str) -> str:
+    """The sentinel-bounded slice of mcp-tools.md naming each field's role.
+
+    Guards the two failure modes a bare `.index()` pair does not: a missing
+    marker raises `ValueError: substring not found` with no remedy, and a
+    marker present more than once resolves to whichever occurrence
+    `.index()` finds first, silently. Both are caught here with a remedy
+    naming the file and that the range is machine-read, before either
+    `.index()` call runs.
+    """
+    begin_count = doc_text.count(CAPABILITIES_FIELDS_BEGIN)
+    assert begin_count == 1, (
+        f"docs/protocol/mcp-tools.md must carry exactly one "
+        f"`{CAPABILITIES_FIELDS_BEGIN}` sentinel -- found {begin_count}. It "
+        f"marks the start of the `system.capabilities` field-role paragraph "
+        f"this test reads to tie the doc to the response's pinned key set; "
+        f"restore exactly one, immediately before that paragraph."
+    )
+    end_count = doc_text.count(CAPABILITIES_FIELDS_END)
+    assert end_count == 1, (
+        f"docs/protocol/mcp-tools.md must carry exactly one "
+        f"`{CAPABILITIES_FIELDS_END}` sentinel, paired with "
+        f"`{CAPABILITIES_FIELDS_BEGIN}` -- found {end_count}. Same reason as "
+        f"above; restore exactly one, immediately after that paragraph."
+    )
+    start = doc_text.index(CAPABILITIES_FIELDS_BEGIN) + len(CAPABILITIES_FIELDS_BEGIN)
+    end = doc_text.index(CAPABILITIES_FIELDS_END)
+    paragraph = doc_text[start:end]
+    assert 50 < len(paragraph) < 3000, (
+        f"the sentinel-bounded slice is {len(paragraph)} chars, outside the "
+        f"50-3000 sane range for this one paragraph -- the markers either "
+        f"collapsed onto each other (empty/near-empty) or one of them "
+        f"drifted next to an unrelated section (over-wide), and either way "
+        f"the doc-tie this bounds is not comparing what it claims to. Fix "
+        f"the sentinel placement in docs/protocol/mcp-tools.md rather than "
+        f"this bound."
+    )
+    return paragraph
 
 
 class _NothingWithheld:
@@ -1666,10 +1721,24 @@ async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_
     rather than reporting progress -- a milestone number, if a client wants
     one, lives in the README roadmap, not in any wire field.
 
-    This also ties the doc to the pin: the paragraph in
-    `docs/protocol/mcp-tools.md` naming each of these fields' roles is read
-    below and checked against this same key set, so a field added to one
-    without the other fails here too.
+    This also ties the doc to the pin, now genuinely in both directions.
+    `_capabilities_field_role_paragraph` extracts the sentinel-bounded
+    paragraph in `docs/protocol/mcp-tools.md` naming each field's role, and
+    every backtick-quoted single word in it is compared, as a set, against
+    this response's own key set below: a name in the paragraph that matches
+    no real field, or a real field the paragraph stops naming, both fail.
+
+    The response-side half of that -- a key added to the wire without a
+    matching mention in the paragraph -- is already caught by the
+    exact-key-set assertion above. What the set comparison below adds is
+    the paragraph drifting on its own: the prior version of this check only
+    walked `result`'s keys and asserted each was named in the paragraph, so
+    it could never fail on a name the paragraph added that matches no real
+    field -- a bogus name added there survived the whole suite (#206 round
+    two, m13). The paragraph's own slice was unguarded too: a marker
+    *sentence* resolved by `.index()` silently widens under duplication,
+    which is why the extraction is sentinel-bounded instead (m14, killed by
+    `_capabilities_field_role_paragraph`'s length guard).
     """
     result = await _call(registry, "system.capabilities")
 
@@ -1689,18 +1758,18 @@ async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_
     )
 
     doc_text = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
-    start = doc_text.index("`system.capabilities` exists so a client can degrade")
-    end = doc_text.index("### `project.list`", start)
-    field_role_paragraph = doc_text[start:end]
+    field_role_paragraph = _capabilities_field_role_paragraph(doc_text)
+    documented_fields = set(re.findall(r"`(\w+)`", field_role_paragraph))
 
-    for key in result:
-        assert f"`{key}`" in field_role_paragraph, (
-            f"docs/protocol/mcp-tools.md's `system.capabilities` paragraph "
-            f"does not name `{key}` (backtick-quoted). That paragraph is the "
-            f"prose enumeration of this response's top-level fields, so it "
-            f"drifts silently from the key set above unless something reads "
-            f"both -- name {key}'s role there."
-        )
+    assert documented_fields == set(result), (
+        f"docs/protocol/mcp-tools.md's sentinel-bounded `system.capabilities` "
+        f"paragraph names {sorted(documented_fields)} (backtick-quoted, "
+        f"single word) but the response's own top-level keys are "
+        f"{sorted(result)}. The two must match exactly, in both directions: "
+        f"a name in the paragraph that is not a real field, and a real "
+        f"field the paragraph stops naming, are both this drift -- update "
+        f"whichever side is behind."
+    )
 
 
 # -- Result shape ----------------------------------------------------------
