@@ -106,6 +106,14 @@ def _load(text: str, anchor: SourceAnchor) -> dict[str, Any]:
         except yaml.YAMLError as exc:
             msg = f"{anchor.source_uri} is neither valid JSON nor valid YAML: {exc}"
             raise ValueError(msg) from exc
+    except RecursionError as exc:
+        # Mirrors `structured.py::JsonParser.parse`'s identical guard around
+        # the identical call: a JSON document nested deep enough blows the
+        # decoder's own recursion limit, and `RecursionError` is not a
+        # `json.JSONDecodeError`, so it sailed past the `except` above and out
+        # of this function uncaught (measured: 20,000 nested arrays).
+        msg = f"{anchor.source_uri} is nested too deeply to parse"
+        raise ValueError(msg) from exc
 
     if not isinstance(loaded, dict):
         msg = (

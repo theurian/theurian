@@ -22,6 +22,7 @@ translation is deleted, not merely written to look like it would.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import shutil
 import sys
@@ -319,11 +320,13 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_an_unr
     project: Path,
 ) -> None:
     """``chmod 000`` on ``.theurian`` (``migrations_dir``'s parent), not on
-    ``migrations_dir`` itself -- ``is_dir()`` needs only traversal permission
-    on the parent to raise ``EACCES``; a directory `chmod 000`'d itself
-    leaves `is_dir()` succeeding, which is `glob`'s own, different,
-    previously-unfixed silent-empty-result case, closed by the tests below
-    (issue #214).
+    ``migrations_dir`` itself -- the probe needs only traversal permission on
+    the parent to raise ``EACCES``, whether that probe is today's explicit
+    ``migrations_dir.stat()`` (``migration_loader.py``) or the ``is_dir()``
+    call that preceded it before round two's fix. A directory `chmod 000`'d
+    itself instead of its parent leaves the probe succeeding either way,
+    which was `glob`'s own, different, previously-unfixed silent-empty-result
+    case, closed by the tests below (issue #214).
     """
     migrations_dir = project / ".theurian" / "migrations"
     (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
@@ -345,10 +348,13 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_the_di
     project: Path, mode: int
 ) -> None:
     """Issue #214: ``chmod``'d on ``migrations_dir`` *itself*, not its parent
-    (the sibling case above). ``is_dir()`` still succeeds under either mode --
-    stat needs only traversal permission on ancestors, not on the target
-    itself -- so the existing ``OSError`` conversion around ``is_dir()``
-    never ran. Before the fix, the failure instead happened inside
+    (the sibling case above). At the time of issue #214, the top-level probe
+    was still ``is_dir()`` -- round two later replaced it with an explicit
+    ``os.stat`` call, for the unrelated ``ELOOP``-swallowing reason pinned
+    above -- and it succeeded under either mode, since stat needs only
+    traversal permission on ancestors, not on the target itself, so the
+    ``OSError`` conversion issue #205 had already wrapped around that probe
+    never ran. Before issue #214's own fix, the failure instead happened inside
     ``pathlib.Path.glob``'s own ``scandir``, which caught the
     ``PermissionError`` it raises internally and yielded nothing: that
     returned an *empty* ``LoadedMigrations`` rather than raising, so
@@ -429,8 +435,9 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_a_syml
     """Adversarial HIGH (round two, orchestrator-measured): a symlink chain
     longer than ``SYMLOOP_MAX`` at ``migrations_dir`` makes ``Path.is_dir()``
     swallow ``ELOOP`` -- the same convenience it already extends to
-    ``ENOENT``/``ENOTDIR`` (the comment on ``load_migrations``'s own
-    ``is_dir()`` probe, ``migration_loader.py``) -- and return ``False``.
+    ``ENOENT``/``ENOTDIR`` (the comment on ``load_migrations``'s own explicit
+    ``os.stat`` probe, ``migration_loader.py``, which replaced ``is_dir()``
+    for exactly this reason) -- and return ``False``.
     Before this fix that made a ``migrations_dir`` that is actually a loop,
     not a directory that never existed, hit the same ``if not is_directory:
     return LoadedMigrations.empty()`` branch a genuinely absent directory
@@ -470,6 +477,209 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_a_syml
     )
 
 
+# -- round three: entry-level enumeration policy -----------------------------
+#
+# The symlink-loop test above drives `migrations_dir` *itself* being a loop.
+# This section drives a loop, or a dangling target, on one *entry* inside an
+# otherwise-healthy `migrations_dir` -- a different fault, because entry-level
+# enumeration goes through `p.is_file()` in the comprehension, not the
+# top-of-function `os.stat` probe.
+#
+# Orchestrator-measured today, before any of the fixes this section's RED
+# tests specify exist: with two `*.yaml` entries on disk -- one real, one a
+# 40-link symlink loop -- `load_migrations` reports a `migrationCount` of 1,
+# silently dropping the loop entry, because `Path.is_file()` swallows `ELOOP`
+# (and `ENOENT`) internally (CPython's `pathlib._abc._ignore_error`,
+# `_IGNORED_ERRNOS = (ENOENT, ENOTDIR, EBADF, ELOOP)`) and simply reports
+# `False`, filtering the entry out of the enumerated set with no error at
+# all. A dangling symlink entry (a valid target name, but nothing at the far
+# end) vanishes the identical way, via `ENOENT` instead of `ELOOP`.
+#
+# WARNING carried from the adversarial review: a naive fix that swaps
+# `p.is_file()` for a bare `p.stat()` inside this same comprehension, with no
+# per-entry `try`, would make a *dangling* entry's `ENOENT` propagate out of
+# the comprehension and into the directory-level `except OSError` around it
+# (`load_migrations`, `migration_loader.py`), which already answers `ENOENT`
+# with `LoadedMigrations.empty()` for the *whole* directory -- turning "one
+# entry is broken" into "nothing loaded at all", a worse regression than
+# today's silent per-entry drop. The green pins below (skip only the raced
+# entry; still load a symlink to a valid target) exist to catch exactly that
+# trap once a per-entry classification lands.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_load_migrations_raises_migration_file_unreadable_error_for_a_symlink_loop_entry(
+    project: Path,
+) -> None:
+    """RED (round three): entry-level counterpart of
+    ``test_load_migrations_raises_migrations_directory_unreadable_error_for_a_symlink_loop``
+    above -- here the loop is one *entry* inside `migrations_dir`, not the
+    directory itself. Today this is silently dropped (see this section's own
+    banner comment, measured directly); the specified fix is to raise
+    :class:`MigrationFileUnreadableError` naming the entry, not the directory,
+    with a remedy that says "loop", not "confirm it still exists" -- the
+    generic ``_read_failure_remedy`` fallback every other
+    :class:`MigrationFileUnreadableError` case in this file gets today has no
+    branch for ``ELOOP`` at all, so this stays red until one is added.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-real.yaml").write_text(_VALID_MIGRATION)
+    theurian_dir = project / ".theurian"
+    links = [theurian_dir / f"entry-loop-{i}" for i in range(40)]
+    loop_entry = migrations_dir / "01K1LLLLLL01234567890ABCDE-loop.yaml"
+    loop_entry.symlink_to(links[0])
+    for index in range(len(links) - 1):
+        links[index].symlink_to(links[index + 1])
+    links[-1].symlink_to(links[0])
+
+    with pytest.raises(OSError) as os_excinfo:
+        loop_entry.stat()
+    assert os_excinfo.value.errno == errno.ELOOP, "fixture must actually reproduce ELOOP"
+
+    with pytest.raises(MigrationFileUnreadableError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    relative = str(loop_entry.relative_to(project))
+    assert str(excinfo.value) == f"{relative!r} could not be read: {os.strerror(errno.ELOOP)}"
+    assert excinfo.value.remedy == (
+        f"{relative!r} is a loop of symbolic links. Point it at a real file, then retry."
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_load_migrations_raises_migration_file_unreadable_error_for_a_dangling_symlink_entry(
+    project: Path,
+) -> None:
+    """RED (round three): the entry-level sibling of the loop-entry test
+    above -- a symlink whose target simply does not exist, rather than one
+    that loops. Today this also vanishes silently (``Path.is_file()``
+    swallows ``ENOENT`` the identical way it swallows ``ELOOP``); the
+    specified fix distinguishes it from an *ordinary* missing file (a
+    genuinely absent entry is not an entry at all -- there is nothing to
+    enumerate) by checking symlink-ness first: this entry *is* a symlink
+    (``lstat`` succeeds), and only its target is missing, so the reason and
+    remedy name "symbolic link" rather than the generic "confirm this exists"
+    every other missing-file case gets. This changes today's silent skip, so
+    it stays red until that per-entry classification exists.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-real.yaml").write_text(_VALID_MIGRATION)
+    dangling = migrations_dir / "01K1DDDDDD01234567890ABCDE-dangling.yaml"
+    dangling.symlink_to(migrations_dir / "01K1DDDDDD01234567890ABCDE-does-not-exist.yaml")
+
+    with pytest.raises(OSError) as os_excinfo:
+        dangling.stat()
+    assert os_excinfo.value.errno == errno.ENOENT, "fixture must actually reproduce ENOENT"
+    assert dangling.is_symlink(), "fixture must actually be a symlink, not a missing plain file"
+
+    with pytest.raises(MigrationFileUnreadableError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    relative = str(dangling.relative_to(project))
+    assert str(excinfo.value) == f"{relative!r} could not be read: symbolic link target is missing"
+    assert excinfo.value.remedy == (
+        f"{relative!r} is a symbolic link whose target is missing. Restore the target or "
+        f"remove the link, then retry."
+    )
+
+
+def test_load_migrations_skips_only_a_non_symlink_entry_that_vanishes_mid_enumeration(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GREEN pin (round three): the regression this section's banner comment
+    warns a naive per-entry fix could introduce -- one entry's ``Path.stat()``
+    raising ``ENOENT`` (a plain file removed between ``iterdir()`` listing it
+    and the per-entry check, not a symlink) must skip only that entry, never
+    the whole directory. Driven by patching ``Path.stat`` itself, one layer
+    below ``is_file()``: today's ``is_file()`` already swallows this
+    internally and this test proves that fact stays true, so a future
+    per-entry ``try`` around an explicit ``stat()`` call has this pin to
+    fail against if it forgets to catch ``ENOENT``/``ENOTDIR`` per entry
+    rather than letting it propagate to the directory-level ``except``
+    around the whole enumeration (`load_migrations`, `migration_loader.py`),
+    which would turn this one raced-away file into ``LoadedMigrations.empty()``
+    for everything.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-real.yaml").write_text(_VALID_MIGRATION)
+    vanished_id = "01K1VVVVVV01234567890ABCDE"
+    vanished = migrations_dir / f"{vanished_id}-vanished.yaml"
+    vanished.write_text(
+        _VALID_MIGRATION.replace("01K1KKKKKK01234567890ABCDE", vanished_id).replace(
+            "architecture.auth-policy", "architecture.vanished-policy"
+        )
+    )
+
+    real_stat = Path.stat
+
+    def _fake_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == vanished:
+            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+
+    ids = {str(m.migration_id) for m in loaded.migration_set}
+    assert ids == {"01K1KKKKKK01234567890ABCDE"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is POSIX-only")
+def test_load_migrations_skips_a_fifo_and_a_directory_both_named_dot_yaml(
+    project: Path,
+) -> None:
+    """GREEN pin (round three), item 3 of the entry-level policy: an entry
+    that stats without error but is not a regular file -- a FIFO, or a
+    subdirectory that happens to be named ``*.yaml`` -- is skipped exactly as
+    it was before this round, not classified as any kind of failure. Neither
+    is a symlink and neither has a broken stat, so this is the "ordinary,
+    working as designed" branch the new symlink-loop/dangling handling above
+    must not touch.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-real.yaml").write_text(_VALID_MIGRATION)
+    os.mkfifo(migrations_dir / "a-fifo.yaml")
+    (migrations_dir / "a-directory.yaml").mkdir()
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+
+    ids = {str(m.migration_id) for m in loaded.migration_set}
+    assert ids == {"01K1KKKKKK01234567890ABCDE"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_load_migrations_follows_a_symlink_entry_to_a_valid_in_project_file(
+    project: Path,
+) -> None:
+    """GREEN pin (round three): a symlink entry whose target exists, is a
+    regular file, and stays inside ``project_root`` must still load like any
+    other migration -- the new loop/dangling handling above must not turn
+    *every* symlink entry into a refusal, only the two broken shapes. The
+    target lives outside `migrations_dir` (directly under `.theurian/`) so
+    this is not merely "a symlink next to its own target", proving the read
+    genuinely follows the link rather than coincidentally finding the same
+    bytes.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-real.yaml").write_text(_VALID_MIGRATION)
+
+    linked_id = "01K1SSSSSS01234567890ABCDE"
+    target = project / ".theurian" / f"{linked_id}-external-source.yaml"
+    target.write_text(
+        _VALID_MIGRATION.replace("01K1KKKKKK01234567890ABCDE", linked_id).replace(
+            "architecture.auth-policy", "architecture.linked-policy"
+        )
+    )
+    linked_entry = migrations_dir / f"{linked_id}-linked.yaml"
+    linked_entry.symlink_to(target)
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+
+    ids = {str(m.migration_id) for m in loaded.migration_set}
+    assert ids == {"01K1KKKKKK01234567890ABCDE", linked_id}
+
+
 # -- errno policy for a failure during enumeration, not the is_dir() probe ---
 
 
@@ -478,13 +688,14 @@ def test_load_migrations_treats_a_stale_enumeration_failure_as_an_empty_set(
     project: Path, monkeypatch: pytest.MonkeyPatch, stale_errno: int
 ) -> None:
     """Round-two errno policy: ``ENOENT``/``ENOTDIR`` raised while
-    *enumerating* ``migrations_dir`` -- after the ``is_dir()`` probe already
-    answered ``True``, one line above -- means the directory vanished or was
-    replaced between the probe and the listing, the identical race
-    ``is_dir()``'s own ``ENOENT``/``ENOTDIR`` swallow already treats as
-    "nothing to load" (``if not is_directory: return
-    LoadedMigrations.empty()``, ``migration_loader.py``). Before this fix,
-    every enumeration-time ``OSError`` converted to
+    *enumerating* ``migrations_dir`` -- after the directory probe above
+    (``migrations_dir.stat()``, ``migration_loader.py``) already found it and
+    answered "yes, this is a directory" -- means the directory vanished or
+    was replaced between the probe and the listing, the identical race that
+    probe's own ``except OSError`` clause already treats as "nothing to
+    load" for ``ENOENT``/``ENOTDIR`` (``if exc.errno in (errno.ENOENT,
+    errno.ENOTDIR): return LoadedMigrations.empty()``, the same file). Before
+    this fix, every enumeration-time ``OSError`` converted to
     ``MigrationsDirectoryUnreadableError`` regardless of errno, which would
     have reported a refusal for a directory that merely raced its own
     deletion instead of the same "nothing to load" answer a directory that
@@ -554,6 +765,44 @@ def test_load_migrations_raises_migrations_directory_unreadable_error_for_an_unr
     )
 
 
+def test_load_migrations_gives_the_permission_remedy_for_an_injected_eperm(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-three mutation-adversarial (mutation x4 SURVIVED): the sibling
+    of the test above, but for the other half of
+    ``_directory_unreadable_remedy``'s own permission tuple
+    (``domain/errors.py``): ``if errno_value in (_errno.EACCES,
+    _errno.EPERM):``. Every existing permission-refusal test in this file
+    drives its failure with a real ``chmod``, which raises ``EACCES`` on this
+    platform, never ``EPERM`` -- so a mutation dropping ``_errno.EPERM`` from
+    that tuple entirely survived every test here despite the tuple's own
+    reference to it. ``EPERM`` is injected the same way
+    ``ENAMETOOLONG`` is above, since it is not reliably producible with a
+    real ``chmod`` on every platform this suite runs on.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
+
+    real_iterdir = Path.iterdir
+
+    def _fake_iterdir(self: Path) -> Iterator[Path]:
+        if self == migrations_dir:
+            raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _fake_iterdir)
+
+    with pytest.raises(MigrationsDirectoryUnreadableError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    relative = str(migrations_dir.relative_to(project))
+    assert str(excinfo.value) == f"{relative!r} could not be listed: {os.strerror(errno.EPERM)}"
+    assert excinfo.value.remedy == (
+        f"Confirm this user has read and execute permission on {relative!r} "
+        f"and its parent directories, then retry."
+    )
+
+
 # -- issue #214 must not overreach: the legitimate "zero migrations" cases ----
 
 
@@ -564,12 +813,61 @@ def test_load_migrations_on_an_ordinarily_readable_empty_directory_returns_an_em
     leave alone: an existing, ordinarily-readable, genuinely empty
     ``migrations_dir`` is not a refusal, it is ``LoadedMigrations.empty()`` --
     the same value ``load_migrations`` already returns when ``migrations_dir``
-    does not exist at all (``if not is_directory: return
-    LoadedMigrations.empty()``, ``migration_loader.py``). A fix that makes
-    *any* zero-migration read raise would pass every test above it in this
-    file and still be wrong.
+    does not exist at all (``if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+    return LoadedMigrations.empty()`` inside the directory probe's own
+    ``except OSError``, ``migration_loader.py``). A fix that makes *any*
+    zero-migration read raise would pass every test above it in this file and
+    still be wrong.
     """
     migrations_dir = project / ".theurian" / "migrations"
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+
+    assert loaded == LoadedMigrations.empty()
+
+
+def test_load_migrations_treats_a_migrations_path_that_is_a_regular_file_as_an_empty_set(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-three pin for the ``stat.S_ISDIR``-false branch
+    (``migration_loader.py``): nothing in this file previously drove
+    ``migrations_dir`` existing as something other than a directory *and*
+    other than genuinely absent -- the probe's own ``except OSError`` above
+    only covers ``ENOENT``/``ENOTDIR`` (nothing there at all, or a parent
+    segment that is not a directory). A path that *does* exist, *is*
+    readable, and simply is not a directory -- a plain file sitting where
+    ``.theurian/migrations`` should be -- reaches ``if not
+    stat.S_ISDIR(probe.st_mode): return LoadedMigrations.empty()`` instead.
+
+    Self-verified (round three): inverting that condition (``if
+    stat.S_ISDIR(...)``) is *not* caught by a result-only assertion, and was
+    measured to survive one -- a regular file also makes the enumeration
+    step's own ``migrations_dir.iterdir()`` raise ``NotADirectoryError``
+    (``ENOTDIR``), which the very next ``except OSError`` clause answers with
+    the identical ``LoadedMigrations.empty()``. Two different branches
+    agreeing on the same output is exactly the "equivalent only by luck of
+    the enumeration fallback" trap round two's adversarial finding named, so
+    a same-answer assertion cannot tell them apart. This instead proves the
+    ``S_ISDIR`` branch itself short-circuits: it fails outright if
+    ``Path.iterdir`` is ever called on ``migrations_dir``, which the
+    enumeration fallback would necessarily do and the direct branch never
+    does.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    migrations_dir.rmdir()
+    migrations_dir.write_text("not a directory\n")
+
+    real_iterdir = Path.iterdir
+
+    def _iterdir_must_not_run_for_a_non_directory(self: Path) -> Iterator[Path]:
+        if self == migrations_dir:
+            pytest.fail(
+                "enumeration must not run at all for a migrations_dir that is "
+                "not a directory -- the S_ISDIR check must short-circuit first"
+            )
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir_must_not_run_for_a_non_directory)
 
     loaded = load_migrations(project, migrations_dir, real_schema_root())
 
@@ -630,23 +928,51 @@ def test_load_migrations_matches_pathlib_globs_own_dotfile_behaviour_today(
 
 
 def test_load_migrations_reports_the_lexicographically_first_invalid_file(
-    project: Path,
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Code-review MEDIUM (round two): a mutation collapsing the
     enumeration's own ``sorted(...)`` to ``list(...)`` (``migration_loader.py``)
     survived round one's suite -- nothing pinned *which* of several invalid
     files a multi-file failure names, only that some ``MigrationError`` was
     raised, so an unstable ``iterdir()`` order would have passed unnoticed.
-    Two invalid files, named so filesystem creation order and lexicographic
-    order disagree (``z-...`` written first, ``a-...`` second): the loop in
-    ``load_migrations`` that calls ``_load_one`` once per sorted path raises
-    on the first invalid file it reaches, so pinning *which* file the error
-    names pins the sort itself, not merely that a sort happened.
+
+    Reworked (round three, code-review MEDIUM): the previous version of this
+    test relied on filesystem creation order disagreeing with lexicographic
+    order (``z-...`` written first, ``a-...`` second) to prove ``sorted(...)``
+    actually runs -- true on APFS, which walks ``iterdir()`` in creation
+    order, but not a guarantee this suite can rely on: ext4 returns hash
+    order, under which a mutation dropping ``sorted`` could coincidentally
+    still report the files in the "right" order and pass. This instead
+    injects ``Path.iterdir``'s raw yield order directly, forced to
+    reverse-lexicographic regardless of what the real filesystem does (the
+    same ``_fake_iterdir`` pattern the errno-policy tests above use), so the
+    pin holds on every filesystem, not only this developer's own.
+
+    The loop in ``load_migrations`` that calls ``_load_one`` once per
+    *sorted* path raises on the first invalid file it reaches, so pinning
+    *which* file the error names pins the sort itself, not merely that a
+    sort happened.
     """
     migrations_dir = project / ".theurian" / "migrations"
     malformed = "id: [unclosed\n  bad: {{{\n"
-    (migrations_dir / "z-01K1ZZZZZZ01234567890ABCDE-second.yaml").write_text(malformed)
-    (migrations_dir / "a-01K1AAAAAA01234567890ABCDE-first.yaml").write_text(malformed)
+    first = migrations_dir / "a-01K1AAAAAA01234567890ABCDE-first.yaml"
+    second = migrations_dir / "z-01K1ZZZZZZ01234567890ABCDE-second.yaml"
+    first.write_text(malformed)
+    second.write_text(malformed)
+
+    real_iterdir = Path.iterdir
+
+    def _reverse_lexicographic_iterdir(self: Path) -> Iterator[Path]:
+        if self == migrations_dir:
+            return iter(sorted(real_iterdir(self), reverse=True))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _reverse_lexicographic_iterdir)
+
+    observed_names = [p.name for p in migrations_dir.iterdir()]
+    assert observed_names == [second.name, first.name], (
+        "fixture must actually yield reverse-lexicographic order"
+    )
 
     with pytest.raises(MigrationError) as excinfo:
         load_migrations(project, migrations_dir, real_schema_root())
@@ -696,6 +1022,24 @@ def test_load_migrations_raises_schema_unreadable_error_for_an_unreadable_schema
 def test_validator_raises_schema_unreadable_error_for_truncated_json(tmp_path: Path) -> None:
     """Measured: an unterminated JSON string raises `json.JSONDecodeError`,
     not the `OSError` `_validator`'s guard catches.
+
+    Strengthened (round three, mutation x2 SURVIVED): the three
+    `json.JSONDecodeError`/`UnicodeDecodeError`/`AttributeError` `except`
+    clauses in `_validator` (`migration_loader.py`) each build `reason` from
+    `str(exc)` and pass it straight through -- a mutation collapsing every
+    one of those `str(exc)` calls to the same hardcoded constant survived
+    every schema test in this file, because none of them checked *which*
+    message came back, only that `.remedy` was truthy. A shape-specific
+    fragment of the underlying exception's own wording -- not the exact
+    string, which is CPython's to change -- is what a wholesale-replacement
+    mutation cannot satisfy for more than one of these four cases at once.
+
+    This case also pins `SchemaUnreadableError.remedy` exactly (mutation x1,
+    SURVIVED: replacing the whole `f"Reinstall theurian; ..."` template with
+    a constant also passed every `assert excinfo.value.remedy` truthy check
+    here). The expected reason is derived from calling `json.loads` on the
+    identical text, not hardcoded, so this does not pin `json`'s own wording
+    across Python versions -- only that `_validator` forwards it unchanged.
     """
     _validator.cache_clear()
     schema_dir = tmp_path / "schema"
@@ -704,12 +1048,22 @@ def test_validator_raises_schema_unreadable_error_for_truncated_json(tmp_path: P
     schema_file.write_text('{"type": "obj')
 
     try:
+        json.loads('{"type": "obj')
+        pytest.fail("fixture must actually reproduce json.JSONDecodeError")
+    except json.JSONDecodeError as json_exc:
+        expected_reason = str(json_exc)
+    assert "Unterminated string" in expected_reason, "fixture must exercise this specific shape"
+
+    try:
         with pytest.raises(SchemaUnreadableError) as excinfo:
             _validator(schema_dir)
     finally:
         _validator.cache_clear()
 
-    assert excinfo.value.remedy
+    assert "Unterminated string" in str(excinfo.value)
+    assert excinfo.value.remedy == (
+        f"Reinstall theurian; {str(schema_file)!r} could not be read ({expected_reason})."
+    )
 
 
 def test_validator_raises_schema_unreadable_error_for_an_empty_file(tmp_path: Path) -> None:
@@ -717,6 +1071,9 @@ def test_validator_raises_schema_unreadable_error_for_an_empty_file(tmp_path: Pa
     `Expecting value` rather than truncation's `Unterminated string`, a
     distinct message from the same exception type, pinned as its own case so
     a fix keyed on one message does not leave the other uncaught.
+
+    Strengthened (round three): see the identical `str(exc)`-collapsing
+    mutation this guards against on the truncated-JSON test above.
     """
     _validator.cache_clear()
     schema_dir = tmp_path / "schema"
@@ -730,7 +1087,7 @@ def test_validator_raises_schema_unreadable_error_for_an_empty_file(tmp_path: Pa
     finally:
         _validator.cache_clear()
 
-    assert excinfo.value.remedy
+    assert "Expecting value" in str(excinfo.value)
 
 
 def test_validator_raises_schema_unreadable_error_for_non_utf8_bytes(tmp_path: Path) -> None:
@@ -738,6 +1095,9 @@ def test_validator_raises_schema_unreadable_error_for_non_utf8_bytes(tmp_path: P
     the same `read_text(encoding="utf-8")` call the `OSError` guard already
     wraps -- a failure *inside* the guarded call, not a different call the
     guard never reaches.
+
+    Strengthened (round three): see the identical `str(exc)`-collapsing
+    mutation this guards against on the truncated-JSON test above.
     """
     _validator.cache_clear()
     schema_dir = tmp_path / "schema"
@@ -751,16 +1111,27 @@ def test_validator_raises_schema_unreadable_error_for_non_utf8_bytes(tmp_path: P
     finally:
         _validator.cache_clear()
 
-    assert excinfo.value.remedy
+    assert "can't decode" in str(excinfo.value)
 
 
 def test_validator_raises_schema_unreadable_error_for_a_json_list_schema(tmp_path: Path) -> None:
-    """Measured: a schema that parses but is a JSON *list* rather than an
-    object raises `AttributeError`, not at the read but one line later, at
+    """RED (round three): a schema that parses but is a JSON *list* rather
+    than an object is refused with a reason naming *what* is wrong -- "not an
+    object" -- under the new semantic-hardening contract (round three), the
+    same reason a bare JSON boolean gets
+    (:func:`test_validator_raises_schema_unreadable_error_for_a_non_object_schema`
+    below), because both are "the parsed value is not a JSON object", one
+    check, not two.
+
+    Before this round: a JSON list raised `AttributeError` one line later, at
     `Draft202012Validator(schema)` construction -- `jsonschema` calls
-    `schema.get(...)` internally, and a `list` has no `.get`. The read itself
-    succeeded, so this is outside even the two `json.JSONDecodeError` shapes
-    above.
+    `schema.get(...)` internally, and a `list` has no `.get` -- and
+    `_validator`'s `except AttributeError` clause forwarded that raw message
+    (`"'list' object has no attribute 'get'"`) as the reason. This is a
+    behaviour change, not a strengthening of an existing pin: today's message
+    does not contain "not an object", so this stays red until `_validator`
+    checks `isinstance(schema, dict)` before constructing the validator at
+    all.
     """
     _validator.cache_clear()
     schema_dir = tmp_path / "schema"
@@ -774,4 +1145,99 @@ def test_validator_raises_schema_unreadable_error_for_a_json_list_schema(tmp_pat
     finally:
         _validator.cache_clear()
 
-    assert excinfo.value.remedy
+    assert "not an object" in str(excinfo.value)
+
+
+# -- SchemaUnreadableError: round three's semantic hardening -----------------
+#
+# The four tests above all cover a read that *fails to parse*. These two
+# cover a read that parses cleanly to JSON but is not usable as a JSON
+# Schema at all -- a case `_validator` does not guard today, so both are RED
+# until it does. `{}` is deliberately not tested as refused anywhere in this
+# file: it is a valid, if vacuous, schema (it matches every instance), and a
+# fix that refused it would be wrong, not merely early.
+
+
+def test_validator_raises_schema_unreadable_error_for_a_non_object_schema(
+    tmp_path: Path,
+) -> None:
+    """RED (round three): JSON Schema's draft 2020-12 permits a bare boolean
+    as a top-level schema (`true` matches everything, `false` matches
+    nothing) -- so `json.loads("true")` succeeds, and
+    `Draft202012Validator(True)` constructs without error today. That is
+    worse than a crash: an installed schema corrupted to `true` would make
+    every migration in every project validate, silently, because the
+    resulting validator accepts anything. `_validator` needs an explicit
+    `isinstance(schema, dict)` check before it ever reaches
+    `Draft202012Validator` for this to be refused as install corruption
+    rather than accepted as "no rules". Measured directly: today this
+    `pytest.raises` block does not raise at all.
+    """
+    _validator.cache_clear()
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text("true")
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            _validator(schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert "not an object" in str(excinfo.value)
+
+
+def test_validator_raises_schema_unreadable_error_for_structurally_invalid_schema_keywords(
+    tmp_path: Path,
+) -> None:
+    """RED (round three): a schema whose own keywords are malformed --
+    `required` must be an array of strings per the JSON Schema metaschema,
+    and this one is a bare string -- constructs without error today
+    (`Draft202012Validator.__init__` does not call `check_schema` on its own
+    input), so the failure does not surface until a *migration* is validated
+    against it. Measured directly: `Draft202012Validator({"type": "object",
+    "required": "not-a-list"}).validate({"apiVersion": "x"})` raises
+    `jsonschema.exceptions.ValidationError: 'n' is a required property` --
+    `required`'s own keyword implementation iterates a string character by
+    character, and "n" is `"not-a-list"[0]` -- which `_load_one`'s existing
+    `except ValidationError` clause (`migration_loader.py`) happily converts
+    to `MigrationError(f"{path.name} is invalid at <root>: 'n' is a required
+    property")`: a perfectly schema-valid migration blamed for a fault in
+    the *schema*. `_validator` needs to call `Draft202012Validator.
+    check_schema(schema)` itself and translate `jsonschema.exceptions.
+    SchemaError` to `SchemaUnreadableError`, so this is caught at load time,
+    attributed to the installation, before any migration is ever checked
+    against it.
+    """
+    _validator.cache_clear()
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text(json.dumps({"type": "object", "required": "not-a-list"}))
+
+    try:
+        with pytest.raises(SchemaUnreadableError):
+            _validator(schema_dir)
+    finally:
+        _validator.cache_clear()
+
+
+def test_validator_accepts_the_vacuous_empty_object_schema(tmp_path: Path) -> None:
+    """Guards the non-goal the two RED tests above name explicitly: `{}` is a
+    valid JSON Schema that matches every instance. The semantic hardening
+    those tests specify must not turn this project's own "no schema
+    available" fallback (or any deliberately permissive schema) into a
+    refusal.
+    """
+    _validator.cache_clear()
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text("{}")
+
+    try:
+        validator = _validator(schema_dir)
+        validator.validate({"anything": "goes"})
+    finally:
+        _validator.cache_clear()

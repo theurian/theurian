@@ -84,10 +84,26 @@ def load_yaml(text: str, *, max_bytes: int = MAX_YAML_BYTES) -> Any:
         InputTooLargeError: If the document exceeds ``max_bytes``.
         yaml.YAMLError: If the document is malformed.
         ValueError: If the document nests past the parser's recursion depth --
-            translated from a ``RecursionError``, which is a ``BaseException``
-            subclass and would otherwise pass uncaught through every consumer
-            here, all of which already catch ``ValueError`` (adversarial round
-            two: ``"["*495 + "]"*495``, 1,023 bytes, is already enough).
+            translated from a ``RecursionError`` (adversarial round two:
+            ``"["*495 + "]"*495``, 1,023 bytes, is already enough). Not
+            because ``RecursionError`` sits outside ``Exception``'s hierarchy
+            -- it is a ``RuntimeError`` subclass, and a bare ``except
+            Exception`` would catch it fine -- but because, before this
+            translation existed, no ``except`` clause anywhere on either
+            consumer of this function named ``RuntimeError`` or
+            ``RecursionError`` at all. ``ValueError`` is the target because it
+            is the contract both callers already keep, not because it is the
+            only type that would otherwise escape: the migration-load path
+            (``infrastructure/filesystem/migration_loader.py::_load_one``)
+            catches ``ValueError`` directly around ``load_yaml_mapping``, and
+            the structured parsers
+            (``infrastructure/filesystem/parsers/structured.py``, ``.../
+            openapi.py``) document ``ValueError`` as their own parse-failure
+            contract -- even at a call site, like ``openapi.py::_load``'s
+            YAML fallback leg, that catches only ``yaml.YAMLError`` around
+            this call and lets a bare, URI-less ``ValueError`` reach
+            ``application/ingestion_service.py``'s own ``except (ValueError,
+            InputTooLargeError)`` unchanged, rather than crashing.
     """
     size = len(text.encode("utf-8"))
     if size > max_bytes:

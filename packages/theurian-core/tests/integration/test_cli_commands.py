@@ -941,12 +941,20 @@ def test_validate_reports_a_deeply_nested_migration_instead_of_a_raw_traceback(
 ) -> None:
     """Adversarial HIGH (round two, orchestrator-reproduced): a migration
     nested past PyYAML's own recursion limit makes `load_yaml_mapping` raise
-    `RecursionError` -- a `BaseException` subclass reached through none of
-    `_load_one`'s three `except` clauses (`migration_loader.py`) -- so it
-    sailed past every one of them and reached `resolve_context` as a raw
-    traceback under `--json`, exactly the escape #217 closed for a YAML
-    syntax error one exception type over. Reproduced directly against this
-    CLI: `runner.invoke(..., catch_exceptions=False)` itself raised
+    `RecursionError`.
+
+    Corrected (round three): `RecursionError` is a `RuntimeError` subclass, in
+    turn an `Exception` subclass -- not, as an earlier revision of this
+    docstring claimed, a `BaseException` subclass in the sense of sitting
+    outside `Exception`'s hierarchy; a bare `except Exception` would have
+    caught it. What actually let it through is that none of `_load_one`'s
+    three `except` clauses (`migration_loader.py`) name `RuntimeError` or
+    `RecursionError` -- they name `UnicodeDecodeError`, `ValueError`, and
+    `yaml.YAMLError`, and `RecursionError` is none of those -- so it sailed
+    past every one of them and reached `resolve_context` as a raw traceback
+    under `--json`, exactly the escape #217 closed for a YAML syntax error
+    one exception type over. Reproduced directly against this CLI:
+    `runner.invoke(..., catch_exceptions=False)` itself raised
     `RecursionError` before this fix, the identical failure mode
     `test_validate_reports_a_malformed_migration_yaml_instead_of_crashing`
     above documents for `yaml.YAMLError`.
@@ -1069,6 +1077,90 @@ def test_apply_refuses_a_symlink_loop_migrations_directory_without_seeding_a_sta
     assert payload["error"] == f"{relative!r} could not be listed: {os.strerror(errno.ELOOP)}"
     assert payload["remedy"] == (
         f"{relative!r} is a loop of symbolic links. Point it at a real directory, then retry."
+    )
+    state_dir = project / ".theurian" / "state"
+    assert not state_dir.exists() or not any(state_dir.iterdir())
+
+
+# -- round three: entry-level enumeration policy, the CLI face --------------
+#
+# The symlink-loop tests above drive `.theurian/migrations` *itself* being a
+# loop. These two drive a loop on one *entry* inside an otherwise-healthy
+# migrations directory -- see
+# `tests/unit/test_migration_loader_errors.py`'s own "round three:
+# entry-level enumeration policy" section for the measured mechanism
+# (`Path.is_file()` silently swallows `ELOOP` per entry) and the new
+# per-entry contract these RED tests specify.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_validate_reports_a_symlink_loop_migration_entry_instead_of_silently_dropping_it(
+    project: Path,
+) -> None:
+    """RED (round three, orchestrator-measured): with one real migration and
+    one 40-link symlink-loop *entry* on disk, `migrate validate --json`
+    reports `migrationCount: 1, valid: true`, exit 0 today -- the loop entry
+    is silently dropped from the count, not refused, because
+    `Path.is_file()` swallows the `ELOOP` its own `stat()` raises. Stays red
+    until the entry-level classification the unit-level pin at
+    `tests/unit/test_migration_loader_errors.py::test_load_migrations_raises_migration_file_unreadable_error_for_a_symlink_loop_entry`
+    specifies lands.
+    """
+    _invoke("init")
+    _write_migration(project)
+    migrations_dir = project / ".theurian" / "migrations"
+    theurian_dir = project / ".theurian"
+    links = [theurian_dir / f"entry-loop-{i}" for i in range(40)]
+    loop_entry = migrations_dir / "01K1LLLLLL01234567890ABCDE-loop.yaml"
+    loop_entry.symlink_to(links[0])
+    for index in range(len(links) - 1):
+        links[index].symlink_to(links[index + 1])
+    links[-1].symlink_to(links[0])
+
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    relative = str(loop_entry.relative_to(project))
+    assert payload["error"] == f"{relative!r} could not be read: {os.strerror(errno.ELOOP)}"
+    assert payload["remedy"] == (
+        f"{relative!r} is a loop of symbolic links. Point it at a real file, then retry."
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_apply_refuses_a_symlink_loop_migration_entry_without_seeding_a_state_database(
+    project: Path,
+) -> None:
+    """RED (round three, orchestrator-measured): the `apply`-side worse face
+    of the gap the `validate` test above pins -- mirroring
+    `test_apply_refuses_a_symlink_loop_migrations_directory_without_seeding_a_state_database`
+    at entry granularity instead of directory granularity. Measured directly:
+    `migrate apply --json` seeds a state database for the one real migration
+    it did see today, silently ignoring the loop entry instead of refusing
+    before any state is touched.
+    """
+    _invoke("init")
+    _write_migration(project)
+    migrations_dir = project / ".theurian" / "migrations"
+    theurian_dir = project / ".theurian"
+    links = [theurian_dir / f"entry-loop-{i}" for i in range(40)]
+    loop_entry = migrations_dir / "01K1LLLLLL01234567890ABCDE-loop.yaml"
+    loop_entry.symlink_to(links[0])
+    for index in range(len(links) - 1):
+        links[index].symlink_to(links[index + 1])
+    links[-1].symlink_to(links[0])
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    relative = str(loop_entry.relative_to(project))
+    assert payload["error"] == f"{relative!r} could not be read: {os.strerror(errno.ELOOP)}"
+    assert payload["remedy"] == (
+        f"{relative!r} is a loop of symbolic links. Point it at a real file, then retry."
     )
     state_dir = project / ".theurian" / "state"
     assert not state_dir.exists() or not any(state_dir.iterdir())

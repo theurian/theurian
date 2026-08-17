@@ -243,6 +243,29 @@ def test_oversized_json_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
         JsonParser().parse(b'{"k": "' + b"x" * 100 + b'"}', media_type=JSON, anchor=ANCHOR)
 
 
+def test_yaml_parser_names_the_source_uri_for_a_document_nested_past_the_recursion_limit() -> None:
+    """Round-three RED (orchestrator-reproduced): ``security/yaml_loading.py``'s
+    own ``RecursionError`` -> ``ValueError`` translation is a module-level
+    function with no ``anchor`` to name, so its message is the bare "YAML
+    document exceeds the parser's safe nesting depth" -- and
+    ``YamlParser.parse`` (``structured.py``) catches only ``yaml.YAMLError``
+    around ``load_yaml``, not ``ValueError``, so that URI-less message reaches
+    the caller unchanged instead of being re-wrapped the way this same method
+    already wraps every *other* failure with ``anchor.source_uri``: ``_decode``'s
+    ``UnicodeDecodeError`` clause, and this method's own ``yaml.YAMLError``
+    clause immediately above the ``load_yaml`` call this drives. Measured
+    directly: today this assertion fails, not the ``pytest.raises`` itself --
+    a ``ValueError`` *is* raised, it just never learns which document it came
+    from.
+    """
+    deep = ("a: " + "[" * 20000 + "]" * 20000 + "\n").encode("utf-8")
+
+    with pytest.raises(ValueError, match="nesting depth") as excinfo:
+        YamlParser().parse(deep, media_type=YAML, anchor=ANCHOR)
+
+    assert ANCHOR.source_uri in str(excinfo.value)
+
+
 # ==========================================================================
 # OpenAPI
 # ==========================================================================
@@ -365,6 +388,28 @@ def test_asyncapi_channels_are_extracted() -> None:
 def test_a_non_mapping_api_document_is_refused() -> None:
     with pytest.raises(ValueError, match="must be a mapping"):
         OpenApiParser().parse(b"[1, 2, 3]", media_type=OPENAPI, anchor=ANCHOR)
+
+
+def test_openapi_reports_the_source_uri_for_json_nested_past_the_recursion_limit() -> None:
+    """Round-three RED (orchestrator-reproduced): ``_load``'s JSON leg
+    (``openapi.py``) tries ``json.loads(text)`` and catches only
+    ``json.JSONDecodeError`` before falling back to YAML -- a document nested
+    deep enough to blow the decoder's recursion limit raises
+    ``RecursionError`` instead, which is not a ``JSONDecodeError``, so it
+    sails past that ``except`` uncaught and out of ``OpenApiParser.parse``.
+    ``structured.py``'s ``JsonParser.parse`` already guards the identical
+    failure with ``except RecursionError as exc: raise ValueError(f"{anchor.
+    source_uri} is nested too deeply to parse") from exc`` -- this pins that
+    ``OpenApiParser`` gets the same translation, carrying the same
+    ``anchor.source_uri``, not a raw ``RecursionError`` escaping to the
+    caller under ``--json``.
+    """
+    deep = ("[" * 20000 + "]" * 20000).encode("utf-8")
+
+    with pytest.raises(ValueError, match="nested") as excinfo:
+        OpenApiParser().parse(deep, media_type=OPENAPI, anchor=ANCHOR)
+
+    assert ANCHOR.source_uri in str(excinfo.value)
 
 
 # ==========================================================================

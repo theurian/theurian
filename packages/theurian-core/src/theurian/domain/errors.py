@@ -126,7 +126,21 @@ def _read_failure_remedy(
     any syscall runs -- and for that case ``missing_or_wrong_text`` is exactly
     right: a NUL byte in a path is a malformed-path problem, the same family as
     "this path does not exist."
+
+    ``ELOOP`` gets its own branch (round three), the file-level counterpart of
+    :func:`_directory_unreadable_remedy`'s identical one: a `chmod` fixes a
+    permission problem but does nothing about a symlink chain, so folding it
+    into the ``EACCES``/``EPERM`` branch would send a reader to check a
+    permission bit that was never wrong. A *dangling* symlink -- resolvable,
+    but pointing at nothing -- is not handled here at all: unlike a loop, its
+    remedy text ("restore the target or remove the link") does not fit the
+    single ``target`` this function names, so
+    :class:`MigrationFileUnreadableError`'s own ``remedy`` keyword lets that
+    one caller build it directly instead of stretching this function's
+    ``target``-shaped contract to cover it.
     """
+    if errno_value == _errno.ELOOP:
+        return f"{target!r} is a loop of symbolic links. Point it at a real file, then retry."
     if errno_value in (_errno.EACCES, _errno.EPERM):
         return (
             f"Confirm this user has read permission on {target!r} and its "
@@ -195,14 +209,36 @@ class MigrationFileUnreadableError(MigrationError):
     traceback, exit 1, empty stdout -- the identical escape
     `MigrationContentUnreadableError` closed for `contentFile`, one call site
     over.
+
+    Round three widened this past the open-and-read failure above to the
+    *enumeration* step that finds the path in the first place: a `*.yaml`
+    entry that is a symlink loop, or a symlink whose target is missing, is
+    also raised from here rather than silently dropped by
+    ``Path.is_file()``'s own errno-swallowing (see
+    ``infrastructure/filesystem/migration_loader.py``'s enumeration comment).
+    The loop case reuses :func:`_read_failure_remedy`'s ``ELOOP`` branch; the
+    dangling case passes ``remedy`` explicitly, because "restore the target or
+    remove the link" is specific to a symlink whose target is missing and does
+    not fit the errno-keyed dispatch every other case here shares.
     """
 
-    def __init__(self, migration_path: str, reason: str, errno_value: int | None = None) -> None:
+    def __init__(
+        self,
+        migration_path: str,
+        reason: str,
+        errno_value: int | None = None,
+        *,
+        remedy: str | None = None,
+    ) -> None:
         self.migration_path = migration_path
-        self.remedy = _read_failure_remedy(
-            migration_path,
-            errno_value,
-            missing_or_wrong_text=f"Confirm {migration_path!r} still exists, then retry.",
+        self.remedy = (
+            remedy
+            if remedy is not None
+            else _read_failure_remedy(
+                migration_path,
+                errno_value,
+                missing_or_wrong_text=f"Confirm {migration_path!r} still exists, then retry.",
+            )
         )
         super().__init__(f"{migration_path!r} could not be read: {reason}")
 
@@ -237,7 +273,7 @@ class MigrationsDirectoryUnreadableError(MigrationError):
     """``.theurian/migrations/`` itself could not be probed or listed (issues
     #205, #214, and round two's symlink-loop and residual-errno faces).
 
-    Four raw-IO shapes converge on this one class:
+    Five raw-IO shapes converge on this one class:
 
     1. **A parent denies traversal (#205).** ``pathlib.Path.is_dir()`` in this
        interpreter swallows ``ENOENT``/``ENOTDIR``/``ELOOP`` -- the well-formed
@@ -269,13 +305,17 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        `ENOENT`/`ENOTDIR`, misreporting a loop as "does not exist" -- an empty
        migration set, and `migrate apply --json` seeding a state database for
        it, rather than the refusal every other member of this class gets.
+    5. **A residual errno neither of the above names (round two).** Whatever
+       else the platform can raise at the probe or the listing --
+       `ENAMETOOLONG` is what round two's adversarial test injects, since it is
+       portable and does not depend on constructing a real over-length path --
+       still refuses, but with a remedy that does not misdiagnose it as a
+       permission problem: "confirm this resolves to a readable directory,"
+       not "check read and execute permission."
 
-    All four are now raised from ``load_migrations``'s explicit ``os.stat``
+    All five are now raised from ``load_migrations``'s explicit ``os.stat``
     probe and its enumeration `try`, both keying the remedy on ``errno_value``
-    via :func:`_directory_unreadable_remedy` -- a residual, non-``ELOOP``,
-    non-permission errno (round two's adversarial test injects
-    ``ENAMETOOLONG``) still refuses, but with a remedy that does not
-    misdiagnose it as a permission problem.
+    via :func:`_directory_unreadable_remedy`.
     """
 
     def __init__(self, migrations_path: str, reason: str, errno_value: int | None = None) -> None:
@@ -299,10 +339,16 @@ class SchemaUnreadableError(TheurianError):
     ``read_text()`` that hit a permission problem on the installation, not on
     any user's project. Round two widened "touching it failed" past the read
     itself: a read that *succeeds* can still hand back a schema this build
-    cannot use -- truncated or empty JSON, non-UTF-8 bytes, or a JSON document
-    that parses but is a list rather than an object -- and those are
-    translated here too (see ``_validator``'s own docstring,
-    ``infrastructure/filesystem/migration_loader.py``, for the four shapes).
+    cannot use -- truncated or empty JSON, or non-UTF-8 bytes. Round three
+    widened it again to a read that parses cleanly but is not usable as a
+    schema: not a JSON object at all (a list, or a bare boolean -- both
+    otherwise-valid JSON, and the latter otherwise a valid top-level JSON
+    Schema too, refused anyway because it would build a validator that
+    accepts everything), or an object whose own keywords are structurally
+    malformed against the JSON Schema metaschema. All of these are translated
+    here rather than left to reach a migration author as a misattributed
+    :class:`MigrationError` (see ``_validator``'s own docstring,
+    ``infrastructure/filesystem/migration_loader.py``, for the full list).
     Not a :class:`MigrationError`: nothing about migration *content* failed,
     the installation this build ships with did.
     """

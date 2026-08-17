@@ -59,6 +59,17 @@ class YamlParser:
         except yaml.YAMLError as exc:
             msg = f"{anchor.source_uri} is not valid YAML: {exc}"
             raise ValueError(msg) from exc
+        except ValueError as exc:
+            # `load_yaml`'s own `RecursionError` -> `ValueError` translation
+            # (`security/yaml_loading.py`) has no `anchor` to name, so its
+            # message is the bare "YAML document exceeds the parser's safe
+            # nesting depth" -- re-wrapped here with `anchor.source_uri` for
+            # the identical reason the `yaml.YAMLError` clause immediately
+            # above it, and `_decode`'s `UnicodeDecodeError` clause, both
+            # already carry it: this is the only failure `load_yaml` can
+            # raise into this method that did not, until now.
+            msg = f"{anchor.source_uri}: {exc}"
+            raise ValueError(msg) from exc
 
         return _document(
             loaded, text=text, media_type=media_type, anchor=anchor, parser_id=self.parser_id
