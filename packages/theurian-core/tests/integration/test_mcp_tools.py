@@ -21,6 +21,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
+from theurian import __protocol_version__, __version__
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     ProjectPaths,
@@ -1508,18 +1509,24 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     survived the whole suite, and the first two are what Milestone 7 flips.
     That the block holds *only* those seven is the sibling test below.
 
-    One field outside the block is deliberately not pinned to a value here:
-    `schemaVersion` is asserted truthy rather than to a constant, because the
-    schema version moves on its own schedule.
+    Four fields sit outside the block. Three are now pinned to a value here
+    too: `version` and `protocolVersion` against the package's own constants,
+    and `note` to the substring that carries its one load-bearing claim
+    (ADR-0013's "no write-intent tool exists"). Before this, mutations on all
+    three -- including inverting `note`'s meaning -- survived the whole suite,
+    which is a wider gap than it looks: `version` and `protocolVersion` are
+    CP-6 compatibility-gate inputs (docs/protocol/plugin-core-compatibility.md),
+    not incidental metadata. Only `schemaVersion` stays unpinned to a value by
+    design, asserted truthy rather than to a constant, because the schema
+    version moves on its own schedule.
 
-    A `milestone` field used to sit beside it, reporting a build progress
+    A `milestone` field used to sit beside them, reporting a build progress
     integer that had drifted stale against the README since Milestone 6
     closed, with no test, schema, or doc pinning it -- a mutation to `99`
     survived the whole suite. #206 removed it rather than defining it: it was
     produced in exactly one place and consumed nowhere in this repository.
-    The `capabilities` booleans are the supported contract; the sibling test
-    below pins the response's full top-level key set, `milestone`'s absence
-    included.
+    The sibling test below pins the response's full top-level key set,
+    `milestone`'s absence included.
     """
     result = await _call(registry, "system.capabilities")
 
@@ -1559,6 +1566,28 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "relations rather than traceability edges. A client reading `true` would "
         "offer a query the server cannot serve, so flip this in the change that "
         "ships the tool, not ahead of it."
+    )
+    assert result["version"] == __version__, (
+        "identifies the build for the CP-6 compatibility gate "
+        "(docs/protocol/plugin-core-compatibility.md); a mutation that stales "
+        "this against the package's own `__version__` is exactly the drift "
+        "that gate exists to catch before a client does."
+    )
+    assert result["protocolVersion"] == __protocol_version__, (
+        "for a client that only calls MCP tools, `system.capabilities` is the "
+        "sole place this is readable -- `/health` is an HTTP route outside "
+        "the MCP tool surface, not a tool. `resolve_compatibility` "
+        "(theurian.domain.compatibility) returns a terminal `protocol-mismatch` "
+        "on exactly this value, so a mutation here is a client refusing to "
+        "run, or worse, one that should refuse and does not."
+    )
+    assert "No write-intent tool exists" in result["note"], (
+        "the response's only prose statement of ADR-0013 -- ADR-0013 is why "
+        "no MCP path reaches approved state. The note's meaning can be "
+        "inverted (`No write-intent tool exists` -> `A write-intent tool "
+        "exists`) while every other assertion here keeps passing, so this "
+        "pins the load-bearing substring rather than the sentence's exact "
+        "wording, which is free to change around it."
     )
     assert result["schemaVersion"]
 
