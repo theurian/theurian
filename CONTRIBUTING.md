@@ -10,9 +10,14 @@ know before your first pull request.
    Apache-2.0. There is no CLA — you keep your copyright, and Core cannot be
    relicensed without your agreement ([ADR-0015](docs/adr/0015-dco-over-cla.md)).
    Read the [DCO](docs/contributing/dco.md).
-2. **One topic per pull request.** Separate branches for separate concerns.
+2. **Every commit is cryptographically signed.** Separate from the sign-off
+   above: `main` requires a verified signature — GitHub's "Verified" badge —
+   which the `Signed-off-by` trailer does not provide. A one-time config makes
+   every commit sign automatically; see
+   [Signing your commits](#signing-your-commits).
+3. **One topic per pull request.** Separate branches for separate concerns.
    A refactor, a bug fix, and a feature are three pull requests.
-3. **No test in this repository calls an external API.** Every port has a
+4. **No test in this repository calls an external API.** Every port has a
    deterministic fake. A contribution that needs a paid API key to test is a
    contribution most people cannot review
    ([ADR-0009](docs/adr/0009-no-llm-vendor-lock-in.md)).
@@ -39,6 +44,43 @@ uv run pytest --cov
 
 CI runs the same commands plus packaging, security scanning, and plugin
 validation. Nothing here should surprise you on the runner.
+
+## Signing your commits
+
+`main` requires every commit to carry a verified cryptographic signature — the
+"Verified" badge on GitHub, enforced by the branch's `required_signatures` rule.
+This is a **separate** requirement from the DCO sign-off, and satisfying one does
+not satisfy the other:
+
+| Requirement | What it is | How to satisfy it |
+| :-- | :-- | :-- |
+| DCO sign-off | A `Signed-off-by:` text trailer asserting your right to submit | `git commit -s` |
+| Signed commit | A cryptographic signature GitHub verifies against a key you registered | `git commit -S`, or `commit.gpgsign true` to sign every commit |
+
+A commit needs **both**, and a missing signature is easy to miss: no CI check
+reports it, so the pull request shows every check green while staying
+unmergeable. [#197](https://github.com/theurian/theurian/pull/197), the first
+contribution from outside the team, hit exactly this — the sign-off was correct,
+the commit was unsigned, and nothing in these docs said it needed to be.
+
+The lowest-friction setup reuses an SSH key you already have:
+
+```sh
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+```
+
+Then add that **public** key to GitHub a second time, as a signing key:
+**Settings → SSH and GPG keys → New SSH key → Key type: Signing Key**. It is a
+distinct entry from any authentication key, even when it is the same key — an
+authentication key alone will not make your commits show as verified. After this,
+`git commit` signs automatically and GitHub shows "Verified".
+
+Prefer GPG? It works the same way; follow GitHub's
+[commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification)
+guide and register a GPG signing key. Either way, keep `git commit -s` for the
+sign-off — the signature does not replace it.
 
 ## Commit messages
 

@@ -7,10 +7,13 @@ able to assert on the exact JSON a caller receives.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,11 @@ pytestmark = pytest.mark.integration
 runner = CliRunner()
 
 EXIT_STATE_ERROR = 4
+
+#: A `chmod` cannot refuse root, and Windows has no POSIX mode bits at all --
+#: the same guard `test_auth_rotate.py` and `test_setup_journal.py` use before
+#: a permission-refusal test.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID = "01K1AAAREV01234567890ABCDE"
@@ -91,6 +99,137 @@ def _write_migration(root: Path, migration: str = MIGRATION, body: str = BODY) -
     (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(migration)
 
 
+# -- issue #205: a contentFile that does not resolve ------------------------
+
+UNRESOLVABLE_MIGRATION_ID = "01K1EEEEEE01234567890ABCDE"
+UNRESOLVABLE_REVISION_ID = "01K1EEEREV01234567890ABCDE"
+
+#: The natural authoring mistake the issue names: a path that would have
+#: resolved against a proposal directory, left uncorrected after the migration
+#: moved into `.theurian/migrations/`, which is where `contentFile` actually
+#: resolves from (docs/protocol/migrations.md, "Path safety").
+UNRESOLVABLE_CONTENT_FILE = "content.md"
+
+UNRESOLVABLE_CONTENT_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {UNRESOLVABLE_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {UNRESOLVABLE_REVISION_ID}
+    contentFile: {UNRESOLVABLE_CONTENT_FILE}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _write_unresolvable_content_migration(root: Path) -> None:
+    """A migration referencing a ``contentFile`` that is never written to disk.
+
+    Reproduces issue #205: `resolve_context` loads every migration under
+    `.theurian/migrations/`, including this one, so any `--json` command that
+    calls it inherits the crash unless the loader itself converts the read
+    failure into a structured error.
+    """
+    (root / f".theurian/migrations/{UNRESOLVABLE_MIGRATION_ID}-repro.yaml").write_text(
+        UNRESOLVABLE_CONTENT_MIGRATION
+    )
+
+
+def _content_unreadable_migration_path() -> str:
+    return f".theurian/migrations/{UNRESOLVABLE_MIGRATION_ID}-repro.yaml"
+
+
+def _assert_content_unreadable_payload(payload: dict[str, Any]) -> None:
+    """Full equality, not a substring: a gutted ``error``/``remedy`` must fail this.
+
+    Anchored to ``os.strerror(errno.ENOENT)`` rather than a hardcoded
+    "No such file or directory", so the assertion is portable and still pins
+    that ``exc.strerror`` reaches the message -- a mutation that dropped it
+    survived a looser ``"content.md" in payload["error"]`` check, because the
+    filename alone was still present.
+    """
+    migration_path = _content_unreadable_migration_path()
+    reason = os.strerror(errno.ENOENT)
+    assert payload["error"] == (
+        f"{migration_path!r}: contentFile {UNRESOLVABLE_CONTENT_FILE!r} could not be read: {reason}"
+    )
+    assert payload["remedy"] == (
+        f"{UNRESOLVABLE_CONTENT_FILE!r} resolves relative to the migration file "
+        f"({migration_path!r}), not to a proposal directory "
+        f"(docs/protocol/migrations.md, 'Path safety'). Fix the path, or "
+        f"restore the referenced file, then retry."
+    )
+
+
+# -- issue #205: a migration file that is unreadable -------------------------
+#
+# The sibling face: the migration YAML itself, not a `contentFile` it names.
+# The `chmod 000` measurement behind both fixes lives on
+# `MigrationFileUnreadableError`'s own docstring (`domain/errors.py`), not
+# repeated at each of these call sites.
+
+UNREADABLE_MIGRATION_ID = "01K1JJJJJJ01234567890ABCDE"
+UNREADABLE_MIGRATION_FILENAME = f"{UNREADABLE_MIGRATION_ID}-unreadable.yaml"
+
+UNREADABLE_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {UNREADABLE_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+"""
+
+
+def _write_unreadable_migration(root: Path) -> Path:
+    """A schema-valid migration file, `chmod 000`'d after being written.
+
+    Returns the path so the caller can restore its mode in a ``finally`` --
+    pytest's own ``tmp_path`` cleanup walks the tree afterward, and a mode-000
+    file left behind fails *that* instead of the calling test, which reads as
+    an unrelated, confusing failure.
+    """
+    migration = root / f".theurian/migrations/{UNREADABLE_MIGRATION_FILENAME}"
+    migration.write_text(UNREADABLE_MIGRATION)
+    migration.chmod(0o000)
+    return migration
+
+
+def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
+    """Full equality, the same anti-mutation shape as :func:`_assert_content_unreadable_payload`.
+
+    A remedy gutted to the 10-char token ``"permission"`` survived a looser
+    ``"permission" in payload["remedy"]`` check; only exact equality catches
+    that.
+    """
+    migration_path = f".theurian/migrations/{UNREADABLE_MIGRATION_FILENAME}"
+    reason = os.strerror(errno.EACCES)
+    assert payload["error"] == f"{migration_path!r} could not be read: {reason}"
+    assert payload["remedy"] == (
+        f"Confirm this user has read permission on {migration_path!r} and its "
+        f"parent directory, then retry."
+    )
+
+
 # -- init ------------------------------------------------------------------
 
 
@@ -131,6 +270,49 @@ def test_init_outside_a_git_repository_fails_clearly(
     code, payload = _invoke("init")
     assert code == 1
     assert "not inside a Git repository" in payload["error"]
+
+
+def test_init_reports_an_unresolvable_content_file_instead_of_crashing(project: Path) -> None:
+    """Issue #205: every ``--json`` command reaching ``resolve_context`` is a
+    member of this class, not only ``migrate validate``. ``init`` re-run against
+    a project whose migrations already hold one is the second measured member.
+    """
+    _invoke("init")
+    _write_unresolvable_content_migration(project)
+
+    # `catch_exceptions=False` re-raises anything Click's own `SystemExit`
+    # handling does not swallow, so a bare `FileNotFoundError` propagates out
+    # of `invoke` itself and fails this test at the call above -- which is
+    # exactly what it did before the fix. Reaching the assertions below is
+    # itself the "no traceback reached the caller" proof.
+    result = runner.invoke(app, ["init", "--json"], catch_exceptions=False)
+
+    assert result.exit_code != 0
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_content_unreadable_payload(json.loads(result.stderr))
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_init_reports_an_unreadable_migration_file_instead_of_crashing(project: Path) -> None:
+    """``init``'s counterpart to the ``migrate validate`` unreadable-file test below.
+
+    Round-one review measured the `MigrationFileUnreadableError` branch in
+    ``_context_remedy`` as never exercised by any test: every existing test
+    reached it only through `_require_project`'s own except clause (`migrate
+    validate`), never through a command that calls `resolve_context` directly.
+    `init` re-run against a project whose migrations already hold an
+    unreadable file is that missing combination.
+    """
+    _invoke("init")
+    migration = _write_unreadable_migration(project)
+    try:
+        result = runner.invoke(app, ["init", "--json"], catch_exceptions=False)
+    finally:
+        migration.chmod(0o644)
+
+    assert result.exit_code != 0
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_file_unreadable_payload(json.loads(result.stderr))
 
 
 # -- project ---------------------------------------------------------------
@@ -185,6 +367,43 @@ def test_status_outside_a_repository_reports_unregistered(
     code, status = _invoke("project", "status")
     assert code == 0, "status must report, not fail, outside a project"
     assert not status["registered"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_status_surfaces_a_remedy_for_an_unresolved_project_not_only_a_reason(
+    project: Path,
+) -> None:
+    """``_unresolved_status``'s own docstring promise, held to the unified attribute.
+
+    Round-two's refactor moved `_context_remedy` and `_require_project` to a
+    single ``if exc.remedy:`` check, replacing a type-keyed
+    ``isinstance``/``except`` enumeration -- but `_unresolved_status` (this
+    command's own exit-0 handler) was a *third*, separate caller that still
+    read ``isinstance(exc, ProjectError) and exc.remedy``, so
+    `MigrationsDirectoryUnreadableError` and its siblings reached this payload
+    with `reason` but no `remedy`, silently narrower than every other command
+    reporting the same exception. `chmod 000 .theurian` -- `is_dir()` must
+    traverse it to stat `migrations_dir` -- drives exactly that exception
+    through `resolve_context` into this handler.
+    """
+    _invoke("init")
+    theurian_dir = project / ".theurian"
+    theurian_dir.chmod(0o000)
+    try:
+        code, status = _invoke("project", "status")
+    finally:
+        theurian_dir.chmod(0o700)
+
+    assert code == 0, "status must report, not fail, on an unresolved project"
+    assert status["registered"] is False
+    assert "could not be listed" in status["reason"]
+    assert "remedy" in status, (
+        "MigrationsDirectoryUnreadableError sets .remedy; _unresolved_status must surface it"
+    )
+    assert status["remedy"] == (
+        f"Confirm this user has read and execute permission on {'.theurian/migrations'!r} "
+        f"and its parent directories, then retry."
+    )
 
 
 # -- project list, when the registry file is not what it should be ----------
@@ -588,6 +807,52 @@ operations:
     assert code == EXIT_STATE_ERROR
     assert "Revision conflict" in error["error"]
     assert "does not merge knowledge automatically" in error["remedy"]
+
+
+def test_validate_reports_an_unresolvable_content_file_instead_of_crashing(project: Path) -> None:
+    """Issue #205: the CLI's own reproduction.
+
+    Before the fix, ``read_source_file``'s documented ``FileNotFoundError``
+    escaped `resolve_context` -- called from `_require_project` -- as a bare
+    `OSError` that none of `_require_project`'s `except` clauses caught,
+    reaching Typer as a Rich traceback: exit 1, empty stdout, no `{error,
+    remedy}` payload even under `--json` (CP-2).
+    """
+    _invoke("init")
+    _write_unresolvable_content_migration(project)
+
+    # `catch_exceptions=False` re-raises anything Click's own `SystemExit`
+    # handling does not swallow, so a bare `FileNotFoundError` propagates out
+    # of `invoke` itself and fails this test at the call above -- which is
+    # exactly what it did before the fix. Reaching the assertions below is
+    # itself the "no traceback reached the caller" proof.
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_content_unreadable_payload(json.loads(result.stderr))
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_validate_reports_an_unreadable_migration_file_instead_of_crashing(project: Path) -> None:
+    """Issue #205's second face: the migration *file* itself, not a `contentFile`
+    it names.
+
+    `read_source_file`'s raw `PermissionError` used to escape from
+    `_load_one`'s own read (`migration_loader.py`), the sibling of the
+    `contentFile` escape closed above -- same seam, same root cause, one call
+    site over.
+    """
+    _invoke("init")
+    migration = _write_unreadable_migration(project)
+    try:
+        result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+    finally:
+        migration.chmod(0o644)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_file_unreadable_payload(json.loads(result.stderr))
 
 
 def test_a_malformed_migration_names_the_offending_field(project: Path) -> None:

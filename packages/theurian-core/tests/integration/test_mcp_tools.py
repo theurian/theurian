@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator, Sequence
@@ -21,6 +22,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from typer.testing import CliRunner
 
+from theurian import __protocol_version__, __version__
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     ProjectPaths,
@@ -42,12 +44,71 @@ from theurian.infrastructure.sqlite.connection import (
     open_read_connection,
     write_transaction,
 )
+from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
+
+#: tests/integration/test_mcp_tools.py -> integration -> tests -> theurian-core
+#: -> packages -> repo root, matching test_wire_contract.py's own computation.
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+#: HTML-comment sentinels bounding the `system.capabilities` field-role
+#: paragraph in mcp-tools.md, read by
+#: `test_the_system_capabilities_response_holds_exactly_the_keys_that_are_pinned`.
+#: A sentinel line, not a marker *sentence* matched by `.index()`: a sentence
+#: duplicated earlier in the document still `.index()`es successfully at its
+#: first occurrence, silently widening the slice to everything in between
+#: (measured: duplicating the old start sentence widened the slice from ~830
+#: to ~20,082 chars, pulling in `knowledge.status`'s own `protocolVersion`
+#: and `schemaVersion` mentions and making the doc-tie a no-op -- #206 round
+#: two). An HTML comment is not prose a heading rename or an added example
+#: reproduces by accident.
+CAPABILITIES_FIELDS_BEGIN = "<!-- capabilities-fields:begin -->"
+CAPABILITIES_FIELDS_END = "<!-- capabilities-fields:end -->"
+
+
+def _capabilities_field_role_paragraph(doc_text: str) -> str:
+    """The sentinel-bounded slice of mcp-tools.md naming each field's role.
+
+    Guards the two failure modes a bare `.index()` pair does not: a missing
+    marker raises `ValueError: substring not found` with no remedy, and a
+    marker present more than once resolves to whichever occurrence
+    `.index()` finds first, silently. Both are caught here with a remedy
+    naming the file and that the range is machine-read, before either
+    `.index()` call runs.
+    """
+    begin_count = doc_text.count(CAPABILITIES_FIELDS_BEGIN)
+    assert begin_count == 1, (
+        f"docs/protocol/mcp-tools.md must carry exactly one "
+        f"`{CAPABILITIES_FIELDS_BEGIN}` sentinel -- found {begin_count}. It "
+        f"marks the start of the `system.capabilities` field-role paragraph "
+        f"this test reads to tie the doc to the response's pinned key set; "
+        f"restore exactly one, immediately before that paragraph."
+    )
+    end_count = doc_text.count(CAPABILITIES_FIELDS_END)
+    assert end_count == 1, (
+        f"docs/protocol/mcp-tools.md must carry exactly one "
+        f"`{CAPABILITIES_FIELDS_END}` sentinel, paired with "
+        f"`{CAPABILITIES_FIELDS_BEGIN}` -- found {end_count}. Same reason as "
+        f"above; restore exactly one, immediately after that paragraph."
+    )
+    start = doc_text.index(CAPABILITIES_FIELDS_BEGIN) + len(CAPABILITIES_FIELDS_BEGIN)
+    end = doc_text.index(CAPABILITIES_FIELDS_END)
+    paragraph = doc_text[start:end]
+    assert 50 < len(paragraph) < 3000, (
+        f"the sentinel-bounded slice is {len(paragraph)} chars, outside the "
+        f"50-3000 sane range for this one paragraph -- the markers either "
+        f"collapsed onto each other (empty/near-empty) or one of them "
+        f"drifted next to an unrelated section (over-wide), and either way "
+        f"the doc-tie this bounds is not comparing what it claims to. Fix "
+        f"the sentinel placement in docs/protocol/mcp-tools.md rather than "
+        f"this bound."
+    )
+    return paragraph
 
 
 class _NothingWithheld:
@@ -1504,12 +1565,32 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     survived the whole suite, and the first two are what Milestone 7 flips.
     That the block holds *only* those seven is the sibling test below.
 
-    Two fields outside the block are deliberately not pinned here.
-    `schemaVersion` is asserted truthy rather than to a value, because the schema
-    version moves on its own schedule. `milestone` is not asserted at all: it
-    reads 5 in a build past Milestone 5, so pinning it now would freeze a value
-    already known to be wrong -- #206 owns deciding what that field should say
-    and pins it in the change that decides.
+    Four fields sit outside the block, and all four are now pinned to a
+    value here. `version` and `protocolVersion` are pinned against the
+    package's own constants; `schemaVersion` against `SCHEMA_VERSION`, the
+    same precedent `test_wire_contract.py` already set for
+    `knowledge.status`; and `note` to the substring that carries its one
+    load-bearing claim (ADR-0013's "no write-intent tool exists"), plus a
+    second assertion ruling out the note also asserting the opposite while
+    that substring stays intact. Before this, mutations on all four --
+    including inverting `note`'s meaning -- survived the whole suite.
+    `version` and `protocolVersion` are not incidental metadata either --
+    they re-publish the same two process constants `theurian compat check`
+    reads directly for CP-6 (docs/architecture/requirements-analysis.md), so
+    a divergence here is invisible to that gate and visible only through
+    this response. `schemaVersion` moving on its own schedule, unlike
+    `version`, was the reasoning this docstring used to give for leaving it
+    unpinned -- `version` moves on its own schedule too, and was pinned with
+    a constant comparison regardless, so that was never a real distinction
+    and this closes it rather than repeating it.
+
+    A `milestone` field used to sit beside them, reporting a build progress
+    integer that had drifted stale against the README since Milestone 6
+    closed, with no test, schema, or doc pinning it -- a mutation to `99`
+    survived the whole suite. #206 removed it rather than defining it: it was
+    produced in exactly one place and consumed nowhere in this repository.
+    The sibling test below pins the response's full top-level key set,
+    `milestone`'s absence included.
     """
     result = await _call(registry, "system.capabilities")
 
@@ -1550,7 +1631,53 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "offer a query the server cannot serve, so flip this in the change that "
         "ships the tool, not ahead of it."
     )
-    assert result["schemaVersion"]
+    assert result["version"] == __version__, (
+        "re-publishes the same `__version__` process constant `theurian "
+        "compat check` reads directly for CP-6 "
+        "(docs/architecture/requirements-analysis.md) -- that gate never "
+        "reads this response, so a mutation here would not make `compat "
+        "check` refuse anything. It would only let a client that already "
+        "passed the gate see a stale build reported on the MCP face, which "
+        "is the drift this pin catches instead."
+    )
+    assert result["protocolVersion"] == __protocol_version__, (
+        "for a client that only calls MCP tools, `system.capabilities` is "
+        "the sole place this is readable at all -- `/health` is an HTTP "
+        "route outside the MCP tool surface, not a tool in this build. It "
+        "re-publishes the same `__protocol_version__` constant "
+        "`resolve_compatibility` (theurian.domain.compatibility) reads "
+        "directly through `cli/main.py`'s `compat_check`, never through "
+        "this response, so a mutation here would not move that gate's "
+        "outcome -- it would only make a client that already passed the "
+        "gate see a different protocol reported here than the one it was "
+        "actually checked against."
+    )
+    assert "No write-intent tool exists" in result["note"], (
+        "the response's only prose statement of ADR-0013 -- ADR-0013 is why "
+        "no MCP path reaches approved state. The note's meaning can be "
+        "inverted (`No write-intent tool exists` -> `A write-intent tool "
+        "exists`) while every other assertion here keeps passing, so this "
+        "pins the load-bearing substring rather than the sentence's exact "
+        "wording, which is free to change around it."
+    )
+    assert "A write-intent tool" not in result["note"], (
+        "closes the gap the substring pin above leaves open on its own: a "
+        "mutation that appends a contradicting clause -- 'No write-intent "
+        "tool exists, except a write-intent tool exists for admins' -- keeps "
+        "the first substring intact and would otherwise survive. The pair "
+        "still permits wording that neither negates the first substring nor "
+        "introduces this one, so this is a substring pin against the two "
+        "meanings that matter, not a pin on the sentence's exact wording."
+    )
+    assert result["schemaVersion"] == SCHEMA_VERSION, (
+        "`schemaVersion` moves on its own schedule too, the same reasoning "
+        "this test used to leave it unpinned -- but `version` moves on its "
+        "own schedule and is pinned above with a constant comparison "
+        "regardless, so schedule was never a reason to leave a field "
+        "unpinned, only a reason to pin it against the right constant. "
+        "`test_wire_contract.py` already sets this precedent for "
+        "`knowledge.status` (`== SCHEMA_VERSION`, not merely truthy)."
+    )
 
 
 @pytest.mark.asyncio
@@ -1587,6 +1714,84 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         f"promise no test holds the server to: add the new flag to "
         f"`test_capabilities_report_what_is_and_is_not_built` with the value it "
         f"actually holds and the reason it holds it, then add it here."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_system_capabilities_response_holds_exactly_the_keys_that_are_pinned(
+    registry: ProjectRegistry,
+) -> None:
+    """The population one level above the block, which is where `milestone` sat.
+
+    The sibling test above pins the population of the `capabilities` block, but
+    `milestone` lived beside it -- a top-level sibling of `version` and
+    `schemaVersion`, not an entry inside the block -- so that test could never
+    see it. Nothing enumerated the response's own top-level keys, and a
+    mutation setting `milestone` to `99` survived the whole suite (#206). This
+    is that enumeration, one layer up: it fails when a top-level field is
+    added or removed, exactly as the block's own population test does for the
+    block.
+
+    `milestone` does not appear here. #206 removed it rather than defining it:
+    it was produced in exactly one place and consumed nowhere in this
+    repository, `docs/protocol/mcp-tools.md` never defined what it meant, and
+    it had drifted stale against the README's own milestone claim since
+    Milestone 6 closed. The response's other fields keep their own roles
+    instead of filling that gap: `capabilities` (with `knowledgeSearch`) is
+    the supported, tested contract a client degrades against; `version` and
+    `protocolVersion` re-publish the same two constants `theurian compat
+    check` reads directly for CP-6 (docs/architecture/requirements-analysis.md)
+    rather than reporting progress -- a milestone number, if a client wants
+    one, lives in the README roadmap, not in any wire field.
+
+    This also ties the doc to the pin, now genuinely in both directions.
+    `_capabilities_field_role_paragraph` extracts the sentinel-bounded
+    paragraph in `docs/protocol/mcp-tools.md` naming each field's role, and
+    every backtick-quoted single word in it is compared, as a set, against
+    this response's own key set below: a name in the paragraph that matches
+    no real field, or a real field the paragraph stops naming, both fail.
+
+    The response-side half of that -- a key added to the wire without a
+    matching mention in the paragraph -- is already caught by the
+    exact-key-set assertion above. What the set comparison below adds is
+    the paragraph drifting on its own: the prior version of this check only
+    walked `result`'s keys and asserted each was named in the paragraph, so
+    it could never fail on a name the paragraph added that matches no real
+    field -- a bogus name added there survived the whole suite (#206 round
+    two, m13). The paragraph's own slice was unguarded too: a marker
+    *sentence* resolved by `.index()` silently widens under duplication,
+    which is why the extraction is sentinel-bounded instead (m14, killed by
+    `_capabilities_field_role_paragraph`'s length guard).
+    """
+    result = await _call(registry, "system.capabilities")
+
+    assert set(result) == {
+        "version",
+        "protocolVersion",
+        "schemaVersion",
+        "capabilities",
+        "note",
+    }, (
+        f"system.capabilities returned top-level keys {sorted(result)}. A "
+        f"field a client can see is part of the wire contract, so an "
+        f"unenumerated one is a promise nothing holds the server to: decide "
+        f"what it means, document its role in the `system.capabilities` "
+        f'paragraph under "Project and system" in '
+        f"docs/protocol/mcp-tools.md, then add it here."
+    )
+
+    doc_text = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
+    field_role_paragraph = _capabilities_field_role_paragraph(doc_text)
+    documented_fields = set(re.findall(r"`(\w+)`", field_role_paragraph))
+
+    assert documented_fields == set(result), (
+        f"docs/protocol/mcp-tools.md's sentinel-bounded `system.capabilities` "
+        f"paragraph names {sorted(documented_fields)} (backtick-quoted, "
+        f"single word) but the response's own top-level keys are "
+        f"{sorted(result)}. The two must match exactly, in both directions: "
+        f"a name in the paragraph that is not a real field, and a real "
+        f"field the paragraph stops naming, are both this drift -- update "
+        f"whichever side is behind."
     )
 
 

@@ -741,17 +741,31 @@ class ProjectRegistry:
         handler entirely and surfaced as a traceback. Same file, same corruption,
         same remedy; only the first byte differed.
 
-        ``OSError`` is the third, and it was the last one left: a registry at
-        mode ``000``, or a directory sitting where the file should be, escaped
-        every reader here. Because *every* reader reaches this method it escaped
-        all of them at once -- ``project.list`` and every project-scoped MCP tool
+        ``OSError`` is the third, from the read below -- and, one level up,
+        from the ``.exists()`` probe that used to sit ahead of the ``try``
+        entirely. That docstring claim was false: ``.exists()`` swallows
+        ``ENOENT`` but re-raises ``EACCES`` the same way ``Path.is_dir()``
+        does, so a *registry file* at mode ``000`` was already covered by the
+        read below raising on it, while a *data directory* at mode ``000`` --
+        `.exists()` must traverse it to stat the file inside -- escaped
+        every reader here, one directory level up from where this docstring
+        said the gap was closed (issue #205's Class 1c, measured against the
+        real CLI). Because *every* reader reaches this method both escaped all
+        of them at once -- ``project.list`` and every project-scoped MCP tool
         as ``[Errno 13] Permission denied``, ``theurian project list`` and
-        ``project status`` as a traceback with an empty stdout. It is separated
-        from the parse failures only so the message can say which happened; the
-        cure is the same, because a file this process cannot open is a file whose
-        ids it cannot know.
+        ``project status`` as a traceback with an empty stdout. Both are
+        separated from the parse failures only so the message can say which
+        happened; the cure is the same, because a file this process cannot
+        open is a file whose ids it cannot know.
         """
-        if not self.path.exists():
+        try:
+            exists = self.path.exists()
+        except OSError as exc:
+            raise ProjectError(
+                f"{self.path} cannot be opened: {exc}",
+                remedy=_registry_reset_remedy(self.path),
+            ) from exc
+        if not exists:
             return {}
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
