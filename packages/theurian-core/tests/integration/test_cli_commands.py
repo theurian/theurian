@@ -230,7 +230,7 @@ def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
     )
 
 
-# -- issue #217: a YAML syntax error propagates uncaught --------------------
+# -- issue #217: a YAML syntax error used to propagate uncaught -------------
 
 MALFORMED_YAML_MIGRATION_FILENAME = "01K1GGGGGG01234567890ABCDE-malformed.yaml"
 _MALFORMED_YAML = "id: [unclosed\n  bad: {{{\n"
@@ -242,17 +242,36 @@ def _write_malformed_yaml_migration(root: Path) -> Path:
     return migration
 
 
-# -- issue #214: an unreadable migrations directory is silently empty -------
+# -- round two: a document nested past the parser's recursion limit ---------
+
+DEEPLY_NESTED_MIGRATION_FILENAME = "01K1RRRRRR01234567890ABCDE-nested.yaml"
+#: 1023 bytes -- the orchestrator's own reproduction, well past the measured
+#: 495-bracket-pair leak threshold, so this stays red even if PyYAML's own
+#: recursion cost per nesting level shifts.
+_DEEPLY_NESTED_YAML = "apiVersion: theurian.dev/v1\nid: " + "[" * 1000 + "]" * 1000 + "\n"
+
+
+def _write_deeply_nested_migration(root: Path) -> Path:
+    migration = root / f".theurian/migrations/{DEEPLY_NESTED_MIGRATION_FILENAME}"
+    migration.write_text(_DEEPLY_NESTED_YAML)
+    return migration
+
+
+# -- issue #214: an unreadable migrations directory used to look silently empty --
 
 
 def _assert_directory_unreadable_payload(payload: dict[str, Any], migrations_path: str) -> None:
-    """`MigrationsDirectoryUnreadableError`'s remedy (`domain/errors.py`) is a
-    fixed template, unlike `MigrationContentUnreadableError`'s errno-keyed one
-    -- it does not vary with *why* the read failed -- so it is safe to pin in
-    full here regardless of which OS call the #214 fix uses to detect the
-    refusal.
+    """Every call site in this file drives this through `chmod 0o000` on
+    `migrations_dir` itself -- an `EACCES` raised while *enumerating* the
+    directory, not while probing it -- so `os.strerror(errno.EACCES)` is safe
+    to pin in full here, the same reasoning `_assert_file_unreadable_payload`
+    above already gives for the sibling `MigrationFileUnreadableError` case.
+    Exact equality, not `.startswith`: a mutation collapsing
+    `exc.strerror or str(exc)` to a constant survived a looser check because
+    the fixed prefix alone was still present.
     """
-    assert payload["error"].startswith(f"{migrations_path!r} could not be listed:")
+    reason = os.strerror(errno.EACCES)
+    assert payload["error"] == f"{migrations_path!r} could not be listed: {reason}"
     assert payload["remedy"] == (
         f"Confirm this user has read and execute permission on {migrations_path!r} "
         f"and its parent directories, then retry."
@@ -885,16 +904,17 @@ def test_validate_reports_an_unreadable_migration_file_instead_of_crashing(proje
 
 
 def test_validate_reports_a_malformed_migration_yaml_instead_of_crashing(project: Path) -> None:
-    """Issue #217: `yaml.YAMLError` is neither `UnicodeDecodeError` nor
-    `ValueError` -- the two types `_load_one`'s `except` clause around
-    `load_yaml_mapping` catches (`migration_loader.py`) -- so it propagates
-    uncaught through `resolve_context`. Measured against the real CLI with
-    `id: [unclosed\\n  bad: {{{`: exit 1, empty stdout, a raw Rich traceback on
-    stderr instead of the CP-2 `{error, remedy}` payload every sibling
-    malformed-migration case in this file already gets (see
-    `test_a_malformed_migration_names_the_offending_field` and its neighbours
-    below, all of which already report a structured refusal for a document
-    that parses but is invalid).
+    """Before issue #217's fix, `yaml.YAMLError` was neither
+    `UnicodeDecodeError` nor `ValueError` -- the two types `_load_one`'s
+    `except` clause around `load_yaml_mapping` caught at the time
+    (`migration_loader.py`; it now catches three, `yaml.YAMLError` added
+    alongside them) -- so it propagated uncaught through `resolve_context`.
+    Measured against the real CLI with `id: [unclosed\\n  bad: {{{`: exit 1,
+    empty stdout, a raw Rich traceback on stderr instead of the CP-2 `{error,
+    remedy}` payload every sibling malformed-migration case in this file
+    already got (see `test_a_malformed_migration_names_the_offending_field`
+    and its neighbours below, all of which already report a structured
+    refusal for a document that parses but is invalid).
     """
     _invoke("init")
     migration = _write_malformed_yaml_migration(project)
@@ -902,7 +922,42 @@ def test_validate_reports_a_malformed_migration_yaml_instead_of_crashing(project
     # `catch_exceptions=False`: see the identical comment on
     # `test_validate_reports_an_unresolvable_content_file_instead_of_crashing`
     # above. A `yaml.YAMLError` escaping `runner.invoke` itself is exactly
-    # what happens before the #217 fix.
+    # what happened before the #217 fix.
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    assert migration.name in payload["error"]
+    # Exact pin, not merely truthy: a bare `MigrationError` (no `.remedy` of
+    # its own) falls back to `_require_project`'s own `except MigrationError`
+    # clause default (`cli/commands.py`), and a gutted remedy string still
+    # reads as truthy.
+    assert payload["remedy"] == "Fix the migration file, then retry."
+
+
+def test_validate_reports_a_deeply_nested_migration_instead_of_a_raw_traceback(
+    project: Path,
+) -> None:
+    """Adversarial HIGH (round two, orchestrator-reproduced): a migration
+    nested past PyYAML's own recursion limit makes `load_yaml_mapping` raise
+    `RecursionError` -- a `BaseException` subclass reached through none of
+    `_load_one`'s three `except` clauses (`migration_loader.py`) -- so it
+    sailed past every one of them and reached `resolve_context` as a raw
+    traceback under `--json`, exactly the escape #217 closed for a YAML
+    syntax error one exception type over. Reproduced directly against this
+    CLI: `runner.invoke(..., catch_exceptions=False)` itself raised
+    `RecursionError` before this fix, the identical failure mode
+    `test_validate_reports_a_malformed_migration_yaml_instead_of_crashing`
+    above documents for `yaml.YAMLError`.
+    """
+    _invoke("init")
+    migration = _write_deeply_nested_migration(project)
+
+    # `catch_exceptions=False`: see the identical comment on
+    # `test_validate_reports_an_unresolvable_content_file_instead_of_crashing`
+    # above. A `RecursionError` escaping `runner.invoke` itself is exactly
+    # what happens before this fix.
     result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
 
     assert result.exit_code == EXIT_STATE_ERROR
@@ -916,14 +971,14 @@ def test_validate_reports_a_malformed_migration_yaml_instead_of_crashing(project
 def test_validate_refuses_an_unreadable_migrations_directory_instead_of_reporting_it_empty(
     project: Path,
 ) -> None:
-    """Issue #214: `pathlib.Path.glob` swallows the `PermissionError` a
-    `chmod 000`'d `migrations_dir` raises internally in its own `scandir` and
-    yields nothing, so `load_migrations` returns an *empty* set. Measured
-    against the real CLI: `migrate validate --json` then reports `valid:
-    true` with `migrationCount: 0` for a project whose migrations were never
-    read at all -- a silent false positive, and the more dangerous of this
-    class's two faces, because nothing about the exit code or the payload
-    shape says anything went wrong.
+    """Before issue #214's fix: `pathlib.Path.glob` swallowed the
+    `PermissionError` a `chmod 000`'d `migrations_dir` raised internally in
+    its own `scandir` and yielded nothing, so `load_migrations` returned an
+    *empty* set. Measured against the real CLI at the time: `migrate validate
+    --json` reported `valid: true` with `migrationCount: 0` for a project
+    whose migrations were never read at all -- a silent false positive, and
+    the more dangerous of this class's two faces, because nothing about the
+    exit code or the payload shape said anything went wrong.
     """
     _invoke("init")
     _write_migration(project)
@@ -945,14 +1000,14 @@ def test_validate_refuses_an_unreadable_migrations_directory_instead_of_reportin
 def test_apply_refuses_an_unreadable_migrations_directory_without_seeding_a_state_database(
     project: Path,
 ) -> None:
-    """Issue #214's worse face: `migrate apply --json` does not merely
-    misreport an unreadable migrations directory as empty, it *acts* on that
-    misreading. Measured against the real CLI: it creates a state database for
-    the empty set it wrongly believes is the whole story (`databaseCreated:
-    true`, `changed: false`), instead of refusing before any state is ever
-    touched -- the same "a refusal costs nothing" contract
-    `test_a_refused_apply_leaves_no_database_file` below already pins for
-    issue #63's own refusal, reused here for this one.
+    """Issue #214's worse face: before the fix, `migrate apply --json` did not
+    merely misreport an unreadable migrations directory as empty, it *acted*
+    on that misreading. Measured against the real CLI at the time: it created
+    a state database for the empty set it wrongly believed was the whole
+    story (`databaseCreated: true`, `changed: false`), instead of refusing
+    before any state was ever touched -- the same "a refusal costs nothing"
+    contract `test_a_refused_apply_leaves_no_database_file` below already
+    pins for issue #63's own refusal, reused here for this one.
     """
     _invoke("init")
     _write_migration(project)
@@ -968,7 +1023,55 @@ def test_apply_refuses_an_unreadable_migrations_directory_without_seeding_a_stat
     _assert_directory_unreadable_payload(
         json.loads(result.stderr), str(migrations_dir.relative_to(project))
     )
-    assert list((project / ".theurian/state").glob("*.sqlite")) == []
+    # Not only "no `*.sqlite`": measured pre-fix, both `active.json`
+    # (`.theurian/state/active.json`, `application/project_service.py`) and
+    # the sqlite database were created, so a check scoped to the database
+    # alone would have missed half of what a refused apply must not seed.
+    state_dir = project / ".theurian" / "state"
+    assert not state_dir.exists() or not any(state_dir.iterdir())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_apply_refuses_a_symlink_loop_migrations_directory_without_seeding_a_state_database(
+    project: Path,
+) -> None:
+    """Adversarial HIGH (round two, orchestrator-measured): the CLI-level
+    face of the symlink-loop pin at
+    `tests/unit/test_migration_loader_errors.py::test_load_migrations_raises_migrations_directory_unreadable_error_for_a_symlink_loop`.
+    A symlink chain longer than `SYMLOOP_MAX` at `.theurian/migrations` makes
+    `Path.is_dir()` swallow `ELOOP` and return `False` -- the same
+    convenience it already extends to `ENOENT`/`ENOTDIR` -- so a directory
+    that is actually a loop, not one that never existed, used to hit the same
+    `LoadedMigrations.empty()` branch a genuinely absent directory does.
+    Before this fix, measured against the real CLI: `migrate apply --json`
+    seeded a state database for the empty set it wrongly believed was the
+    whole story, the identical worse face
+    `test_apply_refuses_an_unreadable_migrations_directory_without_seeding_a_state_database`
+    above pins for a permission refusal.
+    """
+    _invoke("init")
+    _write_migration(project)
+    migrations_dir = project / ".theurian" / "migrations"
+    theurian_dir = project / ".theurian"
+    shutil.rmtree(migrations_dir)
+    links = [theurian_dir / f"loop-{i}" for i in range(40)]
+    migrations_dir.symlink_to(links[0])
+    for index in range(len(links) - 1):
+        links[index].symlink_to(links[index + 1])
+    links[-1].symlink_to(links[0])
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    relative = str(migrations_dir.relative_to(project))
+    assert payload["error"] == f"{relative!r} could not be listed: {os.strerror(errno.ELOOP)}"
+    assert payload["remedy"] == (
+        f"{relative!r} is a loop of symbolic links. Point it at a real directory, then retry."
+    )
+    state_dir = project / ".theurian" / "state"
+    assert not state_dir.exists() or not any(state_dir.iterdir())
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
@@ -978,9 +1081,10 @@ def test_status_refuses_an_unreadable_migrations_directory_instead_of_reporting_
     """One representative for `migrate status --json`: all three `migrate`
     subcommands share the identical `_require_project` call site
     (`cli/commands.py`), so this is the third and last member of that shared
-    class, not a fourth independent bug. Measured against the real CLI:
-    `total: 0`, `stateBuilt: false`, exit 0 -- the same silent misreading
-    `migrate validate` and `migrate apply` both give above.
+    class, not a fourth independent bug. Before issue #214's fix, measured
+    against the real CLI: `total: 0`, `stateBuilt: false`, exit 0 -- the same
+    silent misreading `migrate validate` and `migrate apply` both used to give
+    above.
     """
     _invoke("init")
     _write_migration(project)

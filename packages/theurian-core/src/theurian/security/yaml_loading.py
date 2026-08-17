@@ -83,12 +83,21 @@ def load_yaml(text: str, *, max_bytes: int = MAX_YAML_BYTES) -> Any:
     Raises:
         InputTooLargeError: If the document exceeds ``max_bytes``.
         yaml.YAMLError: If the document is malformed.
+        ValueError: If the document nests past the parser's recursion depth --
+            translated from a ``RecursionError``, which is a ``BaseException``
+            subclass and would otherwise pass uncaught through every consumer
+            here, all of which already catch ``ValueError`` (adversarial round
+            two: ``"["*495 + "]"*495``, 1,023 bytes, is already enough).
     """
     size = len(text.encode("utf-8"))
     if size > max_bytes:
         raise InputTooLargeError("YAML document size", max_bytes, size)
 
-    return yaml.load(text, Loader=_StrictLoader)  # noqa: S506 -- _StrictLoader is SafeLoader-derived
+    try:
+        return yaml.load(text, Loader=_StrictLoader)  # noqa: S506 -- _StrictLoader is SafeLoader-derived
+    except RecursionError as exc:
+        msg = "YAML document exceeds the parser's safe nesting depth"
+        raise ValueError(msg) from exc
 
 
 def load_yaml_mapping(text: str, *, max_bytes: int = MAX_YAML_BYTES) -> dict[str, Any]:
@@ -97,6 +106,13 @@ def load_yaml_mapping(text: str, *, max_bytes: int = MAX_YAML_BYTES) -> dict[str
     Migrations and configuration files are always mappings. A document that
     parses to a list or a scalar is malformed, and saying so here produces a
     better error than a ``KeyError`` three layers up.
+
+    Raises:
+        InputTooLargeError: If the document exceeds ``max_bytes``.
+        yaml.YAMLError: If the document is malformed.
+        ValueError: If the document root is not a mapping, or the document
+            nests past the parser's safe recursion depth (see :func:`load_yaml`,
+            which this delegates to).
     """
     loaded = load_yaml(text, max_bytes=max_bytes)
     if not isinstance(loaded, dict):

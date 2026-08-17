@@ -207,11 +207,37 @@ class MigrationFileUnreadableError(MigrationError):
         super().__init__(f"{migration_path!r} could not be read: {reason}")
 
 
+def _directory_unreadable_remedy(directory: str, errno_value: int | None) -> str:
+    """The cure selected by *why* ``.theurian/migrations/`` could not be
+    probed or listed, the same errno-keyed shape :func:`_read_failure_remedy`
+    already gives the per-file siblings above.
+
+    ``ELOOP`` gets its own remedy (round two): a `chmod` fixes a permission
+    problem but does nothing about a symlink chain, so folding it into the
+    ``EACCES``/``EPERM`` branch would send a reader to check a permission bit
+    that was never wrong. The residual branch -- neither a known permission
+    errno nor a loop -- covers whatever else the platform can raise at this
+    probe (round two's adversarial test injects ``ENAMETOOLONG``); it names
+    no specific cause, because there is no single one to name, only "this is
+    not a readable directory."
+    """
+    if errno_value == _errno.ELOOP:
+        return (
+            f"{directory!r} is a loop of symbolic links. Point it at a real directory, then retry."
+        )
+    if errno_value in (_errno.EACCES, _errno.EPERM):
+        return (
+            f"Confirm this user has read and execute permission on "
+            f"{directory!r} and its parent directories, then retry."
+        )
+    return f"Confirm {directory!r} resolves to a readable directory, then retry."
+
+
 class MigrationsDirectoryUnreadableError(MigrationError):
     """``.theurian/migrations/`` itself could not be probed or listed (issues
-    #205 and #214).
+    #205, #214, and round two's symlink-loop and residual-errno faces).
 
-    Three raw-IO shapes converge on this one class:
+    Four raw-IO shapes converge on this one class:
 
     1. **A parent denies traversal (#205).** ``pathlib.Path.is_dir()`` in this
        interpreter swallows ``ENOENT``/``ENOTDIR``/``ELOOP`` -- the well-formed
@@ -224,7 +250,7 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        `chmod 000 .theurian` (also `chmod 400`, missing only the execute bit)
        crashed all of them with a raw `PermissionError` Rich traceback.
     2. **The directory itself denies listing (#214).** `chmod 000`/`0o111` on
-       `migrations_dir` itself -- not its parent -- leaves `is_dir()`
+       `migrations_dir` itself -- not its parent -- leaves the directory probe
        succeeding, since stat needs no permission on the target, only its
        ancestors. `pathlib.Path.glob("*.yaml")`'s own `scandir` used to catch
        the resulting `PermissionError` internally and yield nothing, so
@@ -237,17 +263,24 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        traversable, so stat-ing each entry to filter to regular files raises
        `PermissionError` too, and unlike case 2 that one was never caught: it
        escaped as a raw Rich traceback.
+    4. **The directory itself is a symlink loop (round two).** A chain longer
+       than the platform's loop limit at `migrations_dir` made the previous
+       `is_dir()`-based probe swallow `ELOOP` the same way it already swallows
+       `ENOENT`/`ENOTDIR`, misreporting a loop as "does not exist" -- an empty
+       migration set, and `migrate apply --json` seeding a state database for
+       it, rather than the refusal every other member of this class gets.
 
-    All three are now raised from one enumeration site in `load_migrations`,
-    wrapping both the directory open and the per-entry stat in a single `try`.
+    All four are now raised from ``load_migrations``'s explicit ``os.stat``
+    probe and its enumeration `try`, both keying the remedy on ``errno_value``
+    via :func:`_directory_unreadable_remedy` -- a residual, non-``ELOOP``,
+    non-permission errno (round two's adversarial test injects
+    ``ENAMETOOLONG``) still refuses, but with a remedy that does not
+    misdiagnose it as a permission problem.
     """
 
-    def __init__(self, migrations_path: str, reason: str) -> None:
+    def __init__(self, migrations_path: str, reason: str, errno_value: int | None = None) -> None:
         self.migrations_path = migrations_path
-        self.remedy = (
-            f"Confirm this user has read and execute permission on "
-            f"{migrations_path!r} and its parent directories, then retry."
-        )
+        self.remedy = _directory_unreadable_remedy(migrations_path, errno_value)
         super().__init__(f"{migrations_path!r} could not be listed: {reason}")
 
 
@@ -264,8 +297,14 @@ class SchemaUnreadableError(TheurianError):
     what stays importable from every layer regardless. This is "a candidate
     was found, but touching it failed" -- an ``.exists()`` probe or a
     ``read_text()`` that hit a permission problem on the installation, not on
-    any user's project. Not a :class:`MigrationError`: nothing about
-    migration *content* failed, the installation this build ships with did.
+    any user's project. Round two widened "touching it failed" past the read
+    itself: a read that *succeeds* can still hand back a schema this build
+    cannot use -- truncated or empty JSON, non-UTF-8 bytes, or a JSON document
+    that parses but is a list rather than an object -- and those are
+    translated here too (see ``_validator``'s own docstring,
+    ``infrastructure/filesystem/migration_loader.py``, for the four shapes).
+    Not a :class:`MigrationError`: nothing about migration *content* failed,
+    the installation this build ships with did.
     """
 
     def __init__(self, schema_path: str, reason: str) -> None:

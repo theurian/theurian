@@ -7,7 +7,9 @@ check that keeps that safe lives here.
 
 from __future__ import annotations
 
+import errno
 import json
+import stat
 from collections.abc import Mapping
 from datetime import datetime
 from functools import lru_cache
@@ -62,9 +64,14 @@ from theurian.domain.values import ContentHash, MediaType
 from theurian.security.paths import read_source_file, resolve_within_root
 from theurian.security.yaml_loading import load_yaml_mapping
 
-#: Ceiling on migration files per project. Not a design limit -- it is a guard
-#: against a pathological or generated directory turning a status check into a
-#: multi-minute filesystem walk.
+#: Ceiling on migration files *loaded* per project. Not a design limit -- it
+#: bounds how many `Migration` objects a single load can produce, not the
+#: directory walk that finds them: the check below runs *after* enumeration
+#: -- the `iterdir()`/per-entry `is_file()` loop below, measurably costlier
+#: than the `glob("*.yaml")` it replaced (see that loop's own comment for why
+#: `glob` is not used here) -- has already completed. A pathological or
+#: generated directory still pays for the full walk before this refuses to
+#: load what it found; it does not bound the walk's own cost.
 MAX_MIGRATIONS: Final = 10_000
 
 _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
@@ -78,22 +85,40 @@ def _validator(schema_root: Path) -> Draft202012Validator:
     project -- `schema_root()` (`cli/context.py`) already raises
     `ProjectError` when neither candidate location exists at all, checked with
     `.exists()` before either is returned here. What that leaves is "a
-    location was found, but reading it failed": a permission problem on
-    site-packages, or a symlink loop. Originally left as a bare `OSError` on
-    the reasoning that install-integrity is not user-project state -- true,
-    but beside the CP-2 point: an unguarded read still crashes every `--json`
-    command that reaches `resolve_context` (issue #205's Class 1), so it is
-    translated here too, to `SchemaUnreadableError` rather than a
-    `MigrationError`, keeping that distinction in the *type* instead of in
-    whether the failure is caught at all.
+    location was found, but touching it failed", and that covers two
+    different kinds of failure, both translated here to `SchemaUnreadableError`
+    rather than a `MigrationError` -- keeping install-integrity failures in
+    the *type* instead of in whether the failure is caught at all:
+
+    1. **The read itself fails.** A permission problem on site-packages or a
+       symlink loop raises `OSError`; non-UTF-8 bytes raise `UnicodeDecodeError`
+       at the same `read_text(encoding="utf-8")` call. Originally only the
+       first was guarded, on the reasoning that install-integrity is not
+       user-project state -- true, but beside the CP-2 point: an unguarded
+       read still crashes every `--json` command that reaches
+       `resolve_context` (issue #205's Class 1).
+    2. **The read succeeds, the content is corrupt (round two).** Truncated or
+       empty JSON raises `json.JSONDecodeError` -- itself a `ValueError`
+       subclass, measured with both an unterminated string and a zero-byte
+       file, two distinct messages from the same type. A JSON document that
+       parses but is a list rather than an object raises `AttributeError`, not
+       at the read but one line later, at `Draft202012Validator` construction
+       -- `jsonschema` calls `schema.get(...)` internally, and a `list` has no
+       `.get`.
     """
     schema_path = schema_root / _SCHEMA_RELATIVE
     try:
         text = schema_path.read_text(encoding="utf-8")
+        schema = json.loads(text)
+        return Draft202012Validator(schema)
     except OSError as exc:
         raise SchemaUnreadableError(str(schema_path), exc.strerror or str(exc)) from exc
-    schema = json.loads(text)
-    return Draft202012Validator(schema)
+    except UnicodeDecodeError as exc:
+        raise SchemaUnreadableError(str(schema_path), str(exc)) from exc
+    except json.JSONDecodeError as exc:
+        raise SchemaUnreadableError(str(schema_path), str(exc)) from exc
+    except AttributeError as exc:
+        raise SchemaUnreadableError(str(schema_path), str(exc)) from exc
 
 
 def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
@@ -129,21 +154,38 @@ def load_migrations(
         MigrationError: On a malformed, duplicate, cyclic, or unresolvable file.
         PathEscapeError: If a ``contentFile`` points outside ``project_root``.
         InputTooLargeError: If a file exceeds its size limit.
+        MigrationsDirectoryUnreadableError: If ``migrations_dir`` cannot be
+            probed or listed for a reason other than genuinely not existing --
+            a parent that denies traversal, the directory itself denying
+            listing or per-entry stat, a symlink loop, or any other raw
+            ``OSError``.
+        SchemaUnreadableError: If the installed schema cannot be read, or
+            parses to something this build cannot use as a schema.
     """
     try:
-        # CPython's `Path.is_dir()` swallows `ENOENT`/`ENOTDIR`/`ELOOP` -- the
-        # well-formed "not a directory" case the `if not is_directory` below
-        # already answers by returning an empty migration set -- but
-        # re-raises `EACCES` when a *parent* of `migrations_dir` denies
-        # traversal. The measurement behind converting that is on
-        # `MigrationsDirectoryUnreadableError`'s own docstring, not repeated
-        # here.
-        is_directory = migrations_dir.is_dir()
+        # `os.stat` (`Path.stat()`, following symlinks like `os.stat` does) is
+        # probed explicitly rather than `Path.is_dir()`, which swallows every
+        # `OSError` internally and reports `False` for all of them alike --
+        # conflating a directory that never existed with one hidden behind a
+        # symlink chain longer than the platform's loop limit (round two): both
+        # used to answer "nothing to load" here, and only the first one
+        # should. `ENOENT`/`ENOTDIR` are the well-formed "not a directory"
+        # case the `if not stat.S_ISDIR(...)` below already answers by
+        # returning an empty migration set; every other errno -- `EACCES`
+        # when a *parent* of `migrations_dir` denies traversal, `ELOOP` for
+        # the loop, and the residual case round two's adversarial test drives
+        # with `ENAMETOOLONG` -- is a refusal, keyed by
+        # `_directory_unreadable_remedy` (`domain/errors.py`) so the remedy
+        # matches the failure instead of guessing at the single most common
+        # one.
+        probe = migrations_dir.stat()
     except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return LoadedMigrations.empty()
         raise MigrationsDirectoryUnreadableError(
-            str(migrations_dir.relative_to(project_root)), exc.strerror or str(exc)
+            str(migrations_dir.relative_to(project_root)), exc.strerror or str(exc), exc.errno
         ) from exc
-    if not is_directory:
+    if not stat.S_ISDIR(probe.st_mode):
         return LoadedMigrations.empty()
 
     # Enumeration is `iterdir()`-based rather than `glob("*.yaml")`, and both
@@ -151,14 +193,19 @@ def load_migrations(
     # this one `try`, so that every raw-IO failure the enumeration can hit
     # surfaces as `MigrationsDirectoryUnreadableError` rather than one of two
     # divergent failure modes (issue #214): `chmod 000`/`0o111` on
-    # `migrations_dir` *itself* (rather than its parent, above -- `is_dir()`
+    # `migrations_dir` *itself* (rather than its parent, above -- the probe
     # needs no permission on the target, only on its ancestors) makes
     # `os.scandir` raise `PermissionError` when the listing starts, and
     # `chmod 0o444` leaves the directory *listable* but not *traversable*, so
     # `is_file()`'s own stat on each entry raises `PermissionError` instead.
     # `pathlib.Path.glob` caught the first of those internally and yielded
     # nothing -- a silent `migrationCount: 0` false positive -- while the
-    # second escaped as a raw traceback; both are one class now.
+    # second escaped as a raw traceback; both are one class now. Every
+    # `OSError` here goes through the identical `ENOENT`/`ENOTDIR`-is-a-race
+    # vs. everything-else-is-a-refusal split the probe above uses: the
+    # directory can vanish or be replaced between the probe and this listing,
+    # and that race gets the same "nothing to load" answer a directory that
+    # was simply never created gets.
     #
     # Sorted so a failure reports the first file in a stable order rather than
     # whichever the filesystem happened to yield first. `iterdir()` does not
@@ -169,8 +216,10 @@ def load_migrations(
             p for p in migrations_dir.iterdir() if p.name.endswith(".yaml") and p.is_file()
         )
     except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return LoadedMigrations.empty()
         raise MigrationsDirectoryUnreadableError(
-            str(migrations_dir.relative_to(project_root)), exc.strerror or str(exc)
+            str(migrations_dir.relative_to(project_root)), exc.strerror or str(exc), exc.errno
         ) from exc
     if len(paths) > MAX_MIGRATIONS:
         raise MigrationError(f"{len(paths)} migration files exceeds the limit of {MAX_MIGRATIONS}")

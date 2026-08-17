@@ -9,6 +9,7 @@ schema.
 from __future__ import annotations
 
 import datetime
+from collections.abc import Callable
 
 import pytest
 import yaml
@@ -125,3 +126,32 @@ def test_non_mapping_root_is_refused(document: str) -> None:
 def test_malformed_yaml_raises() -> None:
     with pytest.raises(yaml.YAMLError):
         load_yaml("key: [unclosed")
+
+
+@pytest.mark.parametrize("loader", [load_yaml, load_yaml_mapping])
+def test_excessive_nesting_raises_value_error_not_recursion_error(
+    loader: Callable[[str], object],
+) -> None:
+    """Adversarial HIGH (round two, orchestrator-reproduced): a document
+    nested past PyYAML's own recursion limit -- 495 bracket pairs is already
+    enough, measured directly -- makes ``yaml.load`` raise ``RecursionError``,
+    a ``BaseException`` subclass none of ``MigrationError``'s callers, and no
+    ``except ValueError`` anywhere on the migration-load path, was ever
+    written to catch. Reproduced against the real CLI: it sailed past every
+    ``except`` clause in ``_load_one`` (``migration_loader.py``) and reached
+    ``resolve_context`` as a raw traceback under ``--json``, on a 1023-byte
+    document. Depth 1000 here, roughly double the measured leak threshold, so
+    this stays red even if PyYAML's own recursion cost per nesting level
+    shifts between versions.
+
+    ``ValueError`` is the target, not merely "not ``RecursionError``",
+    because it is the one type every existing consumer on this path already
+    catches -- ``load_yaml_mapping``'s own non-mapping-root check
+    (:func:`test_non_mapping_root_is_refused` above) and ``_load_one``'s
+    ``except ValueError`` (``migration_loader.py``) both already handle it,
+    so translating here needs no new catch clause anywhere downstream.
+    """
+    document = "apiVersion: theurian.dev/v1\nid: " + "[" * 1000 + "]" * 1000 + "\n"
+
+    with pytest.raises(ValueError, match="nesting depth"):
+        loader(document)
