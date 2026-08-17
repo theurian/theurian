@@ -884,19 +884,23 @@ def test_accept_refuses_a_proposal_directory_holding_two_migrations(
         service.accept(drafted.proposal_id)
 
 
-def test_a_yaml_body_can_be_drafted_and_accepted(
+def test_a_namespaceless_yaml_body_can_be_drafted_and_accepted(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
     """HIGH-3: a YAML body's file is also a `*.yaml`, and used to look like a migration.
 
     Globbing `*.yaml` for the migration counted the body, so `accept` reported
     "two or more migration files" and a YAML-bodied proposal could never be
-    accepted. The migration is identified by its `<ulid>-<slug>.yaml` name now,
-    which a `<leaf>.<revision>.yaml` body does not match.
+    accepted. The migration is identified by its `<ulid>-<slug>.yaml` name now.
+
+    The item is deliberately **namespace-less** (``limits``, not ``api.limits``):
+    a namespaced body mirrors into a subdirectory and a top-level ``glob`` never
+    sees it, so only a body at the top level -- beside the migration -- exercises
+    the name check that keeps them apart. Reverting to ``glob("*.yaml")`` makes
+    this find two migrations.
     """
-    drafted = service.draft(
-        _request(item_id=ItemId("api.limits"), body="max: 3\n", content_type=YAML)
-    )
+    drafted = service.draft(_request(item_id=ItemId("limits"), body="max: 3\n", content_type=YAML))
+    assert drafted.body_file.parent == drafted.directory, "the body is at the top level"
     assert drafted.body_file.suffix == ".yaml"
 
     accepted = service.accept(drafted.proposal_id)
