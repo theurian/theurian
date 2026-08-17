@@ -12,6 +12,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING — `system.capabilities` no longer publishes `milestone`**
+  ([#206](https://github.com/theurian/theurian/issues/206)). The field
+  reported a build-progress integer that had drifted stale against the
+  README's own milestone claim since the Milestone 6 close, and nothing —
+  test, schema, or `docs/protocol/mcp-tools.md` — pinned its value or even
+  its presence: a mutation setting it to `99` survived the whole suite. It
+  had exactly one producer (`mcp/tools.py`) and no consumer anywhere in this
+  repository, plugin included, and was never defined in that document or in
+  any schema under `schemas/mcp/`.
+
+  Breaking by the table in
+  [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md)
+  ("Removing a field" is always breaking), and `protocolVersion` is not
+  bumped for it anyway — a recorded, narrowly-scoped exemption specific to
+  this one field, not a precedent for others. The reasoning is in *Changing
+  this contract* in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md):
+  `milestone` was protocol-undefined and had no defined purpose anywhere in
+  this repository, which `version` and `protocolVersion` are not — both are
+  named in that document's field-role paragraph, and each re-publishes a
+  process constant a real consumer elsewhere (`theurian compat check`)
+  reads directly, even though that consumer reads the constant and never
+  this response.
+
+  `test_the_system_capabilities_response_holds_exactly_the_keys_that_are_pinned`
+  now pins the response's exact top-level key set, and
+  `test_capabilities_report_what_is_and_is_not_built` newly pins `version`,
+  `protocolVersion`, `schemaVersion` and the load-bearing substring of
+  `note` — closing the four siblings review found unpinned beside
+  `milestone`.
+
 ### Documentation
 
 - **Documents describing review ingestion as shipped, corrected together with

@@ -979,7 +979,6 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             "version": __version__,
             "protocolVersion": __protocol_version__,
             "schemaVersion": SCHEMA_VERSION,
-            "milestone": 5,
             "capabilities": {
                 # What this build supports. A given response's `retrieval.mode`
                 # says what actually ran, which is `substring` until a project
