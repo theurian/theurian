@@ -108,9 +108,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#214](https://github.com/theurian/theurian/issues/214),
   [#217](https://github.com/theurian/theurian/issues/217)). Closes the two
   defects the `#205` fix above named as not covered, a third face of #214
-  that reproducing it found and that neither issue had named, and three more
+  that reproducing it found and that neither issue had named, three more
   members of the same class that this branch's own review round two found on
-  the same load path — not new issues, escapes the round-one fix left open.
+  the same load path, and three further members round three found on the
+  round-two fixes themselves — not new issues, escapes the round-one and
+  round-two fixes each left open.
 
   - **#217 — a YAML syntax error, or a NUL byte in the migration source, no
     longer crashes.** `load_yaml_mapping` raises `yaml.YAMLError` on either —
@@ -141,15 +143,23 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     `PermissionError` instead — a raw traceback, not the silent false
     positive above. Same root cause, same fix: caught by the same `try`.
   - **Round two — a YAML document nested past PyYAML's recursion limit no
-    longer crashes.** `RecursionError` is a `BaseException` subclass, not an
-    `Exception`, so none of `load_yaml_mapping`'s six call sites — the two on
-    `proposal_service.py` above included — caught it, and it reached
-    `resolve_context` as a raw traceback under `--json`. About 1 KB of
-    nested YAML is already enough to trigger it (measured:
-    `"["*495 + "]"*495`, 1,023 bytes). `load_yaml` and `load_yaml_mapping` now
-    catch `RecursionError` and raise `ValueError` in its place — the type
-    every consumer on this path already handles — closing all of them at the
-    one seam instead of adding a catch clause at each.
+    longer crashes.** `RecursionError` is not outside `Exception`'s hierarchy
+    — it is a `RuntimeError` subclass, and a bare `except Exception` would
+    have caught it fine — but no `except` clause on this path named
+    `RuntimeError` or `RecursionError` at all: `load_yaml_mapping`'s three
+    callers (`migration_loader.py`'s `_load_one`, and `proposal_service.py`'s
+    `_parse_migration` and `_pinned_digest_at`) each caught only
+    `UnicodeDecodeError`, `ValueError`, and `yaml.YAMLError`, so it escaped
+    every one of them and reached `resolve_context` as a raw traceback under
+    `--json`. About 1 KB of nested YAML is already enough to trigger it
+    (measured: `"["*495 + "]"*495`, 1,023 bytes). `load_yaml` and
+    `load_yaml_mapping` now catch `RecursionError` and raise `ValueError` in
+    its place — the type every consumer on this path already handles.
+    `load_yaml`'s other three callers, which do not go through
+    `load_yaml_mapping` — the front-matter, structured-YAML, and OpenAPI
+    parsers (`infrastructure/filesystem/parsers/`) — get the identical fix
+    from the same one seam, rather than a catch clause added at each of the
+    six.
   - **Round two — a symlink chain at `.theurian/migrations` longer than the
     platform's loop limit no longer reports real migrations as an empty
     set.** `Path.is_dir()` swallows every `OSError` it hits internally,
@@ -167,6 +177,23 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     this path used to validate as an empty migration set by accident, and now
     refuses instead — any earlier description of a symlink loop as a
     legitimate empty shape no longer holds.
+  - **Round two, never itself given a line in this entry until now — the
+    enumeration's own `ENOENT`/`ENOTDIR` answer relaxed from a refusal (round
+    one) back to an empty set.** Round one's enumeration `except OSError`
+    (the #214 fix above) converted *every* `OSError` to
+    `MigrationsDirectoryUnreadableError`, `ENOENT`/`ENOTDIR` included, so a
+    `migrations_dir` that raced its own deletion between the directory probe
+    and the `iterdir()` listing refused rather than answering
+    `LoadedMigrations.empty()`. The `os.stat`-probe rewrite in the bullet
+    above added the identical `if exc.errno in (ENOENT, ENOTDIR): return
+    empty()` branch to the enumeration's own `except` too, quietly changing
+    this one case back to the pre-#214 answer — a deliberate race policy, not
+    an oversight: the probe's own answer went stale between the check and the
+    listing, and a directory that has since vanished means nothing to load,
+    not a corrupted install. Shipped in round two but not previously named
+    here, unlike the `ELOOP` change beside it, which this entry already
+    flagged as a behaviour change; pinned by
+    `test_load_migrations_treats_a_stale_enumeration_failure_as_an_empty_set`.
   - **Round two — a corrupted installed schema no longer crashes
     `_validator`.** Truncated or empty JSON raised `json.JSONDecodeError`;
     non-UTF-8 bytes raised `UnicodeDecodeError` at the same
@@ -174,19 +201,113 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     JSON list rather than an object raised `AttributeError` one line later,
     at `Draft202012Validator` construction (`jsonschema` calls
     `schema.get(...)` internally, and a list has no `.get`). All three, and
-    the original `OSError`, now convert to `SchemaUnreadableError`.
+    the original `OSError`, now convert to `SchemaUnreadableError`. Round
+    three (below) removes the `AttributeError` translation and replaces it
+    with a check performed before construction, rather than after.
+  - **Round three — a `*.yaml` entry that is a symlink loop, or a symlink
+    whose target is missing, no longer vanishes silently from the loaded
+    set.** `Path.is_file()` — used by both `glob` and round one/two's
+    `iterdir()`-based enumeration — swallows `ELOOP` and `ENOENT` internally
+    and reports `False` for both, the identical directory-level convenience
+    the #214 and round-two fixes above exist to close, one level down:
+    `migrate validate --json` reported a lower `migrationCount` with no error
+    at all, and `migrate apply --json` seeded a state database for the
+    migrations it did see. Per-entry classification now `lstat`s each entry
+    first to tell a symlink from an ordinary file, and a symlink whose
+    resolution fails is refused by name as `MigrationFileUnreadableError` —
+    `ENOENT` gets a dangling-link-specific remedy, every other errno (`ELOOP`
+    chief among them) the loop-specific one from the bullet above. A
+    non-symlink entry that raises `ENOENT`/`ENOTDIR` is still skipped rather
+    than refused: the identical race the enumeration-level bullet above
+    already answers with "nothing to load," one entry down instead of one
+    directory up. Handling the two identically was considered and rejected:
+    an entry-level `try` that answered every stat error with "skip the
+    entry," symlink or not, would turn a directory-wide permission refusal
+    (`chmod 0o444` on `migrations_dir`, #214's own third face above) into a
+    silently shrunken migration set the moment it reached one symlinked entry
+    first — the same worse-regression trap the loop/dangling fix itself
+    exists to avoid, one shape over. Any other non-symlink errno (`EACCES`
+    included) still re-raises to the enumeration's own `except OSError` and
+    surfaces as `MigrationsDirectoryUnreadableError`, unchanged. Reproduced
+    against the real CLI:
+    `test_validate_reports_a_symlink_loop_migration_entry_instead_of_silently_dropping_it`
+    and
+    `test_apply_refuses_a_symlink_loop_migration_entry_without_seeding_a_state_database`.
+  - **Round three — the last two paths where a deeply nested document could
+    still crash a parser now convert to `ValueError`.** `OpenApiParser`'s
+    JSON leg (`infrastructure/filesystem/parsers/openapi.py`) called
+    `json.loads(text)` with no guard around `RecursionError`, so a document
+    nested past the decoder's own recursion limit escaped `_load` uncaught
+    (measured: 20,000 nested arrays) — `structured.py`'s `JsonParser` already
+    carried the identical guard, so this closes the class's one remaining
+    member. `YamlParser.parse` (`structured.py`) also now re-wraps
+    `load_yaml`'s own nesting-depth `ValueError` (round two's translation,
+    above) with `anchor.source_uri`, matching every other failure branch in
+    that method — round two already converted this one to the right type,
+    just without the source URI every sibling branch already carries.
+    Reproduced against the real parsers directly:
+    `test_openapi_reports_the_source_uri_for_json_nested_past_the_recursion_limit`
+    and
+    `test_yaml_parser_names_the_source_uri_for_a_document_nested_past_the_recursion_limit`.
+  - **Round three — the installed schema is now refused, not silently
+    accepted, when it parses but is not usable as a schema.** Two checks in
+    `_validator`, both performed before `Draft202012Validator` construction
+    rather than after: `isinstance(schema, dict)` refuses a schema that is
+    not a JSON object at all — a list (already an `AttributeError` refusal
+    since round two, above) or a bare `true`/`false`, both otherwise-valid
+    top-level JSON Schema documents. Accepting `true` had been silently
+    fail-open: it builds a validator that matches every instance, so an
+    installation corrupted to `true` made every migration in every project
+    validate rather than refusing. `Draft202012Validator.check_schema(schema)`
+    separately refuses a schema whose own keywords are structurally
+    malformed — `required` must be an array of strings, and a bare string
+    previously surfaced only when a schema-*valid* migration tripped over it,
+    misattributed to whichever migration validated first as `'n' is a
+    required property`. Both convert to `SchemaUnreadableError`, and the
+    now-unreachable `except AttributeError` clause is removed rather than
+    kept as a defensive clause nothing can drive. `{}` remains accepted: a
+    valid, if vacuous, schema that matches every instance — deliberately not
+    a third refusal. `test_validator_raises_schema_unreadable_error_for_a_non_object_schema`,
+    `test_validator_raises_schema_unreadable_error_for_structurally_invalid_schema_keywords`,
+    and `test_validator_accepts_the_vacuous_empty_object_schema` pin all
+    three.
 
-  **The legitimate empty shapes are unchanged.** A project with no
-  `.theurian/migrations/` directory, and an existing, ordinarily-readable,
-  genuinely empty one, both still validate as an empty set —
-  `test_load_migrations_on_an_ordinarily_readable_empty_directory_returns_an_empty_set`
-  pins the one a fix that raised on every zero-migration read would still
-  pass without. A symlink loop is deliberately not a third member of this
-  list — see round two above.
+  **The legitimate empty shapes, current as of round three.**
+  `load_migrations` still answers `LoadedMigrations.empty()` — never a
+  refusal — for: a `migrations_dir` that does not exist at all; one that is a
+  dangling symlink, whose target-following `stat()` probe raises the
+  identical `ENOENT` a missing directory raises; one that exists but is a
+  regular file rather than a directory
+  (`test_load_migrations_treats_a_migrations_path_that_is_a_regular_file_as_an_empty_set`,
+  round three); an existing, ordinarily-readable, genuinely empty directory
+  (`test_load_migrations_on_an_ordinarily_readable_empty_directory_returns_an_empty_set`);
+  a `*.yaml`-named entry that is a FIFO or itself a directory, silently
+  excluded from the loaded set rather than counted
+  (`test_load_migrations_skips_a_fifo_and_a_directory_both_named_dot_yaml`,
+  round three); and a non-symlink entry that is simply gone by the time it is
+  stat-ed, having raced its own deletion between `iterdir()` listing it and
+  the classification stat that follows
+  (`test_load_migrations_skips_only_a_non_symlink_entry_that_vanishes_mid_enumeration`,
+  round three) — the identical race policy the enumeration-level bullet above
+  already applies one directory up. A directory-level symlink loop at
+  `migrations_dir` itself is deliberately not a member of this list — see
+  round two above, unchanged here.
 
-  Reproduced against the real CLI for all six faces; covered by
-  `tests/unit/test_migration_loader_errors.py`,
-  `tests/unit/test_yaml_loading.py`, and
+  **Not a legitimate empty shape any more, as of round three: a `*.yaml`
+  entry that is a symlink loop, or a symlink whose target is missing.** Both
+  used to vanish the identical silent way described above — `glob` and every
+  round before this one relied on `Path.is_file()`, which swallows `ELOOP`
+  and `ENOENT` internally and simply excludes the entry, no error, no count.
+  Per-entry classification now raises `MigrationFileUnreadableError` naming
+  the entry instead (round-three bullet above); any earlier description of
+  either as a legitimate empty or silently-skipped shape no longer holds.
+
+  Every fault named above — across all three rounds, not counting the
+  enumeration-race policy note, which documents a round-two decision rather
+  than closing a new one — was reproduced against the real CLI, or the real
+  parsers and `_validator` directly for the parser and schema checks; covered
+  by `tests/unit/test_migration_loader_errors.py`,
+  `tests/unit/test_yaml_loading.py`, `tests/unit/test_parsers.py`, and
   `tests/integration/test_cli_commands.py`.
 
 ### Documentation

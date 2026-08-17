@@ -209,6 +209,12 @@ def load_migrations(
             a parent that denies traversal, the directory itself denying
             listing or per-entry stat, a symlink loop, or any other raw
             ``OSError``.
+        MigrationFileUnreadableError: If a migration file cannot be read once
+            found -- or, for a ``*.yaml`` entry found during enumeration, if
+            it is a symlink loop or resolves to nothing (round three; see
+            :func:`_entry_is_migration_file`).
+        MigrationContentUnreadableError: If an ``upsertRevision`` operation's
+            ``contentFile`` cannot be resolved or read.
         SchemaUnreadableError: If the installed schema cannot be read, or
             parses to something this build cannot use as a schema.
     """
