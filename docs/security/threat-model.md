@@ -714,11 +714,13 @@ because the scheme allowlist below will read this field and the default was the
 fail-open direction: `//evil.test/x.json` and `\\smb-host\share\x.json` both name
 a host and both used to record `relative-file`, while
 `C:\Windows\system32\x.json` recorded the scheme `c`, a drive letter `urlsplit`
-read as a scheme. RFC 3986 §4.2's forms now record as `protocol-relative`, `unc`,
-`absolute-file` and `relative-file`, and the split is structural — the mixed
-`/\host\x` that Windows and browsers accept lands on the network side without
-being enumerated. `NETWORK_PATH_SCHEMES` and `LOCAL_PATH_SCHEMES` in that module
-publish the two groups for the gate that will key on them.
+read as a scheme. RFC 3986 §4.2's three relative-reference forms now record as
+`protocol-relative`, `absolute-file` and `relative-file`, and `unc` covers
+Windows's spelling of the first, which is not an RFC form at all. The split is
+structural — the mixed `/\host\x` that Windows and browsers accept lands on the
+network side without being enumerated. `NETWORK_PATH_SCHEMES` and
+`LOCAL_PATH_SCHEMES` in that module publish the two groups for the gate that will
+key on them.
 
 **The residual is a scheme that is faithful and still remote.**
 `file://evil.test/share/x.json` records `file`, correctly: the recording says
@@ -729,15 +731,37 @@ authority — as it must inspect the path of an equally local, equally unwanted
 Both walk caps — `MAX_REFS` (5000) and `MAX_REF_DEPTH` (64) — still stop the
 walk, and each now records where it stopped, because a cut that left no trace
 reported the document as having *no* external references at all: a `$ref` nested
-past the depth cap gave `unresolvedRefCount` 0, which is the answer a reader
-acts on. One record per reason, so the marker cannot itself become the
-exhaustion vector the caps exist to prevent, and `refWalkTruncated` in the
-parser's metadata says whether the count is a total or a floor.
+past the depth cap gave `unresolvedRefCount` 0, the same answer a document with
+no external references gives. One record per reason, so the marker cannot itself
+become the exhaustion vector the caps exist to prevent, and `refWalkTruncated`
+beside that count says whether it is a total or a floor.
+
+**Neither cap marks a node that could not have held a reference.** A scalar has
+no children and an empty container has none either, and emptiness is answerable
+without descending — which is what lets the check sit in front of a cap that
+forbids descending. Both were measured claiming otherwise: an empty `{}` one
+past the depth cap made a document with no external references publish
+`unresolvedRefCount` 1 and `refWalkTruncated` true. A *non-empty* container stays
+marked even when it holds only scalars, because knowing better means reading the
+children the cap refused to read.
+
+**Both counts stop at the parser boundary, so neither is what a post-ingest
+reader acts on.** `_to_document` carries `structured` into `IngestedDocument`,
+which has no metadata field at all, and no consumer of either value exists in
+`src/`. The record that survives is `structured["_index"]`: `externalRefs`, and
+`refWalkTruncations`, non-empty for exactly the documents `refWalkTruncated`
+calls truncated. A scheme allowlist should read those two and not the counts.
+Kept that way deliberately — threading parser metadata through the ingestion
+port would widen the surface for a value nothing reads — and pinned by
+`test_the_parser_metadata_stops_at_the_parser_boundary`, so a change that starts
+relying on it has to face this decision rather than discover it.
 
 Recording is pinned by `test_external_refs_are_recorded_never_fetched` and, for
 fidelity, by `tests/unit/test_ref_recording.py` — #203's repro table row by row,
 a generated property that a reference opening with two separators never records
-a local-file label, and each cap asserted on both sides of its boundary.
+a local-file label, and each cap asserted on both sides of its boundary: at the
+limit and one past it for depth, and at exactly `MAX_REFS` both with and without
+a further node that could hold a reference.
 
 *Future controls, not shipped:* the scheme allowlist, the rejection of
 private-network destinations, and the repository allowlist in

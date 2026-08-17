@@ -96,9 +96,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   **Both walk caps stay where they were** — `MAX_REFS` (5000) and
   `MAX_REF_DEPTH` (64) — and each now records where it stopped, one record per
   reason so the marker cannot become the exhaustion vector the caps exist to
-  prevent. The parser's metadata gains `refWalkTruncated`, which says whether
+  prevent. Neither marks a node that could not have held a reference: a scalar
+  has no children and an empty container has none either, and emptiness is
+  answerable without descending, which is what lets the check sit in front of a
+  cap that forbids descending. A non-empty container stays marked even when it
+  holds only scalars, because knowing better means reading the children the cap
+  refused. The parser's metadata gains `refWalkTruncated`, which says whether
   `unresolvedRefCount` is a total or a floor, and the index gains
-  `refWalkTruncations`. Nothing fetches, and the never-fetched pins in
+  `refWalkTruncations`. Both counts stop at the parser boundary — `IngestedDocument`
+  has no metadata field, so what survives ingestion is `_index`'s
+  `externalRefs` and `refWalkTruncations`, which is where a Milestone 7 gate
+  should read. Nothing fetches, and the never-fetched pins in
   `tests/unit/test_network_call_sites.py` are untouched.
 
   **Not covered: a scheme that is faithful and still remote.**
