@@ -7,6 +7,7 @@ able to assert on the exact JSON a caller receives.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -150,6 +151,85 @@ def _write_unresolvable_content_migration(root: Path) -> None:
     )
 
 
+def _content_unreadable_migration_path() -> str:
+    return f".theurian/migrations/{UNRESOLVABLE_MIGRATION_ID}-repro.yaml"
+
+
+def _assert_content_unreadable_payload(payload: dict[str, Any]) -> None:
+    """Full equality, not a substring: a gutted ``error``/``remedy`` must fail this.
+
+    Anchored to ``os.strerror(errno.ENOENT)`` rather than a hardcoded
+    "No such file or directory", so the assertion is portable and still pins
+    that ``exc.strerror`` reaches the message -- a mutation that dropped it
+    survived a looser ``"content.md" in payload["error"]`` check, because the
+    filename alone was still present.
+    """
+    migration_path = _content_unreadable_migration_path()
+    reason = os.strerror(errno.ENOENT)
+    assert payload["error"] == (
+        f"{migration_path!r}: contentFile {UNRESOLVABLE_CONTENT_FILE!r} could not be read: {reason}"
+    )
+    assert payload["remedy"] == (
+        f"{UNRESOLVABLE_CONTENT_FILE!r} resolves relative to the migration file "
+        f"({migration_path!r}), not to a proposal directory "
+        f"(docs/protocol/migrations.md, 'Path safety'). Fix the path, or "
+        f"restore the referenced file, then retry."
+    )
+
+
+# -- issue #205: a migration file that is unreadable -------------------------
+#
+# The sibling face: the migration YAML itself, not a `contentFile` it names.
+# The `chmod 000` measurement behind both fixes lives on
+# `MigrationFileUnreadableError`'s own docstring (`domain/errors.py`), not
+# repeated at each of these call sites.
+
+UNREADABLE_MIGRATION_ID = "01K1JJJJJJ01234567890ABCDE"
+UNREADABLE_MIGRATION_FILENAME = f"{UNREADABLE_MIGRATION_ID}-unreadable.yaml"
+
+UNREADABLE_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {UNREADABLE_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.auth-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+"""
+
+
+def _write_unreadable_migration(root: Path) -> Path:
+    """A schema-valid migration file, `chmod 000`'d after being written.
+
+    Returns the path so the caller can restore its mode in a ``finally`` --
+    pytest's own ``tmp_path`` cleanup walks the tree afterward, and a mode-000
+    file left behind fails *that* instead of the calling test, which reads as
+    an unrelated, confusing failure.
+    """
+    migration = root / f".theurian/migrations/{UNREADABLE_MIGRATION_FILENAME}"
+    migration.write_text(UNREADABLE_MIGRATION)
+    migration.chmod(0o000)
+    return migration
+
+
+def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
+    """Full equality, the same anti-mutation shape as :func:`_assert_content_unreadable_payload`.
+
+    A remedy gutted to the 10-char token ``"permission"`` survived a looser
+    ``"permission" in payload["remedy"]`` check; only exact equality catches
+    that.
+    """
+    migration_path = f".theurian/migrations/{UNREADABLE_MIGRATION_FILENAME}"
+    reason = os.strerror(errno.EACCES)
+    assert payload["error"] == f"{migration_path!r} could not be read: {reason}"
+    assert payload["remedy"] == (
+        f"Confirm this user has read permission on {migration_path!r} and its "
+        f"parent directory, then retry."
+    )
+
+
 # -- init ------------------------------------------------------------------
 
 
@@ -209,11 +289,30 @@ def test_init_reports_an_unresolvable_content_file_instead_of_crashing(project: 
 
     assert result.exit_code != 0
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
-    payload = json.loads(result.stderr)
-    assert "error" in payload
-    assert "remedy" in payload
-    assert UNRESOLVABLE_CONTENT_FILE in payload["error"]
-    assert "relative to the migration file" in payload["remedy"]
+    _assert_content_unreadable_payload(json.loads(result.stderr))
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_init_reports_an_unreadable_migration_file_instead_of_crashing(project: Path) -> None:
+    """``init``'s counterpart to the ``migrate validate`` unreadable-file test below.
+
+    Round-one review measured the `MigrationFileUnreadableError` branch in
+    ``_context_remedy`` as never exercised by any test: every existing test
+    reached it only through `_require_project`'s own except clause (`migrate
+    validate`), never through a command that calls `resolve_context` directly.
+    `init` re-run against a project whose migrations already hold an
+    unreadable file is that missing combination.
+    """
+    _invoke("init")
+    migration = _write_unreadable_migration(project)
+    try:
+        result = runner.invoke(app, ["init", "--json"], catch_exceptions=False)
+    finally:
+        migration.chmod(0o644)
+
+    assert result.exit_code != 0
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_file_unreadable_payload(json.loads(result.stderr))
 
 
 # -- project ---------------------------------------------------------------
@@ -694,17 +793,7 @@ def test_validate_reports_an_unresolvable_content_file_instead_of_crashing(proje
 
     assert result.exit_code == EXIT_STATE_ERROR
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
-    payload = json.loads(result.stderr)
-    assert "error" in payload
-    assert "remedy" in payload
-    # Names which migration and which unresolvable path, not only that
-    # something failed.
-    assert UNRESOLVABLE_MIGRATION_ID in payload["error"]
-    assert UNRESOLVABLE_CONTENT_FILE in payload["error"]
-    # The natural authoring mistake the issue names: contentFile written as if
-    # relative to a proposal directory, not to the migration file itself.
-    assert "relative to the migration file" in payload["remedy"]
-    assert "proposal directory" in payload["remedy"]
+    _assert_content_unreadable_payload(json.loads(result.stderr))
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
@@ -715,43 +804,18 @@ def test_validate_reports_an_unreadable_migration_file_instead_of_crashing(proje
     `read_source_file`'s raw `PermissionError` used to escape from
     `_load_one`'s own read (`migration_loader.py`), the sibling of the
     `contentFile` escape closed above -- same seam, same root cause, one call
-    site over. Measured against the real CLI before the fix: a `chmod 000`'d,
-    schema-valid migration crashed `migrate validate --json` with a raw
-    `PermissionError` Rich traceback, exit 1, empty stdout.
+    site over.
     """
     _invoke("init")
-    migration = project / f".theurian/migrations/{MIGRATION_ID}-unreadable.yaml"
-    migration.write_text(
-        f"""apiVersion: theurian.dev/v1
-id: {MIGRATION_ID}
-createdAt: 2026-08-02T10:00:00+09:00
-author: engineer@example.com
-operations:
-  - op: createItem
-    itemId: architecture.auth-policy
-    kind: architecture
-    namespace: backend
-    owner: platform-team
-"""
-    )
-    migration.chmod(0o000)
+    migration = _write_unreadable_migration(project)
     try:
         result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
     finally:
-        # Restored unconditionally: pytest's own `tmp_path` cleanup walks the
-        # tree afterward, and a mode-000 file left behind fails *that* instead
-        # of this test, which reads as an unrelated, confusing failure.
         migration.chmod(0o644)
 
     assert result.exit_code == EXIT_STATE_ERROR
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
-    payload = json.loads(result.stderr)
-    assert "error" in payload
-    assert "remedy" in payload
-    assert f"{MIGRATION_ID}-unreadable.yaml" in payload["error"]
-    # The permission-check remedy, not the contentFile-resolution one: this
-    # error has no notion of "relative to the migration file" to restate.
-    assert "permission" in payload["remedy"]
+    _assert_file_unreadable_payload(json.loads(result.stderr))
 
 
 def test_a_malformed_migration_names_the_offending_field(project: Path) -> None:

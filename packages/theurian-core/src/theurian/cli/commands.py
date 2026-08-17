@@ -56,10 +56,8 @@ from theurian.cli.context import (
 )
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
-    MigrationContentUnreadableError,
     MigrationCycleError,
     MigrationError,
-    MigrationFileUnreadableError,
     RevisionConflictError,
     TheurianError,
     UnenforceableScopeError,
@@ -282,16 +280,23 @@ def _context_remedy(exc: TheurianError, *, default: str) -> str:
     registry which project this root is, and load and validate every migration —
     so a fixed "run this inside a Git repository" told a user with a malformed
     migration to go looking for a ``.git`` directory that was already there.
+
+    A non-empty ``exc.remedy`` wins over everything below it, checked first
+    rather than per type. Before ``TheurianError.remedy`` existed, this
+    function hand-enumerated every self-describing subtype —
+    ``isinstance(exc, ProjectError)``, then a second, growing
+    ``isinstance(exc, MigrationContentUnreadableError |
+    MigrationFileUnreadableError)`` added when the second one joined the
+    first — a list that had to be remembered and extended at every new
+    self-describing error (issue #205). Checking the attribute once replaces
+    an open-ended list with a property every such error already satisfies by
+    construction, including ones this function has never heard of, like
+    ``SchemaUnreadableError``.
     """
-    if isinstance(exc, ProjectError) and exc.remedy:
+    if exc.remedy:
         return exc.remedy
     if isinstance(exc, MigrationCycleError):
         return "Break the dependency cycle shown above, then retry."
-    # Checked ahead of the general `MigrationError` branch below: both are
-    # subtypes, and the general branch's fixed string would otherwise shadow
-    # the specific remedy naming what actually happened (issue #205).
-    if isinstance(exc, MigrationContentUnreadableError | MigrationFileUnreadableError):
-        return exc.remedy
     if isinstance(exc, MigrationError):
         return "Fix the migration file, then retry."
     return default
@@ -1674,32 +1679,27 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
             code=EXIT_STATE_ERROR,
         )
         raise
-    # Checked ahead of the general `MigrationError` clause below: both are
-    # subtypes, and Python matches the first `except` whose type fits, so
-    # leaving either after the general clause would report the generic "fix
-    # the migration file" string instead of the specific remedy naming what
-    # actually happened (issue #205: `contentFile` resolves relative to the
-    # migration file for the first, a permission or missing-file check for the
-    # second). Graded the same `EXIT_STATE_ERROR` as every other
-    # `MigrationError`: an unreadable migration is a knowledge-state problem
-    # the user must fix, the same family as a checksum mismatch or a
-    # dependency cycle above.
-    # A tuple, not `A | B`: `except` does not accept `types.UnionType`, only a
-    # single type or a tuple of types (confirmed against this interpreter --
-    # `except A | B:` raises `TypeError: catching classes that do not inherit
-    # from BaseException is not allowed` when it actually fires).
-    except (MigrationContentUnreadableError, MigrationFileUnreadableError) as exc:
-        _fail(
-            str(exc),
-            remedy=exc.remedy,
-            as_json=as_json,
-            code=EXIT_STATE_ERROR,
-        )
-        raise
+    # `exc.remedy or "..."` rather than a separate `except` for every
+    # self-describing subtype: `MigrationContentUnreadableError`,
+    # `MigrationFileUnreadableError`, and `MigrationsDirectoryUnreadableError`
+    # all set their own `.remedy`, and the previous shape -- a growing
+    # `isinstance`/`except` tuple that had to be extended at every new one --
+    # is exactly the enumeration `TheurianError.remedy` exists to replace
+    # (issue #205). Every branch in *this* `try` is graded `EXIT_STATE_ERROR`
+    # -- that is `_require_project`'s own grading, not a claim about every
+    # consumer of these types: `init` and `project register` reach the same
+    # exceptions through their own direct `resolve_context()` calls and exit
+    # 1 via `_context_remedy`'s generic `except TheurianError` branch, and
+    # `project status` reaches exit 0 through `_unresolved_status`. An
+    # unreadable migration is a knowledge-state problem the user must fix in
+    # `_require_project`'s seven callers, the same family as a checksum
+    # mismatch or a dependency cycle above -- what varies between commands is
+    # the exit code their own contract already assigns to "could not resolve
+    # a project", not a re-grading of the exception itself.
     except MigrationError as exc:
         _fail(
             str(exc),
-            remedy="Fix the migration file, then retry.",
+            remedy=exc.remedy or "Fix the migration file, then retry.",
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )

@@ -20,6 +20,7 @@ from theurian.application.project_service import (
     derive_project_id,
     resolve_state_hash,
 )
+from theurian.domain.errors import SchemaUnreadableError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import LoadedMigrations
 from theurian.domain.state import StateHash
@@ -101,6 +102,24 @@ def repository_url(root: Path) -> str | None:
     return url or None
 
 
+def _schema_candidate_exists(candidate: Path) -> bool:
+    """``.exists()`` on one candidate schema location, translating a probe failure.
+
+    CPython's ``Path.exists()`` swallows ``ENOENT``/``ENOTDIR`` -- "not there"
+    -- but re-raises ``EACCES`` the same way ``Path.is_dir()`` does. A
+    permission problem on an ancestor of the installation directory is
+    install-integrity, not a location that is simply absent, so it is not the
+    ``ProjectError`` this function's caller raises when *neither* candidate
+    exists -- that message says "reinstall" for the right reason only when
+    reinstalling would actually help (issue #205's Class 1, applied to the
+    schema-location probes rather than the read that follows them).
+    """
+    try:
+        return candidate.exists()
+    except OSError as exc:
+        raise SchemaUnreadableError(str(candidate), exc.strerror or str(exc)) from exc
+
+
 def schema_root() -> Path:
     """Locate the published JSON Schemas.
 
@@ -112,11 +131,11 @@ def schema_root() -> Path:
     effect without reinstalling.
     """
     packaged = Path(__file__).resolve().parents[1] / "schemas"
-    if (packaged / "migrations" / "migration.schema.json").exists():
+    if _schema_candidate_exists(packaged / "migrations" / "migration.schema.json"):
         return packaged
 
     from_source = Path(__file__).resolve().parents[5] / "schemas"
-    if (from_source / "migrations" / "migration.schema.json").exists():
+    if _schema_candidate_exists(from_source / "migrations" / "migration.schema.json"):
         return from_source
 
     raise ProjectError(
