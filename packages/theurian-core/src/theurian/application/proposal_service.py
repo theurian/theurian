@@ -374,6 +374,15 @@ class ProposalService:
         writes use ``O_NOFOLLOW`` with an explicit mode, so no source bit and no
         planted destination symlink survives the move.
 
+        The bytes that land are bounded by what a *committed* proposal can carry.
+        A hardlink is the one channel this does not close -- ``O_NOFOLLOW`` does
+        not see one -- but Git cannot commit a live hardlink (a fresh clone gets
+        a distinct inode holding the committed blob), so the documented channel
+        cannot deliver one; reaching it needs local write access at accept time,
+        where the secret is already readable. Recorded as an accepted residual
+        under the local-write boundary rather than closed with an ``st_nlink``
+        check, which would refuse legitimate files.
+
         Raises:
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
                 names a migration already in place, or names a file the security
@@ -516,19 +525,41 @@ class ProposalService:
     def _read_within_project(self, path: Path) -> bytes:
         """Read one accept-path file, or refuse it.
 
-        A regular file, no symlink on the final component, inside the project
-        root, under SEC-8's size cap. :func:`read_source_file` enforces the last
-        two -- and rejects a symlink that *escapes* the root -- while the
-        ``is_symlink`` check rejects a symlink that resolves back inside it,
-        which the security layer permits but the accept path must not follow:
-        that link's target is an in-project file the proposal never authored.
+        A regular file, inside the project root, under SEC-8's size cap, with no
+        symlink *anywhere* in its chain below the root. :func:`read_source_file`
+        enforces the size cap and rejects a symlink that escapes the root, but it
+        *follows* an intermediate symlink that stays in-project -- and a proposal
+        directory is a contributor's, so a namespaced body reached through an
+        in-project directory symlink would read a file the proposal never
+        authored. The chain is therefore walked and every symlink component is
+        refused, so 'no symlink anywhere in its chain' is literally true, the
+        same stance :meth:`_require_directory` takes on the proposal directory.
         """
-        if path.is_symlink():
-            raise ProposalError(
-                f"{path.name} is a symlink, not a regular file.",
-                remedy="A proposal's migration and body are real files. Remove the link.",
-            )
+        self._reject_symlink_in_chain(path)
         return read_source_file(self._paths.root, PurePosixPath(path.relative_to(self._paths.root)))
+
+    def _reject_symlink_in_chain(self, path: Path) -> None:
+        """Refuse ``path`` if any component below the project root is a symlink.
+
+        Only the portion below the root is walked: what sits above it (a
+        ``/tmp`` that is itself a link on macOS, say) is the environment's, not
+        the proposal's. A symlink component *inside* the proposal is never
+        legitimate -- a committed proposal is real files and directories.
+        """
+        root = self._paths.root
+        try:
+            relative = path.relative_to(root)
+        except ValueError:  # pragma: no cover - accept paths are built under the root
+            raise PathEscapeError(str(path), str(root)) from None
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ProposalError(
+                    f"{current.relative_to(root).as_posix()} is a symlink; a proposal's "
+                    "files and directories must all be real.",
+                    remedy="Remove the link and commit the real file or directory.",
+                )
 
     def _refuse_if_a_replacement_breaks_an_existing_pin(self, moves: Iterable[_BodyMove]) -> None:
         """Refuse a body replacement that would invalidate an applied migration.

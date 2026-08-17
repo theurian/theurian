@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -818,6 +819,36 @@ def test_accept_refuses_a_symlinked_body_source(
 
     assert not drafted.body_destination.exists()
     assert "PRIVATE-KEY-MATERIAL" not in _tree_bytes(paths.root)
+
+
+def test_accept_refuses_an_in_project_intermediate_directory_symlink(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """No symlink anywhere in the read chain -- intermediate components included.
+
+    ``read_source_file`` follows an intermediate symlink that stays inside the
+    project root: ``assert_no_symlink_escape`` refuses only one that leaves the
+    root. So a namespaced body whose *subdirectory* in the proposal is an
+    in-project directory symlink was read through -- the accept path read an
+    in-project file the proposal never authored. No out-of-project disclosure
+    (root containment holds) and ``contentSha256`` catches it downstream, but the
+    accept docstring claims "no symlink anywhere in its chain", so the chain is
+    walked and any symlink component is refused, matching ``_require_directory``.
+    """
+    drafted = service.draft(_request())
+    leaf = drafted.body_file.name
+    real_subdir = drafted.body_file.parent  # <proposal>/architecture/
+    decoy = paths.proposals / "decoy"  # an in-project directory the proposal did not author
+    decoy.mkdir()
+    (decoy / leaf).write_text("BYTES THE PROPOSAL NEVER AUTHORED\n", encoding="utf-8")
+    shutil.rmtree(real_subdir)
+    real_subdir.symlink_to(decoy, target_is_directory=True)
+
+    with pytest.raises(ProposalError, match="symlink"):
+        service.accept(drafted.proposal_id)
+
+    assert not drafted.body_destination.exists()
+    assert "NEVER AUTHORED" not in _tree_bytes(paths.knowledge)
 
 
 def test_accept_refuses_a_content_file_inside_the_root_but_outside_knowledge(
