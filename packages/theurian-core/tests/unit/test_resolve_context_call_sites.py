@@ -14,7 +14,12 @@ held one.
 happens, in ``infrastructure/filesystem/migration_loader.py`` -- closes the
 class at its root: every caller already guards ``TheurianError``, so a
 ``TheurianError`` subclass is caught wherever ``resolve_context`` is already
-caught, with no per-command patch needed. What that fix alone does not close
+caught, with no per-command patch needed. Its sibling
+``MigrationFileUnreadableError`` closes the identical escape one call site
+over, for the migration file's own read rather than a `contentFile` it names
+(a `chmod 000`'d migration crashed the same way). Both are members of the same
+class for the purposes of this file: what it pins is the *reaching* commands,
+not which subclass the loader happens to raise. What neither fix alone closes
 is a *new* command reaching ``resolve_context`` (or ``_require_project``,
 which wraps it) without going through one of the two guarded shapes below --
 that is what this file pins, the ``_reclaim`` docstring's CP-2 precedent for
@@ -53,7 +58,11 @@ from collections.abc import Iterator
 import pytest
 
 import theurian
-from theurian.domain.errors import MigrationContentUnreadableError, TheurianError
+from theurian.domain.errors import (
+    MigrationContentUnreadableError,
+    MigrationFileUnreadableError,
+    TheurianError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -280,14 +289,18 @@ def test_each_direct_caller_of_resolve_context_ends_in_except_theurian_error(
     )
 
 
-def test_the_loaders_content_file_error_is_a_theurian_error() -> None:
+@pytest.mark.parametrize(
+    "error_type", [MigrationContentUnreadableError, MigrationFileUnreadableError]
+)
+def test_the_loaders_read_errors_are_theurian_errors(error_type: type[TheurianError]) -> None:
     """The other half of the closure argument: what the loader actually raises.
 
     The parametrized test above proves each direct caller catches
     `TheurianError`. This proves what
-    `infrastructure/filesystem/migration_loader.py` raises for an unresolvable
-    `contentFile` is in fact one -- together, the two prove the read failure
-    cannot again escape as a bare `OSError` through any of the pinned call
-    sites above.
+    `infrastructure/filesystem/migration_loader.py` raises for its two raw
+    reads -- an unresolvable `contentFile`, and the migration file itself --
+    is in fact one, for both. Together, the two tests prove neither read
+    failure can again escape as a bare `OSError` through any of the pinned
+    call sites above.
     """
-    assert issubclass(MigrationContentUnreadableError, TheurianError)
+    assert issubclass(error_type, TheurianError)
