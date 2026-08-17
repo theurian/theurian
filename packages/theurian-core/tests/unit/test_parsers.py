@@ -266,6 +266,31 @@ def test_yaml_parser_names_the_source_uri_for_a_document_nested_past_the_recursi
     assert ANCHOR.source_uri in str(excinfo.value)
 
 
+def test_json_parser_names_the_source_uri_for_a_document_nested_past_the_recursion_limit() -> None:
+    """Round-four mutation-adversarial (mutation n17 SURVIVED): ``JsonParser.
+    parse``'s own ``except RecursionError as exc: raise ValueError(f"{anchor.
+    source_uri} is nested too deeply to parse") from exc`` (``structured.py``)
+    is the *reference implementation* two siblings already copy and cite by
+    name -- ``OpenApiParser._load``'s identical guard says "Mirrors
+    ``structured.py::JsonParser.parse``'s identical guard around the
+    identical call" (``openapi.py``), and this file already pins that mirror
+    at
+    :func:`test_openapi_reports_the_source_uri_for_json_nested_past_the_recursion_limit`
+    below -- but nothing in this file ever drove the original guard it
+    mirrors. A mutation deleting the ``except RecursionError`` clause here
+    entirely, or one that dropped ``anchor.source_uri`` from its message,
+    would have passed every existing test in this file: the malformed-JSON
+    parametrization above drives only ``json.JSONDecodeError``, a different
+    branch of the same ``try``.
+    """
+    deep = ("[" * 20000 + "]" * 20000).encode("utf-8")
+
+    with pytest.raises(ValueError, match="nested") as excinfo:
+        JsonParser().parse(deep, media_type=JSON, anchor=ANCHOR)
+
+    assert ANCHOR.source_uri in str(excinfo.value)
+
+
 # ==========================================================================
 # OpenAPI
 # ==========================================================================

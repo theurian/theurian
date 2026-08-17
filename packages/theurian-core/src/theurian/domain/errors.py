@@ -217,9 +217,15 @@ class MigrationFileUnreadableError(MigrationError):
     ``Path.is_file()``'s own errno-swallowing (see
     ``infrastructure/filesystem/migration_loader.py``'s enumeration comment).
     The loop case reuses :func:`_read_failure_remedy`'s ``ELOOP`` branch; the
-    dangling case passes ``remedy`` explicitly, because "restore the target or
-    remove the link" is specific to a symlink whose target is missing and does
-    not fit the errno-keyed dispatch every other case here shares.
+    dangling case passes ``missing_or_wrong_text`` explicitly, because
+    "restore the target or remove the link" is specific to a symlink whose
+    target is missing and does not fit the errno-keyed dispatch every other
+    case here shares. This is the same ``missing_or_wrong_text`` fallback hook
+    :func:`_read_failure_remedy` already exposes for
+    :class:`MigrationContentUnreadableError`'s own missing-file text -- not a
+    separate ``remedy`` keyword, which briefly existed here and silently
+    ignored ``errno_value`` whenever both were passed (two sources of truth
+    for the same string).
     """
 
     def __init__(
@@ -228,22 +234,24 @@ class MigrationFileUnreadableError(MigrationError):
         reason: str,
         errno_value: int | None = None,
         *,
-        remedy: str | None = None,
+        missing_or_wrong_text: str | None = None,
     ) -> None:
         self.migration_path = migration_path
-        self.remedy = (
-            remedy
-            if remedy is not None
-            else _read_failure_remedy(
-                migration_path,
-                errno_value,
-                missing_or_wrong_text=f"Confirm {migration_path!r} still exists, then retry.",
-            )
+        self.remedy = _read_failure_remedy(
+            migration_path,
+            errno_value,
+            missing_or_wrong_text=(
+                missing_or_wrong_text
+                if missing_or_wrong_text is not None
+                else f"Confirm {migration_path!r} still exists, then retry."
+            ),
         )
         super().__init__(f"{migration_path!r} could not be read: {reason}")
 
 
-def _directory_unreadable_remedy(directory: str, errno_value: int | None) -> str:
+def _directory_unreadable_remedy(
+    directory: str, errno_value: int | None, *, missing_or_wrong_text: str | None = None
+) -> str:
     """The cure selected by *why* ``.theurian/migrations/`` could not be
     probed or listed, the same errno-keyed shape :func:`_read_failure_remedy`
     already gives the per-file siblings above.
@@ -251,11 +259,17 @@ def _directory_unreadable_remedy(directory: str, errno_value: int | None) -> str
     ``ELOOP`` gets its own remedy (round two): a `chmod` fixes a permission
     problem but does nothing about a symlink chain, so folding it into the
     ``EACCES``/``EPERM`` branch would send a reader to check a permission bit
-    that was never wrong. The residual branch -- neither a known permission
-    errno nor a loop -- covers whatever else the platform can raise at this
-    probe (round two's adversarial test injects ``ENAMETOOLONG``); it names
-    no specific cause, because there is no single one to name, only "this is
-    not a readable directory."
+    that was never wrong. ``missing_or_wrong_text`` (round four) is the
+    directory-level counterpart of :class:`MigrationFileUnreadableError`'s
+    identically-named hook: a dangling ``migrations_dir`` symlink needs
+    "restore the target or remove the link", not the generic residual text,
+    and that text does not fit this function's single ``directory``-shaped
+    contract any more than it fit :func:`_read_failure_remedy`'s. The residual
+    branch -- neither a known permission errno, a loop, nor a caller-supplied
+    override -- covers whatever else the platform can raise at this probe
+    (round two's adversarial test injects ``ENAMETOOLONG``); it names no
+    specific cause, because there is no single one to name, only "this is not
+    a readable directory."
     """
     if errno_value == _errno.ELOOP:
         return (
@@ -266,14 +280,17 @@ def _directory_unreadable_remedy(directory: str, errno_value: int | None) -> str
             f"Confirm this user has read and execute permission on "
             f"{directory!r} and its parent directories, then retry."
         )
+    if missing_or_wrong_text is not None:
+        return missing_or_wrong_text
     return f"Confirm {directory!r} resolves to a readable directory, then retry."
 
 
 class MigrationsDirectoryUnreadableError(MigrationError):
     """``.theurian/migrations/`` itself could not be probed or listed (issues
-    #205, #214, and round two's symlink-loop and residual-errno faces).
+    #205, #214, round two's symlink-loop and residual-errno faces, and round
+    four's dangling-symlink face).
 
-    Five raw-IO shapes converge on this one class:
+    Six raw-IO shapes converge on this one class:
 
     1. **A parent denies traversal (#205).** ``pathlib.Path.is_dir()`` in this
        interpreter swallows ``ENOENT``/``ENOTDIR``/``ELOOP`` -- the well-formed
@@ -312,15 +329,40 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        still refuses, but with a remedy that does not misdiagnose it as a
        permission problem: "confirm this resolves to a readable directory,"
        not "check read and execute permission."
+    6. **`migrations_dir` itself is a dangling symlink (round four).** Distinct
+       from case 4's loop: a chain that terminates at nothing, rather than one
+       that never terminates, made the previous target-following probe raise
+       `ENOENT` -- the identical errno a directory that never existed at all
+       raises -- so a dangling `migrations_dir` used to fold into
+       `LoadedMigrations.empty()` right alongside it. `load_migrations` now
+       checks `migrations_dir.is_symlink()` (an `lstat`, checked before the
+       following probe) first, so a dangling link is told apart from a
+       genuinely absent directory before that probe ever runs, and refuses
+       with `missing_or_wrong_text` naming the link rather than the generic
+       residual text.
 
-    All five are now raised from ``load_migrations``'s explicit ``os.stat``
-    probe and its enumeration `try`, both keying the remedy on ``errno_value``
-    via :func:`_directory_unreadable_remedy`.
+    All six are now raised from ``load_migrations``'s ``is_symlink()`` check,
+    its explicit ``os.stat`` probe, and its enumeration `try`, all keying the
+    remedy on ``errno_value`` (or an explicit ``missing_or_wrong_text``) via
+    :func:`_directory_unreadable_remedy`. A `migrations_dir` symlink that
+    resolves *outside* `project_root` is not a member of this class -- see
+    :class:`PathEscapeError`, raised directly by the same `is_symlink()` check
+    rather than folded in here, since "escapes the root" is a different fault
+    from "cannot be read at all."
     """
 
-    def __init__(self, migrations_path: str, reason: str, errno_value: int | None = None) -> None:
+    def __init__(
+        self,
+        migrations_path: str,
+        reason: str,
+        errno_value: int | None = None,
+        *,
+        missing_or_wrong_text: str | None = None,
+    ) -> None:
         self.migrations_path = migrations_path
-        self.remedy = _directory_unreadable_remedy(migrations_path, errno_value)
+        self.remedy = _directory_unreadable_remedy(
+            migrations_path, errno_value, missing_or_wrong_text=missing_or_wrong_text
+        )
         super().__init__(f"{migrations_path!r} could not be listed: {reason}")
 
 

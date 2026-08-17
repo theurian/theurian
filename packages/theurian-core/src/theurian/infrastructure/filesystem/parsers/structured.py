@@ -66,8 +66,14 @@ class YamlParser:
             # nesting depth" -- re-wrapped here with `anchor.source_uri` for
             # the identical reason the `yaml.YAMLError` clause immediately
             # above it, and `_decode`'s `UnicodeDecodeError` clause, both
-            # already carry it: this is the only failure `load_yaml` can
-            # raise into this method that did not, until now.
+            # already carry it: this is the only *ValueError* `load_yaml` can
+            # raise into this method that did not, until now. `load_yaml` can
+            # also raise `InputTooLargeError` (`SecurityError`, not
+            # `ValueError`) for an oversized document; that one is not caught
+            # by this clause and passes through this method unwrapped, still
+            # without `anchor.source_uri` -- a deliberate contract this
+            # method's own `Raises:` section already documents separately,
+            # not a gap this clause is meant to close.
             msg = f"{anchor.source_uri}: {exc}"
             raise ValueError(msg) from exc
 

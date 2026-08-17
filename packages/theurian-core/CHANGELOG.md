@@ -152,7 +152,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     `UnicodeDecodeError`, `ValueError`, and `yaml.YAMLError`, so it escaped
     every one of them and reached `resolve_context` as a raw traceback under
     `--json`. About 1 KB of nested YAML is already enough to trigger it
-    (measured: `"["*495 + "]"*495`, 1,023 bytes). `load_yaml` and
+    (measured: `"["*495 + "]"*495`, 990 bytes — 1,023 was the full migration
+    document this was reproduced against, not this bracket string alone).
+    `load_yaml` and
     `load_yaml_mapping` now catch `RecursionError` and raise `ValueError` in
     its place — the type every consumer on this path already handles.
     `load_yaml`'s other three callers, which do not go through

@@ -85,7 +85,9 @@ def load_yaml(text: str, *, max_bytes: int = MAX_YAML_BYTES) -> Any:
         yaml.YAMLError: If the document is malformed.
         ValueError: If the document nests past the parser's recursion depth --
             translated from a ``RecursionError`` (adversarial round two:
-            ``"["*495 + "]"*495``, 1,023 bytes, is already enough). Not
+            ``"["*495 + "]"*495``, 990 bytes, is already enough -- 1,023 was
+            the byte count of the full migration document this leak was
+            reproduced against, not this bare bracket string). Not
             because ``RecursionError`` sits outside ``Exception``'s hierarchy
             -- it is a ``RuntimeError`` subclass, and a bare ``except
             Exception`` would catch it fine -- but because, before this

@@ -1082,6 +1082,45 @@ def test_apply_refuses_a_symlink_loop_migrations_directory_without_seeding_a_sta
     assert not state_dir.exists() or not any(state_dir.iterdir())
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_apply_refuses_a_dangling_migrations_directory_symlink_without_seeding_a_state_database(
+    project: Path,
+) -> None:
+    """RED (round four): the CLI-level face of
+    `tests/unit/test_migration_loader_errors.py::test_load_migrations_refuses_a_dangling_migrations_directory_symlink`
+    -- `.theurian/migrations` symlinked at nothing, rather than the
+    symlink-*loop* the sibling test above drives. Measured directly before
+    this fix: `load_migrations`'s top-of-function probe follows the dangling
+    link, gets `ENOENT`, and answers `LoadedMigrations.empty()` -- the
+    identical branch a directory that never existed hits -- so `migrate apply
+    --json` reports `databaseCreated: true, changed: false` at exit 0 and
+    creates both `.theurian/state/active.json` and a `.sqlite` database for
+    the empty set it wrongly believed was the whole story, the same worse
+    face `test_apply_refuses_an_unreadable_migrations_directory_without_
+    seeding_a_state_database` above pins for a permission refusal and the
+    symlink-loop test immediately above pins for a loop.
+    """
+    _invoke("init")
+    _write_migration(project)
+    migrations_dir = project / ".theurian" / "migrations"
+    shutil.rmtree(migrations_dir)
+    migrations_dir.symlink_to(project / ".theurian" / "does-not-exist")
+
+    result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    payload = json.loads(result.stderr)
+    relative = str(migrations_dir.relative_to(project))
+    assert payload["error"] == f"{relative!r} could not be listed: symbolic link target is missing"
+    assert payload["remedy"] == (
+        f"{relative!r} is a symbolic link whose target is missing. Restore the target or "
+        f"remove the link, then retry."
+    )
+    state_dir = project / ".theurian" / "state"
+    assert not state_dir.exists() or not any(state_dir.iterdir())
+
+
 # -- round three: entry-level enumeration policy, the CLI face --------------
 #
 # The symlink-loop tests above drive `.theurian/migrations` *itself* being a
