@@ -24,7 +24,14 @@ from theurian.domain.enums import (
     SpecificationStatus,
     TrustLevel,
 )
-from theurian.domain.errors import MigrationError, PathEscapeError
+from theurian.domain.errors import (
+    MigrationContentUnreadableError,
+    MigrationError,
+    MigrationFileUnreadableError,
+    MigrationsDirectoryUnreadableError,
+    PathEscapeError,
+    SchemaUnreadableError,
+)
 from theurian.domain.identifiers import ItemId, MigrationId, RevisionId, SpecId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.migration import (
@@ -63,7 +70,27 @@ _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 
 @lru_cache(maxsize=1)
 def _validator(schema_root: Path) -> Draft202012Validator:
-    schema = json.loads((schema_root / _SCHEMA_RELATIVE).read_text(encoding="utf-8"))
+    """Build the migration-schema validator, translating a corrupted install.
+
+    Reads the *installed package's* schema, never a path under a user's
+    project -- `schema_root()` (`cli/context.py`) already raises
+    `ProjectError` when neither candidate location exists at all, checked with
+    `.exists()` before either is returned here. What that leaves is "a
+    location was found, but reading it failed": a permission problem on
+    site-packages, or a symlink loop. Originally left as a bare `OSError` on
+    the reasoning that install-integrity is not user-project state -- true,
+    but beside the CP-2 point: an unguarded read still crashes every `--json`
+    command that reaches `resolve_context` (issue #205's Class 1), so it is
+    translated here too, to `SchemaUnreadableError` rather than a
+    `MigrationError`, keeping that distinction in the *type* instead of in
+    whether the failure is caught at all.
+    """
+    schema_path = schema_root / _SCHEMA_RELATIVE
+    try:
+        text = schema_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SchemaUnreadableError(str(schema_path), exc.strerror or str(exc)) from exc
+    schema = json.loads(text)
     return Draft202012Validator(schema)
 
 
@@ -82,9 +109,36 @@ def load_migrations(
         PathEscapeError: If a ``contentFile`` points outside ``project_root``.
         InputTooLargeError: If a file exceeds its size limit.
     """
-    if not migrations_dir.is_dir():
+    try:
+        # CPython's `Path.is_dir()` swallows `ENOENT`/`ENOTDIR`/`ELOOP` -- the
+        # well-formed "not a directory" case the `if not is_directory` below
+        # already answers by returning an empty migration set -- but
+        # re-raises `EACCES` when a *parent* of `migrations_dir` denies
+        # traversal. The measurement behind converting that is on
+        # `MigrationsDirectoryUnreadableError`'s own docstring, not repeated
+        # here.
+        is_directory = migrations_dir.is_dir()
+    except OSError as exc:
+        raise MigrationsDirectoryUnreadableError(
+            str(migrations_dir.relative_to(project_root)), exc.strerror or str(exc)
+        ) from exc
+    if not is_directory:
         return LoadedMigrations.empty()
 
+    # `glob` is a *different* raw-IO call than `is_dir` above, and does not
+    # belong to the class this file sweeps: `chmod 000` on `migrations_dir`
+    # *itself* (rather than its parent, above) leaves `is_dir()` on it
+    # succeeding -- stat needs no permission on the target, only on its
+    # ancestors -- while `pathlib.Path.glob` catches the `PermissionError` its
+    # own `scandir` hits internally and yields nothing, so this returns an
+    # *empty* migration set rather than crashing. `migrate validate --json`
+    # then reports `valid: true` with `migrationCount: 0` for a project whose
+    # migrations were never read. That is a different, quieter defect than the
+    # Rich-traceback crash this file's `MigrationFileUnreadableError`/
+    # `MigrationContentUnreadableError`/`MigrationsDirectoryUnreadableError`
+    # sites close, and sweeping it into a bare-`OSError` conversion here would
+    # do nothing, because there is no `OSError` to catch -- filed separately.
+    #
     # Sorted so a failure reports the first file in a stable order rather than
     # whichever the filesystem happened to yield first.
     paths = sorted(p for p in migrations_dir.glob("*.yaml") if p.is_file())
@@ -113,7 +167,16 @@ def _load_one(
     validator: Draft202012Validator,
     content_by_hash: dict[str, str],
 ) -> Migration:
-    raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
+    try:
+        raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
+    except OSError as exc:
+        # The sibling of `_parse_upsert`'s conversion below, for the *other*
+        # raw read on this load path: the migration file itself, not a
+        # `contentFile` it names. The measurement behind this conversion is on
+        # `MigrationFileUnreadableError`'s own docstring, not repeated here.
+        raise MigrationFileUnreadableError(
+            str(path.relative_to(project_root)), exc.strerror or str(exc), exc.errno
+        ) from exc
     checksum = ContentHash.of_bytes(raw)
 
     try:
@@ -265,7 +328,25 @@ def _parse_upsert(
     # influenceable. Resolution happens against the project root with symlinks
     # followed first, so `../../../.ssh/id_ed25519` and a symlink that leaves
     # the tree are both refused (SEC-7, T-4, T-5).
-    relative_to_root = (migrations_dir / content_file).resolve()
+    try:
+        relative_to_root = (migrations_dir / content_file).resolve()
+    except (ValueError, OSError) as exc:
+        # An embedded NUL byte makes `Path.resolve()` -- `os.path.realpath`,
+        # then an `lstat` the OS refuses to even attempt -- raise `ValueError`,
+        # not `OSError`, before any of the checks below run. The JSON Schema's
+        # `contentFile` definition checks type, length and a `..`/absolute-path
+        # prefix; none of those exclude a NUL byte, so this reached the
+        # resolve call unfiltered (issue #205's Class 1a, reproduced against
+        # the real CLI as `ValueError: lstat: embedded null character in
+        # path`). `OSError` is caught too on the same reasoning as the read
+        # below: neither is a `TheurianError`, and this call sits ahead of
+        # every guard in this file.
+        raise MigrationContentUnreadableError(
+            str(path.relative_to(project_root)),
+            content_file,
+            str(exc),
+            getattr(exc, "errno", None),
+        ) from exc
     try:
         relative = relative_to_root.relative_to(project_root.resolve())
     except ValueError as exc:
@@ -273,7 +354,19 @@ def _parse_upsert(
 
     relative_posix = PurePosixPath(relative)
     resolve_within_root(project_root, relative_posix)
-    body_bytes = read_source_file(project_root, relative_posix)
+    try:
+        body_bytes = read_source_file(project_root, relative_posix)
+    except OSError as exc:
+        # `read_source_file`'s own docstring names `FileNotFoundError` as one of
+        # the things it raises, and a bare `OSError` is none of the types every
+        # `resolve_context` caller already guards (issue #205). Converting here,
+        # at the one call site the read happens, is what makes every one of
+        # those callers -- `migrate validate`, `init`, and the rest of
+        # `_require_project`'s seven call sites -- report the CP-2 `{error,
+        # remedy}` shape instead of a Rich traceback with an empty stdout.
+        raise MigrationContentUnreadableError(
+            str(path.relative_to(project_root)), content_file, exc.strerror or str(exc), exc.errno
+        ) from exc
 
     try:
         body = body_bytes.decode("utf-8")
