@@ -429,8 +429,15 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   the calling agent's responsibility.** Theurian cannot stop an agent that treats
   document text as instructions, and no MCP server can. This is a shared
   responsibility, and it is the most important line in this document.
-- **Secrets already committed to your repository.** Ingestion warns or blocks per
-  policy, but Theurian is not a secret scanner and should not be your only one.
+- **Secrets already committed to your repository.** Theurian does not scan
+  ingested content for secrets. SEC-11's scanner is not implemented
+  ([#198](https://github.com/theurian/theurian/issues/198)), so ingestion neither
+  warns nor blocks, and the `security.secretScan` key in the published config
+  schema selects nothing. What stands between a secret in a document and an
+  approved, indexed revision is the human who reads the migration diff; getting
+  one out afterwards means superseding the revision or retiring the item. Run a
+  repository secret scanner — Theurian is not one and is not a replacement for
+  one.
 - **Network-level attackers.** The OSS Core is loopback-only by design. Exposing
   it to a network is unsupported. A hosted deployment requires TLS, OAuth 2.1,
   audience and scope validation, and tenant isolation — none of which the local

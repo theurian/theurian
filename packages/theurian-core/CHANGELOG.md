@@ -516,6 +516,30 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `ReviewProvider`'s docstring now says the GitHub *adapter* is unbuilt; the
   port itself exists.
 
+- **The documents described a secret scanner that does not exist**
+  ([#198](https://github.com/theurian/theurian/issues/198)). SEC-11 — scan a
+  candidate revision for secrets and block (default), warn, or do nothing per
+  policy — is not implemented. No content scanner exists anywhere in `src/`, and
+  nothing reads `.theurian/config.yaml` at all (#129), so the
+  `security.secretScan` key selected no behaviour while the published schema
+  declared `"default": "block"`. Six surfaces asserted the control was in force
+  and each now names the absence: T-15's Controls block, the threat summary row,
+  the same T-15 row in `docs/architecture/requirements-analysis.md`,
+  `SECURITY.md`'s "Ingestion warns or blocks per policy", the schema key, and the
+  sample project's config. Same class as the T-7 correction above — a security
+  control written in the present tense whose component does not exist.
+
+  **What stands at SEC-11's trigger point is now stated rather than implied, and
+  neither control is automated:** human review of the authored migration
+  (ADR-0013 — no registered MCP tool can reach a canonical write, and `theurian
+  propose accept` moves files without approving), and supersede or retire with
+  Milestone 6's withdrawal→purge trigger for removing a secret after the fact.
+  The residual is written where a reader meets it: a secret in a document reaches
+  the index unless a human notices it in the migration diff. The repository-side
+  `Secret scan` job (OSS-9, gitleaks) is a different control and is unchanged —
+  it scans this repository's Git history in CI and was never in a user project's
+  ingestion path.
+
 ## [0.1.0.dev4] - 2026-08-16
 
 ### Added
