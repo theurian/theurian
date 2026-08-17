@@ -470,16 +470,35 @@ Additive changes (a new optional field, a new tool) are MINOR and do not bump
 or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
 
-**`protocolVersion` is still `theurian/v1` after Milestone 5, which made three
-breaking changes to this contract.** That is a decision, recorded here because
-the alternative reading is that somebody forgot. The rule above governs changes
-*from a released protocol*: no published version of Core has ever lacked them,
-so no client can be pinned to a `v1` that lacks them, and bumping would publish
-a `theurian/v2` whose `v1` never shipped. Milestone 5's breaking set is the
-*content* of `v1`, not a departure from it.
+**`protocolVersion` is still `theurian/v1` after Milestone 5 and #206, which
+between them made four breaking changes to this contract.** That is a
+decision, recorded here because the alternative reading is that somebody
+forgot. The rule above governs changes *from a released protocol*: no
+published version of Core has ever lacked them, so no client can be pinned to
+a `v1` that lacks them, and bumping would publish a `theurian/v2` whose `v1`
+never shipped. Milestone 5's breaking set is the *content* of `v1`, not a
+departure from it.
 
-The three, so that "breaking but unbumped" is checkable rather than asserted:
+The four, so that "breaking but unbumped" is checkable rather than asserted:
 the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
-and the two required fields `project.list` gained. Each is named as BREAKING in
-the changelog, which is what protects an integrator. The first bump is the
+and the two required fields `project.list` gained (all Milestone 5), and the
+removal of `system.capabilities.milestone` (#206). Each is named as BREAKING
+in the changelog, which is what protects an integrator. The first bump is the
 first breaking change after the version that first carries `theurian/v1`.
+
+**`milestone`'s exemption stands on different ground, and the two must not be
+conflated.** The "no published version of Core has ever lacked them" reading
+above does not cover it: measured across `core-v0.1.0.dev0` through
+`core-v0.1.0.dev4`, the field shipped in every released tag, all under
+`theurian/v1` -- unlike Milestone 5's set, which never shipped under `v1` at
+all before the milestone that changed it, so a client *could* in principle
+have been built against `milestone`'s presence. The exemption is granted
+anyway, on grounds specific to this one field: it was never defined in this
+document or in any schema under `schemas/mcp/`, it has zero consumers --
+search-verified across this repository, plugins included -- and the project is
+pre-1.0 on a `dev` line with no known external integration to break.
+Publishing `theurian/v2` over a field nothing reads would trip every CP-6
+compatibility gate for a change no integrator can observe. **This exemption is
+scoped to `milestone` alone**: it says nothing about `version` or
+`protocolVersion`, which feed that same gate and are not optional to check
+(see the `system.capabilities` paragraph under "Project and system" above).

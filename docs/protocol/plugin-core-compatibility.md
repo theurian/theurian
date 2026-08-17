@@ -204,6 +204,11 @@ Bump `protocolVersion` when the change is breaking:
 | Changing an exit code's meaning | **Yes** |
 | Renaming a tool | **Yes** |
 
+`system.capabilities.milestone`'s removal (#206) was breaking by this table
+and shipped unbumped anyway -- a recorded, narrowly-scoped exemption, not a
+silent exception. See "Changing this contract" in
+[mcp-tools.md](mcp-tools.md) for the reasoning.
+
 On a bump: raise `CURRENT_PROTOCOL_VERSION` in Core, release Core, then update
 every client's `protocolVersion` and `coreCompatibility`, and release the
 clients. In that order — clients that stop working loudly are recoverable;
