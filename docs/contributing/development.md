@@ -173,7 +173,9 @@ Adding one:
 
 ## Commits
 
-Conventional Commits, DCO sign-off, one topic per pull request. Full detail in
+Conventional Commits, DCO sign-off, a
+[verified commit signature](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md#signing-your-commits),
+one topic per pull request. Full detail in
 [CONTRIBUTING.md](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md).
 
 ```sh

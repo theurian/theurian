@@ -92,12 +92,22 @@ out by requiring that Core remain fully functional standalone.
 
 Still owed, with the milestone that will satisfy it:
 
-- **The DCO check is not a required check.** This section said it was.
-  `main`'s branch protection carries no `required_status_checks` at all, so the
-  job reports and does not block — a pull request with an unsigned commit can be
-  merged by anyone able to merge. Point 3 of the Decision calls it "a mechanical
-  gate, not a judgement call", and today it is neither, because nothing gates on
-  it. This is a repository setting rather than a file, which is why no amount of
-  reading the tree finds it; it is filed as
-  [#67](https://github.com/theurian/theurian/issues/67) so it is fixed before
-  the first outside contribution rather than after.
+- **The DCO check is not a required status check.** This section said it was.
+  `main` has no required status checks at all
+  (`branches/main/protection/required_status_checks` returns 404), so the
+  `commits` job reports a missing sign-off without blocking the merge. Point 3
+  of the Decision calls it "a mechanical gate, not a judgement call", and today
+  it reports but does not gate. This is a repository setting rather than a file,
+  which is why no amount of reading the tree finds it; it is filed as
+  [#67](https://github.com/theurian/theurian/issues/67).
+
+  What this note used to conclude from that — "a pull request with an unsigned
+  commit can be merged by anyone able to merge" — is false, and #197 proved it.
+  `main`'s `required_signatures` setting (a branch-protection mechanism, not a
+  status check) blocks any commit without a verified cryptographic signature,
+  regardless of its sign-off state. #197, the first contribution from outside
+  the team, carried a correct sign-off and was still refused with every check
+  green — landable only by an admin override, not by "anyone able to merge." So
+  the owed item is narrow: DCO sign-off is reported but not gate-enforced, while
+  cryptographic signing already is
+  ([Signing your commits](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md#signing-your-commits)).
