@@ -236,12 +236,16 @@ class SchemaUnreadableError(TheurianError):
 
     Distinct from ``cli/context.py::schema_root``'s "neither candidate
     location exists" :class:`~theurian.application.project_service.ProjectError`
-    -- itself unreachable from here, since ``application`` is not a dependency
-    infrastructure takes on (ADR-0003): this is "a candidate was found, but
-    touching it failed" -- an ``.exists()`` probe or a ``read_text()`` that hit
-    a permission problem on the installation, not on any user's project. Not a
-    :class:`MigrationError`: nothing about migration *content* failed, the
-    installation this build ships with did.
+    -- itself defined in ``application/``, which no module under
+    ``infrastructure/`` imports anywhere in this tree, and this class lives
+    where this failure is raised, in ``infrastructure/filesystem/
+    migration_loader.py``. ADR-0003 does not name this specific edge, only
+    that ``application/`` "depends on `domain/` only"; a domain-level type is
+    what stays importable from every layer regardless. This is "a candidate
+    was found, but touching it failed" -- an ``.exists()`` probe or a
+    ``read_text()`` that hit a permission problem on the installation, not on
+    any user's project. Not a :class:`MigrationError`: nothing about
+    migration *content* failed, the installation this build ships with did.
     """
 
     def __init__(self, schema_path: str, reason: str) -> None:
