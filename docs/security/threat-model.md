@@ -166,6 +166,15 @@ and pasted into issues.
 secret; the token lives in `~/.theurian/auth/mcp-token`; a test asserts the generated
 config contains no high-entropy string.
 
+**Residual:** that test's detector requires an upper-case letter, a lower-case
+letter and a digit, so a real `secrets.token_urlsafe(32)` containing no digit is
+not reported — 0.065% of tokens, `(54/64)**42 × 13/16`, because the 43rd
+character carries only four bits and three of its sixteen symbols are digits;
+measured 10,315 in 16,000,000 samples on 2026-08-18. Whether the repository's
+gitleaks scan catches such a token has not been measured and is not claimed
+here. The detector and its own self-tests are in
+`packages/theurian-core/tests/unit/test_plugin_boundary.py` (#201, #43).
+
 #### T-9 — The token appears in a log or crash report (Information disclosure, High)
 
 > **Corrected in Milestone 5, review round 7. This entry named a control that
