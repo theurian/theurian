@@ -107,6 +107,38 @@ class MigrationDependencyMissingError(MigrationError):
         super().__init__(f"Migration {migration_id} depends on unknown migration {missing}")
 
 
+class DuplicateContentFileError(MigrationError):
+    """Two operations in one migration set reference the same body file (issue #210).
+
+    A body file is not versioned: the loader reads whatever it holds *now*, and
+    where no ``contentSha256`` is declared it adopts that file's current hash as
+    the revision's own. Two operations pointing at one path therefore describe a
+    state that depends on when the file was last written rather than on what
+    either migration says -- measured: the earlier revision recorded the *later*
+    body under its own title and author and, having adopted that body's hash,
+    was self-consistent afterwards and so undetectable.
+
+    Refused over the whole set rather than diagnosed per migration, because
+    neither migration is wrong on its own; what is wrong is that both exist.
+
+    Carries no remedy text of its own, for the reason
+    :class:`UnenforceableScopeError` carries none: whether the honest fix is an
+    edit or a rebuild depends on whether the offending migration was already
+    applied, and only a caller holding a store can know that.
+    """
+
+    def __init__(self, content_file: str, first: MigrationId, second: MigrationId) -> None:
+        self.content_file = content_file
+        self.first = first
+        self.second = second
+        super().__init__(
+            f"{second} references the body file {content_file!r}, which {first} already "
+            f"references. One body file cannot be the content of two revisions: it holds "
+            f"one version at a time, so whichever revision is written first records "
+            f"whatever the file happens to hold then, under its own title and author."
+        )
+
+
 def _read_failure_remedy(
     target: str, errno_value: int | None, *, missing_or_wrong_text: str
 ) -> str:

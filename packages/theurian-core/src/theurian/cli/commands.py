@@ -24,6 +24,7 @@ from theurian.application.ingestion_service import (
 from theurian.application.migration_engine import (
     MigrationEngine,
     WithdrawalCandidate,
+    refuse_duplicate_content_files,
     refuse_unenforceable_scope,
     unenforceable_scope_violations,
     verify_no_applied_migration_changed,
@@ -54,6 +55,7 @@ from theurian.cli.context import (
     resolve_context,
 )
 from theurian.domain.errors import (
+    DuplicateContentFileError,
     MigrationChecksumMismatchError,
     MigrationCycleError,
     MigrationError,
@@ -67,7 +69,7 @@ from theurian.domain.extras import (
     provided_by_daemon_extra,
 )
 from theurian.domain.identifiers import MigrationId, ProjectId
-from theurian.domain.migration import MIGRATION_ENGINE_VERSION
+from theurian.domain.migration import MIGRATION_ENGINE_VERSION, MigrationSet
 from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
 from theurian.domain.state import ActiveState
@@ -172,6 +174,26 @@ UNENFORCEABLE_SCOPE_REMEDY_APPLIED: Final = (
 )
 
 
+#: Cure for `DuplicateContentFileError` (issue #210). One string rather than
+#: the applied/unapplied pair `UnenforceableScopeError` needs: the fix here is
+#: an edit to the *later* migration, and a later migration that has already
+#: been applied is only reachable from a build older than this refusal, so the
+#: rebuild procedure is named as the second half of one remedy instead of being
+#: selected by a store read. Naming it is not optional -- editing an applied
+#: migration trips FR-K5's checksum guard, whose own remedy says to restore the
+#: file, and a remedy that stopped at "edit it" would loop the reader between
+#: the two the way issue #63's HIGH-1 did.
+DUPLICATE_CONTENT_FILE_REMEDY: Final = (
+    "Give the later revision a body file of its own: copy the body to a new path under "
+    "`.theurian/knowledge/` and point that migration's contentFile at it, then retry. "
+    "Pin both bodies with contentSha256 while you are there, so a later edit to either is "
+    "refused rather than silently adopted. If that migration was already applied, editing "
+    "it also trips the applied-migration checksum guard -- delete `.theurian/state/` after "
+    "the edit and run `theurian migrate apply`, which rebuilds canonical state from the "
+    "corrected migrations (FR-K4)."
+)
+
+
 #: Every canonical-state database this project has ever built. Excludes
 #: `theurian-index-*.sqlite`, which lives in the same directory
 #: (`ProjectPaths.state`) but is a different schema entirely.
@@ -239,6 +261,27 @@ def _unenforceable_scope_remedy(
     if exc.migration_id in _applied_migration_ids(paths, project_id):
         return UNENFORCEABLE_SCOPE_REMEDY_APPLIED
     return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
+
+
+def _refuse_a_body_file_backing_two_revisions(
+    migration_set: MigrationSet, *, as_json: bool
+) -> None:
+    """Report issue #210's whole-set refusal, identically at both call sites.
+
+    One function rather than a `try`/`except` in each command, so `migrate
+    validate` and `migrate apply` cannot drift apart on a statically decidable
+    rule the way issue #36's class describes -- and so `apply` keeps its own
+    return-statement budget while refusing before `create_database` runs.
+    """
+    try:
+        refuse_duplicate_content_files(migration_set)
+    except DuplicateContentFileError as exc:
+        _fail(
+            str(exc),
+            remedy=DUPLICATE_CONTENT_FILE_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
 
 
 def _state_remedy(exc: TheurianError) -> str:
@@ -993,6 +1036,8 @@ def migrate_validate(as_json: JsonOption = False) -> None:
         )
         return
 
+    _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
+
     _emit(
         {
             "valid": True,
@@ -1028,6 +1073,12 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             code=EXIT_STATE_ERROR,
         )
         return
+
+    # `MigrationEngine.apply` refuses this too, but only once a write
+    # transaction is open and `create_database` has already run. Refusing here
+    # as well is what keeps issue #63's property -- a refused apply leaves no
+    # database file behind -- true for this rule too (issue #210).
+    _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
 
     # This installation's record of the state it built, out of the repository
     # tree (ADR-0004, SEC-7). Used twice below: to refuse to *apply into* a

@@ -366,19 +366,30 @@ def test_re_applying_the_same_migration_stays_a_no_op(project: Path) -> None:
 async def test_a_second_item_may_still_carry_the_same_content(
     project: Path, registry: ProjectRegistry
 ) -> None:
-    """Only the id is spent. Two items sharing a `contentFile` is not the defect.
+    """Only the id is spent. Two items carrying the same bytes is not the defect.
 
     Worth pinning separately: the cheapest wrong fix is to refuse on the content
-    hash, which would forbid a second item from citing the same document and
-    would still pass a reused id carrying different content. This is also what
-    the corrected migration looks like, so it says what the refusal above asks
-    the author for.
+    hash, which would forbid a second item from carrying the same document and
+    would still pass a reused id carrying different content. The two bodies here
+    are byte-identical, so ``content_by_hash`` holds a single entry for both and
+    a hash-keyed refusal still goes RED on this test.
+
+    Each body sits at its **own path**, which is the other half of what the
+    corrected migration looks like. Until issue #210 this test shared one
+    ``contentFile`` between the two items and said so; a body file may now back
+    only one revision, because a file holds one version at a time and the
+    earlier revision would otherwise record, self-consistently, whatever the
+    later author last wrote there.
     """
     own_revision = "01K1CCCREV01234567890ABCDE"
+    (project / ".theurian/knowledge/architecture/public-note.md").write_text(WITHHELD_BODY)
     _write(
         project,
         REUSING_MIGRATION,
-        REUSING_MIGRATION_YAML.replace(SHARED_REVISION, own_revision),
+        REUSING_MIGRATION_YAML.replace(SHARED_REVISION, own_revision).replace(
+            "contentFile: ../knowledge/architecture/withheld-credentials.md",
+            "contentFile: ../knowledge/architecture/public-note.md",
+        ),
     )
 
     report = _json("migrate", "apply")

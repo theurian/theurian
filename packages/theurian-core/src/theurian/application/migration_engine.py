@@ -22,6 +22,7 @@ from typing import Final, Protocol
 
 from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
 from theurian.domain.errors import (
+    DuplicateContentFileError,
     MigrationChecksumMismatchError,
     MigrationError,
     RevisionConflictError,
@@ -239,6 +240,61 @@ def unenforceable_scope_violations(migration_set: MigrationSet) -> tuple[Migrati
     return tuple(refused)
 
 
+def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
+    """Refuse a body file backing two different revisions (issue #210).
+
+    A body file holds one version at a time and carries no history, so a set in
+    which two *distinct* revisions read one path does not describe a state -- it
+    describes whatever that file was last written with. Measured against the
+    unpinned form: both migrations applied, exit 0, and the earlier revision
+    recorded the later body under its own title and author. Nothing detects it
+    afterwards, because the loader adopts the file's current hash where no
+    ``contentSha256`` is declared, so the wrong record is internally consistent.
+
+    **Keyed by revision id, which is what keeps two legitimate shapes working.**
+    Re-declaring one revision against its own body is how an in-place status
+    change is written -- the revision id does not move, ``append_revision`` is
+    the no-op FR-K8 requires, and only ``status`` differs (ADR-0024 decision 5,
+    the ``reject``/``inplace-draft`` faces in ``test_absence_proof.py``). And a
+    *reused* revision id across two items, sharing a body, stays this function's
+    business to let through: it is refused at write time by the guard that
+    exists for it, whose error names the two items -- refusing it here first
+    would replace that diagnosis with a less specific one for the more serious
+    fault.
+
+    Whole-set rather than pending-only, for the reason
+    :func:`refuse_unenforceable_scope` is: `migrate validate` holds no store and
+    so has no notion of pending, and the two commands must decide a statically
+    decidable rule on identical input or reopen issue #36's class. An
+    already-applied duplicate is refused too -- reachable only from a build
+    older than this guard, and no less ambiguous for having landed.
+
+    Compares :attr:`UpsertRevision.content_reference`, the loader's own resolved
+    path, so ``a/./x.md`` and ``a/x.md`` collide.
+
+    `migrate status` does not call this, matching how it treats the scope rule:
+    its contract is observation, so it keeps reporting on a set the gating
+    commands refuse.
+
+    Raises:
+        DuplicateContentFileError: On the first body file claimed by a second
+            revision, in migration and operation order -- deterministic, since a
+            `MigrationSet` iterates in the application order it settled at
+            construction.
+    """
+    claimed_by: dict[str, tuple[RevisionId, MigrationId]] = {}
+    for migration in migration_set:
+        for operation in migration.operations:
+            if not isinstance(operation, UpsertRevision):
+                continue
+            reference = operation.content_reference
+            claim = claimed_by.get(reference)
+            if claim is None:
+                claimed_by[reference] = (operation.revision_id, migration.migration_id)
+            elif claim[0] != operation.revision_id:
+                raise DuplicateContentFileError(reference, claim[1], migration.migration_id)
+
+
 def _refuse_operation_scope(migration_id: MigrationId, operation: UpsertRevision) -> None:
     violations = _scope_violations(operation)
     if violations:
@@ -330,9 +386,16 @@ class MigrationEngine:
                 enforce (issue #63). Checked over the whole set, after
                 planning but before any write, so it never depends on what
                 has already been written.
+            DuplicateContentFileError: If two operations reference one body
+                file (issue #210). Checked last of the three and over the same
+                whole set: the two above name a specific migration as wrong,
+                while this one is a statement about the set, and reporting the
+                narrower fault first is what keeps a reader from being sent to
+                a second migration that is not the one to edit.
         """
         plan = self.plan(writer, project_id, migration_set)
         refuse_unenforceable_scope(migration_set)
+        refuse_duplicate_content_files(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
         # The items whose surfaceability or current revision an operation could
@@ -734,6 +797,7 @@ __all__ = [
     "MigrationPlan",
     "MigrationWriter",
     "WithdrawalCandidate",
+    "refuse_duplicate_content_files",
     "refuse_unenforceable_scope",
     "revisions_to_purge",
     "unenforceable_scope_violations",

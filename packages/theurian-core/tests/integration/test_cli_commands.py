@@ -819,7 +819,13 @@ def test_editing_an_applied_migration_is_fatal(project: Path) -> None:
 
 
 def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
-    """ADR-0006. The remedy must say a human decides, not the tool."""
+    """ADR-0006. The remedy must say a human decides, not the tool.
+
+    The conflicting migration carries a body file of its own. Pointing it at the
+    first migration's body -- which it did, incidentally, before the issue #210
+    refusal existed -- now reports that ambiguity instead, and this test would
+    then assert ADR-0006's message against a set that never reaches the store.
+    """
     _invoke("init")
     _write_migration(project)
     _invoke("migrate", "apply")
@@ -827,6 +833,9 @@ def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
     # No I, L, O, or U: those are excluded from Crockford base32.
     stale = "01K1STAAAA01234567890ABCDE"
     second = "01K1BBBBBB01234567890ABCDE"
+    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(
+        "# Authentication policy\n\nEvery call carries a signed token, checked twice.\n"
+    )
     (project / f".theurian/migrations/{second}-conflict.yaml").write_text(
         f"""apiVersion: theurian.dev/v1
 id: {second}
@@ -837,7 +846,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: 01K1BBBREV01234567890ABCDE
     expectedRevision: {stale}
-    contentFile: ../knowledge/architecture/auth-policy.md
+    contentFile: ../knowledge/architecture/auth-policy.revised.md
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -1681,6 +1690,126 @@ def test_a_foreign_tenant_recorded_in_a_non_first_sorted_database_is_still_found
     assert ".theurian/state" in error["remedy"]
     assert "FR-K4" in error["remedy"]
     assert "then retry" not in error["remedy"]
+
+
+# -- issue #210: two migrations referencing one body file ------------------
+
+_SECOND_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
+_SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
+
+#: The path the first migration already names. Written as its own constant so
+#: the spelling test below can vary it without varying anything else.
+_SHARED_CONTENT_FILE = "../knowledge/architecture/auth-policy.md"
+
+
+def _second_migration(content_file: str = _SHARED_CONTENT_FILE) -> str:
+    """A well-formed update to the item the first migration created.
+
+    Everything about it is correct except that its ``contentFile`` is the body
+    the first migration already references: the ``expectedRevision`` chain is
+    right, the ids are unique, and no ``contentSha256`` is declared -- the
+    unpinned, hand-authored shape issue #210 measured applying cleanly and
+    recording the *second* body under the *first* revision's title and author.
+    """
+    return f"""apiVersion: theurian.dev/v1
+id: {_SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {_SECOND_REVISION_ID}
+    expectedRevision: {REVISION_ID}
+    contentFile: {content_file}
+    metadata:
+      title: Authentication policy, revised
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _write_second_migration(root: Path, content_file: str = _SHARED_CONTENT_FILE) -> None:
+    (root / f".theurian/migrations/{_SECOND_MIGRATION_ID}-revise.yaml").write_text(
+        _second_migration(content_file)
+    )
+
+
+def test_validate_and_apply_refuse_two_migrations_sharing_one_body_file(project: Path) -> None:
+    """Issue #210, face 1. Both commands exited 0 and the store recorded the
+    second body under the first revision's title and author, self-consistently:
+    the loader adopts the file's current hash where no ``contentSha256`` is
+    declared, so nothing afterwards can tell the substitution happened.
+
+    Pinned at both commands, not one: the refusal has two call sites (issue
+    #36's class -- a property visible to one command and not the other), and a
+    test that asked only `validate` would stay green with `apply`'s call
+    deleted.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_second_migration(project)
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["error"] == apply_error["error"]
+    assert MIGRATION_ID in validate_error["error"], "the migration that names the body first"
+    assert _SECOND_MIGRATION_ID in validate_error["error"], "and the one that names it again"
+    assert "auth-policy.md" in validate_error["error"], "and the path they share"
+    assert validate_error["remedy"] != "Fix the migration set, then retry."
+    assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
+        "a refused apply must cost no state file, as issue #63's refusal already does"
+    )
+
+
+def test_two_spellings_of_one_body_file_are_still_refused(project: Path) -> None:
+    """The comparison is over the resolved path, not the authored string.
+
+    ``../knowledge/architecture/./auth-policy.md`` is the same file as
+    ``../knowledge/architecture/auth-policy.md``; a string-keyed guard reports
+    two distinct references and lets the set through. The loader already
+    resolves this path -- against the migrations directory, symlinks followed
+    -- to read the body at all, so the resolved form is what the refusal
+    compares.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_second_migration(project, content_file="../knowledge/architecture/./auth-policy.md")
+
+    code, error = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR
+    assert _SECOND_MIGRATION_ID in error["error"]
+
+
+def test_two_migrations_naming_two_body_files_are_not_refused(project: Path) -> None:
+    """The negative control. Refusing every second migration would pass the
+    two tests above while breaking the ordinary case they exist to protect."""
+    _invoke("init")
+    _write_migration(project)
+    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(
+        "# Authentication policy, revised\n\nEvery call carries a signed token.\n"
+    )
+    _write_second_migration(
+        project, content_file="../knowledge/architecture/auth-policy.revised.md"
+    )
+
+    validate_code, validated = _invoke("migrate", "validate")
+    apply_code, applied = _invoke("migrate", "apply")
+
+    assert validate_code == 0
+    assert validated["valid"] is True
+    assert apply_code == 0
+    assert applied["applied"] == [MIGRATION_ID, _SECOND_MIGRATION_ID]
 
 
 # ==========================================================================

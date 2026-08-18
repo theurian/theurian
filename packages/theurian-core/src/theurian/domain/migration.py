@@ -122,6 +122,12 @@ class UpsertRevision(Operation):
     metadata: RevisionMetadataSpec
     expected_revision: RevisionId | None = None
     content_sha256: ContentHash | None = None
+    #: ``content_file_path`` as the loader resolved it -- project-relative, with
+    #: ``..`` collapsed and symlinks followed. Recorded because two operations
+    #: can name one file in two spellings, and only the layer that touched the
+    #: disk can say they are the same file (issue #210). ``None`` for an
+    #: operation built in memory, which has no tree to resolve against.
+    resolved_content_path: str | None = None
 
     @override
     @property
@@ -132,6 +138,16 @@ class UpsertRevision(Operation):
     @property
     def content_file(self) -> str | None:
         return self.content_file_path
+
+    @property
+    def content_reference(self) -> str:
+        """The key on which two operations reference the *same* body file.
+
+        The resolved form where there is one, so two spellings of one path
+        compare equal; the authored string otherwise, which is all an
+        in-memory operation has.
+        """
+        return self.resolved_content_path or self.content_file_path
 
 
 @dataclass(frozen=True, slots=True)

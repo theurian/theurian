@@ -15,6 +15,7 @@ from fakes import FrozenClock, InMemoryWriter
 from theurian.application.migration_engine import (
     ApplyReport,
     MigrationEngine,
+    refuse_duplicate_content_files,
     refuse_unenforceable_scope,
     revisions_to_purge,
     unenforceable_scope_violations,
@@ -28,6 +29,7 @@ from theurian.domain.enums import (
     TrustLevel,
 )
 from theurian.domain.errors import (
+    DuplicateContentFileError,
     InvariantViolationError,
     MigrationChecksumMismatchError,
     MigrationCycleError,
@@ -1120,3 +1122,158 @@ def test_status_reports_every_refused_migration_without_raising() -> None:
 def test_status_reports_no_refused_ids_when_the_set_is_clean() -> None:
     migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
     assert unenforceable_scope_violations(migrations) == ()
+
+
+# -- Issue #210: one body file backs one revision --------------------------
+
+
+def _upsert(
+    revision_id: RevisionId,
+    body: str,
+    content_file_path: str,
+    *,
+    resolved: str | None = None,
+    expected_revision: RevisionId | None = None,
+) -> UpsertRevision:
+    return UpsertRevision(
+        item_id=ITEM,
+        revision_id=revision_id,
+        content_file_path=content_file_path,
+        resolved_content_path=resolved,
+        metadata=_metadata(),
+        expected_revision=expected_revision,
+        content_sha256=ContentHash.of_text(body),
+    )
+
+
+def test_a_body_file_backing_two_revisions_is_refused() -> None:
+    """Issue #210, face 1, at the layer that decides it.
+
+    Nothing about either migration is wrong on its own: the ids are unique and
+    the ``expectedRevision`` chain is correct. What is wrong is that one file
+    has to be two versions at once, and the file cannot be -- so the earlier
+    revision records whatever the later author wrote there.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(
+                MIG_2, _upsert(REV_2, BODY_V2, "../knowledge/a.md", expected_revision=REV_1)
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError) as exc:
+        refuse_duplicate_content_files(migrations)
+
+    message = str(exc.value)
+    assert MIG_1 in message, "the migration that referenced the body first"
+    assert MIG_2 in message, "and the one that referenced it again"
+    assert "../knowledge/a.md" in message, "and the path, or the reader has to go looking"
+
+
+def test_two_spellings_of_one_resolved_path_are_one_reference() -> None:
+    """The key is the loader's resolved path, not the authored string.
+
+    ``a/./x.md`` and ``a/x.md`` are one file. A guard keyed on what the author
+    typed reports two references and lets the set through -- and the loader
+    already resolves this path, symlinks and all, to read the body at all.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_1, _upsert(REV_1, BODY_V1, "../knowledge/a.md", resolved="knowledge/a.md")
+            ),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/./a.md",
+                    resolved="knowledge/a.md",
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError):
+        refuse_duplicate_content_files(migrations)
+
+
+def test_an_in_place_status_change_may_re_declare_its_own_body() -> None:
+    """The shape the refusal must not break (ADR-0024 decision 5).
+
+    A reject or draft in place re-declares the item's *current* revision,
+    changing only ``status``: the revision id does not move, and naming the same
+    body file is what keeps ``append_revision`` the no-op FR-K8 requires. Keying
+    the refusal on the path alone refuses this, taking the withdrawal purge's
+    ``reject`` and ``inplace-draft`` faces with it.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    metadata=_metadata(status=KnowledgeStatus.REJECTED),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+
+    refuse_duplicate_content_files(migrations)
+
+    report = _engine(BODY_V1).apply(InMemoryWriter(), PROJECT, migrations)
+    assert report.applied == [MigrationId(MIG_1), MigrationId(MIG_2)]
+
+
+def test_two_revisions_with_their_own_body_files_are_not_refused() -> None:
+    """The negative control. Refusing every second `upsertRevision` would pass
+    every assertion above while forbidding the ordinary way to revise an item."""
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(
+                MIG_2, _upsert(REV_2, BODY_V2, "../knowledge/b.md", expected_revision=REV_1)
+            ),
+        )
+    )
+
+    refuse_duplicate_content_files(migrations)
+
+    report = _engine(BODY_V1, BODY_V2).apply(InMemoryWriter(), PROJECT, migrations)
+    assert report.applied == [MigrationId(MIG_1), MigrationId(MIG_2)]
+
+
+def test_apply_refuses_a_shared_body_file_before_writing_anything() -> None:
+    """`apply` refuses on its own, not merely because a caller checked first.
+
+    Asserted on the store as well as on the exception: a refusal raised after
+    the first migration had been written would leave a half-applied set behind
+    on any writer without a transaction to roll back.
+    """
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1),
+            _migration(
+                MIG_2, _upsert(REV_2, BODY_V2, "../knowledge/a.md", expected_revision=REV_1)
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError):
+        _engine(BODY_V1, BODY_V2).apply(writer, PROJECT, migrations)
+
+    assert writer.revisions == {}
+    assert writer.history == []
+
+
+def test_duplicate_content_file_error_is_a_migration_error() -> None:
+    """CLI error handling catches the broader family, so this must join it."""
+    assert issubclass(DuplicateContentFileError, MigrationError)

@@ -751,6 +751,11 @@ def _parse_upsert(
         content_file_path=content_file,
         expected_revision=None if expected is None else RevisionId(expected),
         content_sha256=actual,
+        # The resolution this function already performed in order to read the
+        # body at all, kept so the application layer can tell two spellings of
+        # one path from two paths (issue #210) without resolving anything, and
+        # therefore without touching the filesystem.
+        resolved_content_path=relative_posix.as_posix(),
         metadata=RevisionMetadataSpec(
             title=metadata["title"],
             content_type=MediaType(metadata["contentType"]),
