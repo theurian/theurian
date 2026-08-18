@@ -886,6 +886,57 @@ def test_the_secret_scan_policy_publishes_no_default() -> None:
     )
 
 
+def test_the_published_max_source_file_bytes_default_is_the_constant_it_documents() -> None:
+    """SEC-8, #198: the schema default *documents* `MAX_SOURCE_FILE_BYTES`, so it must equal it.
+
+    `security.maxSourceFileBytes` publishes `default: 8388608`, and its
+    description says that value "documents the shipped limit rather than setting
+    it: `MAX_SOURCE_FILE_BYTES` in `security/paths.py` is 8388608 and is what
+    ingestion enforces". Nothing reads the key (#129), so the default is a
+    *claim about the constant*, not a control -- and a claim that names a number
+    is false the moment the number it names moves.
+
+    The failure this prevents is silent drift between the two: raise
+    `MAX_SOURCE_FILE_BYTES` to lift the real limit and the published default now
+    documents a limit that no longer exists; edit the schema default alone and it
+    documents a limit the code never had. Only a range check guarded this before
+    (`test_path_security.py::test_default_size_limit_is_generous_but_bounded`),
+    which both edits survive as long as they stay inside 1 MiB..64 MiB. This pins
+    the equality the description asserts, so either side moving without the other
+    goes red here.
+
+    The description assertion is a fixture guard, not decoration: if the key were
+    renamed or the description reworded to drop the constant, the equality could
+    pass by coincidence against a default that documents nothing. Holding the
+    description to `MAX_SOURCE_FILE_BYTES` and `security/paths.py` keeps the
+    equality evidence about the claim the schema actually makes.
+    """
+    from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+
+    node = _load("config/project-config.schema.json")["properties"]["security"]["properties"][
+        "maxSourceFileBytes"
+    ]
+
+    assert "MAX_SOURCE_FILE_BYTES" in node["description"], (
+        "the maxSourceFileBytes description no longer names the constant it "
+        "documents; the equality below would then pass against a default that "
+        "documents nothing"
+    )
+    assert "security/paths.py" in node["description"], (
+        "the maxSourceFileBytes description no longer points at security/paths.py, "
+        "where MAX_SOURCE_FILE_BYTES lives and is enforced"
+    )
+    assert node["default"] == MAX_SOURCE_FILE_BYTES, (
+        f"the schema publishes `default: {node['default']}` for "
+        f"`security.maxSourceFileBytes`, but its description says that default "
+        f"documents `MAX_SOURCE_FILE_BYTES` in `security/paths.py`, which is "
+        f"{MAX_SOURCE_FILE_BYTES}. Nothing reads the key (#129), so the default is "
+        f"a claim about the constant, not a control: move one and the published "
+        f"contract documents a limit the code does not enforce. Change both in the "
+        f"same edit, or make the schema stop naming the constant."
+    )
+
+
 # -- CLI contract ----------------------------------------------------------
 
 
