@@ -390,3 +390,85 @@ def test_each_reserved_key_still_publishes_the_absence_the_scan_enforces(
             f"is where the reader gets recorded and those documents are where "
             f"the claim gets corrected; if it does not, restore the sentence."
         )
+
+
+#: The prose surfaces #198 corrected from "the secret scanner is active" to "no
+#: content scanner ships", as ``(label, repo-relative path, the load-bearing
+#: sentence the correction turns on)``.
+#:
+#: The schema-description pins above and the reader-absence scan hold the claim
+#: *inside the contract and the source tree*. These four are the documents a
+#: human reads, and every one shipped stating that secret scanning happens:
+#: ``SECURITY.md`` told users "ingestion warns or blocks per policy", the threat
+#: model listed a configurable ``block``/``warn``/``off`` scanner as T-15's
+#: control, the requirements table cited SEC-11 with no qualification, and the
+#: slash command said ingestion "stores **evidence**". Reverting any one to that
+#: wording leaves both pins above green -- they read code and schema, not prose --
+#: so without these four the correction can rot back to a false security claim
+#: with the suite none the wiser. Each sentence below is absent from the false
+#: version and present only in the correction, so a revert goes red here.
+#:
+#: Matched after collapsing runs of whitespace to a single space, because these
+#: are line-wrapped Markdown: ``SECURITY.md`` breaks "Theurian does not scan" and
+#: "ingested content for secrets" across two source lines, and a raw substring
+#: match would miss the corrected wording and pass vacuously.
+SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, str], ...] = (
+    (
+        "SECURITY.md",
+        "SECURITY.md",
+        "Theurian does not scan ingested content for secrets",
+    ),
+    (
+        "docs/security/threat-model.md (T-15 Controls)",
+        "docs/security/threat-model.md",
+        "no automated control against secrets in content exists",
+    ),
+    (
+        "docs/architecture/requirements-analysis.md (T-15 row)",
+        "docs/architecture/requirements-analysis.md",
+        "no content scanner ships",
+    ),
+    (
+        "plugins/claude-code/commands/ingest.md",
+        "plugins/claude-code/commands/ingest.md",
+        "stores no content",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "relative_path", "sentence"),
+    SECRET_SCAN_PROSE_SURFACES,
+    ids=[case[0] for case in SECRET_SCAN_PROSE_SURFACES],
+)
+def test_each_secret_scan_prose_surface_still_states_no_scanner_ships(
+    label: str, relative_path: str, sentence: str
+) -> None:
+    """SEC-11, #198: the human-facing documents must not re-assert a scanner that does not exist.
+
+    ``security.secretScan`` publishes no default and no code reads it, and four
+    documents tell a reader not to rely on secret scanning *because of that*. The
+    schema-description and reader-absence pins in this module hold the machine
+    side; nothing held the prose, so reverting ``SECURITY.md`` to "ingestion
+    warns or blocks per policy" -- a claim that a control runs that does not --
+    stayed green (round-two mutations B1-B4 all survived).
+
+    The failure this prevents is a security document that promises a control the
+    product does not have: an operator who reads "ingestion warns or blocks"
+    ships a secret into the canonical store believing Theurian caught it. When
+    the scanner lands (Milestone 7, #198), these sentences get corrected in the
+    same change that adds the reader recorded by
+    ``test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force``.
+    """
+    normalized = " ".join((REPO_ROOT / relative_path).read_text(encoding="utf-8").split())
+
+    assert sentence in normalized, (
+        f"{label} no longer states {sentence!r}.\n\n"
+        "That sentence is what tells a reader Theurian does not scan ingested "
+        "content for secrets: SEC-11's scanner is not implemented (#198), no "
+        "code reads `security.secretScan` (#129), and this document must not "
+        "re-assert the control. If the scanner has since shipped, this correction "
+        "and the reader recorded in "
+        "`test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force` "
+        "belong in the same change; otherwise restore the sentence."
+    )
