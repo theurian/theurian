@@ -725,12 +725,74 @@ asking "can someone burn this daemon's CPU" to find two places.
 
 **Controls:** external `$ref` targets recorded as unresolved, never fetched.
 `_external_refs` in `infrastructure/filesystem/parsers/openapi.py` records the
-target instead of following it — with its scheme where the form carries one, so a
-protocol-relative or UNC target records as `relative-file`, and a ref past either
-walk cap, `MAX_REFS` (5000) or `MAX_REF_DEPTH` (64), is dropped from the count
-entirely ([#203](https://github.com/theurian/theurian/issues/203),
-pre-Milestone 7). Recording is pinned by
-`test_external_refs_are_recorded_never_fetched`.
+target instead of following it, with the scheme a fetcher would use
+([#203](https://github.com/theurian/theurian/issues/203)). A reference carrying
+no scheme is classified by its structure rather than defaulted to a local one,
+because the scheme allowlist below will read this field and the default was the
+fail-open direction: `//evil.test/x.json` and `\\smb-host\share\x.json` both name
+a host and both used to record `relative-file`, while
+`C:\Windows\system32\x.json` recorded the scheme `c`, a drive letter `urlsplit`
+read as a scheme. RFC 3986 §4.2's three relative-reference forms now record as
+`protocol-relative`, `absolute-file` and `relative-file`, and `unc` covers
+Windows's spelling of the first, which is not an RFC form at all. The split is
+structural — the mixed `/\host\x` that Windows and browsers accept lands on the
+network side without being enumerated. `NETWORK_PATH_SCHEMES` and
+`LOCAL_PATH_SCHEMES` in that module publish the two groups for the gate that will
+key on them.
+
+**The residual is a scheme that is faithful and still remote.**
+`file://evil.test/share/x.json` records `file`, correctly: the recording says
+what the reference *is*, and a gate that allows `file` at all must inspect the
+authority — as it must inspect the path of an equally local, equally unwanted
+`file:///etc/shadow`. Nothing decides that here.
+
+Both walk caps — `MAX_REFS` (5000) and `MAX_REF_DEPTH` (64) — still stop the
+walk, and each now records where it stopped, because a cut that left no trace
+reported the document as having *no* external references at all: a `$ref` nested
+past the depth cap gave `unresolvedRefCount` 0, the same answer a document with
+no external references gives. One record per reason and two reasons, so the
+marker list holds at most two entries however many nodes sit at a cap.
+
+**That bound is on the marker list, not on the walk, and neither cap is a
+resource-exhaustion control.** The traversal revisits shared sub-objects instead
+of memoising them, so a document can make it exponential without reaching either
+cap ([#245](https://github.com/theurian/theurian/issues/245)). SEC-8 is not
+discharged here.
+
+**`unresolvedRefCount` counts distinct `$ref` strings, and nothing else.** Not
+occurrences, not distinct targets — two spellings of one URL count twice — and
+not the other resolution keywords a specification can carry: `$dynamicRef`,
+`operationRef` and the rest are outside this walk entirely
+([#246](https://github.com/theurian/theurian/issues/246)), so a document can hold
+a remote reference this count does not see. It is a total when
+`refWalkTruncated` is false and a lower bound *for `$ref`* when it is true.
+
+**Neither cap marks a node that could not have held a reference.** A scalar has
+no children and an empty container has none either, and emptiness is answerable
+without descending — which is what lets the check sit in front of a cap that
+forbids descending. Both were measured claiming otherwise: an empty `{}` one
+past the depth cap made a document with no external references publish
+`unresolvedRefCount` 1 and `refWalkTruncated` true. A *non-empty* container stays
+marked even when it holds only scalars, because knowing better means reading the
+children the cap refused to read.
+
+**Both counts stop at the parser boundary, so neither is what a post-ingest
+reader acts on.** `_to_document` carries `structured` into `IngestedDocument`,
+which has no metadata field at all, and no consumer of either value exists in
+`src/`. The record that survives is `structured["_index"]`: `externalRefs`, and
+`refWalkTruncations`, non-empty for exactly the documents `refWalkTruncated`
+calls truncated. A scheme allowlist should read those two and not the counts.
+Kept that way deliberately — threading parser metadata through the ingestion
+port would widen the surface for a value nothing reads — and pinned by
+`test_the_parser_metadata_stops_at_the_parser_boundary`, so a change that starts
+relying on it has to face this decision rather than discover it.
+
+Recording is pinned by `test_external_refs_are_recorded_never_fetched` and, for
+fidelity, by `tests/unit/test_ref_recording.py` — #203's repro table row by row,
+a generated property that a reference opening with two separators never records
+a local-file label, and each cap asserted on both sides of its boundary: at the
+limit and one past it for depth, and at exactly `MAX_REFS` both with and without
+a further node that could hold a reference.
 
 *Future controls, not shipped:* the scheme allowlist, the rejection of
 private-network destinations, and the repository allowlist in

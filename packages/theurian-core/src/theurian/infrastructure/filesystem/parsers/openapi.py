@@ -7,14 +7,18 @@ coverage impossible to compute and impossible to add later without reprocessing
 everything.
 
 External ``$ref`` targets are recorded, never fetched. Resolving one would turn
-every ingested document into a potential SSRF request (SEC-10, T-7).
+every ingested document into a potential SSRF request (SEC-10, T-7). What gets
+recorded has to be faithful for the same reason: the scheme allowlist Milestone 7
+owes will read that record, so a target destined for a host must never arrive
+under a label that reads like a file on this machine (#203).
 """
 
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 from typing import Any, Final, final
-from urllib.parse import urlparse
 
 import yaml
 
@@ -29,14 +33,71 @@ _HTTP_METHODS: Final = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 )
 
-#: Caps the extracted index. A generated OpenAPI document can be enormous, and
-#: an unbounded walk is a resource-exhaustion vector (SEC-8).
+#: Cap the size of the extracted index -- how many operations and how many
+#: references this module will *record* from one document, which a generated
+#: OpenAPI document can otherwise make enormous.
+#:
+#: They do not cap what the extraction costs, and neither is a
+#: resource-exhaustion control. ``_external_refs`` revisits shared sub-objects
+#: instead of memoising them, so a document can make the traversal exponential
+#: while recording almost nothing and reaching neither cap
+#: (https://github.com/theurian/theurian/issues/245). SEC-8 is not discharged
+#: here, and an earlier version of this comment implied it was.
 MAX_OPERATIONS: Final = 5000
 MAX_REFS: Final = 5000
 
-#: Depth cap for the $ref walk. Matches the projection's cap so the two agree
-#: about how deep a document can be before it is treated as pathological.
+#: Depth cap for the $ref walk: below this a document is treated as pathological
+#: and the walk stops descending, recording where it stopped rather than dropping
+#: the subtree in silence (#203).
+#:
+#: Not the projection's cap, which an earlier version of this comment claimed it
+#: matched: ``normalization/projection.py::MAX_DEPTH`` is 24. The two have never
+#: been equal, and nothing here requires them to be.
 MAX_REF_DEPTH: Final = 64
+
+#: RFC 3986 §3.1: a scheme is a letter followed by letters, digits, ``+``, ``-``
+#: and ``.``, terminated by a colon. Matched here rather than delegated to
+#: ``urllib.parse``, whose two answers to "what scheme is this" both reached the
+#: record and both were wrong (#203, each measured):
+#:
+#: - ``urlsplit`` reads the drive letter of ``C:\Windows\system32\x.json`` as the
+#:   scheme ``c``;
+#: - it *raises* ``ValueError("Invalid IPv6 URL")`` on ``http://[::1``, and that
+#:   exception travelled out of ``parse`` and discarded the whole document --
+#:   every operation, schema and other ``$ref`` in it included.
+_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
+
+#: What separates path segments in the forms a ``$ref`` arrives in. Backslash
+#: belongs here because Windows and every browser accept it where a URL wants
+#: ``/``, so ``\\host\share`` reaches the same host ``//host/x`` does.
+_SEPARATORS: Final = frozenset("/\\")
+
+#: Dropped from a reference before it is classified -- tab, newline and carriage
+#: return anywhere, C0 controls and space at the ends. Classifying the raw string
+#: instead would read ``"\t//evil.test/x.json"`` as a relative path while
+#: everything that could ever fetch it sees the host ``evil.test`` (measured).
+#:
+#: The removal *set* is the one ``urlsplit`` uses; the ends are not. ``urlsplit``
+#: strips leading C0-and-space only, while this strips both ends, which is the
+#: WHATWG side of the mapping. Deliberate, and safe in the direction that
+#: matters: trailing characters cannot move a classification from network to
+#: local, because every label here is decided by the *front* of the reference --
+#: the two separators, or the scheme that ends at the first colon.
+_REMOVED_ANYWHERE: Final = str.maketrans({"\t": None, "\n": None, "\r": None})
+_STRIPPED_AT_THE_ENDS: Final = "".join(chr(code) for code in range(0x21))
+
+#: The labels ``scheme`` carries for a reference that names no scheme of its own
+#: -- RFC 3986 §4.2's relative-reference forms, plus Windows's spelling of the
+#: first. Two groups, disjoint, and the split is the whole point of #203: the
+#: scheme allowlist T-7 owes (#129) will key on this field, and a target destined
+#: for a *host* must not arrive under a name that reads like a local file.
+#:
+#: Nothing in ``src/`` consumes either set yet -- the gate that will is Milestone
+#: 7's. They are published so that gate and the fidelity table in
+#: ``tests/unit/test_ref_recording.py`` share one statement of the label space
+#: rather than each carrying its own copy.
+NETWORK_PATH_SCHEMES: Final = frozenset({"protocol-relative", "unc"})
+LOCAL_PATH_SCHEMES: Final = frozenset({"relative-file", "absolute-file"})
 
 
 @final
@@ -73,8 +134,9 @@ class OpenApiParser:
 
         document = _load(text, anchor)
 
+        index = _build_index(document)
         structured: dict[str, Any] = dict(document)
-        structured["_index"] = _build_index(document)
+        structured["_index"] = index
 
         return NormalizedDocument(
             title=_title(document, anchor),
@@ -85,8 +147,30 @@ class OpenApiParser:
             structured=structured,
             metadata={
                 "parser": self.parser_id,
-                "operationCount": str(len(structured["_index"]["operations"])),
-                "unresolvedRefCount": str(len(structured["_index"]["externalRefs"])),
+                "operationCount": str(len(index["operations"])),
+                # A count of this document's *distinct `$ref` strings*, and only
+                # those: not occurrences, not distinct targets (two spellings of
+                # one URL count twice), and not the other resolution keywords a
+                # specification can carry -- `$dynamicRef`, `operationRef` and
+                # the rest are outside this walk entirely (#246). A truncation
+                # record counts too, because it stands for a subtree nobody
+                # looked at; without it a document whose refs all sit past a walk
+                # cap answered "no external references" (#203).
+                #
+                # So: a total when `refWalkTruncated` is false, and a lower bound
+                # for `$ref` when it is true.
+                #
+                # Both keys stop at this object. `IngestionService._to_document`
+                # carries `structured` into `IngestedDocument` and has no
+                # metadata field to carry these into, so the record that survives
+                # ingestion -- and the one a scheme allowlist will read (T-7,
+                # #129) -- is `structured["_index"]`: `externalRefs`, and
+                # `refWalkTruncations` non-empty for exactly the documents this
+                # flag calls truncated.
+                "unresolvedRefCount": str(
+                    len(index["externalRefs"]) + len(index["refWalkTruncations"])
+                ),
+                "refWalkTruncated": "true" if index["refWalkTruncations"] else "false",
             },
         )
 
@@ -131,6 +215,7 @@ def _build_index(document: dict[str, Any]) -> dict[str, Any]:
     answerable. Without it, an OpenAPI document is just a long string.
     """
     operations = _operations(document)
+    refs = _external_refs(document)
     return {
         "specVersion": _version(document),
         "operations": operations,
@@ -138,7 +223,10 @@ def _build_index(document: dict[str, Any]) -> dict[str, Any]:
         "schemaNames": _schema_names(document),
         "channels": _channels(document),
         # Recorded, never fetched (SEC-10, T-7).
-        "externalRefs": _external_refs(document),
+        "externalRefs": list(refs.found),
+        # Where the walk stopped looking. Without it, a document whose refs all
+        # sit past a walk cap is indistinguishable from one that has none (#203).
+        "refWalkTruncations": list(refs.truncations),
     }
 
 
@@ -213,39 +301,172 @@ def _channels(document: dict[str, Any]) -> list[str]:
     return [str(k) for k in channels] if isinstance(channels, dict) else []
 
 
-def _external_refs(document: dict[str, Any]) -> list[dict[str, str]]:
+@dataclass(frozen=True, slots=True)
+class _RefWalk:
+    """What the ``$ref`` walk found, and where it stopped looking.
+
+    Two fields rather than one list because a cut subtree is not a reference: it
+    is the admission that this document holds an unknown number of them.
+    """
+
+    found: tuple[dict[str, str], ...]
+    truncations: tuple[dict[str, str], ...]
+
+
+def _external_refs(document: dict[str, Any]) -> _RefWalk:
     """Collect ``$ref`` targets that point outside this document.
 
     Recorded rather than resolved. Fetching one would let any ingested document
-    make Theurian issue an arbitrary request -- the SSRF path in T-7. A local
-    ``#/...`` reference is internal and needs no note.
+    make Theurian issue an arbitrary request -- the SSRF path in T-7. A
+    same-document reference needs no note: ``#/components/x``, and the empty
+    reference RFC 3986 §4.4 defines as "this document", both resolve inside the
+    bytes already in hand.
+
+    Both caps stop the walk where they are checked, and each records where it
+    stopped. A cut that leaves no trace is worse than a low cap, because the
+    document then reports *no* external references at all (#203).
+
+    **What is bounded here is the marker list, not the traversal.** One record
+    per reason and two reasons, so ``truncations`` holds at most two entries
+    however many nodes sit at a cap -- a document can hold thousands, and one
+    marker each would be a list the caller never asked for. That is the whole of
+    the claim: this walk revisits shared sub-objects rather than memoising them,
+    so its cost is *not* bounded by these caps, and neither cap fires on the
+    shape that makes it expensive (#245). Nothing in this function is a
+    resource-exhaustion control.
     """
     found: list[dict[str, str]] = []
+    truncations: dict[str, dict[str, str]] = {}
     seen: set[str] = set()
 
+    def cut(reason: str, at: str, limit: int) -> None:
+        truncations.setdefault(reason, {"reason": reason, "at": at, "limit": str(limit)})
+
+    def record(ref: object, path: str) -> None:
+        if not isinstance(ref, str) or ref in seen:
+            return
+        target = _as_a_fetcher_reads_it(ref)
+        if not target or target.startswith("#"):
+            return
+        seen.add(ref)
+        found.append({"ref": ref, "at": path, "scheme": _ref_scheme(target), "resolved": "false"})
+
     def walk(node: object, path: str, depth: int) -> None:
-        if len(found) >= MAX_REFS or depth > MAX_REF_DEPTH:
+        if not isinstance(node, dict | list) or not node:
+            # Neither cap may claim it cut something the node could not have
+            # held. A scalar has no children at all, and an empty container has
+            # none either -- emptiness is answerable without descending, which
+            # is the whole reason this check can sit in front of a cap that
+            # forbids descending. Both were measured claiming otherwise: a
+            # `$ref` at exactly `MAX_REF_DEPTH` had its own string value marked
+            # as an uninspected subtree, and an empty `{}` or `[]` one past the
+            # cap made a document with *no* external references publish
+            # `unresolvedRefCount` 1 and `refWalkTruncated` true.
+            #
+            # A non-empty container stays marked even when it happens to hold
+            # only scalars: knowing that requires reading its children, which is
+            # exactly the descent the cap refused, so "we did not look" remains
+            # the honest answer there.
+            return
+        if len(found) >= MAX_REFS:
+            cut("refCount", path, MAX_REFS)
+            return
+        if depth > MAX_REF_DEPTH:
+            cut("depth", path, MAX_REF_DEPTH)
             return
         if isinstance(node, dict):
-            ref = node.get("$ref")
-            if isinstance(ref, str) and not ref.startswith("#") and ref not in seen:
-                seen.add(ref)
-                found.append(
-                    {
-                        "ref": ref,
-                        "at": path,
-                        "scheme": urlparse(ref).scheme or "relative-file",
-                        "resolved": "false",
-                    }
-                )
+            record(node.get("$ref"), path)
             for key, child in node.items():
                 walk(child, f"{path}.{key}" if path else str(key), depth + 1)
-        elif isinstance(node, list):
+        else:
             for index, child in enumerate(node):
                 walk(child, f"{path}[{index}]", depth + 1)
 
     walk(document, "", 0)
-    return found
+    return _RefWalk(found=tuple(found), truncations=tuple(truncations.values()))
+
+
+def _as_a_fetcher_reads_it(ref: str) -> str:
+    r"""Strip what every URL parser strips, before anything classifies ``ref``.
+
+    The record keeps the reference verbatim; only the classification reads this
+    form. Otherwise ``"\t//evil.test/x.json"`` records as a relative file while
+    ``urlsplit`` -- and so anything that would ever fetch it -- sees the host
+    ``evil.test``.
+    """
+    return ref.translate(_REMOVED_ANYWHERE).strip(_STRIPPED_AT_THE_ENDS)
+
+
+def _names_an_authority(target: str) -> bool:
+    r"""Whether ``target`` opens with the two separators that introduce a host.
+
+    RFC 3986 §3.2 introduces an authority with ``//``; Windows spells the same
+    thing ``\\``, and Windows and browsers alike accept the mixed ``/\`` and
+    ``\/``. Reading the pair structurally covers all four without enumerating
+    them, so a spelling nobody has met yet lands on the network side rather than
+    the local one.
+    """
+    # Sliced rather than indexed so a reference shorter than two characters
+    # yields "" and simply fails the membership test.
+    return target[:1] in _SEPARATORS and target[1:2] in _SEPARATORS
+
+
+def _ref_scheme(target: str) -> str:
+    r"""Name what ``target`` points at, the way a fetcher would read it.
+
+    This value is what a scheme allowlist will key on (T-7, #129), so the failure
+    that matters is a target destined for a host arriving under a label that
+    reads like a file on this machine. Before #203 that was the *default*:
+    anything ``urlsplit`` found no scheme in recorded ``relative-file``, which
+    made ``//evil.test/x.json`` and ``\\smb-host\share\x.json`` -- both of which
+    name a host -- read as local files.
+
+    A scheme-less reference is therefore classified by its structure, following
+    RFC 3986 §4.2's three relative-reference forms:
+
+    - ``//host/x.json`` -- a network-path reference -> ``protocol-relative``
+    - ``\\host\share\x`` -- the same thing, spelled for Windows -> ``unc``
+    - ``/etc/passwd`` -- an absolute-path reference -> ``absolute-file``
+    - ``./local.yaml`` -- a relative-path reference -> ``relative-file``
+
+    ``///x`` has an *empty* authority and is really a local absolute path; it
+    records as network-destined anyway, because between two readings of a form
+    that cannot be resolved without its base, the one that assumes a host is the
+    one that fails closed.
+
+    A reference that does carry a scheme records that scheme, lowercased. Two
+    consequences are worth stating outright:
+
+    - ``C:\Windows\system32\x.json`` is not the scheme ``c``. IANA registers no
+      one-letter scheme, so the drive reading is the only one with instances in
+      the wild. It joins ``absolute-file`` rather than getting a label of its own
+      because what it shares with ``/etc/passwd`` is the property a gate cares
+      about -- it resolves from a root, not from the referring document. But
+      ``x://host/y`` keeps the scheme ``x``: a one-letter scheme that names an
+      authority is network-destined whatever else it is. That rule is about the
+      authority, not about the letter, so ``C://foo`` and ``C:\\host\x`` record
+      the scheme ``c`` as well -- a drive letter *is* what they open with, and
+      the sentence above does not hold for those two spellings. Neither is in
+      :data:`LOCAL_PATH_SCHEMES` nor :data:`NETWORK_PATH_SCHEMES`, so an
+      allowlist of either group refuses them: wrong-looking, and fail-closed.
+    - ``file://evil.test/share/x.json`` records ``file``, which is faithful and
+      still network-destined. Nothing here decides that for the gate: allowing
+      ``file`` at all obliges it to inspect the authority, exactly as it obliges
+      it to inspect the path of a ``file:///etc/shadow``. That residual is
+      recorded in ``docs/security/threat-model.md`` (T-7).
+    """
+    if _names_an_authority(target):
+        return "unc" if target.startswith("\\") else "protocol-relative"
+
+    match = _SCHEME.match(target)
+    if match is None:
+        return "absolute-file" if target[:1] in _SEPARATORS else "relative-file"
+
+    # `end()` sits one past the colon, which is not part of the scheme itself.
+    scheme = target[: match.end() - 1].lower()
+    if len(scheme) == 1 and not _names_an_authority(target[match.end() :]):
+        return "absolute-file"
+    return scheme
 
 
 def _title(document: dict[str, Any], anchor: SourceAnchor) -> str:
