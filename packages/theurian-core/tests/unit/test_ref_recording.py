@@ -309,22 +309,39 @@ def test_a_ref_inside_an_array_is_recorded_with_its_index_path() -> None:
     document puts one, so deleting that branch removes recording for the shape
     most likely to carry a hostile reference -- and every other test here kept
     passing, because all of them put their ``$ref`` under a mapping.
+
+    The reference sits at index 1 behind an unrelated element, not at index 0,
+    because index 0 is what a broken branch produces by accident: hardcoding the
+    path to ``[0]`` and scanning only ``node[:1]`` both survive a single-element
+    array, since its one true index is 0 anyway. A ``$ref`` the walk must count
+    *to* to reach, and label with the index it counted to, is what makes the
+    arithmetic and the scan observable.
     """
     document = {
         "openapi": "3.1.0",
         "paths": {
             "/orders": {
-                "get": {"parameters": [{"$ref": "https://evil.test/param.json"}]},
+                "get": {
+                    "parameters": [
+                        {"summary": "unrelated, and not a reference"},
+                        {"$ref": "https://evil.test/second.json"},
+                    ]
+                },
             }
         },
-        "nested": [[{"$ref": "https://evil.test/deep.json"}]],
+        # Two levels of list, the inner reference again past the first element,
+        # so both indices in the path are non-zero.
+        "nested": [["skip", {"$ref": "https://evil.test/deep.json"}]],
     }
 
     by_ref = {record["ref"]: record for record in _index(document)["externalRefs"]}
 
-    assert set(by_ref) == {"https://evil.test/param.json", "https://evil.test/deep.json"}
-    assert by_ref["https://evil.test/param.json"]["at"] == "paths./orders.get.parameters[0]"
-    assert by_ref["https://evil.test/deep.json"]["at"] == "nested[0][0]", (
+    assert set(by_ref) == {"https://evil.test/second.json", "https://evil.test/deep.json"}
+    assert by_ref["https://evil.test/second.json"]["at"] == "paths./orders.get.parameters[1]", (
+        "the index is the position the reference actually holds, not 0 -- so a "
+        "hardcoded `[0]` and a scan of only the first element both go red"
+    )
+    assert by_ref["https://evil.test/deep.json"]["at"] == "nested[0][1]", (
         "an index appears per level, so a reader can find the reference again"
     )
 
