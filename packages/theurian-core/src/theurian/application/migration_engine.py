@@ -240,6 +240,47 @@ def unenforceable_scope_violations(migration_set: MigrationSet) -> tuple[Migrati
     return tuple(refused)
 
 
+@dataclass(frozen=True, slots=True)
+class UnpinnedRevision:
+    """One ``upsertRevision`` whose body no ``contentSha256`` freezes."""
+
+    migration_id: MigrationId
+    revision_id: RevisionId
+    #: The path as authored, not as resolved: this is what a reader edits.
+    content_file: str
+
+
+def unpinned_revisions(migration_set: MigrationSet) -> tuple[UnpinnedRevision, ...]:
+    """Every ``upsertRevision`` that declares no ``contentSha256`` (issue #210).
+
+    A warning's worth of information, not a refusal's: `migrate validate`
+    reports these and keeps exit 0. The field is optional in the schema, both
+    shipped example migrations omit it, and requiring it is a Milestone 7
+    decision with a measured cost -- what can be said now is that an unpinned
+    body is the one whose out-of-band edit nothing detects, and saying nothing
+    at all was the state issue #210 was filed against.
+
+    Reported per operation rather than per migration, unlike
+    :func:`unenforceable_scope_violations`: the fix is a digest computed from
+    one named body file, so collapsing two revisions of one migration into one
+    id would drop the half of the answer that says which file.
+
+    Returns them in migration and operation order -- deterministic, since a
+    `MigrationSet` iterates in the application order it settled at
+    construction.
+    """
+    return tuple(
+        UnpinnedRevision(
+            migration_id=migration.migration_id,
+            revision_id=operation.revision_id,
+            content_file=operation.content_file_path,
+        )
+        for migration in migration_set
+        for operation in migration.operations
+        if isinstance(operation, UpsertRevision) and not operation.content_pinned
+    )
+
+
 def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
     """Refuse a body file backing two different revisions (issue #210).
 
@@ -796,10 +837,12 @@ __all__ = [
     "MigrationEngine",
     "MigrationPlan",
     "MigrationWriter",
+    "UnpinnedRevision",
     "WithdrawalCandidate",
     "refuse_duplicate_content_files",
     "refuse_unenforceable_scope",
     "revisions_to_purge",
     "unenforceable_scope_violations",
+    "unpinned_revisions",
     "verify_no_applied_migration_changed",
 ]

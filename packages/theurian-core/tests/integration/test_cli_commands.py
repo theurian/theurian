@@ -8,6 +8,7 @@ able to assert on the exact JSON a caller receives.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -1810,6 +1811,67 @@ def test_two_migrations_naming_two_body_files_are_not_refused(project: Path) -> 
     assert validated["valid"] is True
     assert apply_code == 0
     assert applied["applied"] == [MIGRATION_ID, _SECOND_MIGRATION_ID]
+
+
+# -- issue #210: an upsertRevision carrying no contentSha256 ---------------
+
+
+def _pinned_migration() -> str:
+    """The same migration, with the pin the schema calls optional."""
+    digest = hashlib.sha256(BODY.encode("utf-8")).hexdigest()
+    return MIGRATION.replace(
+        f"    contentFile: {_SHARED_CONTENT_FILE}\n",
+        f"    contentFile: {_SHARED_CONTENT_FILE}\n    contentSha256: {digest}\n",
+    )
+
+
+def test_validate_warns_about_a_revision_that_pins_no_body_digest(project: Path) -> None:
+    """``contentSha256`` is optional and nothing recommended it (issue #210).
+
+    A warning rather than a refusal: both shipped example migrations are
+    unpinned and 21 of the 22 test files naming ``upsertRevision`` never mention
+    the field, so requiring it is a schema decision with a measured cost, taken
+    in Milestone 7. What `validate` can do now is stop being silent -- an
+    unpinned body is the one whose out-of-band edit nothing detects.
+
+    Exit 0 is asserted first: a warning that refuses is a refusal.
+    """
+    _invoke("init")
+    _write_migration(project)
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0
+    assert validated["valid"] is True
+    warned = validated["unpinnedRevisions"]
+    assert len(warned) == 1
+    assert REVISION_ID in warned[0], "the revision whose body nothing pins"
+    assert MIGRATION_ID in warned[0], "the file the author has to edit"
+    assert "auth-policy.md" in warned[0], "and the body whose digest to take"
+
+
+def test_validate_says_nothing_about_a_revision_that_pins_its_body(project: Path) -> None:
+    """The negative control: a field that is always non-empty is not a warning."""
+    _invoke("init")
+    _write_migration(project, migration=_pinned_migration())
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0
+    assert validated["unpinnedRevisions"] == []
+
+
+def test_the_unpinned_warning_reaches_the_human_output_too(project: Path) -> None:
+    """`--json` is the plugin's channel; a person reading the default output
+    must see the same warning, or the two disagree about the same project."""
+    _invoke("init")
+    _write_migration(project)
+
+    result = runner.invoke(app, ["migrate", "validate"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "unpinnedRevisions" in result.stdout
+    assert REVISION_ID in result.stdout
 
 
 # ==========================================================================

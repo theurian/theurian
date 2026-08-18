@@ -756,6 +756,11 @@ def _parse_upsert(
         # one path from two paths (issue #210) without resolving anything, and
         # therefore without touching the filesystem.
         resolved_content_path=relative_posix.as_posix(),
+        # `content_sha256` above is the hash this loader just computed, whether
+        # or not the migration declared one, so it cannot answer "is this body
+        # frozen?". Only a declared pin is checked against the file, and only a
+        # declared pin therefore makes an out-of-band edit detectable (#210).
+        content_pinned=declared is not None,
         metadata=RevisionMetadataSpec(
             title=metadata["title"],
             content_type=MediaType(metadata["contentType"]),

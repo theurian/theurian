@@ -19,6 +19,7 @@ from theurian.application.migration_engine import (
     refuse_unenforceable_scope,
     revisions_to_purge,
     unenforceable_scope_violations,
+    unpinned_revisions,
     verify_no_applied_migration_changed,
 )
 from theurian.domain.enums import (
@@ -1277,3 +1278,88 @@ def test_apply_refuses_a_shared_body_file_before_writing_anything() -> None:
 def test_duplicate_content_file_error_is_a_migration_error() -> None:
     """CLI error handling catches the broader family, so this must join it."""
     assert issubclass(DuplicateContentFileError, MigrationError)
+
+
+# -- Issue #210: an upsertRevision that declares no contentSha256 ----------
+
+
+def test_a_revision_declaring_no_pin_is_reported() -> None:
+    """The warning's whole content: which migration, which revision, which body.
+
+    A reader with only the revision id still has to find the file to edit, and
+    a reader with only the migration id still has to find which body's digest
+    to take -- so all three are carried.
+    """
+    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+
+    reported = unpinned_revisions(migrations)
+
+    assert len(reported) == 1
+    assert reported[0].migration_id == MigrationId(MIG_1)
+    assert reported[0].revision_id == REV_1
+    assert reported[0].content_file == "../knowledge/a.md"
+
+
+def test_a_revision_that_pins_its_body_is_not_reported() -> None:
+    """The negative control, and the distinction the whole field rests on.
+
+    ``content_sha256`` is set on both operations -- the loader fills it either
+    way, with the declared pin or with the hash it just read -- so a check
+    written against that field alone reports neither of them and this test goes
+    green against a build that warns about nothing at all.
+    """
+    pinned = _migration(
+        MIG_1,
+        UpsertRevision(
+            item_id=ITEM,
+            revision_id=REV_1,
+            content_file_path="../knowledge/a.md",
+            metadata=_metadata(),
+            content_sha256=ContentHash.of_text(BODY_V1),
+            content_pinned=True,
+        ),
+    )
+
+    assert unpinned_revisions(MigrationSet.ordered((pinned,))) == ()
+
+
+def test_every_unpinned_revision_is_reported_in_application_order() -> None:
+    """Per operation, not per migration: two revisions of one migration are two
+    body files, and one id would drop the half of the answer naming the file."""
+    two_upserts = _migration(
+        MIG_2,
+        _upsert(REV_2, BODY_V2, "../knowledge/b.md"),
+        UpsertRevision(
+            item_id=ItemId("architecture.caching-policy"),
+            revision_id=RevisionId("01K1REV00301234567890ABCDE"),
+            content_file_path="../knowledge/c.md",
+            metadata=_metadata(),
+            content_sha256=ContentHash.of_text(BODY_V1),
+        ),
+    )
+    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1), two_upserts))
+
+    reported = unpinned_revisions(migrations)
+
+    assert [u.content_file for u in reported] == [
+        "../knowledge/a.md",
+        "../knowledge/b.md",
+        "../knowledge/c.md",
+    ]
+
+
+def test_a_revision_cannot_claim_a_pin_it_has_no_hash_for() -> None:
+    """The flag and the hash describe one fact, so they cannot disagree.
+
+    Refused at construction rather than left for whatever reads them later:
+    `unpinned_revisions` would call such an operation pinned while the engine
+    has nothing to check the body against.
+    """
+    with pytest.raises(MigrationError, match="no content hash"):
+        UpsertRevision(
+            item_id=ITEM,
+            revision_id=REV_1,
+            content_file_path="../knowledge/a.md",
+            metadata=_metadata(),
+            content_pinned=True,
+        )

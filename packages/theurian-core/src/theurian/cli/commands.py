@@ -27,6 +27,7 @@ from theurian.application.migration_engine import (
     refuse_duplicate_content_files,
     refuse_unenforceable_scope,
     unenforceable_scope_violations,
+    unpinned_revisions,
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (
@@ -261,6 +262,26 @@ def _unenforceable_scope_remedy(
     if exc.migration_id in _applied_migration_ids(paths, project_id):
         return UNENFORCEABLE_SCOPE_REMEDY_APPLIED
     return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
+
+
+def _unpinned_warnings(migration_set: MigrationSet) -> list[str]:
+    """`migrate validate`'s ``unpinnedRevisions`` field (issue #210).
+
+    One line per revision whose body nothing freezes, each naming the migration
+    file to edit, the revision inside it, and the body whose digest to take.
+    Strings rather than objects because ``_render`` prints a list of objects as
+    Python reprs, and this field has to be readable in the default output as
+    well as parseable in ``--json`` -- the two channels render one payload.
+
+    A warning, so it is emitted alongside ``valid: true`` and never changes the
+    exit code. Always present, empty list included: a field that only sometimes
+    exists is one every caller eventually forgets to check for.
+    """
+    return [
+        f"{unpinned.migration_id}: {unpinned.revision_id} ({unpinned.content_file}) "
+        f"declares no contentSha256, so an edit to that body is adopted, not refused"
+        for unpinned in unpinned_revisions(migration_set)
+    ]
 
 
 def _refuse_a_body_file_backing_two_revisions(
@@ -1022,6 +1043,11 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     source-anchor requirement is one, and the shipped
     `examples/sample-project/` demonstrates it validating a document `migrate
     apply` then rejects (issue #36).
+
+    Publishes one thing `apply` does not: ``unpinnedRevisions``, a warning that
+    leaves the exit code alone (issue #210). It belongs here rather than on
+    `apply` because it is advice about how the migration is *written*, and the
+    command whose contract is "read this before you commit it" is this one.
     """
     context, _ = _require_project(as_json)
 
@@ -1045,6 +1071,7 @@ def migrate_validate(as_json: JsonOption = False) -> None:
             "contentFileCount": len(context.loaded.content_checksums),
             "stateHash": str(context.state_hash),
             "applicationOrder": [str(m.migration_id) for m in context.loaded.migration_set],
+            "unpinnedRevisions": _unpinned_warnings(context.loaded.migration_set),
         },
         as_json=as_json,
     )
