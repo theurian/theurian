@@ -115,7 +115,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "Ingestion stores **evidence**", both of which describe a write that does not
   happen: `IngestionService` has no write path, parsed documents live in memory
   for the run, and the only file the command writes is the content-hash manifest
-  `.theurian/knowledge/cache/ingestion.json`. An agent reading the old text would
+  `.theurian/cache/ingestion.json`. An agent reading the old text would
   have told a user that an ingested document is retrievable, which it is not —
   nothing reaches the canonical store until a migration is applied. The same
   overstatement in `ingest_command`'s docstring is corrected in

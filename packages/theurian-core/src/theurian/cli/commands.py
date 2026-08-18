@@ -1517,7 +1517,7 @@ def ingest_command(as_json: JsonOption = False) -> None:
 
     Ingestion records a content-hash manifest and stores no body: parsed
     documents live in memory for the run, and the only file written is
-    ``.theurian/knowledge/cache/ingestion.json``. It never writes approved
+    ``.theurian/cache/ingestion.json``. It never writes approved
     knowledge; promotion runs through a migration and a human (ADR-0013).
 
     A parse failure fails one document, not the run: a malformed file among two

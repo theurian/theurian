@@ -569,7 +569,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - **`theurian ingest`'s docstring said it "stores evidence"**, which overstates
   what the command persists: `IngestionService` has no write path, parsed bodies
   live in memory for the run, and the only file written is the content-hash
-  manifest `.theurian/knowledge/cache/ingestion.json`. The docstring and T-15's
+  manifest `.theurian/cache/ingestion.json`. The docstring and T-15's
   reference to it now say so. `schemas/config/project-config.schema.json`'s
   `security.maxSourceFileBytes` gains the same treatment its annotated siblings
   have: its default documents the shipped `MAX_SOURCE_FILE_BYTES` in

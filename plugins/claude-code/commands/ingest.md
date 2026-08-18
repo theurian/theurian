@@ -19,7 +19,7 @@ Report what was ingested by source type and how many documents changed.
 ## Rules
 
 - Ingestion **stores no content**. It parses, reports what it read, and writes
-  one file: the content-hash manifest `.theurian/knowledge/cache/ingestion.json`,
+  one file: the content-hash manifest `.theurian/cache/ingestion.json`,
   which exists so an unchanged file is not reparsed. Parsed documents live in
   memory for the run. Nothing reaches the canonical store, so an ingested design
   note is neither a team rule nor knowledge an agent can retrieve afterwards.
