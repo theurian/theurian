@@ -52,5 +52,8 @@ traceabilityPolicy:
     traceability: none
 
 security:
+  # The policy the SEC-11 scanner would apply. Nothing in `src/` reads this file
+  # and no content secret scanner exists, so this blocks nothing; it is owed with
+  # Milestone 7 (#198).
   secretScan: block
   maxSourceFileBytes: 8388608

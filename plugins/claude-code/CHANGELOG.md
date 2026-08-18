@@ -110,6 +110,17 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `rev-parse --show-toplevel`, `rev-parse HEAD` and `remote get-url origin`.
   Measured by running the command against a `git` shim that logs every
   invocation.
+- `/theurian:ingest` no longer says it stores anything. It opened with "Read
+  source material into the canonical store as evidence" and its first Rule said
+  "Ingestion stores **evidence**", both of which describe a write that does not
+  happen: `IngestionService` has no write path, parsed documents live in memory
+  for the run, and the only file the command writes is the content-hash manifest
+  `.theurian/cache/ingestion.json`. An agent reading the old text would
+  have told a user that an ingested document is retrievable, which it is not —
+  nothing reaches the canonical store until a migration is applied. The same
+  overstatement in `ingest_command`'s docstring is corrected in
+  [Core's changelog](../../packages/theurian-core/CHANGELOG.md)
+  ([#198](https://github.com/theurian/theurian/issues/198) round one).
 - `/theurian:ingest` no longer promises to report a partial result when
   candidate generation fails (FR-V5). `theurian ingest` generates no candidates
   and runs no summarization stage, and its JSON has no field for a partial

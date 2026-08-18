@@ -842,20 +842,60 @@ and the spawn arm's own docstring names and measures it.
 `system.capabilities` reports `reviewIngestion: false`, pinned by
 `test_capabilities_report_what_is_and_is_not_built`.
 
-#### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High)
+#### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High — no content scanner ships)
 
-Once indexed, the secret is retrievable by every agent and embedded in derived
-artifacts.
+Once it is in the canonical store the secret is retrievable by every agent
+authorised for the project, and it is embedded in derived artifacts once the
+index is built.
 
-**Controls:** secret scanning before a revision is approved, configurable
-`block` (default) / `warn` / `off`. Theurian is not a replacement for a
-repository secret scanner and SECURITY.md says so.
+The grade does not move because the scanner never ran: this High was always the
+residual of an absent control. It stays High rather than rising because the
+audience the secret reaches is bounded by project authorisation (SEC-13) and by
+the repository read access the secret already had — unlike T-17, which crossed
+that boundary.
 
-Removing a secret once it is in is a different operation — superseding the
+**Controls: no automated control against secrets in content exists.** What
+stands at the point SEC-11 names — before a revision becomes approved — is human
+review of the authored migration. Approved knowledge changes only through a
+Git-tracked migration; no registered MCP tool can reach a canonical write
+(`test_no_registered_tool_can_reach_a_canonical_write`, ADR-0013, T-12); and the
+agent path ends at a proposal, since `theurian propose accept` moves files and
+does not approve, so the human's merge is the approval. `theurian ingest` is the
+same shape — it records a content-hash manifest and stores no body, and
+promotion runs through a migration and a human (`ingest_command`'s docstring).
+
+**Residual: nothing enforces the merge.** `migrate apply` applies whatever is in
+`.theurian/migrations/`, committed or not — the human's review is a workflow
+convention, not a check the code makes, and the actors table's untrusted
+same-UID process can run it directly.
+
+**The second standing control acts after the fact, not at the trigger point:**
+removing a secret once it is in is a different operation — superseding the
 revision or retiring the item. See T-17: performing exactly that remediation is
 what re-opened a channel to read the secret back, through `knowledge.search`
 rather than through the revision itself — a window T-17a's withdrawal→purge
 trigger now closes in the same `migrate apply` (#15).
+
+*Future controls, not shipped:* the scanner itself. SEC-11 — scan a candidate
+revision for secrets and block (default), warn, or do nothing per policy — is
+not implemented. No content scanner exists anywhere in `src/`: `security/` holds
+`tokens.py`, `env_file.py`, `paths.py`, `yaml_loading.py` and their
+`__init__.py`, which are token storage and input hardening. Nothing in `src/`
+reads `.theurian/config.yaml` at all (#129), so `security.secretScan` in the
+published schema and in the sample project selects no behaviour, and the schema
+publishes no default for it because no code would apply one. The scanner is owed
+with the write-path work in Milestone 7
+([#198](https://github.com/theurian/theurian/issues/198)).
+
+**So the residual, stated plainly: a secret in a document becomes readable
+through `knowledge.search` and `knowledge.get` the moment `theurian migrate
+apply` writes it into the canonical store — before any `index build`, since
+search degrades to a canonical substring scan (`mcp/search.py`) — unless a human
+notices it in the migration diff and the body it names.** The `Secret scan` job
+in `security.yml` (OSS-9, gitleaks) is a different control in a different place —
+it scans *this repository's* Git history in CI, never a user project's ingested
+content. Theurian is not a replacement for a repository secret scanner, as
+SECURITY.md says, and today it is not a content secret scanner either.
 
 #### T-16 — A compromised release artifact is installed (Tampering, **Critical** — publication ships, install-time verification does not)
 
@@ -4093,7 +4133,7 @@ fix.
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
-| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 |
+| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — no content scanner ships; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger are what stand, and the scanner is owed with the write path in M7 ([#198](https://github.com/theurian/theurian/issues/198)) |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |

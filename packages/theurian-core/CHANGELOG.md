@@ -579,6 +579,65 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `ReviewProvider`'s docstring now says the GitHub *adapter* is unbuilt; the
   port itself exists.
 
+- **The documents described a secret scanner that does not exist**
+  ([#198](https://github.com/theurian/theurian/issues/198)). SEC-11 — scan a
+  candidate revision for secrets and block (default), warn, or do nothing per
+  policy — is not implemented. No content scanner exists anywhere in `src/`, and
+  nothing reads `.theurian/config.yaml` at all (#129), so the
+  `security.secretScan` key selected no behaviour while the published schema
+  declared `"default": "block"`. Six surfaces asserted the control was in force
+  and each now names the absence: T-15's Controls block, the threat summary row,
+  the same T-15 row in `docs/architecture/requirements-analysis.md`,
+  `SECURITY.md`'s "Ingestion warns or blocks per policy", the schema key, and the
+  sample project's config. Same class as the T-7 correction above — a security
+  control written in the present tense whose component does not exist.
+
+  **What stands at SEC-11's trigger point is now stated rather than implied, and
+  neither control is automated:** human review of the authored migration
+  (ADR-0013 — no registered MCP tool can reach a canonical write, and `theurian
+  propose accept` moves files without approving), and supersede or retire with
+  Milestone 6's withdrawal→purge trigger for removing a secret after the fact.
+  Both entries record what neither control does: nothing enforces the merge —
+  `migrate apply` applies whatever is in `.theurian/migrations/`, committed or
+  not.
+
+  **The residual names the boundary the exposure actually starts at.** It is the
+  canonical write, not the index: a secret becomes readable through
+  `knowledge.search` and `knowledge.get` the moment `theurian migrate apply`
+  writes it, before any `index build`, because search degrades to a canonical
+  substring scan when no index can answer (`mcp/search.py`). The repository-side
+  `Secret scan` job (OSS-9, gitleaks) is a different control and is unchanged —
+  it scans this repository's Git history in CI and was never in a user project's
+  ingestion path.
+
+  **Each correction is now pinned, because a corrected claim with no test is a
+  claim that can quietly become false again.** `test_the_secret_scan_policy_publishes_no_default`
+  holds the dropped schema default, with the enum asserted beside it so the
+  no-default assertion cannot pass vacuously against a renamed or deleted key.
+  `tests/unit/test_config_key_call_sites.py` is new and holds the claim the other
+  five surfaces rest on — that no shipped code reads the key:
+  `test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force`
+  parses every `.py` under the imported package and matches whole identifiers and
+  whole string constants, which is what separates a reader from the six places
+  `repositories` appears in `src/` as English prose;
+  `test_each_reserved_key_still_publishes_the_absence_the_scan_enforces` closes the
+  reverse direction, where the description moves and no reader is added; and
+  `test_the_config_key_scan_sees_each_naming_form_and_no_other` guards the scanner
+  itself, since a scan that resolves nothing and a package with no reader produce
+  the same green. `test_a_key_the_example_sets_but_nothing_reads_stays_marked_not_in_force`
+  holds the sample project's annotation, which no schema validates. The same
+  three pins cover `providers.review.repositories` (#129), whose schema
+  description makes the identical not-in-force claim.
+
+- **`theurian ingest`'s docstring said it "stores evidence"**, which overstates
+  what the command persists: `IngestionService` has no write path, parsed bodies
+  live in memory for the run, and the only file written is the content-hash
+  manifest `.theurian/cache/ingestion.json`. The docstring and T-15's
+  reference to it now say so. `schemas/config/project-config.schema.json`'s
+  `security.maxSourceFileBytes` gains the same treatment its annotated siblings
+  have: its default documents the shipped `MAX_SOURCE_FILE_BYTES` in
+  `security/paths.py` rather than setting it, and nothing reads the key (#129).
+
 ## [0.1.0.dev4] - 2026-08-16
 
 ### Added

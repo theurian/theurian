@@ -833,6 +833,110 @@ def test_the_raptor_forest_is_declared_off_by_default() -> None:
     assert raptor["properties"]["enabled"]["default"] is False
 
 
+def test_the_secret_scan_policy_publishes_no_default() -> None:
+    """SEC-11, #198. A default states a policy, and no code applies this one.
+
+    The schema declared `default: "block"` from the day the block was written,
+    and every reader of the published contract took it as the shipped behaviour:
+    the threat model listed secret scanning as T-15's only primary content-side
+    control, "configurable `block` (default) / `warn` / `off`", and `SECURITY.md`
+    told users "ingestion warns or blocks per policy". None of it was true. No
+    content secret scanner exists anywhere in `src/`, and nothing reads
+    `.theurian/config.yaml` at all (#129), so the key selected no behaviour and
+    the default applied nothing.
+
+    Dropping the default is the correction, not a cosmetic one: a JSON Schema
+    `default` is what a form generator fills in, what a client library
+    substitutes for an absent key, and what a person reading the contract
+    believes the product does when they say nothing. Publishing one for an
+    unimplemented control is the same defect as the prose that was fixed
+    alongside it, in the surface a third party validates against — which is why
+    it is pinned here for the reason
+    `test_the_raptor_forest_is_declared_off_by_default` gives: a default is a
+    published claim the moment it is in a schema a third party validates against.
+
+    The enum assertion is a fixture guard rather than decoration. `"default" not
+    in {}` passes just as happily against a key that was renamed, moved under
+    another block, or deleted outright, and then this test would report the
+    absence of a default for a property that no longer exists. Asserting the
+    reserved key is still published, with its three policies intact, is what
+    makes the second assertion evidence about `secretScan`.
+
+    The absence of a *reader* is the other half and cannot be seen from here;
+    `tests/unit/test_config_key_call_sites.py` holds it, and holds the schema
+    description that states it.
+    """
+    secret_scan = _load("config/project-config.schema.json")["properties"]["security"][
+        "properties"
+    ]["secretScan"]
+
+    assert secret_scan["enum"] == ["block", "warn", "off"], (
+        "the reserved `security.secretScan` key is not published as it was; the "
+        "no-default assertion below would pass vacuously against a renamed or "
+        "deleted property"
+    )
+    assert "default" not in secret_scan, (
+        f"`security.secretScan` publishes `default: {secret_scan.get('default')!r}`. "
+        "SEC-11's scanner is not implemented (#198) and nothing reads "
+        "`.theurian/config.yaml` (#129), so a default here states a policy that "
+        "nothing applies -- which is the claim six surfaces were corrected to "
+        "stop making. If a scanner has since shipped, publish the default in the "
+        "same change that corrects the schema description, SECURITY.md, "
+        "docs/security/threat-model.md (T-15) and the sample project's config."
+    )
+
+
+def test_the_published_max_source_file_bytes_default_is_the_constant_it_documents() -> None:
+    """SEC-8, #198: the schema default *documents* `MAX_SOURCE_FILE_BYTES`, so it must equal it.
+
+    `security.maxSourceFileBytes` publishes `default: 8388608`, and its
+    description says that value "documents the shipped limit rather than setting
+    it: `MAX_SOURCE_FILE_BYTES` in `security/paths.py` is 8388608 and is what
+    ingestion enforces". Nothing reads the key (#129), so the default is a
+    *claim about the constant*, not a control -- and a claim that names a number
+    is false the moment the number it names moves.
+
+    The failure this prevents is silent drift between the two: raise
+    `MAX_SOURCE_FILE_BYTES` to lift the real limit and the published default now
+    documents a limit that no longer exists; edit the schema default alone and it
+    documents a limit the code never had. Only a range check guarded this before
+    (`test_path_security.py::test_default_size_limit_is_generous_but_bounded`),
+    which both edits survive as long as they stay inside 1 MiB..64 MiB. This pins
+    the equality the description asserts, so either side moving without the other
+    goes red here.
+
+    The description assertion is a fixture guard, not decoration: if the key were
+    renamed or the description reworded to drop the constant, the equality could
+    pass by coincidence against a default that documents nothing. Holding the
+    description to `MAX_SOURCE_FILE_BYTES` and `security/paths.py` keeps the
+    equality evidence about the claim the schema actually makes.
+    """
+    from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+
+    node = _load("config/project-config.schema.json")["properties"]["security"]["properties"][
+        "maxSourceFileBytes"
+    ]
+
+    assert "MAX_SOURCE_FILE_BYTES" in node["description"], (
+        "the maxSourceFileBytes description no longer names the constant it "
+        "documents; the equality below would then pass against a default that "
+        "documents nothing"
+    )
+    assert "security/paths.py" in node["description"], (
+        "the maxSourceFileBytes description no longer points at security/paths.py, "
+        "where MAX_SOURCE_FILE_BYTES lives and is enforced"
+    )
+    assert node["default"] == MAX_SOURCE_FILE_BYTES, (
+        f"the schema publishes `default: {node['default']}` for "
+        f"`security.maxSourceFileBytes`, but its description says that default "
+        f"documents `MAX_SOURCE_FILE_BYTES` in `security/paths.py`, which is "
+        f"{MAX_SOURCE_FILE_BYTES}. Nothing reads the key (#129), so the default is "
+        f"a claim about the constant, not a control: move one and the published "
+        f"contract documents a limit the code does not enforce. Change both in the "
+        f"same edit, or make the schema stop naming the constant."
+    )
+
+
 # -- CLI contract ----------------------------------------------------------
 
 
