@@ -48,6 +48,7 @@ operations:
     revisionId: 01K1DEFREV1234567890ABCDEF
     expectedRevision: 01K1ABCREV1234567890ABCDEF
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: 9a15842264396c898700b6bcfc7cc7d81f8dcaf617492b6c7c1001a3082d29c4
     metadata:
       title: Authentication and authorization policy
       contentType: text/markdown
@@ -65,6 +66,13 @@ operations:
 Body content lives in a separate file rather than inline. Reviewers then read a
 normal Markdown (or YAML, or JSON) diff, and the content hash covers the file's
 actual bytes instead of a YAML-escaped copy of them.
+
+The two guards on that operation cover two different things, and a hand-written
+migration wants both: `expectedRevision` says which revision this one replaces
+([Concurrency](#concurrency)), and `contentSha256` says which bytes the body
+held when the migration was written
+([Pinning the body](#pinning-the-body-contentsha256)). One body file backs one
+revision — [a second revision naming it is refused](#one-body-file-one-revision-issue-210).
 
 ## Operations
 
@@ -125,6 +133,122 @@ still not a change anyone should be able to make without saying why.
 Conflicts are **reported, never merged**. An automatic three-way merge of a
 design decision produces a paragraph nobody approved — precisely the failure
 Theurian exists to prevent.
+
+### Pinning the body: `contentSha256`
+
+`expectedRevision` guards the item. `contentSha256` guards the body file the
+revision points at. It is optional in the schema, and only the declared form
+freezes anything:
+
+| `contentSha256` | What the loader does |
+| :-- | :-- |
+| declared | Hashes the body on every load and refuses a mismatch. An out-of-band edit to the body becomes detectable. |
+| absent | Adopts whatever the file hashes to now as that revision's content hash. Nothing to compare against, so nothing to refuse. |
+
+`theurian propose` pins every revision it writes, unconditionally — that pin is
+why a proposed body is written to a per-revision path
+([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)). **A hand-written
+migration should pin too, and an update should carry `expectedRevision` as
+well.** The value is the SHA-256 of the body file's bytes:
+
+```console
+$ shasum -a 256 .theurian/knowledge/architecture/auth-policy.md
+9a15842264396c898700b6bcfc7cc7d81f8dcaf617492b6c7c1001a3082d29c4  ...
+```
+
+Edit that body afterwards and the next `migrate validate` exits 4 rather than
+carrying the change in silently:
+
+```text
+error: 01K1AAAAAA01234567890ABCDE-create.yaml: ../knowledge/architecture/auth-policy.md
+hashes to 7e1eb70348da but the migration pins 9a1584226439. The body file changed
+after the migration was written.
+```
+
+#### What an unpinned body does not get
+
+**An unpinned body is frozen by nothing.** FR-K5 checksums the migration YAML;
+that checksum does not cover the file the YAML points at. Measured on a project
+whose one migration declared no `contentSha256`: apply it, edit the body, and
+`migrate validate` still reports `valid: true` at exit 0. A second `migrate
+apply` then records the edited bytes under the same revision id and returns
+`changed: true` — the state hash covers body content, so the edit lands in a new
+state partition rather than being reported anywhere. This residual, and the
+decision to leave the schema field optional until Milestone 7, are recorded on
+[#210](https://github.com/theurian/theurian/issues/210#issuecomment-5328173657).
+Requiring the pin is a breaking schema change: both shipped example migrations
+are unpinned today.
+
+What `migrate validate` does instead is stop being silent about it. Its output
+carries `unpinnedRevisions`, one line per `upsertRevision` that declares no pin,
+naming the migration to edit, the revision inside it, and the body whose digest
+to take:
+
+```console
+$ theurian migrate validate
+valid: True
+migrationCount: 1
+contentFileCount: 1
+stateHash: 4e640de8baeb1f70e293d88c0b1160f15e6d02df676574937a9557ac8f6d87af
+applicationOrder:
+  - 01K1AAAAAA01234567890ABCDE
+unpinnedRevisions:
+  - 01K1AAAAAA01234567890ABCDE: 01K1AAAREV01234567890ABCDE (../knowledge/architecture/auth-policy.md) declares no contentSha256, so an edit to that body is adopted, not refused
+```
+
+The field is **always present** — an empty list when every revision pins — and
+it is a warning, not a refusal: `valid` stays `true` and the exit code stays 0.
+It is reported per operation rather than per migration, because the fix is a
+digest taken from one named body file, and a per-migration line would drop the
+half of the answer that says which file. `migrate apply` does not publish it:
+the advice is about how a migration is *written*, and the command a reader runs
+before committing one is `validate`.
+
+### One body file, one revision (issue #210)
+
+**`migrate validate` and `migrate apply` both refuse a migration set in which
+two *different* revisions name one `contentFile`.** A body file holds one
+version at a time and carries no history, so such a set does not describe a
+state — it describes whatever that file was last written with. Measured before
+this refusal existed: two hand-written migrations sharing one path, with a
+correct `expectedRevision` chain and no `contentSha256`, both applied at exit 0,
+and the earlier revision recorded the *later* body under its own title and
+author. Having adopted that body's hash, the wrong record was self-consistent
+afterwards, so nothing could detect it later.
+
+Both commands exit 4 on the same message, and `apply` refuses before it creates
+a database file — a refused set costs no state, the property issue #63's refusal
+already has.
+
+**The key is the revision id, not the path alone.** Re-declaring one revision
+against its own body is how an in-place status change is written: the revision
+id does not move, `append_revision` stays the no-op FR-K8 requires, and only
+`status` differs ([ADR-0024](../adr/0024-a-purge-is-a-build.md) decision 5, the
+`reject` and in-place `draft` shapes). Keying on the path alone would refuse
+that, and take the withdrawal purge's own faces with it. This passes:
+
+```yaml
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: 01K1AAAREV01234567890ABCDE   # the item's *current* revision
+    expectedRevision: 01K1AAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/auth-policy.md
+    metadata:
+      # every required field, as the current revision already has it, except:
+      status: rejected
+```
+
+`metadata` is still required in full — this is a re-declaration, not a patch.
+Measured against the set above: `migrate validate` and `migrate apply` both
+exit 0, and `apply` reports both migrations applied.
+
+Two *spellings* of one path do collide. The comparison runs on the path the
+loader already resolved in order to read the body, so
+`../knowledge/architecture/./auth-policy.md` and
+`../knowledge/architecture/auth-policy.md` are one reference, not two.
+
+`migrate status` does not refuse, matching how it treats the tenant/ACL rule
+above: its contract is observation, not a gate.
 
 ### Idempotence
 
@@ -233,7 +357,9 @@ flowchart TD
     D -->|yes| E["FATAL: an applied migration was edited.<br/>Do not repair. Do not delete state --<br/>except the recovery in 'Upgrading a<br/>project that already applied one of<br/>these', above (issue #63)."]
     D -->|no| S{"Any tenantId != local<br/>or aclGroup != default?"}
     S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No AuthorizationProvider exists yet (issue #63)."]
-    S -->|no| F["Topologically sort by dependsOn"]
+    S -->|no| U{"One body file named by<br/>two different revisions?"}
+    U -->|yes| V["FATAL: DuplicateContentFileError.<br/>A body file holds one version (issue #210)."]
+    U -->|no| F["Topologically sort by dependsOn"]
     F --> G{"Cycle?"}
     G -->|yes| H["FATAL: report the cycle"]
     G -->|no| I["For each unapplied migration"]
@@ -251,6 +377,7 @@ flowchart TD
     style E fill:#8a2f2f,color:#fff
     style H fill:#8a2f2f,color:#fff
     style T fill:#8a2f2f,color:#fff
+    style V fill:#8a2f2f,color:#fff
     style L fill:#8a6f2f,color:#fff
     style R fill:#1f6f4a,color:#fff
 ```
@@ -266,6 +393,12 @@ that is *both* tampered *and* names a foreign tenant is reported as a
 checksum problem, never as a scope one — a reader who sees
 `MigrationChecksumMismatchError` should never have to wonder whether a hidden
 scope problem is the real reason their edit went unreported.
+
+**The duplicate-body refusal (U) runs after the scope check (S)**, in that order
+in both commands and again inside `MigrationEngine.apply`. The scope rule names
+one migration as wrong; U is a statement about the *set*, in which neither
+migration is wrong on its own. Reporting the narrower fault first is what keeps
+a reader from being sent to a second migration that is not the one to edit.
 
 All operations in one migration share one transaction: either the whole logical
 change lands or none of it does. Transactions stay short and never contain
@@ -295,6 +428,7 @@ scanning a directory listing and may be changed freely.
 | `MigrationCycleError` | `dependsOn` loops | Break the cycle; the reported path shows where. |
 | `MigrationDependencyMissingError` | A dependency is not in the reachable set | Usually a rebase dropped a migration. Check the branch. |
 | `PathEscapeError` | `contentFile` points outside the root | Fix the path. If it looks intentional, treat it as a security finding. |
+| `DuplicateContentFileError` | Two different revisions name one `contentFile` | Give the later revision a body file of its own under `.theurian/knowledge/` and point that migration at it; pin both with `contentSha256` while you are there. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
 | `UnenforceableScopeError` | A revision named a `tenantId` other than `local` or an `aclGroup` other than `default` | Edit it to the default. **Unless the revision was already applied** — then the fix above does not apply; see [Upgrading a project that already applied one of these](#upgrading-a-project-that-already-applied-one-of-these), and do not use this row's checksum-error advice as a substitute (issue #63). |
 
 ## Related
@@ -303,4 +437,6 @@ scanning a directory listing and may be changed freely.
 - [ADR-0005 — YAML knowledge migrations](../adr/0005-yaml-knowledge-migrations.md)
 - [ADR-0006 — immutable revisions and optimistic concurrency](../adr/0006-immutable-revisions-and-optimistic-concurrency.md)
 - [ADR-0007 — state-hash-partitioned databases](../adr/0007-state-hash-partitioned-databases.md)
+- [ADR-0013 — AI writes produce proposals](../adr/0013-ai-writes-produce-proposals.md), for why every proposed revision pins its body
 - [issue #63](https://github.com/theurian/theurian/issues/63) — the tenant/ACL refusal this page documents
+- [issue #210](https://github.com/theurian/theurian/issues/210) — the body pin, `unpinnedRevisions`, and the one-body-one-revision refusal

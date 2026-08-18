@@ -27,6 +27,68 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   carries the proposal (ADR-0013 point 4). There is no CLI or MCP surface that
   stands in for that merge.
 
+- **`theurian migrate validate` names every revision whose body no digest pins**
+  ([#210](https://github.com/theurian/theurian/issues/210)). `contentSha256` is
+  optional in the schema and is the only thing that freezes a body: where it is
+  declared, the loader hashes the file on every load and refuses a mismatch;
+  where it is absent, the loader adopts whatever the file hashes to now as that
+  revision's own content hash. Measured on an unpinned migration: apply it, edit
+  the body out of band, and `migrate validate` still reports `valid: true` at
+  exit 0, while the next `migrate apply` records the edited bytes under the same
+  revision id and returns `changed: true`. Nothing recommended the field and
+  nothing reported its absence.
+
+  Validate's output now carries `unpinnedRevisions` — one line per
+  `upsertRevision` that declares no pin, naming the migration to edit, the
+  revision inside it, and the body whose digest to take — in `--json` and in the
+  default human output alike. Additive and **always present**, an empty list when
+  every revision pins. It is a **warning, not a refusal**: `valid` stays `true`
+  and the exit code stays 0. Requiring the pin instead would be a breaking schema
+  change with a measured cost — both shipped example migrations under
+  `examples/sample-project/` are unpinned, and at this branch's base
+  (`8b8abd7`) 21 of the 22 test files naming `upsertRevision` never mentioned the
+  field — so it is recorded on #210 as a Milestone 7 decision rather than taken
+  here. `theurian propose` already pins every revision it writes (ADR-0013).
+  Reported per operation rather than per migration, because the fix is a digest
+  taken from one named body file. Documented in
+  [`docs/protocol/migrations.md`](../../docs/protocol/migrations.md).
+
+### Changed
+
+- **BREAKING — one body file may back only one revision across a migration set**
+  ([#210](https://github.com/theurian/theurian/issues/210)).
+
+  **Old shape:** a set in which two *different* revisions named one `contentFile`
+  applied. Measured: two hand-written migrations sharing one path, with a correct
+  `expectedRevision` chain and no `contentSha256`, both applied at exit 0 — and
+  the earlier revision recorded the *later* body under its own title and author.
+  Having adopted that body's hash where no pin was declared, the wrong record was
+  self-consistent afterwards, so nothing could detect it later.
+
+  **New shape:** `migrate validate` and `migrate apply` both refuse the whole set
+  with `DuplicateContentFileError` at exit 4, naming the two migrations and the
+  path they share. `apply` refuses before it creates a database file, so a refused
+  set costs no state — the property issue #63's refusal already has. The remedy
+  says to give the later revision a body file of its own, and says what to do when
+  the offending migration was already applied: editing it trips FR-K5's
+  applied-migration checksum guard, so the fix there is the edit plus a
+  `.theurian/state/` rebuild (FR-K4).
+
+  The key is the **revision id**, not the path alone. Re-declaring one revision
+  against its own body — how an in-place status change such as `reject` is
+  written, where the revision id does not move, only `status` differs, and
+  `append_revision` stays the no-op FR-K8 requires (ADR-0024 decision 5) — still
+  passes. Two *spellings* of one resolved path do collide, because the comparison
+  runs on the path the loader already resolved in order to read the body.
+  `migrate status` does not refuse; its contract is observation, matching how it
+  treats the tenant/ACL rule.
+
+  Breaking because a migration set that applied on `0.1.0.dev4` and earlier now
+  refuses. No stable release exists — the published versions are `0.1.0.devN` —
+  and no compatibility promise covers it, but the break is named here rather than
+  filed as a fix. Documented in
+  [`docs/protocol/migrations.md`](../../docs/protocol/migrations.md).
+
 ### Removed
 
 - **BREAKING — `system.capabilities` no longer publishes `milestone`**
