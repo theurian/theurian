@@ -1087,3 +1087,17 @@ def test_a_failing_body_write_rolls_the_migration_set_back(
         service.accept(drafted.proposal_id)
 
     assert _tree(paths.root) == before, "a failed accept leaves the tree exactly as it was"
+
+
+def test_an_unreadable_proposal_directory_raises_proposal_error_with_remedy(
+    service: ProposalService,
+) -> None:
+    """An unreadable proposal directory translates OSError to ProposalError (#227)."""
+    drafted = service.draft(_request())
+    os.chmod(drafted.directory, 0o000)
+    try:
+        with pytest.raises(ProposalError, match=r"could not be (read|accessed)") as exc_info:
+            service.accept(drafted.proposal_id)
+        assert "Grant read and execute permissions" in exc_info.value.remedy
+    finally:
+        os.chmod(drafted.directory, 0o700)
