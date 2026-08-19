@@ -40,8 +40,16 @@ product itself writes.
 :func:`_population` says what it costs.
 
 Lives under ``tests/`` and so inside :data:`UNREAD`, which is load-bearing --
-the docstrings below quote dead commands as examples, and a reader that opened
-this file would report every one of them.
+the docstrings below quote dead commands as examples, and
+``test_no_file_that_names_a_command_escapes_the_scan`` reports this file by name
+the moment that prefix leaves the list, taking ``command_extraction`` and the
+integration tests with it (measured, not assumed).
+
+The same list is applied a second time, inside :func:`_files`, and *there* it is
+inert today: exactly one file under those prefixes has a scanned suffix --
+``tests/e2e/README.md``, which names no command -- so deleting that call changes
+no verdict in this repository. It is pinned by a synthetic fixture rather than
+left to the next markdown file written under either prefix to discover.
 """
 
 from __future__ import annotations

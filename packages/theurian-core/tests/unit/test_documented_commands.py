@@ -667,6 +667,38 @@ def test_the_python_reader_is_handed_only_the_subtree_its_surface_names(
     assert scanned == ["packages/theurian-core/src/theurian/compatibility.py"]
 
 
+def test_a_tracked_document_under_a_test_tree_is_not_handed_to_a_reader(
+    sandbox: pathlib.Path,
+) -> None:
+    """The exclusion applies to the readers, not only to the guard that reports gaps.
+
+    :data:`UNREAD` exists because a test naming a dead command fails on its own
+    if it runs one, and because the fixtures here quote dead commands on
+    purpose. Both call sites apply it, and only one of them is exercised by this
+    repository: deleting the guard's call reports ``command_population``,
+    ``command_extraction`` and the integration tests, while deleting the one in
+    :func:`_files` changes no verdict, because exactly one file under those
+    prefixes has a scanned suffix -- ``tests/e2e/README.md`` -- and it names no
+    command.
+
+    So this is a synthetic fixture for a guard no real file reaches. Without it
+    the filter deletes clean, and the first markdown fixture written under
+    ``packages/theurian-core/tests/`` becomes a failure nobody asked for.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    fixtures = sandbox / "packages" / "theurian-core" / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "corpus.md").write_text("a fixture quoting `theurian upgrade`\n", encoding="utf-8")
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "shipped.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "packages", "docs")
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/shipped.md"]
+
+
 def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
     sandbox: pathlib.Path,
 ) -> None:
