@@ -65,7 +65,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 ### Changed
 
 - **BREAKING — one body file may back only one revision across a migration set**
-  ([#210](https://github.com/theurian/theurian/issues/210)).
+  ([#210](https://github.com/theurian/theurian/issues/210);
+  [GHSA-w5cm-cqf9-vm7r](https://github.com/theurian/theurian/security/advisories/GHSA-w5cm-cqf9-vm7r)).
 
   **Old shape:** a set in which two *different* revisions named one `contentFile`
   applied. Measured: two hand-written migrations sharing one path, with a correct
