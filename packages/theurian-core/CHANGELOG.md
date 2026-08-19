@@ -39,9 +39,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   nothing reported its absence.
 
   Validate's output now carries `unpinnedRevisions` — one line per
-  `upsertRevision` that declares no pin, naming the migration to edit, the
-  revision inside it, and the body whose digest to take — in `--json` and in the
-  default human output alike. Additive and **always present**, an empty list when
+  `upsertRevision` that declares no pin, naming the migration, the revision
+  inside it, the body's **project-relative** path (the one a reader can `shasum`
+  from the repository root, not the authored `contentFile`, which is relative to
+  the migration file), and the remedy — in `--json` and in the default human
+  output alike. The remedy carries its applied-case escape: the warning fires on
+  already-applied migrations too, and editing an applied migration to add the pin
+  trips FR-K5's checksum guard, so pinning an already-applied body means editing
+  it, deleting `.theurian/state/`, and rebuilding (FR-K4) — a warning that
+  stopped at "add the pin" would loop a reader between two errors, the way issue
+  #63's HIGH-1 did. Additive and **always present**, an empty list when
   every revision pins. It is a **warning, not a refusal**: `valid` stays `true`
   and the exit code stays 0. Requiring the pin instead would be a breaking schema
   change with a measured cost — both shipped example migrations under

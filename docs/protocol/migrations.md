@@ -181,8 +181,9 @@ are unpinned today.
 
 What `migrate validate` does instead is stop being silent about it. Its output
 carries `unpinnedRevisions`, one line per `upsertRevision` that declares no pin,
-naming the migration to edit, the revision inside it, and the body whose digest
-to take:
+naming the migration, the revision inside it, the body's **project-relative**
+path — the one a reader can `shasum` from the repository root, not the authored
+`contentFile`, which is relative to the migration file — and the remedy:
 
 ```console
 $ theurian migrate validate
@@ -193,8 +194,19 @@ stateHash: 4e640de8baeb1f70e293d88c0b1160f15e6d02df676574937a9557ac8f6d87af
 applicationOrder:
   - 01K1AAAAAA01234567890ABCDE
 unpinnedRevisions:
-  - 01K1AAAAAA01234567890ABCDE: 01K1AAAREV01234567890ABCDE (../knowledge/architecture/auth-policy.md) declares no contentSha256, so an edit to that body is adopted, not refused
+  - 01K1AAAAAA01234567890ABCDE: 01K1AAAREV01234567890ABCDE declares no contentSha256 for .theurian/knowledge/architecture/auth-policy.md, so an edit to that body is adopted, not refused. Pin it with the digest from `shasum -a 256 .theurian/knowledge/architecture/auth-policy.md`; if this migration is already applied, editing it trips the applied-migration checksum guard, so delete `.theurian/state/` and run `theurian migrate apply` to rebuild from the corrected migrations (FR-K4).
 ```
+
+The remedy carries its applied-case escape rather than stopping at "add the
+pin". The warning fires on **every** unpinned revision, already-applied ones
+included — and editing an *applied* migration to add the pin trips FR-K5's
+checksum guard (["Identity and immutability"](#identity-and-immutability)),
+whose own remedy says to restore the file. A remedy that stopped at the edit
+would loop a reader between the two errors, the way issue #63's HIGH-1 did with
+the scope refusal; so pinning an already-applied body means editing the
+migration, deleting `.theurian/state/`, and rebuilding from the corrected
+migrations (FR-K4) — the same sanctioned state-rebuild the scope and
+duplicate-body remedies name.
 
 The field is **always present** — an empty list when every revision pins — and
 it is a warning, not a refusal: `valid` stays `true` and the exit code stays 0.

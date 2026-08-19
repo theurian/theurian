@@ -268,21 +268,38 @@ def _unenforceable_scope_remedy(
 def _unpinned_warnings(migration_set: MigrationSet) -> list[str]:
     """`migrate validate`'s ``unpinnedRevisions`` field (issue #210).
 
-    One line per revision whose body nothing freezes, each naming the migration
-    file to edit, the revision inside it, and the body whose digest to take.
-    Strings rather than objects because ``_render`` prints a list of objects as
-    Python reprs, and this field has to be readable in the default output as
-    well as parseable in ``--json`` -- the two channels render one payload.
+    One line per revision whose body nothing freezes: the migration, the
+    revision, the body's project-relative path -- the one a reader can ``shasum``
+    from the repository root, *not* the authored ``contentFile``, which is
+    relative to the migration file and so shasums to nothing from the root -- and
+    the two-step remedy. Strings rather than objects because ``_render`` prints a
+    list of objects as Python reprs, and this field has to be readable in the
+    default output as well as parseable in ``--json`` -- the two channels render
+    one payload.
+
+    The remedy carries the applied-case escape, the same shape
+    :data:`DUPLICATE_CONTENT_FILE_REMEDY` and the scope remedies carry: pinning
+    an *already-applied* migration by editing it in place trips FR-K5's checksum
+    guard, whose own remedy says to restore the file -- so the warning must not
+    stop at "add the pin", which loops a reader between two errors the way issue
+    #63's HIGH-1 did. `validate` holds no store here, so the line states both
+    cases rather than choosing between them.
 
     A warning, so it is emitted alongside ``valid: true`` and never changes the
     exit code. Always present, empty list included: a field that only sometimes
     exists is one every caller eventually forgets to check for.
     """
-    return [
-        f"{unpinned.migration_id}: {unpinned.revision_id} ({unpinned.content_file}) "
-        f"declares no contentSha256, so an edit to that body is adopted, not refused"
-        for unpinned in unpinned_revisions(migration_set)
-    ]
+    warnings: list[str] = []
+    for unpinned in unpinned_revisions(migration_set):
+        body = unpinned.resolved_content_path or unpinned.content_file
+        warnings.append(
+            f"{unpinned.migration_id}: {unpinned.revision_id} declares no contentSha256 for "
+            f"{body}, so an edit to that body is adopted, not refused. Pin it with the digest "
+            f"from `shasum -a 256 {body}`; if this migration is already applied, editing it "
+            f"trips the applied-migration checksum guard, so delete `.theurian/state/` and run "
+            f"`theurian migrate apply` to rebuild from the corrected migrations (FR-K4)."
+        )
+    return warnings
 
 
 def _refuse_a_body_file_backing_two_revisions(

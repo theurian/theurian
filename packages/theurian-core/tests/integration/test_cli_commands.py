@@ -2122,6 +2122,37 @@ def test_the_unpinned_warning_reaches_the_human_output_too(project: Path) -> Non
     assert REVISION_ID in result.stdout
 
 
+def test_the_unpinned_warning_names_a_shasummable_path_and_a_non_fatal_remedy(
+    project: Path,
+) -> None:
+    """Issue #210's remedy loop. The warning fires on already-applied migrations
+    too, and the naive cure -- add `contentSha256` to the migration -- is fatal
+    there: editing an applied migration trips FR-K5's checksum guard, whose own
+    remedy says to restore the file, looping the reader (issue #63's HIGH-1
+    shape). And the body path must be one the reader can actually `shasum` from
+    the repository root -- the authored `../knowledge/...` is relative to the
+    migration file and shasums to nothing there.
+    """
+    _invoke("init")
+    _write_migration(project)
+    apply_code, _ = _invoke("migrate", "apply")
+    assert apply_code == 0, "the migration is applied, so its warning must give the applied remedy"
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0, "an unpinned body is a warning, not a refusal, even once applied"
+    warning = validated["unpinnedRevisions"][0]
+    # The body path the reader shasums, resolved from the repository root -- not
+    # the authored path, which is relative to the migration file.
+    assert ".theurian/knowledge/architecture/auth-policy.md" in warning
+    assert "../knowledge/architecture/auth-policy.md" not in warning, (
+        "authored path is un-shasummable"
+    )
+    # A non-empty remedy that does not stop at the fatal "edit the applied migration".
+    assert "shasum" in warning, "the digest command the reader runs"
+    assert ".theurian/state/" in warning, "the applied-case escape, not just 'add the pin'"
+
+
 # ==========================================================================
 # ingest
 # ==========================================================================

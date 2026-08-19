@@ -248,6 +248,11 @@ class UnpinnedRevision:
     revision_id: RevisionId
     #: The path as authored, not as resolved: this is what a reader edits.
     content_file: str
+    #: The loader's resolved, project-relative path -- the one a reader can
+    #: ``shasum`` from the repository root. ``None`` for an in-memory operation.
+    #: The authored ``content_file`` is relative to the *migration* file, so a
+    #: reader cannot ``shasum`` it from the root; the warning prints this instead.
+    resolved_content_path: str | None = None
 
 
 def unpinned_revisions(migration_set: MigrationSet) -> tuple[UnpinnedRevision, ...]:
@@ -274,6 +279,7 @@ def unpinned_revisions(migration_set: MigrationSet) -> tuple[UnpinnedRevision, .
             migration_id=migration.migration_id,
             revision_id=operation.revision_id,
             content_file=operation.content_file_path,
+            resolved_content_path=operation.resolved_content_path,
         )
         for migration in migration_set
         for operation in migration.operations

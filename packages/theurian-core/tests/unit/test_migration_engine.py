@@ -1547,6 +1547,22 @@ def test_a_revision_declaring_no_pin_is_reported() -> None:
     assert reported[0].content_file == "../knowledge/a.md"
 
 
+def test_an_unpinned_revision_carries_its_resolved_path_for_shasum() -> None:
+    """The warning shasums a body from the repository root, so the reporter must
+    carry the loader's resolved, project-relative path -- the authored
+    ``content_file`` is relative to the migration file and shasums to nothing
+    there. Kept beside the authored path, not in place of it, so a reader still
+    sees the string they typed."""
+    migration = _migration(
+        MIG_1, _upsert(REV_1, BODY_V1, "../knowledge/a.md", resolved="knowledge/a.md")
+    )
+
+    reported = unpinned_revisions(MigrationSet.ordered((migration,)))
+
+    assert reported[0].resolved_content_path == "knowledge/a.md"
+    assert reported[0].content_file == "../knowledge/a.md"
+
+
 def test_a_revision_that_pins_its_body_is_not_reported() -> None:
     """The negative control, and the distinction the whole field rests on.
 
