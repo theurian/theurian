@@ -293,7 +293,16 @@ def _unpinned_warnings(migration_set: MigrationSet) -> list[str]:
     """
     warnings: list[str] = []
     for unpinned in unpinned_revisions(migration_set):
-        body = unpinned.resolved_content_path or unpinned.content_file
+        # `is None` rather than `or`: an empty resolved path, were one ever
+        # recorded, is a resolution -- not the "no resolution" an authored path
+        # falls back for. Behaviour is unchanged today (the loader never records
+        # an empty resolved path), and this keeps the display fall-back reading
+        # the way the identity fields it names are guarded (issue #210).
+        body = (
+            unpinned.content_file
+            if unpinned.resolved_content_path is None
+            else unpinned.resolved_content_path
+        )
         warnings.append(
             f"{unpinned.migration_id}: {unpinned.revision_id} declares no contentSha256 for "
             f"{body}, so an edit to that body is adopted, not refused. Pin it with the digest "
