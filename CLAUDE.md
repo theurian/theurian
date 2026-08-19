@@ -45,6 +45,30 @@ Two narrow exceptions, both stated in the response when used:
 Launch independent assignments **in one message**. Sequence only where one
 genuinely consumes another's output.
 
+### Independence is a measured file set, not an issue title
+
+Parallel fan-out is load-balanced by **which files each fix actually touches**,
+and that key comes from reproduction, not from reading the issue. An issue lies
+about its own scope: a title says `propose accept`, and the fix lands in a
+helper (`_migration_document`) shared with the create path — two "independent"
+assignments now collide in one file. Reproduce first, name the file set, then
+partition:
+
+1. **Same file set → same cluster → one worktree, worked serially.** Fanning a
+   cluster across worktrees does not remove the conflict; it defers it to a
+   merge that someone must untangle by hand.
+2. **Disjoint clusters → parallel worktrees.** This is what worktree isolation
+   is for; the shared checkout is what the serialize-writers rule protects.
+3. **Shared logical resources escape worktrees.** `SCHEMA_VERSION` and the
+   CHANGELOG's `[Unreleased]` section collide across worktrees, not just
+   within one. Any change touching them joins a serial spine, whatever its
+   cluster.
+4. **Verification stays serial per item, always.** Parallelism is for
+   producing fixes, never for checking them — and the ceiling on useful
+   fan-out is the orchestrator's own verification rate, not the worktree
+   count. Fixes delivered faster than they can be run and reviewed are
+   inventory, not progress.
+
 ## Milestone definition of done
 
 A milestone is not done when the code works. It is done when all of this has
