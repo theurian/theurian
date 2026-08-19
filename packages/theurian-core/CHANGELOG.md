@@ -17,8 +17,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 ### Fixed
 
 - **A rejected item's relation note reached an approved item's `knowledge.get`
-  through an alias-id collision** (GHSA-\<pending\>, assigned when the advisory is
-  published). Critical; affected 0.1.0.dev0–0.1.0.dev5. An `addAlias` whose key
+  through an alias-id collision**
+  ([GHSA-vx8x-rjfj-9x54](https://github.com/theurian/theurian/security/advisories/GHSA-vx8x-rjfj-9x54)).
+  Critical; affected 0.1.0.dev0–0.1.0.dev5. An `addAlias` whose key
   equalled the id of a live `rejected` item, while the alias pointed at an
   approved item, defeated the relation-visibility gate: `get_item` resolves an
   alias before it looks up a status, so a lookup for the retired id resolved to
@@ -42,7 +43,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 ### Changed
 
 - **BREAKING — an alias key may not collide with a non-deprecated item id across a
-  migration set** (GHSA-\<pending\>, assigned when the advisory is published).
+  migration set**
+  ([GHSA-vx8x-rjfj-9x54](https://github.com/theurian/theurian/security/advisories/GHSA-vx8x-rjfj-9x54)).
 
   **Old shape:** a set whose `addAlias` key equalled a live item's id applied
   silently. With that item `rejected` and the alias pointing at an approved item,
