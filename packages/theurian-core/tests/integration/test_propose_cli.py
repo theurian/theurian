@@ -10,6 +10,7 @@ migration commands actually applies.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import subprocess
 from collections.abc import Iterator
@@ -22,6 +23,7 @@ import yaml
 from typer.testing import CliRunner
 
 from theurian.cli.main import app
+from theurian.cli.propose_commands import _DRAFT_STEPS
 
 pytestmark = pytest.mark.integration
 
@@ -763,3 +765,225 @@ def test_governed_metadata_survives_acceptance_and_reaches_the_derived_store(
     assert published["sensitivity"] == "public"
     assert json.loads(published["scope_paths"]) == ["src/**"]
     assert json.loads(published["labels"]) == ["retention"]
+
+
+# -- the governed-defaults note (#249) -------------------------------------
+#
+# The note the draft surfaces when a governed field is omitted is the whole
+# reason #249 is a fix and not only an enhancement: the migration is left
+# without the keys (the compatibility pin holds that), so the *only* thing that
+# tells a caller a reviewed, public ADR is about to publish `unverified`/
+# `internal` is this next step. The adversarial reviewer found the round-1
+# surfacing tests could not fail -- five mutations survived them -- because they
+# asserted the *absence* of two strings rather than the shape of the note. The
+# tests below pin the note positively.
+
+
+def _governed_note(payload: dict[str, Any]) -> str:
+    """The single governed-defaults next step, selected by its signature.
+
+    Found by the phrase `will publish` -- which no other step carries -- rather
+    than by position, so a test that reads the note's *content* does not also
+    silently pin its *place*. The ordering has its own test. Asserting exactly
+    one match is what makes a malformed empty note (mutation ``if False``) visible
+    here: it still carries the signature, so the count, not a substring, catches it.
+    """
+    notes: list[str] = [step for step in payload["nextSteps"] if "will publish" in step]
+    assert len(notes) == 1, payload["nextSteps"]
+    return notes[0]
+
+
+def test_the_surfaced_default_equals_the_value_the_store_will_publish(project: Path) -> None:
+    """MEDIUM-1: the warned default and the published default are one value.
+
+    The shared ``DEFAULT_TRUST_LEVEL``/``DEFAULT_SENSITIVITY`` constants close the
+    original divergence structurally; this guards against re-divergence. It reads
+    the default the note *names* and the column ``migrate apply`` actually *wrote*,
+    both at runtime, and asserts they agree -- so reintroducing a literal in either
+    the note or the loader that drifts from the shared constant fails here. A note
+    that promised ``unverified`` while the store published something else would be
+    the exact false reassurance #249 exists to remove.
+    """
+    code, drafted = _draft(project)
+    assert code == 0, drafted
+
+    note = _governed_note(drafted)
+    surfaced_trust = re.search(r"trustLevel:\s*(\S+)", note)
+    surfaced_sensitivity = re.search(r"sensitivity:\s*(\S+)", note)
+    assert surfaced_trust and surfaced_sensitivity, note
+
+    accept_code, accepted = _invoke("propose", "accept", drafted["proposalId"])
+    assert accept_code == 0, accepted
+    apply_code, applied = _invoke("migrate", "apply")
+    assert apply_code == 0, applied
+
+    published = _published_revision(project, drafted["revisionId"])
+    assert surfaced_trust.group(1) == published["trust_level"], note
+    assert surfaced_sensitivity.group(1) == published["sensitivity"], note
+
+
+def test_a_draft_that_sets_both_governed_fields_carries_no_note_at_all(project: Path) -> None:
+    """MEDIUM-2: supplied both, the note is *absent*, not merely string-free.
+
+    The round-1 test asserted only that ``unverified``/``internal`` do not appear,
+    which the mutation ``if not omitted: return None`` -> ``if False: return None``
+    survived: with both fields given it builds an empty, malformed note ("`` was
+    not set, so this revision will publish  -- the schema default -- ...`") that
+    names neither default, so the old test stayed green while the response grew a
+    broken step. Pinned positively here: the next steps are exactly the baseline
+    list, first step included, and no step carries the note's signature phrases.
+    """
+    code, payload = _draft(project, "--trust-level", "reviewed", "--sensitivity", "public")
+
+    assert code == 0, payload
+    steps = payload["nextSteps"]
+    assert len(steps) == len(_DRAFT_STEPS), steps
+    assert steps[0] == _DRAFT_STEPS[0], steps
+    for step in steps:
+        assert "will publish" not in step, step
+        assert "schema default" not in step, step
+
+
+def test_a_draft_that_sets_only_trust_surfaces_only_the_sensitivity_default(project: Path) -> None:
+    """MEDIUM-3: one field omitted names that field alone, in the singular.
+
+    ``--trust-level`` supplied and ``--sensitivity`` omitted: the note must warn
+    about ``sensitivity``/``internal``/``--sensitivity`` and must not mention the
+    field the caller did set. ``was not set`` is asserted verbatim so the singular
+    grammar branch is exercised -- it goes RED under both ``len(omitted) > 1`` ->
+    ``> 0`` (which makes ``plural`` true for one field) and the ``'was'`` -> ``'were'``
+    literal flip, either of which would have this single-field note read "were".
+    """
+    code, payload = _draft(project, "--trust-level", "reviewed")
+
+    assert code == 0, payload
+    note = _governed_note(payload)
+    assert "sensitivity" in note, note
+    assert "internal" in note, note
+    assert "--sensitivity" in note, note
+    assert "was not set" in note, note
+    assert "trustLevel" not in note, note
+    assert "unverified" not in note, note
+    assert "--trust-level" not in note, note
+
+
+def test_a_draft_that_sets_only_sensitivity_surfaces_only_the_trust_default(project: Path) -> None:
+    """MEDIUM-3, the mirror: ``--sensitivity`` set, ``--trust-level`` omitted.
+
+    The note warns about ``trustLevel``/``unverified``/``--trust-level`` and names
+    nothing about the sensitivity the caller set. ``was not set`` verbatim kills the
+    same two mutations as its sibling above by pinning the singular grammar the note
+    uses when exactly one field is missing.
+    """
+    code, payload = _draft(project, "--sensitivity", "public")
+
+    assert code == 0, payload
+    note = _governed_note(payload)
+    assert "trustLevel" in note, note
+    assert "unverified" in note, note
+    assert "--trust-level" in note, note
+    assert "was not set" in note, note
+    assert "sensitivity" not in note, note
+    assert "internal" not in note, note
+    assert "--sensitivity" not in note, note
+
+
+def test_the_governed_defaults_note_is_the_first_next_step(project: Path) -> None:
+    """LOW: the warning leads, so a caller reading top-down meets it first.
+
+    When owed, the note is prepended (``[note, *steps]``). Pinned at index 0 so the
+    mutation ``[*steps, note]`` -- which buries the warning under three procedural
+    steps a hurried caller may not reach -- goes RED here.
+    """
+    code, payload = _draft(project)
+
+    assert code == 0, payload
+    assert "will publish" in payload["nextSteps"][0], payload["nextSteps"]
+
+
+# -- blank / invalid governed input, refused at draft (#249) ---------------
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_scope_path_is_refused_and_stages_nothing(project: Path, blank: str) -> None:
+    """LOW: a scope glob that matches nothing is an authoring slip, not a rule.
+
+    ``revisionMetadata.scope.paths`` items carry no ``minLength``, so ``""`` or a
+    whitespace-only value would stage a glob that can never apply and reads in
+    review as a mistake. Refused by name, and -- the half a bare exit code would
+    miss -- no proposal directory is left behind.
+    """
+    code, payload = _draft(project, "--scope-path", blank)
+
+    assert code == EXIT_INVALID_INPUT, payload
+    assert "--scope-path" in payload["error"], payload
+    assert payload["remedy"]
+    assert not [p for p in (project / ".theurian/proposals").iterdir() if p.is_dir()]
+
+
+def test_an_empty_label_is_refused_and_stages_nothing(project: Path) -> None:
+    """LOW: an empty label groups by nothing; refuse it before it stages."""
+    code, payload = _draft(project, "--label", "")
+
+    assert code == EXIT_INVALID_INPUT, payload
+    assert "--label" in payload["error"], payload
+    assert payload["remedy"]
+    assert not [p for p in (project / ".theurian/proposals").iterdir() if p.is_dir()]
+
+
+def test_a_label_with_a_control_character_is_refused_by_name(project: Path) -> None:
+    """LOW: a newline in a label corrupts the reviewed migration text.
+
+    ``labels.items`` has no ``pattern`` forbidding control characters the way
+    ``title``/``owner`` do, so a newline would split the label across YAML lines
+    and a NUL would truncate it. The refusal names the cause -- a control
+    character -- rather than exiting on an opaque code, and stages nothing.
+    """
+    code, payload = _draft(project, "--label", "a\nb")
+
+    assert code == EXIT_INVALID_INPUT, payload
+    assert "control character" in payload["error"], payload
+    assert payload["remedy"]
+    assert not [p for p in (project / ".theurian/proposals").iterdir() if p.is_dir()]
+
+
+def test_a_label_bearing_a_space_is_allowed(project: Path) -> None:
+    """LOW: the guard forbids control characters, not printable whitespace.
+
+    A space (U+0020) sits exactly on the C0 ceiling and is legitimate inside a
+    label, so it must stage unchanged. This pins the guard to control characters
+    rather than to "any whitespace": a mutation that broadened it to ``<=`` the
+    ceiling would refuse ``a b`` and fail here, where the refusal tests could not
+    see the over-block.
+    """
+    code, payload = _draft(project, "--label", "a b")
+
+    assert code == 0, payload
+    assert _staged_metadata(project, payload)["labels"] == ["a b"]
+
+
+@pytest.mark.parametrize(("option", "value"), [("--label", "x"), ("--scope-path", "src/**")])
+def test_a_list_valued_draft_option_handed_to_accept_is_refused(
+    project: Path, option: str, value: str
+) -> None:
+    """LOW: the repeatable options are stray after a verb too, not just the scalars.
+
+    Click parses a group's options whatever follows them, so
+    ``theurian propose --label x accept <id>`` parses and drops the label --
+    reporting success for a change nobody made. The existing stray test pins only
+    the scalar ``--trust-level``; ``--scope-path`` and ``--label`` arrive as
+    ``None``/list rather than a scalar default, so a stray check that tested them
+    wrongly could silently drop them. Pinned here for both.
+    """
+    _, drafted = _draft(project)
+
+    result = runner.invoke(
+        app,
+        ["propose", "--json", option, value, "accept", drafted["proposalId"]],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == EXIT_INVALID_INPUT, result.stdout
+    payload = json.loads(result.stderr)
+    assert option in payload["error"], payload
+    assert payload["remedy"]
