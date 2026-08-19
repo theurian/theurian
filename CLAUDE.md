@@ -512,7 +512,11 @@ is not "be careful":
   `kill` handed a subshell's pid returns 0 and leaves the daemon running, and
   the survivor answers the *next* run's health probe — that is how a
   `daemon-running` step read `satisfied` in a measurement that needed `missing`.
-  Check with `lsof -nP -iTCP:7419 -sTCP:LISTEN`; no output means free.
+  Check with `lsof -nP -iTCP:<dev-port> -sTCP:LISTEN`; no output means free.
+  **Once a resident dogfood daemon owns 7419, dev-time runs take an explicit
+  `--port <dev-port>` and every check names that port, not 7419** — including
+  `setup --dry-run` and `doctor`, whose default probes otherwise report on the
+  resident daemon rather than on the thing under test.
 
 #### Registration: `--dry-run` is the only form to run here
 
