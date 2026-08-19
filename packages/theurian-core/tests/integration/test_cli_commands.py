@@ -1834,6 +1834,62 @@ def test_status_reports_a_body_sharing_migration_without_gating(project: Path) -
     assert _SECOND_MIGRATION_ID in status["pendingIds"], "and it is still reported as pending"
 
 
+#: An in-place status change (ADR-0024 decision 5): the item's *current* revision
+#: id, re-declared against its own body, changing only ``status``. The revision
+#: id does not move and the body is the same file, so the two operations share an
+#: identity but name one revision -- a legitimate no-op re-declaration (FR-K8),
+#: not one file backing two revisions. No ``expectedRevision``: it does not
+#: advance the item's revision, it restates it.
+_INPLACE_STATUS_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {REVISION_ID}
+    contentFile: {_SHARED_CONTENT_FILE}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def test_an_in_place_status_change_is_not_reported_as_body_sharing(project: Path) -> None:
+    """The shape the body-sharing refusal must let through, end to end (#210).
+
+    The second migration re-declares the first revision's own body to change its
+    status: same body file, same revision id. The identity collides but the
+    revision id does not, so this is a re-declaration, not a collision. `status`
+    must keep exit 0 and *not* name it under `refusedIds` -- the enumerator's
+    revision-id guard, untested until now -- and `validate` must not refuse it,
+    the throwing form's guard at the CLI edge.
+    """
+    _invoke("init")
+    _write_migration(project)
+    (project / f".theurian/migrations/{_SECOND_MIGRATION_ID}-reject.yaml").write_text(
+        _INPLACE_STATUS_MIGRATION
+    )
+
+    status_code, status = _invoke("migrate", "status")
+    validate_code, validated = _invoke("migrate", "validate")
+
+    assert status_code == 0, "status observes, it does not gate"
+    assert _SECOND_MIGRATION_ID not in status["refusedIds"], (
+        "re-declaring a revision's own body is a no-op, not one file backing two revisions"
+    )
+    assert validate_code == 0, "and the gating command must not refuse the re-declaration either"
+    assert validated["valid"] is True
+
+
 # -- issue #210: the re-key -- identity, not the path string ----------------
 #
 # The refusal above keys on filesystem identity (`st_dev`/`st_ino`), not on the

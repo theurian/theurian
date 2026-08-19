@@ -1628,3 +1628,42 @@ def test_a_revision_cannot_claim_a_pin_it_has_no_hash_for() -> None:
             metadata=_metadata(),
             content_pinned=True,
         )
+
+
+# -- Issue #210 hardening: the guards' two easily-mutated edges -------------
+
+
+def test_status_does_not_report_an_in_place_re_declaration_as_body_sharing() -> None:
+    """The status enumerator's revision-id guard, driven for the first time.
+
+    An in-place status change re-declares the item's *current* revision id
+    against its own body, changing only ``status`` (ADR-0024 decision 5, FR-K8's
+    no-op ``append_revision``): the identity matches but the revision id does
+    not move, so it is a legitimate re-declaration, not one file backing two
+    revisions. The throwing form's exclusion of this shape was pinned
+    (``test_an_in_place_status_change_may_re_declare_its_own_body``); the
+    non-throwing enumerator ``migrate status`` calls was not. A mutation
+    dropping the ``!= operation.revision_id`` guard in
+    ``duplicate_content_file_violations`` survived the whole suite, so ``status``
+    could begin reporting a re-declaration under ``refusedIds`` -- gating a
+    legitimate no-op in the one command whose contract is to observe, not gate --
+    with nothing red. This makes that mutation fail.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    content_identity=IDENTITY_A,
+                    metadata=_metadata(status=KnowledgeStatus.REJECTED),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+
+    assert duplicate_content_file_violations(migrations) == ()
