@@ -612,6 +612,43 @@ def test_a_document_written_but_not_yet_committed_is_scanned(sandbox: pathlib.Pa
     assert scanned == ["docs/draft.md"]
 
 
+def test_the_python_reader_is_handed_only_the_subtree_its_surface_names(
+    sandbox: pathlib.Path,
+) -> None:
+    """``root`` decides which files owe an answer to a reader and which to the guard.
+
+    One population feeds four surfaces, and only the Python one is narrowed --
+    to Core's ``src/``, because that is the product's own source. A ``.py`` file
+    outside it is not unwatched: it is in the population, no reader opens it,
+    and :func:`test_no_file_that_names_a_command_escapes_the_scan` reports it if
+    it names a command, which forces a decision instead of a silent read.
+
+    Pinned because the narrowing used to be structural -- the walk started at
+    ``root`` and could not yield above it -- and is now one condition that
+    deletes cleanly. Deleting it hands ``tools/`` and ``plugins/`` Python to a
+    tokenizing reader that was never scoped to them, and until this test
+    existed, nothing in the suite noticed.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    source = sandbox / "packages" / "theurian-core" / "src" / "theurian"
+    source.mkdir(parents=True)
+    (source / "compatibility.py").write_text('REMEDY = "theurian upgrade"\n', encoding="utf-8")
+    (sandbox / "tools").mkdir()
+    (sandbox / "tools" / "harness.py").write_text('LABEL = "theurian upgrade"\n', encoding="utf-8")
+
+    scanned = [
+        path.relative_to(sandbox).as_posix()
+        for path in _files(
+            sandbox / "packages" / "theurian-core" / "src",
+            frozenset({".py"}),
+            repository=sandbox,
+        )
+    ]
+
+    assert scanned == ["packages/theurian-core/src/theurian/compatibility.py"]
+
+
 def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
     sandbox: pathlib.Path,
 ) -> None:
@@ -638,7 +675,7 @@ def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
 
 
 def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
-    sandbox: pathlib.Path,
+    sandbox: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A tree nested in an unrelated repository is answered for by that repository.
 
@@ -651,11 +688,20 @@ def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
     file. Neither is this tree's answer, so the toplevel git reports has to be
     this tree before its listing is used.
 
+    The ceiling is raised for this test alone, and that is the whole fixture:
+    :func:`sandbox` pins it at the directory holding the sandbox so no test
+    finds a repository by accident, and under that ceiling git never discovers
+    the outer repository either -- ``rev-parse`` exits 128, the listing is
+    refused for the *first* reason rather than the toplevel, and deleting the
+    toplevel check leaves this test green. It did, until the ceiling moved up
+    one directory.
+
     Asserted through the fallback's own signature -- the repository-root
     ``.theurian/`` missing while ``docs/`` is read -- because that is what
     distinguishes "fell back" from "took the outer repository's word".
     """
     git = _require_git()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(sandbox.parent.parent))
     _git(git, "init", "-q", str(sandbox.parent))
     (sandbox / ".theurian" / "knowledge").mkdir(parents=True)
     (sandbox / ".theurian" / "knowledge" / "local-only.md").write_text(
