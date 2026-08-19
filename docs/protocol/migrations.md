@@ -265,7 +265,7 @@ same `stat` that read it — not on the path string. So
 a case-insensitive filesystem (APFS, NTFS) collapses onto one inode — an
 uppercase extension, a case-variant directory, an NFC/NFD pair, or a second
 hardlinked name. A guard keyed on the resolved *string* would leave those
-distinct and let a second revision name a withheld body through a variant
+distinct and let a second revision name the same body through a variant
 spelling; identity is the platform-correct key, where casefolding the string
 would go wrong the other way and refuse two genuinely different files on a
 case-sensitive filesystem.
