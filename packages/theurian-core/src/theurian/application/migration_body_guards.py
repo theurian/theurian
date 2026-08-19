@@ -11,11 +11,12 @@ call all four through the CLI.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from theurian.domain.errors import DuplicateContentFileError
 from theurian.domain.identifiers import MigrationId, RevisionId
-from theurian.domain.migration import MigrationSet, UpsertRevision
+from theurian.domain.migration import Migration, MigrationSet, UpsertRevision
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,40 @@ class _ContentClaim:
     resolved_content_path: str | None
 
 
+def _identified_upserts(
+    migration_set: MigrationSet,
+) -> Iterator[tuple[Migration, UpsertRevision, tuple[int, int]]]:
+    """Every ``upsertRevision`` carrying a filesystem identity, in application order.
+
+    The single place the None-identity skip lives, so the throwing and the
+    non-throwing body-sharing guards cannot drift on *which* operations they
+    compare. Yields ``(migration, operation, identity)`` for each
+    ``upsertRevision`` whose ``content_identity`` is set, in the application order
+    a ``MigrationSet`` iterates -- deterministic, so both guards report the same
+    collision first.
+
+    An operation whose ``content_identity`` is ``None`` is skipped, not compared:
+    it has no file on disk and so cannot participate in an identity comparison,
+    and folding it back onto the path string it happens to carry is exactly the
+    weaker key issue #210 replaced -- two spellings of one file compare unequal
+    as strings. The loader -- the sole *production* constructor of
+    ``UpsertRevision`` -- sets the identity from the ``stat`` that read the body,
+    so no gate reached from ``migrate validate``/``apply`` ever sees ``None``
+    (pinned by ``test_migration_loader_identity.py``). A future in-memory
+    production constructor that does not set the identity would be silently
+    skipped here; it must set the identity, or that skip becomes a live hole and
+    the change gets its own review.
+    """
+    for migration in migration_set:
+        for operation in migration.operations:
+            if not isinstance(operation, UpsertRevision):
+                continue
+            identity = operation.content_identity
+            if identity is None:
+                continue
+            yield migration, operation, identity
+
+
 def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
     """Refuse a body file backing two different revisions (issue #210).
 
@@ -134,35 +169,25 @@ def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
             construction.
     """
     claimed_by: dict[tuple[int, int], _ContentClaim] = {}
-    for migration in migration_set:
-        for operation in migration.operations:
-            if not isinstance(operation, UpsertRevision):
-                continue
-            identity = operation.content_identity
-            if identity is None:
-                # An in-memory operation with no file on disk. The loader -- the
-                # only path any gate sees -- always sets the identity, so this
-                # branch is unreachable from `migrate validate`/`apply`; skipping
-                # is not the removed path-string fall-back, which could false-match.
-                continue
-            claim = claimed_by.get(identity)
-            if claim is None:
-                claimed_by[identity] = _ContentClaim(
-                    revision_id=operation.revision_id,
-                    migration_id=migration.migration_id,
-                    content_file=operation.content_file_path,
-                    resolved_content_path=operation.resolved_content_path,
-                )
-            elif claim.revision_id != operation.revision_id:
-                raise DuplicateContentFileError(
-                    first_migration=claim.migration_id,
-                    first_revision=claim.revision_id,
-                    first_content_file=claim.content_file,
-                    second_migration=migration.migration_id,
-                    second_revision=operation.revision_id,
-                    second_content_file=operation.content_file_path,
-                    resolved_content_path=claim.resolved_content_path,
-                )
+    for migration, operation, identity in _identified_upserts(migration_set):
+        claim = claimed_by.get(identity)
+        if claim is None:
+            claimed_by[identity] = _ContentClaim(
+                revision_id=operation.revision_id,
+                migration_id=migration.migration_id,
+                content_file=operation.content_file_path,
+                resolved_content_path=operation.resolved_content_path,
+            )
+        elif claim.revision_id != operation.revision_id:
+            raise DuplicateContentFileError(
+                first_migration=claim.migration_id,
+                first_revision=claim.revision_id,
+                first_content_file=claim.content_file,
+                second_migration=migration.migration_id,
+                second_revision=operation.revision_id,
+                second_content_file=operation.content_file_path,
+                resolved_content_path=claim.resolved_content_path,
+            )
 
 
 def duplicate_content_file_violations(migration_set: MigrationSet) -> tuple[MigrationId, ...]:
@@ -182,18 +207,12 @@ def duplicate_content_file_violations(migration_set: MigrationSet) -> tuple[Migr
     """
     claimed_by: dict[tuple[int, int], RevisionId] = {}
     refused: list[MigrationId] = []
-    for migration in migration_set:
-        for operation in migration.operations:
-            if not isinstance(operation, UpsertRevision):
-                continue
-            identity = operation.content_identity
-            if identity is None:
-                continue
-            claimant = claimed_by.get(identity)
-            if claimant is None:
-                claimed_by[identity] = operation.revision_id
-            elif claimant != operation.revision_id and migration.migration_id not in refused:
-                refused.append(migration.migration_id)
+    for migration, operation, identity in _identified_upserts(migration_set):
+        claimant = claimed_by.get(identity)
+        if claimant is None:
+            claimed_by[identity] = operation.revision_id
+        elif claimant != operation.revision_id and migration.migration_id not in refused:
+            refused.append(migration.migration_id)
     return tuple(refused)
 
 
