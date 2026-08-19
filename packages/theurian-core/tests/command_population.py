@@ -138,13 +138,16 @@ def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
 
     ``None`` means one of three things, and the caller treats them alike: no
     git on this machine, the tree is not a working copy, or the tree sits
-    *inside* somebody else's working copy. The last is why the toplevel is
-    checked rather than trusting a zero exit -- a copy of the checkout dropped
-    under another repository would otherwise be answered for by that
-    repository's index, which knows nothing about any of these files and would
-    return a population of nothing at all. A silently empty population is the
-    one failure mode this module cannot survive: every assertion in it passes
-    when no file is read.
+    *inside* somebody else's working copy -- a copy of the checkout unpacked
+    below an unrelated repository, which is one ``TMPDIR`` away from real.
+
+    The third is why the toplevel is checked rather than a zero exit trusted.
+    Measured, both ways, on a scratch repository: asked from inside such a copy,
+    git answers for the *outer* repository and gives whichever wrong answer that
+    repository's ignore rules imply. If it does not ignore the copy, everything
+    on disk comes back -- local-only knowledge included, which is #262 again. If
+    it does, nothing comes back at all, and that is the failure this module
+    cannot survive, because every assertion in it passes when no file is read.
     """
     git = shutil.which("git")
     if git is None:

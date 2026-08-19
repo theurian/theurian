@@ -612,6 +612,63 @@ def test_a_document_written_but_not_yet_committed_is_scanned(sandbox: pathlib.Pa
     assert scanned == ["docs/draft.md"]
 
 
+def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
+    sandbox: pathlib.Path,
+) -> None:
+    """``--cached`` answers for the index, and the index outlives the file.
+
+    Deleting a file without telling git is an ordinary state mid-edit, and the
+    path git still reports for it points at nothing. Handing that to the readers
+    is not a wrong answer but a crash: :func:`_text` would raise
+    ``FileNotFoundError`` out of a module whose whole job is to *report* files,
+    and the traceback would name the reader rather than the deletion.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    (sandbox / "docs").mkdir()
+    deleted = sandbox / "docs" / "gone.md"
+    deleted.write_text("run `theurian upgrade`\n", encoding="utf-8")
+    (sandbox / "docs" / "here.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "docs/gone.md")
+    deleted.unlink()
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/here.md"]
+
+
+def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
+    sandbox: pathlib.Path,
+) -> None:
+    """A tree nested in an unrelated repository is answered for by that repository.
+
+    One ``TMPDIR`` away from real: ``tools/mutate.py`` builds its copies outside
+    this checkout, and nothing says the directory it builds them in is outside
+    every checkout. Measured on a scratch repository, git asked from inside such
+    a copy answers with the outer repository's ignore rules -- everything on
+    disk when it does not ignore the copy, which is #262 again, and nothing at
+    all when it does, which passes every assertion in this module by reading no
+    file. Neither is this tree's answer, so the toplevel git reports has to be
+    this tree before its listing is used.
+
+    Asserted through the fallback's own signature -- the repository-root
+    ``.theurian/`` missing while ``docs/`` is read -- because that is what
+    distinguishes "fell back" from "took the outer repository's word".
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox.parent))
+    (sandbox / ".theurian" / "knowledge").mkdir(parents=True)
+    (sandbox / ".theurian" / "knowledge" / "local-only.md").write_text(
+        "quoting `theurian upgrade`\n", encoding="utf-8"
+    )
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "shipped.md").write_text("run `theurian init`\n", encoding="utf-8")
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/shipped.md"]
+
+
 def test_a_tree_that_is_not_a_checkout_reads_less_rather_than_more(
     sandbox: pathlib.Path,
 ) -> None:
