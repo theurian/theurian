@@ -4099,8 +4099,7 @@ project, the note `REJECTED BECAUSE sessions.token held raw bearer tokens until
 never appeared; only the note leaked — which is the content `knowledge.get` says
 a rejected revision is withheld *for*. Reproducible in the shipped default
 configuration through the documented migration API, so **Critical**. Affected
-0.1.0.dev0–0.1.0.dev5, fixed in 0.1.0.dev6 (GHSA-\<pending\> (T-21), assigned when
-the advisory is published).
+0.1.0.dev0–0.1.0.dev5, fixed in 0.1.0.dev6 (GHSA-vx8x-rjfj-9x54, T-21).
 
 The root cause is that an alias key and an item id share one namespace, and a
 read that resolves the alias then evaluates the *wrong* item's authority: it asks
@@ -4173,7 +4172,7 @@ content recorded for two revisions, with that same direct-request asymmetry
 (GHSA-w5cm-cqf9-vm7r). T-21 shares an **alias identity** — an alias key equal to a
 live item id — so a read gate that resolves the alias evaluates the approved
 target's authority instead of the withheld item's, publishing its edge and note
-(GHSA-\<pending\> (T-21)). T-19 instead ships a **doctored derived state** that
+(GHSA-vx8x-rjfj-9x54, T-21). T-19 instead ships a **doctored derived state** that
 never went through a local build, so the gate runs over tampered input rather
 than being bypassed (GHSA-266v-fcj2-qggx). Each has its own root cause, so its own
 entry and its own control. The invariant common to the shared-identity three —
@@ -4306,7 +4305,7 @@ fix.
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
-| T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-\<pending\>) |
+| T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
 
 ## Explicitly out of scope
 
