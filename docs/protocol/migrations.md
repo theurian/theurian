@@ -207,14 +207,17 @@ before committing one is `validate`.
 ### One body file, one revision (issue #210)
 
 **`migrate validate` and `migrate apply` both refuse a migration set in which
-two *different* revisions name one `contentFile`.** A body file holds one
-version at a time and carries no history, so such a set does not describe a
-state — it describes whatever that file was last written with. Measured before
-this refusal existed: two hand-written migrations sharing one path, with a
-correct `expectedRevision` chain and no `contentSha256`, both applied at exit 0,
-and the earlier revision recorded the *later* body under its own title and
-author. Having adopted that body's hash, the wrong record was self-consistent
-afterwards, so nothing could detect it later.
+two *different* revisions back onto one body file.** A body file holds one
+version at a time and cannot be independently frozen or attributed to each of
+two revisions — there is one set of bytes to hash — so such a set does not
+describe a state. The refusal is **unconditional of pinning**: even a pair that
+both pin the same `contentSha256` is refused, because the hazard is the sharing,
+not the missing pin. Where no pin is declared the failure is also silent —
+measured before this refusal existed: two hand-written migrations sharing one
+path, with a correct `expectedRevision` chain and no `contentSha256`, both
+applied at exit 0, and the earlier revision recorded the *later* body under its
+own title and author. Having adopted that body's hash, the wrong record was
+self-consistent afterwards, so nothing could detect it later.
 
 Both commands exit 4 on the same message, and `apply` refuses before it creates
 a database file — a refused set costs no state, the property issue #63's refusal
@@ -242,13 +245,24 @@ that, and take the withdrawal purge's own faces with it. This passes:
 Measured against the set above: `migrate validate` and `migrate apply` both
 exit 0, and `apply` reports both migrations applied.
 
-Two *spellings* of one path do collide. The comparison runs on the path the
-loader already resolved in order to read the body, so
+Two *spellings* of one file do collide, because the comparison runs on the
+body's **filesystem identity** (`st_dev`/`st_ino`), taken by the loader from the
+same `stat` that read it — not on the path string. So
 `../knowledge/architecture/./auth-policy.md` and
-`../knowledge/architecture/auth-policy.md` are one reference, not two.
+`../knowledge/architecture/auth-policy.md` are one file, and so are the spellings
+a case-insensitive filesystem (APFS, NTFS) collapses onto one inode — an
+uppercase extension, a case-variant directory, an NFC/NFD pair, or a second
+hardlinked name. A guard keyed on the resolved *string* would leave those
+distinct and let a second revision name a withheld body through a variant
+spelling; identity is the platform-correct key, where casefolding the string
+would go wrong the other way and refuse two genuinely different files on a
+case-sensitive filesystem.
 
-`migrate status` does not refuse, matching how it treats the tenant/ACL rule
-above: its contract is observation, not a gate.
+`migrate status` does not refuse — its contract is observation, not a gate —
+but names every migration `validate`/`apply` refuse under `refusedIds`, exactly
+as it does for the tenant/ACL rule above, so the property stays visible on the
+one command that keeps going. It reports the *later* migration of each sharing
+pair, the one whose body a reader gives its own file.
 
 ### Idempotence
 

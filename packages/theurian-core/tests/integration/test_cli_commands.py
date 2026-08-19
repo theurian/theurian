@@ -1814,6 +1814,26 @@ def test_two_migrations_naming_two_body_files_are_not_refused(project: Path) -> 
     assert applied["applied"] == [MIGRATION_ID, _SECOND_MIGRATION_ID]
 
 
+def test_status_reports_a_body_sharing_migration_without_gating(project: Path) -> None:
+    """Issue #210 on `migrate status`: observation, not a gate.
+
+    The body-sharing migration is named under `refusedIds` -- exactly as the
+    tenant/ACL rule already is -- while the command keeps exit 0. Before this,
+    `status` reported `refusedIds: []` for a set `validate`/`apply` exit 4 on,
+    so the property the gating commands refuse went invisible on the one command
+    whose contract is to keep reporting.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_second_migration(project)
+
+    code, status = _invoke("migrate", "status")
+
+    assert code == 0, "status observes, it does not gate"
+    assert _SECOND_MIGRATION_ID in status["refusedIds"], "the later migration validate/apply refuse"
+    assert _SECOND_MIGRATION_ID in status["pendingIds"], "and it is still reported as pending"
+
+
 # -- issue #210: the re-key -- identity, not the path string ----------------
 #
 # The refusal above keys on filesystem identity (`st_dev`/`st_ino`), not on the

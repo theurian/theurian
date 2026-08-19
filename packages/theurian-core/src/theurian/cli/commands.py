@@ -24,6 +24,7 @@ from theurian.application.ingestion_service import (
 from theurian.application.migration_engine import (
     MigrationEngine,
     WithdrawalCandidate,
+    duplicate_content_file_violations,
     refuse_duplicate_content_files,
     refuse_unenforceable_scope,
     unenforceable_scope_violations,
@@ -303,6 +304,25 @@ def _refuse_a_body_file_backing_two_revisions(
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
+
+
+def _refused_migration_ids(migration_set: MigrationSet) -> list[str]:
+    """Every migration id `migrate validate`/`apply` would refuse, for `status`.
+
+    Both gating rules feed `refusedIds`: the tenant/ACL scope rule (issue #63)
+    and the one-body-one-revision rule (issue #210). Each has a non-throwing
+    enumerator split from its throwing refusal precisely so `status` can report
+    without gating -- reporting only the scope rule, as this did, told a reader
+    `refusedIds: []` for a set `validate`/`apply` exit 4 on. Deduplicated in
+    first-seen order (a migration can carry both faults), so the field is stable.
+    """
+    seen: dict[str, None] = {}
+    for migration_id in (
+        *unenforceable_scope_violations(migration_set),
+        *duplicate_content_file_violations(migration_set),
+    ):
+        seen.setdefault(str(migration_id), None)
+    return list(seen)
 
 
 def _state_remedy(exc: TheurianError) -> str:
@@ -962,14 +982,15 @@ def migrate_status(as_json: JsonOption = False) -> None:
     """Report applied and pending migrations.
 
     Unlike `migrate validate` and `migrate apply`, this command never refuses
-    (issue #63's MEDIUM-3): its contract is observation, so a set containing a
-    revision naming a tenant or ACL group nothing can yet enforce is still
-    reported in full, with `refusedIds` naming which migrations `validate`/
-    `apply` will refuse -- the statically decidable property this issue is
-    about stays visible here too, on the one consumer that keeps going.
+    (issue #63's MEDIUM-3): its contract is observation, so a set `validate`/
+    `apply` would refuse is still reported in full, with `refusedIds` naming the
+    migrations they refuse. Both statically decidable rules feed it -- a revision
+    naming a tenant or ACL group nothing can enforce (issue #63), and two
+    revisions backing one body file (issue #210) -- so neither property goes
+    invisible on the one consumer that keeps going.
     """
     context, database = _require_project(as_json)
-    refused_ids = [str(m) for m in unenforceable_scope_violations(context.loaded.migration_set)]
+    refused_ids = _refused_migration_ids(context.loaded.migration_set)
 
     if not database.exists():
         _emit(

@@ -66,22 +66,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   self-consistent afterwards, so nothing could detect it later.
 
   **New shape:** `migrate validate` and `migrate apply` both refuse the whole set
-  with `DuplicateContentFileError` at exit 4, naming the two migrations and the
-  path they share. `apply` refuses before it creates a database file, so a refused
-  set costs no state — the property issue #63's refusal already has. The remedy
-  says to give the later revision a body file of its own, and says what to do when
-  the offending migration was already applied: editing it trips FR-K5's
+  with `DuplicateContentFileError` at exit 4, naming both revisions, both authored
+  paths, and the resolved body. `apply` refuses before it creates a database file,
+  so a refused set costs no state — the property issue #63's refusal already has.
+  The refusal is **unconditional of pinning**: even a pair that both pin the same
+  `contentSha256` is refused, because one file cannot be independently frozen or
+  attributed to two revisions — the hazard is the sharing, not the missing pin.
+  The remedy says to give the later revision a body file of its own, and says what
+  to do when the offending migration was already applied: editing it trips FR-K5's
   applied-migration checksum guard, so the fix there is the edit plus a
   `.theurian/state/` rebuild (FR-K4).
 
-  The key is the **revision id**, not the path alone. Re-declaring one revision
-  against its own body — how an in-place status change such as `reject` is
-  written, where the revision id does not move, only `status` differs, and
-  `append_revision` stays the no-op FR-K8 requires (ADR-0024 decision 5) — still
-  passes. Two *spellings* of one resolved path do collide, because the comparison
-  runs on the path the loader already resolved in order to read the body.
-  `migrate status` does not refuse; its contract is observation, matching how it
-  treats the tenant/ACL rule.
+  The comparison key is the body's **filesystem identity** (`st_dev`/`st_ino`),
+  not the path string, so two revisions that reach one physical file through
+  *different* spellings still collide — a `./` segment, and the case-variant and
+  NFC/NFD spellings a case-insensitive filesystem (APFS, NTFS) collapses onto one
+  inode, and a second hardlinked name. A string key left those distinct and let a
+  second revision name a withheld body through a variant spelling; casefolding the
+  string would go wrong the other way and refuse two genuinely different files on
+  a case-sensitive filesystem, so identity is the platform-correct key. Re-declaring
+  one revision against its own body — how an in-place status change such as
+  `reject` is written, where the revision id does not move, only `status` differs,
+  and `append_revision` stays the no-op FR-K8 requires (ADR-0024 decision 5) —
+  still passes, because the key that separates a re-declaration from a collision is
+  the revision id. `migrate status` does not refuse — its contract is observation —
+  but names every refused migration under `refusedIds`, matching how it treats the
+  tenant/ACL rule.
 
   Breaking because a migration set that applied on `0.1.0.dev4` and earlier now
   refuses. No stable release exists — the published versions are `0.1.0.devN` —
