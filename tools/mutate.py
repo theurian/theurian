@@ -251,11 +251,165 @@ _DEFAULT_TIMEOUT_SECONDS: Final = 1800
 # suite that walks the repository root.
 _RUNNER_NAME: Final = ".mutate-run"
 
+# The source checkout's tracked file list, recorded in the copy because the copy
+# has no `.git` to be asked. A contract with
+# `packages/theurian-core/tests/command_population.py`, which reads this file by
+# this name and takes it over its own name-based guess -- the format is exactly
+# `git ls-files --cached -z` output, so both ends parse it the same way.
+#
+# Without it that guess drops the whole repository-root `.theurian/`, which on
+# the dogfood corpus branch is 81 tracked files -- 26 knowledge documents, 27
+# migrations, 27 proposals, one specification -- 78 of them with a suffix the
+# scan reads, against a scanned population of 321. The harness would then run
+# every verdict against 24% less than the gate it stands in for, and say nothing
+# about the difference.
+_POPULATION_NAME: Final = ".mutate-population"
+
+
+# The same class of variable `command_population._INHERITED_GIT_OVERRIDES`
+# drops, and for the same reason: `GIT_INDEX_FILE` binds the index while the
+# `-C` argument binds the working tree, so an inherited one answers for another
+# tree and `ls-files` comes back empty. Git exports these to hooks, and a harness
+# started from one would record a manifest belonging to somebody else's index.
+_INHERITED_GIT_OVERRIDES: Final = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+)
+
+
+def _is_complete(listing: bytes) -> bool:
+    """Whether a manifest is a whole one.
+
+    ``ls-files -z`` terminates *every* entry including the last, so a listing
+    that does not end in a NUL was cut short -- a partial write, a full disk, a
+    harness killed between the two. Empty fails the same test, which is the
+    point: an empty manifest is a population of nothing, and the reader would
+    otherwise adopt it as the answer.
+    """
+    return listing.endswith(b"\0")
+
+
+def _git_in_source(*arguments: str) -> subprocess.CompletedProcess[bytes] | None:
+    """One read-only git command in the source checkout, or ``None`` if it cannot run.
+
+    ``None`` rather than an exception for the two ways running it is impossible:
+    no git on ``PATH``, and a git that cannot be executed. The second is not
+    theoretical -- a ``PATH`` entry that has gone away raises ``OSError`` from
+    ``subprocess``, and an uncaught one here would walk straight past
+    ``_prepare_mode``'s ``except HarnessError`` and leave the work root behind.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        return subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
+            [git, "-C", str(REPO_ROOT), *arguments],
+            capture_output=True,
+            check=False,
+            env={
+                name: value
+                for name, value in os.environ.items()
+                if name not in _INHERITED_GIT_OVERRIDES
+            },
+        )
+    except OSError:
+        return None
+
+
+def _tracked_paths() -> bytes | None:
+    """``git ls-files --cached -z`` for the source checkout, or ``None``.
+
+    **Three guards, and the reader holds the same three** -- see
+    ``_git_listing`` and ``_manifest_listing`` in
+    ``packages/theurian-core/tests/command_population.py``. They are duplicated
+    rather than shared because ``tools/`` and the core's test tree reach
+    ``sys.path`` by different mechanisms and neither imports the other; the two
+    sites name each other so a change to one is a search away from the other.
+
+    1. **The environment is the harness's, not the caller's.** ``GIT_INDEX_FILE``
+       binds the index while ``-C`` binds the working tree, so an inherited one
+       answers from another index. Git exports it to hooks.
+    2. **The toplevel must be this checkout.** A source that is not a repository
+       but sits *inside* one is answered for by the outer repository, and the
+       answer is not empty -- measured on a scratch tree, ``ls-files`` exits 0
+       and lists the outer repository's paths *relative to the source*,
+       including a file the source itself does not track. Neither the exit code
+       nor the emptiness check sees it; only comparing the toplevel does.
+    3. **The listing must be whole.** A zero exit with nothing on stdout is what
+       an empty or foreign index looks like, and a 0-byte manifest tells the
+       copy that this repository ships nothing.
+    """
+    toplevel = _git_in_source("rev-parse", "--show-toplevel")
+    if toplevel is None or toplevel.returncode != 0:
+        return None
+    named = toplevel.stdout.decode("utf-8", "surrogateescape").strip()
+    if not named or Path(named).resolve() != REPO_ROOT.resolve():
+        return None
+    listing = _git_in_source("ls-files", "--cached", "-z")
+    if listing is None or listing.returncode != 0 or not _is_complete(listing.stdout):
+        return None
+    return listing.stdout
+
+
+def _record_population(destination: Path) -> None:
+    """Write the source checkout's tracked paths into the copy, or refuse to build.
+
+    **A tree whose population cannot be recorded raises rather than degrading**,
+    and that is a decision worth stating because the alternative looks kinder.
+    Printing a warning and letting the copy fall back to its name-based guess
+    means every verdict in the batch is computed against a population the real
+    gate does not have -- 78 scanned files fewer on the corpus branch, about a
+    third of it -- while each verdict still reads as an ordinary KILLED or
+    SURVIVED. Nothing downstream can tell. The harness already refuses to build
+    a tree whose virtualenv it cannot make; a tree whose *suite* it cannot make
+    honest is the same kind of refusal, and ``_prepare_mode`` already unwinds
+    the work root on ``HarnessError``.
+
+    The one case that is not a degrade: a copy of a tree that was itself
+    prepared carries the manifest its source carried, which lists the same
+    files. That is kept, and said out loud on stderr -- ``--prepare-tree`` puts
+    the tree's path on stdout and nothing else, so commentary that lands there
+    would be captured by ``$(...)`` and break the caller's ``cd``.
+
+    Written through a temporary name and renamed into place, because the reader
+    cannot distinguish a manifest that is short from one that is truncated
+    except by its terminator, and the cheapest way to never write a short one is
+    to never write into the name at all.
+    """
+    listing = _tracked_paths()
+    if listing is not None:
+        staging = destination / f"{_POPULATION_NAME}.partial"
+        staging.write_bytes(listing)
+        staging.replace(destination / _POPULATION_NAME)
+        return
+
+    carried = destination / _POPULATION_NAME
+    if carried.is_file() and _is_complete(carried.read_bytes()):
+        _note(f"{destination}: kept the population its source recorded; git could not be asked")
+        return
+
+    raise HarnessError(
+        f"could not record the population for {destination}: `git ls-files` did not answer "
+        f"for {REPO_ROOT}, and no manifest came with the copy. The suite inside it would "
+        "silently scan a different set of files than the gate this batch stands in for."
+    )
+
 
 def _build_tree(destination: Path, cache_dir: Path) -> Path:
     """Copy the checkout and give the copy its own virtualenv."""
     shutil.rmtree(destination, ignore_errors=True)
     shutil.copytree(REPO_ROOT, destination, ignore=_COPY_IGNORE, symlinks=True)
+    _record_population(destination)
     completed = subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
         [_uv(), "sync", "--frozen"],
         cwd=destination,

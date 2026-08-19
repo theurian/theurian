@@ -65,10 +65,17 @@ What is deliberately unread is listed in :data:`UNREAD`, and
 the repository to prove the list is complete: a surface added tomorrow in a file
 type nothing here reads fails that test rather than escaping quietly.
 
-The walk is over what the repository *ships*, which is not the same as what is
-on disk -- see :func:`_walked`. A suite run under the mutation harness leaves
-twelve thousand fixture files inside the tree, and reading them turned the
-unmutated control RED.
+The population is what the repository *ships*, which is not the same as what is
+on disk, so it is git's answer and not a walk's: ``git ls-files --cached``, the
+index and nothing else. ``command_population``'s own docstring holds why
+``--others`` is out -- the product writes untracked files under ``.theurian/``
+that a gate must not fail on. Two measured failures say why the walk went. A
+suite run under the mutation harness leaves twelve thousand fixture files
+inside the tree, and reading them turned the unmutated control RED. A
+machine that dogfoods Theurian keeps knowledge under ``.theurian/`` that
+``.git/info/exclude`` hides from every clone, and reading *that* failed the
+class test below on a note quoting ``theurian upgrade`` (#262) -- on a working
+tree ``git status`` reports as clean.
 
 **The population key is the command word, not the flag.** These tests resolve
 the first word after ``theurian`` -- and, for a registered group, the second --
@@ -83,8 +90,6 @@ the thing that goes stale, and it is what made #42's fix incomplete.
 
 from __future__ import annotations
 
-import os
-import pathlib
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -117,9 +122,9 @@ from command_population import (
     Invocation,
     _files,
     _is_unread,
+    _population,
     _scan,
     _text,
-    _walked,
 )
 
 # -- what is knowingly left ------------------------------------------------
@@ -460,32 +465,6 @@ def test_no_recorded_exception_outlives_the_text_it_excuses() -> None:
     )
 
 
-def test_the_walk_enters_only_what_the_repository_ships() -> None:
-    """A walk that reads whatever is on disk answers a question nobody asked.
-
-    Both the scan and the guard below walk from the repository root, so what
-    they see depends on what a tool has left lying about. The mutation harness
-    is the case that proved it: it runs the suite with ``TMPDIR`` pointed inside
-    its copy of the tree, and a run left 12,734 fixture files under
-    ``.mutate-tmp/`` -- entire ``.theurian`` project directories with their own
-    markdown, JSON and YAML, some of it not UTF-8. The scan read them, the
-    unmutated control went RED, and with it every verdict in that batch.
-
-    Pinned as a rule and not as the list of names seen so far, because the names
-    keep changing and the rule does not.
-    """
-    assert _walked([".claude", ".github", ".theurian", "docs", "schemas"]) == [
-        ".claude",
-        ".github",
-        ".theurian",
-        "docs",
-        "schemas",
-    ]
-
-    assert _walked([".mutate-tmp", ".mutate-home", ".venv", ".git", ".pytest_cache"]) == []
-    assert _walked(["worktrees", "node_modules", "site", "htmlcov", "__pycache__"]) == []
-
-
 def test_no_file_that_names_a_command_escapes_the_scan() -> None:
     """The population claim in the docstring, checked instead of asserted.
 
@@ -502,30 +481,51 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
     it flags is not necessarily a defect -- it is a file whose contents nothing
     here has ever looked at.
 
-    Walks the same pruned tree the readers do, and for the same reason: the
-    question is which *repository* files escape, and everything :func:`_walked`
-    refuses belongs to a tool rather than to the repository.
+    Reads the same population the readers do, and it has to: the question is
+    which *repository* files escape, so a file git does not list is not an
+    escape but somebody's private note. Asking the filesystem here instead is
+    the other half of #262 -- the ignored corpus that failed the scan would have
+    been reported by this guard as a file no reader opens, which is just as RED
+    and just as wrong.
     """
     scanned = {
         path.relative_to(REPO_ROOT).as_posix()
         for surface in SCANNED_SURFACES
         for path in _files(surface.root, surface.suffixes)
     }
+    population = _population(REPO_ROOT)
+
+    # The guard's predicate is pinned by _GUARD_ORACLE; its *input* is pinned
+    # here, and it was not: emptying this tuple passed the whole suite, because
+    # a guard that is handed nothing reports nothing and reporting nothing is
+    # what passing looks like. The repository tracked 398 files at bd4fb25.
+    #
+    # What this floor catches is an emptied or near-emptied population -- a
+    # source that stopped answering, a manifest read as nothing. It does *not*
+    # catch a degraded one: the name-based walk on the merged corpus branch
+    # drops 78 of 321 scanned files and still hands over more than 400, so it
+    # clears this line comfortably. That case is caught where it is visible --
+    # by the RuntimeWarning `_git_output` raises under `filterwarnings = error`,
+    # and by the manifest tests in test_command_population.
+
+    assert len(population) > 200, (
+        f"the guard below was handed {len(population)} files. It reports what no "
+        "reader opens, so a population this small makes it pass by having "
+        "nothing to look at."
+    )
+    assert REPO_ROOT / "README.md" in population
 
     unseen: list[str] = []
-    for base, directories, names in os.walk(REPO_ROOT):
-        directories[:] = _walked(directories)
-        for name in sorted(names):
-            path = pathlib.Path(base) / name
-            relative = path.relative_to(REPO_ROOT).as_posix()
-            if relative in scanned or _is_unread(relative):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            if any(_names_a_command(line) for line in text.splitlines()):
-                unseen.append(relative)
+    for path in population:
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if relative in scanned or _is_unread(relative):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if any(_names_a_command(line) for line in text.splitlines()):
+            unseen.append(relative)
 
     assert not unseen, (
         "These files name a `theurian <command>` and no reader in this module "
