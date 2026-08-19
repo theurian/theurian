@@ -39,6 +39,8 @@ from theurian.domain.errors import (
 from theurian.domain.identifiers import ItemId, MigrationId, RevisionId, SpecId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.migration import (
+    DEFAULT_SENSITIVITY,
+    DEFAULT_TRUST_LEVEL,
     MIGRATION_API_VERSION,
     AddAlias,
     AddEvidence,
@@ -608,8 +610,8 @@ def _parse_operation(  # noqa: PLR0911, PLR0912 -- a flat dispatch over 14 opera
                 kind_=KnowledgeKind(payload["kind"]),
                 namespace=payload["namespace"],
                 owner=payload["owner"],
-                sensitivity=Sensitivity(payload.get("sensitivity", "internal")),
-                trust_level=TrustLevel(payload.get("trustLevel", "unverified")),
+                sensitivity=Sensitivity(payload.get("sensitivity", DEFAULT_SENSITIVITY.value)),
+                trust_level=TrustLevel(payload.get("trustLevel", DEFAULT_TRUST_LEVEL.value)),
             )
         case "upsertRevision":
             return _parse_upsert(payload, path, project_root, migrations_dir, content_by_hash)
@@ -785,8 +787,8 @@ def _parse_upsert(
             namespace=metadata["namespace"],
             status=KnowledgeStatus(metadata["status"]),
             owner=metadata["owner"],
-            trust_level=TrustLevel(metadata.get("trustLevel", "unverified")),
-            sensitivity=Sensitivity(metadata.get("sensitivity", "internal")),
+            trust_level=TrustLevel(metadata.get("trustLevel", DEFAULT_TRUST_LEVEL.value)),
+            sensitivity=Sensitivity(metadata.get("sensitivity", DEFAULT_SENSITIVITY.value)),
             tenant_id=metadata.get("tenantId", "local"),
             acl_group=metadata.get("aclGroup", "default"),
             valid_from=_optional_datetime(metadata.get("validFrom"), path),

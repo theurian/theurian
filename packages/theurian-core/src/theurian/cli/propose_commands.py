@@ -38,7 +38,11 @@ from theurian.domain.enums import KnowledgeKind, Sensitivity, TrustLevel
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
-from theurian.domain.migration import current_revision_in
+from theurian.domain.migration import (
+    DEFAULT_SENSITIVITY,
+    DEFAULT_TRUST_LEVEL,
+    current_revision_in,
+)
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML, MediaType
 from theurian.infrastructure.filesystem.migration_loader import validate_migration_document
@@ -49,6 +53,14 @@ from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 #: missing required option, and every one of these would have been exactly that
 #: had the group shape allowed the options to be declared required.
 EXIT_INVALID_INPUT: Final = 2
+
+#: The C0 control block (below U+0020) and DEL (U+007F). A label carrying one of
+#: these corrupts the reviewed migration text -- a newline splits it across
+#: lines, a NUL truncates it -- and the schema's ``labels.items`` does not forbid
+#: them the way ``title``/``owner`` do, so ``propose`` refuses them at draft
+#: time (#249).
+_C0_CEILING: Final = 0x20
+_DEL: Final = 0x7F
 
 #: Body formats a proposal may carry, keyed by the extension the caller wrote.
 #: Read from the file name rather than taken as its own option so the extension
@@ -289,6 +301,11 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
             as_json=as_json,
         )
 
+    scope_paths = tuple(scope_path or ())
+    labels = tuple(label or ())
+    _refuse_blank_scope_paths(scope_paths, as_json=as_json)
+    _refuse_unusable_labels(labels, as_json=as_json)
+
     _draft(
         _Inputs(
             item_id=_present(item_id),
@@ -304,8 +321,8 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
             authored_here=authored_here,
             trust_level=trust_level,
             sensitivity=sensitivity,
-            scope_paths=tuple(scope_path or ()),
-            labels=tuple(label or ()),
+            scope_paths=scope_paths,
+            labels=labels,
             agent_id=_present(agent_id),
             task_id=_present(task_id),
             model=_present(model),
@@ -414,6 +431,48 @@ _DRAFT_STEPS: Final = (
     "`theurian migrate apply` enforces -- a revision's source anchor, a reused revision "
     "id -- are checked after the pull request has merged, not before it.",
 )
+
+
+def _refuse_blank_scope_paths(scope_paths: tuple[str, ...], *, as_json: bool) -> None:
+    """Refuse a ``--scope-path`` that names no path.
+
+    ``revisionMetadata.scope.paths`` items carry no ``minLength``, so ``""`` or a
+    whitespace-only value stages a scope entry that matches nothing and reads in
+    review as an authoring slip. Refuse it here -- naming the option, staging
+    nothing -- rather than packaging a glob that can never apply (#249).
+    """
+    if any(not path.strip() for path in scope_paths):
+        _refuse(
+            "--scope-path was given an empty path.",
+            remedy="Pass a path glob such as docs/**, or drop --scope-path.",
+            as_json=as_json,
+        )
+
+
+def _refuse_unusable_labels(labels: tuple[str, ...], *, as_json: bool) -> None:
+    """Refuse an empty ``--label`` or one bearing a control character.
+
+    ``revisionMetadata.labels.items`` carry only ``maxLength``, unlike ``title``
+    and ``owner`` whose ``pattern`` forbids control characters. #249 first opened
+    this arbitrary-label path, so it closes the two values that corrupt the
+    reviewed migration text: an empty label groups by nothing, and a C0 or DEL
+    control character -- a newline splits the label across lines, a NUL truncates
+    it -- makes the YAML read as something other than what was passed. The public
+    schema is unchanged here; this is the CLI refusing before it stages (#249).
+    """
+    for label in labels:
+        if not label:
+            _refuse(
+                "--label was given an empty value.",
+                remedy="Pass a non-empty label, or drop --label.",
+                as_json=as_json,
+            )
+        if any(ord(char) < _C0_CEILING or ord(char) == _DEL for char in label):
+            _refuse(
+                "--label contains a control character.",
+                remedy="Pass a label of printable text, or drop --label.",
+                as_json=as_json,
+            )
 
 
 def _draft(inputs: _Inputs, *, as_json: bool) -> None:
@@ -620,14 +679,17 @@ def _governed_defaults_note(
     """Name the governed fields left unset and the default each will publish.
 
     ``None`` when both were given: there is then no default to warn about. The
-    defaults are read from the enums rather than spelled here, so this message
-    cannot drift from what the loader actually applies.
+    defaults are read from :data:`DEFAULT_TRUST_LEVEL` and
+    :data:`DEFAULT_SENSITIVITY` -- the same constants the loader's ``.get(...)``
+    fallbacks apply when a migration omits these keys -- so the value named here
+    and the value the revision will publish are one definition, not two that
+    happen to agree.
     """
     omitted = [
         (field, default, option)
         for value, field, default, option in (
-            (trust_level, "trustLevel", TrustLevel.UNVERIFIED.value, "--trust-level"),
-            (sensitivity, "sensitivity", Sensitivity.INTERNAL.value, "--sensitivity"),
+            (trust_level, "trustLevel", DEFAULT_TRUST_LEVEL.value, "--trust-level"),
+            (sensitivity, "sensitivity", DEFAULT_SENSITIVITY.value, "--sensitivity"),
         )
         if value is None
     ]
