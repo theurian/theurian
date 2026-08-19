@@ -19,17 +19,6 @@ dist/
 coverage.xml
 htmlcov/
 
-# --- Theurian derived artifacts -------------------------------------------
-# Canonical state is rebuilt from Git-tracked migrations and content.
-# Never commit any of these. See docs/adr/0004-sqlite-is-a-derived-artifact.md
-.theurian/state/
-.theurian/cache/
-.theurian/runtime/
-.theurian/generated/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-
 # --- Documentation site (derived) ---
 # `mkdocs build` writes site/. The Pages workflow copies the logo into
 # docs/assets/ before building, so anyone replicating that build locally
@@ -58,3 +47,14 @@ htmlcov/
 .env.*
 !.env.example
 *.token
+
+# >>> theurian >>>
+# Derived artifacts. Rebuilt from Git-tracked migrations (ADR-0004).
+.theurian/state/
+.theurian/cache/
+.theurian/runtime/
+.theurian/generated/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+# <<< theurian <<<
