@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GWD03YD4TFJV2E0SHAVV
+createdAt: '2026-08-19T14:06:39+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0007, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.state-hash-partitioned-databases
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.state-hash-partitioned-databases
+  revisionId: 01M0D5GWD03YD4TFJV2E0SHAVW
+  contentFile: ../knowledge/architecture/state-hash-partitioned-databases.01M0D5GWD03YD4TFJV2E0SHAVW.md
+  contentSha256: e4ef9c818e5a61cd598ea2323c6a03b34a9853438790efa1c74c06d8e1d2c09e
+  metadata:
+    title: 'ADR-0007: State-hash-partitioned databases for Git branches and worktrees'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0007
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0007-state-hash-partitioned-databases.md

@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H5660KXHS75NEM4BMR1W
+createdAt: '2026-08-19T14:06:48+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0024, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.a-purge-is-a-build
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.a-purge-is-a-build
+  revisionId: 01M0D5H5660KXHS75NEM4BMR1X
+  contentFile: ../knowledge/architecture/a-purge-is-a-build.01M0D5H5660KXHS75NEM4BMR1X.md
+  contentSha256: 6ac4bc1d080c1016896b90917a071fad7186f4c7838fee58c9bc364471f62b4f
+  metadata:
+    title: 'ADR-0024: A purge is a build; a published index is never written'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0024
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0024-a-purge-is-a-build.md

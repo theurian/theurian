@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H3JK0JJRZQ769EJ4GJVJ
+createdAt: '2026-08-19T14:06:46+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0021, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.rank-fusion-over-score-normalisation
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.rank-fusion-over-score-normalisation
+  revisionId: 01M0D5H3JK0JJRZQ769EJ4GJVK
+  contentFile: ../knowledge/architecture/rank-fusion-over-score-normalisation.01M0D5H3JK0JJRZQ769EJ4GJVK.md
+  contentSha256: 13af197c1432e4b5f8cf77f8617cf9aca7520f2e3bac572ead753d655562db0b
+  metadata:
+    title: 'ADR-0021: Fuse retrievers by rank, not by normalised score'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0021
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0021-rank-fusion-over-score-normalisation.md

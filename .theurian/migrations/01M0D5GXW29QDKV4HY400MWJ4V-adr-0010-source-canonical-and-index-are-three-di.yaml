@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GXW29QDKV4HY400MWJ4V
+createdAt: '2026-08-19T14:06:40+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0010, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.three-layer-knowledge-model
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.three-layer-knowledge-model
+  revisionId: 01M0D5GXW29QDKV4HY400MWJ4W
+  contentFile: ../knowledge/architecture/three-layer-knowledge-model.01M0D5GXW29QDKV4HY400MWJ4W.md
+  contentSha256: 29f54120c6d15ffb88dc8cf8b0ca4bed9ecbf2b2ccbda8c0fc54891186e9d6ee
+  metadata:
+    title: 'ADR-0010: Source, Canonical, and Index are three distinct layers'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0010
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0010-three-layer-knowledge-model.md

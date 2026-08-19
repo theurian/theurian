@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H1ZW7YW97TFNBPVG7HB0
+createdAt: '2026-08-19T14:06:44+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0018, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.single-writer-synchronous-in-m1
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.single-writer-synchronous-in-m1
+  revisionId: 01M0D5H1ZW7YW97TFNBPVG7HB1
+  contentFile: ../knowledge/architecture/single-writer-synchronous-in-m1.01M0D5H1ZW7YW97TFNBPVG7HB1.md
+  contentSha256: a30b85a9cdbb4459912e6298ac11aa34707642934300ff34d0a545af33999e55
+  metadata:
+    title: 'ADR-0018: One writer, expressed as a lock in Milestone 1 and a queue later'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0018
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0018-single-writer-synchronous-in-m1.md

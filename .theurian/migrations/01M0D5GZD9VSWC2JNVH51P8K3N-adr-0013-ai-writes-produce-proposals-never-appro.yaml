@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GZD9VSWC2JNVH51P8K3N
+createdAt: '2026-08-19T14:06:42+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0013, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.ai-writes-produce-proposals
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.ai-writes-produce-proposals
+  revisionId: 01M0D5GZD9VSWC2JNVH51P8K3P
+  contentFile: ../knowledge/architecture/ai-writes-produce-proposals.01M0D5GZD9VSWC2JNVH51P8K3P.md
+  contentSha256: 7f243ef7cfe1b3e0f6fd0cd2276b0d84ac3710670351403bb72015abbe4bff22
+  metadata:
+    title: 'ADR-0013: AI writes produce proposals, never approved state'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0013
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0013-ai-writes-produce-proposals.md

@@ -1,0 +1,34 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H69WKWVMV597BS2SDNFG
+createdAt: '2026-08-19T14:06:49+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: the revision-id-reuse disclosure work log, verbatim, from the pinned
+  commit.'
+operations:
+- op: createItem
+  itemId: security.revision-id-reuse-disclosure
+  kind: incident
+  namespace: security
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: security.revision-id-reuse-disclosure
+  revisionId: 01M0D5H69WKWVMV597BS2SDNFH
+  contentFile: ../knowledge/security/revision-id-reuse-disclosure.01M0D5H69WKWVMV597BS2SDNFH.md
+  contentSha256: 1cf88f5637a4aba43a9aa35d1e65851740909ad5e0f3532d8c2d6cc25110c524
+  metadata:
+    title: Revision-id reuse discloses a withheld item's body (GHSA-7997-g35f-q59h)
+    contentType: text/markdown
+    kind: incident
+    namespace: security
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - work-log
+    - disclosure
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/work-logs/2026-08-15-revision-id-reuse-disclosure.md

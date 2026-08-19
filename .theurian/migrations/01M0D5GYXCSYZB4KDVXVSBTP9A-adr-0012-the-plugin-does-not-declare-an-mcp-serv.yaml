@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GYXCSYZB4KDVXVSBTP9A
+createdAt: '2026-08-19T14:06:41+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0012, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.plugin-does-not-autoregister-mcp-server
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.plugin-does-not-autoregister-mcp-server
+  revisionId: 01M0D5GYXCSYZB4KDVXVSBTP9B
+  contentFile: ../knowledge/architecture/plugin-does-not-autoregister-mcp-server.01M0D5GYXCSYZB4KDVXVSBTP9B.md
+  contentSha256: bad645ee92131e32d3fe2be7efd1257204107b71c1af682ee6a2aa080dcc5076
+  metadata:
+    title: 'ADR-0012: The plugin does not declare an MCP server; setup installs the connection'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0012
+    scope:
+      paths:
+      - plugins/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0012-plugin-does-not-autoregister-mcp-server.md

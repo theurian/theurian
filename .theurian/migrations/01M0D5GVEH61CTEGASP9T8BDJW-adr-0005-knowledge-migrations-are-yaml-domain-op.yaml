@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GVEH61CTEGASP9T8BDJW
+createdAt: '2026-08-19T14:06:38+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0005, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.yaml-knowledge-migrations
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.yaml-knowledge-migrations
+  revisionId: 01M0D5GVEH61CTEGASP9T8BDJX
+  contentFile: ../knowledge/architecture/yaml-knowledge-migrations.01M0D5GVEH61CTEGASP9T8BDJX.md
+  contentSha256: a62a0ae5d6c355aeaace33dc027df88589246f83c70349b9c9f56aa769ff3287
+  metadata:
+    title: 'ADR-0005: Knowledge migrations are YAML domain operations, not SQL'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0005
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0005-yaml-knowledge-migrations.md

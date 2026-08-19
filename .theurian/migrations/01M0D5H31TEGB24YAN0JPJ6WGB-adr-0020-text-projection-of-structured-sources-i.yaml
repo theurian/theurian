@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H31TEGB24YAN0JPJ6WGB
+createdAt: '2026-08-19T14:06:45+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0020, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.deterministic-text-projection
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.deterministic-text-projection
+  revisionId: 01M0D5H31TEGB24YAN0JPJ6WGC
+  contentFile: ../knowledge/architecture/deterministic-text-projection.01M0D5H31TEGB24YAN0JPJ6WGC.md
+  contentSha256: 7176dc93782f3729be9104ea8d134109765707657788999f5a19fee092a5c8da
+  metadata:
+    title: 'ADR-0020: Text projection of structured sources is a deterministic pure function'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0020
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0020-deterministic-text-projection.md

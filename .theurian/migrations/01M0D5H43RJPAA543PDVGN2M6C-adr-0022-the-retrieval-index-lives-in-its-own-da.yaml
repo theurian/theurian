@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H43RJPAA543PDVGN2M6C
+createdAt: '2026-08-19T14:06:46+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0022, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.index-lives-in-its-own-database
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.index-lives-in-its-own-database
+  revisionId: 01M0D5H43RJPAA543PDVGN2M6D
+  contentFile: ../knowledge/architecture/index-lives-in-its-own-database.01M0D5H43RJPAA543PDVGN2M6D.md
+  contentSha256: 15050e3a8c3afb92700fc999b4c8b67f46f7da7d31fef86d5f56361d5e18a0dc
+  metadata:
+    title: 'ADR-0022: The retrieval index lives in its own database file'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0022
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0022-index-lives-in-its-own-database.md
