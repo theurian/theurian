@@ -1667,3 +1667,59 @@ def test_status_does_not_report_an_in_place_re_declaration_as_body_sharing() -> 
     )
 
     assert duplicate_content_file_violations(migrations) == ()
+
+
+def test_the_refusal_compares_the_full_identity_tuple_not_the_inode_alone() -> None:
+    """The key is ``(st_dev, st_ino)``, not ``st_ino`` on its own (issue #210).
+
+    An inode number is unique only *within* a filesystem; the same number names
+    two different files across two mounts. Keying the refusal on the inode alone
+    would false-refuse two genuinely distinct files that happen to share one --
+    the mirror of the case-variant false-refuse casefolding a path would cause --
+    so the comparison must be over the whole tuple. Two operations with the same
+    inode on *different* devices are distinct files and pass; the same device and
+    inode are one file and are refused.
+
+    This pins the *guard's* use of the full tuple, at both call sites. The
+    *loader's* capture of a real ``st_dev`` -- rather than a constant -- is
+    pinned separately by ``test_migration_loader_identity.py``'s equality
+    against the body's real ``stat``; what neither exercises is two genuinely
+    different real devices sharing an inode number, which needs a multi-device
+    mount, and that residual is an accepted LOW.
+    """
+    same_inode_two_devices = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=(1, 5)),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/b.md",
+                    identity=(2, 5),
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+    refuse_duplicate_content_files(same_inode_two_devices)
+    assert duplicate_content_file_violations(same_inode_two_devices) == ()
+
+    same_device_and_inode = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=(1, 5)),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/a.md",
+                    identity=(1, 5),
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+    with pytest.raises(DuplicateContentFileError):
+        refuse_duplicate_content_files(same_device_and_inode)
+    assert duplicate_content_file_violations(same_device_and_inode) == (MigrationId(MIG_2),)
