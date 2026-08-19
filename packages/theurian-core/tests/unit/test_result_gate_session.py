@@ -155,6 +155,16 @@ class _RecordingSession:
         self._log.append("get_item")
         return self._known.get(item_id.value)
 
+    def get_item_exact(
+        self,
+        context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
+        item_id: ItemId,
+    ) -> KnowledgeItem | None:
+        # This fake resolves no alias, so exact and resolving reads coincide; it
+        # exists to satisfy the port the gate depends on (T-21).
+        self._log.append("get_item")
+        return self._known.get(item_id.value)
+
     def get_revision(
         self, context: RequestContext, revision_id: RevisionId
     ) -> KnowledgeRevision | None:

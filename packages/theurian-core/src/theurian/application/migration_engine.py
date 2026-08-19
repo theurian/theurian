@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Protocol
 
+from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import refuse_duplicate_content_files
 from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
 from theurian.domain.errors import (
@@ -332,15 +333,23 @@ class MigrationEngine:
                 planning but before any write, so it never depends on what
                 has already been written.
             DuplicateContentFileError: If two operations reference one body
-                file (issue #210). Checked last of the three and over the same
-                whole set: the two above name a specific migration as wrong,
-                while this one is a statement about the set, and reporting the
-                narrower fault first is what keeps a reader from being sent to
-                a second migration that is not the one to edit.
+                file (issue #210). Checked over the same whole set: the scope
+                refusal above names a specific migration as wrong, while this
+                one is a statement about the set, and reporting the narrower
+                fault first is what keeps a reader from being sent to a second
+                migration that is not the one to edit.
+            AliasItemCollisionError: If an ``addAlias`` key equals the id of an
+                item whose final status is not ``deprecated`` (SEC-13, T-21).
+                Checked last and whole-set: a store that resolves the alias
+                before a status lookup would let the retired item surface under
+                the approved item the alias points at. The CLI refuses this
+                before ``create_database`` too, so a refused apply leaves no
+                state database behind.
         """
         plan = self.plan(writer, project_id, migration_set)
         refuse_unenforceable_scope(migration_set)
         refuse_duplicate_content_files(migration_set)
+        refuse_alias_item_id_collision(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
         # The items whose surfaceability or current revision an operation could
