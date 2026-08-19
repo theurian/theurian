@@ -276,6 +276,42 @@ as it does for the tenant/ACL rule above, so the property stays visible on the
 one command that keeps going. It reports the *later* migration of each sharing
 pair, the one whose body a reader gives its own file.
 
+### An alias key is not an item id (T-21)
+
+**`migrate validate` and `migrate apply` both refuse a migration set that leaves
+an `addAlias` key equal to the id of an item whose final status is anything but
+`deprecated`.** An alias key is a string an author chooses, and the store resolves
+it *before* it looks up a status. So a key equal to a live item's id lets a lookup
+for that id resolve to the item the alias points at: a `rejected` item's edge and
+its `note` — where the secret that caused the rejection lives — could then surface
+under the approved item the alias targets. Both directions are the same fault — an
+`addAlias` authored over an existing item, and a `createItem` that takes an id an
+alias already keys — and the check runs against the *whole* set, so a collision
+that straddles an already-applied migration is caught too, because `apply` reloads
+every migration file.
+
+Both commands exit 4 with `AliasItemCollisionError`, naming the alias, the item it
+points at, and the item's final status, and quoting no body and no note. `apply`
+refuses before it creates a database file, so a refused set costs no state.
+
+**The one exempt shape is the rename.** `deprecateItem(old)` then `addAlias(old ->
+new)` leaves `old` `deprecated`, and a lookup for a deprecated id resolving to its
+successor exposes nothing withheld — that is the reachability aliases exist for.
+Every other final status is refused, `superseded` included: only a deprecated item
+is safe to shadow with its own alias. This passes:
+
+```yaml
+  - op: deprecateItem
+    itemId: architecture.auth-policy-old
+  - op: addAlias
+    alias: architecture.auth-policy-old   # now deprecated, so the alias is allowed
+    itemId: architecture.auth-policy
+```
+
+`migrate status` does not refuse — its contract is observation, not a gate — but
+names every colliding migration under `refusedIds`, exactly as it does for the
+tenant/ACL and one-body-one-revision rules above.
+
 ### Idempotence
 
 Re-applying an applied migration is a no-op. This is a property of the engine,
@@ -385,7 +421,9 @@ flowchart TD
     S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No AuthorizationProvider exists yet (issue #63)."]
     S -->|no| U{"One body file named by<br/>two different revisions?"}
     U -->|yes| V["FATAL: DuplicateContentFileError.<br/>A body file holds one version (issue #210)."]
-    U -->|no| F["Topologically sort by dependsOn"]
+    U -->|no| W{"An alias key equal to a<br/>non-deprecated item id?"}
+    W -->|yes| X["FATAL: AliasItemCollisionError.<br/>An alias key is not an item id (T-21)."]
+    W -->|no| F["Topologically sort by dependsOn"]
     F --> G{"Cycle?"}
     G -->|yes| H["FATAL: report the cycle"]
     G -->|no| I["For each unapplied migration"]
@@ -404,6 +442,7 @@ flowchart TD
     style H fill:#8a2f2f,color:#fff
     style T fill:#8a2f2f,color:#fff
     style V fill:#8a2f2f,color:#fff
+    style X fill:#8a2f2f,color:#fff
     style L fill:#8a6f2f,color:#fff
     style R fill:#1f6f4a,color:#fff
 ```
@@ -425,6 +464,12 @@ in both commands and again inside `MigrationEngine.apply`. The scope rule names
 one migration as wrong; U is a statement about the *set*, in which neither
 migration is wrong on its own. Reporting the narrower fault first is what keeps
 a reader from being sent to a second migration that is not the one to edit.
+
+**The alias-collision refusal (W) runs after the duplicate-body check (U)**, again
+in that order at both commands and inside `MigrationEngine.apply`. Like U it is a
+statement about the *set* — an alias key and an item id are each valid on their
+own, and only their coincidence is the fault — so it is reported after the
+per-migration checks that can name a single offending file.
 
 All operations in one migration share one transaction: either the whole logical
 change lands or none of it does. Transactions stay short and never contain
@@ -456,6 +501,7 @@ scanning a directory listing and may be changed freely.
 | `PathEscapeError` | `contentFile` points outside the root | Fix the path. If it looks intentional, treat it as a security finding. |
 | `DuplicateContentFileError` | Two different revisions name one `contentFile` | Give the later revision a body file of its own under `.theurian/knowledge/` and point that migration at it; pin both with `contentSha256` while you are there. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
 | `UnenforceableScopeError` | A revision named a `tenantId` other than `local` or an `aclGroup` other than `default` | Edit it to the default. **Unless the revision was already applied** — then the fix above does not apply; see [Upgrading a project that already applied one of these](#upgrading-a-project-that-already-applied-one-of-these), and do not use this row's checksum-error advice as a substitute (issue #63). |
+| `AliasItemCollisionError` | An `addAlias` key equals the id of an item whose final status is not `deprecated` | Remove the `addAlias`, or give the item a distinct id — an alias key and an item id must not be the same string. If it is a rename, deprecate the old item first (`deprecateItem`), the one shape this allows. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
 
 ## Related
 

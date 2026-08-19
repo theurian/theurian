@@ -4080,17 +4080,111 @@ FR-K5's checksum guard — travels in the refusal. The break this introduces for
 sets that previously applied is recorded, named as breaking, in the
 `0.1.0.dev5` CHANGELOG.
 
-**Same withheld-content-reaches-caller family as T-18 and T-19.** All three land
-a withheld body under an approved item; they differ in what carries it there.
-T-18 shares a **revision id** — a pointer at another item's revision — so a
-direct request for the withheld id is still refused while the approved item
-serves its body (GHSA-7997-g35f-q59h). T-20 shares a **body file** — content
-recorded for two revisions, with that same direct-request asymmetry
-(GHSA-w5cm-cqf9-vm7r). T-19 instead ships a **doctored derived state** that never
-went through a local build, so the gate runs over tampered input rather than
-being bypassed (GHSA-266v-fcj2-qggx). Each has its own root cause, so its own
-entry and its own control; the closure argument common to the three is that a
-withheld and an approved item must not be able to resolve to the same bytes.
+#### T-21 — An alias key colliding with a live item id resolves a withheld item to an approved item's authority (Information disclosure, **Critical** — closed in 0.1.0.dev6)
+
+Class: **an alias key colliding with a live item id, so a read gate that resolves
+the alias evaluates the wrong item's authority.**
+
+An `addAlias` records a key an author chooses freely, and
+`SqliteCanonicalStore.get_item` resolves that key before it looks up a status. An
+`addAlias` whose *key* equals the id of a live, non-`deprecated` item — the
+dangerous case being a `rejected` item `W` — while the alias *points at* an
+approved item `P`, lets a lookup for `W` resolve to `P`. `_relation_is_visible`
+gated each relation endpoint through that resolving read, so an incoming edge `W`
+authored — for example `W contradicts P` — cleared the gate on the *approved*
+`P`'s `knowledge.get` and published `W`'s edge together with its rejection
+`note`, where the secret that caused the rejection lives. Measured against a real
+project, the note `REJECTED BECAUSE sessions.token held raw bearer tokens until
+2026-07` reached the caller on the approved item's response. The withheld id `W`
+never appeared; only the note leaked — which is the content `knowledge.get` says
+a rejected revision is withheld *for*. Reproducible in the shipped default
+configuration through the documented migration API, so **Critical**. Affected
+0.1.0.dev0–0.1.0.dev5, fixed in 0.1.0.dev6 (GHSA-\<pending\> (T-21), assigned when
+the advisory is published).
+
+The root cause is that an alias key and an item id share one namespace, and a
+read that resolves the alias then evaluates the *wrong* item's authority: it asks
+whether the alias target `P` may surface, not whether the item `W` the id
+literally names may. Reachability wants the resolution — `knowledge.get(old)`
+must still reach `new` after a rename — but a visibility decision on a referenced
+id must not.
+
+**Control, part A — read-side, serve-time.** `_relation_is_visible` now reads each
+endpoint's status through a new non-resolving port read, `get_item_exact`, added
+to the `CanonicalReadSession` port and to `SqliteCanonicalStore`: it returns the
+row the id *literally names* and never follows an alias. Reachability keeps the
+resolving `get_item` — a legitimate rename still resolves — so the split records
+the principle: **reachability may resolve an alias; authority, a visibility
+decision on a referenced id, must read the literally-named row.** This is the face
+that closes an *already-poisoned* database — a `0.1.0.dev5` state built before the
+write-side guard existed — because no migration guard reaches a database that is
+already built.
+
+**Control, part B — write-side, prevention.** A whole-set static guard,
+`refuse_alias_item_id_collision`
+([`application/migration_alias_guards.py`](../../packages/theurian-core/src/theurian/application/migration_alias_guards.py)),
+refuses a migration set that leaves an alias key colliding with an item id whose
+*final* status across the set is anything but `deprecated`. It runs at `migrate
+validate`, at `migrate apply`, and inside `MigrationEngine.apply`
+(`AliasItemCollisionError`, exit 4), naming the alias and the item it points at
+and quoting no note. Both collision directions are one predicate — an `addAlias`
+authored over an existing item, and a `createItem` that later takes an id an
+alias already keys — and the whole-set scope covers a collision that straddles an
+earlier *applied* migration, because `migrate apply` reloads every migration file
+into the set the guard sees. `deprecated` is the one exempt status: the
+legitimate rename is `deprecateItem(old)` then `addAlias(old -> new)`, which
+leaves `old` `deprecated`, so `get_item(old)` resolving to `new` exposes nothing
+withheld. Every other final status is refused, `superseded` included — only a
+deprecated item is safe to shadow with its own alias. `migrate status` does not
+refuse — its contract is observation — but names every colliding migration under
+`refusedIds`, the same treatment it gives the tenant/ACL and duplicate-body
+rules.
+
+**The ranked `knowledge.search` face is closed by T-18, not by this fix.** The
+ranked path is not gated by `_relation_is_visible`; it clears rows through
+`CanonicalVisibility._may_surface`, whose item lookup *does* resolve the alias, so
+a ranked row for `W` still resolves to the approved `P` and clears the status
+check. It is nonetheless withheld, because `_may_surface` then requires
+`item.current_revision_id.value == row.revision_id`: the row carries `W`'s
+revision id, `P`'s current revision id is `P`'s own, and the two cannot be equal.
+That closure holds **only because two items cannot share a revision id — the
+invariant T-18 enforces at write time** (item-scoped `append_revision` +
+`put_item` guards). Stated plainly so the dependency is not left implicit: were
+T-18's invariant to fail, the revision-identity check would no longer discriminate
+`W` from `P`, and the ranked face of T-21 would reopen. It is closed here
+transitively through T-18, not independently.
+
+**Residual after the control: nil for the shipped default.** The write-side guard
+means no fixed build can *author* a colliding set, and the read-side guard means a
+database an affected version already built serves the literally-named row's
+authority regardless. A set that applied on `0.1.0.dev5` or earlier is caught on
+the next `migrate apply`; the remedy — remove the `addAlias`, or make the rename
+honest by deprecating the old item first, then rebuild `.theurian/state/` past
+FR-K5's checksum guard if the migration was already applied — travels in the
+refusal. The break this introduces for sets that previously applied is recorded,
+named as breaking, in the `0.1.0.dev6` CHANGELOG.
+
+**Same withheld-content-reaches-caller family: T-18, T-19, T-20 and T-21.** Each
+lands a withheld item's content under an approved item; they differ in what
+carries it there. T-18 shares a **revision id** — a pointer at another item's
+revision — so a direct request for the withheld id is still refused while the
+approved item serves its body (GHSA-7997-g35f-q59h). T-20 shares a **body file** —
+content recorded for two revisions, with that same direct-request asymmetry
+(GHSA-w5cm-cqf9-vm7r). T-21 shares an **alias identity** — an alias key equal to a
+live item id — so a read gate that resolves the alias evaluates the approved
+target's authority instead of the withheld item's, publishing its edge and note
+(GHSA-\<pending\> (T-21)). T-19 instead ships a **doctored derived state** that
+never went through a local build, so the gate runs over tampered input rather
+than being bypassed (GHSA-266v-fcj2-qggx). Each has its own root cause, so its own
+entry and its own control. The invariant common to the shared-identity three —
+T-18, T-20, T-21 — is that a request for a withheld item and a request for an
+approved item must not resolve to the same content, whether they share a revision
+id (T-18), a body file (T-20) or an alias identity (T-21); T-19 forges the content
+instead of sharing an identity, and is caught by provenance rather than by a
+shared-identity refusal. The four are not merely a shared shape but a shared
+dependency: T-21's ranked-search face is closed only because `visibility.py`'s
+revision-identity check discriminates the withheld item from the approved one, and
+that check holds only because T-18 forbids two items from sharing a revision id.
 
 ### TB-4: the filesystem and setup
 
@@ -4212,6 +4306,7 @@ fix.
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
+| T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-\<pending\>) |
 
 ## Explicitly out of scope
 
