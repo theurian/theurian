@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev5] - 2026-08-19
+
 ### Added
 
 - **`theurian propose` drafts a knowledge change, `theurian propose accept`
@@ -89,7 +91,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   *different* spellings still collide — a `./` segment, and the case-variant and
   NFC/NFD spellings a case-insensitive filesystem (APFS, NTFS) collapses onto one
   inode, and a second hardlinked name. A string key left those distinct and let a
-  second revision name a withheld body through a variant spelling; casefolding the
+  second revision name the same body through a variant spelling; casefolding the
   string would go wrong the other way and refuse two genuinely different files on
   a case-sensitive filesystem, so identity is the platform-correct key. Re-declaring
   one revision against its own body — how an in-place status change such as

@@ -8,7 +8,7 @@ plugin must never import them (ADR-0001, CP-2).
 
 from theurian.domain.compatibility import CURRENT_PROTOCOL_VERSION
 
-__version__ = "0.1.0.dev4"
+__version__ = "0.1.0.dev5"
 __protocol_version__ = CURRENT_PROTOCOL_VERSION
 
 __all__ = ["__protocol_version__", "__version__"]
