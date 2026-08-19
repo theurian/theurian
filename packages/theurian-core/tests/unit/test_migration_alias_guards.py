@@ -3,23 +3,24 @@
 :func:`~theurian.application.migration_alias_guards.refuse_alias_item_id_collision`
 computes each item's *final* status with last-write-wins over the migration set
 and exempts a collision only when that final status is ``deprecated`` -- the one
-legitimate ``deprecateItem(old)`` then ``addAlias(old -> new)`` shape. "Final"
-is meaningful only in *application* order, but the guard takes it in the order
-the ``MigrationSet`` iterates.
+legitimate ``deprecateItem(old)`` then ``addAlias(old -> new)`` shape. "Final" is
+meaningful only in *application* order, and the guard normalises to it with
+``MigrationSet.ordered`` rather than trusting the order the caller's
+``MigrationSet`` iterates, so its classification does not depend on how the
+caller built the set.
 
-That happens to be application order today because the sole caller builds
-``MigrationSet.ordered(...)`` (``migration_loader.py:364``);
-``MigrationSet.__post_init__`` does not re-sort and ``__iter__`` yields the tuple
-as given. A future caller handing the guard a raw ``MigrationSet(tuple(...))`` in
-a non-application order would misclassify the exemption -- an item that ends
-``rejected`` in application order but whose ``deprecateItem`` lands last in the
-raw tuple would be read as ``deprecated`` and let through, re-opening the T-21
-disclosure the guard exists to close.
+A guard that trusted the caller's iteration order would misclassify the
+exemption: handed a raw ``MigrationSet(tuple(...))`` in a non-application order,
+an item that ends ``rejected`` in application order but whose ``deprecateItem``
+merely lands last in the raw tuple would read as ``deprecated`` and be let
+through, re-opening the T-21 disclosure the guard exists to close. This test
+pins that it does not -- it hands the guard exactly that mis-ordered tuple and
+asserts the collision is still refused as ``rejected``.
 
 Pure: no store, no transaction, no disk. The domain objects are built in memory
-so the guard's ordering assumption can be attacked directly, which the CLI-level
-tests in ``tests/integration/test_alias_item_id_collision.py`` cannot do -- they
-only ever reach the guard through the ordered loader.
+so the guard's ordering can be attacked directly, which the CLI-level tests in
+``tests/integration/test_alias_item_id_collision.py`` cannot do -- they only ever
+reach the guard through the ordered loader.
 """
 
 from __future__ import annotations
