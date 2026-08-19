@@ -280,6 +280,24 @@ class SqliteCanonicalStore:
             _item_from_row,
         )
 
+    def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        """The row ``item_id`` literally names, with no `_resolve_alias` (T-21).
+
+        `get_item` above resolves an alias before this same read, which is right
+        for *reaching* a renamed item but wrong for deciding whether a
+        *referenced* id may surface. An `addAlias` key is an author-chosen string:
+        a key equal to a `rejected` item's id resolves through `get_item` to the
+        approved item it points at, so a gate keyed on the resolved status clears
+        as that approved item and publishes the rejected item's content.
+        `_relation_is_visible` reads each endpoint through this instead -- the
+        row the id names, judged by its own status.
+        """
+        return self._read_one(
+            "SELECT * FROM knowledge_items WHERE project_id = ? AND item_id = ?",
+            (context.project_id.value, item_id.value),
+            _item_from_row,
+        )
+
     def _resolve_alias(self, project_id: ProjectId, item_id: ItemId) -> ItemId:
         alias = self._read_one(
             "SELECT item_id FROM knowledge_aliases WHERE project_id = ? AND alias = ?",

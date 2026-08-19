@@ -12,6 +12,63 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev6] - 2026-08-19
+
+### Fixed
+
+- **A rejected item's relation note reached an approved item's `knowledge.get`
+  through an alias-id collision** (GHSA-\<pending\>, assigned when the advisory is
+  published). Critical; affected 0.1.0.dev0–0.1.0.dev5. An `addAlias` whose key
+  equalled the id of a live `rejected` item, while the alias pointed at an
+  approved item, defeated the relation-visibility gate: `get_item` resolves an
+  alias before it looks up a status, so a lookup for the retired id resolved to
+  the approved target and cleared the gate as that item. An incoming edge the
+  rejected item authored — for example `contradicts` — and its `note`, where the
+  secret that caused the rejection lives, was published on the *approved* item's
+  response. The withheld id itself never appeared; the note did. Requesting the
+  withheld id directly was still correctly refused, and the ranked
+  `knowledge.search` path was never affected — it is held by the revision-identity
+  check that T-18 underwrites.
+
+  The read side is fixed independently of the write-side refusal below, because a
+  migration guard cannot reach a database an affected version already built:
+  `_relation_is_visible` now reads each relation endpoint's status through a new
+  non-resolving `get_item_exact`, the row the id literally names. Reachability
+  still resolves an alias — `knowledge.get(old)` reaches `new` after a rename —
+  but authority, a visibility decision on a referenced id, reads the
+  literally-named row. See
+  [T-21 in the threat model](../../docs/security/threat-model.md).
+
+### Changed
+
+- **BREAKING — an alias key may not collide with a non-deprecated item id across a
+  migration set** (GHSA-\<pending\>, assigned when the advisory is published).
+
+  **Old shape:** a set whose `addAlias` key equalled a live item's id applied
+  silently. With that item `rejected` and the alias pointing at an approved item,
+  the approved item's `knowledge.get` then published the rejected item's edge and
+  note (the Fixed entry above).
+
+  **New shape:** `migrate validate` and `migrate apply` both refuse the whole set
+  with `AliasItemCollisionError` at exit 4, naming the alias, the item it points
+  at, and the item's final status, and quoting no note. `apply` refuses before it
+  creates a database file, so a refused set costs no state — the property issue
+  #63's refusal already has. Both collision directions are refused — an `addAlias`
+  authored over an existing item, and a `createItem` that takes an id an alias
+  already keys — and a collision that straddles an already-applied migration is
+  caught too, because `apply` reloads every migration file into the set the guard
+  sees. The one exempt shape is the rename `deprecateItem(old)` then
+  `addAlias(old -> new)`, which leaves `old` `deprecated`; every other final
+  status is refused, `superseded` included. `migrate status` does not refuse — its
+  contract is observation — but names every colliding migration under
+  `refusedIds`, matching how it treats the tenant/ACL and duplicate-body rules.
+
+  Breaking because a migration set that applied on `0.1.0.dev5` and earlier now
+  refuses. No stable release exists — the published versions are `0.1.0.devN` —
+  and no compatibility promise covers it, but the break is named here rather than
+  filed as a fix. Documented in
+  [`docs/protocol/migrations.md`](../../docs/protocol/migrations.md).
+
 ## [0.1.0.dev5] - 2026-08-19
 
 ### Added

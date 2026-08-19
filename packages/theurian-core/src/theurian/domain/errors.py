@@ -173,6 +173,52 @@ class DuplicateContentFileError(MigrationError):
         )
 
 
+class AliasItemCollisionError(MigrationError):
+    """An ``addAlias`` key collides with a live item id (SEC-13, T-21).
+
+    An alias key is a string an author chooses, and the store resolves it *before*
+    it looks up a status (``SqliteCanonicalStore._resolve_alias``). So a key equal
+    to the id of an item whose final status is anything but ``deprecated`` -- a
+    ``rejected`` item is the dangerous case -- lets a lookup for that retired id
+    resolve to the approved item the alias points at, and a relation-visibility
+    gate keyed on the resolved row then publishes the retired item's edge and its
+    ``note`` (where the secret that caused the rejection lives) on the approved
+    item's response. The one legitimate shape, ``deprecateItem(old)`` then
+    ``addAlias(old -> new)``, leaves ``old`` ``deprecated`` and is exempt.
+
+    Refused whole-set at write time so neither ``migrate validate`` nor ``migrate
+    apply`` accepts it (issue #36 parity), in both directions: an ``addAlias``
+    over an existing item, and a ``createItem`` at an id an existing alias keys.
+    Names the alias, the item it points at, and the item's final status so the
+    author can find the operation to remove; quotes no body and no note.
+
+    Carries no remedy text of its own, for the reason
+    :class:`UnenforceableScopeError` carries none: whether the honest fix is an
+    edit or a rebuild depends on whether the offending migration was already
+    applied, which only the caller holding a store can know
+    (``cli/commands.py::ALIAS_ITEM_COLLISION_REMEDY`` decides).
+    """
+
+    def __init__(
+        self,
+        *,
+        alias: ItemId,
+        alias_target: ItemId,
+        item_status: str,
+        migration_id: MigrationId,
+    ) -> None:
+        self.alias = alias
+        self.alias_target = alias_target
+        self.item_status = item_status
+        self.migration_id = migration_id
+        super().__init__(
+            f"{migration_id}: addAlias {alias} -> {alias_target} collides with knowledge item "
+            f"{alias} (status {item_status}). An alias key and an item id must be distinct: a "
+            f"lookup for {alias} resolves through the alias to {alias_target}, so the item "
+            f"{alias} names could surface its content -- an edge, a note -- under {alias_target}."
+        )
+
+
 def _read_failure_remedy(
     target: str, errno_value: int | None, *, missing_or_wrong_text: str
 ) -> str:

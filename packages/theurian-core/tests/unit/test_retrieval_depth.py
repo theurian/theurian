@@ -441,6 +441,11 @@ class _ControlledValiditySession:
             ),
         )
 
+    def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        # This fake resolves no alias, so the exact read is the resolving one; it
+        # exists to satisfy the port `CanonicalVisibility` depends on (T-21).
+        return self.get_item(context, item_id)
+
     def get_revision(
         self, context: RequestContext, revision_id: RevisionId
     ) -> KnowledgeRevision | None:

@@ -326,6 +326,22 @@ class CanonicalReadSession(Protocol):
         """
         ...
 
+    def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        """Fetch the row ``item_id`` *literally* names, resolving no alias (T-21).
+
+        The authority counterpart of :meth:`get_item`. Reachability may follow an
+        alias -- a rename has to let a fetch of the old id answer with the new
+        item -- but a *visibility decision on a referenced id* must read the row
+        that id names, never the row an alias redirects it to. An ``addAlias``
+        key is a string an author chooses freely, so a key equal to a live but
+        non-surfaceable item's id would otherwise let that item clear a gate as
+        the approved item the alias points at:
+        :func:`~theurian.mcp.tools._relation_is_visible` gates each relation
+        endpoint through this exact read, so an endpoint that is also an alias
+        key is judged by its own status and not the alias target's (SEC-13, T-21).
+        """
+        ...
+
     def get_revision(
         self, context: RequestContext, revision_id: RevisionId
     ) -> KnowledgeRevision | None: ...

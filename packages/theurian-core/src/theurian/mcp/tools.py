@@ -306,20 +306,36 @@ def _relation_is_visible(
     which is the content :func:`knowledge_get` says a rejected revision is
     withheld *for*.
 
-    **Both ends, not "the end that is not the fetched item".** The latter has to
-    infer direction by comparing an id against the one the caller passed, and
-    that comparison is sound only while ``list_relations`` resolves aliases to
-    exactly the id ``get_item`` returned -- an assumption held in another layer,
-    where nothing announces breaking it. Asking about both ends needs no such
-    assumption and no special case for an edge whose two ends are equal:
-    :class:`KnowledgeRelation` rejects a self-relation at construction so one
-    cannot reach here, but this predicate answers it correctly anyway (that edge
-    has no endpoint other than the visible fetched item, so it is published).
-    The cost is one extra primary-key lookup per edge for the near end, which is
-    the fetched item and has already cleared this same predicate.
+    **Both ends, and each read by the id it literally names.** Two independent
+    assumptions had to go, not one. Gating "the end that is not the fetched
+    item" inferred direction by comparing an id against the one the caller
+    passed, sound only while ``list_relations`` resolves aliases to exactly the
+    id ``get_item`` returned. Asking about *both* ends removes that direction
+    inference and needs no special case for an edge whose two ends are equal
+    (:class:`KnowledgeRelation` rejects a self-relation at construction, but this
+    predicate answers one correctly anyway: its only endpoint is the visible
+    fetched item, so it is published).
+
+    That is not enough on its own, because the *read* of each end was itself
+    alias-resolving. ``get_item`` resolves an ``addAlias`` key before its status
+    lookup, and an author chooses that key freely: a ``rejected`` item ``W`` that
+    is also an alias key for an approved ``P`` resolved to ``P`` here and cleared
+    the gate as ``P``, publishing the edge ``W`` authored -- its rejection
+    ``note``, where the secret that caused the rejection lives -- on ``P``'s
+    response (SEC-13, T-21). So each endpoint is read through
+    :meth:`~theurian.domain.ports.canonical_store.CanonicalReadSession.get_item_exact`,
+    the row the id literally names. The principle the split records:
+    **reachability may resolve an alias; authority -- a visibility decision on a
+    referenced id -- must read the literally-named row.** The cost is one extra
+    primary-key lookup per edge for the near end, which is the fetched item and
+    has already cleared this predicate.
     """
     for endpoint_id in (relation.source_item_id, relation.target_item_id):
-        endpoint = store.get_item(context, endpoint_id)
+        # `get_item_exact`, not `get_item`: a visibility decision on a referenced
+        # id reads the row that id names. Resolving the alias here would let a
+        # rejected endpoint that is also an alias key clear the gate as the
+        # approved item the alias points at (SEC-13, T-21).
+        endpoint = store.get_item_exact(context, endpoint_id)
         if endpoint is None or not may_surface(
             endpoint.status, include_unapproved=include_unapproved
         ):

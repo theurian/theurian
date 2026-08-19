@@ -21,6 +21,10 @@ from theurian.application.ingestion_service import (
     IngestionService,
     manifest_from,
 )
+from theurian.application.migration_alias_guards import (
+    alias_item_collision_violations,
+    refuse_alias_item_id_collision,
+)
 from theurian.application.migration_body_guards import (
     duplicate_content_file_violations,
     refuse_duplicate_content_files,
@@ -59,6 +63,7 @@ from theurian.cli.context import (
     resolve_context,
 )
 from theurian.domain.errors import (
+    AliasItemCollisionError,
     DuplicateContentFileError,
     MigrationChecksumMismatchError,
     MigrationCycleError,
@@ -198,6 +203,25 @@ DUPLICATE_CONTENT_FILE_REMEDY: Final = (
 )
 
 
+#: Cure for `AliasItemCollisionError` (SEC-13, T-21). An alias key and an item id
+#: must not be the same string, or a lookup for the retired id resolves to the
+#: item the alias points at and surfaces content the retired item withholds. The
+#: one shape this allows is a rename: deprecate the old item first, then alias it.
+#: Names the rebuild path as the second half of one remedy for the same reason
+#: `DUPLICATE_CONTENT_FILE_REMEDY` does -- editing an applied migration trips
+#: FR-K5's checksum guard, so a remedy that stopped at "edit it" would loop the
+#: reader between the two (issue #63's HIGH-1).
+ALIAS_ITEM_COLLISION_REMEDY: Final = (
+    "Remove the addAlias, or give the item a distinct id -- an alias key and an item id must "
+    "not be the same string. If this is a rename, deprecate the old item first "
+    "(deprecateItem), the one shape this allows: the retired id then resolves to its "
+    "successor without exposing withheld content. If the offending migration was already "
+    "applied, editing it also trips the applied-migration checksum guard -- delete "
+    "`.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds "
+    "canonical state from the corrected migrations (FR-K4)."
+)
+
+
 #: Every canonical-state database this project has ever built. Excludes
 #: `theurian-index-*.sqlite`, which lives in the same directory
 #: (`ProjectPaths.state`) but is a different schema entirely.
@@ -334,20 +358,41 @@ def _refuse_a_body_file_backing_two_revisions(
         )
 
 
+def _refuse_an_alias_colliding_with_an_item(migration_set: MigrationSet, *, as_json: bool) -> None:
+    """Report T-21's whole-set refusal identically at `migrate validate` and `apply`.
+
+    One function rather than a `try`/`except` in each command, so the two cannot
+    drift on a statically decidable rule (issue #36's class) -- and so `apply`
+    refuses before `create_database` runs and leaves no state database behind, the
+    way the scope and body-file guards already do.
+    """
+    try:
+        refuse_alias_item_id_collision(migration_set)
+    except AliasItemCollisionError as exc:
+        _fail(
+            str(exc),
+            remedy=ALIAS_ITEM_COLLISION_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+
+
 def _refused_migration_ids(migration_set: MigrationSet) -> list[str]:
     """Every migration id `migrate validate`/`apply` would refuse, for `status`.
 
-    Both gating rules feed `refusedIds`: the tenant/ACL scope rule (issue #63)
-    and the one-body-one-revision rule (issue #210). Each has a non-throwing
-    enumerator split from its throwing refusal precisely so `status` can report
-    without gating -- reporting only the scope rule, as this did, told a reader
-    `refusedIds: []` for a set `validate`/`apply` exit 4 on. Deduplicated in
-    first-seen order (a migration can carry both faults), so the field is stable.
+    Three gating rules feed `refusedIds`: the tenant/ACL scope rule (issue #63),
+    the one-body-one-revision rule (issue #210), and the alias/item-id collision
+    rule (SEC-13, T-21). Each has a non-throwing enumerator split from its
+    throwing refusal precisely so `status` can report without gating -- reporting
+    only some of them told a reader `refusedIds: []` for a set `validate`/`apply`
+    exit 4 on. Deduplicated in first-seen order (a migration can carry more than
+    one fault), so the field is stable.
     """
     seen: dict[str, None] = {}
     for migration_id in (
         *unenforceable_scope_violations(migration_set),
         *duplicate_content_file_violations(migration_set),
+        *alias_item_collision_violations(migration_set),
     ):
         seen.setdefault(str(migration_id), None)
     return list(seen)
@@ -1112,6 +1157,7 @@ def migrate_validate(as_json: JsonOption = False) -> None:
         return
 
     _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
+    _refuse_an_alias_colliding_with_an_item(context.loaded.migration_set, as_json=as_json)
 
     _emit(
         {
@@ -1150,11 +1196,12 @@ def migrate_apply(as_json: JsonOption = False) -> None:
         )
         return
 
-    # `MigrationEngine.apply` refuses this too, but only once a write
+    # `MigrationEngine.apply` refuses these too, but only once a write
     # transaction is open and `create_database` has already run. Refusing here
     # as well is what keeps issue #63's property -- a refused apply leaves no
-    # database file behind -- true for this rule too (issue #210).
+    # database file behind -- true for these rules too (issue #210, T-21).
     _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
+    _refuse_an_alias_colliding_with_an_item(context.loaded.migration_set, as_json=as_json)
 
     # This installation's record of the state it built, out of the repository
     # tree (ADR-0004, SEC-7). Used twice below: to refuse to *apply into* a
