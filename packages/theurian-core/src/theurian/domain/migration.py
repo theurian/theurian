@@ -39,6 +39,14 @@ MIGRATION_API_VERSION: Final = "theurian.dev/v1"
 #: reinterpreting it (ADR-0007).
 MIGRATION_ENGINE_VERSION: Final = 1
 
+#: The governed metadata a revision acquires when its migration omits it. These
+#: are the single source of truth: the dataclass defaults below, the loader's
+#: ``.get(...)`` fallbacks, and the ``propose`` note that warns an author which
+#: default an omission will publish all read *these* constants, so the warning
+#: cannot claim one value while the loader fills another (#249).
+DEFAULT_TRUST_LEVEL: Final = TrustLevel.UNVERIFIED
+DEFAULT_SENSITIVITY: Final = Sensitivity.INTERNAL
+
 
 class OperationKind(StrEnum):
     """The closed operation set. Adding one bumps ``apiVersion`` (ADR-0005)."""
@@ -84,8 +92,8 @@ class CreateItem(Operation):
     kind_: KnowledgeKind
     namespace: str
     owner: str
-    sensitivity: Sensitivity = Sensitivity.INTERNAL
-    trust_level: TrustLevel = TrustLevel.UNVERIFIED
+    sensitivity: Sensitivity = DEFAULT_SENSITIVITY
+    trust_level: TrustLevel = DEFAULT_TRUST_LEVEL
 
     @override
     @property
@@ -103,8 +111,8 @@ class RevisionMetadataSpec:
     namespace: str
     status: KnowledgeStatus
     owner: str
-    trust_level: TrustLevel = TrustLevel.UNVERIFIED
-    sensitivity: Sensitivity = Sensitivity.INTERNAL
+    trust_level: TrustLevel = DEFAULT_TRUST_LEVEL
+    sensitivity: Sensitivity = DEFAULT_SENSITIVITY
     tenant_id: str = "local"
     acl_group: str = "default"
     valid_from: datetime | None = None

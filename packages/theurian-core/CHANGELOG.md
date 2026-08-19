@@ -12,6 +12,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`theurian propose` can now set `--scope-path` and `--label`**
+  ([#249](https://github.com/theurian/theurian/issues/249)). Each is repeatable
+  and keeps the order it was given: `--scope-path` writes `metadata.scope.paths`
+  (the globs Milestone 8's drift detection will read), and `--label` writes
+  `metadata.labels`. A `--label` given alongside `--authored-here` is
+  de-duplicated against the implied `authored-in-theurian` label — the schema
+  declares `labels` `uniqueItems`, so a duplicate would otherwise turn a legal
+  invocation into a refusal. An enhancement rather than a fix: before this, these
+  fields were simply unreachable from the propose flow, and their absence
+  published nothing false.
+
+### Fixed
+
+- **A maintainer-reviewed, public ADR accepted through `propose` → `accept`
+  published `trustLevel: unverified` and `sensitivity: internal` on every result**
+  ([#249](https://github.com/theurian/theurian/issues/249)). `theurian propose`
+  could express no `trustLevel` or `sensitivity`, so a corpus built by the shipped
+  flow could only ever carry the schema defaults; the loader completed the omitted
+  fields silently, and both reach every `knowledge.search` and `knowledge.get`
+  result. Measured on the first dogfooding slice: three publicly readable ADRs a
+  maintainer had merged were published as `unverified`/`internal` beside
+  `status: approved`, and hand-editing the generated YAML was the only remedy.
+  `propose` now takes `--trust-level {unverified|inferred|reviewed|authoritative}`
+  and `--sensitivity {public|internal|confidential|restricted}`, on both the
+  create and update flows, so a false value is correctable rather than permanent.
+  When either is omitted the default is not stamped into the migration — that
+  would assert a judgement the caller never made — but is named in the draft's
+  `--json` next steps, so an omission is a surfaced choice rather than a silent
+  false positive.
+
 ## [0.1.0.dev6] - 2026-08-19
 
 ### Fixed

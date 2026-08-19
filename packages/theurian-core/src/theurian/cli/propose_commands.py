@@ -34,11 +34,15 @@ from theurian.application.proposal_service import (
     ProposalService,
 )
 from theurian.cli.context import CommandContext, schema_root
-from theurian.domain.enums import KnowledgeKind
+from theurian.domain.enums import KnowledgeKind, Sensitivity, TrustLevel
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
-from theurian.domain.migration import current_revision_in
+from theurian.domain.migration import (
+    DEFAULT_SENSITIVITY,
+    DEFAULT_TRUST_LEVEL,
+    current_revision_in,
+)
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML, MediaType
 from theurian.infrastructure.filesystem.migration_loader import validate_migration_document
@@ -49,6 +53,14 @@ from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 #: missing required option, and every one of these would have been exactly that
 #: had the group shape allowed the options to be declared required.
 EXIT_INVALID_INPUT: Final = 2
+
+#: The C0 control block (below U+0020) and DEL (U+007F). A label carrying one of
+#: these corrupts the reviewed migration text -- a newline splits it across
+#: lines, a NUL truncates it -- and the schema's ``labels.items`` does not forbid
+#: them the way ``title``/``owner`` do, so ``propose`` refuses them at draft
+#: time (#249).
+_C0_CEILING: Final = 0x20
+_DEL: Final = 0x7F
 
 #: Body formats a proposal may carry, keyed by the extension the caller wrote.
 #: Read from the file name rather than taken as its own option so the extension
@@ -107,6 +119,10 @@ class _Inputs:
     expected_revision: str | None
     anchor: SourceAnchor | None
     authored_here: bool
+    trust_level: TrustLevel | None
+    sensitivity: Sensitivity | None
+    scope_paths: tuple[str, ...]
+    labels: tuple[str, ...]
     agent_id: str
     task_id: str
     model: str
@@ -176,6 +192,35 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
             help="Declare that this knowledge originates in Theurian and has no external source.",
         ),
     ] = False,
+    trust_level: Annotated[
+        TrustLevel | None,
+        typer.Option(
+            "--trust-level",
+            help="How much scrutiny this content has had. Omitted, the revision loads as "
+            "'unverified' -- honest for an agent draft, wrong for reviewed knowledge.",
+        ),
+    ] = None,
+    sensitivity: Annotated[
+        Sensitivity | None,
+        typer.Option(
+            "--sensitivity",
+            help="Disclosure class. Omitted, the revision loads as 'internal'.",
+        ),
+    ] = None,
+    scope_path: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scope-path",
+            help="Glob this knowledge governs, e.g. src/**. Repeatable; the order is kept.",
+        ),
+    ] = None,
+    label: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--label",
+            help="Free-form label to group this knowledge by. Repeatable; the order is kept.",
+        ),
+    ] = None,
     agent_id: Annotated[
         str | None, typer.Option("--agent-id", help="Which agent drafted this (required).")
     ] = None,
@@ -226,6 +271,13 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
         "--source-uri": source_uri,
         "--source-commit": source_commit,
         "--source-path": source_path,
+        "--trust-level": trust_level,
+        "--sensitivity": sensitivity,
+        # Repeatable options arrive as ``None`` when omitted and a list when
+        # given, so an empty draft leaves them out of the stray check while a
+        # populated one is caught -- the same "was it passed" test the scalars use.
+        "--scope-path": scope_path,
+        "--label": label,
         "--agent-id": agent_id,
         "--task-id": task_id,
         "--model": model,
@@ -249,6 +301,11 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
             as_json=as_json,
         )
 
+    scope_paths = tuple(scope_path or ())
+    labels = tuple(label or ())
+    _refuse_blank_scope_paths(scope_paths, as_json=as_json)
+    _refuse_unusable_labels(labels, as_json=as_json)
+
     _draft(
         _Inputs(
             item_id=_present(item_id),
@@ -262,6 +319,10 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
             expected_revision=expected_revision,
             anchor=_anchor(source_provider, source_uri, source_commit, source_path),
             authored_here=authored_here,
+            trust_level=trust_level,
+            sensitivity=sensitivity,
+            scope_paths=scope_paths,
+            labels=labels,
             agent_id=_present(agent_id),
             task_id=_present(task_id),
             model=_present(model),
@@ -372,6 +433,48 @@ _DRAFT_STEPS: Final = (
 )
 
 
+def _refuse_blank_scope_paths(scope_paths: tuple[str, ...], *, as_json: bool) -> None:
+    """Refuse a ``--scope-path`` that names no path.
+
+    ``revisionMetadata.scope.paths`` items carry no ``minLength``, so ``""`` or a
+    whitespace-only value stages a scope entry that matches nothing and reads in
+    review as an authoring slip. Refuse it here -- naming the option, staging
+    nothing -- rather than packaging a glob that can never apply (#249).
+    """
+    if any(not path.strip() for path in scope_paths):
+        _refuse(
+            "--scope-path was given an empty path.",
+            remedy="Pass a path glob such as docs/**, or drop --scope-path.",
+            as_json=as_json,
+        )
+
+
+def _refuse_unusable_labels(labels: tuple[str, ...], *, as_json: bool) -> None:
+    """Refuse an empty ``--label`` or one bearing a control character.
+
+    ``revisionMetadata.labels.items`` carry only ``maxLength``, unlike ``title``
+    and ``owner`` whose ``pattern`` forbids control characters. #249 first opened
+    this arbitrary-label path, so it closes the two values that corrupt the
+    reviewed migration text: an empty label groups by nothing, and a C0 or DEL
+    control character -- a newline splits the label across lines, a NUL truncates
+    it -- makes the YAML read as something other than what was passed. The public
+    schema is unchanged here; this is the CLI refusing before it stages (#249).
+    """
+    for label in labels:
+        if not label:
+            _refuse(
+                "--label was given an empty value.",
+                remedy="Pass a non-empty label, or drop --label.",
+                as_json=as_json,
+            )
+        if any(ord(char) < _C0_CEILING or ord(char) == _DEL for char in label):
+            _refuse(
+                "--label contains a control character.",
+                remedy="Pass a label of printable text, or drop --label.",
+                as_json=as_json,
+            )
+
+
 def _draft(inputs: _Inputs, *, as_json: bool) -> None:
     """Read the body, build the request, and report what was written."""
     from theurian.cli.commands import _emit, _fail, _require_project  # noqa: PLC0415 - cycle
@@ -396,7 +499,7 @@ def _draft(inputs: _Inputs, *, as_json: bool) -> None:
         )
         return
 
-    _emit(_drafted_payload(drafted, context), as_json=as_json)
+    _emit(_drafted_payload(drafted, context, inputs), as_json=as_json)
 
 
 def _request(inputs: _Inputs, *, body: str, content_type: MediaType) -> ProposalRequest:
@@ -432,12 +535,30 @@ def _request(inputs: _Inputs, *, body: str, content_type: MediaType) -> Proposal
         content_type=content_type,
         evidence=evidence,
         source_anchors=anchors,
-        labels=(AUTHORED_IN_THEURIAN,) if inputs.authored_here else (),
+        labels=_merge_labels(inputs.labels, authored_here=inputs.authored_here),
+        scope_paths=inputs.scope_paths,
+        trust_level=inputs.trust_level,
+        sensitivity=inputs.sensitivity,
         namespace=inputs.namespace,
         expected_revision=(
             None if inputs.expected_revision is None else RevisionId.parse(inputs.expected_revision)
         ),
     )
+
+
+def _merge_labels(labels: tuple[str, ...], *, authored_here: bool) -> tuple[str, ...]:
+    """The caller's labels and the authored-here label, deduplicated in order.
+
+    ``revisionMetadata.labels`` is ``uniqueItems``, so a caller who passes
+    ``--label authored-in-theurian`` beside ``--authored-here`` must not produce a
+    document the generator's own validation then rejects. ``--authored-here`` is
+    INV-8's declaration for source-less knowledge, not a synonym for the label, so
+    it is added rather than assumed and never dropped. First-seen order is kept
+    because the migration is reviewed as text. ``dict.fromkeys`` is the dedupe:
+    it preserves insertion order and collapses the repeat.
+    """
+    ordered = (*labels, AUTHORED_IN_THEURIAN) if authored_here else labels
+    return tuple(dict.fromkeys(ordered))
 
 
 def _anchor(
@@ -513,7 +634,9 @@ def _service(context: CommandContext) -> ProposalService:
     )
 
 
-def _drafted_payload(drafted: DraftedProposal, context: CommandContext) -> dict[str, object]:
+def _drafted_payload(
+    drafted: DraftedProposal, context: CommandContext, inputs: _Inputs
+) -> dict[str, object]:
     root = context.paths.root
     return {
         "proposalId": drafted.proposal_id.value,
@@ -529,8 +652,59 @@ def _drafted_payload(drafted: DraftedProposal, context: CommandContext) -> dict[
         "contentFile": drafted.content_file,
         "contentSha256": drafted.content_sha256.value,
         "bodyDestination": _relative(drafted.body_destination, root),
-        "nextSteps": list(_DRAFT_STEPS),
+        "nextSteps": _draft_steps(inputs),
     }
+
+
+def _draft_steps(inputs: _Inputs) -> list[str]:
+    """The next-steps list, with the governed-defaults warning first when owed.
+
+    #249: an omitted ``--trust-level`` or ``--sensitivity`` is not an error --
+    the schema defaults are the honest answer for an agent's unreviewed draft --
+    but the loader fills ``unverified``/``internal`` silently, and both are
+    published on every retrieval result. The migration is deliberately left
+    without those keys (writing them would state a judgement the caller never
+    made, and would break the compatibility pin), so the surfacing lives here:
+    naming the default the revision will publish, and how to set it, is what
+    keeps a reviewed, public ADR from acquiring ``unverified``/``internal`` with
+    nothing telling the caller.
+    """
+    note = _governed_defaults_note(inputs.trust_level, inputs.sensitivity)
+    return [note, *_DRAFT_STEPS] if note is not None else list(_DRAFT_STEPS)
+
+
+def _governed_defaults_note(
+    trust_level: TrustLevel | None, sensitivity: Sensitivity | None
+) -> str | None:
+    """Name the governed fields left unset and the default each will publish.
+
+    ``None`` when both were given: there is then no default to warn about. The
+    defaults are read from :data:`DEFAULT_TRUST_LEVEL` and
+    :data:`DEFAULT_SENSITIVITY` -- the same constants the loader's ``.get(...)``
+    fallbacks apply when a migration omits these keys -- so the value named here
+    and the value the revision will publish are one definition, not two that
+    happen to agree.
+    """
+    omitted = [
+        (field, default, option)
+        for value, field, default, option in (
+            (trust_level, "trustLevel", DEFAULT_TRUST_LEVEL.value, "--trust-level"),
+            (sensitivity, "sensitivity", DEFAULT_SENSITIVITY.value, "--sensitivity"),
+        )
+        if value is None
+    ]
+    if not omitted:
+        return None
+    plural = len(omitted) > 1
+    fields = " and ".join(field for field, _, _ in omitted)
+    defaults = " and ".join(f"{field}: {default}" for field, default, _ in omitted)
+    options = " and ".join(option for _, _, option in omitted)
+    return (
+        f"{fields} {'were' if plural else 'was'} not set, so this revision will publish "
+        f"{defaults} -- the schema default{'s' if plural else ''} -- on every knowledge.search "
+        f"and knowledge.get result. If that is not right for this knowledge, re-draft with "
+        f"{options}."
+    )
 
 
 def _relative(path: Path, root: Path) -> str:
