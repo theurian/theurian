@@ -2,10 +2,32 @@
 
 Split from ``tests/unit/test_documented_commands.py``, which owns the recorded
 exemptions and the assertions, and sitting beside ``command_extraction``, which
-owns turning one text into command words. This module is the middle: the walk
-over the repository, and what it hands the readers.
+owns turning one text into command words. This module is the middle: the
+population -- which files the repository ships -- and what it hands the readers.
 
-A pure move; every reason recorded here was written where the code was.
+**The population is what git lists, not what is on disk.** ``git ls-files
+--cached --others --exclude-standard`` is the definition: everything tracked,
+plus everything written and not yet ignored, and nothing git has been told to
+ignore. Asking the filesystem instead was #262. A machine that dogfoods
+Theurian keeps its own knowledge under ``.theurian/``, excluded through
+``.git/info/exclude`` and never committed; a directory-name rule descended into
+it and the suite failed on a handoff note quoting ``theurian upgrade`` that no
+clone will ever hold. The same class had already been patched once by name:
+the mutation harness runs the suite with ``TMPDIR`` inside its copy of the
+tree, and a run left 12,734 fixture files under ``.mutate-tmp/`` that the scan
+read, turning the unmutated control RED and every verdict in that batch with
+it. Git answers both, and answers the residual the name list recorded and could
+not close -- ``plugins/claude-code/.claude-plugin/`` is a fourth shipped dot
+directory the three-entry list did not name, and the population picked up its
+``plugin.json`` the moment git was asked (measured at bd4fb25).
+
+The untracked half is a decision and not an oversight: a document naming a dead
+command is cheapest to fix before the commit that ships it, and ``--cached``
+alone would leave the suite green until somebody remembered to re-run it after
+``git add``.
+
+:func:`_walked` is the fallback for a tree with no git in it, and
+:func:`_population` says what it costs.
 
 Lives under ``tests/`` and so inside :data:`UNREAD`, which is load-bearing --
 the docstrings below quote dead commands as examples, and a reader that opened
@@ -17,6 +39,8 @@ from __future__ import annotations
 import functools
 import os
 import pathlib
+import shutil
+import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Final
@@ -58,38 +82,127 @@ SCANNED_SURFACES: Final = (
     Surface("plain", REPO_ROOT, frozenset({".sh", ".yml", ".yaml"}), plain_command_lines),
 )
 
-#: The dot directories this repository *ships*. Every other one is somebody's
-#: tooling state and is not walked, which is a rule rather than a list because a
-#: list of the ones seen so far is a list that keeps being wrong: the mutation
-#: harness runs the suite with ``TMPDIR`` inside the copied tree, so a run there
-#: put 12,734 fixture files -- whole ``.theurian`` project directories, some of
-#: them not even UTF-8 -- under ``.mutate-tmp/``, and the scan read them. The
-#: control run went RED and every verdict in the batch with it.
+#: What git is asked, once per repository. ``--cached`` is what ships and
+#: ``--others --exclude-standard`` is what is being written; ``-z`` because git
+#: quotes non-ASCII paths in every other output mode, and this repository holds
+#: CJK fixtures.
 #:
-#: The residual is stated rather than hidden: a *fourth* dot directory that
-#: ships instructions would escape the scan, and nothing here would say so. The
-#: list is three entries long and sits beside the rule for that reason.
-SHIPPED_DOT_DIRECTORIES: Final = frozenset({".github", ".claude", ".theurian"})
+#: What the pair leaves out is the fix: everything ignored, whether the rule
+#: came from a tracked ``.gitignore``, from ``.git/info/exclude`` -- which is
+#: what #262's corpus used, and what no clone can see -- or from the operator's
+#: ``core.excludesFile``.
+_LISTING: Final = ("ls-files", "--cached", "--others", "--exclude-standard", "-z")
 
-#: Directory names the walk never enters even though they do not start with a
-#: dot. Build and coverage output, vendored packages, and -- the one that is not
-#: obvious -- ``worktrees``, because ``.claude/worktrees/`` is where this machine
-#: keeps agent checkouts of the repository itself. Walking one would scan a
-#: second copy of every file below, which both doubles the population and makes
-#: the result depend on who else is working today.
+#: Belt and braces, not the definition. Since the population is git's answer,
+#: these two lists decide nothing in a checkout; they are the fallback's
+#: approximation of "shipped" for a tree with no git in it, and
+#: :func:`_population` records what that approximation costs. Kept as names
+#: because there is nothing better to key on once git is gone: ``.claude``,
+#: ``.github``, ``.claude-plugin`` and a nested ``.theurian`` are the four dot
+#: directories holding tracked files (``git ls-files``, bd4fb25).
+SHIPPED_DOT_DIRECTORIES: Final = frozenset({".github", ".claude", ".claude-plugin", ".theurian"})
+
+#: Directory names the fallback never enters even though they do not start with
+#: a dot. Build and coverage output, vendored packages, and -- the one that is
+#: not obvious -- ``worktrees``, because ``.claude/worktrees/`` is where this
+#: machine keeps agent checkouts of the repository itself. Walking one would
+#: scan a second copy of every file below, which both doubles the population and
+#: makes the result depend on who else is working today. Git needs none of this:
+#: an ignored directory is not listed, and a nested checkout comes back as one
+#: entry that :func:`_population` drops because it is not a file.
 PRUNED_DIRECTORIES: Final = frozenset(
     {"__pycache__", "node_modules", "htmlcov", "dist", "site", "worktrees"}
 )
 
 
-def _walked(names: Iterable[str]) -> list[str]:
-    """The subdirectories of one directory that are part of the repository."""
+def _walked(names: Iterable[str], *, at_repository_root: bool) -> list[str]:
+    """The subdirectories of one directory the *fallback* treats as shipped.
+
+    ``.theurian/`` at the top of the tree is refused, and only there. That is
+    where a project keeps its own knowledge, this repository tracks nothing
+    under it, and a copy of a dogfooding checkout is precisely where the
+    fallback runs. Deeper it is sample content -- the scan has always read
+    ``examples/sample-project/.theurian/config.yaml``.
+    """
     return sorted(
         name
         for name in names
         if name not in PRUNED_DIRECTORIES
         and (not name.startswith(".") or name in SHIPPED_DOT_DIRECTORIES)
+        and not (at_repository_root and name == ".theurian")
     )
+
+
+def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
+    """Every path git reports for ``repository``, or ``None`` if it cannot be asked.
+
+    ``None`` means one of three things, and the caller treats them alike: no
+    git on this machine, the tree is not a working copy, or the tree sits
+    *inside* somebody else's working copy. The last is why the toplevel is
+    checked rather than trusting a zero exit -- a copy of the checkout dropped
+    under another repository would otherwise be answered for by that
+    repository's index, which knows nothing about any of these files and would
+    return a population of nothing at all. A silently empty population is the
+    one failure mode this module cannot survive: every assertion in it passes
+    when no file is read.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    toplevel = _git_output(git, repository, "rev-parse", "--show-toplevel")
+    if toplevel is None or pathlib.Path(toplevel.strip()).resolve() != repository.resolve():
+        return None
+    listing = _git_output(git, repository, *_LISTING)
+    if listing is None:
+        return None
+    return tuple(sorted(entry for entry in listing.split("\0") if entry))
+
+
+def _git_output(git: str, repository: pathlib.Path, *arguments: str) -> str | None:
+    """One read-only git command's stdout, or ``None`` if it failed.
+
+    ``surrogateescape`` rather than a decode error: a path this suite must
+    report is a path it first has to be able to name.
+    """
+    completed = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+        [git, "-C", str(repository), *arguments],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    return None if completed.returncode != 0 else completed.stdout
+
+
+@functools.cache
+def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
+    """Every file the repository ships or is about to, sorted, git's answer first.
+
+    Cached because several tests want it and it costs a subprocess; the walk it
+    replaced was paid per call.
+
+    The fallback is what runs when :func:`_git_listing` cannot answer, and the
+    mutation harness is why it exists rather than an assertion: ``tools/mutate.py``
+    copies the checkout with ``shutil.copytree`` and its ``_COPY_IGNORE`` drops
+    ``.git`` deliberately, so the suite runs there with no repository at all --
+    while the copy still carries every local-only file the developer's tree
+    carried. The fallback cannot tell those from shipped ones, so it reads
+    *less*: :func:`_walked` refuses the repository-root ``.theurian/`` outright.
+    The residual is stated rather than hidden -- a file ignored anywhere else,
+    say a scratch note under ``docs/`` in somebody's ``info/exclude``, is still
+    read there. That is a copy of one machine's tree, never CI and never a
+    clone, and the gate that decides anything runs in a checkout where git
+    answers.
+    """
+    listed = _git_listing(repository)
+    if listed is not None:
+        return tuple(path for entry in listed if (path := repository / entry).is_file())
+
+    found: list[pathlib.Path] = []
+    for base, directories, names in os.walk(repository):
+        directories[:] = _walked(directories, at_repository_root=pathlib.Path(base) == repository)
+        found.extend(path for name in names if (path := pathlib.Path(base) / name).is_file())
+    return tuple(sorted(found))
 
 
 @dataclass(frozen=True)
@@ -121,20 +234,27 @@ def _is_unread(relative: str) -> bool:
     return any(relative.startswith(entry.prefix) for entry in UNREAD)
 
 
-def _files(root: pathlib.Path, suffixes: frozenset[str]) -> Iterator[pathlib.Path]:
-    """Every file of those suffixes under ``root``, in a fixed order.
+def _files(
+    root: pathlib.Path, suffixes: frozenset[str], repository: pathlib.Path = REPO_ROOT
+) -> Iterator[pathlib.Path]:
+    """Every shipped file of those suffixes under ``root``, in path order.
 
-    ``os.walk`` rather than :meth:`~pathlib.Path.rglob` because the directories
-    have to be pruned *during* the walk. Filtering afterwards still descends
-    into a 149 MB virtualenv, into every sibling worktree, and into the twelve
-    thousand fixture files a suite run leaves under a redirected ``TMPDIR``.
+    ``root`` selects a subtree of ``repository``: the Python surface reads only
+    Core's ``src/`` while the rest read from the top. Both are filtered out of
+    one population rather than walked separately, so a file cannot be part of
+    one answer and not the other.
+
+    ``repository`` is a parameter and not just :data:`REPO_ROOT` because that is
+    what makes the population testable: a sandbox with one tracked and one
+    ignored file is the only way to show that this reads git's answer rather
+    than the disk's.
     """
-    for base, directories, names in os.walk(root):
-        directories[:] = _walked(directories)
-        for name in sorted(names):
-            path = pathlib.Path(base) / name
-            if path.suffix in suffixes and not _is_unread(path.relative_to(REPO_ROOT).as_posix()):
-                yield path
+    for path in _population(repository):
+        if path.suffix not in suffixes or not path.is_relative_to(root):
+            continue
+        if _is_unread(path.relative_to(repository).as_posix()):
+            continue
+        yield path
 
 
 def _text(path: pathlib.Path) -> str:

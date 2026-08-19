@@ -65,10 +65,15 @@ What is deliberately unread is listed in :data:`UNREAD`, and
 the repository to prove the list is complete: a surface added tomorrow in a file
 type nothing here reads fails that test rather than escaping quietly.
 
-The walk is over what the repository *ships*, which is not the same as what is
-on disk -- see :func:`_walked`. A suite run under the mutation harness leaves
-twelve thousand fixture files inside the tree, and reading them turned the
-unmutated control RED.
+The population is what the repository *ships*, which is not the same as what is
+on disk, so it is git's answer and not a walk's: ``git ls-files --cached
+--others --exclude-standard``, see :func:`_population`. Two measured failures
+say why. A suite run under the mutation harness leaves twelve thousand fixture
+files inside the tree, and reading them turned the unmutated control RED. A
+machine that dogfoods Theurian keeps knowledge under ``.theurian/`` that
+``.git/info/exclude`` hides from every clone, and reading *that* failed the
+class test below on a note quoting ``theurian upgrade`` (#262) -- on a working
+tree ``git status`` reports as clean.
 
 **The population key is the command word, not the flag.** These tests resolve
 the first word after ``theurian`` -- and, for a registered group, the second --
@@ -83,8 +88,9 @@ the thing that goes stale, and it is what made #42's fix incomplete.
 
 from __future__ import annotations
 
-import os
 import pathlib
+import shutil
+import subprocess
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -117,6 +123,7 @@ from command_population import (
     Invocation,
     _files,
     _is_unread,
+    _population,
     _scan,
     _text,
     _walked,
@@ -460,30 +467,187 @@ def test_no_recorded_exception_outlives_the_text_it_excuses() -> None:
     )
 
 
-def test_the_walk_enters_only_what_the_repository_ships() -> None:
-    """A walk that reads whatever is on disk answers a question nobody asked.
+def test_the_fallback_walk_enters_only_what_the_repository_could_ship() -> None:
+    """The rule that stands in for git where there is none, pinned as a rule.
 
-    Both the scan and the guard below walk from the repository root, so what
-    they see depends on what a tool has left lying about. The mutation harness
-    is the case that proved it: it runs the suite with ``TMPDIR`` pointed inside
-    its copy of the tree, and a run left 12,734 fixture files under
-    ``.mutate-tmp/`` -- entire ``.theurian`` project directories with their own
-    markdown, JSON and YAML, some of it not UTF-8. The scan read them, the
-    unmutated control went RED, and with it every verdict in that batch.
+    A tree with no ``.git`` in it is not hypothetical: the mutation harness
+    copies the checkout without one, and a run there left 12,734 fixture files
+    under ``.mutate-tmp/`` -- entire ``.theurian`` project directories with
+    their own markdown, JSON and YAML, some of it not UTF-8. The scan read them,
+    the unmutated control went RED, and every verdict in that batch with it.
+
+    In a checkout none of this decides anything, because :func:`_population`
+    asks git. What the fallback still has to get right is the direction of its
+    error: it reads less than the repository ships, never more than the
+    repository tracks.
 
     Pinned as a rule and not as the list of names seen so far, because the names
     keep changing and the rule does not.
     """
-    assert _walked([".claude", ".github", ".theurian", "docs", "schemas"]) == [
-        ".claude",
-        ".github",
-        ".theurian",
-        "docs",
-        "schemas",
+    assert _walked(
+        [".claude", ".claude-plugin", ".github", ".theurian", "docs"], at_repository_root=False
+    ) == [".claude", ".claude-plugin", ".github", ".theurian", "docs"]
+
+    assert _walked([".theurian", "docs"], at_repository_root=True) == ["docs"]
+
+    tool_state = [".mutate-tmp", ".mutate-home", ".venv", ".git", ".pytest_cache"]
+    build_output = ["worktrees", "node_modules", "site", "htmlcov", "__pycache__"]
+    for at_root in (True, False):
+        assert _walked(tool_state, at_repository_root=at_root) == []
+        assert _walked(build_output, at_repository_root=at_root) == []
+
+
+def _require_git() -> str:
+    """The git the population is defined by, or a skip that says why."""
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("the population is defined by `git ls-files`, and this machine has no git")
+    return git
+
+
+def _git(git: str, *arguments: str) -> None:
+    """Run one git command in a sandbox and fail loudly if it did not work."""
+    completed = subprocess.run(  # noqa: S603 - argv is written here, never user input
+        [git, *arguments], capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, (
+        f"the fixture's own `git {' '.join(arguments)}` failed, so the test below would "
+        f"be asserting against a tree nobody built:\n{completed.stderr}"
+    )
+
+
+@pytest.fixture
+def sandbox(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
+    """A repository-shaped tree, cut off from the developer's own git configuration.
+
+    ``GIT_CONFIG_GLOBAL`` and ``GIT_CONFIG_SYSTEM`` name files that do not
+    exist, and ``HOME`` moves with them because git reads ``$HOME/.gitconfig``
+    when the first is unset: a developer whose global ``core.excludesFile``
+    happens to mention ``.theurian`` would otherwise get a different verdict
+    here than CI does. ``GIT_CEILING_DIRECTORIES`` stops the *fallback* test
+    from finding a repository above ``TMPDIR`` and taking the git path by
+    accident, which would make it pass without exercising the fallback at all.
+
+    The environment reaches the code under test because it runs git in a
+    subprocess, which inherits it -- and it is also what keeps this test off the
+    real ``~/.gitconfig``.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / "absent.gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(home / "absent.gitconfig"))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    return root
+
+
+def _scanned_in(sandbox: pathlib.Path) -> list[str]:
+    """The markdown the population hands the readers, relative to the sandbox."""
+    return [
+        path.relative_to(sandbox).as_posix()
+        for path in _files(sandbox, frozenset({".md"}), repository=sandbox)
     ]
 
-    assert _walked([".mutate-tmp", ".mutate-home", ".venv", ".git", ".pytest_cache"]) == []
-    assert _walked(["worktrees", "node_modules", "site", "htmlcov", "__pycache__"]) == []
+
+def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Path) -> None:
+    """A working tree ``git status`` calls clean must not fail this suite (#262).
+
+    ``.theurian/`` is where a project keeps its own knowledge, so a machine that
+    dogfoods Theurian keeps knowledge there that is deliberately never committed
+    -- 56 bodies on the checkout that reported #262, excluded through
+    ``.git/info/exclude``. One was a historical handoff note quoting
+    ``theurian upgrade``, and because the population was defined by directory
+    name, ``test_every_theurian_command_a_document_names_is_registered`` failed
+    on a file no clone will ever hold. No exemption could have covered it: the
+    path carries a ULID that exists on one machine.
+
+    Ignored through ``.git/info/exclude`` rather than ``.gitignore`` deliberately
+    -- that is the file #262's corpus used, it is never committed, and an
+    implementation that parsed ignore rules itself would have to reproduce the
+    whole chain to pass this.
+
+    Asserted as the whole list rather than as an absence, because an enumeration
+    that returned nothing at all would satisfy ``ignored not in scanned`` while
+    making every other assertion in this module pass by reading no files.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    knowledge = sandbox / ".theurian" / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "committed.md").write_text("run `theurian upgrade`\n", encoding="utf-8")
+    (knowledge / "local-only.md").write_text("quoting `theurian upgrade`\n", encoding="utf-8")
+    (sandbox / ".git" / "info" / "exclude").write_text(
+        ".theurian/knowledge/local-only.md\n", encoding="utf-8"
+    )
+    _git(git, "-C", str(sandbox), "add", ".theurian/knowledge/committed.md")
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == [".theurian/knowledge/committed.md"]
+
+
+def test_a_document_written_but_not_yet_committed_is_scanned(sandbox: pathlib.Path) -> None:
+    """A dead command is cheapest to fix before the commit that ships it.
+
+    The population asks for ``--others --exclude-standard`` as well as
+    ``--cached``, and this is the half that costs something to justify: an
+    untracked file is not what the repository ships. ``--cached`` alone would
+    let a new document name a dead command with the suite green until it was
+    committed -- and the point of this module is that nobody has to remember to
+    re-run it after ``git add``. The file is still git's answer and not the
+    filesystem's: ``--exclude-standard`` is what keeps #262 fixed either way.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "draft.md").write_text("run `theurian upgrade`\n", encoding="utf-8")
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/draft.md"]
+
+
+def test_a_tree_that_is_not_a_checkout_reads_less_rather_than_more(
+    sandbox: pathlib.Path,
+) -> None:
+    """The population has to answer where there is no git to ask, and under-read there.
+
+    ``tools/mutate.py`` copies the checkout with ``shutil.copytree`` and its
+    ``_COPY_IGNORE`` drops ``.git`` on purpose ("the copy is not a repository,
+    and the suite has been run without one"), while copying everything else the
+    developer's tree carried -- local-only knowledge included. So the fallback
+    runs in exactly the environment #262 is about, with no way to tell a shipped
+    file from a private one.
+
+    It resolves that by refusing the one directory where a project keeps its own
+    state: ``.theurian/`` at the top of the tree, which this repository tracks
+    nothing under (``git ls-files .theurian`` is empty, measured 2026-08-19 at
+    bd4fb25). A nested one is sample content and is read -- that is
+    ``examples/sample-project/.theurian/config.yaml``, which the scan has always
+    covered.
+
+    The cost is stated rather than hidden: without git the fallback under-reads,
+    and every file it skips is one the real gate still reads, because the gate
+    runs in a checkout.
+    """
+    (sandbox / ".theurian" / "knowledge").mkdir(parents=True)
+    (sandbox / ".theurian" / "knowledge" / "local-only.md").write_text(
+        "quoting `theurian upgrade`\n", encoding="utf-8"
+    )
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "shipped.md").write_text("run `theurian init`\n", encoding="utf-8")
+    nested = sandbox / "examples" / "sample-project" / ".theurian"
+    nested.mkdir(parents=True)
+    (nested / "notes.md").write_text("run `theurian init`\n", encoding="utf-8")
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/shipped.md", "examples/sample-project/.theurian/notes.md"]
 
 
 def test_no_file_that_names_a_command_escapes_the_scan() -> None:
@@ -502,9 +666,12 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
     it flags is not necessarily a defect -- it is a file whose contents nothing
     here has ever looked at.
 
-    Walks the same pruned tree the readers do, and for the same reason: the
-    question is which *repository* files escape, and everything :func:`_walked`
-    refuses belongs to a tool rather than to the repository.
+    Reads the same population the readers do, and it has to: the question is
+    which *repository* files escape, so a file git does not list is not an
+    escape but somebody's private note. Asking the filesystem here instead is
+    the other half of #262 -- the ignored corpus that failed the scan would have
+    been reported by this guard as a file no reader opens, which is just as RED
+    and just as wrong.
     """
     scanned = {
         path.relative_to(REPO_ROOT).as_posix()
@@ -513,19 +680,16 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
     }
 
     unseen: list[str] = []
-    for base, directories, names in os.walk(REPO_ROOT):
-        directories[:] = _walked(directories)
-        for name in sorted(names):
-            path = pathlib.Path(base) / name
-            relative = path.relative_to(REPO_ROOT).as_posix()
-            if relative in scanned or _is_unread(relative):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            if any(_names_a_command(line) for line in text.splitlines()):
-                unseen.append(relative)
+    for path in _population(REPO_ROOT):
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if relative in scanned or _is_unread(relative):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if any(_names_a_command(line) for line in text.splitlines()):
+            unseen.append(relative)
 
     assert not unseen, (
         "These files name a `theurian <command>` and no reader in this module "
