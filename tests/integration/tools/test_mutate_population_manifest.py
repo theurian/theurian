@@ -252,6 +252,62 @@ def test_a_source_whose_files_the_outer_checkout_tracks_is_still_refused(
     assert not (destination / ".mutate-population").exists()
 
 
+def test_a_checkout_with_an_empty_index_stops_the_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real checkout that tracks nothing yet still cannot say what ships.
+
+    The toplevel guard closed the nested-source face and in doing so made the
+    emptiness check look dead -- mutation says otherwise, and this is the state
+    that keeps it alive: ``git init`` and nothing added. The toplevel *is* this
+    tree, the exit code *is* 0, and the listing is empty because the index is.
+    Writing that manifest tells the copy the repository ships nothing, which is
+    the answer that makes the documented-command suite pass by reading no files.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    _git("init", "-q", str(source))
+    (source / "docs").mkdir()
+    (source / "docs" / "written-but-not-added.md").write_text("x\n", encoding="utf-8")
+    destination = tmp_path / "copy"
+    destination.mkdir()
+    monkeypatch.setattr(mutate, "REPO_ROOT", source)
+
+    with pytest.raises(HarnessError, match="could not record the population"):
+        mutate._record_population(destination)
+
+    assert not (destination / ".mutate-population").exists()
+
+
+def test_a_git_that_cannot_be_executed_stops_the_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found on ``PATH`` and unable to run is a different failure from absent.
+
+    ``shutil.which`` answers "there is a git here", and executing it still
+    raises: measured with an executable whose interpreter does not exist, which
+    is what a half-installed toolchain or a stale ``PATH`` entry into a removed
+    virtualenv looks like -- ``FileNotFoundError`` naming the *interpreter*.
+    That is an ``OSError`` out of ``subprocess``, and uncaught it walks past
+    ``_prepare_mode``'s ``except HarnessError`` and leaves the work root behind
+    with a traceback that names ``subprocess`` rather than the tool.
+    """
+    tools = tmp_path / "broken-tools"
+    tools.mkdir()
+    broken_git = tools / "git"
+    broken_git.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+    broken_git.chmod(0o755)
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "copy"
+    destination.mkdir()
+    monkeypatch.setattr(mutate, "REPO_ROOT", source)
+    monkeypatch.setenv("PATH", str(tools))
+
+    with pytest.raises(HarnessError, match="could not record the population"):
+        mutate._record_population(destination)
+
+
 def test_a_missing_git_stops_the_build_instead_of_crashing_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
