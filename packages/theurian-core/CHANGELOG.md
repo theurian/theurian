@@ -65,7 +65,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 ### Changed
 
 - **BREAKING — one body file may back only one revision across a migration set**
-  ([#210](https://github.com/theurian/theurian/issues/210)).
+  ([#210](https://github.com/theurian/theurian/issues/210);
+  [GHSA-w5cm-cqf9-vm7r](https://github.com/theurian/theurian/security/advisories/GHSA-w5cm-cqf9-vm7r)).
 
   **Old shape:** a set in which two *different* revisions named one `contentFile`
   applied. Measured: two hand-written migrations sharing one path, with a correct
@@ -978,8 +979,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   matching hash is out of scope for this control and left to the schema gate, the
   #30 read-back guards, and the corruption checks.
 
-  <!-- Advisory (GHSA) reference for T-19 to be filled at release, when the
-  advisory ships; embargoed until then. -->
+  Published as [GHSA-266v-fcj2-qggx](https://github.com/theurian/theurian/security/advisories/GHSA-266v-fcj2-qggx).
 
 - **`knowledge.search` gains one `fallbackReason`, `index-unbuilt`**, emitted when
   the published index was not built by this installation and the ranked path

@@ -4020,6 +4020,78 @@ a laundered build is now gated on source-index provenance (the sibling face
 above). Local filesystem write access is the T-1/T-4 boundary, assumed
 already-lost there.
 
+#### T-20 — A body file shared across two revisions is served past the status gate (Information disclosure, **Critical** — closed in 0.1.0.dev5)
+
+Class: **one physical body file recorded for two revisions, republishing a
+withheld body under an approved item.**
+
+A migration set whose two `upsertRevision` operations named one physical body
+file — the shape a copy-pasted operation block leaves when only the metadata is
+edited — recorded that body for *both* revisions. With an `approved` / `public`
+item and a `rejected` / `restricted` item sharing the one file, the approved
+item's published index carried the withheld item's bytes: a caller requesting
+the *approved* id was served the rejected body — its title, source anchors and
+any secret that caused the rejection — through `knowledge.search` and
+`knowledge.get`. Requesting the withheld id directly was still correctly refused;
+the sharing bypassed the enforced status gate (`SURFACEABLE_STATUSES`, the axis
+Milestone 6 enforces — sensitivity is deferred to
+[#119](https://github.com/theurian/theurian/issues/119), so status is the
+load-bearing control on this path), and `theurian migrate validate` /
+`migrate apply` reported nothing. Reproducible in the shipped default
+configuration through the documented migration API, so **Critical**. Affected
+0.1.0.dev0–0.1.0.dev4, fixed in 0.1.0.dev5 (GHSA-w5cm-cqf9-vm7r,
+[#210](https://github.com/theurian/theurian/issues/210)).
+
+The root cause was body content adopted per revision with no uniqueness
+constraint on the file behind it: where no `contentSha256` was declared the
+loader hashed whatever the file held and adopted it as that revision's own
+content, so two revisions naming one file each recorded it — self-consistently,
+under their own title, author and status. Nothing downstream could then tell
+that the approved record's body had been authored for a withheld item.
+
+**Control: the whole set is refused when two revisions reach one body, keyed on
+filesystem identity.** `migrate validate` and `migrate apply` refuse a set in
+which two revisions resolve to the same body with `DuplicateContentFileError` at
+exit 4, naming both revisions, both authored paths and the resolved body;
+`apply` refuses before it creates a database file, so a refused set costs no
+state. The comparison key is the body's filesystem identity (`st_dev`/`st_ino`),
+not the path string, so no spelling of the path evades it — a `./` segment, the
+case-variant and NFC/NFD forms a case-insensitive filesystem (APFS, NTFS)
+collapses onto one inode, a symlink, and a second hardlinked name all collide.
+Casefolding the string would go wrong the other way, refusing two genuinely
+different files on a case-sensitive filesystem, so identity is the
+platform-correct key. The refusal is unconditional of pinning: even two
+revisions that pin the same `contentSha256` are refused, because one file cannot
+be independently frozen or attributed to two revisions — the hazard is the
+sharing, not the missing pin. Re-declaring one revision against its own body —
+how an in-place status change such as `reject` is written (ADR-0024 decision 5),
+where the revision id does not move — still passes, because the key separating a
+re-declaration from a collision is the revision id. `migrate status` does not
+refuse (its contract is observation) but names every body-sharing migration
+under `refusedIds`.
+
+**Residual after the control: nil for the shipped default.** The vector is a
+migration set the fixed build refuses to apply, so no state database or
+published index can be built that shares a body across revisions. A set that
+applied on 0.1.0.dev4 or earlier is caught on the next `migrate apply`; the
+remedy — give the later revision its own body file, then, if the offending
+migration was already applied, edit it and rebuild `.theurian/state/` past
+FR-K5's checksum guard — travels in the refusal. The break this introduces for
+sets that previously applied is recorded, named as breaking, in the
+`0.1.0.dev5` CHANGELOG.
+
+**Same withheld-content-reaches-caller family as T-18 and T-19.** All three land
+a withheld body under an approved item; they differ in what carries it there.
+T-18 shares a **revision id** — a pointer at another item's revision — so a
+direct request for the withheld id is still refused while the approved item
+serves its body (GHSA-7997-g35f-q59h). T-20 shares a **body file** — content
+recorded for two revisions, with that same direct-request asymmetry
+(GHSA-w5cm-cqf9-vm7r). T-19 instead ships a **doctored derived state** that never
+went through a local build, so the gate runs over tampered input rather than
+being bypassed (GHSA-266v-fcj2-qggx). Each has its own root cause, so its own
+entry and its own control; the closure argument common to the three is that a
+withheld and an approved item must not be able to resolve to the same bytes.
+
 ### TB-4: the filesystem and setup
 
 #### T-14 — Setup overwrites a user's configuration (Tampering, Medium)
@@ -4138,7 +4210,8 @@ fix.
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
-| T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (ADR-0004, SEC-7) |
+| T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
+| T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
 
 ## Explicitly out of scope
 
