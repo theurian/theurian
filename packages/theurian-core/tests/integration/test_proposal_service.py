@@ -223,13 +223,15 @@ def test_generation_modifies_no_file_outside_the_proposal_directory(
 def test_a_generated_revision_is_status_approved_and_carries_no_trust_level(
     service: ProposalService,
 ) -> None:
-    """m07/b24: ``status: approved`` is fixed, and ``trustLevel`` is never smuggled in.
+    """m07/b24: ``status: approved`` is fixed, and ``trustLevel`` is never invented.
 
     ``status: approved`` is right even though nobody has approved it: the file
     applies only after a human has merged it, and ``draft`` would keep the
     knowledge out of the default index. ``trustLevel: reviewed`` on an agent's
     draft, by contrast, would claim a review that has not happened -- so the
-    generator omits ``trustLevel`` entirely and leaves it to a reviewer.
+    generator writes ``trustLevel`` only when the caller states one (#249's
+    ``--trust-level``); ``_request`` here states none, so it stays out of the
+    file and the loader's ``unverified`` default applies.
     """
     metadata = _upsert(service.draft(_request()).migration_file)["metadata"]
     assert isinstance(metadata, dict)

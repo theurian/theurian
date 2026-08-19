@@ -46,7 +46,7 @@ from typing import Final
 import yaml
 
 from theurian.application.project_service import ProjectPaths
-from theurian.domain.enums import KnowledgeKind, KnowledgeStatus
+from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
 from theurian.domain.errors import PathEscapeError, TheurianError
 from theurian.domain.identifiers import ItemId, MigrationId, ProposalId, RevisionId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
@@ -131,6 +131,13 @@ class ProposalRequest:
     evidence: Evidence
     source_anchors: tuple[SourceAnchor, ...] = ()
     labels: tuple[str, ...] = ()
+    scope_paths: tuple[str, ...] = ()
+    #: Absent means "not stated": the field is left out of the migration and the
+    #: loader applies the schema default. A value is never invented here, because
+    #: `unverified`/`internal` written into every draft would assert a judgement
+    #: the caller did not make (#249).
+    trust_level: TrustLevel | None = None
+    sensitivity: Sensitivity | None = None
     namespace: str | None = None
     expected_revision: RevisionId | None = None
 
@@ -840,9 +847,12 @@ def _migration_document(  # noqa: PLR0913 -- the fields a migration has; all key
     ``status: approved`` is right even though nobody has approved it yet: the
     file applies only once a human has merged it, and ``draft`` would land
     knowledge that ``theurian index build`` leaves out. ``trustLevel`` and
-    ``sensitivity`` are deliberately absent -- claiming ``reviewed`` on
-    something an agent drafted asserts a review that has not happened, and a
-    reviewer can add either.
+    ``sensitivity`` are written only when the caller set them (``--trust-level``,
+    ``--sensitivity``): left unset they are absent from the file and the loader
+    applies its defaults, ``unverified`` and ``internal``. Stamping those
+    defaults in unasked-for would assert a judgement the caller never made, so
+    the omission is surfaced in the CLI's next steps instead of written here
+    (#249).
     """
     metadata: dict[str, object] = {
         "title": request.title,
@@ -852,8 +862,14 @@ def _migration_document(  # noqa: PLR0913 -- the fields a migration has; all key
         "status": KnowledgeStatus.APPROVED.value,
         "owner": request.owner,
     }
+    if request.trust_level is not None:
+        metadata["trustLevel"] = request.trust_level.value
+    if request.sensitivity is not None:
+        metadata["sensitivity"] = request.sensitivity.value
     if request.labels:
         metadata["labels"] = list(request.labels)
+    if request.scope_paths:
+        metadata["scope"] = {"paths": list(request.scope_paths)}
     if request.source_anchors:
         metadata["sourceAnchors"] = [_anchor_document(a) for a in request.source_anchors]
 
