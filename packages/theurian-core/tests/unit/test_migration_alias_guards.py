@@ -103,8 +103,9 @@ def _deprecate_then_reject() -> tuple[Migration, Migration]:
     ``WITHHELD`` as ``rejected`` and aliases ``WITHHELD -> PUBLISHED``. Applied in
     order ``M_dep -> M_rej``, ``WITHHELD``'s final status is ``rejected`` -- a live,
     non-deprecated item that an alias key also names, which is the collision. Seen
-    in the raw tuple order ``(M_rej, M_dep)`` the ``deprecateItem`` lands last and
-    the exemption misfires: that is the ordering fault this drives out.
+    in the raw tuple order ``(M_rej, M_dep)`` the ``deprecateItem`` lands last, and
+    a guard that trusted that order would misfire the exemption -- the ordering
+    fault this test drives out.
     """
     dep = _migration(
         MIG_DEP,
@@ -163,8 +164,9 @@ def test_a_collision_is_refused_regardless_of_raw_migration_set_iteration_order(
     guard that resolved the final status in application order can report
     ``rejected`` here rather than ``deprecated``.
 
-    RED on HEAD: the guard iterates the raw order, sees ``deprecated`` last, and
-    does not raise. GREEN once the guard normalises to application order.
+    GREEN on HEAD: the guard normalises to application order, so ``WITHHELD``
+    resolves to ``rejected`` and the collision is refused. A guard that trusted the
+    raw iteration order would see ``deprecated`` last and wrongly exempt it.
     """
     dep, rej = _deprecate_then_reject()
     misordered = MigrationSet((rej, dep))
