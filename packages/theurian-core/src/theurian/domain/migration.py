@@ -122,6 +122,40 @@ class UpsertRevision(Operation):
     metadata: RevisionMetadataSpec
     expected_revision: RevisionId | None = None
     content_sha256: ContentHash | None = None
+    #: ``content_file_path`` as the loader resolved it -- project-relative, with
+    #: ``..`` collapsed and symlinks followed. Kept for display only: it names a
+    #: body a reader can ``shasum`` and identifies the file in a refusal message.
+    #: It is **not** the key two operations are compared on -- see
+    #: ``content_identity`` for why the path string cannot be that key. ``None``
+    #: for an operation built in memory, which has no tree to resolve against.
+    resolved_content_path: str | None = None
+    #: The resolved body's filesystem identity, ``(st_dev, st_ino)``, taken by the
+    #: loader from the same ``stat`` that confirmed the file readable. This is the
+    #: key on which two operations are judged to reference the *same* body (issue
+    #: #210): a path *string* is not, because a case-insensitive filesystem (APFS,
+    #: NTFS) reaches one physical file through many spellings -- ``note.md`` and
+    #: ``NOTE.md``, an uppercase extension, a case-variant directory, an NFC/NFD
+    #: pair -- each of which ``resolve()`` leaves distinct while ``stat`` returns
+    #: one inode. Casefolding the string instead would be wrong the other way: it
+    #: would false-refuse two genuinely different files on a case-sensitive Linux
+    #: filesystem. ``None`` for an in-memory operation, which has no file on disk;
+    #: such an operation cannot participate in the identity comparison, and the
+    #: loader -- the only path a gate ever sees -- always sets it.
+    content_identity: tuple[int, int] | None = None
+    #: Whether the migration *declared* ``contentSha256``, as distinct from
+    #: whether ``content_sha256`` holds one. The loader fills that field either
+    #: way -- with the declared pin, or with the body's hash as it reads it now
+    #: -- so by the time an operation exists the two cases are indistinguishable
+    #: without this flag. Only the declared case freezes the body: an
+    #: out-of-band edit is a mismatch there and is silently adopted here (issue
+    #: #210).
+    content_pinned: bool = False
+
+    def __post_init__(self) -> None:
+        if self.content_pinned and self.content_sha256 is None:
+            raise MigrationError(
+                f"{self.revision_id} claims to pin its body but carries no content hash"
+            )
 
     @override
     @property

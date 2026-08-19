@@ -21,6 +21,11 @@ from theurian.application.ingestion_service import (
     IngestionService,
     manifest_from,
 )
+from theurian.application.migration_body_guards import (
+    duplicate_content_file_violations,
+    refuse_duplicate_content_files,
+    unpinned_revisions,
+)
 from theurian.application.migration_engine import (
     MigrationEngine,
     WithdrawalCandidate,
@@ -54,6 +59,7 @@ from theurian.cli.context import (
     resolve_context,
 )
 from theurian.domain.errors import (
+    DuplicateContentFileError,
     MigrationChecksumMismatchError,
     MigrationCycleError,
     MigrationError,
@@ -67,7 +73,7 @@ from theurian.domain.extras import (
     provided_by_daemon_extra,
 )
 from theurian.domain.identifiers import MigrationId, ProjectId
-from theurian.domain.migration import MIGRATION_ENGINE_VERSION
+from theurian.domain.migration import MIGRATION_ENGINE_VERSION, MigrationSet
 from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
 from theurian.domain.state import ActiveState
@@ -172,6 +178,26 @@ UNENFORCEABLE_SCOPE_REMEDY_APPLIED: Final = (
 )
 
 
+#: Cure for `DuplicateContentFileError` (issue #210). One string rather than
+#: the applied/unapplied pair `UnenforceableScopeError` needs: the fix here is
+#: an edit to the *later* migration, and a later migration that has already
+#: been applied is only reachable from a build older than this refusal, so the
+#: rebuild procedure is named as the second half of one remedy instead of being
+#: selected by a store read. Naming it is not optional -- editing an applied
+#: migration trips FR-K5's checksum guard, whose own remedy says to restore the
+#: file, and a remedy that stopped at "edit it" would loop the reader between
+#: the two the way issue #63's HIGH-1 did.
+DUPLICATE_CONTENT_FILE_REMEDY: Final = (
+    "Give the later revision a body file of its own: copy the body to a new path under "
+    "`.theurian/knowledge/` and point that migration's contentFile at it, then retry. "
+    "Pin both bodies with contentSha256 while you are there, so a later edit to either is "
+    "refused rather than silently adopted. If that migration was already applied, editing "
+    "it also trips the applied-migration checksum guard -- delete `.theurian/state/` after "
+    "the edit and run `theurian migrate apply`, which rebuilds canonical state from the "
+    "corrected migrations (FR-K4)."
+)
+
+
 #: Every canonical-state database this project has ever built. Excludes
 #: `theurian-index-*.sqlite`, which lives in the same directory
 #: (`ProjectPaths.state`) but is a different schema entirely.
@@ -239,6 +265,92 @@ def _unenforceable_scope_remedy(
     if exc.migration_id in _applied_migration_ids(paths, project_id):
         return UNENFORCEABLE_SCOPE_REMEDY_APPLIED
     return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
+
+
+def _unpinned_warnings(migration_set: MigrationSet) -> list[str]:
+    """`migrate validate`'s ``unpinnedRevisions`` field (issue #210).
+
+    One line per revision whose body nothing freezes: the migration, the
+    revision, the body's project-relative path -- the one a reader can ``shasum``
+    from the repository root, *not* the authored ``contentFile``, which is
+    relative to the migration file and so shasums to nothing from the root -- and
+    the two-step remedy. Strings rather than objects because ``_render`` prints a
+    list of objects as Python reprs, and this field has to be readable in the
+    default output as well as parseable in ``--json`` -- the two channels render
+    one payload.
+
+    The remedy carries the applied-case escape, the same shape
+    :data:`DUPLICATE_CONTENT_FILE_REMEDY` and the scope remedies carry: pinning
+    an *already-applied* migration by editing it in place trips FR-K5's checksum
+    guard, whose own remedy says to restore the file -- so the warning must not
+    stop at "add the pin", which loops a reader between two errors the way issue
+    #63's HIGH-1 did. `validate` holds no store here, so the line states both
+    cases rather than choosing between them.
+
+    A warning, so it is emitted alongside ``valid: true`` and never changes the
+    exit code. Always present, empty list included: a field that only sometimes
+    exists is one every caller eventually forgets to check for.
+    """
+    warnings: list[str] = []
+    for unpinned in unpinned_revisions(migration_set):
+        # `is None` rather than `or`: an empty resolved path, were one ever
+        # recorded, is a resolution -- not the "no resolution" an authored path
+        # falls back for. Behaviour is unchanged today (the loader never records
+        # an empty resolved path), and this keeps the display fall-back reading
+        # the way the identity fields it names are guarded (issue #210).
+        body = (
+            unpinned.content_file
+            if unpinned.resolved_content_path is None
+            else unpinned.resolved_content_path
+        )
+        warnings.append(
+            f"{unpinned.migration_id}: {unpinned.revision_id} declares no contentSha256 for "
+            f"{body}, so an edit to that body is adopted, not refused. Pin it with the digest "
+            f"from `shasum -a 256 {body}`; if this migration is already applied, editing it "
+            f"trips the applied-migration checksum guard, so delete `.theurian/state/` and run "
+            f"`theurian migrate apply` to rebuild from the corrected migrations (FR-K4)."
+        )
+    return warnings
+
+
+def _refuse_a_body_file_backing_two_revisions(
+    migration_set: MigrationSet, *, as_json: bool
+) -> None:
+    """Report issue #210's whole-set refusal, identically at both call sites.
+
+    One function rather than a `try`/`except` in each command, so `migrate
+    validate` and `migrate apply` cannot drift apart on a statically decidable
+    rule the way issue #36's class describes -- and so `apply` keeps its own
+    return-statement budget while refusing before `create_database` runs.
+    """
+    try:
+        refuse_duplicate_content_files(migration_set)
+    except DuplicateContentFileError as exc:
+        _fail(
+            str(exc),
+            remedy=DUPLICATE_CONTENT_FILE_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+
+
+def _refused_migration_ids(migration_set: MigrationSet) -> list[str]:
+    """Every migration id `migrate validate`/`apply` would refuse, for `status`.
+
+    Both gating rules feed `refusedIds`: the tenant/ACL scope rule (issue #63)
+    and the one-body-one-revision rule (issue #210). Each has a non-throwing
+    enumerator split from its throwing refusal precisely so `status` can report
+    without gating -- reporting only the scope rule, as this did, told a reader
+    `refusedIds: []` for a set `validate`/`apply` exit 4 on. Deduplicated in
+    first-seen order (a migration can carry both faults), so the field is stable.
+    """
+    seen: dict[str, None] = {}
+    for migration_id in (
+        *unenforceable_scope_violations(migration_set),
+        *duplicate_content_file_violations(migration_set),
+    ):
+        seen.setdefault(str(migration_id), None)
+    return list(seen)
 
 
 def _state_remedy(exc: TheurianError) -> str:
@@ -898,14 +1010,15 @@ def migrate_status(as_json: JsonOption = False) -> None:
     """Report applied and pending migrations.
 
     Unlike `migrate validate` and `migrate apply`, this command never refuses
-    (issue #63's MEDIUM-3): its contract is observation, so a set containing a
-    revision naming a tenant or ACL group nothing can yet enforce is still
-    reported in full, with `refusedIds` naming which migrations `validate`/
-    `apply` will refuse -- the statically decidable property this issue is
-    about stays visible here too, on the one consumer that keeps going.
+    (issue #63's MEDIUM-3): its contract is observation, so a set `validate`/
+    `apply` would refuse is still reported in full, with `refusedIds` naming the
+    migrations they refuse. Both statically decidable rules feed it -- a revision
+    naming a tenant or ACL group nothing can enforce (issue #63), and two
+    revisions backing one body file (issue #210) -- so neither property goes
+    invisible on the one consumer that keeps going.
     """
     context, database = _require_project(as_json)
-    refused_ids = [str(m) for m in unenforceable_scope_violations(context.loaded.migration_set)]
+    refused_ids = _refused_migration_ids(context.loaded.migration_set)
 
     if not database.exists():
         _emit(
@@ -979,6 +1092,11 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     source-anchor requirement is one, and the shipped
     `examples/sample-project/` demonstrates it validating a document `migrate
     apply` then rejects (issue #36).
+
+    Publishes one thing `apply` does not: ``unpinnedRevisions``, a warning that
+    leaves the exit code alone (issue #210). It belongs here rather than on
+    `apply` because it is advice about how the migration is *written*, and the
+    command whose contract is "read this before you commit it" is this one.
     """
     context, _ = _require_project(as_json)
 
@@ -993,6 +1111,8 @@ def migrate_validate(as_json: JsonOption = False) -> None:
         )
         return
 
+    _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
+
     _emit(
         {
             "valid": True,
@@ -1000,6 +1120,7 @@ def migrate_validate(as_json: JsonOption = False) -> None:
             "contentFileCount": len(context.loaded.content_checksums),
             "stateHash": str(context.state_hash),
             "applicationOrder": [str(m.migration_id) for m in context.loaded.migration_set],
+            "unpinnedRevisions": _unpinned_warnings(context.loaded.migration_set),
         },
         as_json=as_json,
     )
@@ -1028,6 +1149,12 @@ def migrate_apply(as_json: JsonOption = False) -> None:
             code=EXIT_STATE_ERROR,
         )
         return
+
+    # `MigrationEngine.apply` refuses this too, but only once a write
+    # transaction is open and `create_database` has already run. Refusing here
+    # as well is what keeps issue #63's property -- a refused apply leaves no
+    # database file behind -- true for this rule too (issue #210).
+    _refuse_a_body_file_backing_two_revisions(context.loaded.migration_set, as_json=as_json)
 
     # This installation's record of the state it built, out of the repository
     # tree (ADR-0004, SEC-7). Used twice below: to refuse to *apply into* a

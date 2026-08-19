@@ -8,12 +8,14 @@ able to assert on the exact JSON a caller receives.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -819,7 +821,13 @@ def test_editing_an_applied_migration_is_fatal(project: Path) -> None:
 
 
 def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
-    """ADR-0006. The remedy must say a human decides, not the tool."""
+    """ADR-0006. The remedy must say a human decides, not the tool.
+
+    The conflicting migration carries a body file of its own. Pointing it at the
+    first migration's body -- which it did, incidentally, before the issue #210
+    refusal existed -- now reports that ambiguity instead, and this test would
+    then assert ADR-0006's message against a set that never reaches the store.
+    """
     _invoke("init")
     _write_migration(project)
     _invoke("migrate", "apply")
@@ -827,6 +835,9 @@ def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
     # No I, L, O, or U: those are excluded from Crockford base32.
     stale = "01K1STAAAA01234567890ABCDE"
     second = "01K1BBBBBB01234567890ABCDE"
+    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(
+        "# Authentication policy\n\nEvery call carries a signed token, checked twice.\n"
+    )
     (project / f".theurian/migrations/{second}-conflict.yaml").write_text(
         f"""apiVersion: theurian.dev/v1
 id: {second}
@@ -837,7 +848,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: 01K1BBBREV01234567890ABCDE
     expectedRevision: {stale}
-    contentFile: ../knowledge/architecture/auth-policy.md
+    contentFile: ../knowledge/architecture/auth-policy.revised.md
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -1681,6 +1692,521 @@ def test_a_foreign_tenant_recorded_in_a_non_first_sorted_database_is_still_found
     assert ".theurian/state" in error["remedy"]
     assert "FR-K4" in error["remedy"]
     assert "then retry" not in error["remedy"]
+
+
+# -- issue #210: two migrations referencing one body file ------------------
+
+_SECOND_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
+_SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
+
+#: The path the first migration already names. Written as its own constant so
+#: the spelling test below can vary it without varying anything else.
+_SHARED_CONTENT_FILE = "../knowledge/architecture/auth-policy.md"
+
+
+def _second_migration(content_file: str = _SHARED_CONTENT_FILE) -> str:
+    """A well-formed update to the item the first migration created.
+
+    Everything about it is correct except that its ``contentFile`` is the body
+    the first migration already references: the ``expectedRevision`` chain is
+    right, the ids are unique, and no ``contentSha256`` is declared -- the
+    unpinned, hand-authored shape issue #210 measured applying cleanly and
+    recording the *second* body under the *first* revision's title and author.
+    """
+    return f"""apiVersion: theurian.dev/v1
+id: {_SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {_SECOND_REVISION_ID}
+    expectedRevision: {REVISION_ID}
+    contentFile: {content_file}
+    metadata:
+      title: Authentication policy, revised
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def _write_second_migration(root: Path, content_file: str = _SHARED_CONTENT_FILE) -> None:
+    (root / f".theurian/migrations/{_SECOND_MIGRATION_ID}-revise.yaml").write_text(
+        _second_migration(content_file)
+    )
+
+
+def test_validate_and_apply_refuse_two_migrations_sharing_one_body_file(project: Path) -> None:
+    """Issue #210, face 1. Both commands exited 0 and the store recorded the
+    second body under the first revision's title and author, self-consistently:
+    the loader adopts the file's current hash where no ``contentSha256`` is
+    declared, so nothing afterwards can tell the substitution happened.
+
+    Pinned at both commands, not one: the refusal has two call sites (issue
+    #36's class -- a property visible to one command and not the other), and a
+    test that asked only `validate` would stay green with `apply`'s call
+    deleted.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_second_migration(project)
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["error"] == apply_error["error"]
+    assert MIGRATION_ID in validate_error["error"], "the migration that names the body first"
+    assert _SECOND_MIGRATION_ID in validate_error["error"], "and the one that names it again"
+    assert "auth-policy.md" in validate_error["error"], "and the path they share"
+    assert validate_error["remedy"] != "Fix the migration set, then retry."
+    assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
+        "a refused apply must cost no state file, as issue #63's refusal already does"
+    )
+
+
+def test_two_spellings_of_one_body_file_are_still_refused(project: Path) -> None:
+    """The comparison is over the resolved path, not the authored string.
+
+    ``../knowledge/architecture/./auth-policy.md`` is the same file as
+    ``../knowledge/architecture/auth-policy.md``; a string-keyed guard reports
+    two distinct references and lets the set through. The loader already
+    resolves this path -- against the migrations directory, symlinks followed
+    -- to read the body at all, so the resolved form is what the refusal
+    compares.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_second_migration(project, content_file="../knowledge/architecture/./auth-policy.md")
+
+    code, error = _invoke("migrate", "validate")
+
+    assert code == EXIT_STATE_ERROR
+    assert _SECOND_MIGRATION_ID in error["error"]
+
+
+def test_two_migrations_naming_two_body_files_are_not_refused(project: Path) -> None:
+    """The negative control. Refusing every second migration would pass the
+    two tests above while breaking the ordinary case they exist to protect."""
+    _invoke("init")
+    _write_migration(project)
+    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(
+        "# Authentication policy, revised\n\nEvery call carries a signed token.\n"
+    )
+    _write_second_migration(
+        project, content_file="../knowledge/architecture/auth-policy.revised.md"
+    )
+
+    validate_code, validated = _invoke("migrate", "validate")
+    apply_code, applied = _invoke("migrate", "apply")
+
+    assert validate_code == 0
+    assert validated["valid"] is True
+    assert apply_code == 0
+    assert applied["applied"] == [MIGRATION_ID, _SECOND_MIGRATION_ID]
+
+
+def test_status_reports_a_body_sharing_migration_without_gating(project: Path) -> None:
+    """Issue #210 on `migrate status`: observation, not a gate.
+
+    The body-sharing migration is named under `refusedIds` -- exactly as the
+    tenant/ACL rule already is -- while the command keeps exit 0. Before this,
+    `status` reported `refusedIds: []` for a set `validate`/`apply` exit 4 on,
+    so the property the gating commands refuse went invisible on the one command
+    whose contract is to keep reporting.
+    """
+    _invoke("init")
+    _write_migration(project)
+    _write_second_migration(project)
+
+    code, status = _invoke("migrate", "status")
+
+    assert code == 0, "status observes, it does not gate"
+    assert _SECOND_MIGRATION_ID in status["refusedIds"], "the later migration validate/apply refuse"
+    assert _SECOND_MIGRATION_ID in status["pendingIds"], "and it is still reported as pending"
+
+
+#: An in-place status change (ADR-0024 decision 5): the item's *current* revision
+#: id, re-declared against its own body, changing only ``status``. The revision
+#: id does not move and the body is the same file, so the two operations share an
+#: identity but name one revision -- a legitimate no-op re-declaration (FR-K8),
+#: not one file backing two revisions. No ``expectedRevision``: it does not
+#: advance the item's revision, it restates it.
+_INPLACE_STATUS_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: {REVISION_ID}
+    contentFile: {_SHARED_CONTENT_FILE}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+
+
+def test_an_in_place_status_change_is_not_reported_as_body_sharing(project: Path) -> None:
+    """The shape the body-sharing refusal must let through, end to end (#210).
+
+    The second migration re-declares the first revision's own body to change its
+    status: same body file, same revision id. The identity collides but the
+    revision id does not, so this is a re-declaration, not a collision. `status`
+    must keep exit 0 and *not* name it under `refusedIds` -- the enumerator's
+    revision-id guard, untested until now -- and `validate` must not refuse it,
+    the throwing form's guard at the CLI edge.
+    """
+    _invoke("init")
+    _write_migration(project)
+    (project / f".theurian/migrations/{_SECOND_MIGRATION_ID}-reject.yaml").write_text(
+        _INPLACE_STATUS_MIGRATION
+    )
+
+    status_code, status = _invoke("migrate", "status")
+    validate_code, validated = _invoke("migrate", "validate")
+
+    assert status_code == 0, "status observes, it does not gate"
+    assert _SECOND_MIGRATION_ID not in status["refusedIds"], (
+        "re-declaring a revision's own body is a no-op, not one file backing two revisions"
+    )
+    assert validate_code == 0, "and the gating command must not refuse the re-declaration either"
+    assert validated["valid"] is True
+
+
+# -- issue #210: the re-key -- identity, not the path string ----------------
+#
+# The refusal above keys on filesystem identity (`st_dev`/`st_ino`), not on the
+# resolved path string. A case-insensitive filesystem (APFS, NTFS) reaches one
+# physical file through many spellings, so a string key let a second revision
+# slip a case-variant spelling past the refusal and cross-record a withheld body
+# through an approved item's index. These prove the identity key against the real
+# loader; the pure-comparison faces are in `test_migration_engine.py`.
+
+_KNOWLEDGE_DIR = ".theurian/knowledge/architecture"
+
+
+def _temp_dir_is_case_insensitive(root: Path) -> bool:
+    """Whether *this* checkout's filesystem collapses case, decided at runtime.
+
+    APFS and NTFS do; a case-sensitive Linux volume does not, and there the
+    case-variant collapse cannot occur, so the tests that depend on it skip
+    rather than false-fail.
+    """
+    probe = root / _KNOWLEDGE_DIR / "_case_probe.md"
+    probe.write_text("x")
+    try:
+        return (probe.parent / "_CASE_PROBE.MD").exists()
+    finally:
+        probe.unlink()
+
+
+def _temp_dir_collapses_nfc_nfd(root: Path) -> bool:
+    """Whether an NFC name and its NFD spelling reach one inode here (APFS does)."""
+    name = "café_probe.md"
+    nfc = root / _KNOWLEDGE_DIR / unicodedata.normalize("NFC", name)
+    nfc.write_text("x")
+    try:
+        nfd = root / _KNOWLEDGE_DIR / unicodedata.normalize("NFD", name)
+        return nfd.exists() and nfc.stat().st_ino == nfd.stat().st_ino
+    finally:
+        nfc.unlink()
+
+
+def test_a_hardlinked_second_name_for_one_body_is_refused(project: Path) -> None:
+    """Issue #210's re-key, the cross-platform proof: two distinct paths, one
+    inode. A path-string key sees two references and lets the set cross; the
+    identity key sees one file and refuses. A hardlink needs no case-insensitive
+    filesystem, so this is the non-negotiable driving test -- it runs everywhere.
+    """
+    _invoke("init")
+    _write_migration(project)
+    original = project / _KNOWLEDGE_DIR / "auth-policy.md"
+    os.link(original, project / _KNOWLEDGE_DIR / "auth-policy-hardlink.md")
+    _write_second_migration(
+        project, content_file="../knowledge/architecture/auth-policy-hardlink.md"
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, _ = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert _SECOND_MIGRATION_ID in validate_error["error"], "the migration that shares the inode"
+    assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
+        "a refused apply must cost no state file"
+    )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "../knowledge/architecture/auth-policy.MD",
+        "../knowledge/Architecture/auth-policy.md",
+        "../KNOWLEDGE/ARCHITECTURE/AUTH-POLICY.MD",
+    ],
+)
+def test_a_case_variant_spelling_of_one_body_cannot_bypass_the_refusal(
+    project: Path, spelling: str
+) -> None:
+    """The bypass the re-key closes. Each spelling reaches the very file the
+    first migration already names -- an uppercase extension, a case-variant
+    directory, all-uppercase -- and each `resolve()`s to a *distinct* string.
+    A string-keyed guard crossed all three (measured); the identity key refuses
+    all three, because one inode backs both revisions."""
+    _invoke("init")
+    _write_migration(project)
+    if not _temp_dir_is_case_insensitive(project):
+        pytest.skip("this filesystem is case-sensitive; the case-variant collapse cannot occur")
+    _write_second_migration(project, content_file=spelling)
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, _ = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR, f"{spelling} crossed validate"
+    assert apply_code == EXIT_STATE_ERROR, f"{spelling} crossed apply"
+    assert _SECOND_MIGRATION_ID in validate_error["error"]
+    assert list((project / ".theurian/state").glob("*.sqlite")) == []
+
+
+def test_an_nfc_nfd_spelling_of_one_body_cannot_bypass_the_refusal(project: Path) -> None:
+    """The Unicode face of the same collapse. The body is named once; the two
+    migrations reach it through an NFC spelling and its NFD equivalent, which
+    APFS resolves to one inode and Python leaves as distinct strings."""
+    _invoke("init")
+    if not _temp_dir_collapses_nfc_nfd(project):
+        pytest.skip("this filesystem keeps NFC and NFD distinct")
+
+    name = "café-policy.md"
+    body_path = project / _KNOWLEDGE_DIR / unicodedata.normalize("NFC", name)
+    body_path.write_text(BODY)
+    first = MIGRATION.replace(
+        "contentFile: ../knowledge/architecture/auth-policy.md",
+        f"contentFile: ../knowledge/architecture/{unicodedata.normalize('NFC', name)}",
+    )
+    (project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(first)
+    _write_second_migration(
+        project, content_file=f"../knowledge/architecture/{unicodedata.normalize('NFD', name)}"
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, _ = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert _SECOND_MIGRATION_ID in validate_error["error"]
+
+
+# The disclosure the re-key closes: a status-gate-boundary crossing. An approved,
+# public item and a rejected, restricted item share one body file through a
+# case-variant spelling. The status gate withholds the rejected item directly,
+# but the shared body would be served through the *approved* item's published
+# index -- unless the set is refused before it is ever applied.
+_DISCLOSURE_APPROVED_MIGRATION_ID = "01K1DAAAAA01234567890ABCDE"
+_DISCLOSURE_APPROVED_REVISION_ID = "01K1DAAREV01234567890ABCDE"
+_DISCLOSURE_REJECTED_MIGRATION_ID = "01K1DBBBBB01234567890ABCDE"
+_DISCLOSURE_REJECTED_REVISION_ID = "01K1DBBREV01234567890ABCDE"
+
+_DISCLOSURE_APPROVED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_DISCLOSURE_APPROVED_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.public-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.public-policy
+    revisionId: {_DISCLOSURE_APPROVED_REVISION_ID}
+    contentFile: ../knowledge/architecture/shared.md
+    metadata:
+      title: Public policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sensitivity: public
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/shared.md
+"""
+
+_DISCLOSURE_REJECTED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_DISCLOSURE_REJECTED_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.secret-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.secret-policy
+    revisionId: {_DISCLOSURE_REJECTED_REVISION_ID}
+    contentFile: ../knowledge/architecture/SHARED.MD
+    metadata:
+      title: Secret policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sensitivity: restricted
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/shared.md
+"""
+
+
+def test_a_rejected_restricted_body_cannot_reach_an_approved_index_via_a_case_variant(
+    project: Path,
+) -> None:
+    """The security proof for issue #210's re-key (disclosure regression).
+
+    An `approved`/`public` item and a `rejected`/`restricted` item name one body
+    file through two case-variant spellings. On the pre-fix, path-string-keyed
+    guard the set applies at exit 0, and the rejected body -- withheld from
+    direct retrieval by the status gate -- is served through the approved item's
+    published index. The re-key refuses the set at both `validate` and `apply`,
+    before any index can be built, closing the crossing at its source.
+    """
+    _invoke("init")
+    if not _temp_dir_is_case_insensitive(project):
+        pytest.skip("this filesystem is case-sensitive; the case-variant collapse cannot occur")
+
+    (project / _KNOWLEDGE_DIR / "shared.md").write_text(BODY)
+    (project / f".theurian/migrations/{_DISCLOSURE_APPROVED_MIGRATION_ID}-public.yaml").write_text(
+        _DISCLOSURE_APPROVED_MIGRATION
+    )
+    (project / f".theurian/migrations/{_DISCLOSURE_REJECTED_MIGRATION_ID}-secret.yaml").write_text(
+        _DISCLOSURE_REJECTED_MIGRATION
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR, "the rejected body must not reach an approved index"
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["error"] == apply_error["error"]
+    assert _DISCLOSURE_REJECTED_REVISION_ID in validate_error["error"]
+    assert _DISCLOSURE_APPROVED_REVISION_ID in validate_error["error"]
+    assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
+        "a refused apply must cost no state file -- the crossing is stopped before any build"
+    )
+
+
+# -- issue #210: an upsertRevision carrying no contentSha256 ---------------
+
+
+def _pinned_migration() -> str:
+    """The same migration, with the pin the schema calls optional."""
+    digest = hashlib.sha256(BODY.encode("utf-8")).hexdigest()
+    return MIGRATION.replace(
+        f"    contentFile: {_SHARED_CONTENT_FILE}\n",
+        f"    contentFile: {_SHARED_CONTENT_FILE}\n    contentSha256: {digest}\n",
+    )
+
+
+def test_validate_warns_about_a_revision_that_pins_no_body_digest(project: Path) -> None:
+    """``contentSha256`` is optional and nothing recommended it (issue #210).
+
+    A warning rather than a refusal: both shipped example migrations are
+    unpinned and 21 of the 22 test files naming ``upsertRevision`` never mention
+    the field, so requiring it is a schema decision with a measured cost, taken
+    in Milestone 7. What `validate` can do now is stop being silent -- an
+    unpinned body is the one whose out-of-band edit nothing detects.
+
+    Exit 0 is asserted first: a warning that refuses is a refusal.
+    """
+    _invoke("init")
+    _write_migration(project)
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0
+    assert validated["valid"] is True
+    warned = validated["unpinnedRevisions"]
+    assert len(warned) == 1
+    assert REVISION_ID in warned[0], "the revision whose body nothing pins"
+    assert MIGRATION_ID in warned[0], "the file the author has to edit"
+    assert "auth-policy.md" in warned[0], "and the body whose digest to take"
+
+
+def test_validate_says_nothing_about_a_revision_that_pins_its_body(project: Path) -> None:
+    """The negative control: a field that is always non-empty is not a warning."""
+    _invoke("init")
+    _write_migration(project, migration=_pinned_migration())
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0
+    assert validated["unpinnedRevisions"] == []
+
+
+def test_the_unpinned_warning_reaches_the_human_output_too(project: Path) -> None:
+    """`--json` is the plugin's channel; a person reading the default output
+    must see the same warning, or the two disagree about the same project."""
+    _invoke("init")
+    _write_migration(project)
+
+    result = runner.invoke(app, ["migrate", "validate"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "unpinnedRevisions" in result.stdout
+    assert REVISION_ID in result.stdout
+
+
+def test_the_unpinned_warning_names_a_shasummable_path_and_a_non_fatal_remedy(
+    project: Path,
+) -> None:
+    """Issue #210's remedy loop. The warning fires on already-applied migrations
+    too, and the naive cure -- add `contentSha256` to the migration -- is fatal
+    there: editing an applied migration trips FR-K5's checksum guard, whose own
+    remedy says to restore the file, looping the reader (issue #63's HIGH-1
+    shape). And the body path must be one the reader can actually `shasum` from
+    the repository root -- the authored `../knowledge/...` is relative to the
+    migration file and shasums to nothing there.
+    """
+    _invoke("init")
+    _write_migration(project)
+    apply_code, _ = _invoke("migrate", "apply")
+    assert apply_code == 0, "the migration is applied, so its warning must give the applied remedy"
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0, "an unpinned body is a warning, not a refusal, even once applied"
+    warning = validated["unpinnedRevisions"][0]
+    # The body path the reader shasums, resolved from the repository root -- not
+    # the authored path, which is relative to the migration file.
+    assert ".theurian/knowledge/architecture/auth-policy.md" in warning
+    assert "../knowledge/architecture/auth-policy.md" not in warning, (
+        "authored path is un-shasummable"
+    )
+    # A non-empty remedy that does not stop at the fatal "edit the applied migration".
+    assert "shasum" in warning, "the digest command the reader runs"
+    assert ".theurian/state/" in warning, "the applied-case escape, not just 'add the pin'"
 
 
 # ==========================================================================

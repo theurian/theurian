@@ -12,6 +12,11 @@ from datetime import UTC, datetime
 import pytest
 from fakes import FrozenClock, InMemoryWriter
 
+from theurian.application.migration_body_guards import (
+    duplicate_content_file_violations,
+    refuse_duplicate_content_files,
+    unpinned_revisions,
+)
 from theurian.application.migration_engine import (
     ApplyReport,
     MigrationEngine,
@@ -28,6 +33,7 @@ from theurian.domain.enums import (
     TrustLevel,
 )
 from theurian.domain.errors import (
+    DuplicateContentFileError,
     InvariantViolationError,
     MigrationChecksumMismatchError,
     MigrationCycleError,
@@ -1120,3 +1126,600 @@ def test_status_reports_every_refused_migration_without_raising() -> None:
 def test_status_reports_no_refused_ids_when_the_set_is_clean() -> None:
     migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
     assert unenforceable_scope_violations(migrations) == ()
+
+
+# -- Issue #210: one body file backs one revision --------------------------
+
+#: Two synthetic filesystem identities, ``(st_dev, st_ino)``. The loader takes
+#: these from a real ``stat``; here they stand in for "same file" and "a
+#: different file" so the comparison can be exercised without touching disk.
+#: Real-filesystem faces -- hardlinks, case-variant spellings, NFC/NFD -- are
+#: proved against the loader in ``test_cli_commands.py``.
+IDENTITY_A = (1, 1001)
+IDENTITY_B = (1, 1002)
+
+
+def _upsert(  # noqa: PLR0913 -- a test builder; every field models one axis of the identity check
+    revision_id: RevisionId,
+    body: str,
+    content_file_path: str,
+    *,
+    identity: tuple[int, int] | None = None,
+    resolved: str | None = None,
+    expected_revision: RevisionId | None = None,
+    content_pinned: bool = False,
+) -> UpsertRevision:
+    return UpsertRevision(
+        item_id=ITEM,
+        revision_id=revision_id,
+        content_file_path=content_file_path,
+        resolved_content_path=resolved,
+        content_identity=identity,
+        metadata=_metadata(),
+        expected_revision=expected_revision,
+        content_sha256=ContentHash.of_text(body),
+        content_pinned=content_pinned,
+    )
+
+
+def test_a_body_file_backing_two_revisions_is_refused() -> None:
+    """Issue #210, face 1, at the layer that decides it.
+
+    Nothing about either migration is wrong on its own: the ids are unique and
+    the ``expectedRevision`` chain is correct. What is wrong is that one file
+    has to be two versions at once, and the file cannot be -- so the earlier
+    revision records whatever the later author wrote there.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/a.md",
+                    identity=IDENTITY_A,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError) as exc:
+        refuse_duplicate_content_files(migrations)
+
+    message = str(exc.value)
+    assert MIG_1 in message, "the migration that referenced the body first"
+    assert MIG_2 in message, "and the one that referenced it again"
+    assert REV_1.value in message, "the first revision, so the reader knows which two"
+    assert REV_2.value in message, "and the second"
+    assert "../knowledge/a.md" in message, "and the path, or the reader has to go looking"
+
+
+def test_two_spellings_of_one_file_are_one_identity() -> None:
+    """The key is the file's identity, not the path string it was reached by.
+
+    A case-insensitive filesystem reaches one physical file through many
+    spellings; ``resolve()`` leaves them distinct strings while ``stat`` returns
+    one inode. Two *different* resolved paths that share an identity are one
+    file, and a guard keyed on the string reports two references and lets the
+    set cross -- the disclosure this re-key closes.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_1,
+                _upsert(
+                    REV_1, BODY_V1, "../knowledge/note.md", identity=IDENTITY_A, resolved="note.md"
+                ),
+            ),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/NOTE.MD",
+                    identity=IDENTITY_A,
+                    resolved="NOTE.MD",
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError):
+        refuse_duplicate_content_files(migrations)
+
+
+def test_two_files_whose_paths_differ_only_by_case_are_not_refused() -> None:
+    """The Linux-safety control: the key is identity, never a casefolded path.
+
+    Two *genuinely different* files (distinct inodes) whose paths differ only by
+    case coexist on a case-sensitive filesystem. Casefolding the path to close
+    the case-variant bypass would false-refuse this legitimate pair; keying on
+    ``(st_dev, st_ino)`` does not, because different files have different inodes
+    regardless of how their names compare.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_1,
+                _upsert(
+                    REV_1, BODY_V1, "../knowledge/note.md", identity=IDENTITY_A, resolved="note.md"
+                ),
+            ),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/NOTE.md",
+                    identity=IDENTITY_B,
+                    resolved="NOTE.md",
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    refuse_duplicate_content_files(migrations)
+
+
+def test_a_pinned_pair_sharing_one_file_is_still_refused() -> None:
+    """The refusal is unconditional of pinning (issue #210's pinned-pair face).
+
+    A pin freezes a body against out-of-band edits; it does not make one file
+    able to be two revisions. Two revisions pinning the *same* digest and
+    sharing one file still cannot each be independently frozen or attributed --
+    the hazard is the sharing, not the missing pin -- so the set is refused, and
+    the reason names why it holds even here.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_1,
+                _upsert(
+                    REV_1,
+                    BODY_V1,
+                    "../knowledge/a.md",
+                    identity=IDENTITY_A,
+                    content_pinned=True,
+                ),
+            ),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V1,
+                    "../knowledge/a.md",
+                    identity=IDENTITY_A,
+                    content_pinned=True,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError) as exc:
+        refuse_duplicate_content_files(migrations)
+
+    assert "contentSha256" in str(exc.value), "the reason must be true for a pinned pair too"
+
+
+def test_two_upserts_in_one_migration_sharing_a_file_name_both_revisions() -> None:
+    """The single-migration degeneration the old message got wrong (issue #210).
+
+    Two ``upsertRevision`` operations in *one* migration can share a file. The
+    old error printed that migration's id twice and named no revision, and said
+    "neither migration is wrong on its own" -- false, since one migration carries
+    both and is wrong alone. The message must name both revisions so the reader
+    can tell the two operations apart within the one file to edit.
+    """
+    migration = _migration(
+        MIG_1,
+        _upsert(REV_1, BODY_V1, "../knowledge/a.md", identity=IDENTITY_A),
+        _upsert(REV_2, BODY_V2, "../knowledge/a.md", identity=IDENTITY_A),
+    )
+
+    with pytest.raises(DuplicateContentFileError) as exc:
+        refuse_duplicate_content_files(MigrationSet.ordered((migration,)))
+
+    message = str(exc.value)
+    assert REV_1.value in message and REV_2.value in message, "both revisions, not one id twice"
+    assert "neither migration is wrong" not in message, "false when it is one migration"
+
+
+def test_the_refusal_names_both_authored_paths() -> None:
+    """Issue #210's message quality: the reader edits the *authored* path.
+
+    When the two spellings differ -- a case variant, a hardlinked second name --
+    naming only one leaves the reader guessing which contentFile to change. Both
+    authored paths appear; the resolved path is supplementary.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(
+                MIG_1,
+                _upsert(
+                    REV_1,
+                    BODY_V1,
+                    "../knowledge/note.md",
+                    identity=IDENTITY_A,
+                    resolved="knowledge/note.md",
+                ),
+            ),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/NOTE.MD",
+                    identity=IDENTITY_A,
+                    resolved="knowledge/note.md",
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError) as exc:
+        refuse_duplicate_content_files(migrations)
+
+    message = str(exc.value)
+    assert "../knowledge/note.md" in message, "the first revision's authored path"
+    assert "../knowledge/NOTE.MD" in message, "and the second's, which differs"
+
+
+def test_an_in_place_status_change_may_re_declare_its_own_body() -> None:
+    """The shape the refusal must not break (ADR-0024 decision 5).
+
+    A reject or draft in place re-declares the item's *current* revision,
+    changing only ``status``: the revision id does not move, and naming the same
+    body file is what keeps ``append_revision`` the no-op FR-K8 requires. Keying
+    the refusal on identity alone -- with the revision id ignored -- would refuse
+    this, taking the withdrawal purge's ``reject`` and ``inplace-draft`` faces
+    with it.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    content_identity=IDENTITY_A,
+                    metadata=_metadata(status=KnowledgeStatus.REJECTED),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+
+    refuse_duplicate_content_files(migrations)
+
+    report = _engine(BODY_V1).apply(InMemoryWriter(), PROJECT, migrations)
+    assert report.applied == [MigrationId(MIG_1), MigrationId(MIG_2)]
+
+
+def test_two_revisions_with_their_own_body_files_are_not_refused() -> None:
+    """The negative control. Refusing every second `upsertRevision` would pass
+    every assertion above while forbidding the ordinary way to revise an item."""
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/b.md",
+                    identity=IDENTITY_B,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    refuse_duplicate_content_files(migrations)
+
+    report = _engine(BODY_V1, BODY_V2).apply(InMemoryWriter(), PROJECT, migrations)
+    assert report.applied == [MigrationId(MIG_1), MigrationId(MIG_2)]
+
+
+def test_apply_refuses_a_shared_body_file_before_writing_anything() -> None:
+    """`apply` refuses on its own, not merely because a caller checked first.
+
+    Asserted on the store as well as on the exception: a refusal raised after
+    the first migration had been written would leave a half-applied set behind
+    on any writer without a transaction to roll back.
+    """
+    writer = InMemoryWriter()
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/a.md",
+                    identity=IDENTITY_A,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(DuplicateContentFileError):
+        _engine(BODY_V1, BODY_V2).apply(writer, PROJECT, migrations)
+
+    assert writer.revisions == {}
+    assert writer.history == []
+
+
+def test_an_in_memory_operation_without_an_identity_is_not_compared() -> None:
+    """An operation with no ``content_identity`` cannot participate (issue #210).
+
+    The loader always sets the identity from the ``stat`` that read the body, so
+    no gate ever sees ``None``; an operation built in memory has no file, and is
+    skipped rather than folded back onto the path string it happens to carry.
+    Two such operations naming one path do not collide -- otherwise the skip
+    would have quietly re-introduced the string key it replaced.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _migration(MIG_1, _upsert(REV_1, BODY_V1, "../knowledge/a.md")),
+            _migration(
+                MIG_2, _upsert(REV_2, BODY_V2, "../knowledge/a.md", expected_revision=REV_1)
+            ),
+        )
+    )
+
+    refuse_duplicate_content_files(migrations)
+
+
+def test_status_reports_the_migration_that_shares_a_body_without_raising() -> None:
+    """`migrate status` observes, never gates (issue #63's MEDIUM-3), so the
+    body-sharing property has to reach it without a raise -- the second, later
+    migration, matching the throwing form's culprit and the remedy."""
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/a.md",
+                    identity=IDENTITY_A,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    assert duplicate_content_file_violations(migrations) == (MigrationId(MIG_2),)
+
+
+def test_status_reports_no_body_sharing_for_a_set_of_distinct_files() -> None:
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/b.md",
+                    identity=IDENTITY_B,
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+
+    assert duplicate_content_file_violations(migrations) == ()
+
+
+def test_duplicate_content_file_error_is_a_migration_error() -> None:
+    """CLI error handling catches the broader family, so this must join it."""
+    assert issubclass(DuplicateContentFileError, MigrationError)
+
+
+# -- Issue #210: an upsertRevision that declares no contentSha256 ----------
+
+
+def test_a_revision_declaring_no_pin_is_reported() -> None:
+    """The warning's whole content: which migration, which revision, which body.
+
+    A reader with only the revision id still has to find the file to edit, and
+    a reader with only the migration id still has to find which body's digest
+    to take -- so all three are carried.
+    """
+    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
+
+    reported = unpinned_revisions(migrations)
+
+    assert len(reported) == 1
+    assert reported[0].migration_id == MigrationId(MIG_1)
+    assert reported[0].revision_id == REV_1
+    assert reported[0].content_file == "../knowledge/a.md"
+
+
+def test_an_unpinned_revision_carries_its_resolved_path_for_shasum() -> None:
+    """The warning shasums a body from the repository root, so the reporter must
+    carry the loader's resolved, project-relative path -- the authored
+    ``content_file`` is relative to the migration file and shasums to nothing
+    there. Kept beside the authored path, not in place of it, so a reader still
+    sees the string they typed."""
+    migration = _migration(
+        MIG_1, _upsert(REV_1, BODY_V1, "../knowledge/a.md", resolved="knowledge/a.md")
+    )
+
+    reported = unpinned_revisions(MigrationSet.ordered((migration,)))
+
+    assert reported[0].resolved_content_path == "knowledge/a.md"
+    assert reported[0].content_file == "../knowledge/a.md"
+
+
+def test_a_revision_that_pins_its_body_is_not_reported() -> None:
+    """The negative control, and the distinction the whole field rests on.
+
+    ``content_sha256`` is set on both operations -- the loader fills it either
+    way, with the declared pin or with the hash it just read -- so a check
+    written against that field alone reports neither of them and this test goes
+    green against a build that warns about nothing at all.
+    """
+    pinned = _migration(
+        MIG_1,
+        UpsertRevision(
+            item_id=ITEM,
+            revision_id=REV_1,
+            content_file_path="../knowledge/a.md",
+            metadata=_metadata(),
+            content_sha256=ContentHash.of_text(BODY_V1),
+            content_pinned=True,
+        ),
+    )
+
+    assert unpinned_revisions(MigrationSet.ordered((pinned,))) == ()
+
+
+def test_every_unpinned_revision_is_reported_in_application_order() -> None:
+    """Per operation, not per migration: two revisions of one migration are two
+    body files, and one id would drop the half of the answer naming the file."""
+    two_upserts = _migration(
+        MIG_2,
+        _upsert(REV_2, BODY_V2, "../knowledge/b.md"),
+        UpsertRevision(
+            item_id=ItemId("architecture.caching-policy"),
+            revision_id=RevisionId("01K1REV00301234567890ABCDE"),
+            content_file_path="../knowledge/c.md",
+            metadata=_metadata(),
+            content_sha256=ContentHash.of_text(BODY_V1),
+        ),
+    )
+    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1), two_upserts))
+
+    reported = unpinned_revisions(migrations)
+
+    assert [u.content_file for u in reported] == [
+        "../knowledge/a.md",
+        "../knowledge/b.md",
+        "../knowledge/c.md",
+    ]
+
+
+def test_a_revision_cannot_claim_a_pin_it_has_no_hash_for() -> None:
+    """The flag and the hash describe one fact, so they cannot disagree.
+
+    Refused at construction rather than left for whatever reads them later:
+    `unpinned_revisions` would call such an operation pinned while the engine
+    has nothing to check the body against.
+    """
+    with pytest.raises(MigrationError, match="no content hash"):
+        UpsertRevision(
+            item_id=ITEM,
+            revision_id=REV_1,
+            content_file_path="../knowledge/a.md",
+            metadata=_metadata(),
+            content_pinned=True,
+        )
+
+
+# -- Issue #210 hardening: the guards' two easily-mutated edges -------------
+
+
+def test_status_does_not_report_an_in_place_re_declaration_as_body_sharing() -> None:
+    """The status enumerator's revision-id guard, driven for the first time.
+
+    An in-place status change re-declares the item's *current* revision id
+    against its own body, changing only ``status`` (ADR-0024 decision 5, FR-K8's
+    no-op ``append_revision``): the identity matches but the revision id does
+    not move, so it is a legitimate re-declaration, not one file backing two
+    revisions. The throwing form's exclusion of this shape was pinned
+    (``test_an_in_place_status_change_may_re_declare_its_own_body``); the
+    non-throwing enumerator ``migrate status`` calls was not. A mutation
+    dropping the ``!= operation.revision_id`` guard in
+    ``duplicate_content_file_violations`` survived the whole suite, so ``status``
+    could begin reporting a re-declaration under ``refusedIds`` -- gating a
+    legitimate no-op in the one command whose contract is to observe, not gate --
+    with nothing red. This makes that mutation fail.
+    """
+    migrations = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=IDENTITY_A),
+            _migration(
+                MIG_2,
+                UpsertRevision(
+                    item_id=ITEM,
+                    revision_id=REV_1,
+                    content_file_path="../knowledge/a.md",
+                    content_identity=IDENTITY_A,
+                    metadata=_metadata(status=KnowledgeStatus.REJECTED),
+                    content_sha256=ContentHash.of_text(BODY_V1),
+                ),
+            ),
+        )
+    )
+
+    assert duplicate_content_file_violations(migrations) == ()
+
+
+def test_the_refusal_compares_the_full_identity_tuple_not_the_inode_alone() -> None:
+    """The key is ``(st_dev, st_ino)``, not ``st_ino`` on its own (issue #210).
+
+    An inode number is unique only *within* a filesystem; the same number names
+    two different files across two mounts. Keying the refusal on the inode alone
+    would false-refuse two genuinely distinct files that happen to share one --
+    the mirror of the case-variant false-refuse casefolding a path would cause --
+    so the comparison must be over the whole tuple. Two operations with the same
+    inode on *different* devices are distinct files and pass; the same device and
+    inode are one file and are refused.
+
+    This pins the *guard's* use of the full tuple, at both call sites. The
+    *loader's* capture of a real ``st_dev`` -- rather than a constant -- is
+    pinned separately by ``test_migration_loader_identity.py``'s equality
+    against the body's real ``stat``; what neither exercises is two genuinely
+    different real devices sharing an inode number, which needs a multi-device
+    mount, and that residual is an accepted LOW.
+    """
+    same_inode_two_devices = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=(1, 5)),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/b.md",
+                    identity=(2, 5),
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+    refuse_duplicate_content_files(same_inode_two_devices)
+    assert duplicate_content_file_violations(same_inode_two_devices) == ()
+
+    same_device_and_inode = MigrationSet.ordered(
+        (
+            _create_and_upsert(MIG_1, REV_1, BODY_V1, content_identity=(1, 5)),
+            _migration(
+                MIG_2,
+                _upsert(
+                    REV_2,
+                    BODY_V2,
+                    "../knowledge/a.md",
+                    identity=(1, 5),
+                    expected_revision=REV_1,
+                ),
+            ),
+        )
+    )
+    with pytest.raises(DuplicateContentFileError):
+        refuse_duplicate_content_files(same_device_and_inode)
+    assert duplicate_content_file_violations(same_device_and_inode) == (MigrationId(MIG_2),)

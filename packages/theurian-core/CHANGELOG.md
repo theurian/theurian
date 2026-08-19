@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev5] - 2026-08-19
+
 ### Added
 
 - **`theurian propose` drafts a knowledge change, `theurian propose accept`
@@ -26,6 +28,85 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   short of the judgement, and approval is a human merging the pull request that
   carries the proposal (ADR-0013 point 4). There is no CLI or MCP surface that
   stands in for that merge.
+
+- **`theurian migrate validate` names every revision whose body no digest pins**
+  ([#210](https://github.com/theurian/theurian/issues/210)). `contentSha256` is
+  optional in the schema and is the only thing that freezes a body: where it is
+  declared, the loader hashes the file on every load and refuses a mismatch;
+  where it is absent, the loader adopts whatever the file hashes to now as that
+  revision's own content hash. Measured on an unpinned migration: apply it, edit
+  the body out of band, and `migrate validate` still reports `valid: true` at
+  exit 0, while the next `migrate apply` records the edited bytes under the same
+  revision id and returns `changed: true`. Nothing recommended the field and
+  nothing reported its absence.
+
+  Validate's output now carries `unpinnedRevisions` — one line per
+  `upsertRevision` that declares no pin, naming the migration, the revision
+  inside it, the body's **project-relative** path (the one a reader can `shasum`
+  from the repository root, not the authored `contentFile`, which is relative to
+  the migration file), and the remedy — in `--json` and in the default human
+  output alike. The remedy carries its applied-case escape: the warning fires on
+  already-applied migrations too, and editing an applied migration to add the pin
+  trips FR-K5's checksum guard, so pinning an already-applied body means editing
+  it, deleting `.theurian/state/`, and rebuilding (FR-K4) — a warning that
+  stopped at "add the pin" would loop a reader between two errors, the way issue
+  #63's HIGH-1 did. Additive and **always present**, an empty list when
+  every revision pins. It is a **warning, not a refusal**: `valid` stays `true`
+  and the exit code stays 0. Requiring the pin instead would be a breaking schema
+  change with a measured cost — both shipped example migrations under
+  `examples/sample-project/` are unpinned, and at this branch's base
+  (`8b8abd7`) 21 of the 22 test files naming `upsertRevision` never mentioned the
+  field — so it is recorded on #210 as a Milestone 7 decision rather than taken
+  here. `theurian propose` already pins every revision it writes (ADR-0013).
+  Reported per operation rather than per migration, because the fix is a digest
+  taken from one named body file. Documented in
+  [`docs/protocol/migrations.md`](../../docs/protocol/migrations.md).
+
+### Changed
+
+- **BREAKING — one body file may back only one revision across a migration set**
+  ([#210](https://github.com/theurian/theurian/issues/210)).
+
+  **Old shape:** a set in which two *different* revisions named one `contentFile`
+  applied. Measured: two hand-written migrations sharing one path, with a correct
+  `expectedRevision` chain and no `contentSha256`, both applied at exit 0 — and
+  the earlier revision recorded the *later* body under its own title and author.
+  Having adopted that body's hash where no pin was declared, the wrong record was
+  self-consistent afterwards, so nothing could detect it later.
+
+  **New shape:** `migrate validate` and `migrate apply` both refuse the whole set
+  with `DuplicateContentFileError` at exit 4, naming both revisions, both authored
+  paths, and the resolved body. `apply` refuses before it creates a database file,
+  so a refused set costs no state — the property issue #63's refusal already has.
+  The refusal is **unconditional of pinning**: even a pair that both pin the same
+  `contentSha256` is refused, because one file cannot be independently frozen or
+  attributed to two revisions — the hazard is the sharing, not the missing pin.
+  The remedy says to give the later revision a body file of its own, and says what
+  to do when the offending migration was already applied: editing it trips FR-K5's
+  applied-migration checksum guard, so the fix there is the edit plus a
+  `.theurian/state/` rebuild (FR-K4).
+
+  The comparison key is the body's **filesystem identity** (`st_dev`/`st_ino`),
+  not the path string, so two revisions that reach one physical file through
+  *different* spellings still collide — a `./` segment, and the case-variant and
+  NFC/NFD spellings a case-insensitive filesystem (APFS, NTFS) collapses onto one
+  inode, and a second hardlinked name. A string key left those distinct and let a
+  second revision name the same body through a variant spelling; casefolding the
+  string would go wrong the other way and refuse two genuinely different files on
+  a case-sensitive filesystem, so identity is the platform-correct key. Re-declaring
+  one revision against its own body — how an in-place status change such as
+  `reject` is written, where the revision id does not move, only `status` differs,
+  and `append_revision` stays the no-op FR-K8 requires (ADR-0024 decision 5) —
+  still passes, because the key that separates a re-declaration from a collision is
+  the revision id. `migrate status` does not refuse — its contract is observation —
+  but names every refused migration under `refusedIds`, matching how it treats the
+  tenant/ACL rule.
+
+  Breaking because a migration set that applied on `0.1.0.dev4` and earlier now
+  refuses. No stable release exists — the published versions are `0.1.0.devN` —
+  and no compatibility promise covers it, but the break is named here rather than
+  filed as a fix. Documented in
+  [`docs/protocol/migrations.md`](../../docs/protocol/migrations.md).
 
 ### Removed
 

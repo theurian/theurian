@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Protocol
 
+from theurian.application.migration_body_guards import refuse_duplicate_content_files
 from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
@@ -330,9 +331,16 @@ class MigrationEngine:
                 enforce (issue #63). Checked over the whole set, after
                 planning but before any write, so it never depends on what
                 has already been written.
+            DuplicateContentFileError: If two operations reference one body
+                file (issue #210). Checked last of the three and over the same
+                whole set: the two above name a specific migration as wrong,
+                while this one is a statement about the set, and reporting the
+                narrower fault first is what keeps a reader from being sent to
+                a second migration that is not the one to edit.
         """
         plan = self.plan(writer, project_id, migration_set)
         refuse_unenforceable_scope(migration_set)
+        refuse_duplicate_content_files(migration_set)
         report = ApplyReport(skipped=list(plan.already_applied))
 
         # The items whose surfaceability or current revision an operation could
