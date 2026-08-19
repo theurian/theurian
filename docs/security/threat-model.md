@@ -4064,9 +4064,9 @@ platform-correct key. The refusal is unconditional of pinning: even two
 revisions that pin the same `contentSha256` are refused, because one file cannot
 be independently frozen or attributed to two revisions — the hazard is the
 sharing, not the missing pin. Re-declaring one revision against its own body —
-how an in-place status change such as `reject` is written, where the revision id
-does not move — still passes, because the key separating a re-declaration from a
-collision is the revision id (ADR-0024 decision 5). `migrate status` does not
+how an in-place status change such as `reject` is written (ADR-0024 decision 5),
+where the revision id does not move — still passes, because the key separating a
+re-declaration from a collision is the revision id. `migrate status` does not
 refuse (its contract is observation) but names every body-sharing migration
 under `refusedIds`.
 
@@ -4080,15 +4080,17 @@ FR-K5's checksum guard — travels in the refusal. The break this introduces for
 sets that previously applied is recorded, named as breaking, in the
 `0.1.0.dev5` CHANGELOG.
 
-**Same withheld-content-reaches-caller family as T-18 and T-19.** All three
-resolve a withheld body under an approved item, bypassing the status gate a
-direct request still honours; they differ only in what is shared. T-18 shares a
-**revision id** — a pointer at another item's revision (GHSA-7997-g35f-q59h).
-T-20 shares a **body file** — content recorded for two revisions
-(GHSA-w5cm-cqf9-vm7r). T-19 ships a **doctored derived state** that never went
-through a local build (GHSA-266v-fcj2-qggx). Each has its own root cause, so its
-own entry and its own control; the closure argument common to the three is that
-a withheld and an approved item must not be able to resolve to the same bytes.
+**Same withheld-content-reaches-caller family as T-18 and T-19.** All three land
+a withheld body under an approved item; they differ in what carries it there.
+T-18 shares a **revision id** — a pointer at another item's revision — so a
+direct request for the withheld id is still refused while the approved item
+serves its body (GHSA-7997-g35f-q59h). T-20 shares a **body file** — content
+recorded for two revisions, with that same direct-request asymmetry
+(GHSA-w5cm-cqf9-vm7r). T-19 instead ships a **doctored derived state** that never
+went through a local build, so the gate runs over tampered input rather than
+being bypassed (GHSA-266v-fcj2-qggx). Each has its own root cause, so its own
+entry and its own control; the closure argument common to the three is that a
+withheld and an approved item must not be able to resolve to the same bytes.
 
 ### TB-4: the filesystem and setup
 
