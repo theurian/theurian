@@ -5,26 +5,36 @@ exemptions and the assertions, and sitting beside ``command_extraction``, which
 owns turning one text into command words. This module is the middle: the
 population -- which files the repository ships -- and what it hands the readers.
 
-**The population is what git lists, not what is on disk.** ``git ls-files
---cached --others --exclude-standard`` is the definition: everything tracked,
-plus everything written and not yet ignored, and nothing git has been told to
-ignore. Asking the filesystem instead was #262. A machine that dogfoods
-Theurian keeps its own knowledge under ``.theurian/``, excluded through
-``.git/info/exclude`` and never committed; a directory-name rule descended into
-it and the suite failed on a handoff note quoting ``theurian upgrade`` that no
-clone will ever hold. The same class had already been patched once by name:
-the mutation harness runs the suite with ``TMPDIR`` inside its copy of the
-tree, and a run left 12,734 fixture files under ``.mutate-tmp/`` that the scan
-read, turning the unmutated control RED and every verdict in that batch with
-it. Git answers both, and answers the residual the name list recorded and could
-not close -- ``plugins/claude-code/.claude-plugin/`` is a fourth shipped dot
-directory the three-entry list did not name, and the population picked up its
-``plugin.json`` the moment git was asked (measured at bd4fb25).
+**The population is what git tracks, not what is on disk.** ``git ls-files
+--cached`` is the definition, and "ships" is the whole of it: a file the index
+holds is a file every clone gets, and nothing else here is any clone's problem.
+Asking the filesystem instead was #262. A machine that dogfoods Theurian keeps
+its own knowledge under ``.theurian/``, excluded through ``.git/info/exclude``
+and never committed; a directory-name rule descended into it and the suite
+failed on a handoff note quoting ``theurian upgrade`` that no clone will ever
+hold. The same class had already been patched once by name: the mutation
+harness runs the suite with ``TMPDIR`` inside its copy of the tree, and a run
+left 12,734 fixture files under ``.mutate-tmp/`` that the scan read, turning the
+unmutated control RED and every verdict in that batch with it. Git answers both,
+and answers the residual the name list recorded and could not close --
+``plugins/claude-code/.claude-plugin/`` is a fourth shipped dot directory the
+three-entry list did not name, and the population picked up its ``plugin.json``
+the moment git was asked (measured at bd4fb25).
 
-The untracked half is a decision and not an oversight: a document naming a dead
-command is cheapest to fix before the commit that ships it, and ``--cached``
-alone would leave the suite green until somebody remembered to re-run it after
-``git add``.
+**Untracked files are deliberately out, ignored or not.** Adding ``--others
+--exclude-standard`` to catch a dead command before it is committed looks like a
+strictly better gate and is not: it makes the gate fail on the product's own
+documented workflow. ``theurian propose`` writes
+``.theurian/proposals/<proposal-id>/`` -- a migration named after the change, the
+body, and ``evidence.json`` -- and those files stay untracked for the whole
+review window ``propose accept`` exists to close. The committed ``.gitignore``
+does not cover them, and a fresh clone has no ``.git/info/exclude`` to fence
+them off, so ``--others`` puts a draft proposal into the scan on any machine
+running the flow this repository documents. Reproduced on a clone: all three
+files appear in that listing. An uncommitted draft that names a dead command is
+caught the moment it is staged, by CI on the pull request that ships it, and
+that is the right boundary -- a repository gate must not fail on files the
+product itself writes.
 
 :func:`_walked` is the fallback for a tree with no git in it, and
 :func:`_population` says what it costs.
@@ -82,16 +92,15 @@ SCANNED_SURFACES: Final = (
     Surface("plain", REPO_ROOT, frozenset({".sh", ".yml", ".yaml"}), plain_command_lines),
 )
 
-#: What git is asked, once per repository. ``--cached`` is what ships and
-#: ``--others --exclude-standard`` is what is being written; ``-z`` because git
-#: quotes non-ASCII paths in every other output mode, and this repository holds
-#: CJK fixtures.
+#: What git is asked, once per repository. ``--cached`` is the index and the
+#: index is what ships; ``-z`` because git quotes non-ASCII paths in every other
+#: output mode, and this repository holds CJK fixtures.
 #:
-#: What the pair leaves out is the fix: everything ignored, whether the rule
-#: came from a tracked ``.gitignore``, from ``.git/info/exclude`` -- which is
-#: what #262's corpus used, and what no clone can see -- or from the operator's
-#: ``core.excludesFile``.
-_LISTING: Final = ("ls-files", "--cached", "--others", "--exclude-standard", "-z")
+#: What it leaves out is the fix, and it leaves out more than the ignore rules:
+#: an ignored file is untracked by construction, so #262's corpus is excluded
+#: for the same reason a draft proposal is -- nobody committed it. ``--others``
+#: is what would put both back, which is why it is not here.
+_LISTING: Final = ("ls-files", "--cached", "-z")
 
 #: Belt and braces, not the definition. Since the population is git's answer,
 #: these two lists decide nothing in a checkout; they are the fallback's
@@ -142,12 +151,11 @@ def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
     below an unrelated repository, which is one ``TMPDIR`` away from real.
 
     The third is why the toplevel is checked rather than a zero exit trusted.
-    Measured, both ways, on a scratch repository: asked from inside such a copy,
-    git answers for the *outer* repository and gives whichever wrong answer that
-    repository's ignore rules imply. If it does not ignore the copy, everything
-    on disk comes back -- local-only knowledge included, which is #262 again. If
-    it does, nothing comes back at all, and that is the failure this module
-    cannot survive, because every assertion in it passes when no file is read.
+    Asked from inside such a copy, git answers for the *outer* repository's
+    index, which holds none of these paths: measured on a scratch repository,
+    the listing comes back empty and the exit code is 0. That is the failure
+    this module cannot survive, because every assertion in it passes when no
+    file is read -- and it is silent, which nothing else here is.
     """
     git = shutil.which("git")
     if git is None:
@@ -179,7 +187,7 @@ def _git_output(git: str, repository: pathlib.Path, *arguments: str) -> str | No
 
 @functools.cache
 def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
-    """Every file the repository ships or is about to, sorted, git's answer first.
+    """Every file the repository ships, sorted, git's answer where there is one.
 
     Cached because several tests want it and it costs a subprocess; the walk it
     replaced was paid per call.
@@ -188,14 +196,16 @@ def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
     mutation harness is why it exists rather than an assertion: ``tools/mutate.py``
     copies the checkout with ``shutil.copytree`` and its ``_COPY_IGNORE`` drops
     ``.git`` deliberately, so the suite runs there with no repository at all --
-    while the copy still carries every local-only file the developer's tree
-    carried. The fallback cannot tell those from shipped ones, so it reads
-    *less*: :func:`_walked` refuses the repository-root ``.theurian/`` outright.
-    The residual is stated rather than hidden -- a file ignored anywhere else,
-    say a scratch note under ``docs/`` in somebody's ``info/exclude``, is still
-    read there. That is a copy of one machine's tree, never CI and never a
-    clone, and the gate that decides anything runs in a checkout where git
-    answers.
+    while the copy still carries every untracked file the developer's tree
+    carried, local-only knowledge and half-written proposals alike. The fallback
+    cannot tell those from tracked ones, so it reads *less*: :func:`_walked`
+    refuses the repository-root ``.theurian/`` outright, which is where both of
+    them live.
+
+    The residual is stated rather than hidden -- an untracked file anywhere
+    else, say a scratch note under ``docs/``, is still read there. That is a
+    copy of one machine's tree, never CI and never a clone, and the gate that
+    decides anything runs in a checkout where git answers.
     """
     listed = _git_listing(repository)
     if listed is not None:

@@ -567,9 +567,10 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     path carries a ULID that exists on one machine.
 
     Ignored through ``.git/info/exclude`` rather than ``.gitignore`` deliberately
-    -- that is the file #262's corpus used, it is never committed, and an
-    implementation that parsed ignore rules itself would have to reproduce the
-    whole chain to pass this.
+    -- that is the file #262's corpus used, and no clone can see it. What keeps
+    it out of the population is simpler than the ignore chain, though, and worth
+    saying so nobody re-derives the wrong rule from this fixture: it was never
+    committed, and an ignored file is untracked by construction.
 
     Asserted as the whole list rather than as an absence, because an enumeration
     that returned nothing at all would satisfy ``ignored not in scanned`` while
@@ -591,25 +592,41 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     assert scanned == [".theurian/knowledge/committed.md"]
 
 
-def test_a_document_written_but_not_yet_committed_is_scanned(sandbox: pathlib.Path) -> None:
-    """A dead command is cheapest to fix before the commit that ships it.
+def test_a_draft_the_product_itself_writes_is_no_part_of_the_population(
+    sandbox: pathlib.Path,
+) -> None:
+    """A repository gate must not fail on the files the product tells you to create.
 
-    The population asks for ``--others --exclude-standard`` as well as
-    ``--cached``, and this is the half that costs something to justify: an
-    untracked file is not what the repository ships. ``--cached`` alone would
-    let a new document name a dead command with the suite green until it was
-    committed -- and the point of this module is that nobody has to remember to
-    re-run it after ``git add``. The file is still git's answer and not the
-    filesystem's: ``--exclude-standard`` is what keeps #262 fixed either way.
+    ``--others --exclude-standard`` would add the files that exist and are not
+    ignored, which reads as a strictly better gate and is not one: it fails on
+    the workflow this repository documents. ``theurian propose`` writes
+    ``.theurian/proposals/<proposal-id>/`` -- the migration, the body, and
+    ``evidence.json`` -- and those three stay untracked for the whole review
+    window ``propose accept`` exists to close. The committed ``.gitignore`` does
+    not cover them and a fresh clone has no ``.git/info/exclude`` to fence them,
+    so on a clone running the product's own flow the gate would go RED on a
+    draft. Reproduced on one: all three files appear in that listing.
+
+    Tracked is therefore the whole rule, and the boundary it draws is the right
+    one -- a draft naming a dead command becomes a failure the moment it is
+    staged, on the pull request that ships it.
+
+    The tracked document is here so the assertion cannot pass by finding
+    nothing, which is the one way this module goes quietly useless.
     """
     git = _require_git()
     _git(git, "init", "-q", str(sandbox))
     (sandbox / "docs").mkdir()
-    (sandbox / "docs" / "draft.md").write_text("run `theurian upgrade`\n", encoding="utf-8")
+    (sandbox / "docs" / "committed.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "docs/committed.md")
+    proposal = sandbox / ".theurian" / "proposals" / "01K1ABCXYZ01234567890ABCDE"
+    proposal.mkdir(parents=True)
+    (proposal / "body.md").write_text("then run `theurian upgrade`\n", encoding="utf-8")
+    (proposal / "evidence.json").write_text('{"note": "theurian upgrade"}\n', encoding="utf-8")
 
     scanned = _scanned_in(sandbox)
 
-    assert scanned == ["docs/draft.md"]
+    assert scanned == ["docs/committed.md"]
 
 
 def test_the_python_reader_is_handed_only_the_subtree_its_surface_names(
@@ -636,6 +653,7 @@ def test_the_python_reader_is_handed_only_the_subtree_its_surface_names(
     (source / "compatibility.py").write_text('REMEDY = "theurian upgrade"\n', encoding="utf-8")
     (sandbox / "tools").mkdir()
     (sandbox / "tools" / "harness.py").write_text('LABEL = "theurian upgrade"\n', encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "packages", "tools")
 
     scanned = [
         path.relative_to(sandbox).as_posix()
@@ -666,7 +684,7 @@ def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
     deleted = sandbox / "docs" / "gone.md"
     deleted.write_text("run `theurian upgrade`\n", encoding="utf-8")
     (sandbox / "docs" / "here.md").write_text("run `theurian init`\n", encoding="utf-8")
-    _git(git, "-C", str(sandbox), "add", "docs/gone.md")
+    _git(git, "-C", str(sandbox), "add", "docs/gone.md", "docs/here.md")
     deleted.unlink()
 
     scanned = _scanned_in(sandbox)
@@ -681,12 +699,11 @@ def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
 
     One ``TMPDIR`` away from real: ``tools/mutate.py`` builds its copies outside
     this checkout, and nothing says the directory it builds them in is outside
-    every checkout. Measured on a scratch repository, git asked from inside such
-    a copy answers with the outer repository's ignore rules -- everything on
-    disk when it does not ignore the copy, which is #262 again, and nothing at
-    all when it does, which passes every assertion in this module by reading no
-    file. Neither is this tree's answer, so the toplevel git reports has to be
-    this tree before its listing is used.
+    every checkout. Asked from inside such a copy, git answers for the outer
+    repository's index, which holds none of these paths -- measured on a scratch
+    repository, an empty listing and exit 0. Every assertion in this module
+    passes when no file is read, so that answer is worse than an error, and the
+    toplevel git reports has to be this tree before its listing is used.
 
     The ceiling is raised for this test alone, and that is the whole fixture:
     :func:`sandbox` pins it at the directory holding the sandbox so no test
@@ -723,14 +740,15 @@ def test_a_tree_that_is_not_a_checkout_reads_less_rather_than_more(
     ``tools/mutate.py`` copies the checkout with ``shutil.copytree`` and its
     ``_COPY_IGNORE`` drops ``.git`` on purpose ("the copy is not a repository,
     and the suite has been run without one"), while copying everything else the
-    developer's tree carried -- local-only knowledge included. So the fallback
-    runs in exactly the environment #262 is about, with no way to tell a shipped
-    file from a private one.
+    developer's tree carried -- local-only knowledge and draft proposals alike.
+    So the fallback runs in exactly the environment #262 is about, with no way
+    to tell a tracked file from an untracked one.
 
     It resolves that by refusing the one directory where a project keeps its own
     state: ``.theurian/`` at the top of the tree, which this repository tracks
     nothing under (``git ls-files .theurian`` is empty, measured 2026-08-19 at
-    bd4fb25). A nested one is sample content and is read -- that is
+    bd4fb25) and which is where both the private knowledge and the drafts land.
+    A nested one is sample content and is read -- that is
     ``examples/sample-project/.theurian/config.yaml``, which the scan has always
     covered.
 
