@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev7] - 2026-08-19
+
 ### Added
 
 - **`theurian propose` can now set `--scope-path` and `--label`**
