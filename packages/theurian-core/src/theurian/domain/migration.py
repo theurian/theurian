@@ -167,24 +167,6 @@ class UpsertRevision(Operation):
     def content_file(self) -> str | None:
         return self.content_file_path
 
-    @property
-    def content_reference(self) -> str:
-        """A body path to *show* a reader -- resolved where there is one.
-
-        The resolved form identifies the file in a refusal message and is what a
-        reader can ``shasum``; the authored string otherwise, which is all an
-        in-memory operation has. This is a display value, **not** the key two
-        operations are compared on -- that is ``content_identity``, because two
-        spellings of one file compare *unequal* as strings yet are the same file.
-        ``is None`` rather than ``or`` so an empty resolved string, were one ever
-        recorded, is not silently treated as "no resolution".
-        """
-        return (
-            self.content_file_path
-            if self.resolved_content_path is None
-            else self.resolved_content_path
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class DeprecateItem(Operation):
