@@ -104,6 +104,11 @@ SCANNED_SURFACES: Final = (
 #: index is what ships; ``-z`` because git quotes non-ASCII paths in every other
 #: output mode, and this repository holds CJK fixtures.
 #:
+#: Paths come from the index, bytes from the working tree -- :func:`_text` opens
+#: the file, not the blob. Identical in a fresh CI checkout, and where they
+#: differ locally the working tree is the right answer: an uncommitted edit that
+#: adds a dead command is the one this suite should report.
+#:
 #: What it leaves out is the fix, and it leaves out more than the ignore rules:
 #: an ignored file is untracked by construction, so #262's corpus is excluded
 #: for the same reason a draft proposal is -- nobody committed it. ``--others``
@@ -161,9 +166,15 @@ def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
     The third is why the toplevel is checked rather than a zero exit trusted.
     Asked from inside such a copy, git answers for the *outer* repository's
     index, which holds none of these paths: measured on a scratch repository,
-    the listing comes back empty and the exit code is 0. That is the failure
-    this module cannot survive, because every assertion in it passes when no
-    file is read -- and it is silent, which nothing else here is.
+    the listing comes back empty and the exit code is 0.
+
+    An empty population is *caught* -- ``test_the_scan_reaches_every_arm_of_every
+    _reader`` and ``test_no_recorded_exception_outlives_the_text_it_excuses``
+    both go RED on one, measured by returning ``()`` here. So the check is not
+    what stands between this module and a silent pass; it is what keeps a
+    legitimate no-git tree, which is what the mutation harness runs in, from
+    taking a *wrong* answer instead of the fallback and failing for a reason
+    that has nothing to do with the tree.
     """
     git = shutil.which("git")
     if git is None:
@@ -174,7 +185,16 @@ def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
     listing = _git_output(git, repository, *_LISTING)
     if listing is None:
         return None
-    return tuple(sorted(entry for entry in listing.split("\0") if entry))
+    # Two jobs, and only one of them is load-bearing. `dict.fromkeys` is
+    # correctness: the index holds up to three entries for an unmerged path --
+    # base, ours, theirs -- and `ls-files` prints the path once per stage, so a
+    # merge conflict would otherwise put a file into the population three times
+    # and every invocation in it three times with it. `sorted` is determinism
+    # only, and cheap belt: git already emits index order, which is sorted by
+    # path bytes and so identical to this. Deleting it changes nothing today,
+    # which is why no test pins it -- deleting the dedupe fails
+    # `test_a_path_left_unmerged_by_a_conflict_is_listed_once`.
+    return tuple(sorted(dict.fromkeys(entry for entry in listing.split("\0") if entry)))
 
 
 def _git_output(git: str, repository: pathlib.Path, *arguments: str) -> str | None:
@@ -223,7 +243,11 @@ def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
     for base, directories, names in os.walk(repository):
         directories[:] = _walked(directories, at_repository_root=pathlib.Path(base) == repository)
         found.extend(path for name in names if (path := pathlib.Path(base) / name).is_file())
-    return tuple(sorted(found))
+    # Sorted on the repository-relative posix string, which is the key the git
+    # branch gets for free from `ls-files`. Sorting the paths themselves is
+    # component-wise, so `docs/b.md` would come back before `docs-x/a.md` here
+    # and after it there, and `_scan` caches whichever order it was handed.
+    return tuple(sorted(found, key=lambda path: path.relative_to(repository).as_posix()))
 
 
 @dataclass(frozen=True)
@@ -336,10 +360,11 @@ def _scan() -> tuple[Invocation, ...]:
     1106, so collapsing by ``(path, line, command)`` would license a third. The
     readers are made not to overlap instead -- see :func:`_prose_of`.
 
-    Cached because four tests want the same answer and the walk reads every file
-    in the repository. Deterministic for the same reason it is cacheable: the
-    surfaces are ordered, :func:`_files` sorts, and each reader is a generator
-    over one text.
+    Cached because four tests want the same answer and it reads every file in
+    the repository. Deterministic for the same reason it is cacheable: the
+    surfaces are ordered, :func:`_files` yields :func:`_population`'s order --
+    which is sorted, by the same key in both of its branches -- and each reader
+    is a generator over one text.
     """
     return tuple(
         Invocation(relative, span.line, command, span.text)

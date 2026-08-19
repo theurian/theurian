@@ -66,10 +66,12 @@ the repository to prove the list is complete: a surface added tomorrow in a file
 type nothing here reads fails that test rather than escaping quietly.
 
 The population is what the repository *ships*, which is not the same as what is
-on disk, so it is git's answer and not a walk's: ``git ls-files --cached
---others --exclude-standard``, see :func:`_population`. Two measured failures
-say why. A suite run under the mutation harness leaves twelve thousand fixture
-files inside the tree, and reading them turned the unmutated control RED. A
+on disk, so it is git's answer and not a walk's: ``git ls-files --cached``, the
+index and nothing else. ``command_population``'s own docstring holds why
+``--others`` is out -- the product writes untracked files under ``.theurian/``
+that a gate must not fail on. Two measured failures say why the walk went. A
+suite run under the mutation harness leaves twelve thousand fixture files
+inside the tree, and reading them turned the unmutated control RED. A
 machine that dogfoods Theurian keeps knowledge under ``.theurian/`` that
 ``.git/info/exclude`` hides from every clone, and reading *that* failed the
 class test below on a note quoting ``theurian upgrade`` (#262) -- on a working

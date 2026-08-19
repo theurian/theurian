@@ -67,15 +67,16 @@ def _require_git() -> str:
     return git
 
 
-def _git(git: str, *arguments: str) -> None:
+def _git(git: str, *arguments: str, stdin: str = "") -> str:
     """Run one git command in a sandbox and fail loudly if it did not work."""
     completed = subprocess.run(  # noqa: S603 - argv is written here, never user input
-        [git, *arguments], capture_output=True, text=True, check=False
+        [git, *arguments], input=stdin, capture_output=True, text=True, check=False
     )
     assert completed.returncode == 0, (
         f"the fixture's own `git {' '.join(arguments)}` failed, so the test below would "
         f"be asserting against a tree nobody built:\n{completed.stderr}"
     )
+    return completed.stdout
 
 
 @pytest.fixture
@@ -135,8 +136,11 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     committed, and an ignored file is untracked by construction.
 
     Asserted as the whole list rather than as an absence, because an enumeration
-    that returned nothing at all would satisfy ``ignored not in scanned`` while
-    making every other assertion in this module pass by reading no files.
+    that returned nothing at all would satisfy ``ignored not in scanned`` and
+    say nothing about #262 -- the vacuity is this assertion's, not the suite's.
+    An empty population is caught two modules over, by
+    ``test_the_scan_reaches_every_arm_of_every_reader`` and
+    ``test_no_recorded_exception_outlives_the_text_it_excuses``.
     """
     git = _require_git()
     _git(git, "init", "-q", str(sandbox))
@@ -152,6 +156,41 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     scanned = _scanned_in(sandbox)
 
     assert scanned == [".theurian/knowledge/committed.md"]
+
+
+def test_a_path_left_unmerged_by_a_conflict_is_listed_once(sandbox: pathlib.Path) -> None:
+    """A merge conflict is a legitimate local state, and it must not fail this suite.
+
+    The index records up to three entries for an unmerged path -- the merge
+    base and the two sides -- and ``git ls-files --cached`` prints the path once
+    per stage. Measured on a scratch repository: three lines for one file, with
+    ``-z`` and without.
+
+    Downstream that is not a duplicate path but a duplicate *finding*.
+    :func:`_scan` yields one invocation per occurrence on purpose, so that an
+    exemption's count means something; three copies of a file make three copies
+    of every invocation in it, and the count-based check reports surplus
+    occurrences for a file whose every mention is already excused. The suite
+    goes RED on the wrong thing, in the middle of a conflict, and points at a
+    document nobody has touched -- which is the same class as #262: a false
+    failure on a local state git considers ordinary.
+
+    The stages are built with ``update-index --index-info`` rather than by
+    provoking a real merge, because the state wanted here is the index's, and
+    an actual conflicting merge would also depend on the merge driver.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    (sandbox / "docs").mkdir()
+    conflicted = sandbox / "docs" / "conflicted.md"
+    conflicted.write_text("both sides quote `theurian upgrade`\n", encoding="utf-8")
+    blob = _git(git, "-C", str(sandbox), "hash-object", "-w", "docs/conflicted.md").strip()
+    stages = "".join(f"100644 {blob} {stage}\tdocs/conflicted.md\n" for stage in (1, 2, 3))
+    _git(git, "-C", str(sandbox), "update-index", "--index-info", stdin=stages)
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/conflicted.md"]
 
 
 def test_a_draft_the_product_itself_writes_is_no_part_of_the_population(
@@ -286,6 +325,43 @@ def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
     assert scanned == ["docs/here.md"]
 
 
+def test_both_branches_of_the_population_hand_over_the_same_order(
+    sandbox: pathlib.Path,
+) -> None:
+    """One order, whichever branch answered, because the order is what is cached.
+
+    :func:`_scan` is ``functools.cache``d and calls its determinism the reason
+    it may be: same surfaces, same file order, same generators. That holds only
+    if both branches sort by the same key, and they did not. Git hands back
+    repository-relative strings and the fallback built :class:`~pathlib.Path`
+    objects, which sort component-wise -- so ``docs-x/`` and ``docs/`` come back
+    in opposite orders depending on whether a tree has a ``.git`` in it, because
+    ``-`` sorts before ``/`` as a byte and after it as a path boundary.
+
+    Nothing downstream is known to depend on that order today. It is pinned
+    because a cached answer whose order depends on the environment is the kind
+    of difference that gets discovered as a mutation-harness verdict nobody can
+    reproduce.
+    """
+    git = _require_git()
+    copy = sandbox.parent / "copy"
+    for tree in (sandbox, copy):
+        (tree / "docs").mkdir(parents=True)
+        (tree / "docs" / "b.md").write_text("run `theurian init`\n", encoding="utf-8")
+        (tree / "docs-x").mkdir()
+        (tree / "docs-x" / "a.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "init", "-q", str(sandbox))
+    _git(git, "-C", str(sandbox), "add", "docs", "docs-x")
+
+    from_git = _scanned_in(sandbox)
+    from_fallback = [
+        path.relative_to(copy).as_posix()
+        for path in _files(copy, frozenset({".md"}), repository=copy)
+    ]
+
+    assert from_git == from_fallback == ["docs-x/a.md", "docs/b.md"]
+
+
 def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
     sandbox: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -295,9 +371,14 @@ def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
     this checkout, and nothing says the directory it builds them in is outside
     every checkout. Asked from inside such a copy, git answers for the outer
     repository's index, which holds none of these paths -- measured on a scratch
-    repository, an empty listing and exit 0. Every assertion in this module
-    passes when no file is read, so that answer is worse than an error, and the
-    toplevel git reports has to be this tree before its listing is used.
+    repository, an empty listing and exit 0.
+
+    What that costs is a *false RED*, not a silent pass: an empty population is
+    caught by ``test_the_scan_reaches_every_arm_of_every_reader`` and
+    ``test_no_recorded_exception_outlives_the_text_it_excuses``, both of which
+    go red on one. The tree here is a legitimate no-git tree -- the harness's
+    own copy -- and the toplevel check is what routes it to the fallback instead
+    of failing it for a reason that has nothing to do with the tree.
 
     The ceiling is raised for this test alone, and that is the whole fixture:
     :func:`sandbox` pins it at the directory holding the sandbox so no test
