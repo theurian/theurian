@@ -22,9 +22,13 @@ import pathlib
 import shutil
 import subprocess
 
+import command_population
 import pytest
 from command_population import (
+    REPO_ROOT,
     _files,
+    _git_listing,
+    _git_output,
     _walked,
 )
 
@@ -39,9 +43,16 @@ def test_the_fallback_walk_enters_only_what_the_repository_could_ship() -> None:
     the unmutated control went RED, and every verdict in that batch with it.
 
     In a checkout none of this decides anything, because :func:`_population`
-    asks git. What the fallback still has to get right is the direction of its
-    error: it reads less than the repository ships, never more than the
-    repository tracks.
+    asks git, and in a copy the harness prepared it reads that copy's manifest.
+    This is the last resort, and what it has to get right is bounded: it enters
+    no directory that holds a project's own state or a tool's.
+
+    It does **not** get "never more than the repository tracks" right, and the
+    claim used to say so. Measured in a gitless copy: an untracked scratch note
+    under ``docs/`` is read, and one naming a dead command turned the control
+    RED (population 398 to 399). Directories are all this rule can refuse, so
+    an untracked file outside them is indistinguishable from a tracked one --
+    which is the whole reason the manifest exists.
 
     Pinned as a rule and not as the list of names seen so far, because the names
     keep changing and the rule does not.
@@ -85,15 +96,20 @@ def sandbox(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.
 
     ``GIT_CONFIG_GLOBAL`` and ``GIT_CONFIG_SYSTEM`` name files that do not
     exist, and ``HOME`` moves with them because git reads ``$HOME/.gitconfig``
-    when the first is unset: a developer whose global ``core.excludesFile``
-    happens to mention ``.theurian`` would otherwise get a different verdict
-    here than CI does. ``GIT_CEILING_DIRECTORIES`` stops the *fallback* test
-    from finding a repository above ``TMPDIR`` and taking the git path by
-    accident, which would make it pass without exercising the fallback at all.
+    when the first is unset: a developer whose global config happens to mention
+    ``.theurian`` would otherwise get a different verdict here than CI does.
+    ``GIT_CEILING_DIRECTORIES`` stops a fallback test from finding a repository
+    above ``TMPDIR`` and taking the git path by accident, which would make it
+    pass without exercising the fallback at all.
 
-    The environment reaches the code under test because it runs git in a
-    subprocess, which inherits it -- and it is also what keeps this test off the
-    real ``~/.gitconfig``.
+    Only some of this reaches the code under test, and the split is deliberate.
+    :func:`_git_output` runs git under an environment it builds itself, dropping
+    every variable that would make git answer for another tree or index -- so
+    the ``GIT_CONFIG_*`` set here governs the *fixture's* own ``git init`` and
+    ``git add``, while ``HOME`` and ``GIT_CEILING_DIRECTORIES`` are inherited by
+    both. That is why a test can hand the module a hostile ``GIT_INDEX_FILE``
+    and expect it to be ignored, and in the same file set a ceiling and expect
+    it to be obeyed.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -129,11 +145,14 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     on a file no clone will ever hold. No exemption could have covered it: the
     path carries a ULID that exists on one machine.
 
-    Ignored through ``.git/info/exclude`` rather than ``.gitignore`` deliberately
-    -- that is the file #262's corpus used, and no clone can see it. What keeps
-    it out of the population is simpler than the ignore chain, though, and worth
-    saying so nobody re-derives the wrong rule from this fixture: it was never
-    committed, and an ignored file is untracked by construction.
+    **What this pins is the reason, not a second mechanism.** The
+    ``.git/info/exclude`` write is inert: an ignored file is untracked by
+    construction, so ``--cached`` would leave it out with the exclude file
+    empty, and the draft-proposal test next door covers the same code path.
+    It stays because #262's face is worth keeping executable and because the
+    inference runs the other way for a reader -- "the ignore chain is what
+    excludes it" is the rule somebody would re-derive from a passing suite, and
+    then reintroduce ``--others --exclude-standard`` believing it safe.
 
     Asserted as the whole list rather than as an absence, because an enumeration
     that returned nothing at all would satisfy ``ignored not in scanned`` and
@@ -156,6 +175,58 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     scanned = _scanned_in(sandbox)
 
     assert scanned == [".theurian/knowledge/committed.md"]
+
+
+def test_a_path_git_would_have_to_quote_survives_the_listing(sandbox: pathlib.Path) -> None:
+    """``-z`` is not a nicety: every other output mode is ambiguous.
+
+    Git separates paths with newlines and C-quotes anything that would break
+    that, so a filename containing a newline comes back as
+    ``"docs/two\\nlines.md"`` -- quoted, escaped, and indistinguishable from two
+    ordinary paths without an unquoting step this module does not have. Measured
+    on a scratch repository: parsed the way this module parses, that listing
+    yields one entry which is no file, and the population empties.
+
+    A newline in a filename is not a thing anyone commits on purpose. It is a
+    thing a repository can be handed -- and the cost of getting it wrong is not
+    "that file is skipped" but "every file is skipped", which is the failure
+    mode this module is least able to notice.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "two\nlines.md").write_text("run `theurian init`\n", encoding="utf-8")
+    (sandbox / "docs" / "with spaces.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "-A", "docs")
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/two\nlines.md", "docs/with spaces.md"]
+
+
+def test_a_symlinked_repository_is_recognised_as_its_own_checkout(
+    sandbox: pathlib.Path,
+) -> None:
+    """The toplevel comparison must survive being handed a path through a symlink.
+
+    ``rev-parse --show-toplevel`` answers with the physical path, so comparing
+    it against an unresolved argument would say "this tree is not its own
+    checkout" and drop a perfectly good repository onto the fallback -- reading
+    a different set of files, silently, because falling back is not an error.
+
+    ``/tmp`` is a symlink to ``/private/tmp`` on this platform, which is how a
+    reviewer met this; both sides are resolved before the comparison and this
+    is what keeps them that way.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "tracked.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "docs/tracked.md")
+    through_a_link = sandbox.parent / "link-to-checkout"
+    through_a_link.symlink_to(sandbox)
+
+    assert _git_listing(through_a_link) == ("docs/tracked.md",)
 
 
 def test_a_path_left_unmerged_by_a_conflict_is_listed_once(sandbox: pathlib.Path) -> None:
@@ -325,6 +396,124 @@ def test_a_tracked_document_deleted_from_the_working_tree_is_not_read(
     assert scanned == ["docs/here.md"]
 
 
+def test_an_inherited_git_index_file_cannot_answer_for_this_tree(
+    sandbox: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``GIT_INDEX_FILE`` binds the index, and the toplevel check does not see it.
+
+    The check compares ``rev-parse --show-toplevel`` against the tree being
+    asked about, which pins the *working tree* and says nothing about which
+    index answers for it. Measured: with ``GIT_INDEX_FILE`` pointed at a file
+    that is not this repository's, ``--show-toplevel`` still returns the
+    repository -- the check passes -- and ``ls-files --cached`` reads the
+    foreign index and returns nothing.
+
+    Nobody sets that variable by hand. Git sets it for hooks, so a suite run
+    from a ``pre-commit`` or ``post-merge`` hook inherits it, and the population
+    would be whatever that hook's index held.
+
+    Fixed by running git with an environment the module owns rather than the
+    one it inherited, which is also why the sandbox's stripped ``GIT_*`` no
+    longer has to be trusted to reach the subprocess.
+    """
+    git = _require_git()
+    _git(git, "init", "-q", str(sandbox))
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "tracked.md").write_text("run `theurian init`\n", encoding="utf-8")
+    _git(git, "-C", str(sandbox), "add", "docs/tracked.md")
+    monkeypatch.setenv("GIT_INDEX_FILE", str(sandbox.parent / "somebody-elses.index"))
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/tracked.md"]
+
+
+def test_a_git_that_fails_for_an_unexpected_reason_says_so(sandbox: pathlib.Path) -> None:
+    """ "No repository here" and "git refused" must not arrive as the same silence.
+
+    Both end at the fallback, and only one of them is a tree telling the truth
+    about itself. A ``safe.directory`` refusal on a checkout owned by another
+    user, a corrupt config, a git that cannot be executed -- each would have
+    dropped the whole population onto the name-based walk with nothing said, on
+    a machine where the git path was available and expected.
+
+    So an exit that is not "not a git repository" carries git's own stderr into
+    a warning, which this suite's ``filterwarnings = error`` turns into a
+    failure. The expected absence stays quiet, and the fallback tests here are
+    what prove it: they take that path on every run and none of them warns.
+
+    Provoked with a path that is a file, because ``git -C <file>`` fails before
+    it can look for a repository and so cannot produce the expected message.
+    """
+    git = _require_git()
+    not_a_directory = sandbox / "regular-file.txt"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    not_a_directory.write_text("not a checkout\n", encoding="utf-8")
+
+    with pytest.warns(RuntimeWarning, match="falls back to a walk"):
+        answer = _git_output(git, not_a_directory, "rev-parse", "--show-toplevel")
+
+    assert answer is None
+
+
+def test_a_git_that_never_returns_does_not_hold_the_gate_open(
+    sandbox: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subprocess with no timeout is a gate with no upper bound on its runtime.
+
+    ``ls-files`` takes 11 ms on this repository, so the bound is not about
+    slowness -- it is about the cases where git does not come back at all: a
+    contended ``index.lock``, a credential helper waiting on a prompt, a
+    filesystem that has stopped answering. Without a timeout the suite waits
+    with it, and CI reports a job that hung rather than a check that failed.
+
+    Driven with a stand-in for git rather than a real hang, because
+    :func:`_git_output` takes the executable as an argument -- which is the
+    seam that makes this testable at all -- and the module's own bound is
+    lowered for the length of the test so it costs a second rather than thirty.
+    """
+    _require_git()
+    slow_git = sandbox / "slow-git"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    slow_git.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    slow_git.chmod(0o755)
+    monkeypatch.setattr(command_population, "_GIT_TIMEOUT_SECONDS", 1)
+
+    with pytest.warns(RuntimeWarning, match="did not finish"):
+        answer = _git_output(str(slow_git), sandbox, "rev-parse", "--show-toplevel")
+
+    assert answer is None
+
+
+def test_this_checkout_answers_from_git_and_not_from_the_fallback() -> None:
+    """The gate's own population, asserted rather than assumed.
+
+    Every other test here builds the tree it asks about. None of them says
+    which branch answers for *this* repository, and the two branches do not
+    agree: with git absent the fallback drops the repository-root
+    ``.theurian/`` wholesale, which on the dogfood corpus branch is 81 tracked
+    files the gate is supposed to read. A machine without git on ``PATH``, or a
+    checkout git refuses for ``safe.directory``, would run the whole
+    documented-command suite against a different population and report nothing
+    about it.
+
+    Skipped rather than failed where there is no git, because the fallback is a
+    supported way to run this suite -- but a skip here is visible in ``-ra``,
+    and the silence it replaces was not.
+    """
+    git = _require_git()
+    assert git
+
+    listing = _git_listing(REPO_ROOT)
+
+    assert listing is not None, (
+        "this checkout fell back to the name-based walk. The gate is then "
+        "reading a different population than CI, and #262's class is only "
+        "fixed on the git path."
+    )
+    assert "pyproject.toml" in listing
+
+
 def test_both_branches_of_the_population_hand_over_the_same_order(
     sandbox: pathlib.Path,
 ) -> None:
@@ -407,29 +596,68 @@ def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
     assert scanned == ["docs/shipped.md"]
 
 
-def test_a_tree_that_is_not_a_checkout_reads_less_rather_than_more(
+def test_a_gitless_copy_scans_the_population_the_harness_recorded(
     sandbox: pathlib.Path,
 ) -> None:
-    """The population has to answer where there is no git to ask, and under-read there.
+    """The mutation harness must grade against the population its gate has.
+
+    ``tools/mutate.py`` copies the checkout without ``.git`` and the copy keeps
+    every untracked file the developer's tree carried, so nothing in it can be
+    asked what ships. Until the corpus landed, the name-based guess was close
+    enough; ``dogfood/dev7-corpus`` tracks 81 knowledge documents under
+    ``.theurian/knowledge/`` -- beside the untracked notes of #262, in the same
+    directory -- and the guess refuses that directory wholesale. A harness that
+    scans 81 documents fewer than the gate reports verdicts about a suite that
+    does not exist.
+
+    So the harness records ``git ls-files --cached -z`` into the copy and this
+    reads it. Asserted in both directions on purpose: the tracked knowledge
+    document is scanned *because* the manifest names it, and the untracked
+    scratch file beside a manifested one is skipped *because* it does not --
+    which is the half a "read everything the walk allows" implementation would
+    still pass.
+    """
+    knowledge = sandbox / ".theurian" / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "corpus.md").write_text("run `theurian init`\n", encoding="utf-8")
+    (knowledge / "local-only.md").write_text("quoting `theurian upgrade`\n", encoding="utf-8")
+    (sandbox / "docs").mkdir()
+    (sandbox / "docs" / "shipped.md").write_text("run `theurian init`\n", encoding="utf-8")
+    (sandbox / "docs" / "scratch.md").write_text("quoting `theurian upgrade`\n", encoding="utf-8")
+    (sandbox / ".mutate-population").write_bytes(
+        b".theurian/knowledge/corpus.md\x00docs/shipped.md\x00"
+    )
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == [".theurian/knowledge/corpus.md", "docs/shipped.md"]
+
+
+def test_a_tree_with_neither_git_nor_a_manifest_still_refuses_a_projects_own_state(
+    sandbox: pathlib.Path,
+) -> None:
+    """The last resort, and the one thing it can still get right.
 
     ``tools/mutate.py`` copies the checkout with ``shutil.copytree`` and its
     ``_COPY_IGNORE`` drops ``.git`` on purpose ("the copy is not a repository,
     and the suite has been run without one"), while copying everything else the
     developer's tree carried -- local-only knowledge and draft proposals alike.
-    So the fallback runs in exactly the environment #262 is about, with no way
-    to tell a tracked file from an untracked one.
+    A copy the harness prepared now carries a manifest; a tree that reaches here
+    has neither, and no way to tell a tracked file from an untracked one.
 
-    It resolves that by refusing the one directory where a project keeps its own
-    state: ``.theurian/`` at the top of the tree, which this repository tracks
-    nothing under (``git ls-files .theurian`` is empty, measured 2026-08-19 at
-    bd4fb25) and which is where both the private knowledge and the drafts land.
-    A nested one is sample content and is read -- that is
-    ``examples/sample-project/.theurian/config.yaml``, which the scan has always
-    covered.
+    All it can refuse is a directory, so it refuses the one where a project
+    keeps its own state: ``.theurian/`` at the top of the tree, where both the
+    private knowledge and the drafts land. A nested one is sample content and is
+    read -- ``examples/sample-project/.theurian/config.yaml``, which the scan has
+    always covered.
 
-    The cost is stated rather than hidden: without git the fallback under-reads,
-    and every file it skips is one the real gate still reads, because the gate
-    runs in a checkout.
+    **This is not "only what ships", and the name no longer says it is.** Every
+    file in this fixture is untracked -- there is no git here to track anything
+    -- and two of the three are read. An untracked scratch note under ``docs/``
+    is read too, and one naming a dead command turns the gate RED: measured in a
+    gitless copy of this repository, population 398 to 399. That residual is
+    what the manifest removes, and it is the reason the manifest is preferred
+    over this.
     """
     (sandbox / ".theurian" / "knowledge").mkdir(parents=True)
     (sandbox / ".theurian" / "knowledge" / "local-only.md").write_text(

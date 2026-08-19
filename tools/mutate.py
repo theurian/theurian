@@ -251,11 +251,46 @@ _DEFAULT_TIMEOUT_SECONDS: Final = 1800
 # suite that walks the repository root.
 _RUNNER_NAME: Final = ".mutate-run"
 
+# The source checkout's tracked file list, recorded in the copy because the copy
+# has no `.git` to be asked. A contract with
+# `packages/theurian-core/tests/command_population.py`, which reads this file by
+# this name and takes it over its own name-based guess -- the format is exactly
+# `git ls-files --cached -z` output, so both ends parse it the same way.
+#
+# Without it that guess drops the whole repository-root `.theurian/`, which on
+# the dogfood corpus branch is 81 tracked knowledge documents the real gate
+# scans. The harness would then run every verdict against a smaller population
+# than the gate it stands in for, and say nothing about the difference.
+_POPULATION_NAME: Final = ".mutate-population"
+
+
+def _record_population(destination: Path) -> None:
+    """Write the source checkout's tracked paths into the copy.
+
+    Best effort by design: a source tree that is not a checkout leaves no file
+    behind, and the suite there falls back to its own guess exactly as before.
+    Silence is wrong only when git *could* have answered, which is why a failure
+    is printed rather than swallowed.
+    """
+    completed = subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--cached", "-z"],  # noqa: S607
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        print(
+            f"warning: could not record the population for {destination}: "
+            f"{completed.stderr.decode('utf-8', 'replace').strip()}"
+        )
+        return
+    (destination / _POPULATION_NAME).write_bytes(completed.stdout)
+
 
 def _build_tree(destination: Path, cache_dir: Path) -> Path:
     """Copy the checkout and give the copy its own virtualenv."""
     shutil.rmtree(destination, ignore_errors=True)
     shutil.copytree(REPO_ROOT, destination, ignore=_COPY_IGNORE, symlinks=True)
+    _record_population(destination)
     completed = subprocess.run(  # noqa: S603 - argv is harness-owned, never user input
         [_uv(), "sync", "--frozen"],
         cwd=destination,

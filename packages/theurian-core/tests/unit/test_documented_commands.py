@@ -493,9 +493,23 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
         for surface in SCANNED_SURFACES
         for path in _files(surface.root, surface.suffixes)
     }
+    population = _population(REPO_ROOT)
+
+    # The guard's predicate is pinned by _GUARD_ORACLE; its *input* is pinned
+    # here, and it was not: emptying this tuple passed the whole suite, because
+    # a guard that is handed nothing reports nothing and reporting nothing is
+    # what passing looks like. The repository tracked 398 files at bd4fb25 and
+    # this floor is a fraction of that -- low enough not to rot on a deletion,
+    # high enough that no plausible narrowing of the population clears it.
+    assert len(population) > 200, (
+        f"the guard below was handed {len(population)} files. It reports what no "
+        "reader opens, so a population this small makes it pass by having "
+        "nothing to look at."
+    )
+    assert REPO_ROOT / "README.md" in population
 
     unseen: list[str] = []
-    for path in _population(REPO_ROOT):
+    for path in population:
         relative = path.relative_to(REPO_ROOT).as_posix()
         if relative in scanned or _is_unread(relative):
             continue

@@ -59,6 +59,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import warnings
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Final
@@ -101,8 +102,14 @@ SCANNED_SURFACES: Final = (
 )
 
 #: What git is asked, once per repository. ``--cached`` is the index and the
-#: index is what ships; ``-z`` because git quotes non-ASCII paths in every other
-#: output mode, and this repository holds CJK fixtures.
+#: index is what ships.
+#:
+#: ``-z`` because every other output mode is ambiguous rather than merely
+#: awkward: git separates paths with newlines and C-quotes the ones that would
+#: break that, so ``docs/two\nlines.md`` comes back as ``"docs/two\\nlines.md"``
+#: and this module's split -- which does not unquote -- yields one entry that is
+#: no path at all. Measured on a scratch repository. This repository's CJK is
+#: file *content*, which is a different problem and not this one.
 #:
 #: Paths come from the index, bytes from the working tree -- :func:`_text` opens
 #: the file, not the blob. Identical in a fresh CI checkout, and where they
@@ -138,13 +145,22 @@ PRUNED_DIRECTORIES: Final = frozenset(
 
 
 def _walked(names: Iterable[str], *, at_repository_root: bool) -> list[str]:
-    """The subdirectories of one directory the *fallback* treats as shipped.
+    """The subdirectories of one directory the *last-resort* walk treats as shipped.
 
     ``.theurian/`` at the top of the tree is refused, and only there. That is
-    where a project keeps its own knowledge, this repository tracks nothing
-    under it, and a copy of a dogfooding checkout is precisely where the
-    fallback runs. Deeper it is sample content -- the scan has always read
-    ``examples/sample-project/.theurian/config.yaml``.
+    where a project keeps its own knowledge, and a copy of a dogfooding checkout
+    is precisely where this runs. Deeper it is sample content -- the scan has
+    always read ``examples/sample-project/.theurian/config.yaml``.
+
+    **This rule is wrong the moment the repository tracks its own knowledge,
+    and that is why it is the last resort rather than the fallback.** It rests
+    on ``git ls-files .theurian`` being empty, measured at bd4fb25;
+    ``dogfood/dev7-corpus`` puts 81 tracked documents under
+    ``.theurian/knowledge/`` -- beside the untracked local-only notes of #262,
+    in the same directory. No name can separate those two, so a narrower rule is
+    not available: the manifest :func:`_population` prefers is what carries the
+    real answer into a tree with no git, and this is what is left when even that
+    is absent.
     """
     return sorted(
         name
@@ -153,6 +169,44 @@ def _walked(names: Iterable[str], *, at_repository_root: bool) -> list[str]:
         and (not name.startswith(".") or name in SHIPPED_DOT_DIRECTORIES)
         and not (at_repository_root and name == ".theurian")
     )
+
+
+#: Where ``tools/mutate.py`` records the source checkout's tracked paths when it
+#: copies the tree without a ``.git`` -- see ``_POPULATION_NAME`` there, which is
+#: the other half of this contract. The bytes are ``git ls-files --cached -z``
+#: output verbatim, so :func:`_entries` parses both ends.
+_POPULATION_MANIFEST: Final = ".mutate-population"
+
+
+def _entries(listing: str) -> tuple[str, ...]:
+    """The paths in one ``-z`` listing: deduplicated, sorted, empties dropped.
+
+    Two jobs, and only one of them is load-bearing. ``dict.fromkeys`` is
+    correctness: the index holds up to three entries for an unmerged path --
+    base, ours, theirs -- and ``ls-files`` prints the path once per stage, so a
+    merge conflict would otherwise put a file into the population three times
+    and every invocation in it three times with it. ``sorted`` is determinism
+    only, and cheap belt: git already emits index order, which is sorted by path
+    bytes and so identical to this. Deleting it changes nothing today, which is
+    why no test pins it -- deleting the dedupe fails
+    ``test_a_path_left_unmerged_by_a_conflict_is_listed_once``.
+    """
+    return tuple(sorted(dict.fromkeys(entry for entry in listing.split("\0") if entry)))
+
+
+def _manifest_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
+    """The population the mutation harness recorded for this copy, if it did.
+
+    ``None`` when the file is absent, which is every ordinary run, and when it
+    cannot be read -- a manifest nobody can parse is not better than the walk,
+    and pretending otherwise would hand back an empty population.
+    """
+    manifest = repository / _POPULATION_MANIFEST
+    try:
+        listing = manifest.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return None
+    return _entries(listing)
 
 
 def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
@@ -185,57 +239,130 @@ def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
     listing = _git_output(git, repository, *_LISTING)
     if listing is None:
         return None
-    # Two jobs, and only one of them is load-bearing. `dict.fromkeys` is
-    # correctness: the index holds up to three entries for an unmerged path --
-    # base, ours, theirs -- and `ls-files` prints the path once per stage, so a
-    # merge conflict would otherwise put a file into the population three times
-    # and every invocation in it three times with it. `sorted` is determinism
-    # only, and cheap belt: git already emits index order, which is sorted by
-    # path bytes and so identical to this. Deleting it changes nothing today,
-    # which is why no test pins it -- deleting the dedupe fails
-    # `test_a_path_left_unmerged_by_a_conflict_is_listed_once`.
-    return tuple(sorted(dict.fromkeys(entry for entry in listing.split("\0") if entry)))
+    return _entries(listing)
+
+
+#: Environment variables that make git answer for a *different* tree, index or
+#: configuration than the one it was handed, dropped before it is asked. The
+#: toplevel check cannot catch them: ``GIT_INDEX_FILE`` binds the index and not
+#: the working tree, so ``--show-toplevel`` still names this repository while
+#: ``ls-files --cached`` reads somebody else's index and returns nothing
+#: (measured). Nobody exports these by hand -- git exports them to hooks, so a
+#: suite run from ``pre-commit`` or ``post-merge`` inherits them.
+#:
+#: ``GIT_CEILING_DIRECTORIES`` is deliberately *not* here, and that is the whole
+#: asymmetry with the sandbox fixture, which sets it: it can only make git look
+#: less far, which ends at the fallback, never at a wrong answer. What this
+#: module owns is which tree and which index answer; how far git may look to
+#: find one it does not.
+_INHERITED_GIT_OVERRIDES: Final = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+)
+
+#: Long enough that no healthy ``ls-files`` reaches it -- this repository's is
+#: 11 ms -- and short enough that a git waiting on a lock or on credentials
+#: ends the run instead of hanging the gate.
+_GIT_TIMEOUT_SECONDS: Final = 30
+
+#: The one failure that means "there is nothing to ask here" rather than "the
+#: question went wrong". Every other stderr is reported, because a
+#: ``safe.directory`` refusal and a missing repository would otherwise both
+#: arrive as the same silent fallback -- and only one of them is expected.
+_NO_REPOSITORY: Final = "not a git repository"
 
 
 def _git_output(git: str, repository: pathlib.Path, *arguments: str) -> str | None:
-    """One read-only git command's stdout, or ``None`` if it failed.
+    """One read-only git command's stdout, or ``None`` if it could not be asked.
 
     ``surrogateescape`` rather than a decode error: a path this suite must
     report is a path it first has to be able to name.
     """
-    completed = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
-        [git, "-C", str(repository), *arguments],
-        capture_output=True,
-        check=False,
-        encoding="utf-8",
-        errors="surrogateescape",
-    )
-    return None if completed.returncode != 0 else completed.stdout
+    try:
+        completed = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+            [git, "-C", str(repository), *arguments],
+            capture_output=True,
+            check=False,
+            encoding="utf-8",
+            errors="surrogateescape",
+            env={
+                name: value
+                for name, value in os.environ.items()
+                if name not in _INHERITED_GIT_OVERRIDES
+            },
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        warnings.warn(
+            f"`git {' '.join(arguments)}` in {repository} did not finish in "
+            f"{_GIT_TIMEOUT_SECONDS}s; the population falls back to a walk of the tree.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    if completed.returncode == 0:
+        return completed.stdout
+    if _NO_REPOSITORY not in completed.stderr:
+        warnings.warn(
+            f"`git {' '.join(arguments)}` in {repository} exited "
+            f"{completed.returncode}: {completed.stderr.strip()}. The population falls back "
+            "to a walk of the tree, which reads a different set of files.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return None
 
 
 @functools.cache
 def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
-    """Every file the repository ships, sorted, git's answer where there is one.
+    """Every file the repository ships, sorted, from the best source available.
+
+    Three sources, in order, and the order is the point: **git**, then a
+    **manifest** the mutation harness recorded, then a **walk**.
 
     Cached because several tests want it and it costs a subprocess; the walk it
     replaced was paid per call.
 
-    The fallback is what runs when :func:`_git_listing` cannot answer, and the
-    mutation harness is why it exists rather than an assertion: ``tools/mutate.py``
-    copies the checkout with ``shutil.copytree`` and its ``_COPY_IGNORE`` drops
-    ``.git`` deliberately, so the suite runs there with no repository at all --
-    while the copy still carries every untracked file the developer's tree
-    carried, local-only knowledge and half-written proposals alike. The fallback
-    cannot tell those from tracked ones, so it reads *less*: :func:`_walked`
-    refuses the repository-root ``.theurian/`` outright, which is where both of
-    them live.
+    The second source exists because ``tools/mutate.py`` copies the checkout
+    with ``shutil.copytree`` and its ``_COPY_IGNORE`` drops ``.git``
+    deliberately, so the suite runs there with no repository to ask -- while the
+    copy still carries every untracked file the developer's tree carried,
+    local-only knowledge and half-written proposals alike. The harness now
+    writes ``git ls-files --cached -z`` into the copy as
+    :data:`_POPULATION_MANIFEST`, so the copy scans exactly what the gate scans.
 
-    The residual is stated rather than hidden -- an untracked file anywhere
-    else, say a scratch note under ``docs/``, is still read there. That is a
-    copy of one machine's tree, never CI and never a clone, and the gate that
-    decides anything runs in a checkout where git answers.
+    A name-based guess is what is left when there is neither, and it was the
+    whole answer until ``dogfood/dev7-corpus`` made it untenable. Measured on
+    that branch: :func:`_walked` refuses 81 tracked documents under
+    ``.theurian/knowledge/``, 78 of them with a scanned suffix, holding 56
+    ``theurian <command>`` mentions -- about a third of the scanned corpus the
+    real gate reads. A harness grading mutations against that is answering for a
+    suite that does not exist.
+
+    The manifest carries the answer rather than a cleverer name rule because no
+    name can distinguish those 81 from the untracked local-only notes of #262:
+    both live in ``.theurian/knowledge/``, and one of them is in every clone
+    while the other is in no clone.
+
+    The residual is stated rather than hidden: in a tree with neither git nor a
+    manifest, an untracked file outside the repository-root ``.theurian/`` --
+    say a scratch note under ``docs/`` -- is still read. That is one machine's
+    copy, never CI and never a clone, and the gate that decides anything runs
+    in a checkout where git answers.
     """
     listed = _git_listing(repository)
+    if listed is None:
+        listed = _manifest_listing(repository)
     if listed is not None:
         return tuple(path for entry in listed if (path := repository / entry).is_file())
 
