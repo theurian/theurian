@@ -512,11 +512,26 @@ is not "be careful":
   `kill` handed a subshell's pid returns 0 and leaves the daemon running, and
   the survivor answers the *next* run's health probe — that is how a
   `daemon-running` step read `satisfied` in a measurement that needed `missing`.
-  Check with `lsof -nP -iTCP:<dev-port> -sTCP:LISTEN`; no output means free.
-  **Once a resident dogfood daemon owns 7419, dev-time runs take an explicit
-  `--port <dev-port>` and every check names that port, not 7419** — including
-  `setup --dry-run` and `doctor`, whose default probes otherwise report on the
-  resident daemon rather than on the thing under test.
+  **Dev-time daemon runs take `--port 7420`, and the check is two lines** — no
+  output from either means free:
+
+  ```sh
+  lsof -nP -iTCP:7420 -sTCP:LISTEN   # the thing under test
+  lsof -nP -iTCP:7419 -sTCP:LISTEN   # where a run that forgot --port landed
+  ```
+
+  The second line is not optional. The survivor this bullet exists to catch
+  usually comes from a run that omitted `--port`, and that survivor is on 7419,
+  which is exactly the port a one-line check aimed at 7420 does not look at.
+
+  **No resident daemon exists yet, so today anything answering on 7419 is the
+  accident.** Once a resident dogfood daemon owns 7419, that line stops reading
+  "free" and starts reading "the resident one, not mine" — and from that point
+  `setup --dry-run` and `doctor` need `--port 7420` as well. Both take `--port`
+  and default to 7419 — `cli/setup_commands.py` binds their `PortOption` to
+  `DEFAULT_PORT`, which `daemon/instance.py` sets to 7419 — so without it they
+  describe the resident daemon while reading as if they described the thing
+  under test.
 
 #### Registration: `--dry-run` is the only form to run here
 
