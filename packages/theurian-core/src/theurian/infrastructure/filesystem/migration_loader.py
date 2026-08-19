@@ -713,7 +713,7 @@ def _parse_upsert(
         raise PathEscapeError(content_file, str(project_root)) from exc
 
     relative_posix = PurePosixPath(relative)
-    resolve_within_root(project_root, relative_posix)
+    resolved_path = resolve_within_root(project_root, relative_posix)
     try:
         body_bytes = read_source_file(project_root, relative_posix)
     except OSError as exc:
@@ -732,6 +732,20 @@ def _parse_upsert(
         body = body_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise MigrationError(f"{path.name}: {content_file} is not valid UTF-8") from exc
+
+    # The identity the application layer compares two revisions on (issue #210).
+    # Taken from the resolved body -- the same file `read_source_file` just read --
+    # so a case-variant spelling of one file (`NOTE.md` vs `note.md` on APFS/NTFS)
+    # cannot read as a second reference the way its path *string* does. Guarded
+    # like the read above: a stat failing here is the same CP-2 escape, converted
+    # to a `TheurianError` rather than surfaced as a raw traceback.
+    try:
+        body_stat = resolved_path.stat()
+    except OSError as exc:
+        raise MigrationContentUnreadableError(
+            str(path.relative_to(project_root)), content_file, exc.strerror or str(exc), exc.errno
+        ) from exc
+    content_identity = (body_stat.st_dev, body_stat.st_ino)
 
     actual = ContentHash.of_bytes(body_bytes)
     declared = payload.get("contentSha256")
@@ -752,10 +766,13 @@ def _parse_upsert(
         expected_revision=None if expected is None else RevisionId(expected),
         content_sha256=actual,
         # The resolution this function already performed in order to read the
-        # body at all, kept so the application layer can tell two spellings of
-        # one path from two paths (issue #210) without resolving anything, and
-        # therefore without touching the filesystem.
+        # body at all -- kept for display (a body a reader can `shasum`, and the
+        # path named in a refusal), not as the comparison key. Two spellings of
+        # one file resolve to two *different* strings on a case-insensitive
+        # filesystem, so `content_identity` below, not this, is what the
+        # application layer compares (issue #210).
         resolved_content_path=relative_posix.as_posix(),
+        content_identity=content_identity,
         # `content_sha256` above is the hash this loader just computed, whether
         # or not the migration declared one, so it cannot answer "is this body
         # frozen?". Only a declared pin is checked against the file, and only a

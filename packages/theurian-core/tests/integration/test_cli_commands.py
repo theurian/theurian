@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -1811,6 +1812,233 @@ def test_two_migrations_naming_two_body_files_are_not_refused(project: Path) -> 
     assert validated["valid"] is True
     assert apply_code == 0
     assert applied["applied"] == [MIGRATION_ID, _SECOND_MIGRATION_ID]
+
+
+# -- issue #210: the re-key -- identity, not the path string ----------------
+#
+# The refusal above keys on filesystem identity (`st_dev`/`st_ino`), not on the
+# resolved path string. A case-insensitive filesystem (APFS, NTFS) reaches one
+# physical file through many spellings, so a string key let a second revision
+# slip a case-variant spelling past the refusal and cross-record a withheld body
+# through an approved item's index. These prove the identity key against the real
+# loader; the pure-comparison faces are in `test_migration_engine.py`.
+
+_KNOWLEDGE_DIR = ".theurian/knowledge/architecture"
+
+
+def _temp_dir_is_case_insensitive(root: Path) -> bool:
+    """Whether *this* checkout's filesystem collapses case, decided at runtime.
+
+    APFS and NTFS do; a case-sensitive Linux volume does not, and there the
+    case-variant collapse cannot occur, so the tests that depend on it skip
+    rather than false-fail.
+    """
+    probe = root / _KNOWLEDGE_DIR / "_case_probe.md"
+    probe.write_text("x")
+    try:
+        return (probe.parent / "_CASE_PROBE.MD").exists()
+    finally:
+        probe.unlink()
+
+
+def _temp_dir_collapses_nfc_nfd(root: Path) -> bool:
+    """Whether an NFC name and its NFD spelling reach one inode here (APFS does)."""
+    name = "café_probe.md"
+    nfc = root / _KNOWLEDGE_DIR / unicodedata.normalize("NFC", name)
+    nfc.write_text("x")
+    try:
+        nfd = root / _KNOWLEDGE_DIR / unicodedata.normalize("NFD", name)
+        return nfd.exists() and nfc.stat().st_ino == nfd.stat().st_ino
+    finally:
+        nfc.unlink()
+
+
+def test_a_hardlinked_second_name_for_one_body_is_refused(project: Path) -> None:
+    """Issue #210's re-key, the cross-platform proof: two distinct paths, one
+    inode. A path-string key sees two references and lets the set cross; the
+    identity key sees one file and refuses. A hardlink needs no case-insensitive
+    filesystem, so this is the non-negotiable driving test -- it runs everywhere.
+    """
+    _invoke("init")
+    _write_migration(project)
+    original = project / _KNOWLEDGE_DIR / "auth-policy.md"
+    os.link(original, project / _KNOWLEDGE_DIR / "auth-policy-hardlink.md")
+    _write_second_migration(
+        project, content_file="../knowledge/architecture/auth-policy-hardlink.md"
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, _ = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert _SECOND_MIGRATION_ID in validate_error["error"], "the migration that shares the inode"
+    assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
+        "a refused apply must cost no state file"
+    )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "../knowledge/architecture/auth-policy.MD",
+        "../knowledge/Architecture/auth-policy.md",
+        "../KNOWLEDGE/ARCHITECTURE/AUTH-POLICY.MD",
+    ],
+)
+def test_a_case_variant_spelling_of_one_body_cannot_bypass_the_refusal(
+    project: Path, spelling: str
+) -> None:
+    """The bypass the re-key closes. Each spelling reaches the very file the
+    first migration already names -- an uppercase extension, a case-variant
+    directory, all-uppercase -- and each `resolve()`s to a *distinct* string.
+    A string-keyed guard crossed all three (measured); the identity key refuses
+    all three, because one inode backs both revisions."""
+    _invoke("init")
+    _write_migration(project)
+    if not _temp_dir_is_case_insensitive(project):
+        pytest.skip("this filesystem is case-sensitive; the case-variant collapse cannot occur")
+    _write_second_migration(project, content_file=spelling)
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, _ = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR, f"{spelling} crossed validate"
+    assert apply_code == EXIT_STATE_ERROR, f"{spelling} crossed apply"
+    assert _SECOND_MIGRATION_ID in validate_error["error"]
+    assert list((project / ".theurian/state").glob("*.sqlite")) == []
+
+
+def test_an_nfc_nfd_spelling_of_one_body_cannot_bypass_the_refusal(project: Path) -> None:
+    """The Unicode face of the same collapse. The body is named once; the two
+    migrations reach it through an NFC spelling and its NFD equivalent, which
+    APFS resolves to one inode and Python leaves as distinct strings."""
+    _invoke("init")
+    if not _temp_dir_collapses_nfc_nfd(project):
+        pytest.skip("this filesystem keeps NFC and NFD distinct")
+
+    name = "café-policy.md"
+    body_path = project / _KNOWLEDGE_DIR / unicodedata.normalize("NFC", name)
+    body_path.write_text(BODY)
+    first = MIGRATION.replace(
+        "contentFile: ../knowledge/architecture/auth-policy.md",
+        f"contentFile: ../knowledge/architecture/{unicodedata.normalize('NFC', name)}",
+    )
+    (project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(first)
+    _write_second_migration(
+        project, content_file=f"../knowledge/architecture/{unicodedata.normalize('NFD', name)}"
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, _ = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR
+    assert apply_code == EXIT_STATE_ERROR
+    assert _SECOND_MIGRATION_ID in validate_error["error"]
+
+
+# The disclosure the re-key closes: a status-gate-boundary crossing. An approved,
+# public item and a rejected, restricted item share one body file through a
+# case-variant spelling. The status gate withholds the rejected item directly,
+# but the shared body would be served through the *approved* item's published
+# index -- unless the set is refused before it is ever applied.
+_DISCLOSURE_APPROVED_MIGRATION_ID = "01K1DAAAAA01234567890ABCDE"
+_DISCLOSURE_APPROVED_REVISION_ID = "01K1DAAREV01234567890ABCDE"
+_DISCLOSURE_REJECTED_MIGRATION_ID = "01K1DBBBBB01234567890ABCDE"
+_DISCLOSURE_REJECTED_REVISION_ID = "01K1DBBREV01234567890ABCDE"
+
+_DISCLOSURE_APPROVED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_DISCLOSURE_APPROVED_MIGRATION_ID}
+createdAt: 2026-08-02T10:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.public-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.public-policy
+    revisionId: {_DISCLOSURE_APPROVED_REVISION_ID}
+    contentFile: ../knowledge/architecture/shared.md
+    metadata:
+      title: Public policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sensitivity: public
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/shared.md
+"""
+
+_DISCLOSURE_REJECTED_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {_DISCLOSURE_REJECTED_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: architecture.secret-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: architecture.secret-policy
+    revisionId: {_DISCLOSURE_REJECTED_REVISION_ID}
+    contentFile: ../knowledge/architecture/SHARED.MD
+    metadata:
+      title: Secret policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: rejected
+      owner: platform-team
+      trustLevel: reviewed
+      sensitivity: restricted
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/shared.md
+"""
+
+
+def test_a_rejected_restricted_body_cannot_reach_an_approved_index_via_a_case_variant(
+    project: Path,
+) -> None:
+    """The security proof for issue #210's re-key (disclosure regression).
+
+    An `approved`/`public` item and a `rejected`/`restricted` item name one body
+    file through two case-variant spellings. On the pre-fix, path-string-keyed
+    guard the set applies at exit 0, and the rejected body -- withheld from
+    direct retrieval by the status gate -- is served through the approved item's
+    published index. The re-key refuses the set at both `validate` and `apply`,
+    before any index can be built, closing the crossing at its source.
+    """
+    _invoke("init")
+    if not _temp_dir_is_case_insensitive(project):
+        pytest.skip("this filesystem is case-sensitive; the case-variant collapse cannot occur")
+
+    (project / _KNOWLEDGE_DIR / "shared.md").write_text(BODY)
+    (project / f".theurian/migrations/{_DISCLOSURE_APPROVED_MIGRATION_ID}-public.yaml").write_text(
+        _DISCLOSURE_APPROVED_MIGRATION
+    )
+    (project / f".theurian/migrations/{_DISCLOSURE_REJECTED_MIGRATION_ID}-secret.yaml").write_text(
+        _DISCLOSURE_REJECTED_MIGRATION
+    )
+
+    validate_code, validate_error = _invoke("migrate", "validate")
+    apply_code, apply_error = _invoke("migrate", "apply")
+
+    assert validate_code == EXIT_STATE_ERROR, "the rejected body must not reach an approved index"
+    assert apply_code == EXIT_STATE_ERROR
+    assert validate_error["error"] == apply_error["error"]
+    assert _DISCLOSURE_REJECTED_REVISION_ID in validate_error["error"]
+    assert _DISCLOSURE_APPROVED_REVISION_ID in validate_error["error"]
+    assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
+        "a refused apply must cost no state file -- the crossing is stopped before any build"
+    )
 
 
 # -- issue #210: an upsertRevision carrying no contentSha256 ---------------

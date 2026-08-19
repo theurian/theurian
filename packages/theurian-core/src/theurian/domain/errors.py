@@ -108,18 +108,31 @@ class MigrationDependencyMissingError(MigrationError):
 
 
 class DuplicateContentFileError(MigrationError):
-    """Two operations in one migration set reference the same body file (issue #210).
+    """Two revisions in one migration set back onto the same body file (issue #210).
 
-    A body file is not versioned: the loader reads whatever it holds *now*, and
-    where no ``contentSha256`` is declared it adopts that file's current hash as
-    the revision's own. Two operations pointing at one path therefore describe a
-    state that depends on when the file was last written rather than on what
-    either migration says -- measured: the earlier revision recorded the *later*
-    body under its own title and author and, having adopted that body's hash,
-    was self-consistent afterwards and so undetectable.
+    The two revisions are judged the same body by **filesystem identity**
+    (``st_dev``/``st_ino``), not by the path string: a case-insensitive
+    filesystem reaches one physical file through many spellings, and a
+    string-keyed check would let a second revision slip a case-variant spelling
+    past this refusal (the disclosure the re-key closes). So the two ``contentFile``
+    values this names may *differ* as text while pointing at one inode.
 
-    Refused over the whole set rather than diagnosed per migration, because
-    neither migration is wrong on its own; what is wrong is that both exist.
+    A body file cannot be independently frozen or attributed to each of two
+    revisions: it holds one version at a time and there is one set of bytes to
+    hash. Where no ``contentSha256`` is declared the loader adopts the file's
+    current hash, so the earlier revision silently records the *later* body under
+    its own title and author -- measured, self-consistent afterwards, undetectable.
+    But the refusal is **unconditional of pinning**, and its reason must be true
+    for the pinned case too: even when *both* revisions pin the same digest, one
+    file backing two revisions still cannot attribute distinct bytes to each, so
+    the hazard is the sharing itself, not the absence of a pin (issue #210's
+    pinned-pair face).
+
+    Names both offending revisions -- their ids, their migrations, and their
+    *authored* paths (resolved path supplementary) -- so the message is diagnostic
+    whether the two ops live in two migrations or one. The earlier "neither
+    migration is wrong on its own" framing was false in the single-migration case,
+    where one migration carries both ops and is wrong on its own.
 
     Carries no remedy text of its own, for the reason
     :class:`UnenforceableScopeError` carries none: whether the honest fix is an
@@ -127,15 +140,36 @@ class DuplicateContentFileError(MigrationError):
     applied, and only a caller holding a store can know that.
     """
 
-    def __init__(self, content_file: str, first: MigrationId, second: MigrationId) -> None:
-        self.content_file = content_file
-        self.first = first
-        self.second = second
+    def __init__(  # noqa: PLR0913 -- two structured references, keyword-only so a call cannot mis-order them
+        self,
+        *,
+        first_migration: MigrationId,
+        first_revision: RevisionId,
+        first_content_file: str,
+        second_migration: MigrationId,
+        second_revision: RevisionId,
+        second_content_file: str,
+        resolved_content_path: str | None = None,
+    ) -> None:
+        self.first_migration = first_migration
+        self.first_revision = first_revision
+        self.first_content_file = first_content_file
+        self.second_migration = second_migration
+        self.second_revision = second_revision
+        self.second_content_file = second_content_file
+        self.resolved_content_path = resolved_content_path
+        resolved_note = (
+            f" (resolved: {resolved_content_path!r})" if resolved_content_path is not None else ""
+        )
         super().__init__(
-            f"{second} references the body file {content_file!r}, which {first} already "
-            f"references. One body file cannot be the content of two revisions: it holds "
-            f"one version at a time, so whichever revision is written first records "
-            f"whatever the file happens to hold then, under its own title and author."
+            f"revision {second_revision} (migration {second_migration}, body "
+            f"{second_content_file!r}) and revision {first_revision} (migration "
+            f"{first_migration}, body {first_content_file!r}) resolve to the same body "
+            f"file on disk{resolved_note}. One body file cannot back two revisions: it "
+            f"holds one version at a time and cannot be independently frozen or attributed "
+            f"to each, so whichever revision is written first records whatever the file "
+            f"holds then, under its own title and author -- and even a shared contentSha256 "
+            f"cannot separate them, because there is only one set of bytes to hash."
         )
 
 

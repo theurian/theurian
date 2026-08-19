@@ -123,11 +123,25 @@ class UpsertRevision(Operation):
     expected_revision: RevisionId | None = None
     content_sha256: ContentHash | None = None
     #: ``content_file_path`` as the loader resolved it -- project-relative, with
-    #: ``..`` collapsed and symlinks followed. Recorded because two operations
-    #: can name one file in two spellings, and only the layer that touched the
-    #: disk can say they are the same file (issue #210). ``None`` for an
-    #: operation built in memory, which has no tree to resolve against.
+    #: ``..`` collapsed and symlinks followed. Kept for display only: it names a
+    #: body a reader can ``shasum`` and identifies the file in a refusal message.
+    #: It is **not** the key two operations are compared on -- see
+    #: ``content_identity`` for why the path string cannot be that key. ``None``
+    #: for an operation built in memory, which has no tree to resolve against.
     resolved_content_path: str | None = None
+    #: The resolved body's filesystem identity, ``(st_dev, st_ino)``, taken by the
+    #: loader from the same ``stat`` that confirmed the file readable. This is the
+    #: key on which two operations are judged to reference the *same* body (issue
+    #: #210): a path *string* is not, because a case-insensitive filesystem (APFS,
+    #: NTFS) reaches one physical file through many spellings -- ``note.md`` and
+    #: ``NOTE.md``, an uppercase extension, a case-variant directory, an NFC/NFD
+    #: pair -- each of which ``resolve()`` leaves distinct while ``stat`` returns
+    #: one inode. Casefolding the string instead would be wrong the other way: it
+    #: would false-refuse two genuinely different files on a case-sensitive Linux
+    #: filesystem. ``None`` for an in-memory operation, which has no file on disk;
+    #: such an operation cannot participate in the identity comparison, and the
+    #: loader -- the only path a gate ever sees -- always sets it.
+    content_identity: tuple[int, int] | None = None
     #: Whether the migration *declared* ``contentSha256``, as distinct from
     #: whether ``content_sha256`` holds one. The loader fills that field either
     #: way -- with the declared pin, or with the body's hash as it reads it now
@@ -155,13 +169,21 @@ class UpsertRevision(Operation):
 
     @property
     def content_reference(self) -> str:
-        """The key on which two operations reference the *same* body file.
+        """A body path to *show* a reader -- resolved where there is one.
 
-        The resolved form where there is one, so two spellings of one path
-        compare equal; the authored string otherwise, which is all an
-        in-memory operation has.
+        The resolved form identifies the file in a refusal message and is what a
+        reader can ``shasum``; the authored string otherwise, which is all an
+        in-memory operation has. This is a display value, **not** the key two
+        operations are compared on -- that is ``content_identity``, because two
+        spellings of one file compare *unequal* as strings yet are the same file.
+        ``is None`` rather than ``or`` so an empty resolved string, were one ever
+        recorded, is not silently treated as "no resolution".
         """
-        return self.resolved_content_path or self.content_file_path
+        return (
+            self.content_file_path
+            if self.resolved_content_path is None
+            else self.resolved_content_path
+        )
 
 
 @dataclass(frozen=True, slots=True)
