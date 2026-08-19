@@ -47,6 +47,14 @@ from theurian.domain.migration import (
 def _final_item_statuses(migration_set: MigrationSet) -> dict[ItemId, KnowledgeStatus]:
     """Each item id's status after the whole set, computed in application order.
 
+    "Final" is well defined only in application (topological) order, so this
+    normalises to it with ``MigrationSet.ordered`` rather than trusting the
+    caller's iteration order: a raw ``MigrationSet(tuple(...))`` whose
+    ``deprecateItem`` merely lands last would otherwise read as ``deprecated`` and
+    defeat the T-21 exemption. ``ordered`` is idempotent for an already-ordered
+    set, so the ordered-loader caller pays only a re-sort, and re-validates a
+    cycle/missing-dep an applyable set has already passed.
+
     Only the four operations that move an item's status are consulted, and the
     same way ``MigrationEngine`` moves it: ``createItem`` sets ``draft`` for a
     *new* id (a re-create of an existing one is a no-op, so ``setdefault``),
@@ -56,7 +64,7 @@ def _final_item_statuses(migration_set: MigrationSet) -> dict[ItemId, KnowledgeS
     are not consulted.
     """
     statuses: dict[ItemId, KnowledgeStatus] = {}
-    for migration in migration_set:
+    for migration in MigrationSet.ordered(migration_set.migrations):
         for operation in migration.operations:
             match operation:
                 case CreateItem():
@@ -81,12 +89,17 @@ class _AliasTarget:
 def _final_alias_targets(migration_set: MigrationSet) -> dict[ItemId, _AliasTarget]:
     """Each alias key still live after the whole set, and where it was set.
 
+    Normalised to application order via ``MigrationSet.ordered`` for the same
+    reason :func:`_final_item_statuses` is: whether a key added then removed on
+    two migrations is still live, and which migration id a refusal names, are
+    last-write-wins over application order, not over the caller's tuple order.
+
     ``addAlias`` records a key; ``removeAlias`` takes one back, so a key added and
     later removed is not a live collision and is dropped. The migration id kept is
     the ``addAlias``'s own, so a refusal names the operation an author edits.
     """
     targets: dict[ItemId, _AliasTarget] = {}
-    for migration in migration_set:
+    for migration in MigrationSet.ordered(migration_set.migrations):
         for operation in migration.operations:
             match operation:
                 case AddAlias():

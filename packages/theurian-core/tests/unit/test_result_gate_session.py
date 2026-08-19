@@ -161,8 +161,11 @@ class _RecordingSession:
         item_id: ItemId,
     ) -> KnowledgeItem | None:
         # This fake resolves no alias, so exact and resolving reads coincide; it
-        # exists to satisfy the port the gate depends on (T-21).
-        self._log.append("get_item")
+        # exists to satisfy the port the gate depends on (T-21). Logged under its
+        # own name, not "get_item": the read-count assertions below count
+        # "get_item", and a gate that later routed a read through the exact form
+        # would silently inflate those counts if the two shared a label.
+        self._log.append("get_item_exact")
         return self._known.get(item_id.value)
 
     def get_revision(

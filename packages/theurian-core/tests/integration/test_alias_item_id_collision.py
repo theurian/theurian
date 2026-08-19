@@ -516,6 +516,47 @@ def test_validate_refuses_an_alias_over_a_live_item_id(project: Path) -> None:
     assert PUBLISHED_ITEM in report["error"]
 
 
+def test_status_reports_the_alias_collision_under_refused_ids(project: Path) -> None:
+    """``migrate status`` names the colliding migration under ``refusedIds`` (#63, #210).
+
+    ``status`` observes, it does not gate, so it keeps exit 0 -- but the same
+    statically decidable property ``validate``/``apply`` refuse must be visible
+    here, exactly as the tenant/ACL rule (#63) and the one-body-one-revision rule
+    (#210) already are. Otherwise ``status`` reports ``refusedIds: []`` for a set
+    the gating commands exit 4 on, the #210 gap applied to a new rule.
+
+    Untested until now, and the gap has teeth: the sibling of this file's
+    ``test_apply_refuses_an_alias_over_a_live_item_id`` pins the *throwing*
+    ``refuse_alias_item_id_collision``, but nothing pinned the non-throwing
+    ``alias_item_collision_violations`` that feeds ``status``. Mutating that
+    enumerator to ``return ()`` drops the alias rule from
+    ``_refused_migration_ids`` and leaves the whole suite green -- the adversarial
+    reviewer's finding. This test kills that mutation: the same live-item
+    collision as the apply/validate tests, observed rather than gated.
+    """
+    _write_body(project, "architecture/withheld-credentials.md", WITHHELD_BODY)
+    _write_body(project, "architecture/public-note.md", PUBLISHED_BODY)
+    _write_migration(
+        project,
+        MIG_A,
+        _migration(
+            MIG_A,
+            _create_item(WITHHELD_ITEM),
+            _withheld_upsert(),
+            _create_item(PUBLISHED_ITEM),
+            _published_upsert(),
+            _add_alias(alias=WITHHELD_ITEM, item_id=PUBLISHED_ITEM),
+        ),
+    )
+
+    status = _json("migrate", "status")
+
+    assert MIG_A in status["refusedIds"], (
+        "the migration whose addAlias collides with a live item id"
+    )
+    assert MIG_A in status["pendingIds"], "and it is still pending, since status observes not gates"
+
+
 def test_apply_refuses_an_alias_over_an_item_from_an_earlier_applied_migration(
     project: Path,
 ) -> None:
