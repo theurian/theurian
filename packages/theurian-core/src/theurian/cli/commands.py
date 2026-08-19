@@ -21,14 +21,16 @@ from theurian.application.ingestion_service import (
     IngestionService,
     manifest_from,
 )
+from theurian.application.migration_body_guards import (
+    duplicate_content_file_violations,
+    refuse_duplicate_content_files,
+    unpinned_revisions,
+)
 from theurian.application.migration_engine import (
     MigrationEngine,
     WithdrawalCandidate,
-    duplicate_content_file_violations,
-    refuse_duplicate_content_files,
     refuse_unenforceable_scope,
     unenforceable_scope_violations,
-    unpinned_revisions,
     verify_no_applied_migration_changed,
 )
 from theurian.application.project_service import (

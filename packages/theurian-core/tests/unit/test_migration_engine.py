@@ -12,15 +12,17 @@ from datetime import UTC, datetime
 import pytest
 from fakes import FrozenClock, InMemoryWriter
 
+from theurian.application.migration_body_guards import (
+    duplicate_content_file_violations,
+    refuse_duplicate_content_files,
+    unpinned_revisions,
+)
 from theurian.application.migration_engine import (
     ApplyReport,
     MigrationEngine,
-    duplicate_content_file_violations,
-    refuse_duplicate_content_files,
     refuse_unenforceable_scope,
     revisions_to_purge,
     unenforceable_scope_violations,
-    unpinned_revisions,
     verify_no_applied_migration_changed,
 )
 from theurian.domain.enums import (

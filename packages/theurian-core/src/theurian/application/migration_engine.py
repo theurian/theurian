@@ -20,9 +20,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Protocol
 
+from theurian.application.migration_body_guards import refuse_duplicate_content_files
 from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
 from theurian.domain.errors import (
-    DuplicateContentFileError,
     MigrationChecksumMismatchError,
     MigrationError,
     RevisionConflictError,
@@ -237,182 +237,6 @@ def unenforceable_scope_violations(migration_set: MigrationSet) -> tuple[Migrati
             if isinstance(operation, UpsertRevision)
         ):
             refused.append(migration.migration_id)
-    return tuple(refused)
-
-
-@dataclass(frozen=True, slots=True)
-class UnpinnedRevision:
-    """One ``upsertRevision`` whose body no ``contentSha256`` freezes."""
-
-    migration_id: MigrationId
-    revision_id: RevisionId
-    #: The path as authored, not as resolved: this is what a reader edits.
-    content_file: str
-    #: The loader's resolved, project-relative path -- the one a reader can
-    #: ``shasum`` from the repository root. ``None`` for an in-memory operation.
-    #: The authored ``content_file`` is relative to the *migration* file, so a
-    #: reader cannot ``shasum`` it from the root; the warning prints this instead.
-    resolved_content_path: str | None = None
-
-
-def unpinned_revisions(migration_set: MigrationSet) -> tuple[UnpinnedRevision, ...]:
-    """Every ``upsertRevision`` that declares no ``contentSha256`` (issue #210).
-
-    A warning's worth of information, not a refusal's: `migrate validate`
-    reports these and keeps exit 0. The field is optional in the schema, both
-    shipped example migrations omit it, and requiring it is a Milestone 7
-    decision with a measured cost -- what can be said now is that an unpinned
-    body is the one whose out-of-band edit nothing detects, and saying nothing
-    at all was the state issue #210 was filed against.
-
-    Reported per operation rather than per migration, unlike
-    :func:`unenforceable_scope_violations`: the fix is a digest computed from
-    one named body file, so collapsing two revisions of one migration into one
-    id would drop the half of the answer that says which file.
-
-    Returns them in migration and operation order -- deterministic, since a
-    `MigrationSet` iterates in the application order it settled at
-    construction.
-    """
-    return tuple(
-        UnpinnedRevision(
-            migration_id=migration.migration_id,
-            revision_id=operation.revision_id,
-            content_file=operation.content_file_path,
-            resolved_content_path=operation.resolved_content_path,
-        )
-        for migration in migration_set
-        for operation in migration.operations
-        if isinstance(operation, UpsertRevision) and not operation.content_pinned
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _ContentClaim:
-    """The first revision to reference a given body file, for the refusal message."""
-
-    revision_id: RevisionId
-    migration_id: MigrationId
-    content_file: str
-    resolved_content_path: str | None
-
-
-def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
-    """Refuse a body file backing two different revisions (issue #210).
-
-    A body file holds one version at a time and carries no history, so a set in
-    which two *distinct* revisions read one file does not describe a state -- it
-    describes whatever that file was last written with. Measured against the
-    unpinned form: both migrations applied, exit 0, and the earlier revision
-    recorded the later body under its own title and author. Nothing detects it
-    afterwards, because the loader adopts the file's current hash where no
-    ``contentSha256`` is declared, so the wrong record is internally consistent.
-    The refusal is **unconditional of pinning**: even a pair that both pin the
-    same digest is refused, because one file cannot attribute distinct bytes to
-    two revisions -- the hazard is the sharing, not the missing pin.
-
-    **Keyed by filesystem identity (``st_dev``/``st_ino``), not the path string.**
-    A case-insensitive filesystem (APFS, NTFS) reaches one physical file through
-    many spellings -- ``note.md`` and ``NOTE.md``, an uppercase extension, a
-    case-variant directory, an NFC/NFD pair -- each of which ``resolve()`` leaves
-    distinct while ``stat`` returns one inode. Keying on the resolved path string
-    let a second revision slip such a spelling past this refusal and cross-record
-    a withheld body through an approved item's index (the disclosure this re-key
-    closes). Casefolding the string instead would be wrong the other way, false-
-    refusing two genuinely different files on a case-sensitive Linux filesystem;
-    identity is correct on every platform. The loader sets ``content_identity``
-    from the same ``stat`` that read the body, so a gate always sees it; an
-    in-memory operation carries ``None`` and cannot participate, which is a skip,
-    not the old silent fall-back to a weaker path-string key.
-
-    **Distinct revision ids are what keep two legitimate shapes working.**
-    Re-declaring one revision against its own body is how an in-place status
-    change is written -- the revision id does not move, ``append_revision`` is
-    the no-op FR-K8 requires, and only ``status`` differs (ADR-0024 decision 5,
-    the ``reject``/``inplace-draft`` faces in ``test_absence_proof.py``). And a
-    *reused* revision id across two items, sharing a body, stays this function's
-    business to let through: it is refused at write time by the guard that
-    exists for it, whose error names the two items -- refusing it here first
-    would replace that diagnosis with a less specific one for the more serious
-    fault.
-
-    Whole-set rather than pending-only, for the reason
-    :func:`refuse_unenforceable_scope` is: `migrate validate` holds no store and
-    so has no notion of pending, and the two commands must decide a statically
-    decidable rule on identical input or reopen issue #36's class. An
-    already-applied duplicate is refused too -- reachable only from a build
-    older than this guard, and no less ambiguous for having landed.
-
-    `migrate status` does not call this throwing form; it reports the same
-    migrations without raising -- see :func:`duplicate_content_file_violations`,
-    which surfaces them under ``refusedIds`` exactly as it does the scope rule.
-
-    Raises:
-        DuplicateContentFileError: On the first body file claimed by a second
-            revision, in migration and operation order -- deterministic, since a
-            `MigrationSet` iterates in the application order it settled at
-            construction.
-    """
-    claimed_by: dict[tuple[int, int], _ContentClaim] = {}
-    for migration in migration_set:
-        for operation in migration.operations:
-            if not isinstance(operation, UpsertRevision):
-                continue
-            identity = operation.content_identity
-            if identity is None:
-                # An in-memory operation with no file on disk. The loader -- the
-                # only path any gate sees -- always sets the identity, so this
-                # branch is unreachable from `migrate validate`/`apply`; skipping
-                # is not the removed path-string fall-back, which could false-match.
-                continue
-            claim = claimed_by.get(identity)
-            if claim is None:
-                claimed_by[identity] = _ContentClaim(
-                    revision_id=operation.revision_id,
-                    migration_id=migration.migration_id,
-                    content_file=operation.content_file_path,
-                    resolved_content_path=operation.resolved_content_path,
-                )
-            elif claim.revision_id != operation.revision_id:
-                raise DuplicateContentFileError(
-                    first_migration=claim.migration_id,
-                    first_revision=claim.revision_id,
-                    first_content_file=claim.content_file,
-                    second_migration=migration.migration_id,
-                    second_revision=operation.revision_id,
-                    second_content_file=operation.content_file_path,
-                    resolved_content_path=claim.resolved_content_path,
-                )
-
-
-def duplicate_content_file_violations(migration_set: MigrationSet) -> tuple[MigrationId, ...]:
-    """Every migration :func:`refuse_duplicate_content_files` would refuse, without raising.
-
-    The non-throwing enumerator `migrate status` needs, the sibling of
-    :func:`unenforceable_scope_violations`. `status` reports rather than gates
-    (issue #63's MEDIUM-3), so the statically decidable body-sharing property
-    must be visible there too, under ``refusedIds`` -- it was not, and `status`
-    reported ``refusedIds: []`` for a set `validate`/`apply` exit 4 on.
-
-    Reports the *second* migration of each colliding pair -- the later one whose
-    body a reader gives its own file, matching both the throwing form's culprit
-    and the remedy. Every collision is reported, not only the first, and each
-    migration id at most once, in migration and operation order.
-    """
-    claimed_by: dict[tuple[int, int], RevisionId] = {}
-    refused: list[MigrationId] = []
-    for migration in migration_set:
-        for operation in migration.operations:
-            if not isinstance(operation, UpsertRevision):
-                continue
-            identity = operation.content_identity
-            if identity is None:
-                continue
-            claimant = claimed_by.get(identity)
-            if claimant is None:
-                claimed_by[identity] = operation.revision_id
-            elif claimant != operation.revision_id and migration.migration_id not in refused:
-                refused.append(migration.migration_id)
     return tuple(refused)
 
 
@@ -917,13 +741,9 @@ __all__ = [
     "MigrationEngine",
     "MigrationPlan",
     "MigrationWriter",
-    "UnpinnedRevision",
     "WithdrawalCandidate",
-    "duplicate_content_file_violations",
-    "refuse_duplicate_content_files",
     "refuse_unenforceable_scope",
     "revisions_to_purge",
     "unenforceable_scope_violations",
-    "unpinned_revisions",
     "verify_no_applied_migration_changed",
 ]
