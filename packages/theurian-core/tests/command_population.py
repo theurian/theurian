@@ -36,8 +36,12 @@ caught the moment it is staged, by CI on the pull request that ships it, and
 that is the right boundary -- a repository gate must not fail on files the
 product itself writes.
 
-:func:`_walked` is the fallback for a tree with no git in it, and
-:func:`_population` says what it costs.
+Three sources answer that question, in order, and :func:`_population` holds the
+reasoning for each: **git**, then the **manifest** ``tools/mutate.py`` records
+in a copy it made without a ``.git``, then :func:`_walked`'s name rule as a last
+resort. Only the first is a definition; the second carries the first into a tree
+that cannot be asked, and the third is a guess whose error :func:`_population`
+states.
 
 Lives under ``tests/`` and so inside :data:`UNREAD`, which is load-bearing --
 the docstrings below quote dead commands as examples, and
@@ -155,12 +159,13 @@ def _walked(names: Iterable[str], *, at_repository_root: bool) -> list[str]:
     **This rule is wrong the moment the repository tracks its own knowledge,
     and that is why it is the last resort rather than the fallback.** It rests
     on ``git ls-files .theurian`` being empty, measured at bd4fb25;
-    ``dogfood/dev7-corpus`` puts 81 tracked documents under
-    ``.theurian/knowledge/`` -- beside the untracked local-only notes of #262,
-    in the same directory. No name can separate those two, so a narrower rule is
-    not available: the manifest :func:`_population` prefers is what carries the
-    real answer into a tree with no git, and this is what is left when even that
-    is absent.
+    ``dogfood/dev7-corpus`` puts 81 tracked files under ``.theurian/`` -- 26
+    knowledge documents, 27 migrations, 27 proposals and one specification --
+    and the 26 sit beside the untracked local-only notes of #262, in the same
+    directory. No name can separate those two, so a narrower rule is not
+    available: the manifest :func:`_population` prefers is what carries the real
+    answer into a tree with no git, and this is what is left when even that is
+    absent.
     """
     return sorted(
         name
@@ -197,16 +202,25 @@ def _entries(listing: str) -> tuple[str, ...]:
 def _manifest_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
     """The population the mutation harness recorded for this copy, if it did.
 
-    ``None`` when the file is absent, which is every ordinary run, and when it
-    cannot be read -- a manifest nobody can parse is not better than the walk,
-    and pretending otherwise would hand back an empty population.
+    ``None`` when the file is absent, which is every ordinary run; when it
+    cannot be read; and -- the two that are not obvious -- when it is **empty**
+    or **truncated**.
+
+    ``ls-files -z`` terminates every entry including the last, so a manifest
+    that does not end in a NUL was cut short, and an empty one fails the same
+    test. Both would otherwise be adopted as the answer: a population of
+    nothing, or a population silently missing whatever was being written when
+    the write stopped. This function's whole job is to say "I do not know",
+    because the caller can fall back and cannot detect a short answer.
     """
     manifest = repository / _POPULATION_MANIFEST
     try:
         listing = manifest.read_text(encoding="utf-8", errors="surrogateescape")
     except OSError:
         return None
-    return _entries(listing)
+    if not listing.endswith("\0"):
+        return None
+    return _entries(listing) or None
 
 
 def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
@@ -223,11 +237,12 @@ def _git_listing(repository: pathlib.Path) -> tuple[str, ...] | None:
     the listing comes back empty and the exit code is 0.
 
     An empty population is *caught* -- ``test_the_scan_reaches_every_arm_of_every
-    _reader`` and ``test_no_recorded_exception_outlives_the_text_it_excuses``
-    both go RED on one, measured by returning ``()`` here. So the check is not
-    what stands between this module and a silent pass; it is what keeps a
-    legitimate no-git tree, which is what the mutation harness runs in, from
-    taking a *wrong* answer instead of the fallback and failing for a reason
+    _reader``, ``test_no_recorded_exception_outlives_the_text_it_excuses`` and
+    the floor in ``test_no_file_that_names_a_command_escapes_the_scan`` all go
+    RED on one, measured by returning ``()`` here. So the check is not what
+    stands between this module and a silent pass; it is what keeps a legitimate
+    no-git tree, which is what the mutation harness runs in, from taking a
+    *wrong* answer instead of the fallback and failing for a reason
     that has nothing to do with the tree.
     """
     git = shutil.which("git")
@@ -305,7 +320,9 @@ def _git_output(git: str, repository: pathlib.Path, *arguments: str) -> str | No
     except subprocess.TimeoutExpired:
         warnings.warn(
             f"`git {' '.join(arguments)}` in {repository} did not finish in "
-            f"{_GIT_TIMEOUT_SECONDS}s; the population falls back to a walk of the tree.",
+            f"{_GIT_TIMEOUT_SECONDS}s, so the population cannot be defined by the index. "
+            "Under this suite's `filterwarnings = error` that ends the run here; outside "
+            "it, the caller falls back to a manifest or a walk.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -315,8 +332,10 @@ def _git_output(git: str, repository: pathlib.Path, *arguments: str) -> str | No
     if _NO_REPOSITORY not in completed.stderr:
         warnings.warn(
             f"`git {' '.join(arguments)}` in {repository} exited "
-            f"{completed.returncode}: {completed.stderr.strip()}. The population falls back "
-            "to a walk of the tree, which reads a different set of files.",
+            f"{completed.returncode}: {completed.stderr.strip()}. The population cannot be "
+            "defined by the index. Under this suite's `filterwarnings = error` that ends "
+            "the run here; outside it, the caller falls back and reads a different set of "
+            "files.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -343,16 +362,16 @@ def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
 
     A name-based guess is what is left when there is neither, and it was the
     whole answer until ``dogfood/dev7-corpus`` made it untenable. Measured on
-    that branch: :func:`_walked` refuses 81 tracked documents under
-    ``.theurian/knowledge/``, 78 of them with a scanned suffix, holding 56
-    ``theurian <command>`` mentions -- about a third of the scanned corpus the
-    real gate reads. A harness grading mutations against that is answering for a
-    suite that does not exist.
+    that branch: :func:`_walked` refuses 81 tracked files under ``.theurian/``
+    -- 26 knowledge documents, 27 migrations, 27 proposals, one specification --
+    of which 78 carry a scanned suffix. The gate's whole scanned population
+    there is 321 files, so the guess drops **24% of it**. A harness grading
+    mutations against that is answering for a suite that does not exist.
 
     The manifest carries the answer rather than a cleverer name rule because no
-    name can distinguish those 81 from the untracked local-only notes of #262:
-    both live in ``.theurian/knowledge/``, and one of them is in every clone
-    while the other is in no clone.
+    name can distinguish the 26 tracked knowledge documents from the untracked
+    local-only notes of #262: both live in ``.theurian/knowledge/``, and one set
+    is in every clone while the other is in no clone.
 
     The residual is stated rather than hidden: in a tree with neither git nor a
     manifest, an untracked file outside the repository-root ``.theurian/`` --
@@ -490,8 +509,8 @@ def _scan() -> tuple[Invocation, ...]:
     Cached because four tests want the same answer and it reads every file in
     the repository. Deterministic for the same reason it is cacheable: the
     surfaces are ordered, :func:`_files` yields :func:`_population`'s order --
-    which is sorted, by the same key in both of its branches -- and each reader
-    is a generator over one text.
+    sorted on the repository-relative posix path, the same key whichever of its
+    three sources answered -- and each reader is a generator over one text.
     """
     return tuple(
         Invocation(relative, span.line, command, span.text)

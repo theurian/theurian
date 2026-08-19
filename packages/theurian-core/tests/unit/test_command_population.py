@@ -29,6 +29,8 @@ from command_population import (
     _files,
     _git_listing,
     _git_output,
+    _manifest_listing,
+    _population,
     _walked,
 )
 
@@ -157,9 +159,11 @@ def test_a_git_ignored_document_is_no_part_of_the_population(sandbox: pathlib.Pa
     Asserted as the whole list rather than as an absence, because an enumeration
     that returned nothing at all would satisfy ``ignored not in scanned`` and
     say nothing about #262 -- the vacuity is this assertion's, not the suite's.
-    An empty population is caught two modules over, by
-    ``test_the_scan_reaches_every_arm_of_every_reader`` and
-    ``test_no_recorded_exception_outlives_the_text_it_excuses``.
+    An empty population is caught in ``test_documented_commands`` -- by
+    ``test_the_scan_reaches_every_arm_of_every_reader``, by
+    ``test_no_recorded_exception_outlives_the_text_it_excuses``, and now
+    directly by the floor ``test_no_file_that_names_a_command_escapes_the_scan``
+    asserts on the population it is handed.
     """
     git = _require_git()
     _git(git, "init", "-q", str(sandbox))
@@ -439,19 +443,46 @@ def test_a_git_that_fails_for_an_unexpected_reason_says_so(sandbox: pathlib.Path
 
     So an exit that is not "not a git repository" carries git's own stderr into
     a warning, which this suite's ``filterwarnings = error`` turns into a
-    failure. The expected absence stays quiet, and the fallback tests here are
-    what prove it: they take that path on every run and none of them warns.
-
-    Provoked with a path that is a file, because ``git -C <file>`` fails before
-    it can look for a repository and so cannot produce the expected message.
+    failure. What matters is that **git's reason reaches the reader**, not that
+    the module's own sentence does -- so the stub writes the message a
+    ``safe.directory`` refusal writes, and the assertion matches on that rather
+    than on this module's wording, which is free to change and did.
     """
-    git = _require_git()
-    not_a_directory = sandbox / "regular-file.txt"
-    sandbox.mkdir(parents=True, exist_ok=True)
-    not_a_directory.write_text("not a checkout\n", encoding="utf-8")
+    _require_git()
+    refusing_git = sandbox / "refusing-git"
+    refusing_git.write_text(
+        "#!/bin/sh\necho 'fatal: detected dubious ownership in repository' >&2\nexit 128\n",
+        encoding="utf-8",
+    )
+    refusing_git.chmod(0o755)
 
-    with pytest.warns(RuntimeWarning, match="falls back to a walk"):
-        answer = _git_output(git, not_a_directory, "rev-parse", "--show-toplevel")
+    with pytest.warns(RuntimeWarning, match="detected dubious ownership"):
+        answer = _git_output(str(refusing_git), sandbox, "rev-parse", "--show-toplevel")
+
+    assert answer is None
+
+
+def test_a_tree_that_simply_has_no_repository_is_not_reported_as_a_failure(
+    sandbox: pathlib.Path,
+) -> None:
+    """The quiet half of the same rule, and the one that would break every run.
+
+    A copy the mutation harness made has no ``.git`` by design, so the absent
+    repository is the *expected* answer there and on any tree the fallback is
+    meant to serve. Warning about it would turn this suite's
+    ``filterwarnings = error`` on the harness itself and fail every run inside a
+    prepared tree -- the discrimination is what makes the noisy half affordable,
+    and until now nothing asserted it directly.
+    """
+    _require_git()
+    absent_git = sandbox / "absent-repository-git"
+    absent_git.write_text(
+        "#!/bin/sh\necho 'fatal: not a git repository (or any parent up to /)' >&2\nexit 128\n",
+        encoding="utf-8",
+    )
+    absent_git.chmod(0o755)
+
+    answer = _git_output(str(absent_git), sandbox, "rev-parse", "--show-toplevel")
 
     assert answer is None
 
@@ -474,7 +505,6 @@ def test_a_git_that_never_returns_does_not_hold_the_gate_open(
     """
     _require_git()
     slow_git = sandbox / "slow-git"
-    sandbox.mkdir(parents=True, exist_ok=True)
     slow_git.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
     slow_git.chmod(0o755)
     monkeypatch.setattr(command_population, "_GIT_TIMEOUT_SECONDS", 1)
@@ -485,33 +515,43 @@ def test_a_git_that_never_returns_does_not_hold_the_gate_open(
     assert answer is None
 
 
-def test_this_checkout_answers_from_git_and_not_from_the_fallback() -> None:
-    """The gate's own population, asserted rather than assumed.
+def test_this_tree_answers_from_an_index_and_not_from_a_guess() -> None:
+    """Whichever tree this is, the population came from an index -- not from names.
 
-    Every other test here builds the tree it asks about. None of them says
-    which branch answers for *this* repository, and the two branches do not
-    agree: with git absent the fallback drops the repository-root
-    ``.theurian/`` wholesale, which on the dogfood corpus branch is 81 tracked
-    files the gate is supposed to read. A machine without git on ``PATH``, or a
-    checkout git refuses for ``safe.directory``, would run the whole
-    documented-command suite against a different population and report nothing
-    about it.
+    Every other test here builds the tree it asks about. None of them says what
+    answered for *this* one, and the sources do not agree: the name guess drops
+    the repository-root ``.theurian/`` wholesale, which on the dogfood corpus
+    branch is 78 scanned files of the 321 the gate reads. A machine without git
+    on ``PATH``, or a checkout git refuses for ``safe.directory``, would run the
+    whole documented-command suite against a different population and report
+    nothing about it.
 
-    Skipped rather than failed where there is no git, because the fallback is a
-    supported way to run this suite -- but a skip here is visible in ``-ra``,
-    and the silence it replaces was not.
+    **Two trees are supported and this must pass in both**, which the first
+    version of this test got wrong and the mutation harness proved: it asserted
+    on ``_git_listing`` alone, and the harness's own copy has no ``.git`` -- a
+    valid manifest, no git, a failing assert, a RED control, and every verdict
+    in the batch void. It is the assertion that was wrong, not the tree. So the
+    question is whether *an index* answered, by either route.
+
+    The skip is what is left when neither could: no git binary and no manifest,
+    where the guess is the only thing available and this test has nothing to
+    say. Visible in ``-ra``, unlike the silence it replaces.
     """
-    git = _require_git()
-    assert git
+    from_git = _git_listing(REPO_ROOT)
+    recorded = from_git if from_git is not None else _manifest_listing(REPO_ROOT)
+    if recorded is None:
+        pytest.skip(
+            "neither git nor a recorded manifest can answer for this tree, so the "
+            "name-based guess is all there is and there is nothing here to check"
+        )
 
-    listing = _git_listing(REPO_ROOT)
-
-    assert listing is not None, (
-        "this checkout fell back to the name-based walk. The gate is then "
-        "reading a different population than CI, and #262's class is only "
-        "fixed on the git path."
-    )
-    assert "pyproject.toml" in listing
+    assert "pyproject.toml" in recorded
+    # Which source answered is one question; whether the gate used it is
+    # another. `_population` is cached and picks among three, so a fallback
+    # taken and memoised before this test ran would not show up above.
+    assert set(_population(REPO_ROOT)) == {
+        path for entry in recorded if (path := REPO_ROOT / entry).is_file()
+    }
 
 
 def test_both_branches_of_the_population_hand_over_the_same_order(
@@ -563,11 +603,13 @@ def test_a_copy_of_the_tree_inside_another_checkout_takes_the_fallback(
     repository, an empty listing and exit 0.
 
     What that costs is a *false RED*, not a silent pass: an empty population is
-    caught by ``test_the_scan_reaches_every_arm_of_every_reader`` and
-    ``test_no_recorded_exception_outlives_the_text_it_excuses``, both of which
-    go red on one. The tree here is a legitimate no-git tree -- the harness's
-    own copy -- and the toplevel check is what routes it to the fallback instead
-    of failing it for a reason that has nothing to do with the tree.
+    caught in ``test_documented_commands`` by
+    ``test_the_scan_reaches_every_arm_of_every_reader``, by
+    ``test_no_recorded_exception_outlives_the_text_it_excuses``, and by the
+    floor ``test_no_file_that_names_a_command_escapes_the_scan`` asserts on its
+    input. The tree here is a legitimate no-git tree -- the harness's own copy
+    -- and the toplevel check is what routes it to the fallback instead of
+    failing it for a reason that has nothing to do with the tree.
 
     The ceiling is raised for this test alone, and that is the whole fixture:
     :func:`sandbox` pins it at the directory holding the sandbox so no test
@@ -604,11 +646,12 @@ def test_a_gitless_copy_scans_the_population_the_harness_recorded(
     ``tools/mutate.py`` copies the checkout without ``.git`` and the copy keeps
     every untracked file the developer's tree carried, so nothing in it can be
     asked what ships. Until the corpus landed, the name-based guess was close
-    enough; ``dogfood/dev7-corpus`` tracks 81 knowledge documents under
-    ``.theurian/knowledge/`` -- beside the untracked notes of #262, in the same
-    directory -- and the guess refuses that directory wholesale. A harness that
-    scans 81 documents fewer than the gate reports verdicts about a suite that
-    does not exist.
+    enough; ``dogfood/dev7-corpus`` tracks 81 files under ``.theurian/`` -- 26
+    knowledge documents, 27 migrations, 27 proposals, one specification, 78 of
+    them with a suffix the scan reads -- and the guess refuses that directory
+    wholesale. The gate's scanned population there is 321 files, so a harness
+    running on the guess reports verdicts about a suite 24% smaller than the one
+    it stands in for.
 
     So the harness records ``git ls-files --cached -z`` into the copy and this
     reads it. Asserted in both directions on purpose: the tracked knowledge
@@ -631,6 +674,52 @@ def test_a_gitless_copy_scans_the_population_the_harness_recorded(
     scanned = _scanned_in(sandbox)
 
     assert scanned == [".theurian/knowledge/corpus.md", "docs/shipped.md"]
+
+
+@pytest.mark.parametrize(
+    ("label", "manifest"),
+    [
+        ("empty", b""),
+        ("a lone terminator", b"\x00"),
+        ("cut off mid-path", b"docs/first.md\x00docs/sec"),
+        ("cut off after a whole path", b"docs/first.md"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_a_manifest_that_is_not_whole_is_not_an_answer(
+    sandbox: pathlib.Path, label: str, manifest: bytes
+) -> None:
+    """The reader must say "I do not know" rather than "nothing", twice over.
+
+    An empty manifest read as an answer is a population of nothing, which is
+    the one state that makes the documented-command suite pass by opening no
+    files -- ``_population``'s own docstring says it refuses exactly that, and
+    ``_entries`` returning ``()`` handed it back regardless. A truncated one is
+    quieter and worse: a population silently missing whatever was still being
+    written, indistinguishable from a smaller repository.
+
+    Both are caught by the terminator. ``ls-files -z`` ends every entry with a
+    NUL including the last, so anything that does not is not a whole listing.
+    The writer will not produce either now -- it refuses, and renames into place
+    -- but the reader cannot assume it was written by this version of the
+    harness, or that the disk did not fill between the two.
+
+    Asserted against the fallback's answer rather than against emptiness,
+    because "returned None" is only interesting if the caller then goes and
+    finds the files itself. Two files on disk and a manifest that names at most
+    one of them, for the same reason: a truncated manifest whose missing entry
+    is also missing from the tree produces the fallback's answer by accident,
+    and a test that cannot tell those apart passes with the check deleted --
+    this one did, until the fixture grew its second file.
+    """
+    (sandbox / "docs").mkdir(parents=True)
+    (sandbox / "docs" / "first.md").write_text("run `theurian init`\n", encoding="utf-8")
+    (sandbox / "docs" / "second.md").write_text("run `theurian init`\n", encoding="utf-8")
+    (sandbox / ".mutate-population").write_bytes(manifest)
+
+    scanned = _scanned_in(sandbox)
+
+    assert scanned == ["docs/first.md", "docs/second.md"], label
 
 
 def test_a_tree_with_neither_git_nor_a_manifest_still_refuses_a_projects_own_state(

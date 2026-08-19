@@ -498,9 +498,16 @@ def test_no_file_that_names_a_command_escapes_the_scan() -> None:
     # The guard's predicate is pinned by _GUARD_ORACLE; its *input* is pinned
     # here, and it was not: emptying this tuple passed the whole suite, because
     # a guard that is handed nothing reports nothing and reporting nothing is
-    # what passing looks like. The repository tracked 398 files at bd4fb25 and
-    # this floor is a fraction of that -- low enough not to rot on a deletion,
-    # high enough that no plausible narrowing of the population clears it.
+    # what passing looks like. The repository tracked 398 files at bd4fb25.
+    #
+    # What this floor catches is an emptied or near-emptied population -- a
+    # source that stopped answering, a manifest read as nothing. It does *not*
+    # catch a degraded one: the name-based walk on the merged corpus branch
+    # drops 78 of 321 scanned files and still hands over more than 400, so it
+    # clears this line comfortably. That case is caught where it is visible --
+    # by the RuntimeWarning `_git_output` raises under `filterwarnings = error`,
+    # and by the manifest tests in test_command_population.
+
     assert len(population) > 200, (
         f"the guard below was handed {len(population)} files. It reports what no "
         "reader opens, so a population this small makes it pass by having "
