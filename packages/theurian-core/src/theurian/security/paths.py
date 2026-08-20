@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
-from theurian.domain.errors import InputTooLargeError, PathEscapeError
+from theurian.domain.errors import InputTooLargeError, PathDepthExceededError, PathEscapeError
 
 #: Maximum bytes a single source file may occupy (SEC-8). Knowledge is prose and
 #: structured documents; anything larger is a mistake or an attack.
@@ -39,8 +39,12 @@ def resolve_within_root(root: Path, relative: str | PurePosixPath) -> Path:
 
     Raises:
         PathEscapeError: If ``relative`` is absolute, traverses above ``root``,
-            resolves outside ``root`` through a symlink, or exceeds the depth
-            limit.
+            or resolves outside ``root`` through a symlink.
+        PathDepthExceededError: If ``relative`` nests past
+            :data:`MAX_PATH_DEPTH`. A :class:`PathEscapeError` subclass, so
+            every caller catching the base type still catches it -- but with
+            its own message, because such a path need never have left ``root``
+            and "escapes the permitted root" was false for it (issue #233).
 
     The check uses ``Path.resolve()`` followed by ``is_relative_to``, which
     operates on the fully resolved forms of both paths. Every symlink in the
@@ -54,7 +58,7 @@ def resolve_within_root(root: Path, relative: str | PurePosixPath) -> Path:
         raise PathEscapeError(str(relative), str(resolved_root))
 
     if len(candidate.parts) > MAX_PATH_DEPTH:
-        raise PathEscapeError(str(relative), str(resolved_root))
+        raise PathDepthExceededError(str(relative), str(resolved_root), limit=MAX_PATH_DEPTH)
 
     # `strict=False` so a not-yet-existing file still resolves; the containment
     # check is about *where* the path points, not whether it exists yet.

@@ -1226,8 +1226,8 @@ def test_apply_refuses_a_symlink_loop_migration_entry_without_seeding_a_state_da
 # The refusal itself is unchanged -- T-5 containment held before and after.
 
 _SYMLINK_REMEDY_TAIL = (
-    "is a symbolic link resolving outside the project. Repoint it inside the "
-    "project, or remove it, then retry."
+    "is a symbolic link resolving outside the project. Repoint it so it resolves "
+    "inside the project, or remove it, then retry."
 )
 
 
@@ -1327,7 +1327,7 @@ def test_apply_refuses_an_escaping_migration_file_without_seeding_a_state_databa
 def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink_broke(
     project: Path,
 ) -> None:
-    """Round two's HIGH-1, through the CLI a user actually reads.
+    """The ancestor/plain-file face, through the CLI a user actually reads.
 
     `.theurian` itself is the outside-pointing symlink -- reachable from a
     plain `git clone`, issue #237 -- and the migration inside it is an
@@ -1363,13 +1363,51 @@ def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_validate_does_not_tell_a_user_to_delete_a_symlink_that_is_not_the_escape(
+    project: Path,
+) -> None:
+    """The same harm as the test above, reached through a symlink rather than a
+    plain file -- the construction that survived keying the strong role on
+    `is_symlink()` alone.
+
+    The entry is a symbolic link, so the `lstat` is earned; it points at a
+    sibling *inside its own directory*, and `.theurian` is what escapes. This
+    test follows the instruction the way a user would and asserts the outcome
+    that made it a defect rather than a wording nit: after the deletion, the
+    migration is gone and the containment violation is untouched.
+
+    The `exit 0` at the end is issue #237's box, not this one's. What is pinned
+    here is that Theurian never routes anyone into it.
+    """
+    _invoke("init")
+    _write_migration(project)
+    shared = project / ".theurian" / "shared"
+    shared.mkdir()
+    entry = project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
+    shutil.move(str(entry), str(shared / "real.yaml"))
+    entry.symlink_to(Path("..") / "shared" / "real.yaml")
+    outside_theurian = project.parent / "outside-theurian"
+    shutil.move(str(project / ".theurian"), str(outside_theurian))
+    (project / ".theurian").symlink_to(outside_theurian)
+    assert entry.is_symlink(), "fixture must earn the lstat the old rule trusted"
+
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    payload = json.loads(result.stderr)
+    assert "remove it" not in payload["remedy"], "that instruction destroys the user's work"
+    assert "each directory above it" in payload["remedy"]
+    assert entry.is_symlink(), "the entry is still there to be repaired"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_validate_names_the_migration_file_when_its_content_file_escapes(project: Path) -> None:
-    """Round two's MEDIUM-4, through the CLI: a `contentFile` escaping names
+    """Through the CLI: a `contentFile` escaping names
     the migration file carrying it, and still never the author-written value.
 
     `MigrationContentUnreadableError` already prints this same project-relative
     filename for a `contentFile` that merely fails to read, so naming it here
-    discloses nothing new -- which is what made round one's "the only name it
+    discloses nothing new -- which is what made the earlier "the only name it
     could give is the author-written value" false.
     """
     _invoke("init")

@@ -40,11 +40,17 @@ from theurian.domain.errors import (
     MigrationError,
     MigrationFileUnreadableError,
     MigrationsDirectoryUnreadableError,
+    PathDepthExceededError,
     PathEscapeError,
     SchemaUnreadableError,
 )
 from theurian.domain.migration import LoadedMigrations
-from theurian.infrastructure.filesystem.migration_loader import _validator, load_migrations
+from theurian.infrastructure.filesystem import migration_loader
+from theurian.infrastructure.filesystem.migration_loader import (
+    _escape_role_of,
+    _validator,
+    load_migrations,
+)
 from theurian.security.yaml_loading import load_yaml_mapping
 
 pytestmark = pytest.mark.unit
@@ -57,7 +63,7 @@ _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 #: proposes removing what it names. `{name}` takes an already-`repr`'d string.
 _SYMLINK_REMEDY = (
     "{name} is a symbolic link resolving outside the project. "
-    "Repoint it inside the project, or remove it, then retry."
+    "Repoint it so it resolves inside the project, or remove it, then retry."
 )
 
 _VALID_MIGRATION = """apiVersion: theurian.dev/v1
@@ -745,11 +751,11 @@ def test_load_migrations_names_the_entry_when_one_migration_file_escapes_the_pro
 def test_load_migrations_does_not_call_a_plain_entry_a_symlink_when_an_ancestor_escapes(
     project: Path, tmp_path: Path
 ) -> None:
-    """Round two's HIGH-1: `.theurian` itself is the outside-pointing symlink
+    """The ancestor/plain-file face: `.theurian` itself is the outside-pointing symlink
     and the migration entries under it are ORDINARY FILES.
 
-    Reachable from a plain `git clone` (issue #237), and the shipped round-one
-    remedy asserted "this entry is a symbolic link ... or remove it" for every
+    Reachable from a plain `git clone` (issue #237), and an earlier commit on
+    this branch asserted "this entry is a symbolic link ... or remove it" for every
     name it was given. Measured against the real CLI before this fix:
     following that remedy deleted the user's own authored migration, and once
     `migrations/` was empty `migrate validate` exited 0 -- with `.theurian`
@@ -792,14 +798,214 @@ def test_load_migrations_does_not_call_a_plain_entry_a_symlink_when_an_ancestor_
     )
 
 
+def test_a_content_file_nested_too_deep_is_not_reported_as_an_escape(project: Path) -> None:
+    """`_parse_upsert`'s depth face, and the guard that keeps it distinct.
+
+    A `contentFile` nesting past the limit reaches `resolve_within_root` -- the
+    *second* of the three sibling branches that can refuse a `contentFile` on
+    containment grounds -- and raises `PathDepthExceededError`. That type is a
+    `PathEscapeError` subclass, so the referrer wrapper immediately below it in
+    the source would otherwise re-label it "the path this names resolves
+    outside the project", which is false: this path never left the root.
+    """
+    migration = project / ".theurian" / "migrations" / "01K1MMMMMM01234567890ABCDE-deep.yaml"
+    migration.write_text(
+        _UPSERT_MIGRATION.format(content_file="/".join(["deep"] * 40) + "/body.md")
+    )
+
+    with pytest.raises(PathDepthExceededError) as excinfo:
+        load_migrations(project, project / ".theurian" / "migrations", real_schema_root())
+
+    assert "escapes" not in str(excinfo.value)
+    assert excinfo.value.entry is None, "the depth refusal names no entry and needs none"
+
+
+def test_the_sibling_content_file_branches_name_the_migration_file_too(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other two of `_parse_upsert`'s three containment refusals.
+
+    Only the `relative_to` branch is reachable through the filesystem: by the
+    time `resolve_within_root` and `read_source_file` run, the path has already
+    been resolved and proved inside the root, so their escape branches are
+    reachable only if the tree changes underneath the call. That race is why
+    they exist, and it is also why this test drives them by injection rather
+    than with a fixture -- but which of three adjacent branches happens to fire
+    must not decide whether the user is told where to look, and before this
+    they raised anonymously while their neighbour four lines up did not.
+    """
+    migration = project / ".theurian" / "migrations" / "01K1MMMMMM01234567890ABCDE-race.yaml"
+    migration.write_text(_UPSERT_MIGRATION.format(content_file="body.md"))
+    (project / ".theurian" / "migrations" / "body.md").write_text("# Body\n")
+
+    def _escape(*_args: object, **_kwargs: object) -> Path:
+        raise PathEscapeError("../../../etc/id_ed25519", str(project))
+
+    monkeypatch.setattr(migration_loader, "resolve_within_root", _escape)
+
+    with pytest.raises(PathEscapeError) as excinfo:
+        load_migrations(project, project / ".theurian" / "migrations", real_schema_root())
+
+    relative = str(migration.relative_to(project))
+    assert excinfo.value.entry == EscapeSite(relative, "referrer")
+    assert "id_ed25519" not in str(excinfo.value), "the author-written value stays unechoed"
+    assert "id_ed25519" not in excinfo.value.remedy
+
+
+# -- the strong role's acceptance: removal must actually cure the escape -----
+#
+# `is_symlink()` proves "this name is a link". It does not prove "this link is
+# the escape", and the three constructions below are the ones that earn the
+# lstat and break the promise anyway. Two must degrade; the third must not,
+# because there the instruction genuinely works -- a rule that degraded
+# everything would be safe and useless.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_degrades(
+    project: Path, tmp_path: Path
+) -> None:
+    """Construction A: the entry IS a symlink, and it points at a sibling
+    inside its own directory. `.theurian` is what escapes.
+
+    `lstat` says link, so keying the strong role on that alone re-earned the
+    destructive remedy -- and following it deleted the user's committed
+    migration while `.theurian` stayed outside, exactly the harm the plain-file
+    fix was supposed to have ended. The parent-chain conjunct is what tells
+    this apart: `.theurian/migrations` resolves outside, so nothing here is
+    known to be the escaping component.
+    """
+    shared = project / ".theurian" / "shared"
+    shared.mkdir()
+    (shared / "real.yaml").write_text(_VALID_MIGRATION)
+    entry = project / ".theurian" / "migrations" / "01K1SIBLNG01234567890ABCDE-x.yaml"
+    entry.symlink_to(Path("..") / "shared" / "real.yaml")
+    outside_theurian = tmp_path / "outside-theurian"
+    shutil.move(str(project / ".theurian"), str(outside_theurian))
+    (project / ".theurian").symlink_to(outside_theurian)
+
+    migrations_dir = project / ".theurian" / "migrations"
+    assert entry.is_symlink(), "fixture must keep earning the lstat this rule no longer trusts"
+
+    with pytest.raises(PathEscapeError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert excinfo.value.entry is not None
+    assert excinfo.value.entry.role == "resolved"
+    assert "remove it" not in excinfo.value.remedy, "deleting it cures nothing and loses work"
+    assert "each directory above it" in excinfo.value.remedy
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_migrations_directory_link_under_an_escaped_ancestor_degrades(
+    project: Path, tmp_path: Path
+) -> None:
+    """Construction C: `.theurian/migrations` is itself a symlink, pointing at
+    a sibling that is lexically inside the project, while `.theurian` escapes.
+
+    The directory call site ran its own `is_symlink()` first and was described
+    as "the one call site entitled to the strong role" on that basis. It was
+    not: both halves of "repoint it inside the project, or remove it" are
+    useless here -- the target is already inside, and removing the link
+    destroys the layout while `.theurian` still resolves outside.
+    """
+    real = project / ".theurian" / "real-migrations"
+    shutil.move(str(project / ".theurian" / "migrations"), str(real))
+    (project / ".theurian" / "migrations").symlink_to(Path("real-migrations"))
+    outside_theurian = tmp_path / "outside-theurian"
+    shutil.move(str(project / ".theurian"), str(outside_theurian))
+    (project / ".theurian").symlink_to(outside_theurian)
+
+    migrations_dir = project / ".theurian" / "migrations"
+    assert migrations_dir.is_symlink(), "fixture must reach the directory-level symlink check"
+
+    with pytest.raises(PathEscapeError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert excinfo.value.entry == EscapeSite(".theurian/migrations", "resolved")
+    assert "remove it" not in excinfo.value.remedy
+    assert "each directory above it" in excinfo.value.remedy
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_an_entry_that_is_itself_the_escape_keeps_the_strong_role_and_removal_cures_it(
+    project: Path, tmp_path: Path
+) -> None:
+    """Construction B, the one that must NOT degrade: the entry is a symlink
+    whose own link text is lexically in-project (`../../lib/real.yaml`), and
+    the escape is `lib`.
+
+    Its parent chain resolves inside the root and it resolves outside, so it is
+    the component that carried the path out -- "remove it" and "repoint it so
+    it resolves inside" both genuinely cure the escape, and this test proves
+    the first of those by *doing* it. Without this case the rule could be
+    satisfied by degrading everything, which would be safe and useless.
+
+    The wording nit this also pins: the earlier "Repoint it inside the project"
+    was already satisfied as written -- `../../lib/real.yaml` *is* inside the
+    project as text. Only "so it resolves inside" says the true thing.
+    """
+    outside_lib = tmp_path / "outside-lib"
+    outside_lib.mkdir()
+    (outside_lib / "real.yaml").write_text(_VALID_MIGRATION)
+    (project / "lib").symlink_to(outside_lib)
+    migrations_dir = project / ".theurian" / "migrations"
+    entry = migrations_dir / "01K1LEXICAL1234567890ABCD-x.yaml"
+    entry.symlink_to(Path("..") / ".." / "lib" / "real.yaml")
+
+    with pytest.raises(PathEscapeError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    relative = str(entry.relative_to(project))
+    assert excinfo.value.entry == EscapeSite(relative, "symlink")
+    assert excinfo.value.remedy == _SYMLINK_REMEDY.format(name=repr(relative))
+    assert "Repoint it so it resolves inside the project" in excinfo.value.remedy
+
+    # The acceptance itself: follow the instruction and the escape is gone.
+    entry.unlink()
+    assert len(load_migrations(project, migrations_dir, real_schema_root()).migration_set) == 0
+
+
+def test_a_role_probe_that_cannot_run_degrades_rather_than_guessing(
+    project: Path, tmp_path: Path
+) -> None:
+    """`_escape_role_of`'s own `except OSError` branch, driven rather than
+    asserted: a mutation replacing its `return "resolved"` with `"symlink"`
+    survived the suite, which means nothing was checking that a probe it cannot
+    run stays on the safe answer.
+
+    A directory `chmod 0o000` makes the `is_symlink()` lstat raise `EACCES`.
+    The answer must be the role that proposes no deletion -- guessing the
+    strong one from a failed probe would be the original defect with less
+    evidence behind it.
+    """
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    victim = denied / "entry.yaml"
+    victim.write_text("x")
+    denied.chmod(0o000)
+    try:
+        with pytest.raises(OSError) as os_excinfo:
+            victim.is_symlink()
+        assert os_excinfo.value.errno == errno.EACCES, "fixture must actually deny the lstat"
+
+        assert _escape_role_of(victim, project) == "resolved"
+    finally:
+        denied.chmod(0o700)
+
+    assert _escape_role_of(tmp_path / "nope" / "entry.yaml", project) == "resolved", (
+        "a path that does not exist is not evidence of a symbolic link either"
+    )
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_load_migrations_names_the_migration_file_when_its_content_file_escapes(
     project: Path,
 ) -> None:
-    """Round two's MEDIUM-4: a `contentFile` escaping names the migration file
+    """A `contentFile` escaping names the migration file
     that carries it as the place to look.
 
-    Round one left this case unnamed, recording that "the only name it could
+    An earlier commit on this branch left this case unnamed, recording that "the only name it could
     give is the author-written value". That reasoning was false:
     `MigrationContentUnreadableError`, four lines up the same function, already
     prints this migration file's own project-relative name for a `contentFile`
@@ -826,7 +1032,7 @@ def test_load_migrations_names_the_migration_file_when_its_content_file_escapes(
 def test_an_escaping_entrys_control_characters_do_not_reach_output_raw(
     project: Path, tmp_path: Path
 ) -> None:
-    """Round two's MEDIUM-1: the `!r` quoting is load-bearing, and a mutation
+    """The `!r` quoting is load-bearing, and a mutation
     replacing ``{entry.name!r}`` with ``'{entry.name}'`` survived the suite.
 
     A filename may hold anything but ``/`` and NUL, so an ANSI escape and a

@@ -26,24 +26,37 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   won — the "exception that does not describe itself" shape
   [#205](https://github.com/theurian/theurian/issues/205) exists to end. It now
   names, relative to the project root and with the `!r` quoting its siblings
-  use, *where* the problem is, and its remedy is only ever as strong as the
-  check behind it: a name is called a symbolic link solely where an `lstat` on
-  that exact path proved it. That distinction is load-bearing — when
-  `.theurian` itself is the outside-pointing link (reachable from a plain `git
-  clone`, [#237](https://github.com/theurian/theurian/issues/237)) every plain
-  file under it resolves outside while none is a link, and an earlier draft of
-  this fix told users to remove their own authored migration. The offending
+  use, *where* the problem is — and its remedy now carries an acceptance rather
+  than a guess: **wherever it proposes removing or repointing something, doing
+  that must actually cure the escape.** A name is called the escaping symbolic
+  link only where its own `lstat` says link, its parent chain resolves inside
+  the root, and it still resolves outside; anything short of all three gets a
+  remedy that sends the reader up the directory chain and proposes deleting
+  nothing. That distinction is load-bearing, and it took two attempts: keying it
+  on `lstat` alone still told users to delete files that were not the escape —
+  an entry linked to a sibling under an outside-pointing `.theurian` (reachable
+  from a plain `git clone`,
+  [#237](https://github.com/theurian/theurian/issues/237)), and a `migrations`
+  directory link that was lexically in-project under the same. The offending
   path is still never echoed (SEC-7), and neither is the absolute project root.
 - **Exit code:** a `PathEscapeError` raised while resolving a project now exits
   `EXIT_STATE_ERROR` (4) rather than 1 for the commands routed through
-  `_require_project` — measured: `migrate validate`, `migrate status`, `migrate
-  apply`, `index build`, `index status`, `ingest` and `propose accept` — matching
-  every sibling refusal on the same load path
-  (`MigrationsDirectoryUnreadableError`, `MigrationFileUnreadableError`,
-  `MigrationError`). A script keying on exit 1 for those must be updated.
-  `init` and `project register` call `resolve_context` directly and still exit
-  1; `project status` reports at exit 0 as it always has. All three now carry
-  the new remedy text.
+  `_require_project` — measured, all nine: `migrate validate`, `migrate status`,
+  `migrate apply`, `index build`, `index status`, `index gc`, `ingest`,
+  `propose` and `propose accept` — matching every sibling refusal on the same
+  load path (`MigrationsDirectoryUnreadableError`,
+  `MigrationFileUnreadableError`, `MigrationError`). A script keying on exit 1
+  for those must be updated. `init` and `project register` call
+  `resolve_context` directly and still exit 1; `project status` reports at exit
+  0 as it always has. All three now carry the new remedy text.
+- **A path refused only for nesting too deep no longer claims to have escaped**
+  ([#233](https://github.com/theurian/theurian/issues/233)). `resolve_within_root`
+  refuses a path past `MAX_PATH_DEPTH` whether or not it ever leaves the root,
+  and reported it as `Path escapes the permitted root` — false for a path
+  sitting entirely inside. It now raises `PathDepthExceededError` with its own
+  message and a remedy about flattening the nesting. The new type is a
+  `PathEscapeError` subclass, so every existing `except` and every exit-code
+  route catches it unchanged; only what the caller is told differs.
 
 ## [0.1.0.dev7] - 2026-08-19
 

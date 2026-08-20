@@ -414,8 +414,10 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        "not a directory" case ``load_migrations`` already answers by returning
        an empty migration set -- but re-raises ``EACCES``. That escaped every
        command that resolves a project (`init`, `project register`, `project
-       status`, and every one of `_require_project`'s seven callers), `project
-       status` included, even though that command's whole contract is to
+       status`, and every one of `_require_project`'s callers -- nine as of
+       2026-08-20; re-count with ``grep -rn '_require_project(as_json)'
+       packages/theurian-core/src/theurian/cli/`` rather than trusting this
+       number), `project status` included, even though its whole contract is to
        answer at exit 0 rather than crash. Measured against the real CLI:
        `chmod 000 .theurian` (also `chmod 400`, missing only the execute bit)
        crashed all of them with a raw `PermissionError` Rich traceback.
@@ -580,15 +582,18 @@ class SecurityError(TheurianError):
 
 
 #: What a caller has actually *proved* about the entry it is naming in a
-#: :class:`PathEscapeError` (issue #233, round two). The role picks the remedy,
-#: and each one is exactly as strong as the check behind it:
+#: :class:`PathEscapeError` (issue #233). The role picks the remedy, and each
+#: one is exactly as strong as the check behind it:
 #:
-#: * ``"symlink"`` -- the caller ran ``lstat`` on this entry itself and it is a
-#:   symbolic link. Only this role may tell anyone to repoint or remove it.
+#: * ``"symlink"`` -- the caller proved this entry is *the component that
+#:   escaped*: its own ``lstat`` says symbolic link, its parent chain resolves
+#:   inside the root, and it still resolves outside. Only this role may tell
+#:   anyone to repoint or remove it, and only because all three hold together.
 #: * ``"resolved"`` -- this entry is the path that resolved outside the root,
 #:   but *which component* carried it there is unknown: an ancestor directory
-#:   may be the link while the entry is an ordinary file. The remedy sends the
-#:   reader up the chain and never proposes deleting anything.
+#:   may be the link while the entry is an ordinary file, or a link whose own
+#:   target is perfectly ordinary. The remedy sends the reader up the chain and
+#:   never proposes deleting anything.
 #: * ``"referrer"`` -- this entry is the file that *names* the offending path.
 #:   It is where to look, not what is wrong, and it is not itself outside.
 EscapeRole = Literal["symlink", "resolved", "referrer"]
@@ -598,14 +603,40 @@ class EscapeSite(NamedTuple):
     """A name a refusal may print, paired with what the caller proved about it.
 
     One value rather than two parameters, because the pairing is the invariant.
-    Round one shipped a bare ``entry: str`` whose remedy asserted "is a symbolic
-    link" for every name it was given, and ``_load_one`` passed one for a *plain
-    file* whose escaping component was an ancestor directory -- so the refusal
-    told a user to remove their own authored migration. Deleting it emptied the
-    directory, and ``migrate validate`` then exited 0 with ``.theurian`` still
-    pointing outside the project: the remedy walked the user into losing work
-    *and* into a silent pass. A name cannot be attached here without saying what
-    backs it.
+    An earlier commit on this branch carried a bare ``entry: str`` whose remedy
+    asserted "is a symbolic link ... or remove it" for every name it was given,
+    and ``_load_one`` passed one for a *plain file* whose escaping component was
+    an ancestor directory. Following that instruction deleted the user's own
+    authored migration, and ``migrate validate`` then exited 0 with
+    ``.theurian`` still pointing outside the project: the remedy walked the
+    reader into losing work *and* into a silent pass.
+
+    **The acceptance every remedy here must satisfy: in every construction where
+    the remedy proposes removing or repointing X, doing so must actually cure
+    the escape.** Keying the strong role on ``is_symlink()`` alone does not meet
+    it -- that proves "this name is a link", never "this link is the escape".
+    Three constructions earn the ``lstat`` and break the promise anyway: an
+    entry linking to a *sibling* under an escaped ancestor, a
+    ``migrations``-directory link that is lexically in-project under an escaped
+    ancestor, and an entry whose own link text is in-project (``../../lib/x``)
+    while ``lib`` is the escape.
+
+    What does meet it is the conjunction :data:`EscapeRole` describes: the
+    parent chain resolves inside the root, and the full path resolves outside.
+    Resolution walks components left to right, so a base *inside* the root and a
+    result *outside* it leave exactly one candidate -- the final component --
+    and ``lstat`` confirms that component is a link. Remove it and the escape is
+    gone; repoint it so it resolves inside and the escape is gone. Where any
+    conjunct fails, the role degrades to ``"resolved"``, whose remedy proposes
+    nothing destructive and is complete for every construction that can reach
+    it: "check each directory above it" covers an escaping ancestor, and covers
+    a link whose target chain escapes further up.
+
+    The conjuncts are established by adjacent probes, not atomically -- a
+    concurrent replacement between them can leave a printed role describing a
+    path that has since changed. That residual is bounded by what the role
+    *does*: it selects advice for a human who will then go and look, never an
+    action Theurian takes.
     """
 
     name: str
@@ -615,8 +646,10 @@ class EscapeSite(NamedTuple):
 class PathEscapeError(SecurityError):
     """A path resolved outside its permitted root.
 
-    Raised for ``..`` traversal, absolute paths, symlinks that leave the root,
-    and paths nested past the depth limit.
+    Raised for ``..`` traversal, absolute paths, and symlinks that leave the
+    root. A path merely nested too deep is refused by
+    :class:`PathDepthExceededError`, a subclass, because it need not have left
+    the root at all.
 
     **What is never rendered.** The ``requested`` *field* is never read for
     output -- at most of this class's call sites it holds attacker-controlled
@@ -637,19 +670,24 @@ class PathEscapeError(SecurityError):
     :class:`MigrationsDirectoryUnreadableError` apply to theirs, which is what
     keeps a control character in a filename from reaching a terminal raw.
 
-    **Why the role exists.** Round one justified an unconditional "this is a
-    symbolic link" remedy by arguing that a name ``iterdir()`` returned from
-    inside the project has no ``..`` to climb with, so a symlink is the only
-    way it can escape. That argument was about the *final component* and never
-    covered the ancestors: ``.theurian`` itself being an outside-pointing
-    symlink -- reachable from a plain ``git clone``, issue #237 -- makes every
-    plain file under it resolve outside while none of them is a link.
-    :class:`EscapeSite` records what was actually checked so the remedy cannot
-    outrun it. Where no ``entry`` is given at all, the remedy names every
-    mechanism and stays root-agnostic: three raise sites in
+    **Why the role exists.** An earlier commit on this branch justified an
+    unconditional "this is a symbolic link" remedy by arguing that a name
+    ``iterdir()`` returned from inside the project has no ``..`` to climb with,
+    so a symlink is the only way it can escape. That argument was about the
+    *final component* and never covered the ancestors: ``.theurian`` itself
+    being an outside-pointing symlink -- reachable from a plain ``git clone``,
+    issue #237 -- makes every plain file under it resolve outside while none of
+    them is a link. Narrowing the claim to "``lstat`` says link" was still not
+    enough; :class:`EscapeSite` carries the acceptance that finally is.
+
+    Where no ``entry`` is given at all, the remedy names every mechanism and
+    stays root-agnostic: three raise sites in
     ``application/proposal_service.py`` protect ``.theurian/knowledge`` rather
     than the project root, so "keep it inside the project" would be advice a
     caller has already followed.
+
+    Exported by name rather than through an ``__all__``: this module declares
+    none, and every consumer imports the symbol it needs directly.
 
     Before this class carried a remedy, ``cli/commands.py::_context_remedy``
     fell through to its generic default and told a user whose
@@ -684,23 +722,28 @@ def _path_escape_remedy(entry: EscapeSite) -> str:
     their own siblings.
 
     Only the ``"symlink"`` branch proposes removing the named thing, and it is
-    the only branch reached from a call site that ran ``lstat`` on that exact
-    path. The other two send the reader looking without telling them to delete
-    anything, because at those call sites the named entry may be a file the
-    user wrote and the fault may be an ancestor directory or a line inside the
-    file.
+    reached only where :class:`EscapeSite`'s acceptance holds -- so removal
+    genuinely cures the escape there. The other two send the reader looking
+    without telling them to delete anything, because at those call sites the
+    named entry may be a file the user wrote and the fault may be an ancestor
+    directory or a line inside the file.
+
+    "Repoint it **so it resolves** inside the project", not "repoint it inside
+    the project": link text and resolved location are different things, and a
+    link reading ``../../lib/real.yaml`` is already lexically inside a project
+    it escapes through ``lib``.
     """
     if entry.role == "symlink":
         return (
             f"{entry.name!r} is a symbolic link resolving outside the project. "
-            f"Repoint it inside the project, or remove it, then retry."
+            f"Repoint it so it resolves inside the project, or remove it, then retry."
         )
     if entry.role == "referrer":
         return (
-            f"{entry.name!r} names a path that resolves outside the project. Correct that "
-            f"path so it stays inside the project -- remove any `..` that climbs above the "
-            f"project, and check each directory it traverses for a symbolic link that "
-            f"leaves it -- then retry."
+            f"The path {entry.name!r} names resolves outside the project. Check each "
+            f"directory it traverses for a symbolic link that leaves the project, then "
+            f"retry. A leading `..` is the canonical form here "
+            f"(docs/protocol/migrations.md, 'Path safety'), so removing it is not the cure."
         )
     return (
         f"{entry.name!r} resolves outside the project. Check it and each directory above "
@@ -708,6 +751,36 @@ def _path_escape_remedy(entry: EscapeSite) -> str:
         f"link and retry. Do not delete {entry.name!r} itself: an ancestor directory can "
         f"be the link while this entry is an ordinary file."
     )
+
+
+class PathDepthExceededError(PathEscapeError):
+    """A path nested deeper below the root than the containment check will walk.
+
+    A subclass rather than a plain :class:`PathEscapeError`, because the two say
+    different things: this path may sit entirely *inside* the root and still be
+    refused, so "Path escapes the permitted root" was simply false for it. It
+    stays under :class:`PathEscapeError` so that every existing ``except`` and
+    every exit-code route keeps catching it unchanged -- what changes is only
+    what the caller is told.
+
+    ``limit`` is passed in rather than imported: the constant lives in
+    ``security/paths.py``, which imports *this* module, and reaching back for it
+    would close the cycle.
+    """
+
+    def __init__(self, requested: str, root: str, *, limit: int) -> None:
+        self.requested = requested
+        self.root = root
+        self.entry = None
+        self.limit = limit
+        self.remedy = (
+            f"Keep the referenced path within {limit} path segments below the permitted "
+            f"root -- flatten the directories it nests through -- then retry."
+        )
+        # `SecurityError.__init__`, deliberately skipping `PathEscapeError`'s:
+        # that one composes the message from `entry`, and this refusal's message
+        # is not about an escape at all.
+        SecurityError.__init__(self, f"Path exceeds the permitted depth limit of {limit} segments")
 
 
 class InputTooLargeError(SecurityError):
