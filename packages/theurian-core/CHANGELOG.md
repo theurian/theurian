@@ -14,6 +14,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **The installed migration schema resolved `$ref`s over the network, and its
+  resolution failures escaped as raw tracebacks**
+  ([#235](https://github.com/theurian/theurian/issues/235)). The migration
+  schema was validated with `jsonschema`'s default registry, whose retrieve
+  callable fetches an external `$ref` over the network
+  (`urllib.request.urlopen`) at validate time — and reads a `file://` ref off
+  disk the same way. An SSRF-shaped read gated only on the installed schema
+  being corrupted or replaced (an operator-side precondition; `schema_root()`
+  never reads user-project paths), and covered by no existing claim:
+  `parsers/openapi.py`'s "external `$ref` targets are recorded, never fetched"
+  governs *ingested* documents, not the schema this build ships. Every
+  validator is now built with `referencing`'s `EMPTY_REGISTRY` — no retrieve
+  callable — so an external `$ref` fails closed; internal `#/$defs/…` refs
+  still resolve from the schema's own root resource, so the bundled schema
+  validates unchanged. Separately, the resulting resolution failures — an
+  unresolvable `$ref`/`$dynamicRef` raises `referencing.exceptions.Unresolvable`
+  and a self-recursive or empty `$ref` raises `RecursionError`, neither a
+  `ValidationError` — used to slip past every `except ValidationError` seam and
+  reach `resolve_context` as a raw traceback under `--json`. Both are now
+  translated to `SchemaUnreadableError`, the type every other
+  installed-schema-corruption failure already carries, at both validate seams
+  (`migrate validate` / `propose`, and any command that loads migrations from
+  disk).
 - **A path-containment refusal told the user to go somewhere they already were,
   and could instruct them to delete their own work**
   ([#233](https://github.com/theurian/theurian/issues/233)). With
