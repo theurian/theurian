@@ -12,6 +12,35 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An interrupted `theurian propose` was diagnosed as an accepted one**
+  ([#253](https://github.com/theurian/theurian/issues/253)). `propose accept`
+  read the presence of `evidence.json` as "this proposal has already been
+  accepted", but `propose` writes the body, then the evidence, then the
+  migration — so a run killed before its last write left exactly that shape.
+  `accept` then reported that the migration had been moved into
+  `.theurian/migrations/` and that no action was needed beyond opening a pull
+  request, while `.theurian/migrations/` held nothing and the drafted knowledge
+  existed nowhere. The remedy discarded the draft. The two states are told apart
+  by the body file now — `accept` removes every body before it removes the
+  migration, so an accepted directory holds `evidence.json` and nothing else —
+  and an interrupted draft is answered with the command that recovers it.
+
+### Changed
+
+- **BREAKING — re-accepting an already-accepted proposal now exits 4, not 1**
+  ([#254](https://github.com/theurian/theurian/issues/254)). The published exit
+  code table already documented 4 for "that migration is already in place", but
+  that code was reachable only from a hand-built directory: running
+  `theurian propose accept` twice — the way a caller meets this — exited 1
+  alongside "no such proposal", an interrupted draft, and a refused
+  `contentFile`. Exit 1 and exit 4 now carry opposite instructions: 4 means the
+  change is already in place and must not be drafted again, 1 means nothing
+  landed and drafting again is the recovery. Scripts that treat any non-zero
+  exit as failure are unaffected; one that special-cased 1 for "already
+  accepted" must read 4.
+
 ## [0.1.0.dev7] - 2026-08-19
 
 ### Added

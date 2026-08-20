@@ -359,6 +359,31 @@ def test_an_update_without_expected_revision_is_refused_at_the_cli(project: Path
     assert first["revisionId"] in payload["remedy"]
 
 
+def test_re_accepting_an_accepted_proposal_exits_with_the_state_code(project: Path) -> None:
+    """#254: the natural already-accepted case, which used to fold into exit 1.
+
+    The published table said 4 for "that migration is already in place", and the
+    only way to reach 4 was the hand-built state the next test constructs. Simply
+    running ``accept`` twice -- the way a caller meets this -- exited 1 alongside
+    "no such proposal", so a script driving a corpus could not tell "this one has
+    already landed, skip it" from "this proposal is not there, stop".
+
+    4 is the knowledge-state code, and both faces of "the change is already in
+    place" now carry it. It is the one answer whose meaning is *do not draft this
+    again*, which is why it must not share a code with the interrupted draft
+    above, whose meaning is exactly the opposite.
+    """
+    _, drafted = _draft(project)
+    first, _ = _invoke("propose", "accept", drafted["proposalId"])
+    assert first == 0
+
+    code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == EXIT_STATE_ERROR
+    assert "already been accepted" in payload["error"]
+    assert "pull request" in payload["remedy"]
+
+
 def test_accepting_the_same_proposal_twice_is_refused(project: Path) -> None:
     _, drafted = _draft(project)
     _invoke("propose", "accept", drafted["proposalId"])

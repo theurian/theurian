@@ -27,8 +27,8 @@ from typing import Annotated, Final, NoReturn
 import typer
 
 from theurian.application.proposal_service import (
+    ChangeAlreadyInPlaceError,
     DraftedProposal,
-    MigrationNameTakenError,
     ProposalError,
     ProposalRequest,
     ProposalService,
@@ -349,8 +349,18 @@ def propose_accept(
     that migration is already in place. The body file *may* replace what is at
     its path, because on an update to existing knowledge that is the intent.
 
-    Exit codes: 0 moved, 1 no such proposal, 2 malformed id, 4 that migration is
-    already in place.
+    Exit codes: **0** the files moved; **1** this proposal cannot be accepted as
+    it stands and nothing has landed -- no such proposal, a draft interrupted
+    before its migration was written, a file the security layer refuses; **2** the
+    id is not a ULID; **4** the change is already in place -- this proposal has
+    been accepted before, or that migration id is already in
+    ``.theurian/migrations/``.
+
+    1 and 4 carry opposite instructions, which is why they are the split rather
+    than "failure" and "worse failure": 4 means *do not draft this again*, and 1
+    means drafting again is how you recover. 4 used to be reachable only from a
+    hand-built directory -- re-accepting an accepted proposal exited 1 with "no
+    such proposal" and the rest (#254).
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,
@@ -372,7 +382,10 @@ def propose_accept(
     context, _ = _require_project(as_json)
     try:
         accepted = _service(context).accept(parsed)
-    except MigrationNameTakenError as exc:
+    except ChangeAlreadyInPlaceError as exc:
+        # Both faces of "already in place" -- a taken migration name and a
+        # proposal whose migration has already moved out -- are knowledge state,
+        # not a lookup failure, so both take the code reserved for state.
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         return
     except ProposalError as exc:
