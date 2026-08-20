@@ -429,24 +429,28 @@ destination survives the move. Tested:
 
 **The same input also chooses text this command prints, which is T-3's shape at
 the CLI edge rather than in indexed content.** A `contentFile` or a file name in
-the proposal directory reaches a refusal message on stderr, and YAML's
-double-quoted escapes (`\e`, `\r`) carry `ESC [ 2 K` and a carriage return
-through a parser that refuses both literally. Those two erase the line a terminal
-has already drawn and print another in its place: a planted value reproduced
-`propose accept`'s own *"has already been accepted / No action is needed"* under
-this command's name, re-introducing by hand the misdiagnosis
-[#253](https://github.com/theurian/theurian/issues/253) had just removed. The
-victim here is the human reading the terminal, not the agent — the label-based
-controls under T-3 do not apply, and no result payload is involved. **Controls:**
-every proposal-derived name is rendered with `repr` and enumerations stop after
-five with a count of the rest, both in `application.proposal_service._names`;
+the proposal directory reaches the terminal on two paths — a refusal message on
+stderr, and `propose accept`'s exit-0 **success** payload on stdout (`bodyFiles`,
+`migrationFile`) — and YAML's double-quoted escapes (`\e`, `\r`) carry `ESC [ 2 K`
+and a carriage return through a parser that refuses both literally. Those two
+erase the line a terminal has already drawn and print another in its place: a
+planted value reproduced `propose accept`'s own output under this command's name,
+on both paths. The victim here is the human reading the terminal, not the agent —
+the label-based controls under T-3 do not apply. **Controls:** the CLI escapes
+terminal-control characters — the C0 block bar `\n`/`\t`, `DEL`, and C1 — at its
+text-output sink (`cli.commands._render` and `_fail`), so no value any command
+prints, from any source, can rewrite a drawn line, while printable Unicode and
+ordinary whitespace are kept. Proposal-derived *names in error messages* are
+additionally quoted with `repr` and capped at five with a count, in
+`application.proposal_service._names`, for readability rather than for the escape.
 `--json` was never affected, because `json.dumps` escapes control characters.
-Tested: `::test_a_content_file_cannot_forge_this_command_s_own_output` and
-`::test_the_bodies_a_refusal_names_are_capped_rather_than_all_listed`.
-**Residual:** the interpolations this does not quote are constrained by the
-patterns they matched instead — a migration filename, a validated identifier —
-and two library strings measured on 2026-08-20: `OSError.__str__` reprs its own
-filename, and PyYAML refuses `ESC` outright while normalising `CR`.
+Tested: `test_propose_cli::test_a_success_payload_cannot_forge_output_through_a_body_path`,
+`::test_the_render_sink_escapes_controls_and_keeps_printable_unicode`, and
+`test_proposal_service::test_a_content_file_cannot_forge_this_command_s_own_error_output`.
+**Residual:** the sink is the closure; the constrained interpolations behind it
+(a migration filename, a validated identifier) and two library strings measured
+on 2026-08-20 — `OSError.__str__` reprs its own filename, PyYAML refuses `ESC`
+and normalises `CR` — are defence in depth, not the control.
 
 **Residual (accepted, and it belongs to T-1, not a gap here): a hardlinked body.**
 `O_NOFOLLOW` does not see a hardlink — a hardlink is a second name for one inode,

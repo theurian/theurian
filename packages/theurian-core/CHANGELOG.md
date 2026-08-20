@@ -14,13 +14,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
-- **`evidence.json` now records the `migrationId` of the migration its proposal
-  drafted** ([#253](https://github.com/theurian/theurian/issues/253)). It is the
-  one field of that file Core reads back, and it is what makes "has this proposal
-  been accepted?" a question with an answer:
-  `.theurian/migrations/<migrationId>-*.yaml` either exists or it does not.
-  Optional on read — the 26 proposals committed in this repository predate it and
-  are diagnosed by inference, which their message says.
+- **`evidence.json` now records the `migrationId` and `itemId` its proposal
+  drafted** ([#253](https://github.com/theurian/theurian/issues/253)). These are
+  the two fields of that file Core reads back: together they let `propose accept`
+  ask whether a migration with that id, operating on that item, is in
+  `.theurian/migrations/`. Both are a contributor's claim, not authority —
+  `evidence.json` is committed and untrusted (ADR-0013 point 7) — so `itemId` is
+  the cross-check that stops a forged `migrationId` (one pointing at another
+  proposal's landed migration) from reading as accepted. Optional on read: the 26
+  proposals committed in this repository predate both fields and are diagnosed by
+  best-effort inference, which their message says.
 
 ### Fixed
 
@@ -34,24 +37,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   request, while `.theurian/migrations/` held nothing and the drafted knowledge
   existed nowhere. The remedy discarded the draft.
 
-  Acceptance is now read from the recorded migration id rather than inferred from
-  which files are left in the proposal directory. The inference is not merely
-  weaker, it is wrong in both directions: `accept` removes only the bodies its
-  migration names, so a reviewer's notes or an editor's backup survive a
-  *successful* acceptance and would make it read as unfinished — whose remedy
-  mints a duplicate migration — while a body hidden under an unreadable
-  subdirectory would make an untouched draft read as accepted. A directory that
-  cannot be fully read is now reported as exactly that, rather than concluded
-  from.
+  Acceptance is a **best-effort diagnosis over untrusted input, not a
+  tamper-proof fact**: the proposal directory is contributor-controlled, so the
+  recorded `migrationId` is a claim (cross-checked by `itemId` against the
+  migration it names), a `evidence.json` that is present but unreadable is
+  answered as *indeterminate* rather than collapsed into "no record", and every
+  fallible branch points the reader at `.theurian/migrations/` first — no branch
+  emits an unconditional "no action is needed" or "draft it again", so none can
+  tell the author to discard work that may exist or duplicate a change that
+  already landed. Absent `evidence.json` (a legacy proposal, or one interrupted
+  before its evidence write) falls to inference over the directory, which reads
+  only the body shape the generator produces, so a reviewer's notes or a
+  `Thumbs.db` left beside an accepted proposal no longer flips the verdict.
 
 - **A committed proposal could forge `theurian propose accept`'s own output**
   ([#253](https://github.com/theurian/theurian/issues/253)). A proposal directory
   arrives through a contributor's pull request, and a file name or a migration's
   `contentFile` carrying `ESC [ 2 K` and a carriage return erases the line the
   terminal has drawn and prints its own in place of it — reproduced printing this
-  command's own "already been accepted / No action is needed" under its own name.
-  Every proposal-derived name is now quoted, and enumerations stop after five
-  with a count. The `--json` output was never affected.
+  command's own output under its own name, on both the refusal path and the
+  exit-0 **success** payload (`bodyFiles`, `migrationFile`). The CLI now escapes
+  terminal-control characters at its text-output sink, so no value a command
+  prints can rewrite a drawn line, while printable Unicode (a Japanese title) and
+  ordinary whitespace are kept. The `--json` output was never affected.
 
 ### Changed
 
