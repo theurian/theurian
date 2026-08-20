@@ -7,10 +7,18 @@ commit. Every one of the 82 was seeded with the **released** `0.1.0.dev7` wheel
 explicitly instead of inheriting the loader's defaults. That is the thing the
 first slice could not do, and the thing it recorded a decision to wait for.
 
-Everything below was measured on **2026-08-19**. The corpus is committed as
-`a5af66d` and its guard as `52bf3f5`; every body is a verbatim copy of a `docs/`
-file at `2a98d4c8963cdf46cc6169e43ac7add039745342`, which every `sourceAnchor`
-pins. Every command set `HOME`, `THEURIAN_DATA_DIR`, `UV_TOOL_DIR` and
+Everything below was measured on **2026-08-19**. Work on this branch is named by
+what it contains rather than by commit SHA, because a squash-merge collapses
+every commit here into one: a branch SHA written down now resolves for nobody
+reading later, and it does not resolve in a fresh clone even today. The corpus
+is **81 tracked paths under `.theurian/`** — 26 migrations, 26 bodies, 26
+`evidence.json` files and 3 `.gitkeep` (`git ls-files .theurian`, 2026-08-20) —
+and its guard is
+[`test_dogfood_corpus_governance.py`](../../packages/theurian-core/tests/unit/test_dogfood_corpus_governance.py).
+Every body is a verbatim copy of a `docs/` file at
+`2a98d4c8963cdf46cc6169e43ac7add039745342`, which every `sourceAnchor` pins;
+that one commit is cited because it is reachable from `origin/main` and survives
+the merge. Every command set `HOME`, `THEURIAN_DATA_DIR`, `UV_TOOL_DIR` and
 `UV_CACHE_DIR` to scratch directories **in the same command** that ran the CLI.
 
 The first slice's log —
@@ -59,8 +67,16 @@ measurement nobody else can take.
 
 **The committed slice derives standalone.** The adversarial review reproduced
 `73cda6f9…` and 669 chunks four independent ways: from a `git archive` of the
-tree plus `theurian init`, from a linked worktree, from a real clone, and from a
-tree with every `evidence.json` deleted. Three of those move the absolute path;
+tree plus `git init` and then `theurian init`, from a linked worktree, from a
+real clone, and from a tree with every `evidence.json` deleted. The `git init`
+is not optional and was missing from an earlier draft of this recipe: `theurian
+init` refuses a tree that is not inside a Git repository — *"Theurian scopes a
+project to a Git working tree, so that branches and worktrees stay isolated"* —
+and a `git archive` unpacks without a `.git`. Re-measured 2026-08-20 with the
+released dev7 wheel: the archive refuses, `git init` alone unblocks it with no
+commit needed, and `migrate apply` plus `index build` then report 669 chunks and
+`currentStateHash: 73cda6f9fc0df27be45a8badb25ce2c4ee620f418a9b37f974888dc6b3d80a66`.
+Three of those move the absolute path;
 one removes files that are committed beside the corpus but are not inputs to it.
 That is [ADR-0016](../adr/0016-state-hash-covers-the-working-tree.md)'s decision
 3 — *no absolute path, mtime, inode, hostname, or environment value enters the
@@ -163,20 +179,55 @@ Three residuals, all recorded as
 - **`git clean -xdf` deletes all 56 local notes**, precisely because they are
   invisible to Git. They are recoverable — the Obsidian vault is their source
   and Theurian holds a copy, not the original — but the recovery is manual.
-- **The only repository-side assert is the guard test**, `52bf3f5`. It is what a
-  clone gets: 13 tests reading nothing but what Git ships, holding that every
-  committed revision is exactly `public`/`reviewed`/`approved`, that every pin
-  resolves to a tracked body whose bytes hash to the declared `contentSha256`
-  and match the blob at its own anchor commit, and that the managed `.gitignore`
-  block is present exactly once with exactly the patterns `init` writes. A stray
-  `git add -f` of an `internal` or `confidential` item goes RED in CI.
+- **The only repository-side assert is the guard test**,
+  [`test_dogfood_corpus_governance.py`](../../packages/theurian-core/tests/unit/test_dogfood_corpus_governance.py).
+  It is what a clone gets: **24 rules** (`--collect-only`, 2026-08-20) whose
+  paths come from the Git index and whose body bytes and `.gitignore` come from
+  the working tree — identical in a fresh CI checkout, and where they differ
+  locally the working tree is the answer that catches an uncommitted edit. They
+  hold that every committed revision is exactly `public`/`reviewed`/`approved`,
+  that every pin resolves to a tracked body whose bytes hash to the declared
+  `contentSha256` and match the blob at its own anchor commit, and that the
+  managed `.gitignore` block is present exactly once with exactly the patterns
+  `init` writes.
 
-That test has one known gap, recorded in its own skip message rather than left
+Round two grew that module from 13 rules to 24, and the additions are all of one
+shape — **every tracked path under `.theurian/` has to belong to a family the
+module governs, and each family has a rule.** The 13 governed migrations and
+bodies; a path in neither set was simply unread. Now `.gitkeep` must be empty,
+`evidence.json` must carry exactly the evidence key set and sit alone in its own
+proposal directory, one per migration, with an anchor some committed migration
+also names; every migration must validate against the published migration
+schema and declare exactly the `createItem` + `upsertRevision` operations;
+`revisionId` and pinned body must each be unique across the corpus; every
+`sourceAnchor` must be a well-formed git pin. Two further rules keep the module
+honest about itself: one checks the family list is exactly what the code can
+return, and the population resolves through a three-step contract — **git, then
+the manifest `tools/mutate.py` writes into a copy that has no `.git`, then a
+loud skip** — which is what keeps the mutation harness alive. Without it `git`
+exits 128 inside a harness copy and 11 of the original 13 rules *failed* rather
+than skipped, taking the unmutated control RED and voiding every verdict in the
+batch.
+
+**A stray `git add -f` of an `internal` or `confidential` item goes RED in CI**
+for every force-add shape measured: migration and body together, body only,
+migration only, an `evidence.json`, and a non-empty `.gitkeep`. What is still
+unread is free text *inside* a well-formed committed file — confidential prose
+in an `evidence.json` `reasoning` field passes every structural rule. That is
+recorded in the module's own docstring and belongs to SEC-11's secret scanner,
+which does not exist ([#198](https://github.com/theurian/theurian/issues/198)).
+
+That test had one known gap, recorded in its own skip message rather than left
 to be discovered: the byte-identity rule against the anchor commit needs the
 anchor object, and `actions/checkout` defaults to `fetch-depth: 1`, so the rule
-skips in CI until the job asks for `fetch-depth: 0`. In any complete clone a
-missing anchor is a failure, not a skip. The workflow change is owed to
-`theurian-ci` and is not in this branch.
+skipped in CI. In any complete clone a missing anchor is a failure, not a skip.
+**Both halves of that are now fixed in this branch** — the `test` and `offline`
+jobs check out `fetch-depth: 0`, and `core.yml`'s `push` and `pull_request`
+`paths` filters gained `.theurian/**` and `.gitignore`, without which a pull
+request touching only the corpus started no Core run at all. The residual is
+`release-core.yml`, whose `quality` job runs the full suite on a shallow clone
+so the pin guard skips at release time:
+[#267](https://github.com/theurian/theurian/issues/267).
 
 Sensitivity is a published label, not a serving predicate
 ([#119](https://github.com/theurian/theurian/issues/119)), which is why the
@@ -192,12 +243,30 @@ repository is a note that gets served.
 | [#264](https://github.com/theurian/theurian/issues/264) | `init`'s managed `.gitignore` block omits `.theurian/evaluations/` and `.theurian/schema/` |
 | [#265](https://github.com/theurian/theurian/issues/265) | the boundary class above |
 
-**#262 is the one that only dogfooding could find.** The scan walks every file
+**#262 is the one that only dogfooding could find.** The scan walked every file
 in the tree by design, and until this run nothing had ever put fifty-six
 untracked, git-ignored markdown files inside it. The suite was green in CI and
 RED on the machine that had the corpus — which is the worst arrangement, because
-CI is where anybody would look. The fix is on `fix/command-scan-population` and
-not in this branch.
+CI is where anybody would look. It is fixed and merged
+([#266](https://github.com/theurian/theurian/issues/266)): the population is now
+`git ls-files --cached`, so what the scan reads is what a clone gets. This
+branch is based on that fix rather than carrying it.
+
+**That fix leaves a coupling neither module's documentation states, and this is
+the first place it is written down.** Committing the corpus put the 26 bodies
+*inside* the documented-command scan's population, and the guard test's
+`contentSha256` and anchor pins hold those same bytes frozen. The two rules now
+meet on one set of files. Measured 2026-08-20 with the scan's own readers and
+registry: **56 invocation sites naming a registered command, across 18 of the 26
+bodies**, covering 8 top-level groups — `index` 28, `migrate` 14, `init` 4,
+`doctor` 3, `propose` 3, `setup` 2, `auth` 1, `daemon` 1. (Counted as *sites*
+rather than resolved name/verb pairs on purpose: a bare `theurian migrate` and a
+`theurian migrate status` are one mention each either way, which a pair count
+does not settle.) So renaming or removing a registered command turns the scan
+RED on committed knowledge that no one may edit in place — the pins forbid it.
+The way out is one of two, and neither is free: re-seed the affected items
+through `propose` under a new `sourceAnchor`, or record an exemption in
+`test_documented_commands.py`. Worth knowing before the first rename, not after.
 
 One observation, not filed. The project-local commands write `provenance.json`
 — the map from project root to the state hashes this installation built — into
@@ -263,9 +332,9 @@ The adversarial review reproduced and confirmed all five of the claims this
 branch makes, and then ran nine mutations over the committed corpus — governance
 flips, a removed migration, an edited body. **All nine survived.** No test in
 the suite read a byte of the corpus, so committed data had entered the
-repository with no owner. That finding is what `52bf3f5` answers, and it was
-closed the way it was found: each of the 13 rules was verified by mutating a
-scratch clone and watching that rule go RED, not by reading the patch.
+repository with no owner. That finding is what the guard module answers, and it
+was closed the way it was found: each rule was verified by mutating a scratch
+clone and watching that rule go RED, not by reading the patch.
 
 The security review found no private content on any of the six channels it
 examined. That is the finding worth stating plainly for a run whose whole
