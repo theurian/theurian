@@ -384,6 +384,31 @@ def test_re_accepting_an_accepted_proposal_exits_with_the_state_code(project: Pa
     assert "pull request" in payload["remedy"]
 
 
+def test_exit_four_also_covers_a_migration_set_that_cannot_be_read(project: Path) -> None:
+    """The third case the published table names, and the reason 4 is not "done".
+
+    Resolving the project loads the approved migration set, and a set that cannot
+    be read exits 4 from there -- before ``accept`` dispatches at all. So exit 4
+    does not mean "already accepted": here it means the proposal is still
+    waiting, and a caller that skips on 4 abandons it. Reproduced with the body a
+    landed migration pins removed, which is one of three measured shapes
+    (unparseable YAML and a digest that no longer matches are the others, and all
+    three arrive through the same ``MigrationError`` branch).
+    """
+    _, landed = _draft(project)
+    _invoke("propose", "accept", landed["proposalId"])
+    (project / "body.md").write_text("# Other\n\nText.\n", encoding="utf-8")
+    _, waiting = _draft(project, "--item-id", "architecture.other-policy")
+    (project / landed["bodyDestination"]).unlink()
+
+    code, payload = _invoke("propose", "accept", waiting["proposalId"])
+
+    assert code == EXIT_STATE_ERROR
+    assert "could not be read" in payload["error"]
+    proposal = project / ".theurian/proposals" / waiting["proposalId"]
+    assert list(proposal.glob("*.yaml")), "the proposal is still waiting, not accepted"
+
+
 def test_accepting_the_same_proposal_twice_is_refused(project: Path) -> None:
     _, drafted = _draft(project)
     _invoke("propose", "accept", drafted["proposalId"])

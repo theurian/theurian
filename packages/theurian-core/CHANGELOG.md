@@ -12,6 +12,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`evidence.json` now records the `migrationId` of the migration its proposal
+  drafted** ([#253](https://github.com/theurian/theurian/issues/253)). It is the
+  one field of that file Core reads back, and it is what makes "has this proposal
+  been accepted?" a question with an answer:
+  `.theurian/migrations/<migrationId>-*.yaml` either exists or it does not.
+  Optional on read — the 26 proposals committed in this repository predate it and
+  are diagnosed by inference, which their message says.
+
 ### Fixed
 
 - **An interrupted `theurian propose` was diagnosed as an accepted one**
@@ -19,27 +29,50 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   read the presence of `evidence.json` as "this proposal has already been
   accepted", but `propose` writes the body, then the evidence, then the
   migration — so a run killed before its last write left exactly that shape.
-  `accept` then reported that the migration had been moved into
+  `accept` reported that the migration had been moved into
   `.theurian/migrations/` and that no action was needed beyond opening a pull
   request, while `.theurian/migrations/` held nothing and the drafted knowledge
-  existed nowhere. The remedy discarded the draft. The two states are told apart
-  by the body file now — `accept` removes every body before it removes the
-  migration, so an accepted directory holds `evidence.json` and nothing else —
-  and an interrupted draft is answered with the command that recovers it.
+  existed nowhere. The remedy discarded the draft.
+
+  Acceptance is now read from the recorded migration id rather than inferred from
+  which files are left in the proposal directory. The inference is not merely
+  weaker, it is wrong in both directions: `accept` removes only the bodies its
+  migration names, so a reviewer's notes or an editor's backup survive a
+  *successful* acceptance and would make it read as unfinished — whose remedy
+  mints a duplicate migration — while a body hidden under an unreadable
+  subdirectory would make an untouched draft read as accepted. A directory that
+  cannot be fully read is now reported as exactly that, rather than concluded
+  from.
+
+- **A committed proposal could forge `theurian propose accept`'s own output**
+  ([#253](https://github.com/theurian/theurian/issues/253)). A proposal directory
+  arrives through a contributor's pull request, and a file name or a migration's
+  `contentFile` carrying `ESC [ 2 K` and a carriage return erases the line the
+  terminal has drawn and prints its own in place of it — reproduced printing this
+  command's own "already been accepted / No action is needed" under its own name.
+  Every proposal-derived name is now quoted, and enumerations stop after five
+  with a count. The `--json` output was never affected.
 
 ### Changed
 
 - **BREAKING — re-accepting an already-accepted proposal now exits 4, not 1**
   ([#254](https://github.com/theurian/theurian/issues/254)). The published exit
-  code table already documented 4 for "that migration is already in place", but
-  that code was reachable only from a hand-built directory: running
-  `theurian propose accept` twice — the way a caller meets this — exited 1
-  alongside "no such proposal", an interrupted draft, and a refused
-  `contentFile`. Exit 1 and exit 4 now carry opposite instructions: 4 means the
-  change is already in place and must not be drafted again, 1 means nothing
-  landed and drafting again is the recovery. Scripts that treat any non-zero
-  exit as failure are unaffected; one that special-cased 1 for "already
-  accepted" must read 4.
+  code table documented 4 for "that migration is already in place", while the
+  natural route to that state — running `theurian propose accept` twice — exited
+  1 alongside "no such proposal", an interrupted draft, and a refused
+  `contentFile`. Exit 4 keeps its meaning and gains this case: *the knowledge
+  state refuses this move, so read it before acting*. It is not "already done" —
+  an approved migration set that cannot be read also exits 4, with the proposal
+  still waiting — and the published table now says so rather than promising that
+  1 always means nothing landed. Scripts that treat any non-zero exit as failure
+  are unaffected; one that special-cased 1 for "already accepted" must read 4.
+
+  Breaking by the compatibility table in
+  [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
+  and `protocolVersion` is **not** bumped for it — a recorded, narrowly scoped
+  exemption on the same grounds as `system.capabilities.milestone`'s (#206),
+  written up under "Changing this contract" in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md).
 
 ## [0.1.0.dev7] - 2026-08-19
 

@@ -107,18 +107,22 @@ class ProposalError(TheurianError):
 
 
 class ChangeAlreadyInPlaceError(ProposalError):
-    """The change this proposal carries has already landed. Nothing to move.
+    """``.theurian/migrations/`` already holds the migration this move would make.
 
     Its own family rather than a message a caller matches on: these are the
     refusals that say something about the project's *knowledge state* rather
     than about the invocation, so a caller reports them under the exit code it
     reserves for that, and a reworded message cannot silently move them.
 
-    It is also the family whose remedy is never "draft it again": a second draft
-    mints a second migration id for a change already in
-    ``.theurian/migrations/``, which is the duplication #89 measured. Every other
-    refusal here means nothing landed, so re-drafting is safe -- and telling the
-    two apart is what #253 was.
+    The two members differ in what they say about *this* proposal, and their
+    remedies differ with them. :class:`ProposalAlreadyAcceptedError` says this
+    proposal's own migration has landed, so drafting it again would duplicate a
+    change already in history (#89). :class:`MigrationNameTakenError` says the
+    *name* is taken, which is that same case seen from the other side or a
+    genuinely different change that collided -- so its remedy sends the reader to
+    read what is there first, and drafting again is right only in the second
+    case. What they share, and what the exit code carries, is that neither is a
+    refusal a caller may retry unchanged.
     """
 
 

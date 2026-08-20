@@ -349,16 +349,22 @@ def propose_accept(
     that migration is already in place. The body file *may* replace what is at
     its path, because on an update to existing knowledge that is the intent.
 
-    Exit codes: 0 the files moved; 1 this proposal cannot be accepted as it
-    stands and nothing has landed -- no such proposal, a draft interrupted before
-    its migration was written, a file the security layer refuses; 2 the id is not
-    a ULID; 4 the change is already in place -- this proposal was accepted
-    before, or that migration id is already in ``.theurian/migrations/``.
+    Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
+    -- no such proposal, a draft interrupted before its migration was written, a
+    file the security layer refuses; 2 the id is not a ULID; 4 the project's
+    knowledge state refuses the move -- this proposal was accepted before, that
+    migration id is already in ``.theurian/migrations/``, or the approved
+    migration set itself cannot be read.
 
-    1 and 4 carry opposite instructions, and that is the split they encode: 4
-    means the change has landed, so drafting it again would mint a second
-    migration for it, while 1 means nothing landed and drafting again is the
-    recovery.
+    **4 means "read the knowledge state before doing anything", not "already
+    done".** One of its three cases -- an unreadable migration set, which is
+    raised while resolving the project and so arrives before this command
+    dispatches at all -- leaves the proposal undelivered, so a caller that treats
+    4 as "already accepted, skip it" abandons it. 1 normally means nothing landed
+    and drafting again is the recovery; normally, because a part-way write is
+    rolled back on a best-effort basis, and a rollback that itself fails leaves a
+    body in ``.theurian/knowledge/`` while this still reports the original
+    failure.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,

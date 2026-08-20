@@ -520,3 +520,21 @@ scoped to `milestone` alone**: it says nothing about `version` or
 `protocolVersion`, which re-publish the same constants the gate itself reads
 directly, never through this response (see the `system.capabilities`
 paragraph under "Project and system" above).
+
+**`theurian propose accept`'s exit code for an already-accepted proposal is the
+fifth, and is exempted on the same narrow grounds
+([#254](https://github.com/theurian/theurian/issues/254)).** Re-accepting an
+accepted proposal exited 1 and now exits 4, which the compatibility table's
+"changing an exit code's meaning" row makes breaking. The command shipped in
+`core-v0.1.0.dev7`, so unlike Milestone 5's three this *did* ship under a
+released `theurian/v1`. The exemption is granted on the same three facts
+`milestone`'s rests on: the code has zero consumers — search-verified across
+this repository, plugins included, where the only exit-code branch in any
+plugin script is `session-start.sh` on `compat check`'s exit 3
+(`THEURIAN_EXIT_INCOMPATIBLE`), and `/theurian:propose` reads `--json`; the
+project is pre-1.0 on a `dev` line with no known external integration; and the
+change moves a case *toward* the meaning this document already published for 4
+rather than away from it, since the table always documented 4 for "that
+migration is already in place". **Scoped to this one code on this one command**:
+it says nothing about `compat check`'s 0/2/3, which a plugin script does branch
+on, or about `migrate apply`'s 4.
