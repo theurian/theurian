@@ -69,72 +69,27 @@ theurian daemon start --foreground --port "$THEURIAN_PORT"
 If that port is already in use, set `THEURIAN_PORT` to another local port in
 both terminals and rerun the daemon command.
 
-In another terminal, call the shipped `knowledge.search` tool:
+In another terminal, run the sample query helper. It uses the shipped MCP
+`knowledge.search` tool and prints the fields a first-time user should inspect:
 
 ```sh
 tmp="$(cat "${TMPDIR:-/tmp}/theurian-sample-project.path")"
 cd "$tmp"
 export THEURIAN_DATA_DIR="$tmp/.theurian-data"
 export THEURIAN_PORT=17419
-python3 - <<'PY'
-import http.client
-import json
-import os
-import re
-from pathlib import Path
-
-token = Path(os.environ["THEURIAN_DATA_DIR"], "auth", "mcp-token").read_text().strip()
-port = int(os.environ["THEURIAN_PORT"])
-session = {}
-connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-
-def post(payload):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        **session,
-    }
-    connection.request("POST", "/mcp", body=json.dumps(payload), headers=headers)
-    response = connection.getresponse()
-    if session_id := response.getheader("mcp-session-id"):
-        session["mcp-session-id"] = session_id
-    body = response.read().decode()
-    if not body.strip():
-        return {}
-    match = re.search(r"^data: (.*)$", body, re.MULTILINE)
-    return json.loads(match.group(1) if match else body)
-
-post({
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "sample-query", "version": "1"},
-    },
-})
-post({"jsonrpc": "2.0", "method": "notifications/initialized"})
-response = post({
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-        "name": "knowledge.search",
-        "arguments": {
-            "projectId": "sample-project",
-            "query": "order cancellation deadline before mutation",
-            "limit": 1,
-        },
-    },
-})
-print(json.dumps(response["result"]["structuredContent"], indent=2))
-connection.close()
-PY
+uv run --python 3.13 --with 'mcp==2.0.0' python query.py
 ```
 
 The top hit should be `domain.order-cancellation`. The useful part is not just
 that text matched the query; the result also carries the sample's approved
 status, review trust level, validity metadata, and declared GitHub review-thread
 anchor.
+
+Use `uv run --python 3.13 --with 'mcp==2.0.0' python query.py --json` to see
+the full structured MCP response.
+
+To check the whole sample path in one command from a source checkout:
+
+```sh
+examples/sample-project/smoke-test.sh
+```
