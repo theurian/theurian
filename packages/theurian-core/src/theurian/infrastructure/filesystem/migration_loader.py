@@ -11,6 +11,7 @@ import errno
 import json
 import stat
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -19,6 +20,8 @@ from typing import Any, Final
 import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import EMPTY_REGISTRY
 
 from theurian.domain.enums import (
     KnowledgeKind,
@@ -165,12 +168,33 @@ def _validator(schema_root: Path) -> Draft202012Validator:
     above is about what shape of document this build treats as a schema, and
     `{}` already satisfies that shape.
 
-    **Not translated here.** Item 4's `RecursionError` guard covers the schema
-    document's own JSON and keyword structure, not what a `$ref` inside it
-    resolves to: a validate-time `$ref` resolution failure -- including
-    whatever network fetch `jsonschema`'s own reference resolution performs
-    for a remote `$ref` -- is out of scope for this function and is not
-    translated to `SchemaUnreadableError` (issue #235).
+    **The registry pins reference resolution offline (issue #235).** The
+    validator is built with `referencing`'s `EMPTY_REGISTRY` -- a registry
+    with no `retrieve` callable -- so an external `$ref` (`http(s)://`,
+    `file://`, or any other URI) *fails closed* instead of taking
+    `jsonschema`'s default path of fetching it at validate time
+    (`_warn_for_remote_retrieve`, `urllib.request.urlopen`). That default is
+    an SSRF-shaped network read (and a local-file read for `file://`) gated
+    only on this installed schema being corrupted or replaced -- a seam no
+    existing claim covered: `parsers/openapi.py`'s "external `$ref` targets
+    are recorded, never fetched" governs *ingested* documents, not the schema
+    this build ships. Internal `#/$defs/...` refs are unaffected: they resolve
+    against the schema's own root resource, which the registry always holds,
+    so the bundled schema still validates exactly as before.
+
+    **The resolution failure surfaces at validate time, not here.** A `$ref`
+    is a plain string to `check_schema`, which validates the schema document
+    against the metaschema without ever following a reference -- so an
+    unresolvable or self-recursive `$ref` cannot be caught at build time by
+    this function. The fail-closed lookup, a dangling `#/$defs/...` fragment,
+    and a `$dynamicRef` to nowhere all raise `referencing.exceptions.
+    Unresolvable` when a document is validated; an empty or self-recursive
+    `$ref` raises `RecursionError` there. Neither is a `ValidationError`, so
+    both used to slip past every `except ValidationError` seam as a raw
+    traceback -- the same CP-2 escape item 4 closed one layer up. They are
+    translated to `SchemaUnreadableError` at the validate call itself, by
+    :func:`_validate_document`, which both validate seams route through: it is
+    the installed schema that is broken, not the migration being checked.
 
     A JSON list used to reach `Draft202012Validator` construction and raise
     `AttributeError` there instead -- `jsonschema` calls `schema.get(...)`
@@ -207,7 +231,59 @@ def _validator(schema_root: Path) -> Draft202012Validator:
     except RecursionError as exc:
         reason = "the schema nests past check_schema's safe recursion depth"
         raise SchemaUnreadableError(str(schema_path), reason) from exc
-    return Draft202012Validator(schema)
+    # `EMPTY_REGISTRY` has no `retrieve`, so an external `$ref` fails closed
+    # rather than being fetched over the network at validate time (issue #235).
+    return Draft202012Validator(schema, registry=EMPTY_REGISTRY)
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaValidator:
+    """A validator paired with the path of the installed schema it was built
+    from, so a validate-time `$ref` failure can name that schema (issue #235).
+
+    Pairing them also keeps :func:`_load_one` to one validation argument rather
+    than a validator and a path travelling separately down the load path.
+    """
+
+    validator: Draft202012Validator
+    schema_path: Path
+
+
+def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str, object]) -> None:
+    """Run one document through the validator, translating an installed-schema
+    `$ref` that cannot be resolved offline, or resolves without terminating,
+    to `SchemaUnreadableError` (issue #235).
+
+    `_validator` builds every validator with a `referencing` registry that has
+    no network or file retrieval (see its docstring), so an external `$ref`
+    fails closed rather than being fetched. That fail-closed lookup -- and a
+    dangling `#/$defs/...` fragment or a `$dynamicRef` to nowhere -- raises
+    `referencing.exceptions.Unresolvable` (`jsonschema` wraps it as its
+    internal `_WrappedReferencingError`, which is itself an `Unresolvable`);
+    an empty or self-recursive `$ref` (`"#"`, `""`) raises `RecursionError`.
+    Neither is a `ValidationError`, so both escaped every `except
+    ValidationError` seam and reached `resolve_context` as a raw traceback
+    under `--json`. Both are defects in the *installed schema*, not the
+    migration document, so both carry the `SchemaUnreadableError` type every
+    other install-corruption failure `_validator` already translates.
+
+    A `ValidationError` is a real fault in the *document* and is deliberately
+    left to propagate: the two callers word it differently (with or without a
+    file name), so each wraps it into its own `MigrationError`. Only the
+    schema-integrity failures, identical from both seams, are handled here.
+    """
+    try:
+        schema_validator.validator.validate(document)
+    except Unresolvable as exc:
+        # `str(exc)` echoes the offending ref -- safe here, it is the installed
+        # schema's own content, not attacker-supplied user-project data (SEC-7).
+        raise SchemaUnreadableError(
+            str(schema_validator.schema_path),
+            f"a schema $ref could not be resolved offline: {exc}",
+        ) from exc
+    except RecursionError as exc:
+        reason = "a schema $ref resolves recursively without terminating"
+        raise SchemaUnreadableError(str(schema_validator.schema_path), reason) from exc
 
 
 def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
@@ -221,12 +297,15 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
 
     Raises:
         MigrationError: If the document does not satisfy the schema.
-        SchemaUnreadableError: If the installed schema cannot be read, or
-            parses to something this build cannot use as a schema -- raised
-            from :func:`_validator`, which this calls before validating.
+        SchemaUnreadableError: If the installed schema cannot be read, parses
+            to something this build cannot use as a schema (both from
+            :func:`_validator`), or names a `$ref` that cannot be resolved
+            offline or resolves without terminating (from
+            :func:`_validate_document`).
     """
+    schema_validator = _SchemaValidator(_validator(schema_root), schema_root / _SCHEMA_RELATIVE)
     try:
-        _validator(schema_root).validate(document)
+        _validate_document(schema_validator, document)
     except ValidationError as exc:
         location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
         raise MigrationError(f"invalid migration at {location}: {exc.message}") from exc
@@ -277,8 +356,11 @@ def load_migrations(
             :func:`_entry_is_migration_file`).
         MigrationContentUnreadableError: If an ``upsertRevision`` operation's
             ``contentFile`` cannot be resolved or read.
-        SchemaUnreadableError: If the installed schema cannot be read, or
-            parses to something this build cannot use as a schema.
+        SchemaUnreadableError: If the installed schema cannot be read, parses
+            to something this build cannot use as a schema, or names a `$ref`
+            that cannot be resolved offline or resolves without terminating
+            (issue #235; translated at the validate seam by
+            :func:`_validate_document`, which :func:`_load_one` routes through).
     """
     _refuse_unusable_migrations_directory_symlink(migrations_dir, project_root)
 
@@ -364,12 +446,12 @@ def load_migrations(
     if len(paths) > MAX_MIGRATIONS:
         raise MigrationError(f"{len(paths)} migration files exceeds the limit of {MAX_MIGRATIONS}")
 
-    validator = _validator(schema_root)
+    schema_validator = _SchemaValidator(_validator(schema_root), schema_root / _SCHEMA_RELATIVE)
     migrations: list[Migration] = []
     content_by_hash: dict[str, str] = {}
 
     for path in paths:
-        migration = _load_one(path, project_root, migrations_dir, validator, content_by_hash)
+        migration = _load_one(path, project_root, migrations_dir, schema_validator, content_by_hash)
         migrations.append(migration)
 
     return LoadedMigrations(
@@ -571,7 +653,7 @@ def _load_one(
     path: Path,
     project_root: Path,
     migrations_dir: Path,
-    validator: Draft202012Validator,
+    schema_validator: _SchemaValidator,
     content_by_hash: dict[str, str],
 ) -> Migration:
     try:
@@ -628,7 +710,7 @@ def _load_one(
         raise MigrationError(f"{path.name}: {exc}") from exc
 
     try:
-        validator.validate(document)
+        _validate_document(schema_validator, document)
     except ValidationError as exc:
         location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
         raise MigrationError(f"{path.name} is invalid at {location}: {exc.message}") from exc
