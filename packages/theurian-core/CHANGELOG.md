@@ -14,8 +14,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
-- **A path-containment refusal on the `migrate` path told the user to go
-  somewhere they already were, and exited 1 rather than 4**
+- **A path-containment refusal told the user to go somewhere they already were,
+  and could instruct them to delete their own work**
   ([#233](https://github.com/theurian/theurian/issues/233)). With
   `.theurian/migrations` — or one `*.yaml` file inside it — a symlink pointing
   outside the project, `theurian migrate validate --json` printed
@@ -25,14 +25,25 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `PathEscapeError` set no `remedy` of its own, so the CLI's generic fallback
   won — the "exception that does not describe itself" shape
   [#205](https://github.com/theurian/theurian/issues/205) exists to end. It now
-  names the escaping entry relative to the project root, with the `!r` quoting
-  its siblings use, and carries a remedy naming the symlink. **Behaviour change:**
-  a `PathEscapeError` raised while resolving a project now exits
-  `EXIT_STATE_ERROR` (4) rather than 1, matching every sibling refusal on the
-  same load path (`MigrationsDirectoryUnreadableError`,
-  `MigrationFileUnreadableError`, `MigrationError`); a script keying on exit 1
-  for this case must be updated. The offending path is still never echoed
-  (SEC-7), and neither is the absolute project root.
+  names, relative to the project root and with the `!r` quoting its siblings
+  use, *where* the problem is, and its remedy is only ever as strong as the
+  check behind it: a name is called a symbolic link solely where an `lstat` on
+  that exact path proved it. That distinction is load-bearing — when
+  `.theurian` itself is the outside-pointing link (reachable from a plain `git
+  clone`, [#237](https://github.com/theurian/theurian/issues/237)) every plain
+  file under it resolves outside while none is a link, and an earlier draft of
+  this fix told users to remove their own authored migration. The offending
+  path is still never echoed (SEC-7), and neither is the absolute project root.
+- **Exit code:** a `PathEscapeError` raised while resolving a project now exits
+  `EXIT_STATE_ERROR` (4) rather than 1 for the commands routed through
+  `_require_project` — measured: `migrate validate`, `migrate status`, `migrate
+  apply`, `index build`, `index status`, `ingest` and `propose accept` — matching
+  every sibling refusal on the same load path
+  (`MigrationsDirectoryUnreadableError`, `MigrationFileUnreadableError`,
+  `MigrationError`). A script keying on exit 1 for those must be updated.
+  `init` and `project register` call `resolve_context` directly and still exit
+  1; `project status` reports at exit 0 as it always has. All three now carry
+  the new remedy text.
 
 ## [0.1.0.dev7] - 2026-08-19
 

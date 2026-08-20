@@ -87,41 +87,85 @@ def test_excessive_depth_is_refused(project_root: Path) -> None:
         resolve_within_root(project_root, "/".join(["a"] * 40))
 
 
-def test_error_does_not_echo_the_attacker_supplied_path(project_root: Path) -> None:
+#: The marker every attack string below carries. Distinctive enough that its
+#: presence anywhere in a refusal is unambiguous, and it is the same name the
+#: fixture's out-of-tree secret uses.
+_ECHO_MARKER = "id_ed25519"
+
+#: One input per refusal branch `read_source_file` can reach, each carrying
+#: `_ECHO_MARKER`. Round two's MEDIUM-2: the previous single-case test covered
+#: only the traversal branch, and a mutation adding `entry=` to the
+#: absolute-path and depth branches survived the whole suite.
+_ECHO_ATTACKS = [
+    pytest.param(f"../outside/{_ECHO_MARKER}", id="dotdot-climbs-above-the-root"),
+    pytest.param(f"/etc/{_ECHO_MARKER}", id="absolute-path"),
+    pytest.param("/".join(["deep"] * 40) + f"/{_ECHO_MARKER}", id="past-the-depth-limit"),
+    pytest.param(
+        f".theurian/knowledge/{_ECHO_MARKER}.md",
+        id="symlink-target-leaves-the-root",
+        marks=pytest.mark.skipif(
+            sys.platform == "win32", reason="symlinks need privileges on Windows"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("attack", _ECHO_ATTACKS)
+def test_no_refusal_branch_echoes_the_attacker_supplied_path(
+    project_root: Path, attack: str
+) -> None:
     """Reflecting attacker-controlled text into a message is its own problem.
 
-    The remedy is checked alongside the message (issue #233): it is the second
-    half of the same user-facing payload -- `_fail` prints both -- so a remedy
-    that named the offending path would defeat this guard while the message
-    still passed it.
+    Parametrized over every branch that raises, not one of them (round two's
+    MEDIUM-2). The remedy is checked alongside the message (issue #233): it is
+    the second half of the same user-facing payload -- `_fail` prints both --
+    so a remedy that named the offending path would defeat this guard while
+    the message still passed it.
     """
+    if sys.platform != "win32":
+        link = project_root / ".theurian" / "knowledge" / f"{_ECHO_MARKER}.md"
+        link.symlink_to(project_root.parent / "outside" / _ECHO_MARKER)
+
     with pytest.raises(PathEscapeError) as exc:
-        resolve_within_root(project_root, "../outside/id_ed25519")
-    assert "id_ed25519" not in str(exc.value)
-    assert "id_ed25519" not in exc.value.remedy
+        read_source_file(project_root, attack)
+
+    assert _ECHO_MARKER not in str(exc.value)
+    assert _ECHO_MARKER not in exc.value.remedy
 
 
-def test_the_refusal_carries_a_remedy_that_does_not_name_the_absolute_root(
-    project_root: Path,
+@pytest.mark.parametrize("attack", _ECHO_ATTACKS)
+def test_the_refusal_carries_a_remedy_that_names_no_path_at_all(
+    project_root: Path, attack: str
 ) -> None:
     """Issue #233: `PathEscapeError` set no ``.remedy`` at all, so the CLI's
     generic fallback -- "Run this inside an initialised Theurian project" --
     was printed to users who were already inside one.
 
-    ``resolve_within_root`` holds no name it may safely print (the test above
-    is why), so its remedy names the rule rather than a path. It still has to
-    say what to *do*, and it must not fall back to the absolute root the
-    message used to carry: every sibling refusal on this load path prints
-    paths ``relative_to(project_root)``.
+    These call sites hold no name they may safely print (the test above is
+    why), so the remedy names the rule rather than a path. Round two's
+    MEDIUM-3 made it cover all four mechanisms rather than two, and made it
+    root-agnostic: three raise sites in `application/proposal_service.py`
+    protect `.theurian/knowledge` rather than the project root, so "keep it
+    inside the project" was advice those callers had already followed. It
+    must also not fall back to the absolute root the message used to carry --
+    no sibling refusal on this load path prints an absolute path.
     """
+    if sys.platform != "win32":
+        link = project_root / ".theurian" / "knowledge" / f"{_ECHO_MARKER}.md"
+        link.symlink_to(project_root.parent / "outside" / _ECHO_MARKER)
+
     with pytest.raises(PathEscapeError) as exc:
-        resolve_within_root(project_root, "../outside/id_ed25519")
+        read_source_file(project_root, attack)
 
     assert exc.value.entry is None, "this call site has no name it may safely print"
     assert str(exc.value) == "Path escapes the permitted root"
     assert exc.value.remedy == (
-        "Keep every referenced path inside the project: remove any `..` that climbs "
-        "above it, and repoint or remove any symbolic link that leaves it, then retry."
+        "Keep the referenced path inside the permitted root and within its depth "
+        "limit: remove any `..` that climbs above the root, any absolute prefix, "
+        "and any symbolic link that leaves it, then retry."
+    )
+    assert "project" not in exc.value.remedy, (
+        "the knowledge-root callers have already kept the path inside the project"
     )
     assert str(project_root) not in str(exc.value)
     assert str(project_root) not in exc.value.remedy

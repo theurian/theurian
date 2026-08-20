@@ -29,6 +29,8 @@ from theurian.domain.enums import (
     TrustLevel,
 )
 from theurian.domain.errors import (
+    EscapeRole,
+    EscapeSite,
     MigrationContentUnreadableError,
     MigrationError,
     MigrationFileUnreadableError,
@@ -251,13 +253,17 @@ def load_migrations(
             `project_root` as a string regardless of where it resolves, so
             `read_source_file`'s own resolve-and-compare is what actually
             catches that one, one call site later -- the same mechanism the
-            directory-level check no longer has to rely on. Both of those two
-            name the offending entry and carry their own remedy (issue #233;
-            see :class:`~theurian.domain.errors.PathEscapeError` for why the
-            name is attached by the caller rather than derived). The third
-            case -- a ``contentFile`` escaping -- does not, because the only
-            name it could give is the author-written value itself, which this
-            type never echoes.
+            directory-level check no longer has to rely on. All three name a
+            project-relative entry and carry their own remedy (issue #233),
+            each with the
+            :class:`~theurian.domain.errors.EscapeRole` its own check earns:
+            ``"symlink"`` for ``migrations_dir``, whose ``is_symlink()`` ran
+            first; ``"symlink"`` or ``"resolved"`` for an entry, decided by
+            :func:`_escape_role_of`, because an outside-pointing *ancestor*
+            makes plain files resolve outside too (issue #237); and
+            ``"referrer"`` for a ``contentFile``, where the migration file is
+            named as the place to look and the author-written value stays
+            unechoed.
         InputTooLargeError: If a file exceeds its size limit.
         MigrationsDirectoryUnreadableError: If ``migrations_dir`` cannot be
             probed or listed for a reason other than genuinely not existing --
@@ -440,15 +446,17 @@ def _refuse_unusable_migrations_directory_symlink(migrations_dir: Path, project_
     try:
         resolved.relative_to(project_root.resolve())
     except ValueError as exc:
-        # `entry=relative` -- `.theurian/migrations`, a constant of Theurian's
-        # own layout rather than anything an author wrote -- is what lets the
-        # refusal name the link the user has to fix (issue #233). Everything
-        # else this function raises already names it the same way; before this,
-        # `PathEscapeError` alone printed the absolute project root and no
-        # remedy of its own. `resolved` is deliberately *not* passed: it is
-        # where the link points, outside the project, and naming it would hand
-        # back a fact about the filesystem the refusal exists to withhold.
-        raise PathEscapeError(relative, str(project_root), entry=relative) from exc
+        # `.theurian/migrations` is a constant of Theurian's own layout rather
+        # than anything an author wrote, so it is safe to name (issue #233).
+        # `"symlink"` is the strong role, and this is the one call site
+        # entitled to it: the `is_symlink()` lstat above returned True for this
+        # exact path before any of this ran, so "repoint or remove it" cannot
+        # be aimed at a plain file. `resolved` is deliberately *not* passed: it
+        # is where the link points, outside the project, and naming it would
+        # hand back a fact about the filesystem the refusal exists to withhold.
+        raise PathEscapeError(
+            relative, str(project_root), entry=EscapeSite(relative, "symlink")
+        ) from exc
 
 
 def _entry_is_migration_file(entry: Path, project_root: Path) -> bool:
@@ -526,6 +534,23 @@ def _entry_is_migration_file(entry: Path, project_root: Path) -> bool:
     return stat.S_ISREG(entry_stat.st_mode)
 
 
+def _escape_role_of(path: Path) -> EscapeRole:
+    """Whether ``path`` may be named as the symbolic link that escaped.
+
+    ``lstat``, so the final component is examined without being followed. A
+    ``True`` here is the only thing that entitles a remedy to say "remove it",
+    and the answer degrades to the weaker ``"resolved"`` on any failure --
+    including the ``EACCES`` a denied parent raises. Guessing "symlink" from a
+    failed probe is how round two's HIGH-1 pointed a deletion at a plain file;
+    guessing it from a failed probe would be the same mistake with less
+    evidence.
+    """
+    try:
+        return "symlink" if path.is_symlink() else "resolved"
+    except OSError:
+        return "resolved"
+
+
 def _load_one(
     path: Path,
     project_root: Path,
@@ -536,17 +561,26 @@ def _load_one(
     try:
         raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
     except PathEscapeError as exc:
+        role = _escape_role_of(path)
         # Re-raised only to attach the entry's name (issue #233).
         # `read_source_file` cannot attach it itself: its `relative` argument is
         # attacker-influenceable at other call sites -- a `contentFile` an
         # author wrote -- and `tests/unit/test_path_security.py::
-        # test_error_does_not_echo_the_attacker_supplied_path` pins that it is
-        # never echoed. Here it is a `.theurian/migrations/` name `iterdir()`
+        # test_no_refusal_branch_echoes_the_attacker_supplied_path` pins that it
+        # is never echoed. Here it is a `.theurian/migrations/` name `iterdir()`
         # returned, the identical string the `MigrationFileUnreadableError`
         # below already prints for this same entry, so this is the call site
         # that knows it is safe to name.
+        #
+        # The role is decided by an `lstat` on this exact path, never assumed
+        # (round two's HIGH-1). An outside-pointing `.theurian` -- which a plain
+        # `git clone` can produce, issue #237 -- makes every *plain* file under
+        # it resolve outside, and the shipped unconditional "this is a symbolic
+        # link, remove it" remedy aimed a deletion at the user's own authored
+        # migration. Measured: following it emptied `migrations/`, after which
+        # `migrate validate` exited 0 with `.theurian` still outside the project.
         raise PathEscapeError(
-            exc.requested, exc.root, entry=str(path.relative_to(project_root))
+            exc.requested, exc.root, entry=EscapeSite(str(path.relative_to(project_root)), role)
         ) from exc
     except OSError as exc:
         # The sibling of `_parse_upsert`'s conversion below, for the *other*
@@ -737,7 +771,20 @@ def _parse_upsert(
     try:
         relative = relative_to_root.relative_to(project_root.resolve())
     except ValueError as exc:
-        raise PathEscapeError(content_file, str(project_root)) from exc
+        # The migration file names the offending path; it is not itself outside,
+        # so it is attached as `"referrer"` -- the location to open, never the
+        # culprit to delete. Naming it costs nothing new:
+        # `MigrationContentUnreadableError` four lines up already prints this
+        # exact project-relative string for this exact file. `content_file`
+        # stays unechoed: it is the author-written value, and it is the one
+        # string on this path that SEC-7 forbids reflecting (issue #233, round
+        # two -- the shipped refusal named nothing at all here, on the false
+        # reasoning that the author's value was the only name available).
+        raise PathEscapeError(
+            content_file,
+            str(project_root),
+            entry=EscapeSite(str(path.relative_to(project_root)), "referrer"),
+        ) from exc
 
     relative_posix = PurePosixPath(relative)
     resolved_path = resolve_within_root(project_root, relative_posix)

@@ -1216,36 +1216,16 @@ def test_apply_refuses_a_symlink_loop_migration_entry_without_seeding_a_state_da
     assert not state_dir.exists() or not any(state_dir.iterdir())
 
 
-# -- issue #233: a refusal that told the user to go somewhere they already were --
+# -- issue #233: the CLI face of a refusal that described itself wrongly ------
 #
-# Both shapes below already *refused* -- T-5 containment held, and that is not
-# what these tests change. What they pin is the three things the refusal said
-# about itself, measured against the released 0.1.0.dev7 wheel on 2026-08-20:
+# What the refusal used to say, why each part of it was wrong, and what the
+# `EscapeRole` split now guarantees are all recorded once, on
+# `PathEscapeError`'s own docstring (`domain/errors.py`). These tests pin the
+# exit code and the payload a caller actually receives; they do not restate it.
 #
-#   {"error": "Path escapes the permitted root /<abs>/proj",
-#    "remedy": "Run this inside an initialised Theurian project."}
-#   exit: 1
-#
-#   1. The remedy was false. The user *was* inside an initialised project; the
-#      cure is the symlink, not the working directory. It fired because
-#      `PathEscapeError` set no `.remedy` at all, so `_context_remedy`'s generic
-#      default won -- the "exception that does not describe itself" residue
-#      issue #205's `TheurianError.remedy` work was meant to end.
-#   2. Exit 1, while every sibling refusal on this same load path
-#      (`MigrationsDirectoryUnreadableError`, `MigrationFileUnreadableError`,
-#      `MigrationError`) exits `EXIT_STATE_ERROR`. `PathEscapeError` is a
-#      `SecurityError`, so it fell past `_require_project`'s `except
-#      MigrationError` branch into the generic `except TheurianError` one.
-#   3. The message printed the *absolute* project root, where every sibling
-#      prints its path `relative_to(project_root)`.
-#
-# The offending path itself is still never echoed (SEC-7 --
-# `tests/unit/test_path_security.py::test_error_does_not_echo_the_attacker_supplied_path`
-# pins that, remedy included). What is named here is the *entry* -- a
-# `.theurian/`-relative name Theurian itself produced -- with the same `!r`
-# quoting the siblings apply.
+# The refusal itself is unchanged -- T-5 containment held before and after.
 
-_OUTSIDE_ESCAPE_REMEDY_TAIL = (
+_SYMLINK_REMEDY_TAIL = (
     "is a symbolic link resolving outside the project. Repoint it inside the "
     "project, or remove it, then retry."
 )
@@ -1280,7 +1260,7 @@ def test_validate_names_the_symlink_when_the_migrations_directory_escapes_the_pr
     payload = json.loads(result.stderr)
     relative = str(migrations_dir.relative_to(project))
     assert payload["error"] == f"{relative!r} escapes the permitted root"
-    assert payload["remedy"] == f"{relative!r} {_OUTSIDE_ESCAPE_REMEDY_TAIL}"
+    assert payload["remedy"] == f"{relative!r} {_SYMLINK_REMEDY_TAIL}"
     assert str(project) not in payload["error"], "the absolute root is not the user's business"
     assert "valid" not in payload, "containment still refuses; this is not a passing validate"
 
@@ -1313,7 +1293,7 @@ def test_validate_names_the_symlink_when_one_migration_file_escapes_the_project(
     payload = json.loads(result.stderr)
     relative = str(escape_entry.relative_to(project))
     assert payload["error"] == f"{relative!r} escapes the permitted root"
-    assert payload["remedy"] == f"{relative!r} {_OUTSIDE_ESCAPE_REMEDY_TAIL}"
+    assert payload["remedy"] == f"{relative!r} {_SYMLINK_REMEDY_TAIL}"
     assert str(project) not in payload["error"], "the absolute root is not the user's business"
     assert "PRIVATE KEY" not in result.stderr, "the refusal must not hand over what it refused"
 
@@ -1341,6 +1321,74 @@ def test_apply_refuses_an_escaping_migration_file_without_seeding_a_state_databa
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     state_dir = project / ".theurian" / "state"
     assert not state_dir.exists() or not any(state_dir.iterdir())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink_broke(
+    project: Path,
+) -> None:
+    """Round two's HIGH-1, through the CLI a user actually reads.
+
+    `.theurian` itself is the outside-pointing symlink -- reachable from a
+    plain `git clone`, issue #237 -- and the migration inside it is an
+    ordinary file. Measured against this branch before the `EscapeRole` split:
+    the payload told the user that their own authored migration "is a symbolic
+    link ... or remove it", and following that instruction emptied
+    `migrations/`, after which `migrate validate` exited 0 with `.theurian`
+    still outside the project.
+
+    The unit-level pin is
+    `tests/unit/test_migration_loader_errors.py::test_load_migrations_does_not_call_a_plain_entry_a_symlink_when_an_ancestor_escapes`;
+    this one exists because the payload is where the instruction is delivered.
+    The `exit 0` acceptance itself stays #237's box and is not touched here.
+    """
+    _invoke("init")
+    _write_migration(project)
+    outside_theurian = project.parent / "outside-theurian"
+    shutil.move(str(project / ".theurian"), str(outside_theurian))
+    (project / ".theurian").symlink_to(outside_theurian)
+    entry = project / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
+    assert not entry.is_symlink(), "fixture must drive a PLAIN file, not a link"
+
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    payload = json.loads(result.stderr)
+    relative = str(entry.relative_to(project))
+    assert payload["error"] == f"{relative!r} escapes the permitted root"
+    assert "is a symbolic link" not in payload["remedy"]
+    assert "remove it" not in payload["remedy"], "that instruction destroys the user's work"
+    assert "each directory above it" in payload["remedy"]
+    assert entry.exists(), "the refusal must not have removed anything itself"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_validate_names_the_migration_file_when_its_content_file_escapes(project: Path) -> None:
+    """Round two's MEDIUM-4, through the CLI: a `contentFile` escaping names
+    the migration file carrying it, and still never the author-written value.
+
+    `MigrationContentUnreadableError` already prints this same project-relative
+    filename for a `contentFile` that merely fails to read, so naming it here
+    discloses nothing new -- which is what made round one's "the only name it
+    could give is the author-written value" false.
+    """
+    _invoke("init")
+    escaping = f".theurian/migrations/{MIGRATION_ID}-escape.yaml"
+    (project / escaping).write_text(
+        MIGRATION.replace(
+            "contentFile: ../knowledge/architecture/auth-policy.md",
+            "contentFile: ../../../../../../etc/id_ed25519",
+        )
+    )
+
+    result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    payload = json.loads(result.stderr)
+    assert payload["error"] == f"{escaping!r} names a path that escapes the permitted root"
+    assert escaping in payload["remedy"], "the migration file is the place to open"
+    assert "id_ed25519" not in result.stderr, "the author-written value stays unechoed"
+    assert "remove it" not in payload["remedy"], "the migration file is not the culprit"
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
