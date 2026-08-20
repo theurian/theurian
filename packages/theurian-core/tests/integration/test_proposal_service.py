@@ -20,6 +20,8 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    EVIDENCE_FILE,
+    ChangeAlreadyInPlaceError,
     ProposalError,
     ProposalRequest,
     ProposalService,
@@ -754,17 +756,72 @@ def test_re_accepting_an_already_accepted_proposal_says_no_action_is_needed(
 
     Re-accepting used to report "holds no migration file -- draft it again",
     which would mint a second migration for a change that has already landed.
-    The evidence still in the directory marks it as accepted, so the remedy says
-    to review and open a pull request instead.
+
+    The distinguishing fact is asserted rather than assumed: after ``accept``,
+    ``evidence.json`` is the *only* file left, because ``_commit`` unlinks every
+    body it moved and then the migration. That is what separates this state from
+    the interrupted draft below, which still holds its body -- keying the
+    diagnosis off ``evidence.json`` alone conflated the two (#253).
     """
     drafted = service.draft(_request())
     service.accept(drafted.proposal_id)
-    assert drafted.evidence_file.is_file()
+    assert _tree(drafted.directory) == {EVIDENCE_FILE}
 
-    with pytest.raises(ProposalError, match="accepted already") as caught:
+    with pytest.raises(ChangeAlreadyInPlaceError, match="already been accepted") as caught:
         service.accept(drafted.proposal_id)
 
     assert "pull request" in caught.value.remedy
+
+
+def test_an_interrupted_draft_is_not_reported_as_accepted(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#253: body plus evidence and no migration is a half-written draft.
+
+    ``draft`` writes the body, then ``evidence.json``, then the migration, so an
+    interrupted run leaves exactly this shape -- and it was diagnosed as
+    "accepted already", whose remedy ("no action is needed, open a pull request")
+    discards the drafted work. Nothing had been accepted:
+    ``.theurian/migrations/`` holds no migration here, which the last assertion
+    states rather than trusts.
+
+    The state is built by the service's own draft path and then losing the file
+    the interruption would have lost, not by hand-assembling a directory: a
+    hand-built one would still pass if ``draft`` changed the order it writes in.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    assert drafted.body_file.is_file(), "the body is what the interrupted draft still holds"
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert drafted.body_file.name in str(caught.value)
+    assert "theurian propose" in caught.value.remedy
+    assert not list(paths.migrations.glob("*.yaml"))
+
+
+def test_a_directory_with_no_migration_and_no_evidence_says_draft_it_again(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The third migration-less shape, and the only one no draft can produce.
+
+    ``draft`` writes ``evidence.json`` before the migration, so a directory
+    holding neither is not a draft of ours -- a committed proposal whose files
+    never arrived, or a directory made by hand. Hand-assembled here for that
+    reason: this branch is unreachable from the draft path, and before #253 it
+    was unreachable from the accept path too, because the evidence check ahead of
+    it answered every real proposal.
+    """
+    directory = paths.proposals / "01K9C7VN4TQZB2M8XR5HD3JFEW"
+    directory.mkdir(parents=True)
+
+    with pytest.raises(ProposalError, match="holds no") as caught:
+        service.accept(ProposalId(directory.name))
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert "Draft the proposal again" in caught.value.remedy
 
 
 def test_accept_refuses_a_body_path_that_leaves_the_project(

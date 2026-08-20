@@ -375,6 +375,31 @@ def test_accepting_the_same_proposal_twice_is_refused(project: Path) -> None:
     ).read_text() != "apiVersion: theurian.dev/v1\n"
 
 
+def test_an_interrupted_draft_is_diagnosed_as_one_rather_than_as_accepted(
+    project: Path,
+) -> None:
+    """#253 at the process edge: the remedy must not discard the drafted work.
+
+    The interruption is reproduced by removing the file a killed ``propose``
+    would never have written -- the migration is the last of the three -- leaving
+    the body and ``evidence.json`` behind. That shape reported "no action is
+    needed. Review the change and open a pull request" while
+    ``.theurian/migrations/`` held nothing, so a reader following the remedy
+    would have opened a pull request containing no change at all.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    (directory / drafted["migrationFile"]).unlink()
+
+    code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 1
+    assert "pull request" not in payload["remedy"]
+    assert "theurian propose" in payload["remedy"]
+    assert not list((project / ".theurian/migrations").glob("*.yaml"))
+    assert (project / drafted["bodyFile"]).is_file(), "the draft's body is still there to lose"
+
+
 def test_accept_reports_an_unknown_proposal_with_a_remedy(project: Path) -> None:
     code, payload = _invoke("propose", "accept", "01K9C7VN4TQZB2M8XR5HD3JFEW")
 

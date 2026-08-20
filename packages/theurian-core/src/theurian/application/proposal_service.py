@@ -100,13 +100,37 @@ class ProposalError(TheurianError):
         super().__init__(message)
 
 
-class MigrationNameTakenError(ProposalError):
+class ChangeAlreadyInPlaceError(ProposalError):
+    """The change this proposal carries has already landed. Nothing to move.
+
+    Its own family rather than a message a caller matches on: these are the
+    refusals that say something about the project's *knowledge state* rather
+    than about the invocation, so a caller reports them under the exit code it
+    reserves for that, and a reworded message cannot silently move them.
+
+    It is also the family whose remedy is never "draft it again": a second draft
+    mints a second migration id for a change already in
+    ``.theurian/migrations/``, which is the duplication #89 measured. Every other
+    refusal here means nothing landed, so re-drafting is safe -- and telling the
+    two apart is what #253 was.
+    """
+
+
+class MigrationNameTakenError(ChangeAlreadyInPlaceError):
     """``.theurian/migrations/`` already holds a file of that name.
 
-    Its own type rather than a message a caller matches on: this is the one
-    refusal here that says something about the project's *knowledge state* --
-    that migration is already in place -- so a caller reports it under the exit
-    code it reserves for that, and a reworded message cannot silently move it.
+    The name carries the migration's id, so a collision means that migration is
+    already in place. Reached with the proposal's own migration file still in its
+    directory, which is what separates it from
+    :class:`ProposalAlreadyAcceptedError`.
+    """
+
+
+class ProposalAlreadyAcceptedError(ChangeAlreadyInPlaceError):
+    """This proposal's own migration has already been moved out of its directory.
+
+    The evidence-only shape :func:`_no_migration_error` diagnoses: nothing is
+    left to move, because a previous ``accept`` moved it.
     """
 
 
@@ -462,21 +486,7 @@ class ProposalService:
             )
         candidates = [path for path in entries if path.is_file()]
         if not candidates:
-            # An accepted proposal keeps its `evidence.json` and loses its
-            # migration to `.theurian/migrations/`, so that shape is "already
-            # accepted", not "draft it again" -- which would mint a second
-            # migration for a change that has already landed.
-            if (directory / EVIDENCE_FILE).is_file():
-                raise ProposalError(
-                    f"Proposal {proposal_id.value} appears to have been accepted already: "
-                    "its migration has been moved into .theurian/migrations/.",
-                    remedy="No action is needed. Review the change and open a pull request.",
-                )
-            raise ProposalError(
-                f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file.",
-                remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "
-                "Draft the proposal again.",
-            )
+            raise _no_migration_error(directory, proposal_id)
         if len(candidates) > 1:
             raise ProposalError(
                 f"Proposal {proposal_id.value} holds two or more migration files: "
@@ -729,6 +739,82 @@ class _BodyMove:
 
 def _last_segment(item_id: ItemId) -> str:
     return item_id.value.rpartition(".")[2]
+
+
+def _no_migration_error(directory: Path, proposal_id: ProposalId) -> ProposalError:
+    """Say which migration-less shape this directory is, and cure that one.
+
+    Three of them exist, and two used to be one. ``evidence.json`` alone meant
+    "accepted already", so an interrupted ``draft`` -- which writes the body,
+    then the evidence, then the migration -- was diagnosed as an acceptance and
+    answered with "no action is needed. Review the change and open a pull
+    request", while ``.theurian/migrations/`` held nothing and the drafted
+    knowledge existed nowhere (#253). The two remedies are opposites, so getting
+    this wrong either discards a draft or duplicates a landed change.
+
+    The body is what separates them. :meth:`ProposalService._commit` unlinks
+    every body it moved *before* it unlinks the migration, so a directory
+    ``accept`` has emptied holds ``evidence.json`` and nothing else -- measured
+    over the 26 accepted proposals committed under ``.theurian/proposals/``,
+    every one of which holds exactly that file -- while a draft that never
+    reached its migration still holds the body it wrote first.
+    """
+    if not (directory / EVIDENCE_FILE).is_file():
+        # No evidence and no migration is a shape `draft` cannot produce -- it
+        # writes the evidence first -- so it is a directory that arrived by hand
+        # or by half a checkout, and re-drafting is safe.
+        return ProposalError(
+            f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file.",
+            remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "
+            "Draft the proposal again.",
+        )
+    unmoved = _files_beside_the_evidence(directory)
+    if not unmoved:
+        return ProposalAlreadyAcceptedError(
+            f"Proposal {proposal_id.value} has already been accepted: its directory holds "
+            f"{EVIDENCE_FILE} and nothing else, which is what accept leaves behind once the "
+            "migration and every body it names have been moved out.",
+            remedy="No action is needed. Review the change and open a pull request.",
+        )
+    return ProposalError(
+        f"Proposal {proposal_id.value} was never finished: it still holds "
+        f"{', '.join(unmoved)} but no <migration-id>-<slug>.yaml, and accept moves a body "
+        "only together with its migration. Nothing has been accepted, and the knowledge "
+        "this proposal drafted exists nowhere yet.",
+        remedy=f"Draft the change again with theurian propose -- nothing landed, so nothing "
+        f"is duplicated -- then delete .theurian/proposals/{proposal_id.value}/.",
+    )
+
+
+def _files_beside_the_evidence(directory: Path) -> tuple[str, ...]:
+    """Every file in a proposal directory that ``accept`` has not moved out.
+
+    Relative POSIX paths, sorted, so the diagnosis above names them in the same
+    order on every run and every platform. A symlink counts without being
+    followed: what matters here is that *something* is still there, and a link is
+    refused by name elsewhere rather than read.
+
+    Dot-files do not count. A body's path is built by ``body_relative_path`` from
+    an ``ItemId``, whose segments are lowercase kebab-case, so no component of a
+    body path can begin with a dot -- while a ``.DS_Store`` a Finder window left
+    in an *accepted* directory would otherwise read as an unmoved body and turn
+    "no action is needed" into "draft it again", minting a second migration for a
+    change that has already landed.
+
+    Files, not entries, and that distinction is load-bearing: ``accept`` unlinks
+    the body and leaves behind the namespace directory that held it, so an
+    accepted proposal's directory is empty of files while still holding
+    ``architecture/``.
+    """
+    unmoved: list[str] = []
+    for path in directory.rglob("*"):
+        if not path.is_symlink() and not path.is_file():
+            continue
+        relative = path.relative_to(directory)
+        if relative.as_posix() == EVIDENCE_FILE or any(p.startswith(".") for p in relative.parts):
+            continue
+        unmoved.append(relative.as_posix())
+    return tuple(sorted(unmoved))
 
 
 def _require_filename_matches_id(migration_file: Path, document: Mapping[str, object]) -> None:
