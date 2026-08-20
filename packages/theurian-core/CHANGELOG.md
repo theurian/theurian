@@ -12,6 +12,61 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A path-containment refusal told the user to go somewhere they already were,
+  and could instruct them to delete their own work**
+  ([#233](https://github.com/theurian/theurian/issues/233)). With
+  `.theurian/migrations` — or one `*.yaml` file inside it — a symlink pointing
+  outside the project, `theurian migrate validate --json` printed
+  `{"error": "Path escapes the permitted root /<absolute>/<project>", "remedy":
+  "Run this inside an initialised Theurian project."}` at exit 1. The refusal
+  itself was correct and is unchanged; what it said about itself was not.
+  `PathEscapeError` set no `remedy` of its own, so the CLI's generic fallback
+  won — the "exception that does not describe itself" shape
+  [#205](https://github.com/theurian/theurian/issues/205) exists to end. It now
+  names, relative to the project root and with the `!r` quoting its siblings
+  use, *where* the problem is — and **no remedy names a file to delete.** That
+  is the substantive change: an escape happens through a symbolic link somewhere
+  on the entry's ancestor chain or its resolution chain, and which link it is
+  cannot be determined from the entry alone. Three successive attempts to
+  determine it anyway were each refuted by a deeper construction — the last by
+  `x.yaml → y.yaml → outside`, where following the remedy deleted two
+  Git-tracked files and ended at `valid: true` while the minimal cure was
+  repointing `y` alone. So the remedy now states only what `lstat` proves — that
+  the named entry is or is not itself a link — and then hands over the finite
+  checklist: this entry, the directories above it, the links it resolves
+  through. "Repoint that link, or remove that link" refers to whichever the
+  reader finds; Theurian never names it. Related: an outside-pointing
+  `.theurian` is reachable from a plain `git clone`
+  ([#237](https://github.com/theurian/theurian/issues/237)). The offending path
+  is still never echoed (SEC-7), and neither is the absolute project root.
+- **A `contentFile` refusal no longer denies the commonest cure.** The
+  path-escape remedy for a `contentFile` used to say that removing the `..` was
+  "not the cure" — wrong for a plain over-traversal typo, which involves no
+  symlink at all and is fixed by exactly that edit, and in conflict with the
+  sibling `MigrationContentUnreadableError`, which tells the author to fix the
+  path. It now offers both candidates: correct the path, or find the link
+  something it traverses goes through.
+- **Exit code:** a `PathEscapeError` raised while resolving a project now exits
+  `EXIT_STATE_ERROR` (4) rather than 1 for the commands routed through
+  `_require_project` — measured, all nine: `migrate validate`, `migrate status`,
+  `migrate apply`, `index build`, `index status`, `index gc`, `ingest`,
+  `propose` and `propose accept` — matching every sibling refusal on the same
+  load path (`MigrationsDirectoryUnreadableError`,
+  `MigrationFileUnreadableError`, `MigrationError`). A script keying on exit 1
+  for those must be updated. `init` and `project register` call
+  `resolve_context` directly and still exit 1; `project status` reports at exit
+  0 as it always has. All three now carry the new remedy text.
+- **A path refused only for nesting too deep no longer claims to have escaped**
+  ([#233](https://github.com/theurian/theurian/issues/233)). `resolve_within_root`
+  refuses a path past `MAX_PATH_DEPTH` whether or not it ever leaves the root,
+  and reported it as `Path escapes the permitted root` — false for a path
+  sitting entirely inside. It now raises `PathDepthExceededError` with its own
+  message and a remedy about flattening the nesting. The new type is a
+  `PathEscapeError` subclass, so every existing `except` and every exit-code
+  route catches it unchanged; only what the caller is told differs.
+
 ## [0.1.0.dev7] - 2026-08-19
 
 ### Added

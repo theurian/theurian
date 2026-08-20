@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from theurian.domain.errors import InputTooLargeError, PathEscapeError
+from theurian.domain.errors import (
+    InputTooLargeError,
+    PathDepthExceededError,
+    PathEscapeError,
+)
 from theurian.security.paths import (
+    MAX_PATH_DEPTH,
     MAX_SOURCE_FILE_BYTES,
+    assert_no_symlink_escape,
     ensure_private_mode,
     is_world_accessible,
     read_source_file,
@@ -87,11 +94,189 @@ def test_excessive_depth_is_refused(project_root: Path) -> None:
         resolve_within_root(project_root, "/".join(["a"] * 40))
 
 
-def test_error_does_not_echo_the_attacker_supplied_path(project_root: Path) -> None:
-    """Reflecting attacker-controlled text into a message is its own problem."""
+#: The marker every attack string below carries. Distinctive enough that its
+#: presence anywhere in a refusal is unambiguous, and it is the same name the
+#: fixture's out-of-tree secret uses.
+_ECHO_MARKER = "id_ed25519"
+
+_NEEDS_SYMLINKS = pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need privileges on Windows"
+)
+
+
+def _link_that_leaves_the_root(project_root: Path) -> None:
+    """The fixture the symlink-shaped attacks below need."""
+    link = project_root / ".theurian" / "knowledge" / f"{_ECHO_MARKER}.md"
+    if not link.is_symlink():
+        link.symlink_to(project_root.parent / "outside" / _ECHO_MARKER)
+
+
+#: One entry per *reachable* raise site in ``security/paths.py``, each driven
+#: with a path carrying `_ECHO_MARKER`. Three live in ``resolve_within_root``
+#: (absolute, depth, resolves-outside); the fourth is
+#: ``assert_no_symlink_escape``'s ``except ValueError``, which no
+#: ``read_source_file`` call can reach -- ``resolve_within_root`` runs first and
+#: has already proved containment -- so it is driven directly.
+#:
+#: The fifth raise site, ``assert_no_symlink_escape``'s in-loop check, is
+#: deliberately absent and this list is not a claim to cover it. That loop walks
+#: ``target.resolve().relative_to(root)``, whose components are by construction
+#: already symlink-free, so no component it visits can be a link absent a
+#: concurrent replacement mid-loop. Whether the guard should exist at all is
+#: issue #288's question, not this test's -- hence the "reachable" in the test
+#: names below.
+_ECHO_ATTACKS = [
+    pytest.param(
+        lambda root: read_source_file(root, f"../outside/{_ECHO_MARKER}"),
+        id="dotdot-climbs-above-the-root",
+    ),
+    pytest.param(
+        lambda root: read_source_file(root, f"/etc/{_ECHO_MARKER}"),
+        id="absolute-path",
+    ),
+    pytest.param(
+        lambda root: read_source_file(root, "/".join(["deep"] * 40) + f"/{_ECHO_MARKER}"),
+        id="past-the-depth-limit",
+    ),
+    pytest.param(
+        lambda root: read_source_file(root, f".theurian/knowledge/{_ECHO_MARKER}.md"),
+        id="symlink-target-leaves-the-root",
+        marks=_NEEDS_SYMLINKS,
+    ),
+    pytest.param(
+        lambda root: assert_no_symlink_escape(root, root.parent / "outside" / _ECHO_MARKER),
+        id="assert-no-symlink-escape-target-outside",
+    ),
+]
+
+
+@pytest.mark.parametrize("attack", _ECHO_ATTACKS)
+def test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path(
+    project_root: Path, attack: Callable[[Path], object]
+) -> None:
+    """Reflecting attacker-controlled text into a message is its own problem.
+
+    Parametrized over every reachable raise site rather than one of them: a
+    single-case version of this test let a change adding the offending path to
+    the absolute-path and depth branches pass. The remedy is checked alongside
+    the message (issue #233) -- it is the second half of the same user-facing
+    payload, `_fail` prints both, so a remedy naming the path would defeat this
+    guard while the message still passed it.
+    """
+    _link_that_leaves_the_root(project_root)
+
     with pytest.raises(PathEscapeError) as exc:
-        resolve_within_root(project_root, "../outside/id_ed25519")
-    assert "id_ed25519" not in str(exc.value)
+        attack(project_root)
+
+    assert _ECHO_MARKER not in str(exc.value)
+    assert _ECHO_MARKER not in exc.value.remedy
+
+
+#: What each reachable raise site publishes. Split per branch because the depth
+#: refusal is *not* an escape: a path can nest past the limit without ever
+#: leaving the root, and "Path escapes the permitted root" was false for it.
+_ESCAPE_MESSAGE = "Path escapes the permitted root"
+_ESCAPE_REMEDY = (
+    "Keep the referenced path inside the permitted root: remove any `..` that "
+    "climbs above the root, remove any absolute prefix, and check whatever it "
+    "traverses for a symbolic link that leaves the root, then retry."
+)
+_DEPTH_MESSAGE = f"Path exceeds the permitted depth limit of {MAX_PATH_DEPTH} segments"
+_DEPTH_REMEDY = (
+    f"This path nests more than {MAX_PATH_DEPTH} path segments below the permitted "
+    f"root. Shorten it -- flatten the directories it nests through -- then retry."
+)
+
+
+@pytest.mark.parametrize(
+    ("attack", "expected_message", "expected_remedy"),
+    [
+        pytest.param(
+            lambda root: read_source_file(root, f"../outside/{_ECHO_MARKER}"),
+            _ESCAPE_MESSAGE,
+            _ESCAPE_REMEDY,
+            id="dotdot-climbs-above-the-root",
+        ),
+        pytest.param(
+            lambda root: read_source_file(root, f"/etc/{_ECHO_MARKER}"),
+            _ESCAPE_MESSAGE,
+            _ESCAPE_REMEDY,
+            id="absolute-path",
+        ),
+        pytest.param(
+            lambda root: read_source_file(root, f".theurian/knowledge/{_ECHO_MARKER}.md"),
+            _ESCAPE_MESSAGE,
+            _ESCAPE_REMEDY,
+            id="symlink-target-leaves-the-root",
+            marks=_NEEDS_SYMLINKS,
+        ),
+        pytest.param(
+            lambda root: assert_no_symlink_escape(root, root.parent / "outside" / _ECHO_MARKER),
+            _ESCAPE_MESSAGE,
+            _ESCAPE_REMEDY,
+            id="assert-no-symlink-escape-target-outside",
+        ),
+        pytest.param(
+            lambda root: read_source_file(root, "/".join(["deep"] * 40) + f"/{_ECHO_MARKER}"),
+            _DEPTH_MESSAGE,
+            _DEPTH_REMEDY,
+            id="past-the-depth-limit",
+        ),
+    ],
+)
+def test_each_reachable_refusal_branch_carries_a_remedy_that_names_no_path(
+    project_root: Path,
+    attack: Callable[[Path], object],
+    expected_message: str,
+    expected_remedy: str,
+) -> None:
+    """Issue #233: `PathEscapeError` set no ``.remedy`` at all, so the CLI's
+    generic fallback -- "Run this inside an initialised Theurian project" --
+    was printed to users who were already inside one.
+
+    These call sites hold no name they may safely print (the test above is
+    why), so the remedy names the rule rather than a path. It covers all four
+    mechanisms rather than two, and stays root-agnostic: three raise sites in
+    `application/proposal_service.py` protect `.theurian/knowledge` rather than
+    the project root, so "keep it inside the project" was advice those callers
+    had already followed. It must also not fall back to the absolute root the
+    message used to carry -- no sibling refusal on this load path prints an
+    absolute path.
+
+    The depth branch is expected separately, and that split is the point: it
+    used to publish "Path escapes the permitted root" for a path that never
+    left the root, and an earlier commit on this branch pinned that false
+    message as correct.
+    """
+    _link_that_leaves_the_root(project_root)
+
+    with pytest.raises(PathEscapeError) as exc:
+        attack(project_root)
+
+    assert exc.value.entry is None, "this call site has no name it may safely print"
+    assert str(exc.value) == expected_message
+    assert exc.value.remedy == expected_remedy
+    assert str(project_root) not in str(exc.value)
+    assert str(project_root) not in exc.value.remedy
+
+
+def test_a_path_that_is_merely_too_deep_is_not_reported_as_an_escape(
+    project_root: Path,
+) -> None:
+    """The depth refusal keeps its own type, so a caller can tell the two apart
+    without parsing prose -- and a path nested past the limit while staying
+    lexically inside the root is exactly the case the shared message libelled.
+    """
+    inside_but_deep = "/".join(["deep"] * 40) + "/note.md"
+
+    with pytest.raises(PathDepthExceededError) as exc:
+        resolve_within_root(project_root, inside_but_deep)
+
+    assert exc.value.limit == MAX_PATH_DEPTH
+    assert "escapes" not in str(exc.value), "this path never left the root"
+    assert isinstance(exc.value, PathEscapeError), (
+        "every existing `except PathEscapeError` and exit-code route must still catch it"
+    )
 
 
 # -- T-5: symlink escape ---------------------------------------------------
