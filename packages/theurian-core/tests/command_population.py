@@ -160,8 +160,11 @@ def _walked(names: Iterable[str], *, at_repository_root: bool) -> list[str]:
     and that is why it is the last resort rather than the fallback.** It rests
     on ``git ls-files .theurian`` being empty, measured at bd4fb25;
     ``dogfood/dev7-corpus`` puts 81 tracked files under ``.theurian/`` -- 26
-    knowledge documents, 27 migrations, 27 proposals and one specification --
-    and the 26 sit beside the untracked local-only notes of #262, in the same
+    knowledge documents, 26 migrations, 26 proposal evidence files and 3
+    ``.gitkeep`` placeholders (measured 2026-08-20; the earlier "27 migrations,
+    27 proposals and one specification" counted a placeholder as a member of
+    each directory it holds open) -- and the 26 sit beside the untracked
+    local-only notes of #262, in the same
     directory. No name can separate those two, so a narrower rule is not
     available: the manifest :func:`_population` prefers is what carries the real
     answer into a tree with no git, and this is what is left when even that is
@@ -363,8 +366,9 @@ def _population(repository: pathlib.Path) -> tuple[pathlib.Path, ...]:
     A name-based guess is what is left when there is neither, and it was the
     whole answer until ``dogfood/dev7-corpus`` made it untenable. Measured on
     that branch: :func:`_walked` refuses 81 tracked files under ``.theurian/``
-    -- 26 knowledge documents, 27 migrations, 27 proposals, one specification --
-    of which 78 carry a scanned suffix. The gate's whole scanned population
+    -- 26 knowledge documents, 26 migrations, 26 proposal evidence files and 3
+    ``.gitkeep`` placeholders -- of which 78 carry a scanned suffix (the three
+    placeholders do not). The gate's whole scanned population
     there is 321 files, so the guess drops **24% of it**. A harness grading
     mutations against that is answering for a suite that does not exist.
 

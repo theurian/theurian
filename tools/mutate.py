@@ -256,13 +256,17 @@ _RUNNER_NAME: Final = ".mutate-run"
 # `packages/theurian-core/tests/command_population.py`, which reads this file by
 # this name and takes it over its own name-based guess -- the format is exactly
 # `git ls-files --cached -z` output, so both ends parse it the same way.
+# `packages/theurian-core/tests/unit/test_dogfood_corpus_governance.py` is the
+# second reader, and it needs the manifest for a different reason: without one
+# its `git` calls exit 128 in a copy, 11 of its rules ERROR, and the batch's own
+# unmutated control goes RED.
 #
 # Without it that guess drops the whole repository-root `.theurian/`, which on
-# the dogfood corpus branch is 81 tracked files -- 26 knowledge documents, 27
-# migrations, 27 proposals, one specification -- 78 of them with a suffix the
-# scan reads, against a scanned population of 321. The harness would then run
-# every verdict against 24% less than the gate it stands in for, and say nothing
-# about the difference.
+# the dogfood corpus branch is 81 tracked files -- 26 knowledge documents, 26
+# migrations, 26 proposal evidence files and 3 `.gitkeep` placeholders (measured
+# 2026-08-20) -- 78 of them with a suffix the scan reads, against a scanned
+# population of 321. The harness would then run every verdict against 24% less
+# than the gate it stands in for, and say nothing about the difference.
 _POPULATION_NAME: Final = ".mutate-population"
 
 
