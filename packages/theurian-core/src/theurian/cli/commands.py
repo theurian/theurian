@@ -68,6 +68,7 @@ from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationCycleError,
     MigrationError,
+    PathEscapeError,
     RevisionConflictError,
     TheurianError,
     UnenforceableScopeError,
@@ -1887,6 +1888,20 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
+        raise
+    # `PathEscapeError` is a `SecurityError`, not a `MigrationError`, so it fell
+    # past the branch above into the generic `TheurianError` one below and
+    # exited 1 with that branch's "run this inside an initialised Theurian
+    # project" default -- printed to a user who was already inside one, because
+    # a `.theurian/migrations` symlinked outside the project is what raised it
+    # (issue #233). It reaches `resolve_context` from the same load path as
+    # every branch above -- `load_migrations`'s directory probe, or `_load_one`
+    # reading a `*.yaml` entry -- and is the same kind of thing: a
+    # knowledge-state problem the user must fix, not a broken command. So it
+    # takes the same grading, and its own `.remedy` rather than a default,
+    # since this class always sets one.
+    except PathEscapeError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         raise
     except TheurianError as exc:
         _fail(

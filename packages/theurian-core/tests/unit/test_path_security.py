@@ -88,10 +88,43 @@ def test_excessive_depth_is_refused(project_root: Path) -> None:
 
 
 def test_error_does_not_echo_the_attacker_supplied_path(project_root: Path) -> None:
-    """Reflecting attacker-controlled text into a message is its own problem."""
+    """Reflecting attacker-controlled text into a message is its own problem.
+
+    The remedy is checked alongside the message (issue #233): it is the second
+    half of the same user-facing payload -- `_fail` prints both -- so a remedy
+    that named the offending path would defeat this guard while the message
+    still passed it.
+    """
     with pytest.raises(PathEscapeError) as exc:
         resolve_within_root(project_root, "../outside/id_ed25519")
     assert "id_ed25519" not in str(exc.value)
+    assert "id_ed25519" not in exc.value.remedy
+
+
+def test_the_refusal_carries_a_remedy_that_does_not_name_the_absolute_root(
+    project_root: Path,
+) -> None:
+    """Issue #233: `PathEscapeError` set no ``.remedy`` at all, so the CLI's
+    generic fallback -- "Run this inside an initialised Theurian project" --
+    was printed to users who were already inside one.
+
+    ``resolve_within_root`` holds no name it may safely print (the test above
+    is why), so its remedy names the rule rather than a path. It still has to
+    say what to *do*, and it must not fall back to the absolute root the
+    message used to carry: every sibling refusal on this load path prints
+    paths ``relative_to(project_root)``.
+    """
+    with pytest.raises(PathEscapeError) as exc:
+        resolve_within_root(project_root, "../outside/id_ed25519")
+
+    assert exc.value.entry is None, "this call site has no name it may safely print"
+    assert str(exc.value) == "Path escapes the permitted root"
+    assert exc.value.remedy == (
+        "Keep every referenced path inside the project: remove any `..` that climbs "
+        "above it, and repoint or remove any symbolic link that leaves it, then retry."
+    )
+    assert str(project_root) not in str(exc.value)
+    assert str(project_root) not in exc.value.remedy
 
 
 # -- T-5: symlink escape ---------------------------------------------------

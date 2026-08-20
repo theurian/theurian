@@ -12,6 +12,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A path-containment refusal on the `migrate` path told the user to go
+  somewhere they already were, and exited 1 rather than 4**
+  ([#233](https://github.com/theurian/theurian/issues/233)). With
+  `.theurian/migrations` — or one `*.yaml` file inside it — a symlink pointing
+  outside the project, `theurian migrate validate --json` printed
+  `{"error": "Path escapes the permitted root /<absolute>/<project>", "remedy":
+  "Run this inside an initialised Theurian project."}` at exit 1. The refusal
+  itself was correct and is unchanged; what it said about itself was not.
+  `PathEscapeError` set no `remedy` of its own, so the CLI's generic fallback
+  won — the "exception that does not describe itself" shape
+  [#205](https://github.com/theurian/theurian/issues/205) exists to end. It now
+  names the escaping entry relative to the project root, with the `!r` quoting
+  its siblings use, and carries a remedy naming the symlink. **Behaviour change:**
+  a `PathEscapeError` raised while resolving a project now exits
+  `EXIT_STATE_ERROR` (4) rather than 1, matching every sibling refusal on the
+  same load path (`MigrationsDirectoryUnreadableError`,
+  `MigrationFileUnreadableError`, `MigrationError`); a script keying on exit 1
+  for this case must be updated. The offending path is still never echoed
+  (SEC-7), and neither is the absolute project root.
+
 ## [0.1.0.dev7] - 2026-08-19
 
 ### Added

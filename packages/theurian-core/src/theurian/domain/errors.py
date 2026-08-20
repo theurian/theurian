@@ -583,14 +583,56 @@ class PathEscapeError(SecurityError):
     """A path resolved outside its permitted root.
 
     Raised for ``..`` traversal, absolute paths, and symlinks that leave the root.
-    The offending path is not echoed verbatim into user-facing output to avoid
-    reflecting attacker-controlled text (SEC-7).
+    ``requested`` -- the offending path -- is kept as structured state for the
+    caller and is never echoed into the message or the remedy, because at most
+    of this class's call sites it is attacker-controlled text: a ``contentFile``
+    written by whoever authored the migration (SEC-7). ``root`` is likewise
+    structured-only, since it is an absolute path and every sibling refusal on
+    the same load path prints its paths ``relative_to(project_root)``.
+
+    ``entry`` is how a refusal still says *what* escaped (issue #233). It is
+    supplied by the caller rather than derived here, because only the caller
+    knows whether it holds a name that is safe to print: a
+    ``project_root``-relative path that Theurian itself produced by listing its
+    own directory, not one an author chose. It is rendered with the same ``!r``
+    quoting :class:`MigrationFileUnreadableError` and
+    :class:`MigrationsDirectoryUnreadableError` apply to theirs, which is what
+    keeps a control character in a filename from reaching a terminal raw.
+
+    The two call sites that pass one -- ``migrations_dir`` itself and a
+    ``*.yaml`` entry inside it, both in
+    ``infrastructure/filesystem/migration_loader.py`` -- can only escape
+    through a symlink, and the remedy says so: a name that ``iterdir()``
+    returned from inside the project contains no ``..`` to climb with, and
+    ``migrations_dir`` is checked by ``is_symlink()`` before the escape test
+    runs at all. Where no ``entry`` is given, the remedy names the rule and
+    both mechanisms instead, since there is no way to tell from here which one
+    was used.
+
+    Before this class carried a remedy, ``cli/commands.py::_context_remedy``
+    fell through to its generic default and told a user whose
+    ``.theurian/migrations`` was an outside-pointing symlink to "run this
+    inside an initialised Theurian project" -- which is where they already
+    were. That is the "exception that does not describe itself" shape issue
+    #205's :attr:`TheurianError.remedy` exists to end.
     """
 
-    def __init__(self, requested: str, root: str) -> None:
+    def __init__(self, requested: str, root: str, *, entry: str | None = None) -> None:
         self.requested = requested
         self.root = root
-        super().__init__(f"Path escapes the permitted root {root}")
+        self.entry = entry
+        if entry is None:
+            self.remedy = (
+                "Keep every referenced path inside the project: remove any `..` that climbs "
+                "above it, and repoint or remove any symbolic link that leaves it, then retry."
+            )
+            super().__init__("Path escapes the permitted root")
+            return
+        self.remedy = (
+            f"{entry!r} is a symbolic link resolving outside the project. "
+            f"Repoint it inside the project, or remove it, then retry."
+        )
+        super().__init__(f"{entry!r} escapes the permitted root")
 
 
 class InputTooLargeError(SecurityError):

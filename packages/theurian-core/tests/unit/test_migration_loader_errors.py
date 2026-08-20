@@ -677,12 +677,14 @@ def test_load_migrations_refuses_a_migrations_directory_symlink_to_an_empty_outs
     which is why this section's fixture picks the empty case specifically:
     it is the one gap that check does not already close.
 
-    Only the exception *type* is pinned, not `PathEscapeError`'s message or
-    `.requested`/`.root` fields: `load_migrations`'s own docstring already
-    notes "this type's own remedy is generic rather than naming which of
-    these raised it (issue #233; out of scope here)", and the exact
-    construction call this directory-level check makes is an implementation
-    choice this test does not need to constrain.
+    The message, the remedy and ``.entry`` are pinned too (issue #233). They
+    were not when this test was written -- round four's version pinned only
+    the type, on the reasoning that `PathEscapeError`'s remedy was "generic
+    rather than naming which of these raised it ... out of scope here". That
+    generic remedy turned out to be the *false* one: "Run this inside an
+    initialised Theurian project", printed to a user who was already inside
+    one. The construction call is an implementation choice, but what the
+    refusal tells the user is not.
     """
     migrations_dir = project / ".theurian" / "migrations"
     migrations_dir.rmdir()
@@ -690,8 +692,54 @@ def test_load_migrations_refuses_a_migrations_directory_symlink_to_an_empty_outs
     outside_empty.mkdir()
     migrations_dir.symlink_to(outside_empty)
 
-    with pytest.raises(PathEscapeError):
+    with pytest.raises(PathEscapeError) as excinfo:
         load_migrations(project, migrations_dir, real_schema_root())
+
+    relative = str(migrations_dir.relative_to(project))
+    assert excinfo.value.entry == relative
+    assert str(excinfo.value) == f"{relative!r} escapes the permitted root"
+    assert excinfo.value.remedy == (
+        f"{relative!r} is a symbolic link resolving outside the project. "
+        f"Repoint it inside the project, or remove it, then retry."
+    )
+    assert str(outside_empty) not in str(excinfo.value), "the resolved target is not echoed"
+    assert str(outside_empty) not in excinfo.value.remedy, "nor into the remedy"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_load_migrations_names_the_entry_when_one_migration_file_escapes_the_project(
+    project: Path, tmp_path: Path
+) -> None:
+    """Issue #233's second shape, at the other call site: one `*.yaml` *entry*
+    inside a healthy `migrations_dir` symlinked outside `project_root`.
+
+    The refusal here comes from `_load_one`'s call to `read_source_file`, not
+    from the directory-level check the test above drives, and
+    `read_source_file` cannot name the entry itself -- its `relative`
+    argument is attacker-influenceable at other call sites, and
+    `tests/unit/test_path_security.py::test_error_does_not_echo_the_attacker_supplied_path`
+    pins that it is never echoed. `_load_one` is the call site that knows the
+    string is a `.theurian/migrations/` name Theurian's own `iterdir()`
+    returned, which is why it is the one that attaches `entry`.
+    """
+    outside_body = tmp_path / "id_ed25519"
+    outside_body.write_text("PRIVATE KEY\n")
+    migrations_dir = project / ".theurian" / "migrations"
+    entry = migrations_dir / "01K1EVAAAA01234567890ABCDE-escape.yaml"
+    entry.symlink_to(outside_body)
+
+    with pytest.raises(PathEscapeError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    relative = str(entry.relative_to(project))
+    assert excinfo.value.entry == relative
+    assert str(excinfo.value) == f"{relative!r} escapes the permitted root"
+    assert excinfo.value.remedy == (
+        f"{relative!r} is a symbolic link resolving outside the project. "
+        f"Repoint it inside the project, or remove it, then retry."
+    )
+    assert str(outside_body) not in str(excinfo.value), "the resolved target is not echoed"
+    assert str(outside_body) not in excinfo.value.remedy, "nor into the remedy"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")

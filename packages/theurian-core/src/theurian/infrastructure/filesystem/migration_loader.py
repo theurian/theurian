@@ -251,9 +251,13 @@ def load_migrations(
             `project_root` as a string regardless of where it resolves, so
             `read_source_file`'s own resolve-and-compare is what actually
             catches that one, one call site later -- the same mechanism the
-            directory-level check no longer has to rely on. This type's own
-            remedy is generic rather than naming which of these raised it
-            (issue #233; out of scope here).
+            directory-level check no longer has to rely on. Both of those two
+            name the offending entry and carry their own remedy (issue #233;
+            see :class:`~theurian.domain.errors.PathEscapeError` for why the
+            name is attached by the caller rather than derived). The third
+            case -- a ``contentFile`` escaping -- does not, because the only
+            name it could give is the author-written value itself, which this
+            type never echoes.
         InputTooLargeError: If a file exceeds its size limit.
         MigrationsDirectoryUnreadableError: If ``migrations_dir`` cannot be
             probed or listed for a reason other than genuinely not existing --
@@ -436,7 +440,15 @@ def _refuse_unusable_migrations_directory_symlink(migrations_dir: Path, project_
     try:
         resolved.relative_to(project_root.resolve())
     except ValueError as exc:
-        raise PathEscapeError(relative, str(project_root)) from exc
+        # `entry=relative` -- `.theurian/migrations`, a constant of Theurian's
+        # own layout rather than anything an author wrote -- is what lets the
+        # refusal name the link the user has to fix (issue #233). Everything
+        # else this function raises already names it the same way; before this,
+        # `PathEscapeError` alone printed the absolute project root and no
+        # remedy of its own. `resolved` is deliberately *not* passed: it is
+        # where the link points, outside the project, and naming it would hand
+        # back a fact about the filesystem the refusal exists to withhold.
+        raise PathEscapeError(relative, str(project_root), entry=relative) from exc
 
 
 def _entry_is_migration_file(entry: Path, project_root: Path) -> bool:
@@ -523,6 +535,19 @@ def _load_one(
 ) -> Migration:
     try:
         raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
+    except PathEscapeError as exc:
+        # Re-raised only to attach the entry's name (issue #233).
+        # `read_source_file` cannot attach it itself: its `relative` argument is
+        # attacker-influenceable at other call sites -- a `contentFile` an
+        # author wrote -- and `tests/unit/test_path_security.py::
+        # test_error_does_not_echo_the_attacker_supplied_path` pins that it is
+        # never echoed. Here it is a `.theurian/migrations/` name `iterdir()`
+        # returned, the identical string the `MigrationFileUnreadableError`
+        # below already prints for this same entry, so this is the call site
+        # that knows it is safe to name.
+        raise PathEscapeError(
+            exc.requested, exc.root, entry=str(path.relative_to(project_root))
+        ) from exc
     except OSError as exc:
         # The sibling of `_parse_upsert`'s conversion below, for the *other*
         # raw read on this load path: the migration file itself, not a
