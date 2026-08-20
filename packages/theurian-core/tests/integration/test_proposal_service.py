@@ -812,16 +812,23 @@ def test_re_accepting_an_accepted_proposal_reports_it_accepted(
     assert "pull request" in e.value.remedy
 
 
-def test_a_migration_id_pointing_at_another_proposals_migration_is_not_accepted(
+def test_a_migration_id_pointing_at_another_proposals_migration_is_not_confirmed(
     service: ProposalService,
 ) -> None:
-    """The forge, and the item-id cross-check that closes it (round three).
+    """The forge: the item cross-check refuses to confirm another's migration.
 
     A never-accepted proposal sets ``migrationId`` to another proposal's landed
-    migration. Keyed on the id alone that read as "already accepted / no action";
-    the migration it points at operates on a *different* item than this proposal's
-    own record names, so the cross-check refuses to confirm. Dies if the
-    cross-check is removed -- then the id match alone reports it accepted.
+    migration, which operates on a *different* item than this proposal's record
+    names. Keyed on the id alone that read as "already accepted / no action".
+
+    The cross-check does not confirm it (round three), and -- because a migration
+    IS in place under the recorded id -- the answer is read-before-acting, not
+    "nothing landed" (round four, adversarial M1): the message says the item
+    cannot be confirmed and the remedy says to correct the record rather than
+    re-draft, which would mint a second migration. It stays a ``ChangeAlreadyInPlaceError``
+    (exit 4), never the plain-``ProposalError`` re-draft code. Dies if the
+    cross-check is removed -- then the id match alone reports it *accepted* with
+    the confirming message.
     """
     landed = service.draft(_request(item_id=ItemId("architecture.landed")))
     service.accept(landed.proposal_id)
@@ -829,13 +836,13 @@ def test_a_migration_id_pointing_at_another_proposals_migration_is_not_accepted(
     _edit_evidence(forger, migrationId=landed.migration_id.value)
     forger.migration_file.unlink()
 
-    with pytest.raises(ProposalError) as caught:
+    with pytest.raises(ChangeAlreadyInPlaceError, match="cannot confirm") as caught:
         service.accept(forger.proposal_id)
 
-    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
-    # The message names the id the record *claims* -- the forged one -- not the
-    # forger's own minted id, which the record no longer carries.
-    assert landed.migration_id.value in str(caught.value)
+    message = str(caught.value)
+    assert "operates on the item this proposal names" not in message, "not the confirming message"
+    assert landed.migration_id.value in message
+    assert "correct evidence.json" in caught.value.remedy
 
 
 def test_a_recorded_id_is_not_rescued_by_another_proposals_migration_for_its_item(
@@ -861,6 +868,35 @@ def test_a_recorded_id_is_not_rescued_by_another_proposals_migration_for_its_ite
 
     assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
     assert waiting.migration_id.value in str(caught.value)
+
+
+def test_a_landed_migration_with_no_item_recorded_is_read_before_acting(
+    service: ProposalService,
+) -> None:
+    """adversarial M1: migrationId landed, itemId absent -> not "nothing landed".
+
+    A migration IS in ``.theurian/migrations/`` under the recorded id, but the
+    record names no item to cross-check it against -- a contributor-edited
+    ``evidence.json``, or an intermediate-build one that predates ``itemId``.
+    Reporting "nothing has been accepted" and exit 1 (whose #254 contract is
+    "re-draft") would tell the author to duplicate a change on disk (#89). It is
+    read-before-acting instead: a ``ChangeAlreadyInPlaceError`` (exit 4), a
+    message that does not assert nothing landed, and a remedy pointing at the
+    migration set.
+
+    Dies if "present-but-unconfirmed" is folded back into the "nothing landed"
+    branch: the exception type drops to a plain ``ProposalError``.
+    """
+    drafted = service.draft(_request())
+    service.accept(drafted.proposal_id)
+    _edit_evidence(drafted, itemId=None)
+
+    with pytest.raises(ChangeAlreadyInPlaceError, match="cannot confirm") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert "nothing" not in str(caught.value).lower(), "the migration is landed under the id"
+    assert ".theurian/migrations/" in caught.value.remedy
+    assert "correct evidence.json" in caught.value.remedy
 
 
 def test_an_interrupted_draft_with_a_recorded_id_is_not_reported_as_accepted(
@@ -988,6 +1024,85 @@ def test_an_evidence_path_that_is_a_directory_is_indeterminate(
     drafted.migration_file.unlink()
     drafted.evidence_file.unlink()
     drafted.evidence_file.mkdir()
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+
+
+def test_a_non_object_evidence_file_is_indeterminate(service: ProposalService) -> None:
+    """A present, parseable, non-object ``evidence.json`` records no fields.
+
+    ``[1, 2, 3]`` is valid JSON but not a mapping, so it carries no ``migrationId``
+    to check and cannot prove acceptance. Answered indeterminate, not dropped to
+    inference -- which, with no generated body left, could conclude accepted.
+    Dies if the non-object branch falls through to ``return None`` (absent).
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_text("[1, 2, 3]", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "not a JSON object" in str(caught.value)
+
+
+def test_a_non_utf8_evidence_file_is_indeterminate_as_bad_utf8(service: ProposalService) -> None:
+    """The reachable ``UnicodeDecodeError`` branch, pinned.
+
+    ``_read_within_project`` returns bytes, and ``json.loads`` on non-UTF-8 bytes
+    raises ``UnicodeDecodeError`` before it reaches JSON syntax -- so the reason is
+    "not valid UTF-8", not "not valid JSON". Dies if that branch is dropped or
+    ordered after ``ValueError`` (which would report it as JSON).
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_bytes(b'{"migrationId": "\xff\xfe"}')
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "not valid UTF-8" in str(caught.value)
+
+
+def test_a_dangling_symlink_evidence_file_is_indeterminate_not_absent(
+    service: ProposalService,
+) -> None:
+    """A broken symlink named ``evidence.json`` is present, not a missing record.
+
+    ``exists()`` is ``False`` for a dangling link, so without the ``is_symlink()``
+    half of the absent test it reads as "no record" and drops to inference -- which
+    can conclude accepted from a directory a contributor placed the link in. It is
+    indeterminate. Dies if ``and not evidence.is_symlink()`` is removed.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.unlink()
+    drafted.evidence_file.symlink_to(drafted.directory / "does-not-exist.json")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+
+
+def test_an_in_project_symlink_evidence_file_is_indeterminate(service: ProposalService) -> None:
+    """A symlinked ``evidence.json`` is refused by the read guard, then indeterminate.
+
+    A committed proposal's files are real (ADR-0013 point 7); a link resolving to
+    a real in-project file still routes through ``_reject_symlink_in_chain`` and is
+    caught as a present-but-unreadable record rather than followed and trusted.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    real = drafted.directory / "real-evidence.json"
+    real.write_text(drafted.evidence_file.read_text(encoding="utf-8"), encoding="utf-8")
+    drafted.evidence_file.unlink()
+    drafted.evidence_file.symlink_to(real)
 
     with pytest.raises(ProposalError, match="could not be examined") as caught:
         service.accept(drafted.proposal_id)

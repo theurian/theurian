@@ -27,6 +27,7 @@ from theurian.cli import (
     propose_commands,
     setup_commands,
 )
+from theurian.cli.output import escape_terminal_controls
 from theurian.domain.compatibility import (
     CompatibilityDeclaration,
     CompatibilityOutcome,
@@ -86,7 +87,10 @@ def _emit(payload: dict[str, object], *, as_json: bool) -> None:
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         return
     for key, value in payload.items():
-        sys.stdout.write(f"{key}: {value}\n")
+        # `compat check`'s `error` is `str(exc)` over a caller-supplied version
+        # string, so this text path carries untrusted input like `_render` does
+        # and is routed through the same sink (T-3 at the CLI edge).
+        sys.stdout.write(f"{escape_terminal_controls(key)}: {escape_terminal_controls(value)}\n")
 
 
 def _version_payload() -> dict[str, object]:

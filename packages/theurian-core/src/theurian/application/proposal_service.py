@@ -563,19 +563,36 @@ class ProposalService:
             # file (no such key) or a malformed value. No claim to check, so it is
             # inferred exactly like an absent record.
             return self._inferred_answer(directory, proposal_id)
-        landed = self._landed_migration_matching(recorded, document)
-        if landed is not None:
+        landed = self._landed_state(recorded, document)
+        if landed is not None and landed.confirmed:
             return ProposalAlreadyAcceptedError(
                 f"Proposal {proposal_id.value} appears to have been accepted: the migration it "
-                f"records, {_names([landed.name])}, is in .theurian/migrations/ and operates on "
-                "the item this proposal names.",
+                f"records, {_names([landed.migration.name])}, is in .theurian/migrations/ and "
+                "operates on the item this proposal names.",
                 remedy="Confirm that is the change you intended, then review it and open a pull "
                 "request. If it is not, the record is stale -- read what is in "
                 ".theurian/migrations/ before drafting again.",
             )
+        if landed is not None:
+            # The migration IS in place under the recorded id, so nothing here is
+            # "nothing landed" -- returning exit 1 (whose contract is "re-draft")
+            # would tell the author to mint a duplicate of a change on disk (#89,
+            # adversarial M1). The item could not be cross-checked -- the record
+            # names none, or names one this migration does not operate on -- so
+            # this is read-before-acting, not an assertion that it is this change.
+            return ProposalAlreadyAcceptedError(
+                f"Proposal {proposal_id.value} records migration {recorded.value}, and a "
+                f"migration with that id, {_names([landed.migration.name])}, is in "
+                ".theurian/migrations/ -- but this proposal's record does not name an item that "
+                "migration operates on, so it cannot confirm that is the same change.",
+                remedy="Read the migration under that id in .theurian/migrations/. If it is this "
+                "change, review it and open a pull request. If it is not, this proposal's record "
+                "is wrong -- correct evidence.json rather than re-drafting, which would mint a "
+                "second migration.",
+            )
         return ProposalError(
             f"Proposal {proposal_id.value} records migration {recorded.value}, but no migration "
-            "with that id and this proposal's item is in .theurian/migrations/, and no file named "
+            "with that id is in .theurian/migrations/, and no file named "
             f"{recorded.value}-<slug>.yaml is in this proposal directory. Nothing it drafted has "
             "been accepted.",
             remedy="Look in .theurian/migrations/ for the migration this proposal drafted -- it "
@@ -684,37 +701,47 @@ class ProposalService:
             "in .theurian/migrations/ for the migration this proposal drafted before re-drafting.",
         )
 
-    def _landed_migration_matching(
+    def _landed_state(
         self, migration_id: MigrationId, evidence: Mapping[str, object]
-    ) -> Path | None:
-        """The landed migration this proposal drafted, cross-checked by item id.
+    ) -> _LandedMigration | None:
+        """What ``.theurian/migrations/`` holds under the recorded migration id.
 
-        A recorded migration id is a contributor claim: a never-accepted proposal
-        can set ``migrationId`` to another proposal's landed migration and be read
-        as accepted. Finding a file by id is therefore not enough -- that landed
-        migration must also operate on the item this proposal's own record names,
-        which reduces the forge to landing a migration for the same item and is
-        indistinguishable from a genuine acceptance. A record that names no item,
-        or a landed migration whose operations do not name it, is *not confirmed*
-        -- ``None`` -- and the caller points the reader at the migration set
-        rather than concluding.
+        ``None`` when no migration is filed under the id at all -- the only state
+        where nothing this proposal drafted has been accepted. Otherwise a
+        :class:`_LandedMigration` whose ``confirmed`` says whether it also operates
+        on the item this proposal's own record names:
+
+        * confirmed -- a recorded id alone is a contributor claim (``evidence.json``
+          is committed input, ADR-0013 point 7): a never-accepted proposal can
+          point ``migrationId`` at another proposal's landed migration, so the item
+          cross-check is what turns "a file with this id exists" into "this
+          proposal's change is in place".
+        * not confirmed -- a migration is filed under the id, but the item could
+          not be cross-checked (the record names none, or names one the migration
+          does not operate on). *Something is landed under the id*, so this is not
+          "nothing landed": the caller answers read-before-acting, never re-draft.
 
         ``sorted`` for a stable order; in practice at most one file matches,
         because two migrations sharing an id are the duplicate the migration set
         refuses at project resolution, before ``accept`` runs at all.
         """
         claimed = _evidence_item_ids(evidence)
-        if not claimed:
-            return None
+        present: Path | None = None
         for candidate in sorted(self._paths.migrations.glob(f"{migration_id.value}-*.yaml")):
             if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if present is None:
+                present = candidate
+            if not claimed:
                 continue
             try:
                 document = load_yaml_mapping(candidate.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
                 continue
             if claimed & set(_operation_item_ids(document)):
-                return candidate
+                return _LandedMigration(migration=candidate, confirmed=True)
+        if present is not None:
+            return _LandedMigration(migration=present, confirmed=False)
         return None
 
     def _refuse_if_migration_present(self, destination: Path) -> None:
@@ -959,6 +986,20 @@ class _BodyMove:
     replaced: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _LandedMigration:
+    """A migration filed under a recorded id, and whether its item cross-checks.
+
+    ``confirmed`` is the difference between "this proposal's change is in place"
+    and "a migration with this id is in place but may be someone else's" -- the
+    two carry different messages and different remedies, but neither is "nothing
+    landed", so both exit on the knowledge-state code rather than the re-draft one.
+    """
+
+    migration: Path
+    confirmed: bool
+
+
 def _last_segment(item_id: ItemId) -> str:
     return item_id.value.rpartition(".")[2]
 
@@ -1152,9 +1193,14 @@ def _operation_item_ids(document: Mapping[str, object]) -> Iterable[str]:
 #: rather than ``str(exc)``: an ``OSError``'s text carries the absolute filename
 #: (a home-directory leak) and a decode error's echoes bytes the file chose, so a
 #: fixed phrase per class leaks neither. ``UnicodeDecodeError`` precedes
-#: ``ValueError`` because it is one; ``InputTooLargeError``/``PathEscapeError``
-#: precede ``ProposalError`` because ``TheurianError`` is their common base but
-#: only the symlink refusal is a plain ``ProposalError``.
+#: ``ValueError`` because it is one -- and it is reachable, not dead:
+#: ``_read_within_project`` returns *bytes*, and ``json.loads`` on non-UTF-8
+#: bytes raises ``UnicodeDecodeError`` before it reaches JSON syntax, so it must
+#: come first to be reported as UTF-8 rather than as JSON (pinned by
+#: ``test_a_non_utf8_evidence_file_is_indeterminate_as_bad_utf8``).
+#: ``InputTooLargeError``/``PathEscapeError`` precede ``ProposalError`` because
+#: ``TheurianError`` is their common base but only the symlink refusal is a plain
+#: ``ProposalError``.
 _EVIDENCE_FAILURE_REASONS: Final = (
     (InputTooLargeError, "it is larger than the size cap"),
     (PathEscapeError, "its path escapes the project"),

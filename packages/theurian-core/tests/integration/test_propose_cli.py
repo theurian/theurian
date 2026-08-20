@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
@@ -486,14 +487,18 @@ def test_a_success_payload_cannot_forge_output_through_a_body_path(project: Path
     assert "\\x1b" in result.stdout, "the control byte is rendered as a visible escape"
 
 
-def test_the_render_sink_escapes_controls_and_keeps_printable_unicode(
+def test_the_render_sink_escapes_every_control_and_keeps_printable_unicode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The central sink, driven directly: escape controls, keep CJK and whitespace.
+    """The central sink, driven directly: escape every control, keep CJK.
 
     ``_emit`` in text mode is the output path for every command's success payload,
-    so escaping controls here closes the class for all of them -- but it must not
-    mangle a Japanese title or fold a legitimately multi-line value onto one line.
+    so escaping controls here closes the class for all of them. A value's own
+    ``\\n``/``\\t`` is escaped too -- the output's structural whitespace is
+    ``_render``'s own f-strings, added outside the sink, so a newline *inside a
+    value* only ever appends a line that reads as the tool's. The one raw
+    newline expected below is the record separator ``_render`` writes between
+    entries, never one a value carried.
     """
     from theurian.cli.commands import _emit
 
@@ -510,7 +515,29 @@ def test_the_render_sink_escapes_controls_and_keeps_printable_unicode(
     assert "\x1b" not in out and "\r" not in out and "\x7f" not in out and "\x9b" not in out
     assert "\\x1b" in out and "\\x7f" in out and "\\x9b" in out
     assert "再試行ポリシー" in out, "printable non-ASCII is untouched"
-    assert "one\ntwo\ttab" in out, "newlines and tabs are legitimate whitespace"
+    assert "one\\x0atwo\\x09tab" in out, "a value's own newline and tab are escaped"
+    # The list entry rendered on one line: the value carried no raw newline through.
+    assert "  - one\\x0atwo\\x09tab\n" in out
+
+
+def test_the_fail_sink_escapes_controls_on_the_error_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``_fail``'s stderr text is sanitized too, not only ``_render``'s stdout.
+
+    The CHANGELOG credits the error path as closed; only the service layer's
+    ``_names`` was tested for it before. A control character in the message or the
+    remedy -- from a source that skipped ``_names`` -- must not reach the terminal
+    raw. Dies if ``escape_terminal_controls`` is dropped from ``_fail``.
+    """
+    from theurian.cli.commands import _fail
+
+    with pytest.raises(typer.Exit):
+        _fail("a\x1b[2K\rforged", remedy="r\ru\x9bx", as_json=False, code=1)
+
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\r" not in err and "\x9b" not in err
+    assert "\\x1b" in err and "\\x9b" in err
 
 
 def test_accept_reports_an_unknown_proposal_with_a_remedy(project: Path) -> None:
