@@ -177,14 +177,14 @@ def test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path(
 #: leaving the root, and "Path escapes the permitted root" was false for it.
 _ESCAPE_MESSAGE = "Path escapes the permitted root"
 _ESCAPE_REMEDY = (
-    "Keep the referenced path inside the permitted root and within its depth "
-    "limit: remove any `..` that climbs above the root, any absolute prefix, "
-    "and any symbolic link that leaves it, then retry."
+    "Keep the referenced path inside the permitted root: remove any `..` that "
+    "climbs above the root, remove any absolute prefix, and check whatever it "
+    "traverses for a symbolic link that leaves the root, then retry."
 )
 _DEPTH_MESSAGE = f"Path exceeds the permitted depth limit of {MAX_PATH_DEPTH} segments"
 _DEPTH_REMEDY = (
-    f"Keep the referenced path within {MAX_PATH_DEPTH} path segments below the permitted "
-    f"root -- flatten the directories it nests through -- then retry."
+    f"This path nests more than {MAX_PATH_DEPTH} path segments below the permitted "
+    f"root. Shorten it -- flatten the directories it nests through -- then retry."
 )
 
 

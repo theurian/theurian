@@ -59,12 +59,34 @@ pytestmark = pytest.mark.unit
 #: the same guard `test_cli_commands.py` uses before a permission-refusal test.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
-#: `PathEscapeError`'s `"symlink"`-role remedy, the only one of the three that
-#: proposes removing what it names. `{name}` takes an already-`repr`'d string.
-_SYMLINK_REMEDY = (
-    "{name} is a symbolic link resolving outside the project. "
-    "Repoint it so it resolves inside the project, or remove it, then retry."
+#: The checklist every escape remedy ends in. It names the population the
+#: culprit must be in and leaves the identification to the reader, because three
+#: attempts to identify it here were each refuted (`EscapeSite`, `domain/errors.py`).
+_CHECK_THE_CHAIN = (
+    "Check it, each directory above it, and each link it resolves through, for the "
+    "link that leaves the project. Repoint that link so it resolves inside the "
+    "project, or remove that link, then retry."
 )
+#: `PathEscapeError`'s `"symlink"`-role remedy. `{name}` takes an already-`repr`'d
+#: string. The opening sentence is the whole of what `lstat` proved.
+_SYMLINK_REMEDY = "{name} is itself a symbolic link. " + _CHECK_THE_CHAIN
+
+
+def _assert_names_no_file_to_delete(remedy: str) -> None:
+    """The invariant that survives every construction, and the one a reviewer
+    should attack next.
+
+    Deletion-as-cure requires knowing the culprit, and the culprit can sit
+    anywhere on the entry's ancestor chain or its resolution chain -- so no
+    remedy may propose removing a *named* file. Every "remove" it contains must
+    be "remove that link", the one the reader locates by walking the checklist.
+    """
+    assert "remove it" not in remedy, "that names the entry as the thing to delete"
+    assert "delete" not in remedy, "no remedy proposes a deletion of its own"
+    assert remedy.count("remove") == remedy.count("remove that link"), (
+        "every 'remove' must refer to the link the reader locates, never to a filename"
+    )
+
 
 _VALID_MIGRATION = """apiVersion: theurian.dev/v1
 id: 01K1KKKKKK01234567890ABCDE
@@ -790,12 +812,10 @@ def test_load_migrations_does_not_call_a_plain_entry_a_symlink_when_an_ancestor_
     assert "each directory above it" in excinfo.value.remedy, (
         "the escaping component is an ancestor; that is where the reader must be sent"
     )
-    assert excinfo.value.remedy == (
-        f"{relative!r} resolves outside the project. Check it and each directory above "
-        f"it for a symbolic link that leaves the project, then repoint or remove that "
-        f"link and retry. Do not delete {relative!r} itself: the link that leaves the "
-        f"project may be a directory above it."
+    assert excinfo.value.remedy == f"{relative!r} resolves outside the project. " + (
+        _CHECK_THE_CHAIN
     )
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
 
 
 def test_a_content_file_nested_too_deep_is_not_reported_as_an_escape(project: Path) -> None:
@@ -816,8 +836,15 @@ def test_a_content_file_nested_too_deep_is_not_reported_as_an_escape(project: Pa
     with pytest.raises(PathDepthExceededError) as excinfo:
         load_migrations(project, project / ".theurian" / "migrations", real_schema_root())
 
-    assert "escapes" not in str(excinfo.value)
-    assert excinfo.value.entry is None, "the depth refusal names no entry and needs none"
+    relative = str(migration.relative_to(project))
+    assert "escapes" not in str(excinfo.value), "this path never left the root"
+    assert excinfo.value.entry == EscapeSite(relative, "referrer"), (
+        "named like its escaping siblings: the migration file is where to look"
+    )
+    assert str(excinfo.value) == (
+        f"{relative!r} names a path that exceeds the permitted depth limit of 32 segments"
+    )
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
 
 
 def test_the_sibling_content_file_branches_name_the_migration_file_too(
@@ -890,12 +917,9 @@ def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_degrades(
     with pytest.raises(PathEscapeError) as excinfo:
         load_migrations(project, migrations_dir, real_schema_root())
 
-    assert excinfo.value.entry is not None
-    assert excinfo.value.entry.role == "resolved"
-    assert "remove it" not in excinfo.value.remedy, "deleting it cures nothing and loses work"
-    assert "each directory above it" in excinfo.value.remedy
-    assert "ordinary file" not in excinfo.value.remedy, (
-        "this entry IS a symbolic link -- just not the escaping one"
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
+    assert "each directory above it" in excinfo.value.remedy, (
+        "the escaping component is an ancestor; the checklist must reach it"
     )
 
 
@@ -925,31 +949,24 @@ def test_a_migrations_directory_link_under_an_escaped_ancestor_degrades(
     with pytest.raises(PathEscapeError) as excinfo:
         load_migrations(project, migrations_dir, real_schema_root())
 
-    assert excinfo.value.entry == EscapeSite(".theurian/migrations", "resolved")
-    assert "remove it" not in excinfo.value.remedy
+    assert excinfo.value.entry is not None
+    assert excinfo.value.entry.name == ".theurian/migrations"
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
     assert "each directory above it" in excinfo.value.remedy
-    assert "ordinary file" not in excinfo.value.remedy, (
-        "this entry IS a symbolic link -- just not the escaping one"
-    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_an_entry_that_is_itself_the_escape_keeps_the_strong_role_and_removal_cures_it(
+def test_an_entry_that_is_itself_a_symlink_opens_with_the_sentence_lstat_proves(
     project: Path, tmp_path: Path
 ) -> None:
-    """Construction B, the one that must NOT degrade: the entry is a symlink
-    whose own link text is lexically in-project (`../../lib/real.yaml`), and
-    the escape is `lib`.
+    """The entry is a symlink whose own link text is lexically in-project
+    (`../../lib/real.yaml`), and `lib` is the escape.
 
-    Its parent chain resolves inside the root and it resolves outside, so it is
-    the component that carried the path out -- "remove it" and "repoint it so
-    it resolves inside" both genuinely cure the escape, and this test proves
-    the first of those by *doing* it. Without this case the rule could be
-    satisfied by degrading everything, which would be safe and useless.
-
-    The wording nit this also pins: the earlier "Repoint it inside the project"
-    was already satisfied as written -- `../../lib/real.yaml` *is* inside the
-    project as text. Only "so it resolves inside" says the true thing.
+    `lstat` says this entry is a link, so the refusal may say so -- that is the
+    whole of the strong role's claim now, and the checklist that follows is the
+    same one every escape remedy carries. Without a case that keeps the
+    sentence, the rule could be satisfied by never saying anything, which would
+    be safe and useless.
     """
     outside_lib = tmp_path / "outside-lib"
     outside_lib.mkdir()
@@ -965,11 +982,67 @@ def test_an_entry_that_is_itself_the_escape_keeps_the_strong_role_and_removal_cu
     relative = str(entry.relative_to(project))
     assert excinfo.value.entry == EscapeSite(relative, "symlink")
     assert excinfo.value.remedy == _SYMLINK_REMEDY.format(name=repr(relative))
-    assert "Repoint it so it resolves inside the project" in excinfo.value.remedy
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
 
-    # The acceptance itself: follow the instruction and the escape is gone.
-    entry.unlink()
-    assert len(load_migrations(project, migrations_dir, real_schema_root()).migration_set) == 0
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_sibling_link_chain_is_cured_by_the_checklist_without_deleting_anything(
+    project: Path, tmp_path: Path
+) -> None:
+    """The construction that refuted the previous closure argument: `x.yaml` is
+    a symlink to its sibling `y.yaml`, and `y.yaml` is the one pointing outside.
+
+    Every conjunct of the old three-probe rule held for `x` -- its own `lstat`
+    said link, its parent chain resolved inside, and it resolved outside -- so
+    `x` was named as the culprit and the reader told to remove it. Measured
+    against that build: removing `x` produced the same refusal for `y`,
+    removing `y` too ended at `valid: true`, and two Git-tracked files were
+    gone. The premise was false because resolution continues *through* the
+    final component's target chain, so "the parent is inside and the result is
+    outside" never left a single candidate.
+
+    The minimal cure is repointing `y` alone -- `x` was never independently
+    broken -- and this test performs exactly that: no deletion, one edit, the
+    refusal gone. That is what the checklist form buys, and it is the property
+    to attack next.
+
+    The measured CLI construction used two `*.yaml` siblings. The intermediate
+    link here is deliberately *not* named `*.yaml`, and that is the only
+    difference: with both enumerated, `x` and `y` resolve to one file and the
+    cured state trips the duplicate-migration-id rule instead, which would mask
+    the thing under test. What matters -- the culprit sitting on the entry's
+    resolution chain rather than being the entry -- is identical.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "real.yaml").write_text(_VALID_MIGRATION)
+    migrations_dir = project / ".theurian" / "migrations"
+    intermediate = project / ".theurian" / "link-y"
+    intermediate.symlink_to(outside / "real.yaml")
+    entry = migrations_dir / "01K1XXXXXX01234567890ABCDE-x.yaml"
+    entry.symlink_to(Path("..") / intermediate.name)
+
+    with pytest.raises(PathEscapeError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    # The entry is named -- lstat proved it is a link -- and it is not the
+    # culprit. Nothing in the remedy tells anyone to delete it.
+    assert excinfo.value.entry == EscapeSite(str(entry.relative_to(project)), "symlink")
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
+    assert "each link it resolves through" in excinfo.value.remedy, (
+        "the culprit is on the resolution chain; the checklist must send the reader there"
+    )
+
+    # Follow the checklist: walk the links the entry resolves through, find the
+    # intermediate, repoint that one. One edit, no deletion, refusal gone.
+    inside_body = project / ".theurian" / "real.yaml"
+    inside_body.write_text(_VALID_MIGRATION)
+    intermediate.unlink()
+    intermediate.symlink_to(Path(inside_body.name))
+
+    loaded = load_migrations(project, migrations_dir, real_schema_root())
+    assert entry.is_symlink(), "the cure deleted nothing the refusal had named"
+    assert len(loaded.migration_set) == 1
 
 
 def test_a_role_probe_that_cannot_run_degrades_rather_than_guessing(
@@ -995,11 +1068,11 @@ def test_a_role_probe_that_cannot_run_degrades_rather_than_guessing(
             victim.is_symlink()
         assert os_excinfo.value.errno == errno.EACCES, "fixture must actually deny the lstat"
 
-        assert _escape_role_of(victim, project) == "resolved"
+        assert _escape_role_of(victim) == "resolved"
     finally:
         denied.chmod(0o700)
 
-    assert _escape_role_of(tmp_path / "nope" / "entry.yaml", project) == "resolved", (
+    assert _escape_role_of(tmp_path / "nope" / "entry.yaml") == "resolved", (
         "a path that does not exist is not evidence of a symbolic link either"
     )
 
@@ -1028,10 +1101,19 @@ def test_load_migrations_names_the_migration_file_when_its_content_file_escapes(
     relative = str(migration.relative_to(project))
     assert excinfo.value.entry == EscapeSite(relative, "referrer")
     assert str(excinfo.value) == f"{relative!r} names a path that escapes the permitted root"
-    assert relative in excinfo.value.remedy, "the migration file is the place to look"
     assert "id_ed25519" not in str(excinfo.value), "the author-written value stays unechoed"
     assert "id_ed25519" not in excinfo.value.remedy, "nor in the remedy"
-    assert "remove it" not in excinfo.value.remedy, "the migration file is not the culprit"
+    _assert_names_no_file_to_delete(excinfo.value.remedy)
+    assert excinfo.value.remedy == (
+        f"Either the path {relative!r} names is written wrong -- correct it so it stays "
+        f"inside the project (the examples in docs/protocol/migrations.md show the normal "
+        f"`../knowledge/...` form) -- or something it traverses is a symbolic link that "
+        f"leaves the project; find and fix that link."
+    ), (
+        "both candidates, or the commonest case has no cure: a plain over-traversal typo "
+        "(`../../../../../../etc/x`) involves no symlink at all, and an earlier version "
+        "told the author that correcting the path was not the fix"
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")

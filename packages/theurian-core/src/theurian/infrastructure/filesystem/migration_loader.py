@@ -255,16 +255,15 @@ def load_migrations(
             `read_source_file`'s own resolve-and-compare is what actually
             catches that one, one call site later -- the same mechanism the
             directory-level check no longer has to rely on. All three name a
-            project-relative entry and carry their own remedy (issue #233),
-            each with the
-            :class:`~theurian.domain.errors.EscapeRole` its own check earns:
-            ``"symlink"`` for ``migrations_dir``, whose ``is_symlink()`` ran
-            first; ``"symlink"`` or ``"resolved"`` for an entry, decided by
-            :func:`_escape_role_of`, because an outside-pointing *ancestor*
-            makes plain files resolve outside too (issue #237); and
-            ``"referrer"`` for a ``contentFile``, where the migration file is
-            named as the place to look and the author-written value stays
-            unechoed.
+            project-relative entry and carry their own remedy (issue #233).
+            The :class:`~theurian.domain.errors.EscapeRole` each carries picks
+            only the opening sentence: :func:`_escape_role_of` for the two
+            path-shaped cases, and ``"referrer"`` for a ``contentFile``, where
+            the migration file is named as the place to look and the
+            author-written value stays unechoed. None of the three tells the
+            reader which file to delete -- see
+            :class:`~theurian.domain.errors.EscapeSite` for why that claim
+            cannot be made here.
         InputTooLargeError: If a file exceeds its size limit.
         MigrationsDirectoryUnreadableError: If ``migrations_dir`` cannot be
             probed or listed for a reason other than genuinely not existing --
@@ -449,17 +448,8 @@ def _refuse_unusable_migrations_directory_symlink(migrations_dir: Path, project_
     except ValueError as exc:
         # `.theurian/migrations` is a constant of Theurian's own layout rather
         # than anything an author wrote, so it is safe to name (issue #233).
-        #
-        # The role goes through `_escape_role_of` rather than being hardcoded
-        # to `"symlink"`, even though the `is_symlink()` above already returned
-        # True for this exact path: that lstat proves this name is a link, not
-        # that this link is the escape. Measured -- `migrations` symlinked to a
-        # sibling `real-migrations` (lexically in-project) under an
-        # outside-pointing `.theurian` earns the lstat, and both halves of
-        # "repoint it inside the project, or remove it" are then useless: its
-        # target is already inside, and removing it destroys the layout while
-        # `.theurian` still resolves outside. The parent-chain conjunct is what
-        # tells the two apart.
+        # The role only decides whether the refusal opens by saying this entry
+        # is itself a link; it never decides what the reader is told to do.
         #
         # `resolved` is deliberately not passed as the name: it is where the
         # link points, outside the project, and naming it would hand back a
@@ -467,7 +457,7 @@ def _refuse_unusable_migrations_directory_symlink(migrations_dir: Path, project_
         raise PathEscapeError(
             relative,
             str(project_root),
-            entry=EscapeSite(relative, _escape_role_of(migrations_dir, project_root)),
+            entry=EscapeSite(relative, _escape_role_of(migrations_dir)),
         ) from exc
 
 
@@ -556,42 +546,25 @@ def _referrer(migration_path: Path, project_root: Path) -> EscapeSite:
     return EscapeSite(str(migration_path.relative_to(project_root)), "referrer")
 
 
-def _escape_role_of(path: Path, project_root: Path) -> EscapeRole:
-    """Whether ``path`` may be named as *the component that escaped*.
+def _escape_role_of(path: Path) -> EscapeRole:
+    """Whether the refusal may open with "this entry is itself a symbolic link".
 
-    Three probes, taken together, because that is what
-    :class:`~theurian.domain.errors.EscapeSite`'s acceptance requires -- a
-    remedy proposing removal must actually cure the escape:
+    One probe, because that sentence is the only claim the role now carries and
+    ``lstat`` is exactly what settles it. Earlier versions took two more probes
+    -- the parent chain resolving inside the root, and the path still resolving
+    outside -- to justify naming this entry as the culprit and telling the
+    reader to delete it. That instruction is gone
+    (:class:`~theurian.domain.errors.EscapeSite` records the three refutations),
+    and with it the reason those probes existed: they narrowed nothing about
+    whether the entry *is* a link, which is all that remains to be said.
 
-    1. ``path`` itself is a symbolic link (``lstat``, so the final component is
-       examined without being followed).
-    2. ``path``'s parent chain resolves *inside* the root. This is the conjunct
-       ``is_symlink()`` alone cannot supply, and without it three separate
-       constructions earn the strong role while removal cures nothing: an entry
-       linking to a sibling under an escaped ancestor, a ``migrations``
-       directory link that is lexically in-project under an escaped ancestor,
-       and -- for the directory call site -- the same shape one level up.
-    3. ``path`` still resolves *outside* the root. The escape was established by
-       an earlier, separate resolve; re-checking it here means the sentence
-       "is a symbolic link resolving outside" rests on probes taken together
-       rather than on two facts observed at different times.
-
-    Any failure, and any probe that raises, degrades to ``"resolved"`` -- whose
-    remedy tells nobody to delete anything. Degrading is always safe; claiming
-    the strong role on incomplete evidence is what produced the defect this
-    function exists to prevent.
+    An ``OSError`` degrades to ``"resolved"``, which claims nothing at all. A
+    probe that could not run is not evidence of a symbolic link.
     """
     try:
-        if not path.is_symlink():
-            return "resolved"
-        root = project_root.resolve()
-        if not path.parent.resolve().is_relative_to(root):
-            return "resolved"
-        if path.resolve().is_relative_to(root):
-            return "resolved"
+        return "symlink" if path.is_symlink() else "resolved"
     except OSError:
         return "resolved"
-    return "symlink"
 
 
 def _load_one(
@@ -603,31 +576,27 @@ def _load_one(
 ) -> Migration:
     try:
         raw = read_source_file(project_root, PurePosixPath(path.relative_to(project_root)))
-    except PathDepthExceededError:
-        # Let through ahead of the clause below, which would re-wrap it as an
-        # escape. See the identical guard in `_parse_upsert`.
-        raise
     except PathEscapeError as exc:
-        role = _escape_role_of(path, project_root)
         # Re-raised only to attach the entry's name (issue #233).
         # `read_source_file` cannot attach it itself: its `relative` argument is
         # attacker-influenceable at other call sites -- a `contentFile` an
         # author wrote -- and `tests/unit/test_path_security.py::
-        # test_no_refusal_branch_echoes_the_attacker_supplied_path` pins that it
-        # is never echoed. Here it is a `.theurian/migrations/` name `iterdir()`
-        # returned, the identical string the `MigrationFileUnreadableError`
-        # below already prints for this same entry, so this is the call site
-        # that knows it is safe to name.
+        # test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path`
+        # pins that it is never echoed. Here it is a `.theurian/migrations/`
+        # name `iterdir()` returned, the identical string the
+        # `MigrationFileUnreadableError` below already prints for this same
+        # entry, so this is the call site that knows it is safe to name.
         #
-        # The role is probed, never assumed: see `_escape_role_of`. An
-        # outside-pointing `.theurian` -- which a plain `git clone` can produce,
-        # issue #237 -- makes every file under it resolve outside, link or not,
-        # and an earlier commit on this branch aimed "remove it" at the user's
-        # own authored migration. Measured both times: following that emptied
-        # `migrations/`, after which `migrate validate` exited 0 with
-        # `.theurian` still outside the project.
+        # A `PathDepthExceededError` needs no passthrough here, unlike its twin
+        # in `_parse_upsert`: an entry's relative path is
+        # `<knowledge dir>/migrations/<name>`, and every construction site of
+        # `Project.knowledge_directory` in this tree passes the
+        # `DEFAULT_KNOWLEDGE_DIRECTORY` constant, so the path is three segments
+        # and cannot reach the 32-segment limit.
         raise PathEscapeError(
-            exc.requested, exc.root, entry=EscapeSite(str(path.relative_to(project_root)), role)
+            exc.requested,
+            exc.root,
+            entry=EscapeSite(str(path.relative_to(project_root)), _escape_role_of(path)),
         ) from exc
     except OSError as exc:
         # The sibling of `_parse_upsert`'s conversion below, for the *other*
@@ -842,13 +811,16 @@ def _parse_upsert(
     try:
         resolved_path = resolve_within_root(project_root, relative_posix)
         body_bytes = read_source_file(project_root, relative_posix)
-    except PathDepthExceededError:
-        # A `PathEscapeError` subclass, so it must be let through *before* the
-        # clause below, which would otherwise re-wrap it into "the path this
-        # names resolves outside the project" -- false for a path that never
-        # left the root and only nested too deep. Its own message and remedy
-        # are already complete.
-        raise
+    except PathDepthExceededError as exc:
+        # Caught *before* the escape clause below -- it is a `PathEscapeError`
+        # subclass, and that clause would re-label it as an escape, false for a
+        # path that never left the root. Re-raised with the same `_referrer` its
+        # siblings use: the reason recorded there applies unchanged, and which
+        # of these branches fires must not decide whether the user is told
+        # where to look.
+        raise PathDepthExceededError(
+            exc.requested, exc.root, limit=exc.limit, entry=_referrer(path, project_root)
+        ) from exc
     except PathEscapeError as exc:
         raise PathEscapeError(exc.requested, exc.root, entry=_referrer(path, project_root)) from exc
     except OSError as exc:
@@ -858,7 +830,7 @@ def _parse_upsert(
         # at the one call site the read happens, is what makes every one of
         # those callers -- `migrate validate`, `init`, and the rest of
         # `_require_project`'s call sites (nine as of 2026-08-20; re-count
-        # with `grep -rn '_require_project(as_json)'
+        # with `grep -rn '_require_project(as_json)$'
         # packages/theurian-core/src/theurian/cli/`) -- report the CP-2 `{error,
         # remedy}` shape instead of a Rich traceback with an empty stdout.
         raise MigrationContentUnreadableError(

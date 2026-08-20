@@ -1225,9 +1225,13 @@ def test_apply_refuses_a_symlink_loop_migration_entry_without_seeding_a_state_da
 #
 # The refusal itself is unchanged -- T-5 containment held before and after.
 
+#: The whole of what `lstat` proves, followed by the checklist every escape
+#: remedy converges on. No file is named for deletion: "that link" is whichever
+#: one the reader locates by walking the chain (`EscapeSite`, `domain/errors.py`).
 _SYMLINK_REMEDY_TAIL = (
-    "is a symbolic link resolving outside the project. Repoint it so it resolves "
-    "inside the project, or remove it, then retry."
+    "is itself a symbolic link. Check it, each directory above it, and each link it "
+    "resolves through, for the link that leaves the project. Repoint that link so it "
+    "resolves inside the project, or remove that link, then retry."
 )
 
 

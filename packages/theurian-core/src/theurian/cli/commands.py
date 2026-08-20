@@ -1878,7 +1878,7 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
     # `project status` reaches exit 0 through `_unresolved_status`. An
     # unreadable migration is a knowledge-state problem the user must fix in
     # `_require_project`'s callers -- nine as of 2026-08-20; re-count with
-    # `grep -rn '_require_project(as_json)' packages/theurian-core/src/theurian/cli/`
+    # `grep -rn '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/`
     # rather than trusting this number -- the same family as a checksum
     # mismatch or a dependency cycle above -- what varies between commands is
     # the exit code their own contract already assigns to "could not resolve

@@ -26,19 +26,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   won — the "exception that does not describe itself" shape
   [#205](https://github.com/theurian/theurian/issues/205) exists to end. It now
   names, relative to the project root and with the `!r` quoting its siblings
-  use, *where* the problem is — and its remedy now carries an acceptance rather
-  than a guess: **wherever it proposes removing or repointing something, doing
-  that must actually cure the escape.** A name is called the escaping symbolic
-  link only where its own `lstat` says link, its parent chain resolves inside
-  the root, and it still resolves outside; anything short of all three gets a
-  remedy that sends the reader up the directory chain and proposes deleting
-  nothing. That distinction is load-bearing, and it took two attempts: keying it
-  on `lstat` alone still told users to delete files that were not the escape —
-  an entry linked to a sibling under an outside-pointing `.theurian` (reachable
-  from a plain `git clone`,
-  [#237](https://github.com/theurian/theurian/issues/237)), and a `migrations`
-  directory link that was lexically in-project under the same. The offending
-  path is still never echoed (SEC-7), and neither is the absolute project root.
+  use, *where* the problem is — and **no remedy names a file to delete.** That
+  is the substantive change: an escape happens through a symbolic link somewhere
+  on the entry's ancestor chain or its resolution chain, and which link it is
+  cannot be determined from the entry alone. Three successive attempts to
+  determine it anyway were each refuted by a deeper construction — the last by
+  `x.yaml → y.yaml → outside`, where following the remedy deleted two
+  Git-tracked files and ended at `valid: true` while the minimal cure was
+  repointing `y` alone. So the remedy now states only what `lstat` proves — that
+  the named entry is or is not itself a link — and then hands over the finite
+  checklist: this entry, the directories above it, the links it resolves
+  through. "Repoint that link, or remove that link" refers to whichever the
+  reader finds; Theurian never names it. Related: an outside-pointing
+  `.theurian` is reachable from a plain `git clone`
+  ([#237](https://github.com/theurian/theurian/issues/237)). The offending path
+  is still never echoed (SEC-7), and neither is the absolute project root.
+- **A `contentFile` refusal no longer denies the commonest cure.** The
+  path-escape remedy for a `contentFile` used to say that removing the `..` was
+  "not the cure" — wrong for a plain over-traversal typo, which involves no
+  symlink at all and is fixed by exactly that edit, and in conflict with the
+  sibling `MigrationContentUnreadableError`, which tells the author to fix the
+  path. It now offers both candidates: correct the path, or find the link
+  something it traverses goes through.
 - **Exit code:** a `PathEscapeError` raised while resolving a project now exits
   `EXIT_STATE_ERROR` (4) rather than 1 for the commands routed through
   `_require_project` — measured, all nine: `migrate validate`, `migrate status`,
