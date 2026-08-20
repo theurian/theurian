@@ -26,9 +26,11 @@ import json
 import os
 import shutil
 import sys
+import threading
 from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 import yaml
@@ -50,6 +52,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     _escape_role_of,
     _validator,
     load_migrations,
+    validate_migration_document,
 )
 from theurian.security.yaml_loading import load_yaml_mapping
 
@@ -2218,3 +2221,233 @@ def test_validator_accepts_the_vacuous_empty_object_schema(tmp_path: Path) -> No
         validator.validate({"anything": "goes"})
     finally:
         _validator.cache_clear()
+
+
+# -- SchemaUnreadableError: an installed-schema $ref resolves offline or not at all (#235) --
+#
+# `jsonschema`'s default validator fetches an external `$ref` over the network
+# (`urllib.request.urlopen`) at validate time, and reads a `file://` ref off
+# disk the same way -- an SSRF-shaped read gated only on this installed schema
+# being corrupted or replaced. `_validator` now builds every validator with
+# `referencing`'s `EMPTY_REGISTRY` (no `retrieve`), so those refs fail closed,
+# and `_validate_document` translates the resulting resolution failures --
+# which are `Unresolvable`/`RecursionError`, not `ValidationError`, and used to
+# escape as a raw traceback under `--json` -- to `SchemaUnreadableError`.
+#
+# Each test replaces the whole schema file, so it drives `_validator`'s
+# `lru_cache`; the clear before and after is the same hygiene the corruption
+# tests above use.
+
+
+def _recording_handler(hits: list[str]) -> type[BaseHTTPRequestHandler]:
+    """A handler that records every path it is asked for, so a test can assert
+    it is asked for *nothing* -- the network-fetch this fix closes."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # BaseHTTPRequestHandler dispatches by this exact method name
+            hits.append(self.path)
+            body = b'{"type": "string"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        @override
+        def log_message(self, format: str, *args: object) -> None:
+            """Silence the default stderr access log for the test run."""
+
+    return Handler
+
+
+def _write_schema(tmp_path: Path, schema: object) -> Path:
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text(json.dumps(schema))
+    return schema_dir
+
+
+def test_validate_migration_document_never_fetches_an_external_http_ref(tmp_path: Path) -> None:
+    """The reproduction from issue #235: a schema whose top-level `$ref` points
+    at an HTTP server must not cause that server to be contacted.
+
+    A real recording server stands in for the SSRF target. Before the fix the
+    default registry fetched ``/evil.json`` (one recorded hit), retrieved
+    ``{"type": "string"}``, and validated the document against it -- raising a
+    ``MigrationError`` and, more to the point, having made the request. After
+    the fix the registry has no ``retrieve``, so the lookup fails closed as a
+    translated ``SchemaUnreadableError`` and the server is never touched. The
+    ``hits == []`` assertion is the crisp closed-SSRF proof; ``pytest.raises``
+    alone would pass on a fix that fetched and then merely reclassified.
+    """
+    hits: list[str] = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _recording_handler(hits))
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _validator.cache_clear()
+        schema_dir = _write_schema(tmp_path, {"$ref": f"http://127.0.0.1:{port}/evil.json"})
+        try:
+            with pytest.raises(SchemaUnreadableError) as excinfo:
+                validate_migration_document({"apiVersion": "x"}, schema_dir)
+        finally:
+            _validator.cache_clear()
+        assert "could not be resolved offline" in str(excinfo.value)
+        assert hits == [], "the installed schema's external $ref must never be fetched"
+    finally:
+        server.shutdown()
+        thread.join()
+        # `shutdown` stops `serve_forever`; the listening socket stays open
+        # until `server_close`, and a leaked socket surfaces as a
+        # `PytestUnraisableExceptionWarning` during a later test's GC.
+        server.server_close()
+
+
+def test_validate_migration_document_never_reads_a_file_ref(tmp_path: Path) -> None:
+    """The ``file://`` face of the same seam: ``urlopen`` reads a local file for
+    a ``file://`` ref just as it fetches an ``http://`` one.
+
+    The target file holds a real subschema (``{"type": "string"}``) plus a
+    sentinel. Before the fix the ref resolved, the document was validated
+    against ``{"type": "string"}``, and a ``MigrationError`` was raised -- proof
+    the file had been read. After the fix the ref fails closed as
+    ``SchemaUnreadableError`` and the file is never opened, which is why the
+    sentinel cannot appear in the refusal.
+    """
+    _validator.cache_clear()
+    target = tmp_path / "secret-subschema.json"
+    sentinel = "SENTINEL-9d1f-should-never-be-read"
+    target.write_text(json.dumps({"type": "string", "$comment": sentinel}))
+    schema_dir = _write_schema(tmp_path, {"$ref": target.as_uri()})
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            validate_migration_document({"apiVersion": "x"}, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert "could not be resolved offline" in str(excinfo.value)
+    assert sentinel not in str(excinfo.value), "the file:// target's contents must not be read"
+
+
+def test_validate_migration_document_translates_a_dangling_ref(tmp_path: Path) -> None:
+    """A ``$ref`` to a fragment that does not exist raises
+    ``referencing.exceptions.Unresolvable`` (wrapped as jsonschema's
+    ``_WrappedReferencingError``) at validate time -- not a ``ValidationError``,
+    so before the fix it slipped past the ``except ValidationError`` seam and
+    reached ``resolve_context`` as a raw traceback under ``--json``. It is now
+    a ``SchemaUnreadableError`` naming the installed schema.
+
+    The reason text (``"could not be resolved offline"``) is distinct from the
+    recursive-``$ref`` branch below (``"resolves recursively without
+    terminating"``), so a mutation collapsing one branch into the other, or
+    dropping ``except Unresolvable`` entirely, is caught here rather than left
+    green by a bare ``pytest.raises(SchemaUnreadableError)``.
+    """
+    _validator.cache_clear()
+    schema_dir = _write_schema(tmp_path, {"$ref": "#/$defs/does-not-exist"})
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            validate_migration_document({"apiVersion": "x"}, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert "could not be resolved offline" in str(excinfo.value)
+
+
+def test_validate_migration_document_translates_a_dangling_dynamic_ref(tmp_path: Path) -> None:
+    """The ``$dynamicRef`` sibling of the dangling-``$ref`` case: a dynamic
+    reference to an anchor nothing defines also raises ``Unresolvable`` at
+    validate time, and must reach the same translated ``SchemaUnreadableError``
+    rather than escape raw. Pinned separately because ``$dynamicRef`` takes a
+    different resolution path inside ``jsonschema`` than a plain ``$ref``.
+    """
+    _validator.cache_clear()
+    schema_dir = _write_schema(tmp_path, {"$dynamicRef": "#no-such-anchor"})
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            validate_migration_document({"apiVersion": "x"}, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert "could not be resolved offline" in str(excinfo.value)
+
+
+def test_validate_migration_document_translates_a_recursive_ref(tmp_path: Path) -> None:
+    """A self-recursive ``$ref`` (``"#"`` -- the schema referring to itself with
+    no other keyword to terminate on) raises ``RecursionError`` at validate
+    time, not ``Unresolvable`` (``RecursionError`` is not an ``Unresolvable``
+    subclass, confirmed against jsonschema 4.26.0), so it needs its own
+    ``except`` clause. Before the fix it escaped every ``except ValidationError``
+    seam as a raw traceback under ``--json``; it is now a
+    ``SchemaUnreadableError`` whose reason names the recursion.
+    """
+    _validator.cache_clear()
+    schema_dir = _write_schema(tmp_path, {"$ref": "#"})
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            validate_migration_document({"apiVersion": "x"}, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert "resolves recursively without terminating" in str(excinfo.value)
+
+
+def test_load_migrations_translates_a_dangling_ref_in_the_installed_schema(project: Path) -> None:
+    """The ``load_migrations`` -> ``_load_one`` seam is the same class as
+    ``validate_migration_document`` above: both validate against the installed
+    schema, and both used to let a schema ``$ref`` failure escape their own
+    ``except ValidationError`` clause raw. This drives the load path with a real
+    ``*.yaml`` migration on disk so the corrupt schema is actually validated
+    against a document, proving ``_load_one`` routes through ``_validate_document``
+    too and does not reintroduce the raw-traceback escape one call site over.
+    """
+    _validator.cache_clear()
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-ok.yaml").write_text(_VALID_MIGRATION)
+    schema_dir = _write_schema(project, {"$ref": "#/$defs/does-not-exist"})
+
+    try:
+        with pytest.raises(SchemaUnreadableError) as excinfo:
+            load_migrations(project, migrations_dir, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    assert "could not be resolved offline" in str(excinfo.value)
+
+
+def test_validate_migration_document_still_resolves_internal_defs_in_the_real_schema() -> None:
+    """The registry change must not break the bundled schema's own internal
+    ``#/$defs/...`` refs (regression guard). A document that only validates if
+    ``operations`` -> ``#/$defs/operation`` -> ``#/$defs/opCreateItem`` ->
+    ``#/$defs/itemId`` all resolve passes cleanly, and a document whose
+    ``itemId`` violates the ``#/$defs/itemId`` pattern raises ``MigrationError``
+    -- which can only happen if that nested ``$ref`` chain was followed and
+    enforced, offline, from the schema's own root resource.
+    """
+    valid = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K1KKKKKK01234567890ABCDE",
+        "createdAt": "2026-08-02T10:00:00+09:00",
+        "author": "engineer@example.com",
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": "architecture.auth-policy",
+                "kind": "architecture",
+                "namespace": "backend",
+                "owner": "platform-team",
+            }
+        ],
+    }
+    validate_migration_document(valid, real_schema_root())
+
+    bad_item_id = json.loads(json.dumps(valid))
+    bad_item_id["operations"][0]["itemId"] = "Not A Valid Item Id"
+    with pytest.raises(MigrationError):
+        validate_migration_document(bad_item_id, real_schema_root())
