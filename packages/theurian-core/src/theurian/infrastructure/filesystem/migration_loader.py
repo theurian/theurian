@@ -250,22 +250,36 @@ class _SchemaValidator:
 
 
 def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str, object]) -> None:
-    """Run one document through the validator, translating an installed-schema
-    `$ref` that cannot be resolved offline, or resolves without terminating,
-    to `SchemaUnreadableError` (issue #235).
+    """Run one document through the validator, translating a failed offline
+    `$ref` resolution -- and a validate-time recursion attributed to the schema
+    (see below) -- to `SchemaUnreadableError` (issue #235).
 
     `_validator` builds every validator with a `referencing` registry that has
     no network or file retrieval (see its docstring), so an external `$ref`
     fails closed rather than being fetched. That fail-closed lookup -- and a
     dangling `#/$defs/...` fragment or a `$dynamicRef` to nowhere -- raises
     `referencing.exceptions.Unresolvable` (`jsonschema` wraps it as its
-    internal `_WrappedReferencingError`, which is itself an `Unresolvable`);
-    an empty or self-recursive `$ref` (`"#"`, `""`) raises `RecursionError`.
-    Neither is a `ValidationError`, so both escaped every `except
-    ValidationError` seam and reached `resolve_context` as a raw traceback
-    under `--json`. Both are defects in the *installed schema*, not the
-    migration document, so both carry the `SchemaUnreadableError` type every
-    other install-corruption failure `_validator` already translates.
+    internal `_WrappedReferencingError`, which is itself an `Unresolvable`). A
+    self-recursive or empty schema `$ref` (`"#"`, `""`) raises `RecursionError`
+    at the same call. Neither is a `ValidationError`, so both escaped every
+    `except ValidationError` seam and reached `resolve_context` as a raw
+    traceback under `--json`.
+
+    An `Unresolvable` is unambiguously a schema defect. A `RecursionError`
+    here is *attributed* to the schema, not proven to be one: a document nested
+    deep enough raises the identical `RecursionError` from
+    `validator.validate(document)`, and the two sources are indistinguishable
+    at this call. The attribution holds only because no shipped document path
+    reaches this seam deep enough to trip it -- the `load_migrations` path is
+    guarded by `load_yaml_mapping`'s depth limit, which raises `RecursionError`
+    -> `ValueError` -> `MigrationError` before a document is ever validated
+    (`security/yaml_loading.py`), and the `propose` path builds shallow,
+    fixed-structure documents. That leaves a latent gap at other ambient stack
+    depths, tracked as issue #291; the real fix there is build-time
+    schema-recursion detection, not a wider `except` here, since the two
+    sources cannot be told apart once `validate` is running. Both failures this
+    function does attribute to the schema carry `SchemaUnreadableError`, the
+    type every other install-corruption failure `_validator` translates.
 
     A `ValidationError` is a real fault in the *document* and is deliberately
     left to propagate: the two callers word it differently (with or without a
