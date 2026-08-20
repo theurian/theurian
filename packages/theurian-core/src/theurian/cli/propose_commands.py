@@ -351,10 +351,11 @@ def propose_accept(
 
     Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
     -- no such proposal, a draft interrupted before its migration was written, a
-    file the security layer refuses; 2 the id is not a ULID; 4 the project's
-    knowledge state refuses the move -- this proposal was accepted before, that
-    migration id is already in ``.theurian/migrations/``, or the approved
-    migration set itself cannot be read.
+    directory that could not be fully read, a file the security layer refuses; 2
+    the id is not a ULID; 4 the project's knowledge state refuses the move --
+    this proposal was accepted before, that migration id is already in
+    ``.theurian/migrations/``, or the approved migration set itself cannot be
+    read.
 
     **4 means "read the knowledge state before doing anything", not "already
     done".** One of its three cases -- an unreadable migration set, which is
