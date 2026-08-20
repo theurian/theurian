@@ -76,6 +76,20 @@ jobs:
         python: ["3.13"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history, not the default depth-1 clone. The corpus governance
+          # guard in `test_dogfood_corpus_governance.py` checks each pinned body
+          # under `.theurian/` against `git show <sourceAnchor.commitSha>:<path>`,
+          # and a shallow clone does not hold the anchor commit -- so that rule
+          # skips itself instead of running. It is the only check that catches a
+          # committed body edited with its `contentSha256` re-pinned to match, so
+          # a local-only run of it defeats the point: CI is where a hostile or
+          # careless pull request arrives.
+          #
+          # Cost, measured 2026-08-20 with a fresh clone of main at f702736:
+          # 133 commits, 6.56 MiB packed for the full history against 2.77 MiB
+          # for a depth-1 single-branch clone. Under 4 MiB more per job.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
@@ -106,6 +120,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          # This job runs the same `-m "not e2e"` selection as `test`, so it runs
+          # the corpus governance guard too and needs the anchor commits for the
+          # same reason -- see the `test` job's checkout for the rule and the
+          # measured cost. Safe inside the network namespace below: the checkout
+          # happens before it, and `git show` reads objects that are already on
+          # disk.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
