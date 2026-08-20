@@ -548,11 +548,16 @@ def test_the_main_emit_sink_escapes_controls(capsys: pytest.CaptureFixture[str])
     """
     from theurian.cli.main import _emit as main_emit
 
-    main_emit({"error": "a\x1b[2K\rforged"}, as_json=False)
+    main_emit({"a\x1b[2Kkey": "b\x1b[2K\rforged"}, as_json=False)
 
     out = capsys.readouterr().out
     assert "\x1b" not in out and "\r" not in out
     assert "\\x1b" in out and "\\x0d" in out
+    # Both halves of the line escaped: dropping the key's sanitizer leaves a raw
+    # ESC in the key, which the assertion above catches. main._emit renders
+    # `key: value`, so the key precedes the first `: ` and the value follows it.
+    key_text = out.partition(": ")[0]
+    assert "\x1b" not in key_text and "\\x1b" in key_text
 
 
 def test_the_fail_sink_escapes_controls_on_the_error_path(

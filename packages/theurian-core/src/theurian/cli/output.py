@@ -1,16 +1,26 @@
 """The one place a CLI value is made safe to print to a terminal.
 
 Every text-mode emitter in the CLI -- `commands._render`, `commands._fail`, and
-`main._emit` -- routes each value it prints through :func:`escape_terminal_controls`
-so that no string reaching a terminal, whatever its source, can move the cursor
-or start a line. That is the whole of the "the sink is the closure" claim in the
-threat model: it holds because there is exactly one sink and every emitter uses
-it, not because each construction site remembered to quote its input.
+`main._emit` -- routes each value and key it prints through
+:func:`escape_terminal_controls`, so that no string a command *emits through
+them* can move the cursor or start a line. That is the "the sink is the closure"
+claim in the threat model: it holds because there is exactly one sink and every
+emitter uses it, not because each construction site remembered to quote its
+input.
 
 A proposal directory is committed and contributor-controlled (ADR-0013 point 7),
 so a body path or a `contentFile` a command prints is untrusted; an `ESC` or a
 carriage return in one rewrites a line the tool has already drawn and forges the
 tool's own output (T-3 at the CLI edge).
+
+**What the sink does not cover, and why that is safe elsewhere.** An *uncaught*
+exception is rendered by Typer's Rich traceback, not by these emitters -- a
+`chmod 000` body, or the unreadable proposal directory of the pre-existing
+uncaught-`PermissionError` class ([#227](https://github.com/theurian/theurian/issues/227))
+-- so a control character in that path is neutralised by Rich escaping it as it
+draws the traceback, not by this sink. The scope above is therefore "strings
+routed through the emitters", which is every value on a normal (non-crash) exit;
+#227's crash path is out of this module's scope.
 """
 
 from __future__ import annotations
