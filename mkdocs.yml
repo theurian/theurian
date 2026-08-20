@@ -85,10 +85,11 @@ markdown_extensions:
 # diagram, so both of them joined the paying-only-the-pair set and every number
 # here moved by two except that twenty.
 #
-# Three of the five numbers in this paragraph move whenever a page is added, and
-# they have now been corrected in two consecutive changes. Nothing pins them: no
-# test reads this comment, so it is true only for as long as whoever adds the
-# next page rebuilds and re-counts. Treat that as the known weakness it is.
+# Four of these five numbers move when a page without a diagram is added -- 26,
+# 46, 28 and 49 -- and three when it carries one -- 46, 49 and 20. They have now
+# been corrected in two consecutive changes. Nothing pins them: no test reads
+# this comment, so it is true only for as long as whoever adds the next page
+# rebuilds and re-counts. Treat that as the known weakness it is.
 #
 # docs/js/mermaid.min.js is not in the repository. The Pages workflow fetches
 # it, checksum-verified, before the build, and a local build has to do the

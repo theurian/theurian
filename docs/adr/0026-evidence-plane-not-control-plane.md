@@ -3,10 +3,11 @@
 - Status: accepted
 - Date: 2026-08-20
 - Deciders: Theurian maintainers
-- Requirements: SEC-15, T-3, OSS-15
+- Requirements: SEC-15, T-3
 - Decision recorded in [the roadmap](../roadmap.md) §11, adopted 2026-08-20
-- Constrains [ADR-0013](0013-ai-writes-produce-proposals.md) (approval is a Git
-  merge) and [ADR-0009](0009-no-llm-vendor-lock-in.md) (local-first, offline)
+- Rests on [ADR-0013](0013-ai-writes-produce-proposals.md) (approval is a Git
+  merge) and [ADR-0009](0009-no-llm-vendor-lock-in.md) (local-first, offline):
+  both are inputs to the reasoning below rather than decisions this one changes
 
 ## Context
 
@@ -49,7 +50,7 @@ Concretely, and in the same order:
   CI. "Theurian labels; it does not enforce. Acting on the label is the calling
   agent's responsibility" (T-3).
 
-**CI MAY consult Theurian** — a future drift command is the intended shape — and
+**CI may consult Theurian** — a future drift command is the intended shape — and
 may block a pull request on what it finds. That is a welcome arrangement, and the
 thing that blocked is CI.
 
@@ -88,7 +89,7 @@ thing that blocked is CI.
 | :-- | :-- |
 | **Become the control plane** — declare policy, approve changes, block non-compliant work | Three reasons, each with a source. (1) It contradicts the security stance the threat model's grading rests on: "Theurian labels; it does not enforce" is why T-3 is High and not Critical, so crossing that line re-grades threats rather than adding a feature. (2) It competes with control points that already exist and are better at the job — Git branch protection for approval, CI for enforcement — and being a third one is the entrance to the sprawling ALM product this project exists not to be. (3) A local-first, loopback, single-user daemon cannot honour a control plane's availability and integrity obligations. Meeting them makes hosting inevitable, which contradicts ADR-0009 and the permanent commitments in GOVERNANCE.md. |
 | **Orchestrate the specification → implement → review workflow** | Workflow state belongs to the agents and CI that perform the work, and Theurian's existing statuses, kinds and relations are sufficient substrate for anything a caller needs to read. Adding a workflow schema would create a second place where progress is recorded, and the two would disagree the first time a run failed halfway. |
-| **Enforce only "soft" policy — warn, never block** | A warning nothing acts on is a label, which is what already ships. A warning something acts on is enforcement with the responsibility hidden. There is no stable middle position, and naming it "soft" moves the boundary without admitting it. |
+| **Enforce only "soft" policy — warn, never block** | A warning nothing acts on is a label, which is what already ships. A warning something acts on is enforcement with the responsibility hidden. There is no stable middle position, and naming it "soft" moves the boundary without admitting it. What is rejected here is a *judgment on the user's changes*. A report about Theurian's own state is not policy and is not affected: `theurian doctor`, `retrieval.stale` and `indexPurge.failed` all describe the system to its operator, which is what an evidence plane is for. |
 | **Keep the positioning informal rather than writing it down** | The framing had already begun to appear in planning discussion. An unwritten boundary is re-litigated by whoever arrives next, and the cost of rediscovering these three reasons is higher than the cost of this file. |
 
 ## Compliance
@@ -97,17 +98,22 @@ thing that blocked is CI.
 section says which is which** — an ADR that implied the whole boundary was
 machine-checked would itself be the kind of false claim it exists to prevent.
 
-Held by tests today:
+Held by tests today — **one clause of the three**:
 
-- **The no-write half, on the MCP surface.** `system.capabilities` reports
+- **"Does not approve", on the MCP surface.** `system.capabilities` reports
   `writeTools: false`, and
   `tests/integration/test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write`
   walks the bytecode of every registered tool rather than trusting the tool list,
-  so a write path added later fails the suite instead of shipping.
-- **The capability flags generally.** `traceability: false` and
-  `reviewIngestion: false` are asserted with the reasoning for each in
-  `test_mcp_tools.py`, which is what stops a flag being flipped ahead of the
-  feature it advertises.
+  so a write path added later fails the suite instead of shipping. This holds the
+  MCP half only; that a human *merged* the proposal is T-15's recorded residual
+  and is held by nothing.
+
+> The other capability flags — `traceability: false`, `reviewIngestion: false` —
+> are asserted with their reasoning in `test_mcp_tools.py`, and it is worth
+> saying what that does and does not do for this ADR. It is evidence of
+> *capability honesty*: a flag cannot be flipped ahead of the feature it
+> advertises. It is not evidence of the boundary. A build could report every flag
+> truthfully and still orchestrate.
 
 Held by prose and review, not by a test:
 
@@ -116,16 +122,18 @@ Held by prose and review, not by a test:
   is this ADR, the roadmap's *Not recommended* table — kept deliberately as the
   record of what was not built — and the product-boundary test in the roadmap's
   §2: does the change hold a fact, or perform an action?
-- **The normative sentence's placement.** It appears verbatim in three files —
-  `README.md`, `docs/index.md` and `docs/roadmap.md` — and nothing checks that
-  the three agree or that they still contain it.
+- **The normative sentence's placement.** It appears verbatim in **four files** —
+  `README.md`, `docs/index.md`, `docs/roadmap.md`, and this ADR, which became the
+  fourth copy the moment it was written — and nothing checks that the four agree
+  or that they still contain it.
 
 Still owed, with the phase that would satisfy it:
 
-- **A test pinning the boundary sentence across its three locations**, so that
-  editing one and not the others goes red. This is the same shape as the
-  existing call-site and config-key pins, and it is not written. No phase owns
-  it yet; it is cheap and should be filed rather than assumed.
+- **A test pinning the boundary sentence across all four locations**, so that
+  editing one and not the others goes red. This is the same shape as the existing
+  call-site and config-key pins. Filed as
+  [#283](https://github.com/theurian/theurian/issues/283) — whose title says
+  three files, written before this ADR added the fourth.
 - **A recorded decision on where a drift command's blocking behaviour lives**
   (Phase E). This ADR says CI blocks and Theurian reports. The first
   implementation of `drift` is where that stops being a sentence and becomes an
