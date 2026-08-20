@@ -285,6 +285,12 @@ class AcceptedProposal:
     proposal_id: ProposalId
     migration: MovedFile
     bodies: tuple[MovedFile, ...] = ()
+    #: A remedy set only when the move landed but the proposal's own source files
+    #: could not then be removed (a read-only proposal directory). The acceptance
+    #: succeeded, so this rides on the success result rather than turning it into
+    #: a failure -- reporting a non-landing would send the caller to re-draft and
+    #: mint a duplicate migration (#89). ``None`` on a clean move.
+    cleanup_remedy: str | None = None
 
 
 class ProposalService:
@@ -780,6 +786,14 @@ class ProposalService:
         it, and :func:`_names` quotes the result, because a proposal directory's
         filenames are the contributor's (ADR-0013 point 7).
 
+        **The remedy names the path that failed, not the proposal directory.**
+        The examination phase probes ``.theurian/proposals/`` but also stats under
+        ``.theurian/knowledge/`` (the destination's containment check) and the
+        migration destination, so the refused call is not always in the proposal
+        directory. The message already names the offending path via
+        :func:`_project_relative`; the remedy points a ``chmod`` at that same
+        path rather than at a proposal directory it may not be under.
+
         **The remedy never sends the reader to draft again.** A read the
         filesystem refused says nothing about whether this proposal's migration
         has already landed -- the two facts are unrelated -- and re-drafting an
@@ -790,16 +804,15 @@ class ProposalService:
         :meth:`_commit`, which the clause in :meth:`accept` deliberately
         excludes.
         """
+        named = _names([_project_relative(error.filename, self._paths.root)])
         return ProposalError(
             f"Proposal {proposal_id.value} could not be examined: "
-            f"{error.strerror or 'it could not be read'} at "
-            f"{_names([_project_relative(error.filename, self._paths.root)])}. Nothing has been "
+            f"{error.strerror or 'it could not be read'} at {named}. Nothing has been "
             "moved, and whether it can be accepted cannot be answered without reading it.",
-            remedy=f"Make .theurian/proposals/{proposal_id.value} and the files in it readable "
-            "-- chmod u+rX on the proposal directory -- then run theurian propose accept again. "
-            "If they cannot be recovered, look in .theurian/migrations/ for the migration this "
-            "proposal drafted before re-drafting: a refused read is not evidence that nothing "
-            "landed.",
+            remedy=f"Make {named} readable -- chmod u+rX on it -- then run theurian propose "
+            "accept again. If it cannot be recovered, look in .theurian/migrations/ for the "
+            "migration this proposal drafted before re-drafting: a refused read is not evidence "
+            "that nothing landed.",
         )
 
     def _landed_state(
@@ -1088,11 +1101,18 @@ class ProposalService:
         the window since the check, the bodies already written are rolled back
         rather than left as orphans a previous version stranded in
         ``knowledge/``.
+
+        Every write and directory creation is inside the guard, including the
+        opening ``mkdir`` of ``.theurian/migrations/``: its ``OSError`` used to
+        escape ``accept`` raw (``.theurian/`` unwritable and the directory
+        absent), and the examination clause in :meth:`accept` deliberately does
+        not span this method, so nothing translated it (CP-2). The rollback set
+        is empty when the ``mkdir`` runs, so folding it in changes no rollback.
         """
-        self._paths.migrations.mkdir(parents=True, exist_ok=True)
         created: list[Path] = []
         restored: list[tuple[Path, bytes]] = []
         try:
+            self._paths.migrations.mkdir(parents=True, exist_ok=True)
             for move in moves:
                 move.destination.parent.mkdir(parents=True, exist_ok=True)
                 if move.replaced:
@@ -1115,14 +1135,16 @@ class ProposalService:
             raise
         except OSError as exc:
             _roll_back(created, restored)
+            # `strerror` and a project-relative name, never `str(exc)`: an
+            # OSError's text carries the absolute filename, which is the
+            # machine's home directory (the discipline `_unreadable` records).
             raise ProposalError(
-                f"accept could not write a file: {exc}.",
+                f"accept could not write "
+                f"{_names([_project_relative(exc.filename, self._paths.root)])}: "
+                f"{exc.strerror or 'the write failed'}.",
                 remedy="Check the contentFile the migration names, then accept it again.",
             ) from exc
 
-        for move in moves:
-            move.source.unlink(missing_ok=True)
-        migration_file.unlink(missing_ok=True)
         return AcceptedProposal(
             proposal_id=proposal_id,
             migration=MovedFile(
@@ -1132,7 +1154,34 @@ class ProposalService:
                 MovedFile(source=m.source, destination=m.destination, replaced=m.replaced)
                 for m in moves
             ),
+            cleanup_remedy=self._remove_proposal_sources(moves, migration_file),
         )
+
+    def _remove_proposal_sources(
+        self, moves: tuple[_BodyMove, ...], migration_file: Path
+    ) -> str | None:
+        """Delete the proposal's now-copied files; report, don't raise, on failure.
+
+        Runs only after the migration and every body have landed, so the move is
+        already a success: a failure here is a cleanup that could not finish, not
+        a non-landing. Reporting it as a failure would exit 1 -- whose contract is
+        "nothing landed" -- and send the caller to re-draft, minting a duplicate
+        migration (#89). So a refused ``unlink`` (a read-only proposal directory,
+        ``0o555``) is degraded to a remedy naming the leftover for a human to
+        remove, and ``accept`` still returns success.
+        """
+        try:
+            for move in moves:
+                move.source.unlink(missing_ok=True)
+            migration_file.unlink(missing_ok=True)
+        except OSError:
+            leftover = _names([_project_relative(str(migration_file.parent), self._paths.root)])
+            return (
+                f"The migration and its bodies landed; the proposal's own files in {leftover} "
+                "could not be removed. Delete that directory by hand once it is writable -- the "
+                "acceptance is complete and does not need running again."
+            )
+        return None
 
     def _destination_of(self, content_file: str) -> Path:
         """Where one ``contentFile`` points, proved to be inside ``knowledge/``.
@@ -1146,9 +1195,26 @@ class ProposalService:
         ``../knowledge/...``, and confining to the root instead would let a
         hand-authored ``../../.git/hooks/pre-commit`` write an executable git
         hook that runs on the maintainer's next commit.
+
+        ``resolve()`` is the one call here that can raise before any check runs,
+        and on a caller-influenced value: ``ValueError`` on an embedded NUL,
+        ``UnicodeEncodeError`` (a ``ValueError``) on an unpaired surrogate,
+        ``OSError`` on ELOOP/ENAMETOOLONG. None is a ``TheurianError`` or an
+        ``OSError`` the examination clause catches, so each escaped ``accept`` raw
+        and ``--json`` published zero bytes (CP-2). The loader guards its own
+        ``resolve()`` with the same ``(ValueError, OSError)`` (``_parse_upsert``);
+        this matches it. Neither the author's ``content_file`` (SEC-7 forbids
+        reflecting it, #233) nor the ``OSError``'s absolute filename is echoed.
         """
         knowledge = self._paths.knowledge.resolve()
-        resolved = (self._paths.migrations / content_file).resolve()
+        try:
+            resolved = (self._paths.migrations / content_file).resolve()
+        except (ValueError, OSError) as exc:
+            raise ProposalError(
+                "The migration names a contentFile the filesystem cannot resolve to a path "
+                "-- it may hold a NUL byte or an unpaired surrogate.",
+                remedy="Correct the contentFile the migration names, then accept it again.",
+            ) from exc
         try:
             relative = resolved.relative_to(knowledge)
         except ValueError as exc:
@@ -1265,10 +1331,14 @@ def _project_relative(filename: object, root: Path) -> str:
     built as ``self._paths.root / ...`` carries the root as the project was
     configured, while a read through :func:`read_source_file` carries the
     *resolved* one, and the two differ wherever the root is reached through a
-    symlink (``/var`` against ``/private/var`` on macOS is the case this suite
-    runs in). A path under neither is named by a phrase and not by its own text:
-    that is where this is deliberately stricter than :func:`_within`, whose odd
-    path is at least known to be inside a committed proposal directory.
+    symlink (``/var`` against ``/private/var`` on macOS). The suite does not
+    exercise that difference -- pytest's ``tmp_path`` is already the resolved
+    ``/private/var/...``, so both spellings coincide here; the two branches earn
+    their keep on a real project configured under an unresolved root (the shape
+    the orchestrator's ``probes/e7`` shows). A path under neither is named by a
+    phrase and not by its own text: that is where this is deliberately stricter
+    than :func:`_within`, whose odd path is at least known to be inside a
+    committed proposal directory.
     """
     if not isinstance(filename, str):
         return "an unreadable path"

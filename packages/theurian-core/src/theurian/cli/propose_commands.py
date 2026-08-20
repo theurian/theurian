@@ -349,10 +349,14 @@ def propose_accept(
     that migration is already in place. The body file *may* replace what is at
     its path, because on an update to existing knowledge that is the intent.
 
-    Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
-    -- no such proposal, a draft interrupted before its migration was written, a
-    proposal directory or a file in it the filesystem refuses to list, examine or
-    read, a file the security layer refuses; 2 the id is not a ULID; 4 the
+    Exit codes: 0 the files moved -- and, if the migration and bodies landed but
+    the proposal's own source files could not then be removed (a read-only
+    proposal directory), a ``remedy`` naming the leftover; the move still
+    succeeded, so this is not a failure; 1 this proposal could not be used as it
+    stands -- no such proposal, a draft interrupted before its migration was
+    written, a proposal directory or a file in it the filesystem refuses to list,
+    examine or read, a contentFile the filesystem cannot resolve or the security
+    layer refuses; 2 the id is not a ULID; 4 the
     project's knowledge state refuses the move -- this proposal was accepted
     before, that migration id is already in ``.theurian/migrations/``, or the
     approved migration set does not resolve (it is unreadable, tampered, or
@@ -414,18 +418,21 @@ def propose_accept(
         return
 
     root = context.paths.root
-    _emit(
-        {
-            "proposalId": accepted.proposal_id.value,
-            "migrationFile": _relative(accepted.migration.destination, root),
-            "bodyFiles": [_relative(move.destination, root) for move in accepted.bodies],
-            "replacedBodies": [
-                _relative(move.destination, root) for move in accepted.bodies if move.replaced
-            ],
-            "nextSteps": list(_ACCEPT_STEPS),
-        },
-        as_json=as_json,
-    )
+    payload: dict[str, object] = {
+        "proposalId": accepted.proposal_id.value,
+        "migrationFile": _relative(accepted.migration.destination, root),
+        "bodyFiles": [_relative(move.destination, root) for move in accepted.bodies],
+        "replacedBodies": [
+            _relative(move.destination, root) for move in accepted.bodies if move.replaced
+        ],
+        "nextSteps": list(_ACCEPT_STEPS),
+    }
+    # Set only when the move landed but the proposal's own source files could not
+    # then be removed: the acceptance succeeded, and this names the leftover so it
+    # does not read as a failed run the caller re-drafts (#89).
+    if accepted.cleanup_remedy is not None:
+        payload["remedy"] = accepted.cleanup_remedy
+    _emit(payload, as_json=as_json)
 
 
 #: What a caller does next, and the one thing about it that surprises people:

@@ -1010,13 +1010,14 @@ def test_a_proposal_directory_that_cannot_be_read_is_answered_rather_than_crashi
     the reader is handed a stack trace instead of the one-line ``chmod`` that
     fixes it.
 
-    Measured mechanism at mode ``0o000`` (CPython 3.13): ``directory.glob("*.yaml")``
-    swallows the ``PermissionError`` and yields nothing, so ``_require_migration``
-    finds no candidate and falls to ``_no_migration_error``, whose
-    ``evidence.exists()`` probe is the call that raises. The failure therefore
-    arrives from the diagnosis of a *missing* migration while the migration is
-    right there, unread -- which is why the answer must also not conclude:
-    "could not read it" is not "it has been accepted"
+    Measured mechanism at mode ``0o000`` (CPython 3.13): ``directory.iterdir()``
+    in :meth:`ProposalService._require_migration` needs the read bit and raises
+    ``PermissionError``, which :meth:`accept`'s examination clause translates. A
+    previous ``directory.glob("*.yaml")`` swallowed that error and yielded
+    nothing, so ``_require_migration`` found no candidate and fell to
+    ``_no_migration_error`` over a migration sitting right there, unread -- the
+    silent false negative #214/#227 replaced. Either way the answer must not
+    conclude: "could not read it" is not "it has been accepted"
     (:meth:`ProposalService._read_evidence_record`).
 
     The permission is not exotic: a proposal directory arrives through a pull
@@ -1050,14 +1051,15 @@ def test_a_proposal_directory_whose_entries_cannot_be_examined_is_answered(
 ) -> None:
     """#227 at a second unguarded call: the directory lists, but nothing stats.
 
-    At mode ``0o444`` the directory can be *listed* -- ``glob("*.yaml")`` returns
-    the migration -- while every ``stat`` under it is refused. Measured: the raw
+    At mode ``0o444`` the directory can be *listed* -- ``iterdir()`` returns the
+    migration -- while every ``stat`` under it is refused. Measured: the raw
     ``path.is_symlink()`` probe in :meth:`ProposalService._require_migration` is
     what raises here, not the evidence read the sibling above reaches.
 
     One defect, several unguarded calls: the accept path probes the filesystem
-    with raw ``glob`` / ``is_symlink`` / ``is_file`` / read calls and translates
-    none of their ``OSError``s, so *which* one fires is an accident of the mode.
+    with raw ``iterdir`` / ``is_symlink`` / ``is_file`` / read calls and
+    translates none of their ``OSError``s, so *which* one fires is an accident of
+    the mode.
     A fix that guards only the call the first test happens to reach leaves this
     one crashing, which is why the mode that selects a different probe is pinned
     separately rather than folded into a parametrize.
@@ -1111,6 +1113,95 @@ def test_a_migration_file_that_cannot_be_opened_is_answered_rather_than_crashing
     remedy = caught.value.remedy
     assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
     assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
+
+
+def _poison_content_file(drafted: DraftedProposal, quoted_value: str) -> None:
+    """Repoint the drafted migration's ``contentFile`` at a hand-authored value.
+
+    ``accept`` does not schema-validate the proposal's migration, so a value the
+    JSON Schema would reject -- one holding a NUL byte or an unpaired surrogate --
+    reaches ``_destination_of``'s ``resolve()`` unfiltered. ``quoted_value`` is a
+    YAML double-quoted scalar so its ``\\0`` / ``\\uXXXX`` escapes decode to the
+    real code points.
+    """
+    text = drafted.migration_file.read_text(encoding="utf-8")
+    replaced = text.replace(f"contentFile: {drafted.content_file}", f"contentFile: {quoted_value}")
+    assert replaced != text, "the contentFile anchor did not match"
+    drafted.migration_file.write_text(replaced, encoding="utf-8")
+
+
+def test_accept_translates_a_nul_in_the_content_file_path(service: ProposalService) -> None:
+    """CP-2 (adversarial e14): a NUL in ``contentFile`` escaped ``accept`` raw.
+
+    ``Path.resolve()`` -> ``os.path.realpath`` -> ``lstat`` raises ``ValueError``
+    (*"embedded null character in path"*) before any containment check, and
+    ``ValueError`` is not an ``OSError``, so the examination clause did not catch
+    it: the raw exception left ``accept`` and ``--json`` published zero bytes. The
+    loader translates its own ``resolve()`` with ``except (ValueError, OSError)``;
+    ``accept`` must match. Every accept-path exception is a ``ProposalError``
+    carrying a remedy.
+    """
+    drafted = service.draft(_request())
+    _poison_content_file(drafted, '"../knowledge/architecture/a\\0b.md"')
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy.strip(), "a translated failure carries a remedy"
+
+
+def test_accept_translates_a_lone_surrogate_in_the_content_file_path(
+    service: ProposalService,
+) -> None:
+    """CP-2 (adversarial e14): a lone surrogate in ``contentFile`` escaped ``accept`` raw.
+
+    The sibling of the NUL above, and the reason the widening is ``ValueError``
+    and not just the NUL's exact type: an unpaired surrogate cannot be encoded to
+    UTF-8 for the ``lstat``, so ``resolve()`` raises ``UnicodeEncodeError`` -- a
+    ``ValueError`` subclass, caught by the same clause, and neither an ``OSError``
+    nor a ``TheurianError`` before the fix.
+    """
+    drafted = service.draft(_request())
+    _poison_content_file(drafted, '"../knowledge/architecture/a\\uD800b.md"')
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy.strip(), "a translated failure carries a remedy"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_directory_that_lists_but_does_not_stat_is_examined_not_declared_absent(
+    service: ProposalService,
+) -> None:
+    """MEDIUM (adversarial e5): ``iterdir`` raises where ``glob`` would swallow.
+
+    ``0o111`` is the one mode that separates the two: the directory can be
+    *traversed* (every known child stats and opens) but not *listed*.
+    ``iterdir()`` needs the read bit and raises ``PermissionError``, which
+    ``accept`` translates to "could not be examined" -- correct, since the
+    migration is right there, unread. ``glob("*.yaml")`` swallows the same error
+    and yields nothing, so ``_require_migration`` would fall to the missing-file
+    diagnosis and, finding the recorded id absent from ``.theurian/migrations/``,
+    conclude *"nothing it drafted has been accepted"* -- the re-draft answer, over
+    a migration that is present. The three ``#227`` tests use ``0o000``/``0o444``,
+    where the diagnosis itself raises whichever enumerator is used, so none of
+    them pins the ``iterdir`` choice; this one does.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o111)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    # The signal that separates `iterdir` from `glob`: a permission remedy, not
+    # the "draft it again" answer `glob`'s swallowed listing would reach.
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert "could not be examined" in str(caught.value)
 
 
 # -- has this proposal been accepted? (#253) -------------------------------
