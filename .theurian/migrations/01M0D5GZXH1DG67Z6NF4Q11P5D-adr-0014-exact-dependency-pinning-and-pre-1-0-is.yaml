@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GZXH1DG67Z6NF4Q11P5D
+createdAt: '2026-08-19T14:06:42+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0014, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.dependency-pinning-and-pre-1-0-isolation
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.dependency-pinning-and-pre-1-0-isolation
+  revisionId: 01M0D5GZXH1DG67Z6NF4Q11P5E
+  contentFile: ../knowledge/architecture/dependency-pinning-and-pre-1-0-isolation.01M0D5GZXH1DG67Z6NF4Q11P5E.md
+  contentSha256: 33b42c0d70e0c12cb48ea35946ad696fc574133455a335919f5c0ee1ab449ddf
+  metadata:
+    title: 'ADR-0014: Exact dependency pinning and pre-1.0 isolation'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0014
+    scope:
+      paths:
+      - '**'
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md

@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GWW8NAQH4FKYY8GGB6ZA
+createdAt: '2026-08-19T14:06:39+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0008, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.raptor-forest
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.raptor-forest
+  revisionId: 01M0D5GWW8NAQH4FKYY8GGB6ZB
+  contentFile: ../knowledge/architecture/raptor-forest.01M0D5GWW8NAQH4FKYY8GGB6ZB.md
+  contentSha256: ba8efdbab8386f971e2850c25c3ee139df33ebc01e91fabd1a1a014c64b4cf74
+  metadata:
+    title: 'ADR-0008: A RAPTOR forest, not a single tree'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0008
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0008-raptor-forest.md

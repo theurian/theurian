@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H2GX648NAX8ZBZACXDD2
+createdAt: '2026-08-19T14:06:45+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0019, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.front-matter-is-data-not-governance
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.front-matter-is-data-not-governance
+  revisionId: 01M0D5H2GX648NAX8ZBZACXDD3
+  contentFile: ../knowledge/architecture/front-matter-is-data-not-governance.01M0D5H2GX648NAX8ZBZACXDD3.md
+  contentSha256: 6673bb8079e72179530694c93c7f223a0cdaed8928f7953d70be52e90bf4bd55
+  metadata:
+    title: 'ADR-0019: Front matter is data, not governance metadata'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0019
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0019-front-matter-is-data-not-governance.md

@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GTH18F2YV32VN4GZGYY9
+createdAt: '2026-08-19T14:06:37+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0003, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.ports-and-adapters
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.ports-and-adapters
+  revisionId: 01M0D5GTH18F2YV32VN4GZGYYA
+  contentFile: ../knowledge/architecture/ports-and-adapters.01M0D5GTH18F2YV32VN4GZGYYA.md
+  contentSha256: 46ed0b0d7933488236d5e230a681f4dc93c50a23996bd4d7971e4bd783b366ca
+  metadata:
+    title: 'ADR-0003: Ports and adapters as the top-level structure'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0003
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0003-ports-and-adapters.md

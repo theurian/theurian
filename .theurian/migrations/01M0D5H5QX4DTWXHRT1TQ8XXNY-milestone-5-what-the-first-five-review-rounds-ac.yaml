@@ -1,0 +1,33 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H5QX4DTWXHRT1TQ8XXNY
+createdAt: '2026-08-19T14:06:48+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: the Milestone 5 review-rounds work log, verbatim, from the pinned
+  commit.'
+operations:
+- op: createItem
+  itemId: operations.milestone-5-review-rounds
+  kind: operations
+  namespace: operations
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: operations.milestone-5-review-rounds
+  revisionId: 01M0D5H5QX4DTWXHRT1TQ8XXNZ
+  contentFile: ../knowledge/operations/milestone-5-review-rounds.01M0D5H5QX4DTWXHRT1TQ8XXNZ.md
+  contentSha256: e1d355d2d868434a98aa97d9f7e8df5e030169bf7c9d44beb8e0fbae9a07e969
+  metadata:
+    title: 'Milestone 5: what the first five review rounds actually found'
+    contentType: text/markdown
+    kind: operations
+    namespace: operations
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - work-log
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/work-logs/2026-08-03-milestone-5-review-rounds.md

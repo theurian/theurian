@@ -1,0 +1,15 @@
+{
+  "proposalId": "01M0D5H5QX4DTWXHRT1TQ8XXNX",
+  "agentId": "claude-code-orchestrator",
+  "taskId": "m7-corpus-seed",
+  "model": "claude-fable-5",
+  "reasoning": "Verbatim copy of the committed work log at the pinned commit.",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "2a98d4c8963cdf46cc6169e43ac7add039745342",
+      "filePath": "docs/work-logs/2026-08-03-milestone-5-review-rounds.md"
+    }
+  ]
+}

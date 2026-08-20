@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5H0YWASQ2RVNP2YNEXBBD
+createdAt: '2026-08-19T14:06:43+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0016, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.state-hash-covers-the-working-tree
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.state-hash-covers-the-working-tree
+  revisionId: 01M0D5H0YWASQ2RVNP2YNEXBBE
+  contentFile: ../knowledge/architecture/state-hash-covers-the-working-tree.01M0D5H0YWASQ2RVNP2YNEXBBE.md
+  contentSha256: b99704b087cb5c67ed5777f59d9d31dba76153f19151f2332881e44e08454457
+  metadata:
+    title: 'ADR-0016: The state hash covers the working tree, not just committed migrations'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0016
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0016-state-hash-covers-the-working-tree.md

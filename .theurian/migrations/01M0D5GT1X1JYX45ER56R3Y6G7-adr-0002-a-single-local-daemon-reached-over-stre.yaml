@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GT1X1JYX45ER56R3Y6G7
+createdAt: '2026-08-19T14:06:36+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0002, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.single-local-daemon-over-streamable-http
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.single-local-daemon-over-streamable-http
+  revisionId: 01M0D5GT1X1JYX45ER56R3Y6G8
+  contentFile: ../knowledge/architecture/single-local-daemon-over-streamable-http.01M0D5GT1X1JYX45ER56R3Y6G8.md
+  contentSha256: 9320cea7e5d1a394bf66c0c3d3110e482881be28746b7f978e0009706f79fa7c
+  metadata:
+    title: 'ADR-0002: A single local daemon, reached over Streamable HTTP'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0002
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0002-single-local-daemon-over-streamable-http.md

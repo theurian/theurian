@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GSKA479Y85296S745521
+createdAt: '2026-08-19T14:06:36+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0001, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.monorepo-with-independent-artifacts
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.monorepo-with-independent-artifacts
+  revisionId: 01M0D5GSKA479Y85296S745522
+  contentFile: ../knowledge/architecture/monorepo-with-independent-artifacts.01M0D5GSKA479Y85296S745522.md
+  contentSha256: f457716ee9eb1005f299de7fa4f7d9885e1cbb7547c568f89967c7242f3a0bec
+  metadata:
+    title: 'ADR-0001: Monorepo with independently released artifacts'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0001
+    scope:
+      paths:
+      - '**'
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0001-monorepo-with-independent-artifacts.md

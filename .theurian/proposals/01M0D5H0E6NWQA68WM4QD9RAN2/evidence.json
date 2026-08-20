@@ -1,0 +1,15 @@
+{
+  "proposalId": "01M0D5H0E6NWQA68WM4QD9RAN2",
+  "agentId": "claude-code-orchestrator",
+  "taskId": "m7-corpus-seed",
+  "model": "claude-fable-5",
+  "reasoning": "Verbatim copy of the accepted ADR at the pinned commit; the ADR is the source of truth for this decision.",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "2a98d4c8963cdf46cc6169e43ac7add039745342",
+      "filePath": "docs/adr/0015-dco-over-cla.md"
+    }
+  ]
+}

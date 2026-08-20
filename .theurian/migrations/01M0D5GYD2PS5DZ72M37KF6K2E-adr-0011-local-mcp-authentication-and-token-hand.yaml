@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GYD2PS5DZ72M37KF6K2E
+createdAt: '2026-08-19T14:06:41+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0011, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.local-mcp-authentication
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.local-mcp-authentication
+  revisionId: 01M0D5GYD2PS5DZ72M37KF6K2F
+  contentFile: ../knowledge/architecture/local-mcp-authentication.01M0D5GYD2PS5DZ72M37KF6K2F.md
+  contentSha256: 6e09e06a2cd0d9f6b4ff4b6c59a297fe9a17b5f92f470ce33c7e9e14bbbea267
+  metadata:
+    title: 'ADR-0011: Local MCP authentication and token handling'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0011
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0011-local-mcp-authentication.md

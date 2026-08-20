@@ -1,0 +1,36 @@
+apiVersion: theurian.dev/v1
+id: 01M0D5GXBXE3K2578D0ZHCF056
+createdAt: '2026-08-19T14:06:39+00:00'
+author: Takehide Uchida
+description: 'Seed the dogfood corpus: ADR-0009, verbatim, from the pinned commit.'
+operations:
+- op: createItem
+  itemId: architecture.no-llm-vendor-lock-in
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.no-llm-vendor-lock-in
+  revisionId: 01M0D5GXBXE3K2578D0ZHCF057
+  contentFile: ../knowledge/architecture/no-llm-vendor-lock-in.01M0D5GXBXE3K2578D0ZHCF057.md
+  contentSha256: b2bf2dc29a3f7d24ecddf0f31be6afb0f2e5a70a4de29f0840aae87154d795c2
+  metadata:
+    title: 'ADR-0009: No vendor lock-in for LLM, embedding, or cloud providers'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0009
+    scope:
+      paths:
+      - '**'
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 2a98d4c8963cdf46cc6169e43ac7add039745342
+      filePath: docs/adr/0009-no-llm-vendor-lock-in.md
