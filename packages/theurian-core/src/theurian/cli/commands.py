@@ -1139,9 +1139,9 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     neither, *for this one statically decidable rule*. That is not a general
     guarantee that validate cannot pass a document apply will reject: it still
     cannot see every invariant domain construction enforces -- INV-8's
-    source-anchor requirement is one, and the shipped
-    `examples/sample-project/` demonstrates it validating a document `migrate
-    apply` then rejects (issue #36).
+    source-anchor requirement is one. The sample project now satisfies that
+    invariant; custom migrations without anchors can still validate and then be
+    rejected by `migrate apply` (issue #36).
 
     Publishes one thing `apply` does not: ``unpinnedRevisions``, a warning that
     leaves the exit code alone (issue #210). It belongs here rather than on
