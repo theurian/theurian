@@ -258,7 +258,7 @@ _RUNNER_NAME: Final = ".mutate-run"
 # `git ls-files --cached -z` output, so both ends parse it the same way.
 # `packages/theurian-core/tests/unit/test_dogfood_corpus_governance.py` is the
 # second reader, and it needs the manifest for a different reason: without one
-# its `git` calls exit 128 in a copy, 11 of its rules ERROR, and the batch's own
+# its `git` calls exit 128 in a copy, 11 of its rules fail, and the batch's own
 # unmutated control goes RED.
 #
 # Without it that guess drops the whole repository-root `.theurian/`, which on
