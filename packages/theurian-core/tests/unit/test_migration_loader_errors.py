@@ -1052,6 +1052,7 @@ def test_a_sibling_link_chain_is_cured_by_the_checklist_without_deleting_anythin
     assert len(loaded.migration_set) == 1
 
 
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 def test_a_role_probe_that_cannot_run_degrades_rather_than_guessing(
     project: Path, tmp_path: Path
 ) -> None:
