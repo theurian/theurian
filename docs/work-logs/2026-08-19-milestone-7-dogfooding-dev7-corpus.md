@@ -81,11 +81,15 @@ Measured in the derived SQLite, after apply:
 | local only | 50 | `inferred` | `internal` |
 | local only | 6 | `inferred` | `confidential` |
 
-The six `confidential` items are the vault's disclosure-handling notes, which
-cluster around 44–48 — the notes whose subject is an embargo rather than a
-decision. Nothing in that group is committed, and nothing in it is `reviewed`:
-a handoff note is what one session told the next, which is exactly what
-`inferred` means.
+**Six items across five note numbers.** The `confidential` set is the vault's
+disclosure-handling notes — the ones whose subject is an embargo rather than a
+decision — numbered 44 to 48. Number 48 exists as two files, an English
+`2026-08-16-48-dev4-record-closure-and-m7-handoff.md` and a Japanese
+`2026-08-16-48-record-closure-and-m7-handoff.md`. That is a historical numbering
+collision the vault keeps deliberately, and both files were seeded, so five
+numbers produce six items. Nothing in the set is committed, and nothing in it is
+`reviewed`: a handoff note is what one session told the next, which is exactly
+what `inferred` means.
 
 `--trust-level`, `--sensitivity`, `--scope-path` and `--label` are
 [#249](https://github.com/theurian/theurian/issues/249)'s options, and they
