@@ -879,28 +879,31 @@ def test_the_sibling_content_file_branches_name_the_migration_file_too(
     assert "id_ed25519" not in excinfo.value.remedy
 
 
-# -- the strong role's acceptance: removal must actually cure the escape -----
+# -- the invariant every construction shares: no remedy names a file to delete -
 #
-# `is_symlink()` proves "this name is a link". It does not prove "this link is
-# the escape", and the three constructions below are the ones that earn the
-# lstat and break the promise anyway. Two must degrade; the third must not,
-# because there the instruction genuinely works -- a rule that degraded
-# everything would be safe and useless.
+# `is_symlink()` proves "this name is a link", never "this link is the escape",
+# and the constructions below are the ones that earn the lstat while the escape
+# sits elsewhere. Earlier rounds tried to keep the destructive "remove it" and
+# withhold it from exactly these cases; the sibling-chain construction
+# (`test_a_sibling_link_chain...` below) refuted the last such rule. So the
+# remedy no longer names anything to delete, and that -- not a role assignment --
+# is what these tests now pin: whatever role the entry gets, following the
+# remedy destroys nothing. The role only decides whether the refusal opens by
+# saying the entry is itself a link.
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_degrades(
+def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_names_no_file_to_delete(
     project: Path, tmp_path: Path
 ) -> None:
-    """Construction A: the entry IS a symlink, and it points at a sibling
-    inside its own directory. `.theurian` is what escapes.
+    """The entry IS a symlink pointing at a sibling inside its own directory,
+    and `.theurian` is what escapes.
 
-    `lstat` says link, so keying the strong role on that alone re-earned the
-    destructive remedy -- and following it deleted the user's committed
-    migration while `.theurian` stayed outside, exactly the harm the plain-file
-    fix was supposed to have ended. The parent-chain conjunct is what tells
-    this apart: `.theurian/migrations` resolves outside, so nothing here is
-    known to be the escaping component.
+    `lstat` says link, so the entry gets role "symlink" and the refusal opens
+    by saying so -- which is safe now only because the remedy names nothing to
+    delete. An earlier rule kept "remove it" for entries like this, and
+    following it deleted the user's committed migration while `.theurian` stayed
+    outside; the invariant asserted here is that no such instruction survives.
     """
     shared = project / ".theurian" / "shared"
     shared.mkdir()
@@ -912,7 +915,9 @@ def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_degrades(
     (project / ".theurian").symlink_to(outside_theurian)
 
     migrations_dir = project / ".theurian" / "migrations"
-    assert entry.is_symlink(), "fixture must keep earning the lstat this rule no longer trusts"
+    assert entry.is_symlink(), (
+        "the entry is a link, so it gets role 'symlink' -- which must stay safe"
+    )
 
     with pytest.raises(PathEscapeError) as excinfo:
         load_migrations(project, migrations_dir, real_schema_root())
@@ -924,17 +929,19 @@ def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_degrades(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_a_migrations_directory_link_under_an_escaped_ancestor_degrades(
+def test_a_migrations_directory_link_under_an_escaped_ancestor_names_no_file_to_delete(
     project: Path, tmp_path: Path
 ) -> None:
-    """Construction C: `.theurian/migrations` is itself a symlink, pointing at
-    a sibling that is lexically inside the project, while `.theurian` escapes.
+    """`.theurian/migrations` is itself a symlink pointing at a sibling that is
+    lexically inside the project, while `.theurian` escapes.
 
-    The directory call site ran its own `is_symlink()` first and was described
-    as "the one call site entitled to the strong role" on that basis. It was
-    not: both halves of "repoint it inside the project, or remove it" are
-    useless here -- the target is already inside, and removing the link
-    destroys the layout while `.theurian` still resolves outside.
+    The directory call site runs its own `is_symlink()`, so this entry also
+    gets role "symlink" -- and that is deliberate and safe, because the remedy
+    it produces names no file to delete. An earlier version paired the strong
+    role with "repoint it inside the project, or remove it", both useless here:
+    the link's target is already inside, and removing the link destroys the
+    layout while `.theurian` still resolves outside. The invariant asserted here
+    is that neither instruction survives.
     """
     real = project / ".theurian" / "real-migrations"
     shutil.move(str(project / ".theurian" / "migrations"), str(real))
@@ -1105,10 +1112,10 @@ def test_load_migrations_names_the_migration_file_when_its_content_file_escapes(
     assert "id_ed25519" not in excinfo.value.remedy, "nor in the remedy"
     _assert_names_no_file_to_delete(excinfo.value.remedy)
     assert excinfo.value.remedy == (
-        f"Either the path {relative!r} names is written wrong -- correct it so it stays "
-        f"inside the project (the examples in docs/protocol/migrations.md show the normal "
-        f"`../knowledge/...` form) -- or something it traverses is a symbolic link that "
-        f"leaves the project; find and fix that link."
+        f"Either the path that {relative!r} names is written wrong -- correct it so it "
+        f"stays inside the project (the examples in docs/protocol/migrations.md show the "
+        f"normal `../knowledge/...` form) -- or something it traverses is a symbolic link "
+        f"that leaves the project; find and fix that link."
     ), (
         "both candidates, or the commonest case has no cure: a plain over-traversal typo "
         "(`../../../../../../etc/x`) involves no symlink at all, and an earlier version "

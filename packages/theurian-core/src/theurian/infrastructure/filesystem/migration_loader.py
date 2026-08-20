@@ -589,10 +589,14 @@ def _load_one(
         #
         # A `PathDepthExceededError` needs no passthrough here, unlike its twin
         # in `_parse_upsert`: an entry's relative path is
-        # `<knowledge dir>/migrations/<name>`, and every construction site of
-        # `Project.knowledge_directory` in this tree passes the
-        # `DEFAULT_KNOWLEDGE_DIRECTORY` constant, so the path is three segments
-        # and cannot reach the 32-segment limit.
+        # `<knowledge dir>/migrations/<name>`, three segments, well under the
+        # 32-segment limit. That depends on the one call site: `load_migrations`
+        # is reached only from `cli/context.py`, which builds `migrations` from
+        # `ProjectPaths.of(root)` -- no `knowledge_directory` argument, so the
+        # `DEFAULT_KNOWLEDGE_DIRECTORY` constant. If a caller ever passed a
+        # registry-supplied `knowledge_directory` deep enough to blow the limit,
+        # the depth error would be mislabelled as an escape here, and this
+        # passthrough would need restoring alongside `_parse_upsert`'s.
         raise PathEscapeError(
             exc.requested,
             exc.root,

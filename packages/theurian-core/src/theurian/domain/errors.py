@@ -600,15 +600,19 @@ class EscapeSite(NamedTuple):
 
     **The closure argument.** On this branch a path can leave the root only
     through a symbolic link somewhere on the entry's *ancestor chain* or its
-    *resolution chain*: an absolute path, a ``..`` that climbs above the root,
-    and a path nested past the depth limit are each refused on their own branch
-    before any of this runs. So the population that can hold the culprit is
-    exactly three finite parts -- the entry, the directories above it, and the
-    links it resolves through -- and the remedy instructs checking that
-    population without asserting which member is at fault. The only claim it
-    makes beyond the checklist is the one ``lstat`` proves: whether the entry is
-    itself a link. Nothing in that argument depends on state this code did not
-    walk, which is what makes it attackable and what makes it terminate.
+    *resolution chain*. The two non-symlink ways out are excluded by
+    construction rather than by a branch that runs here: an absolute path is
+    refused before an entry name is built, and a ``..`` component cannot appear
+    in a name this code derived by joining ``migrations_dir`` with what
+    ``iterdir()`` returned -- and a path nested past the depth limit is a
+    different refusal, :class:`PathDepthExceededError`, not an escape at all. So
+    the population that can hold the culprit is exactly three finite parts --
+    the entry, the directories above it, and the links it resolves through --
+    and the remedy instructs checking that population without asserting which
+    member is at fault. The only claim it makes beyond the checklist is the one
+    ``lstat`` proves: whether the entry is itself a link. Nothing in that
+    argument depends on state this code did not walk, which is what makes it
+    attackable and what makes it terminate.
 
     **Why it is phrased as a checklist rather than an identification.** Three
     earlier arguments tried to name the culprit, and each was refuted by a
@@ -752,9 +756,9 @@ def _path_escape_remedy(entry: EscapeSite) -> str:
         return f"{entry.name!r} is itself a symbolic link. {_CHECK_THE_CHAIN}"
     if entry.role == "referrer":
         return (
-            f"Either the path {entry.name!r} names is written wrong -- correct it so it "
-            f"stays inside the project (the examples in docs/protocol/migrations.md show "
-            f"the normal `../knowledge/...` form) -- or something it traverses is a "
+            f"Either the path that {entry.name!r} names is written wrong -- correct it so "
+            f"it stays inside the project (the examples in docs/protocol/migrations.md "
+            f"show the normal `../knowledge/...` form) -- or something it traverses is a "
             f"symbolic link that leaves the project; find and fix that link."
         )
     return f"{entry.name!r} resolves outside the project. {_CHECK_THE_CHAIN}"
@@ -789,7 +793,7 @@ class PathDepthExceededError(PathEscapeError):
         self.root = root
         self.entry = entry
         self.limit = limit
-        named = f"The path {entry.name!r} names nests" if entry else "This path nests"
+        named = f"The path that {entry.name!r} names nests" if entry else "This path nests"
         self.remedy = (
             f"{named} more than {limit} path segments below the permitted root. Shorten "
             f"it -- flatten the directories it nests through -- then retry."
