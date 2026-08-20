@@ -979,6 +979,48 @@ def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
+def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The one landed reference the identity guard must *not* refuse.
+
+    Re-declaring one revision against its own body is how an in-place status
+    change is written -- the revision id does not move, ``append_revision`` is a
+    no-op, only ``status`` differs (the ``reject``/``inplace-draft`` faces,
+    ADR-0024 decision 5). It lands on the same body path (the path carries the
+    revision id), so it *is* a replacement -- but of a body its own revision
+    already reads, not a second one. The guard keys on the *pair* (identity,
+    other revision id) for exactly this: an equal revision id is skipped, so the
+    legitimate re-declare is allowed while every different-revision face above is
+    refused. Without the skip the guard would refuse this too, breaking a
+    supported flow; this pins that it does not.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A fresh migration id (so the "already in place" pre-check passes), but the
+    # first item's own revision id re-declared against its own byte-identical
+    # body -- what a hand-authored in-place status change looks like.
+    second = service.draft(_request(item_id=ItemId("architecture.other")))
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(first.body_destination.read_bytes())
+
+    accepted = service.accept(second.proposal_id)
+
+    assert accepted.bodies[0].replaced, "the re-declare lands on the existing body"
+    assert first.body_destination.read_text() == BODY, "the body is unchanged"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
+
+
 def test_accept_leaves_the_evidence_where_a_reviewer_will_read_it(
     service: ProposalService,
 ) -> None:
