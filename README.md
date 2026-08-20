@@ -70,12 +70,15 @@ agents, CI, and people all *consult*. It is deliberately not a control point.
 > **Theurian does not orchestrate, does not approve, does not enforce.**
 
 Those are the jobs of your agent runtime, of Git, and of CI, and Theurian is
-built to leave them there. Approval is the act of merging a pull request —
-there is no approval command and no approver field anywhere in this codebase.
-CI is welcome to read Theurian and block a pull request on what it finds; the
-thing that blocked is CI.
+built to leave them there. Approval is the act of merging a pull request — there
+is no approval command and no approver field anywhere in this codebase, **and
+nothing in the code checks that the merge happened**: `migrate apply` applies
+whatever is in `.theurian/migrations/`, committed or not. The review is a
+workflow convention rather than a check Theurian makes (T-15's recorded
+residual). CI is welcome to read Theurian and block a pull request on what it
+finds; the thing that blocked is CI.
 
-That boundary is what the rest of the design falls out of:
+Everything below follows from that boundary:
 
 - **Agents read, propose, and never approve.** The five MCP tools are read-only,
   and `system.capabilities` reports `writeTools: false`. Proposing happens at the
@@ -84,17 +87,16 @@ That boundary is what the rest of the design falls out of:
   emit the same proposal file, never approved state.
 - **Vendor-neutral by construction, not by intention.** Anything that speaks MCP
   over Streamable HTTP gets the same tools and the same schemas. Core needs no
-  API key and no account, and a CI job named *Full suite with no network* runs
-  the whole test suite with the network blocked on every commit that touches
-  Core.
+  API key and no account, and a CI job runs the suite — every test except the 25
+  end-to-end ones — with the network blocked, on every commit that touches Core.
 - **Every answer carries its evidence.** Status, trust level, validity window,
-  and a source anchor travel with the result, so a claim can be checked rather
-  than believed.
+  and a source anchor — or, for knowledge authored in Theurian rather than
+  ingested, the `authored-in-theurian` declaration that stands in for one —
+  travel with the result, so a claim can be checked rather than believed.
 
-The adopted plan for where this goes next is [the
-roadmap](docs/roadmap.md) — which is direction, not a description of what ships
-today. Anything below that reads as a current capability agrees with
-`system.capabilities`.
+The adopted plan for where this goes next is [the roadmap](docs/roadmap.md) —
+which is direction, not a description of what ships today. Anything below that
+reads as a current capability agrees with `system.capabilities`.
 
 ## What comes back
 
@@ -183,7 +185,7 @@ The approved decision that rejected it is what comes back.
 
 |  |  |
 | :-- | :-- |
-| **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. |
+| **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` through a migration the workflow expects a human to author and merge — a convention the code does not check (T-15). What *is* enforced is that no MCP tool can write it. |
 | **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent *MCP* tool exists, so proposing is the `theurian propose` CLI's job today, and a write-intent tool will emit the same proposal file a human reviews and merges. Resolved review threads become *candidates* when review ingestion lands ([Phase B](docs/roadmap.md)); `system.capabilities` reports `reviewIngestion: false` until it does. The direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries its revision's provenance: provider and URI, plus repository, commit, file and line range where the source pins them. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
@@ -553,7 +555,7 @@ Milestones 0 through 6, which are history rather than a plan:
 | :-- | :-- | :-- |
 | 0–4 | Architecture and ADRs · canonical store and migrations · source ingestion · single MCP daemon · Claude Code plugin | **done** |
 | 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
-| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) · RAPTOR forest end to end (opt-in): `index build --raptor` derives and stores it (three tiers; the Catalog tier is not fanned out, so a build wall remains far above the one removed, [#144](https://github.com/theurian/theurian/issues/144)); a withdrawal re-derives each affected scope so a purged forest equals one that never held the withdrawn rows (ADR-0008 decision 9's two-corpus equality); retrieval routes through summaries to leaves and a hit carries its `raptorPath`, gated so a title crosses no scope the caller's leaf is not in | **done** |
+| 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) (now a 0.1.0 release gate — see below) · RAPTOR forest end to end (opt-in): `index build --raptor` derives and stores it (three tiers; the Catalog tier is not fanned out, so a build wall remains far above the one removed, [#144](https://github.com/theurian/theurian/issues/144)); a withdrawal re-derives each affected scope so a purged forest equals one that never held the withdrawn rows (ADR-0008 decision 9's two-corpus equality; status axis, with residuals recorded in the threat model); retrieval routes through summaries to leaves and a hit carries its `raptorPath`, gated so a title crosses no scope the caller's leaf is not in | **done** |
 
 ### What comes next
 
@@ -563,16 +565,17 @@ stopped being trustworthy: `theurian propose` is recorded in
 [ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md) as landing in Milestone
 7, while this file listed Milestone 7 as `planned` until the change that added
 this section — and the definition of that milestone differed between documents.
-Rather than renumber, the roadmap phases what is left and says what each phase
-does *not* claim:
+This section fixes the README's half; **the ADR side is still open** (roadmap
+appendix item 2). Rather than renumber, the roadmap phases what is left and says
+what each phase does *not* claim:
 
 | Phase | Scope |
 | :-- | :-- |
 | 0 | Stabilize: take the `pre-1.0` label to zero and ship 0.1.0 stable, with sensitivity/tenant/ACL enforcement ([#119](https://github.com/theurian/theurian/issues/119)) mandatory before it |
 | A | A reproducible retrieval-evaluation baseline, so ranking changes stop shipping against no measurement |
-| B | The agent write path over MCP, and GitHub review ingestion |
+| B | The agent write path over MCP, and GitHub review ingestion (SEC-12 input validation is a precondition) |
 | C | Traceability: collecting the graph and querying it |
-| D | Enforced status transitions, and history that can be asked about |
+| D | Enforced status transitions, and history that can be asked about (ADR-first: it changes a disclosure surface) |
 | E | Impact analysis and drift detection |
 | F | Ecosystem: a second client adapter, context export, and experimental work |
 

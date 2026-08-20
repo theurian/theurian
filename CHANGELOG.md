@@ -22,9 +22,9 @@ the definition of that milestone differed between documents. Milestones 0–6 st
 in the README as shipped history.
 
 Recorded here because it changes how work is planned and announced. It is not a
-milestone completion, and it is not comparable to the entries below — of which
-milestones 1 through 6 are missing from this file, an inconsistency the
-roadmap's own appendix records against Phase 0.
+milestone completion, and it is not comparable to the entries below — and the
+entries below are not a complete set: milestones 1 through 6 are missing from
+this file, an inconsistency the roadmap's own appendix records against Phase 0.
 
 ### 2026-08-01 — Milestone 0 complete
 

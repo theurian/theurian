@@ -86,6 +86,17 @@ client can call today are read-only, and `system.capabilities` reports
 
 This is intentional.
 
+Proposing happens at the CLI today: `theurian propose` writes a proposal file a
+human reviews and merges. Write-intent MCP tools are designed and not built;
+when they land they emit the same proposal file.
+
+**What is enforced, and what is convention.** That no MCP tool writes approved
+knowledge is enforced — a test walks the bytecode of every registered tool to
+hold it. That a human merged the proposal is *not*: `migrate apply` applies
+whatever is in `.theurian/migrations/`, committed or not, so the review is a
+workflow convention rather than a check the code makes (T-15's recorded
+residual).
+
 AI agents can consume governed knowledge without becoming the authority that
 governs it. Decisions remain reviewable engineering artifacts controlled by
 the team.
@@ -132,7 +143,7 @@ most important engineering questions.
 | Was this reviewed? | Usually unknown | **Trust and status travel with it** |
 | Is it still valid? | Usually unknown | **Freshness is queryable** |
 | Where did this claim come from? | Often a document link | **Source provenance** |
-| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No** |
+| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — no write tool exists. On the CLI path nothing enforces the merge (T-15's recorded residual); the workflow, not the code, is the check. |
 
 The goal is not to replace search.
 
@@ -229,7 +240,8 @@ and the `traceability_edges` table ships empty. Collecting the graph and
 querying it is Phase C of the adopted roadmap; impact analysis and drift
 detection are Phase E.
 
-Nothing on this page describes a capability that does not exist today. Where
+Nothing on this page describes **as shipped** a capability that does not exist
+today. Where
 this documentation looks forward, it says so, and `system.capabilities` is the
 authority a client should ask.
 
