@@ -132,8 +132,7 @@ Still owed, with the phase that would satisfy it:
 - **A test pinning the boundary sentence across all four locations**, so that
   editing one and not the others goes red. This is the same shape as the existing
   call-site and config-key pins. Filed as
-  [#283](https://github.com/theurian/theurian/issues/283) — whose title says
-  three files, written before this ADR added the fourth.
+  [#283](https://github.com/theurian/theurian/issues/283).
 - **A recorded decision on where a drift command's blocking behaviour lives**
   (Phase E). This ADR says CI blocks and Theurian reports. The first
   implementation of `drift` is where that stops being a sentence and becomes an
