@@ -175,11 +175,26 @@ GOVERNED_METADATA: Final[Mapping[str, str]] = MappingProxyType(
 #: moving it is a decision too.
 GOVERNED_OPERATIONS: Final = ("createItem", "upsertRevision")
 
-#: The exact key set ``propose`` writes into ``.theurian/proposals/<id>/evidence.json``,
+#: The key set ``propose`` writes into ``.theurian/proposals/<id>/evidence.json``,
 #: and the whole of it (measured 2026-08-20 over all 26 committed files).
 EVIDENCE_KEYS: Final = frozenset(
     {"proposalId", "agentId", "taskId", "model", "reasoning", "sourceAnchors"}
 )
+
+#: Keys a committed ``evidence.json`` **may** carry, named one at a time.
+#:
+#: ``migrationId`` is the one field of this file that Core reads back: it is what
+#: lets ``propose accept`` answer "has this proposal been accepted?" from the
+#: migration set rather than by inferring it from which files are left in the
+#: directory, which was wrong in both directions (#253). Optional and not
+#: required, because all 26 committed proposals predate it, and a required key
+#: would take the corpus RED for a field the tool did not write when they were
+#: drafted. Every proposal drafted since carries it.
+#:
+#: This is an allowance for *this* key and not a relaxation of the rule: the
+#: escape the rule below closes is an evidence file carrying a field nothing
+#: reads and no schema validates, and a set of one named key is still exact.
+OPTIONAL_EVIDENCE_KEYS: Final = frozenset({"migrationId"})
 
 #: The keys a ``sourceAnchor`` carries, in both a migration's revision metadata
 #: and an ``evidence.json`` (measured 2026-08-20: one shape, 52 anchors).
@@ -1206,18 +1221,58 @@ def test_every_committed_evidence_file_declares_exactly_the_evidence_keys() -> N
     free text and ``sourceAnchors`` is checked for shape below, not for whether
     the prose inside is publishable. Content scanning is #198's, and the module
     docstring says so.
+
+    Exactness survives :data:`OPTIONAL_EVIDENCE_KEYS`. A key is admitted here by
+    being named in that set, one at a time and with the reason recorded beside
+    it; what stays refused is the unnamed key, which is the whole of the escape.
     """
     unexpected = [
-        (evidence.path, sorted(set(evidence.document) ^ EVIDENCE_KEYS))
+        (evidence.path, _evidence_key_difference(evidence.document))
         for evidence in _evidence()
-        if set(evidence.document) != EVIDENCE_KEYS
+        if _evidence_key_difference(evidence.document)
     ]
 
     assert not unexpected, (
-        f"evidence files whose keys are not exactly {sorted(EVIDENCE_KEYS)} "
-        f"(path, difference): {unexpected}. A key `propose` does not write is a field this "
-        f"module does not read and no schema validates."
+        f"evidence files whose keys are not {sorted(EVIDENCE_KEYS)} plus at most "
+        f"{sorted(OPTIONAL_EVIDENCE_KEYS)} (path, difference): {unexpected}. A key "
+        f"`propose` does not write is a field this module does not read and no schema "
+        f"validates; a missing required one is provenance the corpus does not carry."
     )
+
+
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        (EVIDENCE_KEYS, []),
+        (EVIDENCE_KEYS | {"migrationId"}, []),
+        (EVIDENCE_KEYS | {"notes"}, ["notes"]),
+        (EVIDENCE_KEYS | {"migrationId", "handoff"}, ["handoff"]),
+        (EVIDENCE_KEYS - {"reasoning"}, ["reasoning"]),
+    ],
+)
+def test_the_evidence_key_rule_admits_the_optional_key_and_nothing_else(
+    keys: frozenset[str], expected: list[str]
+) -> None:
+    """The rule above, driven by input rather than by the corpus it reads.
+
+    Every committed evidence file predates ``migrationId``, so the corpus cannot
+    exercise the allowance that admits it: get the allowance wrong -- widen it to
+    any key, or make the new field required -- and the rule above stays green
+    until the first proposal drafted since #253 is committed, which is the run
+    where a wrong rule is most expensive. These five cases are the ones the
+    allowance has to separate.
+    """
+    assert _evidence_key_difference(dict.fromkeys(keys, "value")) == expected
+
+
+def _evidence_key_difference(document: Mapping[str, object]) -> list[str]:
+    """Keys this evidence file has and should not, or lacks and should have.
+
+    Sorted, and symmetric on purpose: an extra key is a publication nothing
+    validates, a missing one is provenance the corpus does not carry, and a rule
+    that names only the first reports the second as an empty list.
+    """
+    return sorted((set(document) - OPTIONAL_EVIDENCE_KEYS) ^ EVIDENCE_KEYS)
 
 
 def test_the_committed_corpus_holds_one_evidence_file_per_migration() -> None:

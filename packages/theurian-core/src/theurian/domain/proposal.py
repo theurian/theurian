@@ -162,6 +162,31 @@ def is_migration_file_name(name: str) -> bool:
     return _MIGRATION_FILE_NAME.match(name) is not None
 
 
+#: The exact leaf :func:`body_relative_path` produces: an ``ItemId``'s last
+#: segment (lowercase kebab-case), the revision ULID, and one of the three body
+#: extensions. Anchored, and deliberately narrower than "a file in the proposal
+#: directory": a diagnosis that reasons over *any* leftover file reasons over
+#: files nothing here wrote -- ``Thumbs.db``, a reviewer's ``REVIEW-NOTES.md``,
+#: an editor's ``evidence.json~`` -- and ``accept`` leaves every one of those
+#: behind on a successful run, because it removes only the bodies the migration
+#: names.
+_BODY_FILE_NAME: Final = re.compile(
+    r"\A[a-z0-9]+(?:-[a-z0-9]+)*\.[0-7][0-9A-HJKMNP-TV-Z]{25}\.(?:md|json|yaml)\Z"
+)
+
+
+def is_generated_body_file_name(name: str) -> bool:
+    """Whether ``name`` is a body file :func:`body_relative_path` could have written.
+
+    Used by ``accept`` to tell an unfinished draft from an accepted proposal
+    where the proposal itself records no migration id -- the 26 committed before
+    that record existed. It answers "did the generator write this file", never
+    "is this a body": a hand-authored ``contentFile`` may name anything, and a
+    proposal that carries one is outside what this predicate can speak for.
+    """
+    return _BODY_FILE_NAME.match(name) is not None
+
+
 def body_extension(content_type: MediaType) -> str:
     """The filename extension a body of this media type is written with.
 
