@@ -45,11 +45,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   fallible branch points the reader at `.theurian/migrations/` first — no branch
   emits an unconditional "no action is needed" or "draft it again", so none can
   tell the author to discard work that may exist or duplicate a change that
-  already landed. The three states are kept distinct by their exit codes: a
-  migration in place under the recorded id — whether or not the item cross-checks
-  — exits 4 ("read before acting"), and only a recorded id that names *nothing*
-  landed exits 1 ("nothing landed, re-draft"), so following exit 1 can never mint
-  a duplicate of a change on disk. Absent `evidence.json` (a legacy proposal, or
+  already landed. Whether a migration is in place under the recorded id is read
+  from the same approved `MigrationSet` `migrate validate`/`apply` read — keyed by
+  the migration's inner id, not by a filename match — so `propose accept` cannot
+  disagree with the loader about what has landed, whatever a migration file was
+  renamed to or whether it is a symlink. The three states are kept distinct by
+  their exit codes: a migration in place under the recorded id — whether or not
+  the item cross-checks — exits 4 ("read before acting"), and only a recorded id
+  the loaded set holds *no* migration for exits 1 ("nothing landed, re-draft"), so
+  following exit 1 can never mint a duplicate of a change on disk. Absent
+  `evidence.json` (a legacy proposal, or
   one interrupted before its evidence write) falls to inference over the
   directory, which reads only the body shape the generator produces, so a
   reviewer's notes or a `Thumbs.db` left beside an accepted proposal no longer

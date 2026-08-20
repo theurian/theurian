@@ -212,14 +212,18 @@ Landed in Milestone 7, by the `theurian propose` CL:
   and `::test_a_proposal_with_no_model_identity_is_rejected_at_construction`
   pinning the two halves of "evidences nothing."
 - The accepted-vs-interrupted diagnosis is best-effort over untrusted input
-  (#253). `test_proposal_service.py::test_a_migration_id_pointing_at_another_proposals_migration_is_not_accepted`
+  (#253). `test_proposal_service.py::test_a_migration_id_pointing_at_another_proposals_migration_is_not_confirmed`
   drives the forge the `itemId` cross-check closes;
   `::test_a_present_but_unreadable_evidence_file_is_indeterminate` and its
-  siblings pin that a read failure is answered indeterminate, never guessed; and
+  siblings pin that a read failure is answered indeterminate, never guessed;
   `::test_an_accepted_proposal_whose_evidence_was_removed_points_at_migrations_first`
-  pins the safe-by-remedy invariant that no branch discards work. The
-  terminal-injection channel these messages could open is closed at the CLI's
-  output sink, tested in `test_propose_cli.py::test_the_render_sink_escapes_controls_and_keeps_printable_unicode`.
+  pins the safe-by-remedy invariant that no branch discards work; and
+  `::test_a_landed_migration_renamed_off_its_ulid_prefix_is_still_landed` with
+  `::test_a_symlinked_landed_migration_is_recognised_as_landed` pin that "in
+  place" is read from the loaded `MigrationSet` (inner-id keyed), so `propose
+  accept` cannot disagree with `migrate validate`/`apply` about what has landed.
+  The terminal-injection channel these messages could open is closed at the CLI's
+  output sink, tested in `test_propose_cli.py::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`.
 
 Still owed, with the milestone that brings the feature under test:
 
