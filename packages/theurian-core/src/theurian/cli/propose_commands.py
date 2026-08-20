@@ -351,11 +351,12 @@ def propose_accept(
 
     Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
     -- no such proposal, a draft interrupted before its migration was written, a
-    directory or an evidence file that could not be fully read, a file the
-    security layer refuses; 2 the id is not a ULID; 4 the project's knowledge
-    state refuses the move -- this proposal was accepted before, that migration id
-    is already in ``.theurian/migrations/``, or the approved migration set does
-    not resolve (it is unreadable, tampered, or internally inconsistent).
+    proposal directory or a file in it the filesystem refuses to list, examine or
+    read, a file the security layer refuses; 2 the id is not a ULID; 4 the
+    project's knowledge state refuses the move -- this proposal was accepted
+    before, that migration id is already in ``.theurian/migrations/``, or the
+    approved migration set does not resolve (it is unreadable, tampered, or
+    internally inconsistent).
 
     **4 means "read the knowledge state before doing anything", not "already
     done".** Its migration-set case -- raised while resolving the project, so
@@ -364,7 +365,10 @@ def propose_accept(
     means nothing landed and drafting again is the recovery; normally, because a
     part-way write is rolled back on a best-effort basis, and a rollback that
     itself fails leaves a body in ``.theurian/knowledge/`` while this still
-    reports the original failure.
+    reports the original failure -- and because a read the filesystem refused
+    exits 1 without having established anything either way, so its own remedy
+    sends the reader to ``.theurian/migrations/`` before re-drafting rather than
+    straight to a second draft (#227).
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,

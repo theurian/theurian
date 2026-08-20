@@ -10,9 +10,11 @@ migration commands actually applies.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -29,6 +31,11 @@ from theurian.cli.propose_commands import _DRAFT_STEPS
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
+
+#: A ``chmod 0o000`` denies nothing to root and nothing on Windows, so a test
+#: that needs the mode to actually refuse cannot run there (the offline CI job
+#: runs as root). Same guard the service-level permission tests carry.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 EXIT_INVALID_INPUT = 2
 EXIT_STATE_ERROR = 4
@@ -593,6 +600,46 @@ def test_accept_refuses_an_id_that_is_not_a_ulid(project: Path) -> None:
 
     assert code == EXIT_INVALID_INPUT
     assert payload["remedy"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_accept_publishes_a_json_document_for_a_proposal_it_cannot_read(project: Path) -> None:
+    """#227: ``--json`` published nothing at all when the directory was unreadable.
+
+    Confirmed through the installed CLI in a sandbox: after ``chmod 000`` on
+    ``.theurian/proposals/<id>``, ``theurian propose accept <id> --json`` exited 1
+    having written **zero bytes** to stdout, with the traceback bottoming at
+    ``PermissionError: [Errno 13] Permission denied: .../evidence.json``. CP-2
+    says a ``--json`` failure is an ``{error, remedy}`` document, so a caller
+    parsing stdout gets a decode error and no remedy -- the one failure mode
+    ``--json`` exists to remove.
+
+    Invoked with ``catch_exceptions=True``, unlike the ``_invoke`` helper: the
+    defect is precisely that an exception escapes the command, so it is caught
+    here and named in a failed assertion rather than propagated as a test error.
+    ``SystemExit`` is what a *translated* failure exits with, so it is the one
+    exception this asserts nothing about.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    directory.chmod(0o000)
+    try:
+        result = runner.invoke(
+            app, ["propose", "accept", drafted["proposalId"], "--json"], catch_exceptions=True
+        )
+    finally:
+        directory.chmod(0o755)
+
+    escaped = None if isinstance(result.exception, SystemExit) else result.exception
+    assert escaped is None, f"an exception escaped instead of a --json document: {escaped!r}"
+    assert result.exit_code != 0, "an unreadable proposal is not an acceptance"
+    # The *whole* stream is parsed, not searched: that is what rules out a
+    # traceback printed beside the document as well as one printed instead of it.
+    # (In-process the runner captures the exception rather than printing it, so a
+    # `"Traceback" not in output` check would hold here whatever the code did.)
+    payload = json.loads(result.stderr or result.stdout)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
 
 
 # -- governed metadata (#249) ----------------------------------------------

@@ -47,6 +47,14 @@ from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 #: runs as root). Same guard the sibling permission tests carry.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
+#: Spellings that tell a reader the cure for a refused read is a permission
+#: change (#227). The contract is that the remedy *names* the permission, not
+#: that it uses one verb: the shipped remedy for an unreadable ``evidence.json``
+#: says "Make ... readable" while :func:`_within`'s sibling says ``chmod``, and
+#: both discharge it. What none of these matches is the answer that would be
+#: wrong here -- "draft it again", or "list .theurian/proposals/".
+_PERMISSION_REMEDY_WORDS = ("chmod", "readable", "permission")
+
 pytestmark = pytest.mark.integration
 
 SCHEMAS = Path(__file__).resolve().parents[4] / "schemas"
@@ -762,6 +770,122 @@ def test_accept_reports_an_unknown_proposal_rather_than_raising_from_the_filesys
 ) -> None:
     with pytest.raises(ProposalError, match="No proposal"):
         service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_proposal_directory_that_cannot_be_read_is_answered_rather_than_crashing(
+    service: ProposalService,
+) -> None:
+    """#227: a raw ``PermissionError`` escapes ``accept`` for an unreadable proposal.
+
+    Confirmed through the real CLI: ``propose accept <id> --json`` on a proposal
+    directory at mode ``0o000`` exited 1 with an empty stdout and a traceback
+    bottoming at ``PermissionError: [Errno 13] Permission denied: .../evidence.json``
+    -- so ``--json`` published no ``{error, remedy}`` document at all (CP-2), and
+    the reader is handed a stack trace instead of the one-line ``chmod`` that
+    fixes it.
+
+    Measured mechanism at mode ``0o000`` (CPython 3.13): ``directory.glob("*.yaml")``
+    swallows the ``PermissionError`` and yields nothing, so ``_require_migration``
+    finds no candidate and falls to ``_no_migration_error``, whose
+    ``evidence.exists()`` probe is the call that raises. The failure therefore
+    arrives from the diagnosis of a *missing* migration while the migration is
+    right there, unread -- which is why the answer must also not conclude:
+    "could not read it" is not "it has been accepted"
+    (:meth:`ProposalService._read_evidence_record`).
+
+    The permission is not exotic: a proposal directory arrives through a pull
+    request and a contributor's umask, an interrupted checkout, or a
+    root-owned file in a container all produce one this process cannot read.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError), (
+        "an unreadable directory cannot prove the change is in place"
+    )
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
+    # Project-relative, not the developer's home directory: an `OSError`'s own
+    # text carries the absolute path, so a message built from `str(exc)` leaks it
+    # (:meth:`ProposalService._evidence_indeterminate`, :func:`_within`).
+    published = f"{caught.value} {remedy}"
+    assert str(drafted.directory) not in published, "the absolute path must not leak"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_proposal_directory_whose_entries_cannot_be_examined_is_answered(
+    service: ProposalService,
+) -> None:
+    """#227 at a second unguarded call: the directory lists, but nothing stats.
+
+    At mode ``0o444`` the directory can be *listed* -- ``glob("*.yaml")`` returns
+    the migration -- while every ``stat`` under it is refused. Measured: the raw
+    ``path.is_symlink()`` probe in :meth:`ProposalService._require_migration` is
+    what raises here, not the evidence read the sibling above reaches.
+
+    One defect, several unguarded calls: the accept path probes the filesystem
+    with raw ``glob`` / ``is_symlink`` / ``is_file`` / read calls and translates
+    none of their ``OSError``s, so *which* one fires is an accident of the mode.
+    A fix that guards only the call the first test happens to reach leaves this
+    one crashing, which is why the mode that selects a different probe is pinned
+    separately rather than folded into a parametrize.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o444)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError), (
+        "a directory that cannot be examined cannot prove the change is in place"
+    )
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_migration_file_that_cannot_be_opened_is_answered_rather_than_crashing(
+    service: ProposalService,
+) -> None:
+    """#227 at the read itself, which no mode on the *directory* can reach.
+
+    The shape a container produces: the proposal directory is perfectly normal --
+    it lists, and every entry stats -- and the migration file alone cannot be
+    opened, because it belongs to another user. Every probe in
+    :meth:`ProposalService._require_migration` therefore succeeds, and the
+    ``PermissionError`` comes out of the read one line later, from
+    :func:`read_source_file` inside the security layer.
+
+    Measured, and the reason this is not a duplicate of the ``0o444`` sibling:
+    with the directory at ``0o444`` the failure lands at ``is_symlink`` and the
+    read is never attempted, so *neither* of the other two tests exercises the
+    read. A fix that wraps only ``_require_migration``'s probes passes both of
+    them and still crashes here.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.migration_file.chmod(0o644)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError), (
+        "a migration that cannot be opened cannot prove the change is in place"
+    )
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
 
 
 # -- has this proposal been accepted? (#253) -------------------------------

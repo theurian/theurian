@@ -454,26 +454,47 @@ class ProposalService:
                 a previous acceptance of this proposal or by a different change
                 that collided.
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
-                could not be fully examined, or names a file the security layer
-                refuses. Both types above are subclasses, so a caller that
-                catches only this still catches everything.
+                could not be fully examined -- including a directory or a file
+                in it the filesystem refuses to list, stat or read -- or names a
+                file the security layer refuses. Both types above are
+                subclasses, so a caller that catches only this still catches
+                everything.
             PathEscapeError: If a ``contentFile`` resolves outside
                 ``.theurian/knowledge/``.
             InputTooLargeError: If a file the accept path reads exceeds SEC-8's
                 size cap.
         """
-        directory = self._require_directory(proposal_id)
-        migration_file = self._require_migration(directory, proposal_id)
-        migration_bytes = self._read_within_project(migration_file)
-        document = _parse_migration(migration_bytes, migration_file)
-        destination = self._paths.migrations / migration_file.name
-        # "Already in place" is the harder stop and is reported first; the
-        # filename/id agreement is checked next, on a name nothing holds.
-        self._refuse_if_migration_present(destination)
-        _require_filename_matches_id(migration_file, document)
+        try:
+            directory = self._require_directory(proposal_id)
+            migration_file = self._require_migration(directory, proposal_id)
+            migration_bytes = self._read_within_project(migration_file)
+            document = _parse_migration(migration_bytes, migration_file)
+            destination = self._paths.migrations / migration_file.name
+            # "Already in place" is the harder stop and is reported first; the
+            # filename/id agreement is checked next, on a name nothing holds.
+            self._refuse_if_migration_present(destination)
+            _require_filename_matches_id(migration_file, document)
 
-        moves = tuple(self._body_moves(directory, document))
-        self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
+            moves = tuple(self._body_moves(directory, document))
+            self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
+        except OSError as exc:
+            # Every line above probes or reads a directory whose permissions are
+            # a contributor's, through raw `is_symlink`/`is_file`/`exists`/`stat`
+            # and read calls, and not one of them translated its own `OSError`:
+            # the failure left `accept` as a bare `PermissionError`, so `--json`
+            # published no `{error, remedy}` document at all (CP-2, #227). Which
+            # call fires is an accident of the mode -- `0o000` on the directory
+            # reaches the evidence probe, `0o444` the `is_symlink` above it, and
+            # an unreadable migration file the read inside the security layer --
+            # so the clause spans the examination phase rather than any one of
+            # them.
+            #
+            # It stops there deliberately. `_commit` below keeps its own
+            # `except OSError`, because a failed write must roll the
+            # destinations back before it reports; a clause spanning both would
+            # swallow that and describe a half-written tree as an unreadable
+            # proposal.
+            raise self._unreadable(proposal_id, exc) from exc
 
         return self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
 
@@ -500,15 +521,24 @@ class ProposalService:
 
     def _require_migration(self, directory: Path, proposal_id: ProposalId) -> Path:
         # The migration is identified by its `<ulid>-<slug>.yaml` name, not by
-        # globbing `*.yaml`: a YAML or YML *body* is a `*.yaml` too, so globbing
-        # counted the body as a second migration and a YAML-bodied proposal could
-        # never be accepted ("holds two or more migration files"). Body files
-        # also mirror their `knowledge/` sub-path and so sit in a subdirectory,
-        # while the migration is always at the top level -- another reason a
-        # top-level, name-matched lookup finds exactly the migration.
-        entries = sorted(
-            path for path in directory.glob("*.yaml") if is_migration_file_name(path.name)
-        )
+        # any `*.yaml`: a YAML or YML *body* is a `*.yaml` too, so matching the
+        # suffix counted the body as a second migration and a YAML-bodied
+        # proposal could never be accepted ("holds two or more migration
+        # files"). Body files also mirror their `knowledge/` sub-path and so sit
+        # in a subdirectory, while the migration is always at the top level --
+        # another reason a top-level, name-matched lookup finds exactly the
+        # migration. The name pattern is anchored on a ULID, so listing the
+        # directory and filtering by name selects exactly what `glob("*.yaml")`
+        # used to.
+        #
+        # `iterdir()` and not `glob()`: `Path.glob` runs its `scandir` inside a
+        # `try` that swallows every `OSError`, so a proposal directory this
+        # process cannot read yielded *nothing* and the migration sitting in it
+        # read as absent -- the silent false negative #214 fixed on the loader's
+        # own enumeration, here handing an unreadable directory to the
+        # already-accepted diagnosis below. `iterdir()` raises instead, and
+        # `accept` translates it (#227).
+        entries = sorted(path for path in directory.iterdir() if is_migration_file_name(path.name))
         # `is_file()` follows a symlink, so a name-matching link to an
         # out-of-project file would otherwise count as the migration and have its
         # target's bytes read into a tracked file. It is rejected by name rather
@@ -715,6 +745,42 @@ class ProposalService:
             remedy=f"Make .theurian/proposals/{proposal_id.value}/{EVIDENCE_FILE} readable and "
             "well-formed, then run theurian propose accept again. If it cannot be recovered, look "
             "in .theurian/migrations/ for the migration this proposal drafted before re-drafting.",
+        )
+
+    def _unreadable(self, proposal_id: ProposalId, error: OSError) -> ProposalError:
+        """The answer when the filesystem refuses a probe or a read on the accept path.
+
+        Raised from the single clause in :meth:`accept` that spans the
+        examination phase, so *which* raw call the mode happens to select does
+        not change the answer the caller gets.
+
+        The reason is ``strerror`` -- the OS's own category for the failure --
+        and never ``str(exc)``, whose text carries the absolute filename and with
+        it the developer's home directory. :meth:`_evidence_indeterminate` records
+        that discipline; :func:`_project_relative` is what names the file without
+        it, and :func:`_names` quotes the result, because a proposal directory's
+        filenames are the contributor's (ADR-0013 point 7).
+
+        **The remedy never sends the reader to draft again.** A read the
+        filesystem refused says nothing about whether this proposal's migration
+        has already landed -- the two facts are unrelated -- and re-drafting an
+        accepted proposal mints a second migration for a change already in
+        history (#89). So it points at ``.theurian/migrations/`` first, exactly
+        as the indeterminate-evidence remedy above does. What it *can* state
+        outright is that nothing moved: every write on this path is in
+        :meth:`_commit`, which the clause in :meth:`accept` deliberately
+        excludes.
+        """
+        return ProposalError(
+            f"Proposal {proposal_id.value} could not be examined: "
+            f"{error.strerror or 'it could not be read'} at "
+            f"{_names([_project_relative(error.filename, self._paths.root)])}. Nothing has been "
+            "moved, and whether it can be accepted cannot be answered without reading it.",
+            remedy=f"Make .theurian/proposals/{proposal_id.value} and the files in it readable "
+            "-- chmod u+rX on the proposal directory -- then run theurian propose accept again. "
+            "If they cannot be recovered, look in .theurian/migrations/ for the migration this "
+            "proposal drafted before re-drafting: a refused read is not evidence that nothing "
+            "landed.",
         )
 
     def _landed_state(
@@ -1076,6 +1142,36 @@ def _within(filename: object, directory: Path) -> str:
         return Path(filename).relative_to(directory).as_posix() or "."
     except ValueError:
         return filename
+
+
+def _project_relative(filename: object, root: Path) -> str:
+    """``filename`` from an ``OSError``, relative to the project root.
+
+    :func:`_within`'s sibling, for the accept path, where the refused call can be
+    anywhere the command reached rather than only inside one proposal directory:
+    a probe under ``.theurian/proposals/``, a body under ``.theurian/knowledge/``,
+    the migration destination. The absolute path is never returned, for the reason
+    :func:`_within` records -- it is the machine's home directory, not the
+    proposal's.
+
+    Both spellings of the root are tried because this path produces both. A probe
+    built as ``self._paths.root / ...`` carries the root as the project was
+    configured, while a read through :func:`read_source_file` carries the
+    *resolved* one, and the two differ wherever the root is reached through a
+    symlink (``/var`` against ``/private/var`` on macOS is the case this suite
+    runs in). A path under neither is named by a phrase and not by its own text:
+    that is where this is deliberately stricter than :func:`_within`, whose odd
+    path is at least known to be inside a committed proposal directory.
+    """
+    if not isinstance(filename, str):
+        return "an unreadable path"
+    candidate = Path(filename)
+    for base in (root, root.resolve()):
+        try:
+            return candidate.relative_to(base).as_posix() or "."
+        except ValueError:
+            continue
+    return "a path outside the project"
 
 
 def _names(names: Sequence[str]) -> str:
