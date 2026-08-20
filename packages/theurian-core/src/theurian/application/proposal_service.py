@@ -50,7 +50,12 @@ from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, T
 from theurian.domain.errors import InputTooLargeError, PathEscapeError, TheurianError
 from theurian.domain.identifiers import ItemId, MigrationId, ProposalId, RevisionId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
-from theurian.domain.migration import MIGRATION_API_VERSION
+from theurian.domain.migration import (
+    MIGRATION_API_VERSION,
+    CreateItem,
+    Migration,
+    UpsertRevision,
+)
 from theurian.domain.ports import Clock, IdGenerator
 from theurian.domain.proposal import (
     Evidence,
@@ -90,6 +95,15 @@ MigrationDocumentValidator = Callable[[Mapping[str, object]], None]
 #: the loaded migration set (:func:`current_revision_in`), and Milestone 7's MCP
 #: tools supply their own view of the same state.
 CurrentRevisionLookup = Callable[[ItemId], RevisionId | None]
+
+#: Returns the migration filed under an id in the project's approved set, or
+#: ``None`` if none is. Injected -- ``MigrationSet.get`` from the *same*
+#: ``MigrationSet`` ``resolve_context`` already loaded -- so the accept path reads
+#: exactly the set ``migrate validate``/``apply`` read (keyed by inner id in
+#: ``MigrationSet._by_id``) rather than re-detecting landed migrations from the
+#: filesystem. That the loader is not imported here is ADR-0003, the same reason
+#: the schema check and the current-revision lookup arrive this way.
+LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 
 
 class ProposalError(TheurianError):
@@ -259,7 +273,7 @@ class AcceptedProposal:
 class ProposalService:
     """Writes proposal directories, and moves accepted ones into place."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- injected dependencies, all keyword-only (ADR-0003)
         self,
         *,
         paths: ProjectPaths,
@@ -267,12 +281,14 @@ class ProposalService:
         ids: IdGenerator,
         validate: MigrationDocumentValidator,
         current_revision: CurrentRevisionLookup,
+        landed_migration: LandedMigrationLookup,
     ) -> None:
         self._paths = paths
         self._clock = clock
         self._ids = ids
         self._validate = validate
         self._current_revision = current_revision
+        self._landed_migration = landed_migration
 
     # -- generation --------------------------------------------------------
 
@@ -567,7 +583,7 @@ class ProposalService:
         if landed is not None and landed.confirmed:
             return ProposalAlreadyAcceptedError(
                 f"Proposal {proposal_id.value} appears to have been accepted: the migration it "
-                f"records, {_names([landed.migration.name])}, is in .theurian/migrations/ and "
+                f"records, {_names([landed.name])}, is in .theurian/migrations/ and "
                 "operates on the item this proposal names.",
                 remedy="Confirm that is the change you intended, then review it and open a pull "
                 "request. If it is not, the record is stale -- read what is in "
@@ -582,7 +598,7 @@ class ProposalService:
             # this is read-before-acting, not an assertion that it is this change.
             return ProposalAlreadyAcceptedError(
                 f"Proposal {proposal_id.value} records migration {recorded.value}, and a "
-                f"migration with that id, {_names([landed.migration.name])}, is in "
+                f"migration with that id, {_names([landed.name])}, is in "
                 ".theurian/migrations/ -- but this proposal's record does not name an item that "
                 "migration operates on, so it cannot confirm that is the same change.",
                 remedy="Read the migration under that id in .theurian/migrations/. If it is this "
@@ -704,57 +720,44 @@ class ProposalService:
     def _landed_state(
         self, migration_id: MigrationId, evidence: Mapping[str, object]
     ) -> _LandedMigration | None:
-        """What ``.theurian/migrations/`` holds under the recorded migration id.
+        """What the project's approved migration set holds under the recorded id.
 
-        ``None`` when no migration is filed under the id at all -- the only state
-        where nothing this proposal drafted has been accepted. Otherwise a
+        **Closure (the class this closes).** This reads the single ``MigrationSet``
+        ``resolve_context`` already loaded -- the same set ``migrate validate`` and
+        ``migrate apply`` read, keyed by *inner* id in ``MigrationSet._by_id`` --
+        through the injected :data:`LandedMigrationLookup`. So it cannot disagree
+        with the loader about whether a migration with the recorded inner id is in
+        place: ``absent`` is returned exactly when ``_by_id`` holds no migration
+        with that id, and no filename shape, ULID prefix, or symlink can make one
+        reader see landed while the other sees absent. A previous version had its
+        *own* landed-detector -- a ``self._paths.migrations`` filename glob keyed on
+        the id's ULID *prefix*, plus a symlink skip -- and it disagreed with the
+        loader twice: a symlinked landed migration read as absent (round five), and
+        a landed migration renamed off its ULID prefix read as absent (round six),
+        each an exit-1 "nothing landed" over a change on disk, each a duplicate-mint
+        (#89). **Residual, same class, not fixed here:** ``_pinned_digest_at`` is
+        the other member that re-detects landed migrations from the filesystem
+        (a ``glob("*.yaml")`` with a symlink skip); it is issue #234's box, a
+        security-sensitive pin guard with its own review, to be closed the same
+        way -- wire it to the loaded set -- in its own slot.
+
+        ``None`` when nothing is filed under the id. Otherwise a
         :class:`_LandedMigration` whose ``confirmed`` says whether it also operates
-        on the item this proposal's own record names:
-
-        * confirmed -- a recorded id alone is a contributor claim (``evidence.json``
-          is committed input, ADR-0013 point 7): a never-accepted proposal can
-          point ``migrationId`` at another proposal's landed migration, so the item
-          cross-check is what turns "a file with this id exists" into "this
-          proposal's change is in place".
-        * not confirmed -- a migration is filed under the id, but the item could
-          not be cross-checked (the record names none, or names one the migration
-          does not operate on, **or the file is a symlink**). *Something is landed
-          under the id*, so this is not "nothing landed": the caller answers
-          read-before-acting, never re-draft.
-
-        A symlinked migration under the id is ``present``, never ``absent``: the
-        migration loader follows symlinks, so it is landed and ``migrate validate``
-        sees it, and reporting "nothing landed" would send the author to re-draft
-        a change already on disk (#89). It is *not* read to confirm the item,
-        though -- that read would follow a committed proposal's link (T-5) -- so a
-        symlink stays ``present`` ("cannot confirm"), never ``confirmed``. Setting
-        ``present`` only after the symlink skip was the bug that reported a landed
-        symlinked migration as "nothing landed". (The ``_pinned_digest_at``
-        symlink skip is a separate loader-vs-guard divergence, issue #234, not
-        touched here.)
-
-        ``sorted`` for a stable order; in practice at most one file matches,
-        because two migrations sharing an id are the duplicate the migration set
-        refuses at project resolution, before ``accept`` runs at all.
+        on the item this proposal's record names -- the cross-check that turns "a
+        migration with this id exists" into "*this proposal's* change is in place",
+        because a recorded id alone is a contributor claim (``evidence.json`` is
+        committed input, ADR-0013 point 7). The items are read from the *loaded*
+        migration's typed operations, which the loader already parsed through the
+        symlink-escape guard, so no link is followed here; a landed migration of a
+        shape a generated proposal does not produce degrades to ``present``
+        ("cannot confirm"), which is safe -- never ``absent``.
         """
+        migration = self._landed_migration(migration_id)
+        if migration is None:
+            return None
+        name = Path(migration.source_path).name if migration.source_path else migration_id.value
         claimed = _evidence_item_ids(evidence)
-        present: Path | None = None
-        for candidate in sorted(self._paths.migrations.glob(f"{migration_id.value}-*.yaml")):
-            if present is None:
-                present = candidate
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            if not claimed:
-                continue
-            try:
-                document = load_yaml_mapping(candidate.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
-                continue
-            if claimed & set(_operation_item_ids(document)):
-                return _LandedMigration(migration=candidate, confirmed=True)
-        if present is not None:
-            return _LandedMigration(migration=present, confirmed=False)
-        return None
+        return _LandedMigration(name=name, confirmed=bool(claimed & _migration_item_ids(migration)))
 
     def _refuse_if_migration_present(self, destination: Path) -> None:
         if destination.exists() or destination.is_symlink():
@@ -1006,9 +1009,11 @@ class _LandedMigration:
     and "a migration with this id is in place but may be someone else's" -- the
     two carry different messages and different remedies, but neither is "nothing
     landed", so both exit on the knowledge-state code rather than the re-draft one.
+    ``name`` is the loaded migration's filename (from ``Migration.source_path``),
+    for the message, never a value the diagnosis reasons *over*.
     """
 
-    migration: Path
+    name: str
     confirmed: bool
 
 
@@ -1188,17 +1193,23 @@ def _evidence_item_ids(evidence: Mapping[str, object]) -> frozenset[str]:
     return frozenset()
 
 
-def _operation_item_ids(document: Mapping[str, object]) -> Iterable[str]:
-    """Every ``itemId`` a migration's operations name."""
-    operations = document.get("operations")
-    if not isinstance(operations, list):
-        return
-    for operation in operations:
-        if not isinstance(operation, Mapping):
-            continue
-        item_id = operation.get("itemId")
-        if isinstance(item_id, str) and item_id:
-            yield item_id
+def _migration_item_ids(migration: Migration) -> frozenset[str]:
+    """The item ids a *loaded* migration's operations name, for the cross-check.
+
+    Read from the loader's typed operations, not a re-parse of the file: the
+    loader already read the id and operations through ``read_source_file``'s
+    symlink-escape guard, so nothing here follows a link. Only ``createItem`` and
+    ``upsertRevision`` are consulted -- the two operations a generated proposal
+    produces, and the pair whose ``item_id`` names the change this proposal made.
+    A landed migration of any other shape contributes no id, so the cross-check
+    reads it as ``present`` ("cannot confirm") rather than ``confirmed``, which is
+    the safe direction: it never turns a landed migration into ``absent``.
+    """
+    return frozenset(
+        op.item_id.value
+        for op in migration.operations
+        if isinstance(op, CreateItem | UpsertRevision)
+    )
 
 
 #: A path-free, control-free reason per read-failure class. By exception type

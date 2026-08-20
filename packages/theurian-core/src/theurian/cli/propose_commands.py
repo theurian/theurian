@@ -650,6 +650,10 @@ def _service(context: CommandContext) -> ProposalService:
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
         current_revision=lambda item_id: current_revision_in(migrations, item_id),
+        # The landed-migration lookup is this same MigrationSet's own `_by_id`
+        # (keyed by inner id), so `propose accept` cannot disagree with
+        # `migrate validate`/`apply` about what is in place (ADR-0003, #253).
+        landed_migration=migrations.get,
     )
 
 

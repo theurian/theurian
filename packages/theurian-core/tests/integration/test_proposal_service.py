@@ -29,9 +29,9 @@ from theurian.application.proposal_service import (
 )
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import InvariantViolationError, MigrationError, PathEscapeError
-from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
-from theurian.domain.migration import current_revision_in
+from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML
@@ -89,12 +89,18 @@ def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
 
 @pytest.fixture
 def service(paths: ProjectPaths) -> ProposalService:
-    # The current-revision lookup reads the project's *approved* migrations, so a
-    # second draft for an item whose first proposal has been accepted sees it as
-    # existing -- which is what exercises the #210 update guard end to end.
+    # Both lookups read the project's *approved* migration set, freshly loaded on
+    # every call the same way the CLI's `resolve_context` loads it -- so a second
+    # draft sees the first proposal's accepted item (the #210 update guard), and
+    # `accept` reads the same set `migrate validate`/`apply` do when it asks
+    # whether a recorded migration id is in place (#253).
     def current_revision(item_id: ItemId) -> RevisionId | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return current_revision_in(loaded.migration_set, item_id)
+
+    def landed_migration(migration_id: MigrationId) -> Migration | None:
+        loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+        return loaded.migration_set.get(migration_id)
 
     return ProposalService(
         paths=paths,
@@ -102,6 +108,7 @@ def service(paths: ProjectPaths) -> ProposalService:
         ids=SeededIdGenerator(),
         validate=_validator,
         current_revision=current_revision,
+        landed_migration=landed_migration,
     )
 
 
@@ -899,24 +906,25 @@ def test_a_landed_migration_with_no_item_recorded_is_read_before_acting(
     assert "correct evidence.json" in caught.value.remedy
 
 
-def test_a_symlinked_landed_migration_is_present_not_nothing_landed(
+def test_a_symlinked_landed_migration_is_recognised_as_landed(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """HIGH (round four): a symlinked migration under the recorded id is landed.
+    """A symlinked landed migration is landed, and the symlink caveat dissolves.
 
     The migration loader follows symlinks, so a symlink at
     ``.theurian/migrations/<id>-<slug>.yaml`` pointing at a real in-project
-    migration is landed and ``migrate validate`` sees it. ``_landed_state`` skipped
-    a symlinked candidate *before* it could record it as present, so it fell
-    through to ``absent`` -> exit 1 "nothing landed", whose #254 remedy re-drafts
-    a change already on disk (#89). It is ``present`` now: a
-    ``ChangeAlreadyInPlaceError`` (exit 4) that does not claim nothing landed, and
-    does not confirm either -- a symlink is never *read* to cross-check the item,
-    because that read would follow a committed proposal's link (T-5).
+    migration is landed and ``migrate validate`` sees it. Round five's own
+    landed-detector skipped a symlinked candidate before it could record it, so it
+    fell through to ``absent`` -> exit 1 "nothing landed" (#89).
 
-    Dies both ways: fold the symlink back into the pre-``present`` skip and it
-    reads "nothing landed"; drop the symlink skip from the *read* guard and it
-    reads the link's target and reports "appears to have been accepted".
+    Reading the loaded set closes it without special-casing the symlink: the
+    migration is in ``_by_id`` because the loader already read it through the
+    symlink-escape guard, so ``_landed_state`` finds it and confirms the item from
+    the *loaded* operations -- no link is followed here. With a matching item it is
+    ``confirmed`` (exit 4 "appears to have been accepted"), the same as a
+    non-symlinked landed migration, which is more precise than round five's
+    forced "cannot confirm". The property that matters is unchanged: never
+    ``absent``, never exit 1.
     """
     landed = service.draft(_request(item_id=ItemId("architecture.landed")))
     service.accept(landed.proposal_id)
@@ -930,13 +938,77 @@ def test_a_symlinked_landed_migration_is_present_not_nothing_landed(
     _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
     proposal.migration_file.unlink()
 
-    with pytest.raises(ChangeAlreadyInPlaceError, match="cannot confirm") as caught:
+    with pytest.raises(ChangeAlreadyInPlaceError) as caught:
         service.accept(proposal.proposal_id)
 
     message = str(caught.value)
     assert "nothing" not in message.lower(), "a symlinked migration is landed, not absent"
-    assert "operates on the item this proposal names" not in message, "a symlink is not confirmed"
-    assert landed.migration_id.value in message
+    assert "operates on the item this proposal names" in message, "the loaded operations confirm it"
+
+
+def test_a_landed_migration_renamed_off_its_ulid_prefix_is_still_landed(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH (round six): the loader keys by inner id, so `_landed_state` must too.
+
+    A landed migration renamed off its ULID-prefix filename -- or filed under a
+    different prefix with the same inner id -- is still loaded and keyed by its
+    *inner* id, so ``migrate validate`` sees it (exit 0). Round five's landed
+    detector globbed ``<id>-*.yaml`` on the *filename* ULID prefix, so it missed
+    the renamed file -> ``absent`` -> exit 1 "nothing landed" -> duplicate-mint
+    (#89), the same observable as the symlink face, a different filename shape.
+
+    Reading the loaded set's ``_by_id`` (the same dict the loader builds) closes
+    the class: no filename shape can make ``_landed_state`` and the loader disagree.
+    Dies if the wiring reverts to a filename glob -- the renamed file is then absent
+    and this reports "nothing landed".
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    real = next(paths.migrations.glob(f"{landed.migration_id.value}-*.yaml"))
+    # Rename off the ULID prefix entirely; the inner id is unchanged, so the
+    # loader still keys it under `landed.migration_id`.
+    real.rename(paths.migrations / "zzz-renamed-off-its-prefix.yaml")
+    loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+    assert loaded.migration_set.get(landed.migration_id) is not None, "still landed by inner id"
+
+    proposal = service.draft(_request(item_id=ItemId("architecture.pointer")))
+    _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
+    proposal.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError) as caught:
+        service.accept(proposal.proposal_id)
+
+    message = str(caught.value)
+    assert "nothing" not in message.lower(), "the renamed migration is landed, not absent"
+    assert "operates on the item this proposal names" in message, "confirmed from the loaded set"
+
+
+def test_a_landed_migration_under_a_different_prefix_but_matching_inner_id_is_landed(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A file whose *name* ULID-prefix differs from its inner id is keyed by inner id.
+
+    Distinct from the rename-off-prefix face: here the filename still looks like a
+    migration (``<other-ulid>-<slug>.yaml``) but its inner id is the recorded one.
+    A filename-glob keyed on the *recorded* id's prefix would not match it, while
+    the loader -- and now ``_landed_state`` -- key on the inner id and find it.
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    real = next(paths.migrations.glob(f"{landed.migration_id.value}-*.yaml"))
+    real.rename(paths.migrations / "01K9C7VN4TQZB2M8XR5HD3JFEW-a-different-prefix.yaml")
+    loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+    assert loaded.migration_set.get(landed.migration_id) is not None
+
+    proposal = service.draft(_request(item_id=ItemId("architecture.pointer")))
+    _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
+    proposal.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError) as caught:
+        service.accept(proposal.proposal_id)
+
+    assert "nothing" not in str(caught.value).lower(), "landed by inner id, not absent"
 
 
 def test_an_interrupted_draft_with_a_recorded_id_is_not_reported_as_accepted(
