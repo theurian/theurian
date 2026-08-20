@@ -20,8 +20,8 @@ local-only note (an operator handoff note, a pre-accept draft) therefore has
 exactly one place left to go RED, and this is it (FR-K9).
 
 **The population key, so a reader can attack the key and not just the number.**
-``git ls-files`` from the repository root, then every path under the root
-``.theurian/`` prefix. Three consequences, each deliberate:
+Every tracked path under the root ``.theurian/`` prefix. Three consequences,
+each deliberate:
 
 - **Tracked only.** An untracked file is invisible here however large the local
   corpus grows. That is the same population rule
@@ -40,18 +40,45 @@ exactly one place left to go RED, and this is it (FR-K9).
   requires a ULID-prefixed name. A YAML the loader ignores is still a file this
   repository publishes, so it is governed here rather than skipped.
 
-**Emptiness is a finding, not a pass.** Every rule below is a ``for`` loop, and a
-loop over nothing asserts nothing -- so :func:`_corpus_paths` and
-:func:`_revisions` *refuse* an empty population rather than return one, and every
-rule inherits that refusal. This was measured, not assumed: with one test
-standing guard instead, ``git rm -r --cached .theurian`` left 11 of the 13 tests
-here green. A corpus that was deleted, moved, or never cherry-picked alongside
-this file now takes the whole module RED.
+**Three sources answer "what is tracked", in order, and only the first is a
+definition.** :func:`_index` asks **git**; failing that it reads the
+**manifest** ``tools/mutate.py`` records in a copy it made without a ``.git``;
+failing that every rule **skips loudly**. This is the contract
+``packages/theurian-core/tests/command_population.py`` already holds with the
+same harness, and it is here because the harness broke this module outright:
+inside a ``tools/mutate.py`` copy, ``git`` exits 128, ``check=True`` turned that
+into a ``CalledProcessError``, and 11 of the 13 rules ERRORed -- which takes the
+*unmutated control* RED and voids every verdict in the batch, including the
+verdicts about this file.
+
+The manifest carries paths and nothing else -- it is ``git ls-files --cached
+-z`` output verbatim -- so two things degrade on that path and say so in their
+own docstrings: :func:`test_no_tracked_corpus_path_is_a_symlink_or_executable`
+reads the mode from the working tree instead of the index, and
+:func:`test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit`
+cannot run at all and skips with that reason. Everything else reads YAML, JSON
+or worktree bytes and is unaffected.
+
+**Emptiness is a finding, not a pass.** Almost every rule below is a ``for``
+loop, and a loop over nothing asserts nothing -- so :func:`_corpus_paths`,
+:func:`_revisions` and :func:`_evidence` *refuse* an empty population rather
+than return one. Measured rather than assumed: with no such refusal, ``git rm -r
+--cached .theurian`` left 11 of the original 13 tests green, because **two** of
+them -- the floor and the index-mode rule -- were the only ones that read a
+count. Two guards for eleven, not one for twelve.
+
+**And the refusal does not reach every rule, which is stated rather than
+rounded up.** Run against a tree that cannot be asked what it tracks, 21 of the
+24 rules here skip and 3 pass: the two managed-``.gitignore`` rules read
+``.gitignore`` and not the corpus, and
+:func:`test_the_known_families_are_exactly_what_family_can_return` reads this
+module's own source. Those three assert something real about a tree with no
+corpus in it; the other 21 would not, which is why they refuse instead.
 
 **A floor, recorded as a lower bound rather than an exact count.** 26 is what
-6f97770 ships; the dogfood corpus is expected to grow, and every item added is
-fully governed by the rules below whether or not anyone updates the number here.
-What the bound catches is the direction that is never routine: committed
+this branch ships; the dogfood corpus is expected to grow, and every item added
+is fully governed by the rules below whether or not anyone updates the number
+here. What the bound catches is the direction that is never routine: committed
 knowledge disappearing.
 
 **What is out of scope, and why.** A pinned body is compared against the blob at
@@ -61,8 +88,11 @@ it belongs to https://github.com/theurian/theurian/issues/263, which is a CI
 concern with a different cadence: a live-drift check goes RED when someone edits
 an ADR, which is a normal thing to do, and turning that into a test failure here
 would make this module the thing people learn to ignore. Also out of scope: the
-*contents* of a body (nothing here scans for secrets) and the prose inside
-``.theurian/proposals/*/evidence.json``.
+*contents* of a body or of an ``evidence.json`` ``reasoning`` string. Nothing
+here scans free text for secrets, and the evidence rules below close the
+*structural* escapes -- an unknown key, a stray file in a proposal directory, an
+anchor naming a document no migration names -- not the prose. SEC-11's secret
+scanner does not exist (#198).
 
 **Not marked ``unit``.** It runs ``git`` in a subprocess, which the ``unit``
 marker's own definition excludes. It lives here with the other structural
@@ -73,17 +103,26 @@ no marker.
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import functools
 import hashlib
+import inspect
+import json
+import os
 import pathlib
+import re
+import stat
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Final, NoReturn
+from types import MappingProxyType
+from typing import Any, Final
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 
 from theurian.domain.project import (
     GITIGNORE_BLOCK_END,
@@ -95,6 +134,8 @@ from theurian.domain.project import (
 #: ``packages`` -> repo root, the reckoning ``test_examples.py`` uses.
 REPO_ROOT: Final = pathlib.Path(__file__).resolve().parents[4]
 
+SCHEMAS: Final = REPO_ROOT / "schemas"
+
 CORPUS_PREFIX: Final = ".theurian/"
 MIGRATIONS_PREFIX: Final = ".theurian/migrations/"
 KNOWLEDGE_PREFIX: Final = ".theurian/knowledge/"
@@ -104,22 +145,90 @@ PROPOSALS_PREFIX: Final = ".theurian/proposals/"
 #: and not an enum check -- the published schema already allows ``internal`` and
 #: ``draft``, and this is the narrower claim the *repository* makes about what it
 #: is willing to publish about itself.
-GOVERNED_METADATA: Final[dict[str, str]] = {
-    "sensitivity": "public",
-    "trustLevel": "reviewed",
-    "status": "approved",
-}
+GOVERNED_METADATA: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "sensitivity": "public",
+        "trustLevel": "reviewed",
+        "status": "approved",
+    }
+)
 
-#: Measured at 6f97770: 26 migrations, 26 bodies, 26 proposal evidence files and
-#: 3 ``.gitkeep`` placeholders -- 81 tracked paths under the root ``.theurian/``.
+#: The operations a committed migration is allowed to declare, in order. Pinned
+#: as a sequence rather than a set because the corpus is seeded, never edited:
+#: 26 migrations, each ``createItem`` then ``upsertRevision`` and nothing else
+#: (measured 2026-08-20).
+#:
+#: **This is what stops an appended operation from moving governance behind the
+#: rules' backs.** Every governance rule here reads ``upsertRevision.metadata``;
+#: a trailing ``changeSensitivity`` op would reclassify the same item to
+#: ``internal`` at apply time while ``upsertRevision`` still reads ``public``,
+#: and every rule below would report the corpus compliant. It is also what makes
+#: :func:`test_every_committed_migration_declares_a_revision_the_governance_rules_can_read`
+#: honest: that rule's diagnosis ("published and ungoverned") is only true
+#: because no other operation shape is permitted here.
+#:
+#: **Retiring or reclassifying an item widens this list.** A ``deprecateItem``
+#: or ``changeSensitivity`` migration is a legitimate thing to commit, and the
+#: change that adds one edits this tuple *and* says in the same commit which
+#: rule now covers the new operation's metadata. The floor below carries the
+#: same convention for the same reason: a recorded constant is a decision, and
+#: moving it is a decision too.
+GOVERNED_OPERATIONS: Final = ("createItem", "upsertRevision")
+
+#: The exact key set ``propose`` writes into ``.theurian/proposals/<id>/evidence.json``,
+#: and the whole of it (measured 2026-08-20 over all 26 committed files).
+EVIDENCE_KEYS: Final = frozenset(
+    {"proposalId", "agentId", "taskId", "model", "reasoning", "sourceAnchors"}
+)
+
+#: The keys a ``sourceAnchor`` carries, in both a migration's revision metadata
+#: and an ``evidence.json`` (measured 2026-08-20: one shape, 52 anchors).
+ANCHOR_KEYS: Final = frozenset({"provider", "sourceUri", "commitSha", "filePath"})
+
+#: A full, unabbreviated object name. An abbreviated one resolves today and
+#: becomes ambiguous as the repository grows, which turns a pin into a lookup
+#: that can start failing for reasons that have nothing to do with the corpus.
+_FULL_OBJECT_NAME: Final = re.compile(r"\A[0-9a-fA-F]{40}\Z")
+
+#: The corpus holds 26 migrations, 26 bodies, 26 ``evidence.json`` files and 3
+#: ``.gitkeep`` placeholders -- 81 tracked paths under the root ``.theurian/``
+#: (measured 2026-08-20). Recorded as content rather than as a branch SHA: a
+#: squash merge destroys the branch commit a reader would go looking for.
+#:
 #: A lower bound; see the module docstring for why it is not an equality.
 MINIMUM_MIGRATIONS: Final = 26
 
 #: Every shape of file this repository knowingly tracks under ``.theurian/``.
 #: Adding a family is a decision (a committed ``config.yaml`` publishes settings;
 #: a committed ``state/`` publishes a derived artifact), so it is made here in
-#: the open rather than absorbed silently by a rule that stopped covering it.
+#: the open rather than absorbed silently by a rule that stopped covering it --
+#: which is what :func:`test_the_known_families_are_exactly_what_family_can_return`
+#: turns from a convention into a check.
 _FAMILIES: Final = ("gitkeep", "migration", "body", "proposal-evidence")
+
+
+def _frozen(value: Any) -> Any:
+    """A YAML or JSON value with every mapping and list made unwriteable.
+
+    :func:`_revisions` is cached, so one :class:`Revision` is handed to every
+    rule in this module and to every rerun inside a session. A rule that poked
+    at ``metadata`` -- or at a nested ``sourceAnchors`` entry, which is where
+    the mutable state actually hides -- would change what its neighbours see,
+    and the order tests happen to run in would decide the result.
+
+    Recursive rather than a single :class:`~types.MappingProxyType` at the top,
+    because a shallow proxy over a dict of lists of dicts protects exactly one
+    level and reads as though it protects all of them. Non-container values are
+    returned untouched, including any that are *not* the shape a rule expects:
+    a ``sourceAnchors: "oops"`` has to stay visible to
+    :func:`test_every_source_anchor_is_a_well_formed_git_pin` rather than be
+    normalised away here.
+    """
+    if isinstance(value, dict):
+        return MappingProxyType({key: _frozen(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_frozen(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,15 +237,89 @@ class Revision:
 
     migration: str
     item_id: str
+    revision_id: str
     content_file: str
     content_sha256: str
-    metadata: dict[str, Any]
+    metadata: Mapping[str, Any]
 
     @property
-    def anchors(self) -> tuple[dict[str, Any], ...]:
-        raw = self.metadata.get("sourceAnchors", [])
-        return tuple(raw) if isinstance(raw, list) else ()
+    def anchors(self) -> tuple[Any, ...]:
+        """``sourceAnchors`` as declared -- entries of any shape, not just mappings.
 
+        A non-mapping entry is a finding for
+        :func:`test_every_source_anchor_is_a_well_formed_git_pin` to report, so
+        it is passed through rather than filtered out here.
+        """
+        raw = self.metadata.get("sourceAnchors", ())
+        return raw if isinstance(raw, tuple) else ()
+
+
+@dataclass(frozen=True, slots=True)
+class Evidence:
+    """One committed ``.theurian/proposals/<proposal-id>/evidence.json``."""
+
+    path: str
+    directory: str
+    document: Mapping[str, Any]
+
+    @property
+    def proposal_id(self) -> str:
+        declared = self.document.get("proposalId")
+        return declared if isinstance(declared, str) else ""
+
+    @property
+    def anchors(self) -> tuple[Any, ...]:
+        raw = self.document.get("sourceAnchors", ())
+        return raw if isinstance(raw, tuple) else ()
+
+
+@dataclass(frozen=True, slots=True)
+class Index:
+    """What Git tracks, and which of the three sources said so.
+
+    ``modes`` is ``None`` on the manifest path and only there: the manifest is
+    ``git ls-files --cached -z`` output, which carries paths and no index modes.
+    A rule that needs a mode either degrades to the working tree and says so, or
+    skips.
+    """
+
+    paths: frozenset[str]
+    modes: Mapping[str, frozenset[str]] | None
+    source: str
+
+
+# -- Asking git, or not ------------------------------------------------------
+
+#: Environment variables that make git answer for a *different* tree, index or
+#: configuration than the one it was handed, dropped before it is asked. The
+#: same set ``command_population._INHERITED_GIT_OVERRIDES`` and
+#: ``tools/mutate.py`` drop, for the same measured reason: ``GIT_INDEX_FILE``
+#: binds the index while ``-C``/``cwd`` binds the working tree, so an inherited
+#: one makes ``ls-files --cached`` report somebody else's index -- and here that
+#: is not a wrong population but a *silently empty* corpus, which
+#: :func:`_corpus_paths` would report as "the committed corpus is gone".
+#:
+#: Nobody exports these by hand. Git exports them to hooks, so a suite run from
+#: ``pre-commit`` or ``post-merge`` inherits them.
+_INHERITED_GIT_OVERRIDES: Final = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+)
+
+#: Long enough that no healthy read reaches it -- this repository's ``ls-files``
+#: is 11 ms -- and short enough that a git waiting on an index lock or on
+#: credentials ends the run instead of hanging the gate.
+_GIT_TIMEOUT_SECONDS: Final = 30
 
 #: Every ``git`` this module runs, with the ownership check told about the one
 #: repository it is being pointed at.
@@ -150,29 +333,139 @@ class Revision:
 #: It grants nothing beyond reading this path; no rule here runs a hook.
 _GIT: Final = ("git", "-c", f"safe.directory={REPO_ROOT}")
 
+#: Where ``tools/mutate.py`` records the source checkout's tracked paths when it
+#: copies the tree without a ``.git`` -- see ``_POPULATION_NAME`` there, which is
+#: the other half of this contract. The bytes are ``git ls-files --cached -z``
+#: output verbatim.
+_POPULATION_MANIFEST: Final = ".mutate-population"
 
-def _git_text(*arguments: str) -> str:
-    """``git`` in the repository root, as text. A non-zero exit raises."""
-    return subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [*_GIT, *arguments],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+
+def _git_environment() -> dict[str, str]:
+    return {
+        name: value for name, value in os.environ.items() if name not in _INHERITED_GIT_OVERRIDES
+    }
+
+
+def _git_run(*arguments: str) -> subprocess.CompletedProcess[bytes] | None:
+    """One read-only git command in the repository root, or ``None`` if it cannot run.
+
+    ``None`` covers the two ways the *question* fails rather than the answer:
+    no git on this machine, and a git that did not finish inside
+    :data:`_GIT_TIMEOUT_SECONDS`. A non-zero exit is *not* ``None`` -- the
+    caller wants to see the stderr, because ``not a git repository`` and a
+    ``safe.directory`` refusal need different answers.
+    """
+    try:
+        return subprocess.run(  # noqa: S603 - fixed argv, no shell, no caller input
+            [*_GIT, *arguments],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            env=_git_environment(),
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _git_index() -> Index | None:
+    """Paths and index modes from ``git``, or ``None`` if git cannot answer here.
+
+    ``-s`` and ``-z`` together: ``-s`` carries the mode, which is the only place
+    "this is a symlink" survives a clone, and ``-z`` matters because without it
+    Git quotes and escapes any path holding a non-ASCII byte -- and a corpus
+    seeded from documents with CJK titles is exactly where such a name appears.
+
+    A path is recorded once, its modes as a set: the index holds up to three
+    entries for a path left unmerged by a conflict, and a merge in progress is a
+    legitimate local state that must not read as a second corpus.
+    """
+    completed = _git_run("ls-files", "-s", "-z", "--full-name")
+    if completed is None or completed.returncode != 0:
+        return None
+
+    modes: dict[str, set[str]] = {}
+    for entry in completed.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        if not entry or "\t" not in entry:
+            continue
+        prefix, path = entry.split("\t", 1)
+        modes.setdefault(path, set()).add(prefix.split(" ", 1)[0])
+    if not modes:
+        return None
+    return Index(
+        paths=frozenset(modes),
+        modes=MappingProxyType({path: frozenset(seen) for path, seen in modes.items()}),
+        source="git",
+    )
+
+
+def _manifest_index() -> Index | None:
+    """The population ``tools/mutate.py`` recorded for this copy, if it did.
+
+    ``None`` when the file is absent, which is every ordinary run; when it
+    cannot be read; and -- the two that are not obvious -- when it is **empty**
+    or **truncated**. ``ls-files -z`` terminates every entry including the last,
+    so a manifest that does not end in a NUL was cut short, and adopting it
+    would silently drop whatever was being written when the write stopped.
+
+    ``modes`` is ``None``: the manifest is a path list and carries no index
+    mode. That is a real loss and it is declared here rather than papered over,
+    because a caller that assumed ``100644`` would be asserting nothing.
+    """
+    manifest = REPO_ROOT / _POPULATION_MANIFEST
+    try:
+        listing = manifest.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return None
+    if not listing.endswith("\0"):
+        return None
+    paths = frozenset(entry for entry in listing.split("\0") if entry)
+    if not paths:
+        return None
+    return Index(paths=paths, modes=None, source="manifest")
 
 
 @functools.cache
-def _tracked_paths() -> frozenset[str]:
-    """Every path Git tracks, repository-relative, NUL-separated so a name cannot lie.
+def _index() -> Index | None:
+    """What is tracked, from the best source available: git, then the manifest."""
+    return _git_index() or _manifest_index()
 
-    ``-z`` matters: without it Git quotes and escapes any path holding a
-    non-ASCII byte, and a corpus seeded from documents with CJK titles is exactly
-    where such a name appears.
+
+def _tracked() -> Index:
+    """The index, or a skip that names both sources and why each did not answer.
+
+    Loud rather than silent, and a skip rather than a failure: a tree with
+    neither a ``.git`` nor a manifest is not a repository making a false claim,
+    it is a tree that cannot be asked the question. What must never happen is
+    the third thing -- returning an empty population and letting every ``for``
+    loop below report safety.
     """
-    return frozenset(
-        entry for entry in _git_text("ls-files", "-z", "--full-name").split("\0") if entry
-    )
+    index = _index()
+    if index is None:
+        pytest.skip(
+            f"nothing here can say what {REPO_ROOT} tracks: `git ls-files` did not answer "
+            f"(no git, a timeout, or not a working copy) and no {_POPULATION_MANIFEST} came "
+            f"with the tree. Every rule in this module reads the tracked corpus, so they "
+            f"would each iterate over nothing and report safety. In a `tools/mutate.py` "
+            f"copy this means the manifest was not recorded; in a checkout it means git "
+            f"could not be run."
+        )
+    return index
+
+
+def _requires_git_objects(what: str) -> Index:
+    """The index, or a skip, for a rule that needs blobs and not just path names."""
+    index = _tracked()
+    if index.source != "git":
+        pytest.skip(
+            f"{what} needs git objects, and the population came from "
+            f"{_POPULATION_MANIFEST} -- a path list with no repository behind it. This is "
+            f"a `tools/mutate.py` copy, which is built without a `.git` on purpose."
+        )
+    return index
+
+
+# -- The population ----------------------------------------------------------
 
 
 @functools.cache
@@ -181,10 +474,11 @@ def _corpus_paths() -> tuple[str, ...]:
 
     Refuses an empty answer here rather than returning one, so that no rule in
     this module can iterate over nothing and report safety. Measured: untracking
-    the whole corpus (``git rm -r --cached .theurian``) left 11 of the 13 tests
-    green when this was a plain filter, with one test standing guard for twelve.
+    the whole corpus (``git rm -r --cached .theurian``) left 11 of the 13
+    original tests green when this was a plain filter -- two of them read a
+    count, eleven read a loop.
     """
-    paths = tuple(sorted(path for path in _tracked_paths() if path.startswith(CORPUS_PREFIX)))
+    paths = tuple(sorted(path for path in _tracked().paths if path.startswith(CORPUS_PREFIX)))
     assert paths, (
         "git tracks nothing under .theurian/. The committed corpus is gone -- which is a "
         "finding, not a reason for these rules to pass."
@@ -196,6 +490,12 @@ def _corpus_paths() -> tuple[str, ...]:
 def _migration_paths() -> tuple[str, ...]:
     """Tracked ``*.yaml`` directly under ``.theurian/migrations/``."""
     return tuple(path for path in _corpus_paths() if _family(path) == "migration")
+
+
+@functools.cache
+def _evidence_paths() -> tuple[str, ...]:
+    """Tracked ``evidence.json`` files under ``.theurian/proposals/``."""
+    return tuple(path for path in _corpus_paths() if _family(path) == "proposal-evidence")
 
 
 def _family(path: str) -> str | None:
@@ -241,9 +541,12 @@ def _revisions() -> tuple[Revision, ...]:
                 Revision(
                     migration=path,
                     item_id=str(operation.get("itemId", "")),
+                    revision_id=str(operation.get("revisionId", "")),
                     content_file=str(operation.get("contentFile", "")),
                     content_sha256=str(operation.get("contentSha256", "")),
-                    metadata=metadata if isinstance(metadata, dict) else {},
+                    metadata=_frozen(metadata)
+                    if isinstance(metadata, dict)
+                    else MappingProxyType({}),
                 )
             )
     assert found, (
@@ -252,6 +555,30 @@ def _revisions() -> tuple[Revision, ...]:
         "than returns empty."
     )
     return tuple(found)
+
+
+@functools.cache
+def _evidence() -> tuple[Evidence, ...]:
+    """Every committed ``evidence.json``, parsed, in path order.
+
+    Refuses an empty answer for the same reason :func:`_revisions` does: the
+    evidence rules are loops, and the corpus ships one evidence file per
+    migration.
+    """
+    found = tuple(
+        Evidence(
+            path=path,
+            directory=path.removeprefix(PROPOSALS_PREFIX).rsplit("/", 1)[0],
+            document=_frozen(json.loads((REPO_ROOT / path).read_text(encoding="utf-8"))),
+        )
+        for path in _evidence_paths()
+    )
+    assert found, (
+        "the committed corpus holds no proposal evidence, so every evidence rule below "
+        "would inspect nothing. See _corpus_paths for why this refuses rather than "
+        "returns empty."
+    )
+    return found
 
 
 def _body_path(revision: Revision) -> str | None:
@@ -325,6 +652,50 @@ def _managed_block() -> tuple[str, ...]:
     )
 
 
+def _anchor_faults(anchor: Any) -> tuple[str, ...]:
+    """Everything wrong with one ``sourceAnchor``, as sentences, or ``()``.
+
+    Every clause here is what makes ``git show <commitSha>:<filePath>`` mean the
+    thing its rule's docstring says it means:
+
+    - **A missing or empty ``commitSha`` compares against the index.** ``git
+      show :docs/adr/0001-....md`` -- the empty revision -- is stage 0 of the
+      *current index*, which is exactly the live comparison the byte-identity
+      rule forswears, and it succeeds, so the shallow-clone skip never fires
+      either. That is a pin which passes by naming nothing.
+    - **An abbreviated ``commitSha``** resolves today and becomes ambiguous as
+      the repository grows.
+    - **A ``filePath`` under ``.theurian/``** would let a body be pinned to a
+      copy of itself, which is a check that cannot fail.
+    - **A ``provider`` other than ``git``** means the anchor is not the thing
+      the rule knows how to verify, and would otherwise be verified anyway.
+    """
+    if not isinstance(anchor, Mapping):
+        return (f"is a {type(anchor).__name__}, not a mapping",)
+
+    faults: list[str] = []
+    if set(anchor) != ANCHOR_KEYS:
+        faults.append(f"declares keys {sorted(anchor)}, not {sorted(ANCHOR_KEYS)}")
+    provider = anchor.get("provider")
+    if provider != "git":
+        faults.append(f"names provider {provider!r}, and only 'git' can be verified here")
+    commit = anchor.get("commitSha")
+    if not isinstance(commit, str) or not _FULL_OBJECT_NAME.match(commit):
+        faults.append(
+            f"names commitSha {commit!r}, which is not a full 40-character object name -- "
+            f"an empty one makes `git show :<path>` read the current index instead"
+        )
+    file_path = anchor.get("filePath")
+    if not isinstance(file_path, str) or not file_path:
+        faults.append(f"names filePath {file_path!r}, so there is no document to compare against")
+    elif file_path.startswith(CORPUS_PREFIX):
+        faults.append(
+            f"names filePath {file_path!r}, inside the corpus itself -- a body pinned to a "
+            f"copy of itself is a check that cannot fail"
+        )
+    return tuple(faults)
+
+
 # -- The population itself ---------------------------------------------------
 
 
@@ -348,10 +719,11 @@ def test_the_committed_corpus_is_present_and_has_not_shrunk() -> None:
 def test_every_tracked_corpus_path_belongs_to_a_family_this_module_governs() -> None:
     """A stranger under ``.theurian/`` is a publication nothing below inspects.
 
-    The rules that follow read migrations, bodies and the managed ignore block. A
-    tracked file of any other shape -- a stray note at ``.theurian/handoff.md``, a
-    ``.yml`` beside the migrations, a committed ``state/`` database -- passes
-    every one of them by never being looked at. This is the seam closed.
+    The rules that follow read migrations, bodies, evidence and the managed
+    ignore block. A tracked file of any other shape -- a stray note at
+    ``.theurian/handoff.md``, a ``.yml`` beside the migrations, a committed
+    ``state/`` database -- passes every one of them by never being looked at.
+    This is the seam closed.
     """
     strangers = [path for path in _corpus_paths() if _family(path) is None]
 
@@ -362,12 +734,48 @@ def test_every_tracked_corpus_path_belongs_to_a_family_this_module_governs() -> 
     )
 
 
+def test_the_known_families_are_exactly_what_family_can_return() -> None:
+    """A family with no rule behind it is the seam above reopened from the inside.
+
+    :func:`test_every_tracked_corpus_path_belongs_to_a_family_this_module_governs`
+    only reports what :func:`_family` calls a stranger. Teaching ``_family`` to
+    recognise ``config.yaml`` therefore *silences* that rule for the new shape,
+    and nothing else here would read it -- the file becomes governed by having
+    been named, which is the opposite of what naming it is for.
+
+    Read out of :func:`_family`'s own source rather than restated, so the check
+    cannot drift from the thing it checks: every string a ``return`` statement
+    in that function can produce must appear in :data:`_FAMILIES`, and every
+    entry of :data:`_FAMILIES` must be reachable from one.
+    """
+    tree = ast.parse(inspect.getsource(_family).strip())
+    returned = {
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+
+    assert returned == set(_FAMILIES), (
+        f"`_family` can return {sorted(returned)}, but _FAMILIES records "
+        f"{sorted(_FAMILIES)}. A family `_family` recognises and _FAMILIES does not name is "
+        f"a shape that stopped being a stranger without any rule starting to read it; the "
+        f"other direction is a rule guarding a family nothing can produce."
+    )
+
+
 def test_every_committed_migration_declares_a_revision_the_governance_rules_can_read() -> None:
     """Soundness for every rule below: they read ``upsertRevision`` operations.
 
     A migration carrying none -- a rename, a hand-written document, an operation
     spelled differently -- would be scanned and found compliant without a single
-    field being compared. Measured at 6f97770: 26 migrations, one revision each.
+    field being compared. Measured 2026-08-20: 26 migrations, one revision each.
+
+    The diagnosis this prints ("published and ungoverned") is only honest
+    because :data:`GOVERNED_OPERATIONS` refuses every other operation shape. A
+    corpus that were allowed to carry a ``deprecateItem``-only migration would
+    fail here while being perfectly governed, and the message would be wrong.
     """
     governed = {revision.migration for revision in _revisions()}
     silent = [path for path in _migration_paths() if path not in governed]
@@ -376,6 +784,109 @@ def test_every_committed_migration_declares_a_revision_the_governance_rules_can_
         f"committed migrations declaring no upsertRevision: {silent}. Every governance "
         f"rule in this module reads that operation, so these files are published and "
         f"ungoverned."
+    )
+
+
+def test_every_committed_migration_declares_exactly_the_governed_operations() -> None:
+    """An appended operation moves governance behind every other rule's back.
+
+    Each rule here reads ``upsertRevision.metadata``. A migration that declares
+    ``createItem``, ``upsertRevision`` **and then** ``changeSensitivity`` applies
+    an item that is ``internal`` in the store while the metadata these rules read
+    still says ``public`` -- so the corpus reports compliant and serves the other
+    thing. Measured: appending such an operation leaves every governance rule in
+    this module green.
+
+    Pinned as an ordered sequence, not a set: the corpus is seeded and never
+    edited, and ``upsertRevision`` before ``createItem`` is not a migration this
+    repository writes. See :data:`GOVERNED_OPERATIONS` for what widening this
+    list costs the change that widens it.
+    """
+    declared = {
+        path: tuple(
+            operation.get("op") if isinstance(operation, dict) else operation
+            for operation in _document(path).get("operations", [])
+        )
+        for path in _migration_paths()
+    }
+    unexpected = {path: ops for path, ops in declared.items() if ops != GOVERNED_OPERATIONS}
+
+    assert not unexpected, (
+        f"committed migrations whose operations are not {list(GOVERNED_OPERATIONS)}: "
+        f"{unexpected}. Only `upsertRevision` carries the metadata this module reads, so "
+        f"any other operation changes what gets applied without changing what gets checked."
+    )
+
+
+def test_every_committed_migration_matches_the_published_migration_schema() -> None:
+    """The corpus has to satisfy the contract the product publishes for it.
+
+    ``test_examples.py`` already holds this for ``examples/sample-project``; the
+    root corpus is the one a maintainer edits by hand, and it had no such guard.
+    Measured by the adversarial review: four corpora the production loader
+    refuses -- a missing ``apiVersion``, a non-ULID ``id``, a naive
+    ``createdAt``, an unknown top-level key -- passed every rule in this module.
+
+    Reported together rather than one raise per file, so a hand-edit that breaks
+    several migrations names all of them in one run.
+    """
+    validator = Draft202012Validator(
+        json.loads((SCHEMAS / "migrations" / "migration.schema.json").read_text(encoding="utf-8"))
+    )
+    invalid = [
+        f"{path}: {error.json_path} {error.message}"
+        for path in _migration_paths()
+        for error in sorted(validator.iter_errors(_document(path)), key=str)
+    ]
+
+    assert not invalid, (
+        f"committed migrations that do not satisfy schemas/migrations/migration.schema.json: "
+        f"{invalid}. The product would refuse to apply these, so the repository is "
+        f"publishing knowledge it cannot itself ingest."
+    )
+
+
+def test_every_committed_revision_id_is_unique_across_the_corpus() -> None:
+    """A revision id is an identity, and two of them make one of the two unreachable.
+
+    ADR-0006 makes a revision immutable and addressable by its id. Duplicating
+    one -- a migration copied as a starting point and edited without renumbering,
+    which is exactly how these were seeded -- means the second apply either
+    collides or silently wins, and a reader who follows the id gets whichever
+    the store kept.
+    """
+    seen: dict[str, list[str]] = {}
+    for revision in _revisions():
+        seen.setdefault(revision.revision_id, []).append(revision.migration)
+    duplicated = {identifier: paths for identifier, paths in seen.items() if len(paths) > 1}
+
+    assert not duplicated, (
+        f"revision ids declared by more than one committed migration: {duplicated}. A "
+        f"revision id is an identity; two migrations claiming one means a reader following "
+        f"it reaches whichever the store kept."
+    )
+
+
+def test_no_two_committed_migrations_pin_the_same_body() -> None:
+    """Two revisions over one file make the sha256 rule check one thing twice.
+
+    Every pin rule below is keyed on the body a migration names. If two
+    migrations name the same ``contentFile``, one body satisfies both -- so an
+    item can be published with a body that was written for a different item, and
+    the hash check agrees, because it is comparing the file against whichever
+    declaration was copied along with it.
+    """
+    seen: dict[str, list[str]] = {}
+    for revision in _revisions():
+        seen.setdefault(_body_path(revision) or revision.content_file, []).append(
+            revision.migration
+        )
+    shared = {body: paths for body, paths in seen.items() if len(paths) > 1}
+
+    assert not shared, (
+        f"bodies pinned by more than one committed migration: {shared}. One body cannot "
+        f"carry two revisions' governance metadata, and the sha256 rule cannot tell which "
+        f"of them it just confirmed."
     )
 
 
@@ -402,8 +913,8 @@ def test_every_committed_revision_is_public_reviewed_and_approved() -> None:
 
     assert not offenders, (
         f"committed revisions whose governance metadata is not "
-        f"{GOVERNED_METADATA}: {offenders}. A local-only note reached the repository, or a "
-        f"published item was reclassified without anyone deciding to publish the change."
+        f"{dict(GOVERNED_METADATA)}: {offenders}. A local-only note reached the repository, "
+        f"or a published item was reclassified without anyone deciding to publish the change."
     )
 
 
@@ -423,6 +934,34 @@ def test_every_committed_revision_names_a_git_source_anchor() -> None:
     )
 
 
+def test_every_source_anchor_is_a_well_formed_git_pin() -> None:
+    """A malformed anchor is a pin that passes by naming nothing.
+
+    The one that is not obvious, and the one the adversarial review measured: an
+    **empty or missing ``commitSha``** turns ``git show <commitSha>:<filePath>``
+    into ``git show :<filePath>``, which is git's syntax for *stage 0 of the
+    current index*. The byte-identity rule then compares the committed body
+    against the live file it explicitly refuses to compare against, succeeds,
+    and never reaches the shallow-clone skip. The anchor names no commit at all
+    and the corpus reports verified.
+
+    Checked here on its own, and checked again inside the byte-identity rule
+    before it runs ``git cat-file``, so the malformed case is reported as what
+    it is rather than as a byte mismatch.
+    """
+    faults = [
+        f"{revision.migration} anchor #{position}: {fault}"
+        for revision in _revisions()
+        for position, anchor in enumerate(revision.anchors)
+        for fault in _anchor_faults(anchor)
+    ]
+
+    assert not faults, (
+        f"source anchors that cannot be verified as written: {faults}. Each one is a "
+        f"provenance claim that reads as checked and is not."
+    )
+
+
 # -- Pin integrity -----------------------------------------------------------
 
 
@@ -434,12 +973,13 @@ def test_every_pinned_body_is_a_tracked_file_inside_the_corpus() -> None:
     file that exists on the author's disk but was never committed -- which is
     precisely what an untracked, local-only body looks like from CI.
     """
+    tracked = _tracked().paths
     unreachable = [
         (revision.migration, revision.content_file, _body_path(revision))
         for revision in _revisions()
         if (resolved := _body_path(revision)) is None
         or not resolved.startswith(CORPUS_PREFIX)
-        or resolved not in _tracked_paths()
+        or resolved not in tracked
     ]
 
     assert not unreachable, (
@@ -454,62 +994,110 @@ def test_every_pinned_body_hashes_to_the_content_sha256_its_migration_declares()
     body edited in place without re-pinning is a revision whose identity has
     silently changed. Nothing else in the suite reads the committed corpus, so
     editing one of these bodies was free.
+
+    The failure names the **body** file, not only the migration: the migration is
+    where the declaration lives and the body is the file somebody edited, and a
+    report that names only the first sends the reader to the wrong file.
     """
-    hashed = [
-        (revision, hashlib.sha256(_body_bytes(revision)).hexdigest()) for revision in _revisions()
-    ]
     drifted = [
-        (revision.migration, revision.content_sha256, digest)
-        for revision, digest in hashed
-        if digest != revision.content_sha256
+        (revision.migration, _body_path(revision), revision.content_sha256, digest)
+        for revision in _revisions()
+        if (digest := hashlib.sha256(_body_bytes(revision)).hexdigest()) != revision.content_sha256
     ]
 
-    assert not drifted, f"bodies whose bytes no longer hash to their declared pin: {drifted}"
+    assert not drifted, (
+        f"bodies whose bytes no longer hash to their declared pin "
+        f"(migration, body, declared, actual): {drifted}. The body is the file that was "
+        f"edited; re-pin it in its migration or restore the bytes."
+    )
 
 
 def test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit() -> None:
     """Each item claims to be a verbatim copy of a document at a named commit.
 
-    Compared against ``git show <commitSha>:<filePath>`` -- the blob as it was at
-    the anchor, which is a fixed object and stays fixed. **Not** against the
-    current ``docs/`` file: an ADR is edited in the normal course of work, and
-    live drift is https://github.com/theurian/theurian/issues/263's concern, on
-    CI's cadence rather than this suite's.
+    Compared against ``git cat-file blob <commitSha>:<filePath>`` -- the blob as
+    it was at the anchor, which is a fixed object and stays fixed. **Not**
+    against the current ``docs/`` file: an ADR is edited in the normal course of
+    work, and live drift is https://github.com/theurian/theurian/issues/263's
+    concern, on CI's cadence rather than this suite's. ``cat-file blob`` rather
+    than ``show`` so that an anchor naming a *directory* fails as a bad pin
+    rather than as a mysterious byte mismatch.
 
-    Skips, loudly and only, when the clone is shallow and therefore does not hold
-    the anchor commit -- ``actions/checkout`` defaults to ``fetch-depth: 1``. In
-    any complete clone a missing anchor is a failure, because a pin naming a
-    commit the repository does not contain is a pin no one can ever check.
+    **Skips per revision, not for the whole rule.** A shallow clone that is
+    missing one anchor commit used to abandon the other twenty-five, which is
+    the wrong trade in the environment it was written for: ``actions/checkout``
+    defaults to ``fetch-depth: 1``, so the first unreachable anchor hid every
+    remaining comparison. Now every revision is compared, the unreadable ones
+    are collected, and the rule reports the mismatches first and the skip only
+    if there was nothing to report.
+
+    In any complete clone a missing anchor is a failure, and the message says
+    **which** kind: a commit this repository does not contain, or a path that
+    does not exist at a commit it does.
+
+    Needs git objects, so it is the one rule that cannot run on the
+    ``.mutate-population`` path -- a ``tools/mutate.py`` copy has no repository
+    to read a blob from, and there is nothing a working-tree read could
+    substitute: the whole claim is about a blob that is *not* in the working
+    tree.
     """
+    _requires_git_objects("comparing a body against the blob at its anchor commit")
+
+    mismatched: list[str] = []
+    unreadable: list[str] = []
     for revision in _revisions():
         body = _body_bytes(revision)
         for anchor in revision.anchors:
-            commit, file_path = anchor.get("commitSha", ""), anchor.get("filePath", "")
-            shown = subprocess.run(  # noqa: S603 - fixed argv, no shell
-                [*_GIT, "show", f"{commit}:{file_path}"],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                check=False,
+            faults = _anchor_faults(anchor)
+            assert not faults, (
+                f"{revision.migration} carries an anchor this rule cannot verify as written: "
+                f"{faults}. Fix the anchor; comparing against it would assert nothing."
             )
-            if shown.returncode != 0:
-                _refuse_missing_anchor(revision, commit, file_path)
-            assert shown.stdout == body, (
-                f"{revision.migration} claims a verbatim copy of {file_path} at {commit}, "
-                f"but the committed body differs ({len(body)} bytes here, "
-                f"{len(shown.stdout)} at the anchor)."
-            )
+            commit, file_path = anchor["commitSha"], anchor["filePath"]
+            shown = _git_run("cat-file", "blob", f"{commit}:{file_path}")
+            if shown is None or shown.returncode != 0:
+                unreadable.append(_unreadable_anchor(revision, commit, file_path))
+                continue
+            if shown.stdout != body:
+                mismatched.append(
+                    f"{revision.migration} pins {_body_path(revision)} as a verbatim copy of "
+                    f"{file_path} at {commit}, but the committed body differs "
+                    f"({len(body)} bytes here, {len(shown.stdout)} at the anchor)"
+                )
 
-
-def _refuse_missing_anchor(revision: Revision, commit: str, file_path: str) -> NoReturn:
-    """A missing anchor object: a skip in a shallow clone, a failure in a full one."""
-    if _git_text("rev-parse", "--is-shallow-repository").strip() == "true":
+    assert not mismatched, f"bodies that are not verbatim copies of their anchors: {mismatched}"
+    if unreadable:
         pytest.skip(
-            f"shallow clone: {commit} is absent, so {revision.migration}'s pin to "
-            f"{file_path} cannot be read. Give the job `fetch-depth: 0` to run this rule."
+            f"{len(unreadable)} anchor(s) could not be read, so those comparisons did not "
+            f"run: {unreadable}"
+        )
+
+
+def _unreadable_anchor(revision: Revision, commit: str, file_path: str) -> str:
+    """Why one anchor could not be read: a shallow clone, a missing commit, or a missing path.
+
+    The three are different findings and used to arrive as one message. A
+    shallow clone is the environment's fault (``fetch-depth: 1``); a commit this
+    repository does not contain is a pin nobody can ever check; a path absent at
+    a commit that *is* present is a pin naming a document that did not exist
+    yet, which is a corpus defect and not a clone depth problem.
+    """
+    shallow = _git_run("rev-parse", "--is-shallow-repository")
+    if shallow is not None and shallow.stdout.decode("utf-8", "replace").strip() == "true":
+        return (
+            f"{revision.migration}: shallow clone, so {commit} is absent and its pin to "
+            f"{file_path} cannot be read. Give the job `fetch-depth: 0` to run this rule"
+        )
+    present = _git_run("cat-file", "-e", f"{commit}^{{commit}}")
+    if present is None or present.returncode != 0:
+        raise AssertionError(
+            f"{revision.migration} anchors {file_path} to {commit}, which this complete "
+            f"clone does not contain. The pin names a source nobody can verify against."
         )
     raise AssertionError(
-        f"{revision.migration} anchors {file_path} to {commit}, which this complete clone "
-        f"does not contain. The pin names a source nobody can verify against."
+        f"{revision.migration} anchors {file_path} to {commit}. That commit is present, "
+        f"and it holds no blob at that path -- the pin names a document that did not exist "
+        f"there, so it has never been compared against anything."
     )
 
 
@@ -532,6 +1120,172 @@ def test_no_tracked_body_is_unreferenced_by_a_committed_migration() -> None:
     )
 
 
+# -- The families no rule used to read ---------------------------------------
+
+
+def test_every_tracked_gitkeep_is_empty() -> None:
+    """``.gitkeep`` was an accepted family with no rule behind it.
+
+    :func:`_family` calls any file named ``.gitkeep`` a known shape, anywhere
+    under ``.theurian/``, and no rule read one. So a note written to
+    ``.theurian/knowledge/architecture/.gitkeep`` -- or to a directory invented
+    for the purpose -- was a *fully governed-looking* publication of arbitrary
+    text: the family rule passed it, the body rules never saw it (it is not
+    ``*.md``), and the work log's claim that "a stray ``git add -f`` goes RED in
+    CI" was false for it.
+
+    A placeholder's whole job is to exist, so zero bytes is the entire contract
+    and anything else is content. The size is reported, never the bytes: a
+    failure message that printed them would republish whatever was hidden there
+    into CI logs.
+    """
+    carrying = [
+        (path, len(payload))
+        for path in _corpus_paths()
+        if _family(path) == "gitkeep" and (payload := (REPO_ROOT / path).read_bytes())
+    ]
+
+    assert not carrying, (
+        f"tracked .gitkeep files that are not empty (path, bytes): {carrying}. A placeholder "
+        f"exists to hold a directory open; bytes inside one are content that no rule in this "
+        f"module reads and no reviewer looks at."
+    )
+
+
+def test_every_tracked_proposal_path_is_an_evidence_file_in_its_own_directory() -> None:
+    """The proposal tree's shape, so nothing can be parked beside the evidence.
+
+    ``propose`` writes ``.theurian/proposals/<proposal-id>/`` holding a
+    migration, a body and ``evidence.json``, and ``propose accept`` moves the
+    first two out. What is committed is therefore the residue: one
+    ``evidence.json`` per directory, plus the placeholder that holds
+    ``proposals/`` itself open.
+
+    Without this, a second file in a proposal directory is governed by nothing:
+    ``.theurian/proposals/<id>/.gitkeep`` is an accepted family (now empty, by
+    the rule above) and ``.theurian/proposals/<id>/notes.md`` is a stranger the
+    family rule catches -- but ``.theurian/proposals/<id>/evidence.json`` in a
+    directory that is *not* a proposal id would be neither.
+    """
+    expected = {f"{PROPOSALS_PREFIX}.gitkeep"}
+    misplaced = [
+        path
+        for path in _corpus_paths()
+        if path.startswith(PROPOSALS_PREFIX)
+        and path not in expected
+        and not re.fullmatch(r"[^/]+/evidence\.json", path.removeprefix(PROPOSALS_PREFIX))
+    ]
+    misnamed = [
+        evidence.path
+        for evidence in _evidence()
+        if evidence.directory != evidence.proposal_id or "/" in evidence.directory
+    ]
+
+    assert not misplaced, (
+        f"tracked under .theurian/proposals/ but not `<proposal-id>/evidence.json`: "
+        f"{misplaced}. Only the evidence file survives `propose accept`; anything else there "
+        f"is a publication with no migration and no governance metadata."
+    )
+    assert not misnamed, (
+        f"evidence files whose directory is not their own proposalId: {misnamed}. The "
+        f"directory name is the only index into the proposal, so a disagreement makes the "
+        f"evidence unreachable from the id it claims."
+    )
+
+
+def test_every_committed_evidence_file_declares_exactly_the_evidence_keys() -> None:
+    """``evidence.json`` was the second accepted family no rule read.
+
+    The adversarial review's shape: an ``evidence.json`` carrying an extra key
+    -- a ``notes`` or a ``handoff`` field holding embargoed reasoning -- was
+    committed, passed the family rule, and was read by nothing else in this
+    module. Exact keys rather than a required subset, because the escape is an
+    addition and a subset check is blind to exactly that.
+
+    What this does **not** close, said plainly: the *values*. ``reasoning`` is
+    free text and ``sourceAnchors`` is checked for shape below, not for whether
+    the prose inside is publishable. Content scanning is #198's, and the module
+    docstring says so.
+    """
+    unexpected = [
+        (evidence.path, sorted(set(evidence.document) ^ EVIDENCE_KEYS))
+        for evidence in _evidence()
+        if set(evidence.document) != EVIDENCE_KEYS
+    ]
+
+    assert not unexpected, (
+        f"evidence files whose keys are not exactly {sorted(EVIDENCE_KEYS)} "
+        f"(path, difference): {unexpected}. A key `propose` does not write is a field this "
+        f"module does not read and no schema validates."
+    )
+
+
+def test_the_committed_corpus_holds_one_evidence_file_per_migration() -> None:
+    """Provenance for every item, and no proposal directory left over.
+
+    The corpus is one item per proposal per migration by construction: 26 and 26
+    (measured 2026-08-20). The proposal id is *not* derivable from the migration
+    id -- the seed generated them monotonically, and 2 of the 26 crossed a
+    millisecond boundary, so ``proposalId + 1 == migration.id`` holds for 24 and
+    is not a relation this can assert. Counts and uniqueness are what the data
+    actually supports, and asserting the false relation would be a rule that
+    goes RED on the next correctly-seeded item.
+
+    An extra evidence directory is a proposal whose migration was never
+    committed -- reasoning published for a decision the repository does not
+    hold. A missing one is an item with no record of who proposed it.
+    """
+    identifiers = [evidence.proposal_id for evidence in _evidence()]
+    duplicated = sorted({name for name in identifiers if identifiers.count(name) > 1})
+
+    assert len(_evidence()) == len(_migration_paths()), (
+        f"the corpus holds {len(_evidence())} evidence files and "
+        f"{len(_migration_paths())} migrations. Every committed item carries the record of "
+        f"the proposal that produced it, and every committed proposal produced an item."
+    )
+    assert not duplicated, (
+        f"proposalIds claimed by more than one evidence file: {duplicated}. The id is the "
+        f"only key into a proposal, so two files claiming one makes the second invisible."
+    )
+
+
+def test_every_evidence_anchor_is_one_a_committed_migration_also_names() -> None:
+    """Evidence cannot cite a document the corpus does not pin.
+
+    The measured escape: an ``evidence.json`` whose ``sourceAnchors`` names a
+    file from outside the repository -- a vault note, an operator handoff -- and
+    the filename itself is the disclosure, before anyone reads a byte of it.
+    Shape alone does not catch it: ``provider: git`` with a 40-hex sha and a
+    plausible ``filePath`` is well-formed.
+
+    So the rule is relational rather than syntactic: **every anchor an evidence
+    file cites must be an anchor some committed migration cites too.** The
+    migration's anchors are already verified byte-for-byte against the blob at
+    that commit, so an anchor that survives this is one the repository has
+    actually read. Measured 2026-08-20: the two multisets are identical, 26 and
+    26.
+    """
+    published = {
+        tuple(sorted((key, str(value)) for key, value in anchor.items()))
+        for revision in _revisions()
+        for anchor in revision.anchors
+        if isinstance(anchor, Mapping)
+    }
+    uncited = [
+        (evidence.path, dict(anchor) if isinstance(anchor, Mapping) else anchor)
+        for evidence in _evidence()
+        for anchor in evidence.anchors
+        if not isinstance(anchor, Mapping)
+        or tuple(sorted((key, str(value)) for key, value in anchor.items())) not in published
+    ]
+
+    assert not uncited, (
+        f"evidence anchors no committed migration names: {uncited}. Only the migrations' "
+        f"anchors are verified against a blob, so an anchor that appears only here has been "
+        f"published and never checked -- and a path is a disclosure before it is a pin."
+    )
+
+
 # -- The managed ignore block ------------------------------------------------
 
 
@@ -540,6 +1294,9 @@ def test_the_managed_gitignore_block_appears_exactly_once() -> None:
 
     A duplicated or half-removed block leaves one copy that ``init`` maintains
     and one that nobody does, and the stale copy is the one a reader believes.
+
+    One of the two rules in this module that read no corpus population at all,
+    so the emptiness refusal in :func:`_corpus_paths` does not reach it.
     """
     lines = _gitignore_lines()
 
@@ -562,6 +1319,8 @@ def test_the_managed_gitignore_block_lists_exactly_the_derived_patterns() -> Non
     missing pattern is how a derived artifact -- an index database, a state
     file -- becomes committable without anyone deciding it should be; removing
     one was a mutation that survived.
+
+    The other rule here that reads no corpus population.
     """
     assert _managed_block() == GITIGNORE_ENTRIES, (
         f"the tracked .gitignore's managed block is {_managed_block()}, not the "
@@ -593,11 +1352,51 @@ def test_no_tracked_corpus_path_is_a_symlink_or_executable() -> None:
     body checked on another -- and it reaches out of the repository by design.
     Git records the distinction in the index mode, which is the only place it
     survives a clone.
-    """
-    entries = _git_text("ls-files", "-s", "--full-name", "--", CORPUS_PREFIX).splitlines()
-    unexpected = [entry for entry in entries if not entry.startswith("100644 ")]
 
-    assert entries, "git tracks nothing under .theurian/; the corpus is gone"
+    **Two sources, and the weaker one is named rather than hidden.** With git,
+    the index mode is read and must be ``100644``, which is the claim that
+    travels. On the ``.mutate-population`` path there are no modes -- the
+    manifest is a path list -- so the mode is read from the *working tree* with
+    :func:`os.lstat` instead. That is a real degradation and it is worth what it
+    is worth: ``tools/mutate.py`` copies the checkout with ``symlinks=True`` and
+    ``copytree``'s default ``copy2``, so a symlink stays a symlink and the
+    executable bit survives, which makes the working-tree answer faithful *for
+    that copy* -- but it is the disk's answer, not the index's, and a machine
+    whose checkout was mangled would be believed. The rule that decides anything
+    runs where git answers.
+    """
+    index = _tracked()
+    corpus = _corpus_paths()
+
+    if index.modes is not None:
+        unexpected = [
+            (path, sorted(index.modes[path])) for path in corpus if index.modes[path] != {"100644"}
+        ]
+        source = "the index"
+    else:
+        unexpected = [
+            (path, [_worktree_mode(path)])
+            for path in corpus
+            if _worktree_mode(path) != "regular, non-executable"
+        ]
+        source = f"the working tree ({_POPULATION_MANIFEST} carries no index modes)"
+
     assert not unexpected, (
-        f"tracked corpus paths that are not regular, non-executable files: {unexpected}"
+        f"tracked corpus paths that are not regular, non-executable files, according to "
+        f"{source}: {unexpected}"
     )
+
+
+def _worktree_mode(path: str) -> str:
+    """How the working tree describes one tracked path, for the manifest fallback."""
+    try:
+        mode = os.lstat(REPO_ROOT / path).st_mode
+    except OSError as error:
+        return f"unreadable ({error.strerror})"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if not stat.S_ISREG(mode):
+        return "not a regular file"
+    if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        return "executable"
+    return "regular, non-executable"
