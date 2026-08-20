@@ -27,8 +27,8 @@ from typing import Annotated, Final, NoReturn
 import typer
 
 from theurian.application.proposal_service import (
+    ChangeAlreadyInPlaceError,
     DraftedProposal,
-    MigrationNameTakenError,
     ProposalError,
     ProposalRequest,
     ProposalService,
@@ -349,8 +349,22 @@ def propose_accept(
     that migration is already in place. The body file *may* replace what is at
     its path, because on an update to existing knowledge that is the intent.
 
-    Exit codes: 0 moved, 1 no such proposal, 2 malformed id, 4 that migration is
-    already in place.
+    Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
+    -- no such proposal, a draft interrupted before its migration was written, a
+    directory or an evidence file that could not be fully read, a file the
+    security layer refuses; 2 the id is not a ULID; 4 the project's knowledge
+    state refuses the move -- this proposal was accepted before, that migration id
+    is already in ``.theurian/migrations/``, or the approved migration set does
+    not resolve (it is unreadable, tampered, or internally inconsistent).
+
+    **4 means "read the knowledge state before doing anything", not "already
+    done".** Its migration-set case -- raised while resolving the project, so
+    before this command dispatches at all -- leaves the proposal undelivered, so a
+    caller that treats 4 as "already accepted, skip it" abandons it. 1 normally
+    means nothing landed and drafting again is the recovery; normally, because a
+    part-way write is rolled back on a best-effort basis, and a rollback that
+    itself fails leaves a body in ``.theurian/knowledge/`` while this still
+    reports the original failure.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,
@@ -372,7 +386,12 @@ def propose_accept(
     context, _ = _require_project(as_json)
     try:
         accepted = _service(context).accept(parsed)
-    except MigrationNameTakenError as exc:
+    except ChangeAlreadyInPlaceError as exc:
+        # Both faces of "already in place" -- a taken migration name and a
+        # proposal whose migration has already moved out -- are knowledge state,
+        # not a lookup failure, so both take the code reserved for state. The
+        # second used to exit 1 beside "no such proposal", which is the exit code
+        # the help text has always documented as 4 (#254).
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
         return
     except ProposalError as exc:
@@ -516,12 +535,12 @@ def _request(inputs: _Inputs, *, body: str, content_type: MediaType) -> Proposal
         model=inputs.model,
         reasoning=inputs.reasoning,
         # The same anchor the revision records, written to a different file for
-        # a different reader. `evidence.json` is read by the humans reviewing
-        # the pull request and never by Core, while `metadata.sourceAnchors` is
-        # what `theurian migrate apply` enforces (INV-8). Neither substitutes
-        # for the other, which is why they stay separate fields here and
-        # separate files on disk even when this surface fills both from one
-        # option.
+        # a different reader. The anchors in `evidence.json` are read by the
+        # humans reviewing the pull request and by no code path, while
+        # `metadata.sourceAnchors` is what `theurian migrate apply` enforces
+        # (INV-8). Neither substitutes for the other, which is why they stay
+        # separate fields here and separate files on disk even when this surface
+        # fills both from one option.
         anchors=anchors,
     )
     return ProposalRequest(
@@ -631,6 +650,10 @@ def _service(context: CommandContext) -> ProposalService:
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
         current_revision=lambda item_id: current_revision_in(migrations, item_id),
+        # The landed-migration lookup is this same MigrationSet's own `_by_id`
+        # (keyed by inner id), so `propose accept` cannot disagree with
+        # `migrate validate`/`apply` about what is in place (ADR-0003, #253).
+        landed_migration=migrations.get,
     )
 
 

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
@@ -359,6 +360,56 @@ def test_an_update_without_expected_revision_is_refused_at_the_cli(project: Path
     assert first["revisionId"] in payload["remedy"]
 
 
+def test_re_accepting_an_accepted_proposal_exits_with_the_state_code(project: Path) -> None:
+    """#254: the natural already-accepted case, which used to fold into exit 1.
+
+    The published table said 4 for "that migration is already in place", and the
+    only way to reach 4 was the hand-built state the next test constructs. Simply
+    running ``accept`` twice -- the way a caller meets this -- exited 1 alongside
+    "no such proposal", so a script driving a corpus could not tell "this one has
+    already landed, skip it" from "this proposal is not there, stop".
+
+    4 is the knowledge-state code, and both faces of "the change is already in
+    place" now carry it. It is the one answer whose meaning is *do not draft this
+    again*, which is why it must not share a code with the interrupted draft
+    above, whose meaning is exactly the opposite.
+    """
+    _, drafted = _draft(project)
+    first, _ = _invoke("propose", "accept", drafted["proposalId"])
+    assert first == 0
+
+    code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == EXIT_STATE_ERROR
+    assert "appears to have been accepted" in payload["error"]
+    assert "pull request" in payload["remedy"]
+
+
+def test_exit_four_also_covers_a_migration_set_that_cannot_be_read(project: Path) -> None:
+    """The third case the published table names, and the reason 4 is not "done".
+
+    Resolving the project loads the approved migration set, and a set that cannot
+    be read exits 4 from there -- before ``accept`` dispatches at all. So exit 4
+    does not mean "already accepted": here it means the proposal is still
+    waiting, and a caller that skips on 4 abandons it. Reproduced with the body a
+    landed migration pins removed, which is one of three measured shapes
+    (unparseable YAML and a digest that no longer matches are the others, and all
+    three arrive through the same ``MigrationError`` branch).
+    """
+    _, landed = _draft(project)
+    _invoke("propose", "accept", landed["proposalId"])
+    (project / "body.md").write_text("# Other\n\nText.\n", encoding="utf-8")
+    _, waiting = _draft(project, "--item-id", "architecture.other-policy")
+    (project / landed["bodyDestination"]).unlink()
+
+    code, payload = _invoke("propose", "accept", waiting["proposalId"])
+
+    assert code == EXIT_STATE_ERROR
+    assert "could not be read" in payload["error"]
+    proposal = project / ".theurian/proposals" / waiting["proposalId"]
+    assert list(proposal.glob("*.yaml")), "the proposal is still waiting, not accepted"
+
+
 def test_accepting_the_same_proposal_twice_is_refused(project: Path) -> None:
     _, drafted = _draft(project)
     _invoke("propose", "accept", drafted["proposalId"])
@@ -373,6 +424,160 @@ def test_accepting_the_same_proposal_twice_is_refused(project: Path) -> None:
     assert (
         project / ".theurian/migrations" / drafted["migrationFile"]
     ).read_text() != "apiVersion: theurian.dev/v1\n"
+
+
+def test_an_interrupted_draft_is_diagnosed_as_one_rather_than_as_accepted(
+    project: Path,
+) -> None:
+    """#253 at the process edge: the remedy must not discard the drafted work.
+
+    The interruption is reproduced by removing the file a killed ``propose``
+    would never have written -- the migration is the last of the three -- leaving
+    the body and ``evidence.json`` behind. That shape reported "no action is
+    needed. Review the change and open a pull request" while
+    ``.theurian/migrations/`` held nothing, so a reader following the remedy
+    would have opened a pull request containing no change at all.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    (directory / drafted["migrationFile"]).unlink()
+
+    code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 1
+    assert "pull request" not in payload["remedy"]
+    assert "theurian propose" in payload["remedy"]
+    assert not list((project / ".theurian/migrations").glob("*.yaml"))
+    assert (project / drafted["bodyFile"]).is_file(), "the draft's body is still there to lose"
+
+
+def test_a_success_payload_cannot_forge_output_through_a_body_path(project: Path) -> None:
+    """#253 round three, CLASS C: the exit-0 stdout path escapes controls too.
+
+    ``propose accept`` emits ``bodyFiles`` and ``migrationFile`` on success via
+    ``_relative`` -> ``_emit`` -> ``_render``, which wrote raw. A hand-authored
+    ``contentFile`` carrying ``ESC``/``CR`` therefore forged the tool's *own
+    success output* -- a channel the refusal-path ``_names`` never covered, since
+    the accept succeeds. Reproduced end to end: the migration's ``contentFile`` is
+    rewritten to carry the control bytes and the body moved to the matching path,
+    so accept lands it and prints the path. The render sink escapes them now.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    migration = directory / drafted["migrationFile"]
+    forged_leaf = "architecture/\x1b[2Kx.\x1b[2Kforged.md"
+    document = yaml.safe_load(migration.read_text(encoding="utf-8"))
+    old_content_file = drafted["contentFile"]
+    new_content_file = f"../knowledge/{forged_leaf}"
+    for operation in document["operations"]:
+        if operation.get("contentFile") == old_content_file:
+            operation["contentFile"] = new_content_file
+    migration.write_text(yaml.safe_dump(document, allow_unicode=True), encoding="utf-8")
+    old_body = directory / Path(drafted["bodyFile"]).relative_to(Path(drafted["proposalDirectory"]))
+    new_body = directory / forged_leaf
+    new_body.parent.mkdir(parents=True, exist_ok=True)
+    old_body.rename(new_body)
+
+    result = runner.invoke(
+        app, ["propose", "accept", drafted["proposalId"]], catch_exceptions=False
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "\x1b" not in result.stdout and "\r" not in result.stdout
+    assert "\\x1b" in result.stdout, "the control byte is rendered as a visible escape"
+
+
+def test_the_render_sink_escapes_every_control_and_keeps_printable_unicode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The central sink, driven directly: escape every control, keep CJK.
+
+    ``_emit`` in text mode is the output path for every command's success payload,
+    so escaping controls here closes the class for all of them. A value's own
+    ``\\n``/``\\t`` is escaped too -- the output's structural whitespace is
+    ``_render``'s own f-strings, added outside the sink, so a newline *inside a
+    value* only ever appends a line that reads as the tool's. The one raw
+    newline expected below is the record separator ``_render`` writes between
+    entries, never one a value carried.
+    """
+    from theurian.cli.commands import _emit
+
+    _emit(
+        {
+            "path": "a\x1b[2K\rforged",
+            "title": "再試行ポリシー",
+            "lines": ["one\ntwo\ttab", "x\x7f\x9by"],
+        },
+        as_json=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\r" not in out and "\x7f" not in out and "\x9b" not in out
+    assert "\\x1b" in out and "\\x7f" in out and "\\x9b" in out
+    assert "再試行ポリシー" in out, "printable non-ASCII is untouched"
+    assert "one\\x0atwo\\x09tab" in out, "a value's own newline and tab are escaped"
+    # The list entry rendered on one line: the value carried no raw newline through.
+    assert "  - one\\x0atwo\\x09tab\n" in out
+
+
+def test_the_render_sink_escapes_a_control_in_a_key(capsys: pytest.CaptureFixture[str]) -> None:
+    """Keys go through the sink too, not only values.
+
+    No payload key carries a control today -- every key is a code literal -- so no
+    CLI input drives this. It is a structural guarantee: the sink escapes whatever
+    it is handed, and a nested data dict's keys are the one place a future payload
+    could carry an untrusted key. Driven directly with a synthetic control-char
+    key; dies if the key is not routed through the sink.
+    """
+    from theurian.cli.commands import _emit
+
+    _emit({"a\x1b[2Kb": "value"}, as_json=False)
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\\x1b" in out
+
+
+def test_the_main_emit_sink_escapes_controls(capsys: pytest.CaptureFixture[str]) -> None:
+    """``main._emit`` -- ``--version`` and ``compat check`` -- routes through the sink.
+
+    Its fields are repr'd or validated upstream, so no CLI input reaches it with a
+    raw control byte; routing it through the shared sink is what makes the "every
+    emitter uses the sink" invariant structural rather than dependent on that. The
+    guarantee is driven directly with a synthetic control-char value; dies if
+    ``main._emit`` stops escaping.
+    """
+    from theurian.cli.main import _emit as main_emit
+
+    main_emit({"a\x1b[2Kkey": "b\x1b[2K\rforged"}, as_json=False)
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\r" not in out
+    assert "\\x1b" in out and "\\x0d" in out
+    # Both halves of the line escaped: dropping the key's sanitizer leaves a raw
+    # ESC in the key, which the assertion above catches. main._emit renders
+    # `key: value`, so the key precedes the first `: ` and the value follows it.
+    key_text = out.partition(": ")[0]
+    assert "\x1b" not in key_text and "\\x1b" in key_text
+
+
+def test_the_fail_sink_escapes_controls_on_the_error_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``_fail``'s stderr text is sanitized too, not only ``_render``'s stdout.
+
+    The CHANGELOG credits the error path as closed; only the service layer's
+    ``_names`` was tested for it before. A control character in the message or the
+    remedy -- from a source that skipped ``_names`` -- must not reach the terminal
+    raw. Dies if ``escape_terminal_controls`` is dropped from ``_fail``.
+    """
+    from theurian.cli.commands import _fail
+
+    with pytest.raises(typer.Exit):
+        _fail("a\x1b[2K\rforged", remedy="r\ru\x9bx", as_json=False, code=1)
+
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\r" not in err and "\x9b" not in err
+    assert "\\x1b" in err and "\\x9b" in err
 
 
 def test_accept_reports_an_unknown_proposal_with_a_remedy(project: Path) -> None:

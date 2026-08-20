@@ -47,12 +47,17 @@ _EXTENSIONS: Final = {MARKDOWN.value: ".md", JSON.value: ".json", YAML.value: ".
 class Evidence:
     """Where a proposed change came from, and why its author believes it.
 
-    Written to ``evidence.json``, which is **read by the humans reviewing the
-    pull request and never by Core**. It is not a substitute for
-    ``metadata.sourceAnchors``, which is what ``theurian migrate apply``
-    enforces (INV-8): a revision carrying rich evidence and no metadata anchor
-    validates and then fails to apply. The two are separate fields with separate
-    readers, and this one is the one a person acts on.
+    Written to ``evidence.json``, and **every field here is read by the humans
+    reviewing the pull request rather than by Core**. Core reads exactly one key
+    of that file, and it is not one of these: ``propose`` also records the
+    migration id it minted, so ``propose accept`` can tell an accepted proposal
+    from an interrupted draft (#253). Nothing below is read by any code path.
+
+    None of it is a substitute for ``metadata.sourceAnchors``, which is what
+    ``theurian migrate apply`` enforces (INV-8): a revision carrying rich
+    evidence and no metadata anchor validates and then fails to apply. The two
+    are separate fields with separate readers, and this one is the one a person
+    acts on.
 
     The two are separate *requirements*, too. ADR-0013 point 5 -- *a proposal
     with no evidence is rejected at generation* -- is about the reasoning that
@@ -160,6 +165,31 @@ def is_migration_file_name(name: str) -> bool:
     could never be accepted (it "held two or more migration files").
     """
     return _MIGRATION_FILE_NAME.match(name) is not None
+
+
+#: The exact leaf :func:`body_relative_path` produces: an ``ItemId``'s last
+#: segment (lowercase kebab-case), the revision ULID, and one of the three body
+#: extensions. Anchored, and deliberately narrower than "a file in the proposal
+#: directory": a diagnosis that reasons over *any* leftover file reasons over
+#: files nothing here wrote -- ``Thumbs.db``, a reviewer's ``REVIEW-NOTES.md``,
+#: an editor's ``evidence.json~`` -- and ``accept`` leaves every one of those
+#: behind on a successful run, because it removes only the bodies the migration
+#: names.
+_BODY_FILE_NAME: Final = re.compile(
+    r"\A[a-z0-9]+(?:-[a-z0-9]+)*\.[0-7][0-9A-HJKMNP-TV-Z]{25}\.(?:md|json|yaml)\Z"
+)
+
+
+def is_generated_body_file_name(name: str) -> bool:
+    """Whether ``name`` is a body file :func:`body_relative_path` could have written.
+
+    Used by ``accept`` to tell an unfinished draft from an accepted proposal
+    where the proposal itself records no migration id -- the 26 committed before
+    that record existed. It answers "did the generator write this file", never
+    "is this a body": a hand-authored ``contentFile`` may name anything, and a
+    proposal that carries one is outside what this predicate can speak for.
+    """
+    return _BODY_FILE_NAME.match(name) is not None
 
 
 def body_extension(content_type: MediaType) -> str:

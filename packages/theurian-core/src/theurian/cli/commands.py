@@ -62,6 +62,7 @@ from theurian.cli.context import (
     repository_url,
     resolve_context,
 )
+from theurian.cli.output import escape_terminal_controls
 from theurian.domain.errors import (
     AliasItemCollisionError,
     DuplicateContentFileError,
@@ -119,15 +120,16 @@ def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
 def _render(payload: dict[str, Any], *, indent: int) -> None:
     pad = "  " * indent
     for key, value in payload.items():
+        safe_key = escape_terminal_controls(key)
         if isinstance(value, dict):
-            sys.stdout.write(f"{pad}{key}:\n")
+            sys.stdout.write(f"{pad}{safe_key}:\n")
             _render(value, indent=indent + 1)
         elif isinstance(value, list):
-            sys.stdout.write(f"{pad}{key}:\n")
+            sys.stdout.write(f"{pad}{safe_key}:\n")
             for entry in value:
-                sys.stdout.write(f"{pad}  - {entry}\n")
+                sys.stdout.write(f"{pad}  - {escape_terminal_controls(entry)}\n")
         else:
-            sys.stdout.write(f"{pad}{key}: {value}\n")
+            sys.stdout.write(f"{pad}{safe_key}: {escape_terminal_controls(value)}\n")
 
 
 def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
@@ -135,7 +137,9 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
     if as_json:
         sys.stderr.write(json.dumps({"error": message, "remedy": remedy}, indent=2) + "\n")
     else:
-        sys.stderr.write(f"error: {message}\n{remedy}\n")
+        sys.stderr.write(
+            f"error: {escape_terminal_controls(message)}\n{escape_terminal_controls(remedy)}\n"
+        )
     raise typer.Exit(code)
 
 

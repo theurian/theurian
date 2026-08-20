@@ -12,6 +12,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`evidence.json` now records the `migrationId` and `itemId` its proposal
+  drafted** ([#253](https://github.com/theurian/theurian/issues/253)). These are
+  the two fields of that file Core reads back: together they let `propose accept`
+  ask whether a migration with that id, operating on that item, is in
+  `.theurian/migrations/`. Both are a contributor's claim, not authority —
+  `evidence.json` is committed and untrusted (ADR-0013 point 7) — so `itemId` is
+  the cross-check that stops a forged `migrationId` (one pointing at another
+  proposal's landed migration) from reading as accepted. Optional on read: the 26
+  proposals committed in this repository predate both fields and are diagnosed by
+  best-effort inference, which their message says.
+
 ### Fixed
 
 - **The installed migration schema resolved `$ref`s over the network, and its
@@ -89,6 +102,73 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   message and a remedy about flattening the nesting. The new type is a
   `PathEscapeError` subclass, so every existing `except` and every exit-code
   route catches it unchanged; only what the caller is told differs.
+- **An interrupted `theurian propose` was diagnosed as an accepted one**
+  ([#253](https://github.com/theurian/theurian/issues/253)). `propose accept`
+  read the presence of `evidence.json` as "this proposal has already been
+  accepted", but `propose` writes the body, then the evidence, then the
+  migration — so a run killed before its last write left exactly that shape.
+  `accept` reported that the migration had been moved into
+  `.theurian/migrations/` and that no action was needed beyond opening a pull
+  request, while `.theurian/migrations/` held nothing and the drafted knowledge
+  existed nowhere. The remedy discarded the draft.
+
+  Acceptance is a **best-effort diagnosis over untrusted input, not a
+  tamper-proof fact**: the proposal directory is contributor-controlled, so the
+  recorded `migrationId` is a claim (cross-checked by `itemId` against the
+  migration it names), a `evidence.json` that is present but unreadable is
+  answered as *indeterminate* rather than collapsed into "no record", and every
+  fallible branch points the reader at `.theurian/migrations/` first — no branch
+  emits an unconditional "no action is needed" or "draft it again", so none can
+  tell the author to discard work that may exist or duplicate a change that
+  already landed. Whether a migration is in place under the recorded id is read
+  from the same approved `MigrationSet` `migrate validate`/`apply` read — keyed by
+  the migration's inner id, not by a filename match — so `propose accept` cannot
+  disagree with the loader about what has landed, whatever a migration file was
+  renamed to or whether it is a symlink. The three states are kept distinct by
+  their exit codes: a migration in place under the recorded id — whether or not
+  the item cross-checks — exits 4 ("read before acting"), and only a recorded id
+  the loaded set holds *no* migration for exits 1 ("nothing landed, re-draft"), so
+  following exit 1 can never mint a duplicate of a change on disk. Absent
+  `evidence.json` (a legacy proposal, or
+  one interrupted before its evidence write) falls to inference over the
+  directory, which reads only the body shape the generator produces, so a
+  reviewer's notes or a `Thumbs.db` left beside an accepted proposal no longer
+  flips the verdict.
+
+- **A committed proposal could forge `theurian propose accept`'s own output**
+  ([#253](https://github.com/theurian/theurian/issues/253)). A proposal directory
+  arrives through a contributor's pull request, and a file name or a migration's
+  `contentFile` carrying `ESC [ 2 K` and a carriage return erases the line the
+  terminal has drawn and prints its own in place of it — reproduced printing this
+  command's own output under its own name, on both the refusal path and the
+  exit-0 **success** payload (`bodyFiles`, `migrationFile`). The CLI now escapes
+  every terminal-control character — the whole C0 block, `DEL` and C1 — at one
+  shared sink that every text-mode emitter routes each value and key through, so
+  no value any command prints, from any source, reaches a terminal with a raw
+  control byte. A value's own newline is escaped too (the output's structural
+  newlines are the emitters' own), while printable Unicode (a Japanese title) is
+  kept. The `--json` output was never affected.
+
+### Changed
+
+- **BREAKING — re-accepting an already-accepted proposal now exits 4, not 1**
+  ([#254](https://github.com/theurian/theurian/issues/254)). The published exit
+  code table documented 4 for "that migration is already in place", while the
+  natural route to that state — running `theurian propose accept` twice — exited
+  1 alongside "no such proposal", an interrupted draft, and a refused
+  `contentFile`. Exit 4 keeps its meaning and gains this case: *the knowledge
+  state refuses this move, so read it before acting*. It is not "already done" —
+  an approved migration set that cannot be read also exits 4, with the proposal
+  still waiting — and the published table now says so rather than promising that
+  1 always means nothing landed. Scripts that treat any non-zero exit as failure
+  are unaffected; one that special-cased 1 for "already accepted" must read 4.
+
+  Breaking by the compatibility table in
+  [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
+  and `protocolVersion` is **not** bumped for it — a recorded, narrowly scoped
+  exemption on the same grounds as `system.capabilities.milestone`'s (#206),
+  written up under "Changing this contract" in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md).
 
 ## [0.1.0.dev7] - 2026-08-19
 

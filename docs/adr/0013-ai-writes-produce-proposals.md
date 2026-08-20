@@ -129,6 +129,22 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 > out-of-project secret (`~/.claude.json`, `~/.kube/config`) into a git-tracked
 > file, an exfiltration channel — was caught in review and never shipped in a
 > release.
+>
+> **`propose accept`'s "has this proposal been accepted?" diagnosis reads
+> `evidence.json`, and that file is point-7 input like any other in the
+> directory — so the diagnosis is best-effort, not authenticated.** `draft`
+> records the `migrationId` and `itemId` it minted there; on re-accept, the
+> command confirms a migration with that id *and* that item is in
+> `.theurian/migrations/`. The item cross-check is what a bare id lookup lacked:
+> without it, a never-accepted proposal could name another proposal's landed
+> migration and be told "already accepted / no action" (#253). It is not
+> tamper-proof — a record forged to match a genuinely landed migration's id and
+> item is indistinguishable from a real acceptance, which is the reduction the
+> cross-check buys — and it does not need to be, because the guarantee it upholds
+> is by *remedy*: a present-but-unreadable `evidence.json` is answered
+> indeterminate rather than guessed, and no branch discards work or duplicates a
+> landed change, so a wrong guess costs a reread and never a lost or doubled
+> migration.
 
 ## Consequences
 
@@ -195,6 +211,19 @@ Landed in Milestone 7, by the `theurian propose` CL:
   `tests/unit/test_proposal.py::test_a_proposal_with_no_reasoning_is_rejected_at_construction`
   and `::test_a_proposal_with_no_model_identity_is_rejected_at_construction`
   pinning the two halves of "evidences nothing."
+- The accepted-vs-interrupted diagnosis is best-effort over untrusted input
+  (#253). `test_proposal_service.py::test_a_migration_id_pointing_at_another_proposals_migration_is_not_confirmed`
+  drives the forge the `itemId` cross-check closes;
+  `::test_a_present_but_unreadable_evidence_file_is_indeterminate` and its
+  siblings pin that a read failure is answered indeterminate, never guessed;
+  `::test_an_accepted_proposal_whose_evidence_was_removed_points_at_migrations_first`
+  pins the safe-by-remedy invariant that no branch discards work; and
+  `::test_a_landed_migration_renamed_off_its_ulid_prefix_is_still_landed` with
+  `::test_a_symlinked_landed_migration_is_recognised_as_landed` pin that "in
+  place" is read from the loaded `MigrationSet` (inner-id keyed), so `propose
+  accept` cannot disagree with `migrate validate`/`apply` about what has landed.
+  The terminal-injection channel these messages could open is closed at the CLI's
+  output sink, tested in `test_propose_cli.py::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`.
 
 Still owed, with the milestone that brings the feature under test:
 

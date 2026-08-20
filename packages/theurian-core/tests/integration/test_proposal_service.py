@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -20,15 +21,18 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    ChangeAlreadyInPlaceError,
+    DraftedProposal,
+    ProposalAlreadyAcceptedError,
     ProposalError,
     ProposalRequest,
     ProposalService,
 )
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import InvariantViolationError, MigrationError, PathEscapeError
-from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
+from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
-from theurian.domain.migration import current_revision_in
+from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
 from theurian.domain.values import JSON, MARKDOWN, YAML
@@ -36,6 +40,12 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
+from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+
+#: A ``chmod 0o000`` denies nothing to root and nothing on Windows, so a test
+#: that needs the mode to actually refuse cannot run there (the offline CI job
+#: runs as root). Same guard the sibling permission tests carry.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 pytestmark = pytest.mark.integration
 
@@ -85,12 +95,18 @@ def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
 
 @pytest.fixture
 def service(paths: ProjectPaths) -> ProposalService:
-    # The current-revision lookup reads the project's *approved* migrations, so a
-    # second draft for an item whose first proposal has been accepted sees it as
-    # existing -- which is what exercises the #210 update guard end to end.
+    # Both lookups read the project's *approved* migration set, freshly loaded on
+    # every call the same way the CLI's `resolve_context` loads it -- so a second
+    # draft sees the first proposal's accepted item (the #210 update guard), and
+    # `accept` reads the same set `migrate validate`/`apply` do when it asks
+    # whether a recorded migration id is in place (#253).
     def current_revision(item_id: ItemId) -> RevisionId | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return current_revision_in(loaded.migration_set, item_id)
+
+    def landed_migration(migration_id: MigrationId) -> Migration | None:
+        loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+        return loaded.migration_set.get(migration_id)
 
     return ProposalService(
         paths=paths,
@@ -98,6 +114,7 @@ def service(paths: ProjectPaths) -> ProposalService:
         ids=SeededIdGenerator(),
         validate=_validator,
         current_revision=current_revision,
+        landed_migration=landed_migration,
     )
 
 
@@ -747,24 +764,702 @@ def test_accept_reports_an_unknown_proposal_rather_than_raising_from_the_filesys
         service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
 
 
-def test_re_accepting_an_already_accepted_proposal_says_no_action_is_needed(
+# -- has this proposal been accepted? (#253) -------------------------------
+#
+# Two answers with opposite remedies -- re-drafting an accepted proposal mints a
+# second migration for a change already in history (#89), and telling the author
+# of an interrupted draft that no action is needed discards work that exists
+# nowhere else. `evidence.json` is committed and contributor-controlled (ADR-0013
+# point 7), so the diagnosis is best-effort over untrusted input, not tamper-
+# proof: a recorded `migrationId` is a claim, cross-checked by `itemId` against
+# the migration it names; a read failure is answered indeterminate; and every
+# fallible branch points the reader at `.theurian/migrations/` before it could
+# discard work. The tests are grouped by what the answer is derived from -- a
+# checkable recorded id, an unreadable record, or (legacy) the directory's shape.
+
+
+def _edit_evidence(drafted: DraftedProposal, **fields: object) -> None:
+    """Overwrite fields of a real draft's ``evidence.json``.
+
+    A value of ``None`` deletes the key. Editing a file the service itself wrote
+    keeps everything else exactly what ``draft`` produced, so a test forges one
+    field rather than hand-assembling a record.
+    """
+    document = json.loads(drafted.evidence_file.read_text(encoding="utf-8"))
+    for key, value in fields.items():
+        if value is None:
+            document.pop(key, None)
+        else:
+            document[key] = value
+    drafted.evidence_file.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
+def _as_legacy(drafted: DraftedProposal) -> None:
+    """Rewrite ``evidence.json`` as one of the 26 proposals committed before #253.
+
+    Those predate both ``migrationId`` and ``itemId``, so the diagnosis has no
+    claim to check and falls to inference over the directory. Reproduced by
+    removing both keys from a real draft.
+    """
+    _edit_evidence(drafted, migrationId=None, itemId=None)
+
+
+def test_re_accepting_an_accepted_proposal_reports_it_accepted(
     service: ProposalService,
 ) -> None:
-    """An accepted proposal keeps its evidence and loses its migration.
+    """The proof path: the recorded migration is landed and names the same item.
 
     Re-accepting used to report "holds no migration file -- draft it again",
-    which would mint a second migration for a change that has already landed.
-    The evidence still in the directory marks it as accepted, so the remedy says
-    to review and open a pull request instead.
+    which mints a second migration for a change already landed. The answer now
+    names the migration ``evidence.json`` records, confirmed to be in
+    ``.theurian/migrations/`` and to operate on the item the proposal names.
+    Dies if the glob stops matching by id (the landed migration is not found).
+    """
+    drafted = service.draft(_request())
+    accepted = service.accept(drafted.proposal_id)
+
+    with pytest.raises(ProposalAlreadyAcceptedError, match="appears to have been accepted") as e:
+        service.accept(drafted.proposal_id)
+
+    assert accepted.migration.destination.name in str(e.value)
+    assert "pull request" in e.value.remedy
+
+
+def test_a_migration_id_pointing_at_another_proposals_migration_is_not_confirmed(
+    service: ProposalService,
+) -> None:
+    """The forge: the item cross-check refuses to confirm another's migration.
+
+    A never-accepted proposal sets ``migrationId`` to another proposal's landed
+    migration, which operates on a *different* item than this proposal's record
+    names. Keyed on the id alone that read as "already accepted / no action".
+
+    The cross-check does not confirm it (round three), and -- because a migration
+    IS in place under the recorded id -- the answer is read-before-acting, not
+    "nothing landed" (round four, adversarial M1): the message says the item
+    cannot be confirmed and the remedy says to correct the record rather than
+    re-draft, which would mint a second migration. It stays a ``ChangeAlreadyInPlaceError``
+    (exit 4), never the plain-``ProposalError`` re-draft code. Dies if the
+    cross-check is removed -- then the id match alone reports it *accepted* with
+    the confirming message.
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    forger = service.draft(_request(item_id=ItemId("architecture.forger")))
+    _edit_evidence(forger, migrationId=landed.migration_id.value)
+    forger.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError, match="cannot confirm") as caught:
+        service.accept(forger.proposal_id)
+
+    message = str(caught.value)
+    assert "operates on the item this proposal names" not in message, "not the confirming message"
+    assert landed.migration_id.value in message
+    assert "correct evidence.json" in caught.value.remedy
+
+
+def test_a_recorded_id_is_not_rescued_by_another_proposals_migration_for_its_item(
+    service: ProposalService,
+) -> None:
+    """The other half of the centre: the glob must match by id, not scan them all.
+
+    This proposal records its own (unlanded) migration id and claims the item a
+    *different* accepted proposal landed. Its own migration is not in
+    ``.theurian/migrations/``, so nothing it drafted was accepted -- even though a
+    migration for the claimed item exists. Dies if the glob drops the id and
+    scans every migration: it then finds the other proposal's and reports this one
+    accepted.
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.shared")))
+    service.accept(landed.proposal_id)
+    waiting = service.draft(_request(item_id=ItemId("architecture.waiting")))
+    _edit_evidence(waiting, itemId="architecture.shared")
+    waiting.migration_file.unlink()
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(waiting.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert waiting.migration_id.value in str(caught.value)
+
+
+def test_a_landed_migration_with_no_item_recorded_is_read_before_acting(
+    service: ProposalService,
+) -> None:
+    """adversarial M1: migrationId landed, itemId absent -> not "nothing landed".
+
+    A migration IS in ``.theurian/migrations/`` under the recorded id, but the
+    record names no item to cross-check it against -- a contributor-edited
+    ``evidence.json``, or an intermediate-build one that predates ``itemId``.
+    Reporting "nothing has been accepted" and exit 1 (whose #254 contract is
+    "re-draft") would tell the author to duplicate a change on disk (#89). It is
+    read-before-acting instead: a ``ChangeAlreadyInPlaceError`` (exit 4), a
+    message that does not assert nothing landed, and a remedy pointing at the
+    migration set.
+
+    Dies if "present-but-unconfirmed" is folded back into the "nothing landed"
+    branch: the exception type drops to a plain ``ProposalError``.
     """
     drafted = service.draft(_request())
     service.accept(drafted.proposal_id)
-    assert drafted.evidence_file.is_file()
+    _edit_evidence(drafted, itemId=None)
 
-    with pytest.raises(ProposalError, match="accepted already") as caught:
+    with pytest.raises(ChangeAlreadyInPlaceError, match="cannot confirm") as caught:
         service.accept(drafted.proposal_id)
 
-    assert "pull request" in caught.value.remedy
+    assert "nothing" not in str(caught.value).lower(), "the migration is landed under the id"
+    assert ".theurian/migrations/" in caught.value.remedy
+    assert "correct evidence.json" in caught.value.remedy
+
+
+def test_a_symlinked_landed_migration_is_recognised_as_landed(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A symlinked landed migration is landed, and the symlink caveat dissolves.
+
+    The migration loader follows symlinks, so a symlink at
+    ``.theurian/migrations/<id>-<slug>.yaml`` pointing at a real in-project
+    migration is landed and ``migrate validate`` sees it. Round five's own
+    landed-detector skipped a symlinked candidate before it could record it, so it
+    fell through to ``absent`` -> exit 1 "nothing landed" (#89).
+
+    Reading the loaded set closes it without special-casing the symlink: the
+    migration is in ``_by_id`` because the loader already read it through the
+    symlink-escape guard, so ``_landed_state`` finds it and confirms the item from
+    the *loaded* operations -- no link is followed here. With a matching item it is
+    ``confirmed`` (exit 4 "appears to have been accepted"), the same as a
+    non-symlinked landed migration, which is more precise than round five's
+    forced "cannot confirm". The property that matters is unchanged: never
+    ``absent``, never exit 1.
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    real = next(paths.migrations.glob(f"{landed.migration_id.value}-*.yaml"))
+    hidden = real.rename(real.with_suffix(".yaml.real"))
+    real.symlink_to(hidden.name)
+    assert real.is_symlink(), "the migration under the recorded id is now a symlink"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    proposal = service.draft(_request(item_id=ItemId("architecture.pointer")))
+    _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
+    proposal.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError) as caught:
+        service.accept(proposal.proposal_id)
+
+    message = str(caught.value)
+    assert "nothing" not in message.lower(), "a symlinked migration is landed, not absent"
+    assert "operates on the item this proposal names" in message, "the loaded operations confirm it"
+
+
+def test_a_landed_migration_renamed_off_its_ulid_prefix_is_still_landed(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH (round six): the loader keys by inner id, so `_landed_state` must too.
+
+    A landed migration renamed off its ULID-prefix filename -- or filed under a
+    different prefix with the same inner id -- is still loaded and keyed by its
+    *inner* id, so ``migrate validate`` sees it (exit 0). Round five's landed
+    detector globbed ``<id>-*.yaml`` on the *filename* ULID prefix, so it missed
+    the renamed file -> ``absent`` -> exit 1 "nothing landed" -> duplicate-mint
+    (#89), the same observable as the symlink face, a different filename shape.
+
+    Reading the loaded set's ``_by_id`` (the same dict the loader builds) closes
+    the class: no filename shape can make ``_landed_state`` and the loader disagree.
+    Dies if the wiring reverts to a filename glob -- the renamed file is then absent
+    and this reports "nothing landed".
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    real = next(paths.migrations.glob(f"{landed.migration_id.value}-*.yaml"))
+    # Rename off the ULID prefix entirely; the inner id is unchanged, so the
+    # loader still keys it under `landed.migration_id`.
+    real.rename(paths.migrations / "zzz-renamed-off-its-prefix.yaml")
+    loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+    assert loaded.migration_set.get(landed.migration_id) is not None, "still landed by inner id"
+
+    proposal = service.draft(_request(item_id=ItemId("architecture.pointer")))
+    _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
+    proposal.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError) as caught:
+        service.accept(proposal.proposal_id)
+
+    message = str(caught.value)
+    assert "nothing" not in message.lower(), "the renamed migration is landed, not absent"
+    assert "operates on the item this proposal names" in message, "confirmed from the loaded set"
+
+
+def test_a_landed_migration_under_a_different_prefix_but_matching_inner_id_is_landed(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """A file whose *name* ULID-prefix differs from its inner id is keyed by inner id.
+
+    Distinct from the rename-off-prefix face: here the filename still looks like a
+    migration (``<other-ulid>-<slug>.yaml``) but its inner id is the recorded one.
+    A filename-glob keyed on the *recorded* id's prefix would not match it, while
+    the loader -- and now ``_landed_state`` -- key on the inner id and find it.
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    real = next(paths.migrations.glob(f"{landed.migration_id.value}-*.yaml"))
+    real.rename(paths.migrations / "01K9C7VN4TQZB2M8XR5HD3JFEW-a-different-prefix.yaml")
+    loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+    assert loaded.migration_set.get(landed.migration_id) is not None
+
+    proposal = service.draft(_request(item_id=ItemId("architecture.pointer")))
+    _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
+    proposal.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError) as caught:
+        service.accept(proposal.proposal_id)
+
+    assert "nothing" not in str(caught.value).lower(), "landed by inner id, not absent"
+
+
+def test_an_interrupted_draft_with_a_recorded_id_is_not_reported_as_accepted(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The recorded id names a migration that was never landed: nothing accepted.
+
+    The remedy points at ``.theurian/migrations/`` first and never says an
+    unconditional "no action is needed", so it cannot tell the author to discard
+    a draft that never landed (#253).
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert drafted.migration_id.value in str(caught.value)
+    assert ".theurian/migrations/" in caught.value.remedy
+    assert "theurian propose" in caught.value.remedy
+    assert not list(paths.migrations.glob("*.yaml"))
+
+
+def test_a_migration_renamed_off_kebab_case_is_not_reported_absent_from_the_directory(
+    service: ProposalService,
+) -> None:
+    """#253 round three, MEDIUM: the message must not lie about the directory.
+
+    A migration renamed off ``<id>-<slug>.yaml`` no longer matches
+    ``_require_migration``'s name test, so the accept path reaches the
+    no-migration diagnosis while the file is still *in* the directory. The message
+    says only what was checked -- no file named ``<id>-<slug>.yaml`` -- and the
+    remedy allows that it may be present under a different name rather than
+    instructing a delete that would discard it.
+    """
+    drafted = service.draft(_request())
+    renamed = drafted.migration_file.rename(drafted.directory / "migration.yaml")
+    assert renamed.is_file()
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert "under a different name" in caught.value.remedy
+    assert "delete" not in caught.value.remedy.lower()
+
+
+# -- a read failure is indeterminate, never an answer -----------------------
+
+
+def test_a_present_but_unreadable_evidence_file_is_indeterminate(
+    service: ProposalService,
+) -> None:
+    """ "Could not read the record" is not "no record", and must not conclude.
+
+    Collapsing an unreadable ``evidence.json`` into "no record" dropped to legacy
+    inference, which can conclude accepted -- an acceptance verdict granted to
+    anyone who can corrupt the file. It is answered indeterminate now.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_text("{ this is not valid json ", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "not valid JSON" in str(caught.value)
+
+
+def test_a_deeply_nested_evidence_file_is_indeterminate_not_a_crash(
+    service: ProposalService,
+) -> None:
+    """A ``RecursionError`` from ``json.loads`` is a read failure, not a traceback.
+
+    Reproduced: deeply nested JSON raised ``RecursionError`` (a ``RuntimeError``,
+    uncaught) -- a raw traceback, exit 1, and no ``--json`` document (CP-2). It is
+    caught and answered indeterminate.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_text("[" * 20000 + "]" * 20000, encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "nested too deeply" in str(caught.value)
+
+
+def test_an_oversized_evidence_file_is_indeterminate_and_names_evidence_json(
+    service: ProposalService,
+) -> None:
+    """An ``evidence.json`` over SEC-8's cap names itself, not ``contentFile``.
+
+    ``_read_within_project`` raises ``InputTooLargeError`` (a ``TheurianError``),
+    which used to reach the CLI's generic handler and print a remedy about the
+    migration's ``contentFile`` -- the wrong file. It is indeterminate now and the
+    remedy names ``evidence.json``.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_bytes(b'{"x": "' + b"a" * (MAX_SOURCE_FILE_BYTES + 1) + b'"}')
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "size cap" in str(caught.value)
+    assert "evidence.json" in caught.value.remedy
+    assert "contentFile" not in caught.value.remedy
+
+
+def test_an_evidence_path_that_is_a_directory_is_indeterminate(
+    service: ProposalService,
+) -> None:
+    """``evidence.json`` as a directory is present but unreadable, not absent.
+
+    ``exists()`` is true, so it is not the absent case; reading it raises an
+    ``OSError``, which is caught and answered indeterminate rather than dropped to
+    inference. What a checkout half-restored into a stale tree can leave behind.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.unlink()
+    drafted.evidence_file.mkdir()
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+
+
+def test_a_non_object_evidence_file_is_indeterminate(service: ProposalService) -> None:
+    """A present, parseable, non-object ``evidence.json`` records no fields.
+
+    ``[1, 2, 3]`` is valid JSON but not a mapping, so it carries no ``migrationId``
+    to check and cannot prove acceptance. Answered indeterminate, not dropped to
+    inference -- which, with no generated body left, could conclude accepted.
+    Dies if the non-object branch falls through to ``return None`` (absent).
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_text("[1, 2, 3]", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "not a JSON object" in str(caught.value)
+
+
+def test_a_non_utf8_evidence_file_is_indeterminate_as_bad_utf8(service: ProposalService) -> None:
+    """The reachable ``UnicodeDecodeError`` branch, pinned.
+
+    ``_read_within_project`` returns bytes, and ``json.loads`` on non-UTF-8 bytes
+    raises ``UnicodeDecodeError`` before it reaches JSON syntax -- so the reason is
+    "not valid UTF-8", not "not valid JSON". Dies if that branch is dropped or
+    ordered after ``ValueError`` (which would report it as JSON).
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.write_bytes(b'{"migrationId": "\xff\xfe"}')
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "not valid UTF-8" in str(caught.value)
+
+
+def test_a_dangling_symlink_evidence_file_is_indeterminate_not_absent(
+    service: ProposalService,
+) -> None:
+    """A broken symlink named ``evidence.json`` is present, not a missing record.
+
+    ``exists()`` is ``False`` for a dangling link, so without the ``is_symlink()``
+    half of the absent test it reads as "no record" and drops to inference -- which
+    can conclude accepted from a directory a contributor placed the link in. It is
+    indeterminate. Dies if ``and not evidence.is_symlink()`` is removed.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.unlink()
+    drafted.evidence_file.symlink_to(drafted.directory / "does-not-exist.json")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+
+
+def test_an_in_project_symlink_evidence_file_is_indeterminate(service: ProposalService) -> None:
+    """A symlinked ``evidence.json`` is refused by the read guard, then indeterminate.
+
+    A committed proposal's files are real (ADR-0013 point 7); a link resolving to
+    a real in-project file still routes through ``_reject_symlink_in_chain`` and is
+    caught as a present-but-unreadable record rather than followed and trusted.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    real = drafted.directory / "real-evidence.json"
+    real.write_text(drafted.evidence_file.read_text(encoding="utf-8"), encoding="utf-8")
+    drafted.evidence_file.unlink()
+    drafted.evidence_file.symlink_to(real)
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [123, ["01K9C7VN4TQZB2M8XR5HD3JFEW"], {"id": "x"}, None, True, "short", "not a ulid!!!", ""],
+)
+def test_a_malformed_migration_id_is_treated_as_absent_not_a_crash(
+    service: ProposalService, value: object
+) -> None:
+    """A ``migrationId`` of the wrong shape falls to inference, never crashes.
+
+    A parsed record whose ``migrationId`` is not a ULID string is *no usable
+    claim*, distinct from an unreadable file: the JSON read fine. It drops to
+    inference (here, an unfinished draft), not to a crash and not to indeterminate.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    _edit_evidence(drafted, migrationId=value)
+
+    with pytest.raises(ProposalError, match="looks unfinished") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert "could not be examined" not in str(caught.value)
+
+
+# -- absent record: legacy inference over the directory ---------------------
+
+
+def test_an_accepted_proposal_whose_evidence_was_removed_points_at_migrations_first(
+    service: ProposalService,
+) -> None:
+    """#253 round three, HIGH: the one branch that said "draft again" unconditionally.
+
+    An accepted proposal whose ``evidence.json`` is gone has its migration and
+    body landed and its directory emptied of bodies. With no record to check, the
+    answer is inferred -- and it must point at ``.theurian/migrations/`` first and
+    never instruct re-drafting outright, or it tells the author to duplicate a
+    change already in history.
+    """
+    drafted = service.draft(_request())
+    service.accept(drafted.proposal_id)
+    drafted.evidence_file.unlink()
+
+    with pytest.raises(ProposalAlreadyAcceptedError, match="appears to have been accepted") as e:
+        service.accept(drafted.proposal_id)
+
+    # Points at the migration set before it mentions re-drafting, and re-drafting
+    # is conditional ("If it is not") -- never the unconditional "draft again"
+    # that would tell the author to duplicate a change already in history.
+    assert ".theurian/migrations/" in e.value.remedy
+    assert e.value.remedy.index(".theurian/migrations/") < e.value.remedy.index(
+        "draft the change again"
+    )
+
+
+def test_a_legacy_proposal_infers_acceptance_from_the_generated_body_shape(
+    service: ProposalService,
+) -> None:
+    """Both inferred answers, on directories a real draft produced.
+
+    A generated-shape body still present reads as unfinished; none left reads as
+    accepted. Both point the reader at the migration set before acting, because
+    the inference is best-effort over a contributor-controlled directory.
+    """
+    unfinished = service.draft(_request())
+    _as_legacy(unfinished)
+    unfinished.migration_file.unlink()
+
+    with pytest.raises(ProposalError, match="looks unfinished") as caught:
+        service.accept(unfinished.proposal_id)
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert ".theurian/migrations/" in caught.value.remedy
+
+    accepted = service.draft(_request(item_id=ItemId("architecture.other-policy")))
+    service.accept(accepted.proposal_id)
+    _as_legacy(accepted)
+
+    with pytest.raises(ProposalAlreadyAcceptedError, match="appears to have been accepted") as e:
+        service.accept(accepted.proposal_id)
+    assert ".theurian/migrations/" in e.value.remedy
+
+
+def test_a_file_accept_left_behind_does_not_flip_the_legacy_inference(
+    service: ProposalService,
+) -> None:
+    """The leftover-file regression, on the path that still infers.
+
+    A real accepted proposal now carries a ``migrationId`` and is answered by the
+    proof path, so leftover files never reach the inference for it. On the legacy
+    path they still would, and the generated-shape filter is what keeps a
+    ``Thumbs.db``, a reviewer's notes or a nested stray from reading as an unmoved
+    body and reporting the accepted proposal unfinished.
+    """
+    drafted = service.draft(_request())
+    service.accept(drafted.proposal_id)
+    _as_legacy(drafted)
+    for name in ("REVIEW-NOTES.md", "Thumbs.db", "desktop.ini", "evidence.json~"):
+        (drafted.directory / name).write_text("left behind\n", encoding="utf-8")
+    (drafted.directory / "nested").mkdir()
+    (drafted.directory / "nested" / "leftover.md").write_text("also left\n", encoding="utf-8")
+
+    with pytest.raises(ProposalAlreadyAcceptedError, match="appears to have been accepted"):
+        service.accept(drafted.proposal_id)
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_an_unreadable_subtree_on_the_legacy_path_is_indeterminate(
+    service: ProposalService,
+) -> None:
+    """A subtree the walk cannot read is indeterminate, and the path it names is relative.
+
+    ``rglob`` swallowed the ``PermissionError`` and yielded what it could reach,
+    so an unreadable subdirectory hiding the body reported the draft accepted. The
+    walk refuses instead. The named path is project-relative, not the developer's
+    absolute home directory (:func:`_within`).
+    """
+    drafted = service.draft(_request())
+    _as_legacy(drafted)
+    drafted.migration_file.unlink()
+    subdirectory = drafted.body_file.parent
+    subdirectory.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError, match="could not be examined") as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        subdirectory.chmod(0o755)
+
+    message = str(caught.value)
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert "chmod" in caught.value.remedy
+    assert str(drafted.directory) not in message, "the absolute path must not leak"
+    assert repr(subdirectory.relative_to(drafted.directory).as_posix()) in message
+
+
+def test_the_legacy_inference_sees_a_symlinked_body(service: ProposalService) -> None:
+    """A body that is a symlink is still a body the generator's move did not take.
+
+    ``accept`` refuses a symlinked body by name later; what matters *here* is that
+    the file has not been moved out, so the draft is unfinished. Replace the
+    walk's name test with one that follows the link and this reads as accepted.
+    """
+    drafted = service.draft(_request())
+    _as_legacy(drafted)
+    drafted.migration_file.unlink()
+    target = drafted.body_file.rename(drafted.directory / "elsewhere.md")
+    drafted.body_file.symlink_to(target)
+
+    with pytest.raises(ProposalError, match="looks unfinished"):
+        service.accept(drafted.proposal_id)
+
+
+def test_the_legacy_inference_names_two_bodies_in_one_directory_in_sorted_order(
+    service: ProposalService,
+) -> None:
+    """Two bodies in ONE directory, one order, on every filesystem.
+
+    A directory listing is not ordered, so a message built from ``walk`` order
+    differs between machines. The two planted bodies share the proposal's top
+    level -- the case ``walk`` reorders on APFS, unlike two in different
+    directories where its top-down order already matches sorted -- so removing the
+    ``sorted`` reorders this message. ``aaa`` must precede ``zzz`` regardless.
+    """
+    drafted = service.draft(_request())
+    _as_legacy(drafted)
+    drafted.migration_file.unlink()
+    drafted.body_file.unlink()
+    zzz = drafted.directory / "zzz.01K9C7VN4TQZB2M8XR5HD3JFEW.md"
+    aaa = drafted.directory / "aaa.01K9C7VN4TQZB2M8XR5HD3JFEV.md"
+    zzz.write_text("z\n", encoding="utf-8")
+    aaa.write_text("a\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="looks unfinished") as caught:
+        service.accept(drafted.proposal_id)
+
+    message = str(caught.value)
+    assert message.index(repr(aaa.name)) < message.index(repr(zzz.name))
+
+
+def test_a_content_file_cannot_forge_this_command_s_own_error_output(
+    service: ProposalService,
+) -> None:
+    """A committed migration chooses text that reaches a terminal (T-3's shape).
+
+    ``ESC [ 2 K`` erases the line a terminal has already drawn and a carriage
+    return returns the cursor to its start, so a name carrying both prints
+    whatever follows *as if this command had printed it*. A proposal directory is
+    committed (ADR-0013 point 7), and YAML's double-quoted escapes carry both
+    characters past a parser that refuses them literally (``\\e``, ``\\r``). This
+    is the error path; the success path is covered at the CLI, where the render
+    sink escapes controls.
+    """
+    drafted = service.draft(_request())
+    forged = '"../knowledge/\\e[2K\\rerror: has already been accepted.md"'
+    document = drafted.migration_file.read_text(encoding="utf-8")
+    drafted.migration_file.write_text(
+        document.replace(drafted.content_file, forged), encoding="utf-8"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    message = f"{caught.value}{caught.value.remedy}"
+    assert "\x1b" not in message and "\r" not in message
+    assert "\\x1b[2K\\r" in message, "rendered as an escape, so a terminal draws it"
+
+
+def test_the_bodies_a_refusal_names_are_capped_rather_than_all_listed(
+    service: ProposalService,
+) -> None:
+    """One directory sets the length of the message it provokes.
+
+    A proposal directory is the contributor's, so its file count is too:
+    50,000 files produced a 600 KB error string in 1.5 s. Five names, then a
+    count. Counting the names listed rather than looking for the "and N more"
+    suffix: with the bound removed and the suffix left in place, the message lists
+    all ten *and* says "and 5 more", and an assertion on the suffix alone passes.
+    """
+    drafted = service.draft(_request())
+    _as_legacy(drafted)
+    drafted.migration_file.unlink()
+    planted = [f"filler-{index}.01K9C7VN4TQZB2M8XR5HD3JFE{index}.md" for index in range(9)]
+    for name in planted:
+        (drafted.directory / name).write_text("filler\n", encoding="utf-8")
+
+    with pytest.raises(ProposalError, match="looks unfinished") as caught:
+        service.accept(drafted.proposal_id)
+
+    message = str(caught.value)
+    body = drafted.body_file.relative_to(drafted.directory).as_posix()
+    listed = [name for name in [*planted, body] if repr(name) in message]
+
+    assert len(listed) == 5, f"five names, not {len(listed)}: {message}"
+    assert "and 5 more" in message, "and a count of the rest"
 
 
 def test_accept_refuses_a_body_path_that_leaves_the_project(

@@ -207,7 +207,11 @@ Bump `protocolVersion` when the change is breaking:
 `system.capabilities.milestone`'s removal (#206) is breaking by this table;
 `protocolVersion` is not bumped for it — a recorded, narrowly-scoped
 exemption, not a silent exception. See "Changing this contract" in
-[mcp-tools.md](mcp-tools.md) for the reasoning.
+[mcp-tools.md](mcp-tools.md) for the reasoning. `theurian propose accept`'s
+exit code for an already-accepted proposal (#254) carries a second exemption
+of the same shape, recorded in the same place. Both are scoped to the one
+field and the one code they name; the codes above — which a plugin script does
+branch on — are covered by neither.
 
 On a bump: raise `CURRENT_PROTOCOL_VERSION` in Core, release Core, then update
 every client's `protocolVersion` and `coreCompatibility`, and release the
