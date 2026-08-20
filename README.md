@@ -1,20 +1,22 @@
 <div align="center">
   <img src="assets/theurian-logo.png" alt="Theurian" width="420">
 
-  <h1>Theurian — Git-native engineering knowledge for AI agents</h1>
+  <h1>Theurian — the engineering record your AI agents consult</h1>
 
   <h3>Stop your AI from re-proposing what your team rejected in March.</h3>
 
   <p>
-    Theurian turns your ADRs and specifications into governed knowledge<br>
-    that any AI agent can query — and that no AI agent can write to.
+    Decisions, rejected alternatives, constraints — and the evidence behind them —<br>
+    under human governance, reachable by any MCP client.<br>
+    <b>Agents read. Agents propose. Agents never approve.</b>
   </p>
 
   <p>
     <a href="#quick-start"><b>Quick start</b></a> ·
     <a href="#why-not-just-a-vector-store-over-your-docs">Why not a vector store?</a> ·
     <a href="#what-comes-back">What comes back</a> ·
-    <a href="docs/adr/README.md">23 ADRs</a> ·
+    <a href="docs/roadmap.md">Roadmap</a> ·
+    <a href="docs/adr/README.md">24 ADRs</a> ·
     <a href="docs/security/threat-model.md">Threat model</a>
   </p>
 
@@ -59,6 +61,40 @@ behind a permission.
 
 </td></tr>
 </table>
+
+## What Theurian is, and what it is not
+
+Theurian is the **evidence plane**: the record of what your team decided that
+agents, CI, and people all *consult*. It is deliberately not a control point.
+
+> **Theurian does not orchestrate, does not approve, does not enforce.**
+
+Those are the jobs of your agent runtime, of Git, and of CI, and Theurian is
+built to leave them there. Approval is the act of merging a pull request —
+there is no approval command and no approver field anywhere in this codebase.
+CI is welcome to read Theurian and block a pull request on what it finds; the
+thing that blocked is CI.
+
+That boundary is what the rest of the design falls out of:
+
+- **Agents read, propose, and never approve.** The five MCP tools are read-only,
+  and `system.capabilities` reports `writeTools: false`. Proposing happens at the
+  CLI today — `theurian propose` writes a proposal file for a human to review and
+  merge. Write-intent MCP tools are designed and not built; when they land they
+  emit the same proposal file, never approved state.
+- **Vendor-neutral by construction, not by intention.** Anything that speaks MCP
+  over Streamable HTTP gets the same tools and the same schemas. Core needs no
+  API key and no account, and a CI job named *Full suite with no network* runs
+  the whole test suite with the network blocked on every commit that touches
+  Core.
+- **Every answer carries its evidence.** Status, trust level, validity window,
+  and a source anchor travel with the result, so a claim can be checked rather
+  than believed.
+
+The adopted plan for where this goes next is [the
+roadmap](docs/roadmap.md) — which is direction, not a description of what ships
+today. Anything below that reads as a current capability agrees with
+`system.capabilities`.
 
 ## What comes back
 
@@ -148,14 +184,16 @@ The approved decision that rejected it is what comes back.
 |  |  |
 | :-- | :-- |
 | **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` only through a migration a human authored and signed off. |
-| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent tool exists today, and when one does it will emit a proposal file a human reviews and merges. Resolved review threads become *candidates* when Milestone 7 ingests them; the direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
+| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent *MCP* tool exists, so proposing is the `theurian propose` CLI's job today, and a write-intent tool will emit the same proposal file a human reviews and merges. Resolved review threads become *candidates* when review ingestion lands ([Phase B](docs/roadmap.md)); `system.capabilities` reports `reviewIngestion: false` until it does. The direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries its revision's provenance: provider and URI, plus repository, commit, file and line range where the source pins them. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
 
 Specification traceability — requirement → spec → ADR → PR → review → code →
 test → evidence, as a queryable graph — is the design this is built toward and
-is not built yet. It is Milestone 8; `system.capabilities` reports
-`traceability: false`.
+**is not built**. `system.capabilities` reports `traceability: false`, no
+`knowledge.trace` or `knowledge.impact` tool exists, and the
+`traceability_edges` table ships empty. It is [Phase C](docs/roadmap.md) of the
+adopted roadmap.
 
 ## Quick start
 
@@ -415,8 +453,10 @@ means each covers the other's blind spot.
 substring retriever for `トークン` alone. The two-character term is dropped from
 the trigram expression, and the floor that would fall back to a scan does not
 fire because the expression is not empty. The long term still answers, so this
-is a recall loss rather than the blackout the all-short case was; closing it is
-Milestone 6 ranking work.
+is a recall loss rather than the blackout the all-short case was. Milestone 6
+completed without closing it; under the adopted [roadmap](docs/roadmap.md) it
+gets measured in Phase A before it gets fixed, so the fix has a baseline to be
+judged against.
 ([ADR-0023](docs/adr/0023-trigram-index-beside-the-word-index.md))
 
 <details>
@@ -502,19 +542,47 @@ yet, and grades it.
 
 ## Status
 
-**Alpha, Milestone 6 of 8.** Usable against real repositories, and not yet
-stable enough to promise upgrade paths.
+**Alpha.** Usable against real repositories, and not yet stable enough to
+promise upgrade paths.
+
+### What has shipped
+
+Milestones 0 through 6, which are history rather than a plan:
 
 | Milestone | Scope | Status |
 | :-- | :-- | :-- |
 | 0–4 | Architecture and ADRs · canonical store and migrations · source ingestion · single MCP daemon · Claude Code plugin | **done** |
 | 5 | Ranked retrieval: FTS5 word + trigram indexes, RRF, token budgets; dense built but opt-in | **done** |
 | 6 | Incremental rebuild (purge is a build, transitive withdrawal, `index gc`) and blue/green index switchover, landed · index states exhaustion explicitly, landed · scope filtering: project + status enforced, tenant/ACL refused at write time, validity window pinned by caller-chosen `asOf`, sensitivity and full axis enforcement deferred to [#119](https://github.com/theurian/theurian/issues/119) · RAPTOR forest end to end (opt-in): `index build --raptor` derives and stores it (three tiers; the Catalog tier is not fanned out, so a build wall remains far above the one removed, [#144](https://github.com/theurian/theurian/issues/144)); a withdrawal re-derives each affected scope so a purged forest equals one that never held the withdrawn rows (ADR-0008 decision 9's two-corpus equality); retrieval routes through summaries to leaves and a hit carries its `raptorPath`, gated so a title crosses no scope the caller's leaf is not in | **done** |
-| 7 | GitHub review ingestion and knowledge candidates | planned |
-| 8 | Specification and traceability tooling, drift detection | planned |
+
+### What comes next
+
+**Forward planning moved from milestone numbers to phases on 2026-08-20, and
+[`docs/roadmap.md`](docs/roadmap.md) is the plan of record.** The numbers had
+stopped being trustworthy: `theurian propose` is recorded in
+[ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md) as landing in Milestone
+7, while this file listed Milestone 7 as `planned` until the change that added
+this section — and the definition of that milestone differed between documents.
+Rather than renumber, the roadmap phases what is left and says what each phase
+does *not* claim:
+
+| Phase | Scope |
+| :-- | :-- |
+| 0 | Stabilize: take the `pre-1.0` label to zero and ship 0.1.0 stable, with sensitivity/tenant/ACL enforcement ([#119](https://github.com/theurian/theurian/issues/119)) mandatory before it |
+| A | A reproducible retrieval-evaluation baseline, so ranking changes stop shipping against no measurement |
+| B | The agent write path over MCP, and GitHub review ingestion |
+| C | Traceability: collecting the graph and querying it |
+| D | Enforced status transitions, and history that can be asked about |
+| E | Impact analysis and drift detection |
+| F | Ecosystem: a second client adapter, context export, and experimental work |
+
+Phases ship independently, and only dependencies constrain the order. **None of
+the above describes a shipped capability** — for that, `system.capabilities` is
+the authority, and this file agrees with it.
 
 ## Documentation
 
+- [Roadmap](docs/roadmap.md) — the adopted plan, what each phase does not claim, and the documentation contradictions Phase 0 owes
 - [Requirements and architecture analysis](docs/architecture/requirements-analysis.md) — the reasoning behind everything here
 - [Architecture decision records](docs/adr/README.md) — every decision, and the alternatives rejected
 - [Threat model](docs/security/threat-model.md) · [Local MCP security](docs/security/local-mcp.md)
