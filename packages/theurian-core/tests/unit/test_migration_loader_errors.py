@@ -2309,18 +2309,29 @@ def test_validate_migration_document_never_reads_a_file_ref(tmp_path: Path) -> N
     """The ``file://`` face of the same seam: ``urlopen`` reads a local file for
     a ``file://`` ref just as it fetches an ``http://`` one.
 
-    The target file holds a real subschema (``{"type": "string"}``) plus a
-    sentinel. Before the fix the ref resolved, the document was validated
-    against ``{"type": "string"}``, and a ``MigrationError`` was raised -- proof
-    the file had been read. After the fix the ref fails closed as
-    ``SchemaUnreadableError`` and the file is never opened, which is why the
-    sentinel cannot appear in the refusal.
+    An ``open`` audit hook records any open of the ``file://`` target, and the
+    test asserts the list stays empty -- the no-read proof is that assertion,
+    not the error message. Before the fix the default registry opened and read
+    the target to resolve the ref; after it the registry has no ``retrieve``,
+    so the ref fails closed as ``SchemaUnreadableError`` and the file is never
+    touched. The ``pytest.raises`` + offline-reason assertions are kept as the
+    fail-closed teeth alongside it.
     """
     _validator.cache_clear()
     target = tmp_path / "secret-subschema.json"
-    sentinel = "SENTINEL-9d1f-should-never-be-read"
-    target.write_text(json.dumps({"type": "string", "$comment": sentinel}))
+    target.write_text(json.dumps({"type": "string"}))
     schema_dir = _write_schema(tmp_path, {"$ref": target.as_uri()})
+
+    opens: list[str] = []
+
+    def _record_open(event: str, args: tuple[object, ...]) -> None:
+        # `open` fires for every file open in the process, and an audit hook
+        # cannot be removed once added -- so match only this test's unique
+        # target name and keep the body a single cheap comparison.
+        if event == "open" and args and isinstance(args[0], str) and args[0].endswith(target.name):
+            opens.append(args[0])
+
+    sys.addaudithook(_record_open)
 
     try:
         with pytest.raises(SchemaUnreadableError) as excinfo:
@@ -2329,7 +2340,7 @@ def test_validate_migration_document_never_reads_a_file_ref(tmp_path: Path) -> N
         _validator.cache_clear()
 
     assert "could not be resolved offline" in str(excinfo.value)
-    assert sentinel not in str(excinfo.value), "the file:// target's contents must not be read"
+    assert opens == [], f"the file:// target must never be opened, but was: {opens}"
 
 
 def test_validate_migration_document_translates_a_dangling_ref(tmp_path: Path) -> None:
