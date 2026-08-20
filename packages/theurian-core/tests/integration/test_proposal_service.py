@@ -763,11 +763,11 @@ def test_accept_refuses_a_replacement_that_would_break_an_existing_pin(
 def test_the_pin_guard_sees_a_pin_held_by_a_symlinked_landed_migration(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """#234: ``_pinned_digest_at`` skips a symlink the loader follows.
+    """#234: the replacement guard once skipped a symlink the loader follows.
 
     The same class ``_landed_state`` closed for the accepted-detector (#253), on
-    the guard above. ``_pinned_digest_at`` re-enumerates
-    ``.theurian/migrations/*.yaml`` from the filesystem and ``continue``s on
+    the guard above. That guard once re-enumerated
+    ``.theurian/migrations/*.yaml`` from the filesystem and ``continue``d on
     ``migration.is_symlink()``, while ``load_migrations`` follows a symlinked
     entry that points at a real in-project migration and loads its pins -- so the
     two readers disagree about which bodies are pinned, and the disagreement is
@@ -853,7 +853,7 @@ def test_accept_refuses_a_case_variant_of_a_landed_body(
 ) -> None:
     """HIGH-A: a ``contentFile`` differing only in case reaches a landed inode.
 
-    ``_pinned_digest_at`` compared resolved path *strings*, and ``Path.resolve()``
+    The replacement guard compared resolved path *strings*, and ``Path.resolve()``
     folds ``.``/``..``/symlinks but never case or NFC/NFD (the loader records this
     on ``UpsertRevision.content_identity``, #210). So a hand-authored
     ``contentFile`` spelling a landed body's path with a different case reached
