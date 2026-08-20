@@ -427,6 +427,27 @@ destination survives the move. Tested:
 `::test_accept_refuses_an_in_project_intermediate_directory_symlink`, and
 `::test_accept_refuses_a_content_file_inside_the_root_but_outside_knowledge`.
 
+**The same input also chooses text this command prints, which is T-3's shape at
+the CLI edge rather than in indexed content.** A `contentFile` or a file name in
+the proposal directory reaches a refusal message on stderr, and YAML's
+double-quoted escapes (`\e`, `\r`) carry `ESC [ 2 K` and a carriage return
+through a parser that refuses both literally. Those two erase the line a terminal
+has already drawn and print another in its place: a planted value reproduced
+`propose accept`'s own *"has already been accepted / No action is needed"* under
+this command's name, re-introducing by hand the misdiagnosis
+[#253](https://github.com/theurian/theurian/issues/253) had just removed. The
+victim here is the human reading the terminal, not the agent — the label-based
+controls under T-3 do not apply, and no result payload is involved. **Controls:**
+every proposal-derived name is rendered with `repr` and enumerations stop after
+five with a count of the rest, both in `application.proposal_service._names`;
+`--json` was never affected, because `json.dumps` escapes control characters.
+Tested: `::test_a_content_file_cannot_forge_this_command_s_own_output` and
+`::test_the_bodies_a_refusal_names_are_capped_rather_than_all_listed`.
+**Residual:** the interpolations this does not quote are constrained by the
+patterns they matched instead — a migration filename, a validated identifier —
+and two library strings measured on 2026-08-20: `OSError.__str__` reprs its own
+filename, and PyYAML refuses `ESC` outright while normalising `CR`.
+
 **Residual (accepted, and it belongs to T-1, not a gap here): a hardlinked body.**
 `O_NOFOLLOW` does not see a hardlink — a hardlink is a second name for one inode,
 not a symlink — so a body file hardlinked to `~/.ssh/id_ed25519` would copy that

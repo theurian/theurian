@@ -1066,19 +1066,31 @@ def test_the_bodies_a_refusal_names_are_capped_rather_than_all_listed(
     50,000 files produced a 600 KB error string in 1.5 s. Five names say what
     shape the problem is and the count says how big it is, which is what a reader
     and a log both need.
+
+    **Both halves are asserted, and the first is the one that matters.** Counting
+    the names listed rather than looking for the "and N more" suffix: with the
+    bound removed and the suffix left in place, the message lists all ten *and*
+    says "and 5 more", and an assertion on the suffix alone passes -- measured,
+    that mutation survived until this test counted.
     """
     drafted = service.draft(_request())
     _forget_the_migration_id(drafted)
     drafted.migration_file.unlink()
-    for index in range(9):
-        (drafted.directory / f"filler-{index}.01K9C7VN4TQZB2M8XR5HD3JFE{index}.md").write_text(
-            "filler\n", encoding="utf-8"
-        )
+    planted = [f"filler-{index}.01K9C7VN4TQZB2M8XR5HD3JFE{index}.md" for index in range(9)]
+    for name in planted:
+        (drafted.directory / name).write_text("filler\n", encoding="utf-8")
 
     with pytest.raises(ProposalError, match="looks unfinished") as caught:
         service.accept(drafted.proposal_id)
 
-    assert "and 5 more" in str(caught.value), "five names, then a count of the rest"
+    message = str(caught.value)
+    # The drafted body is named by its sub-path, the planted ones by their leaf:
+    # each is relative to the proposal directory, which is what the walk yields.
+    body = drafted.body_file.relative_to(drafted.directory).as_posix()
+    listed = [name for name in [*planted, body] if repr(name) in message]
+
+    assert len(listed) == 5, f"five names, not {len(listed)}: {message}"
+    assert "and 5 more" in message, "and a count of the rest"
 
 
 def test_accept_refuses_a_body_path_that_leaves_the_project(

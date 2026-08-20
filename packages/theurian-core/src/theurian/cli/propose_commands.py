@@ -535,12 +535,12 @@ def _request(inputs: _Inputs, *, body: str, content_type: MediaType) -> Proposal
         model=inputs.model,
         reasoning=inputs.reasoning,
         # The same anchor the revision records, written to a different file for
-        # a different reader. `evidence.json` is read by the humans reviewing
-        # the pull request and never by Core, while `metadata.sourceAnchors` is
-        # what `theurian migrate apply` enforces (INV-8). Neither substitutes
-        # for the other, which is why they stay separate fields here and
-        # separate files on disk even when this surface fills both from one
-        # option.
+        # a different reader. The anchors in `evidence.json` are read by the
+        # humans reviewing the pull request and by no code path, while
+        # `metadata.sourceAnchors` is what `theurian migrate apply` enforces
+        # (INV-8). Neither substitutes for the other, which is why they stay
+        # separate fields here and separate files on disk even when this surface
+        # fills both from one option.
         anchors=anchors,
     )
     return ProposalRequest(

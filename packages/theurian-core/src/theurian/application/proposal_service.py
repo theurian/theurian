@@ -426,9 +426,18 @@ class ProposalService:
         check, which would refuse legitimate files.
 
         Raises:
+            ProposalAlreadyAcceptedError: If this proposal's own migration is
+                already in ``.theurian/migrations/``. A composition root reports
+                this and :class:`MigrationNameTakenError` under the exit code it
+                reserves for knowledge state, so both are named here rather than
+                left inside "a migration already in place".
+            MigrationNameTakenError: If the migration's name is taken, whether by
+                a previous acceptance of this proposal or by a different change
+                that collided.
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
-                names a migration already in place, or names a file the security
-                layer refuses.
+                could not be fully examined, or names a file the security layer
+                refuses. Both types above are subclasses, so a caller that
+                catches only this still catches everything.
             PathEscapeError: If a ``contentFile`` resolves outside
                 ``.theurian/knowledge/``.
             InputTooLargeError: If a file the accept path reads exceeds SEC-8's
