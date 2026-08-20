@@ -283,8 +283,9 @@ def _refuse_a_document_that_nests_too_deep(
 ) -> None:
     """Refuse a document nested past :data:`MAX_DOCUMENT_NESTING` (issue #291).
 
-    **Iterative on purpose.** A recursive depth checker would exhaust the same
-    budget it exists to protect, and fail in the same way one level earlier.
+    **Iterative on purpose.** A recursive depth checker spends the very budget
+    it exists to protect, so it would raise `RecursionError` on exactly the
+    documents it is meant to refuse -- moving the fault rather than closing it.
     The frontier holds ``(value, depth)`` pairs, so the only stack this uses is
     the heap.
 
@@ -299,8 +300,10 @@ def _refuse_a_document_that_nests_too_deep(
     ``propose`` path builds the same shapes. ``tuple`` is walked alongside
     ``list`` for the in-memory caller: the schema would refuse one as a
     non-array anyway, but only after ``jsonschema`` has repr'd it, which is the
-    step this bound exists to reach first. ``str`` is deliberately not a
-    container here -- it is a leaf, and its own length is bounded elsewhere.
+    step this bound exists to reach first. The check is ``list | tuple`` and not
+    ``Sequence`` so that a ``str`` stays a leaf: its characters are not nesting,
+    and descending into them would make this pass cost the length of the text
+    for nothing.
     """
     frontier: list[tuple[object, int]] = [(document, 1)]
     while frontier:
@@ -425,9 +428,17 @@ def _missing_required_properties(exc: ValidationError) -> list[str]:
     Empty when the keyword is not ``required``, when the instance is not a
     mapping, or when nothing is missing -- each of which sends the caller back
     to its generic wording rather than to a sentence that would be false.
+
+    The keyword check is not redundant with the type checks below it. Other
+    keywords carry a list of strings too: an array-valued ``type``, or an
+    ``enum``, against a mapping instance would otherwise have every name it
+    lists reported as a *missing property*, which is not what either keyword
+    means.
     """
     required = exc.validator_value
     instance = exc.instance
+    if exc.validator != "required":
+        return []
     if not isinstance(required, list) or not isinstance(instance, Mapping):
         return []
     return [name for name in required if isinstance(name, str) and name not in instance]
@@ -443,8 +454,8 @@ def _schema_rejection(exc: ValidationError) -> str:
     one that leaves no trace when it goes -- the escaping below.
 
     `jsonschema` builds `ValidationError.message` by interpolating the failing
-    instance with `{instance!r}`, which two properties of the refusal we
-    forwarded used to depend on:
+    instance with `{instance!r}`, and two properties of the refusal this seam
+    hands a reader used to rest on that:
 
     * **Bounded.** It was not: a 100 KB author-written value rendered whole
       into a message a reader receives, measured at 100,198 characters. A
@@ -522,7 +533,9 @@ def load_migrations(
         schema_root: The repository's ``schemas/`` directory.
 
     Raises:
-        MigrationError: On a malformed, duplicate, cyclic, or unresolvable file.
+        MigrationError: On a malformed, duplicate, cyclic, or unresolvable
+            file, or one whose document nests past
+            :data:`MAX_DOCUMENT_NESTING` (issue #291).
         PathEscapeError: If a ``contentFile`` points outside ``project_root``;
             if ``migrations_dir`` itself is a symlink that resolves outside
             ``project_root`` (round four; checked directly, at the probe --

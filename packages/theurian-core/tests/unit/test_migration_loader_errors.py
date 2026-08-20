@@ -2811,3 +2811,35 @@ def test_a_deeply_nested_document_is_a_document_fault_from_an_already_consumed_s
             )
     finally:
         sys.setrecursionlimit(previous_limit)
+
+
+def test_a_list_valued_keyword_other_than_required_is_not_read_as_missing_properties(
+    tmp_path: Path,
+) -> None:
+    """The guard inside the #289 fix's `required` wording, driven.
+
+    `_schema_rejection` words a `required` rejection from the schema's own list
+    of names -- the one rejection whose cause is nowhere in the instance. That
+    branch is selected by the *keyword*, and this test is why the keyword check
+    is there rather than being inferred from the shapes: `type` and `enum` also
+    carry a list of strings, and against a mapping instance every name they
+    list would otherwise be reported as a missing property. Deleting the
+    `exc.validator != "required"` line turns the message below into "missing
+    the required properties 'string', 'null'", which is not what `type` means.
+
+    The bundled schema cannot drive it -- its one array-valued `type`
+    (`validTo`) sits inside `#/$defs/operation`'s `oneOf`, which answers first
+    with a list of *subschemas* -- so the schema is written here instead.
+    """
+    _validator.cache_clear()
+    schema_dir = _write_schema(tmp_path, {"type": ["string", "null"]})
+
+    try:
+        with pytest.raises(MigrationError) as excinfo:
+            validate_migration_document({"apiVersion": "theurian.dev/v1"}, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    message = str(excinfo.value)
+    assert "missing the required" not in message, "a type keyword lists types, not properties"
+    assert "'type'" in message, "the reader is still told which keyword refused"
