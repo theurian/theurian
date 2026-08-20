@@ -2,17 +2,18 @@
 
 <img src="assets/theurian-logo.svg" alt="Theurian" width="420">
 
-# Engineering knowledge your AI can trust
+# The engineering record your AI agents consult
 
 ### Stop your AI from re-proposing what your team rejected in March.
 
-Theurian turns architecture decisions, specifications, and engineering context
-into governed knowledge that AI agents can query — with provenance, trust, and
-freshness attached.
+Decisions, rejected alternatives, constraints — and the evidence behind them —
+under human governance, reachable by any MCP client.
+**Agents read. Agents propose. Agents never approve.**
 
 **[Understand the architecture](architecture/overview.md)** ·
 **[Connect Claude Code](integrations/claude-code.md)** ·
-**[Explore the MCP tools](protocol/mcp-tools.md)**
+**[Explore the MCP tools](protocol/mcp-tools.md)** ·
+**[Read the roadmap](roadmap.md)**
 
 </div>
 
@@ -79,9 +80,22 @@ That makes an answer inspectable instead of merely plausible.
 Theurian keeps an explicit boundary between AI output and approved engineering
 knowledge.
 
-**No MCP write tool can directly create approved knowledge.**
+**No MCP write tool can directly create approved knowledge.** The five tools a
+client can call today are read-only, and `system.capabilities` reports
+`writeTools: false`.
 
 This is intentional.
+
+Proposing happens at the CLI today: `theurian propose` writes a proposal file a
+human reviews and merges. Write-intent MCP tools are designed and not built;
+when they land they emit the same proposal file.
+
+**What is enforced, and what is convention.** That no MCP tool writes approved
+knowledge is enforced — a test walks the bytecode of every registered tool to
+hold it. That a human merged the proposal is *not*: `migrate apply` applies
+whatever is in `.theurian/migrations/`, committed or not, so the review is a
+workflow convention rather than a check the code makes (T-15's recorded
+residual).
 
 AI agents can consume governed knowledge without becoming the authority that
 governs it. Decisions remain reviewable engineering artifacts controlled by
@@ -93,6 +107,27 @@ the team.
 Theurian is built for the second one.
 
 [Read the architectural decisions →](adr/README.md)
+
+---
+
+## The evidence plane, not a control plane
+
+Theurian is the record that agents, CI, and people all *consult*. It is
+deliberately not a place where things get decided or enforced.
+
+> **Theurian does not orchestrate, does not approve, does not enforce.**
+
+Approval is the act of merging a pull request; enforcement is what CI and branch
+protection already do. Adding a third control point would put Theurian in
+competition with both, and would contradict the safety rule the rest of the
+design rests on: *Theurian labels; it does not enforce. Acting on the label is
+the calling agent's responsibility.*
+
+CI reading Theurian and blocking a pull request on what it finds is a welcome
+arrangement — and the thing that blocked is CI.
+
+The reasoning, and the alternative positioning that was rejected, are in
+[the roadmap](roadmap.md).
 
 ---
 
@@ -108,7 +143,7 @@ most important engineering questions.
 | Was this reviewed? | Usually unknown | **Trust and status travel with it** |
 | Is it still valid? | Usually unknown | **Freshness is queryable** |
 | Where did this claim come from? | Often a document link | **Source provenance** |
-| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No** |
+| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — no write tool exists. On the CLI path nothing enforces the merge (T-15's recorded residual); the workflow, not the code, is the check. |
 
 The goal is not to replace search.
 
@@ -199,10 +234,19 @@ but also:
 > “Why did the team decide this, what evidence supports it, and is that
 > decision still valid?”
 
-Some parts of that vision are still under development. The documentation
-distinguishes implemented capabilities from planned ones.
+**That graph is not built.** `system.capabilities` reports
+`traceability: false`, there is no `knowledge.trace` or `knowledge.impact` tool,
+and the `traceability_edges` table ships empty. Collecting the graph and
+querying it is Phase C of the adopted roadmap; impact analysis and drift
+detection are Phase E.
 
-[Explore traceability →](architecture/traceability.md)
+Nothing on this page describes **as shipped** a capability that does not exist
+today. Where
+this documentation looks forward, it says so, and `system.capabilities` is the
+authority a client should ask.
+
+[Read the roadmap →](roadmap.md) ·
+[Explore the traceability design →](architecture/traceability.md)
 
 ---
 
@@ -210,7 +254,8 @@ distinguishes implemented capabilities from planned ones.
 
 | Area | What you'll find |
 | --- | --- |
-| [Architecture](architecture/overview.md) | System design, knowledge model, local daemon, retrieval, and traceability |
+| [Roadmap](roadmap.md) | The adopted plan, phase by phase, and what each phase does not claim |
+| [Architecture](architecture/overview.md) | System design, knowledge model, local daemon, retrieval, and the traceability design |
 | [ADRs](adr/README.md) | The decisions that shape Theurian itself |
 | [Protocol](protocol/mcp-tools.md) | MCP tools, migrations, and compatibility contracts |
 | [Integrations](integrations/claude-code.md) | Connecting Theurian to AI development tools |

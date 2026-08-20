@@ -12,6 +12,20 @@ changes, and milestone completions.
 
 ## Repository history
 
+### 2026-08-20 — Forward planning moved from milestones to phases
+
+[`docs/roadmap.md`](docs/roadmap.md) was adopted as the plan of record, and the
+README's forward-looking milestone rows were retired in favour of its phases.
+The numbering had stopped being trustworthy: ADR-0013 records `theurian propose`
+as landing in Milestone 7 while the README listed Milestone 7 as `planned`, and
+the definition of that milestone differed between documents. Milestones 0–6 stay
+in the README as shipped history.
+
+Recorded here because it changes how work is planned and announced. It is not a
+milestone completion, and it is not comparable to the entries below — and the
+entries below are not a complete set: milestones 1 through 6 are missing from
+this file, an inconsistency the roadmap's own appendix records against Phase 0.
+
 ### 2026-08-01 — Milestone 0 complete
 
 Architecture and OSS foundation.
