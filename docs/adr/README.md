@@ -32,6 +32,8 @@ alternatives that were rejected and why.
 | [0022](0022-index-lives-in-its-own-database.md) | The retrieval index lives in its own database file | accepted |
 | [0023](0023-trigram-index-beside-the-word-index.md) | A trigram index beside the word index, not instead of it | accepted |
 | [0024](0024-a-purge-is-a-build.md) | A purge is a build; a published index is never written | accepted |
+| [0025](0025-sensitivity-is-enforced-before-0-1-0-stable.md) | Sensitivity is enforced before 0.1.0 stable | accepted |
+| [0026](0026-evidence-plane-not-control-plane.md) | Theurian is an evidence plane, not a control plane | accepted |
 
 ## Writing a new ADR
 

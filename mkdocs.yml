@@ -71,19 +71,24 @@ markdown_extensions:
 # the 3,566,058-byte mermaid bundle itself, and only on a page that actually
 # has a diagram. A page without one makes no bundle request and pays 6,925
 # bytes uncompressed across the two: 6,384 for js/mermaid-init.js and 541 for
-# css/mermaid.css. That is 24 of the 44 published markdown pages, or 26 of the
-# 47 served HTML files, since 404.html and search.html load them too. The
-# forty-seventh is google150fa28bebf014f3.html, the Search Console verification
+# css/mermaid.css. That is 26 of the 46 published markdown pages, or 28 of the
+# 49 served HTML files, since 404.html and search.html load them too. The
+# forty-ninth is google150fa28bebf014f3.html, the Search Console verification
 # token documented at the end of this file, which requests neither.
 #
-# Re-measured 2026-08-20 against the branch that adds docs/roadmap.md, by
+# Re-measured 2026-08-20 against the branch adding ADR-0025 and ADR-0026, by
 # building the site and counting the built output rather than the sources. The
 # key for "has a diagram" is the selector js/mermaid-init.js actually uses,
 # `pre > code.language-mermaid`; counting ```mermaid fences in the sources
 # instead would also count fences inside excluded pages. Twenty built pages
-# match it, so the no-diagram counts — 24 and 26 — did not move when this page
-# was added: docs/roadmap.md carries two diagrams and joined the matching set,
-# not the paying-only-the-pair set. Both totals did move, by one each.
+# match it, unchanged from the previous measurement — the two new ADRs carry no
+# diagram, so both of them joined the paying-only-the-pair set and every number
+# here moved by two except that twenty.
+#
+# Three of the five numbers in this paragraph move whenever a page is added, and
+# they have now been corrected in two consecutive changes. Nothing pins them: no
+# test reads this comment, so it is true only for as long as whoever adds the
+# next page rebuilds and re-counts. Treat that as the known weakness it is.
 #
 # docs/js/mermaid.min.js is not in the repository. The Pages workflow fetches
 # it, checksum-verified, before the build, and a local build has to do the
