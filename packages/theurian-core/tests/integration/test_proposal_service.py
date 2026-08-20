@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -40,6 +41,11 @@ from theurian.infrastructure.filesystem.migration_loader import (
     validate_migration_document,
 )
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+
+#: A ``chmod 0o000`` denies nothing to root and nothing on Windows, so a test
+#: that needs the mode to actually refuse cannot run there (the offline CI job
+#: runs as root). Same guard the sibling permission tests carry.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 pytestmark = pytest.mark.integration
 
@@ -1326,6 +1332,7 @@ def test_a_file_accept_left_behind_does_not_flip_the_legacy_inference(
         service.accept(drafted.proposal_id)
 
 
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 def test_an_unreadable_subtree_on_the_legacy_path_is_indeterminate(
     service: ProposalService,
 ) -> None:
