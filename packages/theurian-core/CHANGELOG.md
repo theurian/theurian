@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev8] - 2026-08-20
+
 ### Added
 
 - **`evidence.json` now records the `migrationId` and `itemId` its proposal
