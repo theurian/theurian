@@ -47,9 +47,9 @@ failing that every rule **skips loudly**. This is the contract
 ``packages/theurian-core/tests/command_population.py`` already holds with the
 same harness, and it is here because the harness broke this module outright:
 inside a ``tools/mutate.py`` copy, ``git`` exits 128, ``check=True`` turned that
-into a ``CalledProcessError``, and 11 of the 13 rules ERRORed -- which takes the
-*unmutated control* RED and voids every verdict in the batch, including the
-verdicts about this file.
+into a ``CalledProcessError``, and 11 of the 13 rules failed on it (measured:
+11 failed, 2 passed) -- which takes the *unmutated control* RED and voids every
+verdict in the batch, including the verdicts about this file.
 
 The manifest carries paths and nothing else -- it is ``git ls-files --cached
 -z`` output verbatim -- so two things degrade on that path and say so in their
