@@ -754,10 +754,12 @@ def _no_migration_error(directory: Path, proposal_id: ProposalId) -> ProposalErr
 
     The body is what separates them. :meth:`ProposalService._commit` unlinks
     every body it moved *before* it unlinks the migration, so a directory
-    ``accept`` has emptied holds ``evidence.json`` and nothing else -- measured
-    over the 26 accepted proposals committed under ``.theurian/proposals/``,
-    every one of which holds exactly that file -- while a draft that never
-    reached its migration still holds the body it wrote first.
+    ``accept`` has emptied keeps no body, while a draft that never reached its
+    migration still holds the body it wrote first. Measured on 2026-08-20 at
+    ``9873272`` over the 26 accepted proposals committed under
+    ``.theurian/proposals/``: every one holds ``evidence.json`` and nothing else,
+    the namespace directory having been dropped by Git, which tracks no empty
+    directory.
     """
     if not (directory / EVIDENCE_FILE).is_file():
         # No evidence and no migration is a shape `draft` cannot produce -- it
@@ -770,10 +772,14 @@ def _no_migration_error(directory: Path, proposal_id: ProposalId) -> ProposalErr
         )
     unmoved = _files_beside_the_evidence(directory)
     if not unmoved:
+        # "No body is left", not "the directory holds evidence.json alone": a
+        # `.DS_Store` beside the evidence makes the second sentence false while
+        # the diagnosis stays right, and a message that overstates what was
+        # checked is how a reader stops trusting the ones that do not.
         return ProposalAlreadyAcceptedError(
-            f"Proposal {proposal_id.value} has already been accepted: its directory holds "
-            f"{EVIDENCE_FILE} and nothing else, which is what accept leaves behind once the "
-            "migration and every body it names have been moved out.",
+            f"Proposal {proposal_id.value} has already been accepted: no body file is left "
+            f"beside its {EVIDENCE_FILE}, and accept removes a proposal's bodies and then "
+            "its migration.",
             remedy="No action is needed. Review the change and open a pull request.",
         )
     return ProposalError(

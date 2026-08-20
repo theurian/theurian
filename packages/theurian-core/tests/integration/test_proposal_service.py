@@ -802,6 +802,29 @@ def test_an_interrupted_draft_is_not_reported_as_accepted(
     assert not list(paths.migrations.glob("*.yaml"))
 
 
+def test_a_stray_dot_file_does_not_make_an_accepted_proposal_look_unfinished(
+    service: ProposalService,
+) -> None:
+    """The dot-file skip in ``_files_beside_the_evidence``, driven by real input.
+
+    A body path cannot begin with a dot in any component -- it is built from an
+    ``ItemId``, which is lowercase kebab-case -- so a dot-file in a proposal
+    directory is something else's: a Finder window's ``.DS_Store``, an editor's
+    swap file. Counted as an unmoved body it would turn "no action is needed"
+    into "draft it again" and mint a second migration for a change that has
+    already landed, which is the duplication the accepted branch exists to stop.
+
+    Delete the ``startswith(".")`` clause and this goes red with the interrupted
+    diagnosis; nothing else in the suite notices.
+    """
+    drafted = service.draft(_request())
+    service.accept(drafted.proposal_id)
+    (drafted.directory / ".DS_Store").write_bytes(b"\x00\x01")
+
+    with pytest.raises(ChangeAlreadyInPlaceError, match="already been accepted"):
+        service.accept(drafted.proposal_id)
+
+
 def test_a_directory_with_no_migration_and_no_evidence_says_draft_it_again(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
