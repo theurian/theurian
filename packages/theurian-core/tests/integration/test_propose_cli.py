@@ -520,6 +520,41 @@ def test_the_render_sink_escapes_every_control_and_keeps_printable_unicode(
     assert "  - one\\x0atwo\\x09tab\n" in out
 
 
+def test_the_render_sink_escapes_a_control_in_a_key(capsys: pytest.CaptureFixture[str]) -> None:
+    """Keys go through the sink too, not only values.
+
+    No payload key carries a control today -- every key is a code literal -- so no
+    CLI input drives this. It is a structural guarantee: the sink escapes whatever
+    it is handed, and a nested data dict's keys are the one place a future payload
+    could carry an untrusted key. Driven directly with a synthetic control-char
+    key; dies if the key is not routed through the sink.
+    """
+    from theurian.cli.commands import _emit
+
+    _emit({"a\x1b[2Kb": "value"}, as_json=False)
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\\x1b" in out
+
+
+def test_the_main_emit_sink_escapes_controls(capsys: pytest.CaptureFixture[str]) -> None:
+    """``main._emit`` -- ``--version`` and ``compat check`` -- routes through the sink.
+
+    Its fields are repr'd or validated upstream, so no CLI input reaches it with a
+    raw control byte; routing it through the shared sink is what makes the "every
+    emitter uses the sink" invariant structural rather than dependent on that. The
+    guarantee is driven directly with a synthetic control-char value; dies if
+    ``main._emit`` stops escaping.
+    """
+    from theurian.cli.main import _emit as main_emit
+
+    main_emit({"error": "a\x1b[2K\rforged"}, as_json=False)
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\r" not in out
+    assert "\\x1b" in out and "\\x0d" in out
+
+
 def test_the_fail_sink_escapes_controls_on_the_error_path(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
