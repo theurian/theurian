@@ -793,8 +793,8 @@ def test_load_migrations_does_not_call_a_plain_entry_a_symlink_when_an_ancestor_
     assert excinfo.value.remedy == (
         f"{relative!r} resolves outside the project. Check it and each directory above "
         f"it for a symbolic link that leaves the project, then repoint or remove that "
-        f"link and retry. Do not delete {relative!r} itself: an ancestor directory can "
-        f"be the link while this entry is an ordinary file."
+        f"link and retry. Do not delete {relative!r} itself: the link that leaves the "
+        f"project may be a directory above it."
     )
 
 
@@ -894,6 +894,9 @@ def test_an_entry_linking_to_a_sibling_under_an_escaped_ancestor_degrades(
     assert excinfo.value.entry.role == "resolved"
     assert "remove it" not in excinfo.value.remedy, "deleting it cures nothing and loses work"
     assert "each directory above it" in excinfo.value.remedy
+    assert "ordinary file" not in excinfo.value.remedy, (
+        "this entry IS a symbolic link -- just not the escaping one"
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
@@ -925,6 +928,9 @@ def test_a_migrations_directory_link_under_an_escaped_ancestor_degrades(
     assert excinfo.value.entry == EscapeSite(".theurian/migrations", "resolved")
     assert "remove it" not in excinfo.value.remedy
     assert "each directory above it" in excinfo.value.remedy
+    assert "ordinary file" not in excinfo.value.remedy, (
+        "this entry IS a symbolic link -- just not the escaping one"
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")

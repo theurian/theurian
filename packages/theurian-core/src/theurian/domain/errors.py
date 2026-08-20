@@ -745,11 +745,18 @@ def _path_escape_remedy(entry: EscapeSite) -> str:
             f"retry. A leading `..` is the canonical form here "
             f"(docs/protocol/migrations.md, 'Path safety'), so removing it is not the cure."
         )
+    # "may be a directory above it", not "...while this entry is an ordinary
+    # file": this role is reached both by plain files under an escaped ancestor
+    # *and* by entries that are themselves symbolic links which are not the
+    # escape -- a link to a sibling under an escaped `.theurian`, or a
+    # `migrations` link that is lexically in-project under one. Calling those an
+    # ordinary file is the same kind of unearned claim this role exists to
+    # avoid, and running the reviewers' own scripts is what surfaced it.
     return (
         f"{entry.name!r} resolves outside the project. Check it and each directory above "
         f"it for a symbolic link that leaves the project, then repoint or remove that "
-        f"link and retry. Do not delete {entry.name!r} itself: an ancestor directory can "
-        f"be the link while this entry is an ordinary file."
+        f"link and retry. Do not delete {entry.name!r} itself: the link that leaves the "
+        f"project may be a directory above it."
     )
 
 
