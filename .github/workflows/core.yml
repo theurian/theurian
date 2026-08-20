@@ -21,6 +21,12 @@ on:
       - "uv.lock"
       - ".github/workflows/core.yml"
       - ".github/workflows/release-core.yml"
+      # The corpus governance guard has to run when only the corpus changes:
+      # an edited body with its `contentSha256` re-pinned to match is the
+      # exact shape it exists to catch, and nothing else here would run.
+      - ".theurian/**"
+      # Two of that guard's rules read the managed block in `.gitignore`.
+      - ".gitignore"
   pull_request:
     paths:
       - "packages/theurian-core/**"
@@ -31,6 +37,12 @@ on:
       - "uv.lock"
       - ".github/workflows/core.yml"
       - ".github/workflows/release-core.yml"
+      # The corpus governance guard has to run when only the corpus changes:
+      # an edited body with its `contentSha256` re-pinned to match is the
+      # exact shape it exists to catch, and nothing else here would run.
+      - ".theurian/**"
+      # Two of that guard's rules read the managed block in `.gitignore`.
+      - ".gitignore"
 
 permissions:
   contents: read
