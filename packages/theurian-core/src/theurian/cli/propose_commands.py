@@ -351,21 +351,20 @@ def propose_accept(
 
     Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
     -- no such proposal, a draft interrupted before its migration was written, a
-    directory that could not be fully read, a file the security layer refuses; 2
-    the id is not a ULID; 4 the project's knowledge state refuses the move --
-    this proposal was accepted before, that migration id is already in
-    ``.theurian/migrations/``, or the approved migration set itself cannot be
-    read.
+    directory or an evidence file that could not be fully read, a file the
+    security layer refuses; 2 the id is not a ULID; 4 the project's knowledge
+    state refuses the move -- this proposal was accepted before, that migration id
+    is already in ``.theurian/migrations/``, or the approved migration set does
+    not resolve (it is unreadable, tampered, or internally inconsistent).
 
     **4 means "read the knowledge state before doing anything", not "already
-    done".** One of its three cases -- an unreadable migration set, which is
-    raised while resolving the project and so arrives before this command
-    dispatches at all -- leaves the proposal undelivered, so a caller that treats
-    4 as "already accepted, skip it" abandons it. 1 normally means nothing landed
-    and drafting again is the recovery; normally, because a part-way write is
-    rolled back on a best-effort basis, and a rollback that itself fails leaves a
-    body in ``.theurian/knowledge/`` while this still reports the original
-    failure.
+    done".** Its migration-set case -- raised while resolving the project, so
+    before this command dispatches at all -- leaves the proposal undelivered, so a
+    caller that treats 4 as "already accepted, skip it" abandons it. 1 normally
+    means nothing landed and drafting again is the recovery; normally, because a
+    part-way write is rolled back on a best-effort basis, and a rollback that
+    itself fails leaves a body in ``.theurian/knowledge/`` while this still
+    reports the original failure.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,

@@ -183,18 +183,22 @@ EVIDENCE_KEYS: Final = frozenset(
 
 #: Keys a committed ``evidence.json`` **may** carry, named one at a time.
 #:
-#: ``migrationId`` is the one field of this file that Core reads back: it is what
-#: lets ``propose accept`` answer "has this proposal been accepted?" from the
-#: migration set rather than by inferring it from which files are left in the
-#: directory, which was wrong in both directions (#253). Optional and not
-#: required, because all 26 committed proposals predate it, and a required key
-#: would take the corpus RED for a field the tool did not write when they were
-#: drafted. Every proposal drafted since carries it.
+#: ``migrationId`` and ``itemId`` are the two fields of this file that Core reads
+#: back: together they let ``propose accept`` answer "has this proposal been
+#: accepted?" from the migration set -- a migration with that id, operating on
+#: that item, is in ``.theurian/migrations/`` or it is not -- rather than by
+#: inferring it from which files are left in the directory, which was wrong in
+#: both directions (#253). ``itemId`` is the cross-check that stops a forged
+#: ``migrationId`` (pointing at another proposal's landed migration) from reading
+#: as accepted. Optional and not required, because all 26 committed proposals
+#: predate both fields, and a required key would take the corpus RED for a field
+#: the tool did not write when they were drafted. Every proposal drafted since
+#: carries both.
 #:
-#: This is an allowance for *this* key and not a relaxation of the rule: the
-#: escape the rule below closes is an evidence file carrying a field nothing
-#: reads and no schema validates, and a set of one named key is still exact.
-OPTIONAL_EVIDENCE_KEYS: Final = frozenset({"migrationId"})
+#: This is an allowance for *these* keys and not a relaxation of the rule: the
+#: escape the rule below closes is an evidence file carrying a field nothing reads
+#: and no schema validates, and a set of two named keys is still exact.
+OPTIONAL_EVIDENCE_KEYS: Final = frozenset({"migrationId", "itemId"})
 
 #: The keys a ``sourceAnchor`` carries, in both a migration's revision metadata
 #: and an ``evidence.json`` (measured 2026-08-20: one shape, 52 anchors).
@@ -1245,8 +1249,11 @@ def test_every_committed_evidence_file_declares_exactly_the_evidence_keys() -> N
     [
         (EVIDENCE_KEYS, []),
         (EVIDENCE_KEYS | {"migrationId"}, []),
+        (EVIDENCE_KEYS | {"migrationId", "itemId"}, []),
+        (EVIDENCE_KEYS | {"itemId"}, []),
         (EVIDENCE_KEYS | {"notes"}, ["notes"]),
         (EVIDENCE_KEYS | {"migrationId", "handoff"}, ["handoff"]),
+        (EVIDENCE_KEYS | {"itemId", "handoff"}, ["handoff"]),
         (EVIDENCE_KEYS - {"reasoning"}, ["reasoning"]),
     ],
 )

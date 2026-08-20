@@ -47,7 +47,7 @@ import yaml
 
 from theurian.application.project_service import ProjectPaths
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
-from theurian.domain.errors import PathEscapeError, TheurianError
+from theurian.domain.errors import InputTooLargeError, PathEscapeError, TheurianError
 from theurian.domain.identifiers import ItemId, MigrationId, ProposalId, RevisionId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import MIGRATION_API_VERSION
@@ -339,7 +339,10 @@ class ProposalService:
         body_file.write_bytes(body_bytes)
         evidence_file = directory / EVIDENCE_FILE
         evidence_file.write_text(
-            json.dumps(_evidence_document(request.evidence, proposal_id, migration_id), indent=2)
+            json.dumps(
+                _evidence_document(request.evidence, proposal_id, migration_id, request.item_id),
+                indent=2,
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -515,7 +518,7 @@ class ProposalService:
         return candidates[0]
 
     def _no_migration_error(self, directory: Path, proposal_id: ProposalId) -> ProposalError:
-        """Say which migration-less shape this directory is, and cure that one.
+        """Diagnose a proposal directory that holds no migration file.
 
         The question is whether this proposal has already been accepted, and the
         two answers have opposite remedies: re-drafting an accepted proposal
@@ -523,125 +526,196 @@ class ProposalService:
         telling the author of an interrupted draft that no action is needed
         discards work that exists nowhere else (#253).
 
-        **It is answered from what the proposal recorded, not from what is left
-        lying in its directory.** ``draft`` writes its migration id into
-        ``evidence.json``, so acceptance is a fact on disk --
-        ``.theurian/migrations/<migrationId>-*.yaml`` exists or it does not --
-        and no file anyone adds to or removes from the proposal directory can
-        move that answer either way.
+        **This is a best-effort diagnosis over untrusted input, not a
+        tamper-proof fact.** A proposal directory is committed and arrives through
+        a contributor's pull request (ADR-0013 point 7), so everything read here
+        -- ``evidence.json`` included -- is contributor-controlled. A migration id
+        recorded in ``evidence.json`` is a *claim*, not proof: removing it moves
+        the answer, and it can name another proposal's landed migration (a forge).
+        Two things keep the diagnosis safe despite that:
 
-        The population this may reason over is therefore exactly two things: the
-        recorded migration id, and -- only for a proposal that records none --
-        body files of the shape the generator writes. Everything else in the
-        directory is inert. The first version of this reasoned over *every*
-        leftover file and was wrong in both directions: ``accept`` removes only
-        the bodies its migration names, so a ``REVIEW-NOTES.md`` survives a
-        successful acceptance and made it read as unfinished, while a body that
-        an unreadable subdirectory or a dot-name hid made an untouched draft read
-        as accepted.
+        * **A recorded id is cross-checked by item id.** The landed migration it
+          names must also operate on the item this proposal's own record declares
+          (:meth:`_landed_migration_matching`), which reduces the forge to landing
+          a migration for the same item -- indistinguishable from a genuine
+          acceptance.
+        * **Safety is by remedy, not by detection.** No branch here concludes with
+          an unconditional "no action is needed" or "draft it again". Every answer
+          that could be wrong sends the reader to ``.theurian/migrations/`` first,
+          and no remedy instructs discarding work that might exist.
+
+        A read failure is answered as *indeterminate*, never as an answer: a
+        ``evidence.json`` present but unreadable is a different fact from an absent
+        one, and concluding "accepted" or "draft again" from "could not read it"
+        is how a permission slip or a tamper becomes a wrong verdict.
         """
-        if not (directory / EVIDENCE_FILE).is_file():
-            # Reachable from a real draft: `draft` writes the body, then the
-            # evidence, then the migration, so an interruption between the first
-            # two leaves a body and no evidence. Also what a half-arrived
-            # checkout looks like. Nothing to accept either way, and nothing that
-            # says whether a migration was ever minted -- so the cure names both
-            # halves: draft again, and clear the directory that says nothing.
-            return ProposalError(
-                f"Proposal {proposal_id.value} holds no <migration-id>-<slug>.yaml file, and "
-                f"no {EVIDENCE_FILE} that would say which migration it drafted.",
-                remedy="A proposal directory holds one migration named <ulid>-<slug>.yaml. "
-                f"Draft the proposal again, then delete .theurian/proposals/{proposal_id.value}/.",
-            )
-        recorded = self._recorded_migration_id(directory)
-        if recorded is None:
+        document = self._read_evidence_record(directory, proposal_id)
+        if document is None:
+            # No evidence.json at all: a legacy proposal (the 26 committed before
+            # the record existed), an accepted one whose evidence was removed, an
+            # interrupted draft that never reached its evidence write, or a bare
+            # directory. None carries a claim to check, so the answer is inferred
+            # and points at the migration set first.
             return self._inferred_answer(directory, proposal_id)
-        landed = self._landed_migration(recorded)
+        recorded = _migration_id_or_none(document.get("migrationId"))
+        if recorded is None:
+            # Present, readable evidence, but no usable migration id: a legacy
+            # file (no such key) or a malformed value. No claim to check, so it is
+            # inferred exactly like an absent record.
+            return self._inferred_answer(directory, proposal_id)
+        landed = self._landed_migration_matching(recorded, document)
         if landed is not None:
             return ProposalAlreadyAcceptedError(
-                f"Proposal {proposal_id.value} has already been accepted: the migration it "
-                f"drafted, {_names([landed.name])}, is in .theurian/migrations/.",
-                remedy="No action is needed. Review the change and open a pull request.",
+                f"Proposal {proposal_id.value} appears to have been accepted: the migration it "
+                f"records, {_names([landed.name])}, is in .theurian/migrations/ and operates on "
+                "the item this proposal names.",
+                remedy="Confirm that is the change you intended, then review it and open a pull "
+                "request. If it is not, the record is stale -- read what is in "
+                ".theurian/migrations/ before drafting again.",
             )
         return ProposalError(
-            f"Proposal {proposal_id.value} was never finished: the migration it drafted, "
-            f"{recorded.value}, is neither in its directory nor in .theurian/migrations/, so "
-            "nothing has been accepted and the knowledge it drafted exists nowhere.",
-            remedy="Draft the change again with theurian propose -- nothing landed, so nothing "
-            f"is duplicated -- then delete .theurian/proposals/{proposal_id.value}/.",
+            f"Proposal {proposal_id.value} records migration {recorded.value}, but no migration "
+            "with that id and this proposal's item is in .theurian/migrations/, and no file named "
+            f"{recorded.value}-<slug>.yaml is in this proposal directory. Nothing it drafted has "
+            "been accepted.",
+            remedy="Look in .theurian/migrations/ for the migration this proposal drafted -- it "
+            "may be present under a different name. If it is genuinely gone, draft the change "
+            "again with theurian propose.",
         )
 
     def _inferred_answer(self, directory: Path, proposal_id: ProposalId) -> ProposalError:
-        """The answer for a proposal that records no migration id.
+        """The answer when no usable migration id is recorded.
 
-        Every proposal drafted before ``evidence.json`` carried ``migrationId``
-        -- the 26 committed under ``.theurian/proposals/`` on 2026-08-20 at
-        ``9873272`` -- plus any hand-written one. There is nothing on disk tying
-        such a proposal to a migration, so the answer here is an inference and
-        says so, and both remedies send the reader to ``.theurian/migrations/``
-        before they act.
+        Reached for a proposal that records no ``migrationId`` -- the 26 committed
+        before the field existed (2026-08-20 at ``9873272``), one whose
+        ``evidence.json`` is absent, or one whose recorded id is malformed. There
+        is no claim to check, so the answer is inferred from the directory and
+        both branches point at the migration set first.
 
-        The inference reads only files of the shape the generator writes, which
-        is what keeps a ``Thumbs.db`` or a reviewer's notes from deciding it. The
-        residual, stated rather than hidden: a *hand-planted* file of that exact
-        shape in an accepted directory still reads as unfinished. Closing that
-        needs the recorded id, which every draft has carried since #253.
+        The inference reads only files of the shape ``draft`` writes
+        (:func:`is_generated_body_file_name`), which is what keeps a ``Thumbs.db``
+        or a reviewer's notes from deciding it. It is best-effort over a
+        contributor-controlled directory, wrong in *both* directions and safe only
+        by remedy:
+
+        * a generated-shape body hand-planted in an accepted directory reads as
+          unfinished; and
+        * an interrupted draft whose body was hand-authored under a non-generated
+          name -- a hand-written ``contentFile`` bypasses ``body_relative_path``
+          -- leaves no generated-shape body and reads as accepted, though nothing
+          landed.
+
+        Neither misreads into a lost change: the unfinished branch checks the
+        migration set before re-drafting, and the accepted branch never says an
+        unconditional "no action is needed".
         """
         unmoved = _unmoved_generated_bodies(directory, proposal_id)
         if unmoved:
             return ProposalError(
                 f"Proposal {proposal_id.value} looks unfinished: it still holds the body file "
-                f"{_names(unmoved)} but no <migration-id>-<slug>.yaml, and it records no "
-                "migration id to check against .theurian/migrations/.",
-                remedy="Look in .theurian/migrations/ for a migration naming that body. If it "
-                "is not there, nothing landed: draft the change again with theurian propose, "
-                f"then delete .theurian/proposals/{proposal_id.value}/.",
+                f"{_names(unmoved)} but no migration file, and records no migration id to check "
+                "against .theurian/migrations/.",
+                remedy="Look in .theurian/migrations/ for a migration naming that body. If it is "
+                "there, this proposal was accepted -- review it and open a pull request. If it is "
+                "not, nothing landed: draft the change again with theurian propose.",
             )
         return ProposalAlreadyAcceptedError(
-            f"Proposal {proposal_id.value} appears to have been accepted: no drafted body file "
-            f"is left beside its {EVIDENCE_FILE}, and it records no migration id to check "
-            "against .theurian/migrations/ -- it predates that record.",
-            remedy="Confirm the migration is in .theurian/migrations/. If it is, no action is "
-            "needed: review the change and open a pull request.",
+            f"Proposal {proposal_id.value} appears to have been accepted, but this is inferred, "
+            f"not proven: no drafted body file is left beside its {EVIDENCE_FILE} and it records "
+            "no migration id, so the directory cannot say for certain.",
+            remedy="Confirm the migration this proposal drafted is in .theurian/migrations/. If "
+            "it is, no further action is needed beyond reviewing it and opening a pull request. "
+            "If it is not, nothing landed -- draft the change again with theurian propose.",
         )
 
-    def _recorded_migration_id(self, directory: Path) -> MigrationId | None:
-        """The migration id ``draft`` wrote into ``evidence.json``, if it is one.
+    def _read_evidence_record(
+        self, directory: Path, proposal_id: ProposalId
+    ) -> Mapping[str, object] | None:
+        """Parse ``evidence.json``, or ``None`` if it is genuinely absent.
 
-        ``evidence.json`` is committed and so is untrusted input (ADR-0013 point
-        7). It is read through the same guard as every other file on the accept
-        path -- no symlink in the chain, inside the project, under SEC-8's cap --
-        and anything that is not a plain ULID string is treated as absent rather
-        than as a value: a malformed record is a proposal that cannot prove its
-        acceptance, which the inference below already knows how to answer. The
-        parse is also what keeps caller text out of the glob on the next line;
-        a ULID cannot spell a metacharacter.
+        The split that matters, and the one #253's third round named: *absent* and
+        *present-but-unreadable* are different facts. An absent record is a legacy
+        or interrupted proposal and is answered by inference; a present record
+        that cannot be read is answered as indeterminate, because concluding
+        anything from "could not read it" is exactly the collapse that let a
+        permission slip read as an acceptance. ``draft`` writes the body, then the
+        evidence, then the migration, so an interruption can leave no evidence at
+        all -- the absent case is real.
+
+        Every failure ``_read_within_project`` and ``json.loads`` can raise is
+        caught and turned into indeterminate: an ``OSError`` (a directory named
+        ``evidence.json``, an unreadable one), a decode or JSON error, a
+        ``RecursionError`` from a deeply nested document, and the ``TheurianError``
+        family the security layer raises -- a symlinked ``evidence.json`` (T-5),
+        one over SEC-8's size cap, one whose path escapes the root. None may fall
+        through to an answer.
         """
-        try:
-            document = json.loads(self._read_within_project(directory / EVIDENCE_FILE))
-        except (OSError, UnicodeDecodeError, ValueError):
-            return None
-        if not isinstance(document, Mapping):
-            return None
-        recorded = document.get("migrationId")
-        if not isinstance(recorded, str):
+        evidence = directory / EVIDENCE_FILE
+        if not evidence.exists() and not evidence.is_symlink():
             return None
         try:
-            return MigrationId.parse(recorded)
-        except TheurianError:
-            return None
+            document = json.loads(self._read_within_project(evidence))
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError, TheurianError) as exc:
+            raise self._evidence_indeterminate(proposal_id, exc) from exc
+        if isinstance(document, Mapping):
+            return document
+        # Present and parseable, but not an object: it records no fields at all,
+        # so it cannot prove acceptance. Indeterminate rather than "no record",
+        # which would drop to inference and could conclude accepted.
+        raise self._evidence_indeterminate(proposal_id, None)
 
-    def _landed_migration(self, migration_id: MigrationId) -> Path | None:
-        """The file in ``.theurian/migrations/`` this migration id names, if any.
+    def _evidence_indeterminate(
+        self, proposal_id: ProposalId, error: BaseException | None
+    ) -> ProposalError:
+        """An indeterminate verdict: the record is present but could not be read.
 
-        Matched on the id and not on the whole filename, because the id is what
-        identifies a migration (``docs/protocol/migrations.md``) and the slug
-        beside it is a human's to change. ``sorted`` so that a directory holding
-        two files for one id -- which ``accept`` cannot produce and a human can
-        -- names the same one on every run.
+        The reason is derived from the *type* of failure, never from ``str(exc)``:
+        an ``OSError``'s text carries the absolute path, which is the machine's
+        home directory and not the proposal's, and interpolating it here would
+        leak it (the same reason :func:`_within` exists). A category reason says
+        enough without that.
         """
-        matches = sorted(self._paths.migrations.glob(f"{migration_id.value}-*.yaml"))
-        return matches[0] if matches else None
+        return ProposalError(
+            f"Proposal {proposal_id.value} could not be examined: its {EVIDENCE_FILE} is present "
+            f"but could not be read ({_evidence_failure_reason(error)}), so whether it has been "
+            "accepted cannot be answered.",
+            remedy=f"Make .theurian/proposals/{proposal_id.value}/{EVIDENCE_FILE} readable and "
+            "well-formed, then run theurian propose accept again. If it cannot be recovered, look "
+            "in .theurian/migrations/ for the migration this proposal drafted before re-drafting.",
+        )
+
+    def _landed_migration_matching(
+        self, migration_id: MigrationId, evidence: Mapping[str, object]
+    ) -> Path | None:
+        """The landed migration this proposal drafted, cross-checked by item id.
+
+        A recorded migration id is a contributor claim: a never-accepted proposal
+        can set ``migrationId`` to another proposal's landed migration and be read
+        as accepted. Finding a file by id is therefore not enough -- that landed
+        migration must also operate on the item this proposal's own record names,
+        which reduces the forge to landing a migration for the same item and is
+        indistinguishable from a genuine acceptance. A record that names no item,
+        or a landed migration whose operations do not name it, is *not confirmed*
+        -- ``None`` -- and the caller points the reader at the migration set
+        rather than concluding.
+
+        ``sorted`` for a stable order; in practice at most one file matches,
+        because two migrations sharing an id are the duplicate the migration set
+        refuses at project resolution, before ``accept`` runs at all.
+        """
+        claimed = _evidence_item_ids(evidence)
+        if not claimed:
+            return None
+        for candidate in sorted(self._paths.migrations.glob(f"{migration_id.value}-*.yaml")):
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            try:
+                document = load_yaml_mapping(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
+                continue
+            if claimed & set(_operation_item_ids(document)):
+                return candidate
+        return None
 
     def _refuse_if_migration_present(self, destination: Path) -> None:
         if destination.exists() or destination.is_symlink():
@@ -947,31 +1021,31 @@ def _within(filename: object, directory: Path) -> str:
 
 
 def _names(names: Sequence[str]) -> str:
-    """Untrusted names, quoted and bounded, for a message that reaches a terminal.
+    """Untrusted names, quoted and bounded, for an *error message*.
 
     ``repr`` and never the raw name. A proposal directory is committed input
     (ADR-0013 point 7), so its filenames are the contributor's: one carrying
     ``ESC [ 2 K CR`` erases the line a terminal has already drawn and prints its
-    own in place of it, which was measured to reproduce this command's
-    *"already been accepted / No action is needed"* under its own name -- T-3's
-    injection at the CLI edge rather than in indexed content. ``--json`` was
-    never exposed (``json.dumps`` escapes non-ASCII and controls); the plain text
-    path on stderr was.
+    own in place of it -- T-3's injection at the CLI edge rather than in indexed
+    content. This quotes such a name into readable escapes and bounds the count.
 
-    Bounded because the same directory sets the length: 50,000 files produced a
-    600 KB error string in 1.5 s. Five names say what shape the problem is; the
-    count says how big it is.
+    **This is the error path only, and it is not what closes the class.** The
+    class -- every proposal-derived string that reaches a terminal raw -- is
+    closed at the *output sink*: ``cli.commands._render`` and ``_fail`` escape
+    control characters in every value they print, so a name that skips ``_names``
+    (the exit-0 success payload did, before round three) still cannot rewrite a
+    line. ``_names`` remains because quoting and a five-name cap are readability
+    a blanket control-escape does not give: 50,000 files produced a 600 KB error
+    string in 1.5 s before the cap.
 
-    **The class, and why nothing else in this module belongs to it.** The
-    population is every string a committed proposal can choose that reaches a
-    message: a filename in the proposal directory, a ``contentFile`` in its
-    migration, and a path built from either. Each of those now goes through here.
     The remaining interpolations in this module are constrained rather than
-    quoted, measured on 2026-08-20:
+    quoted -- and the sink escapes any control that slips through regardless.
+    Measured on 2026-08-20:
 
     * a migration file's own name, at the two "already in .theurian/migrations/"
-      refusals and in :func:`_parse_migration` -- it matched
-      ``_MIGRATION_FILE_NAME`` to get there, whose charset is a ULID, ASCII
+      refusals and in :func:`_parse_migration`, and its inner ``id`` in
+      :func:`_require_filename_matches_id` -- each reached its message only after
+      matching ``_MIGRATION_FILE_NAME``, whose charset is a ULID, ASCII
       lowercase, hyphens and ``.yaml``;
     * identifiers -- ``ProposalId``, ``MigrationId``, ``ItemId``, ``RevisionId``
       -- validated on construction against anchored patterns;
@@ -1026,6 +1100,79 @@ def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
             f"{path.name} could not be read as a migration: {exc}",
             remedy="Fix the migration file in the proposal directory, then accept it again.",
         ) from exc
+
+
+def _migration_id_or_none(value: object) -> MigrationId | None:
+    """Parse a recorded ``migrationId`` as a ULID, or ``None`` for anything else.
+
+    ``evidence.json`` is untrusted (ADR-0013 point 7), so a ``migrationId`` that
+    is not a string, or a string that is not a ULID, is treated as *no usable id*
+    rather than as a value or a crash: the diagnosis falls to inference, which is
+    safe. This is also what keeps caller text out of the glob a matched id feeds
+    -- a ULID cannot spell a metacharacter.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return MigrationId.parse(value)
+    except TheurianError:
+        return None
+
+
+def _evidence_item_ids(evidence: Mapping[str, object]) -> frozenset[str]:
+    """Item ids this proposal's own record claims, for the acceptance cross-check.
+
+    ``draft`` records a single ``itemId`` string; a hand-written ``evidence.json``
+    may carry a list. Both are read as a set. A value of any other shape yields
+    the empty set, which the cross-check reads as "cannot confirm" -- so a record
+    that names no item never confirms an acceptance, which is the safe default.
+    """
+    value = evidence.get("itemId")
+    if isinstance(value, str):
+        return frozenset({value})
+    if isinstance(value, list):
+        return frozenset(item for item in value if isinstance(item, str))
+    return frozenset()
+
+
+def _operation_item_ids(document: Mapping[str, object]) -> Iterable[str]:
+    """Every ``itemId`` a migration's operations name."""
+    operations = document.get("operations")
+    if not isinstance(operations, list):
+        return
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        item_id = operation.get("itemId")
+        if isinstance(item_id, str) and item_id:
+            yield item_id
+
+
+#: A path-free, control-free reason per read-failure class. By exception type
+#: rather than ``str(exc)``: an ``OSError``'s text carries the absolute filename
+#: (a home-directory leak) and a decode error's echoes bytes the file chose, so a
+#: fixed phrase per class leaks neither. ``UnicodeDecodeError`` precedes
+#: ``ValueError`` because it is one; ``InputTooLargeError``/``PathEscapeError``
+#: precede ``ProposalError`` because ``TheurianError`` is their common base but
+#: only the symlink refusal is a plain ``ProposalError``.
+_EVIDENCE_FAILURE_REASONS: Final = (
+    (InputTooLargeError, "it is larger than the size cap"),
+    (PathEscapeError, "its path escapes the project"),
+    (ProposalError, "it is, or is reached through, a symlink"),
+    (RecursionError, "it is nested too deeply to parse"),
+    (UnicodeDecodeError, "it is not valid UTF-8"),
+    (ValueError, "it is not valid JSON"),
+)
+
+
+def _evidence_failure_reason(error: BaseException | None) -> str:
+    """A path-free, control-free reason an ``evidence.json`` could not be read."""
+    for kind, reason in _EVIDENCE_FAILURE_REASONS:
+        if isinstance(error, kind):
+            return reason
+    if isinstance(error, OSError):
+        return (error.strerror or "it could not be read").lower()
+    return "it is not a JSON object"
 
 
 def _content_files(document: Mapping[str, object]) -> Iterable[str]:
@@ -1180,17 +1327,27 @@ def _anchor_document(anchor: SourceAnchor) -> dict[str, object]:
 
 
 def _evidence_document(
-    evidence: Evidence, proposal_id: ProposalId, migration_id: MigrationId
+    evidence: Evidence,
+    proposal_id: ProposalId,
+    migration_id: MigrationId,
+    item_id: ItemId,
 ) -> dict[str, object]:
     """The origin record ADR-0013 point 5 requires, for a human to read.
 
-    Written for a human, with exactly one field Core reads back: ``migrationId``.
-    That field is what makes "has this proposal been accepted?" a question with
-    an answer -- ``.theurian/migrations/<migrationId>-*.yaml`` either exists or it
-    does not -- rather than an inference over which files are left in the
-    directory, which is what got #253 wrong in both directions. Only the id is
-    recorded, not the body path: the id settles the question by itself, and a
-    second field is a second thing that has to stay true.
+    Written for a human, with two fields ``propose accept`` reads back:
+    ``migrationId`` and ``itemId``. Together they let it ask "has this proposal
+    been accepted?" -- a migration with that id, operating on that item, is in
+    ``.theurian/migrations/`` or it is not -- rather than inferring the answer
+    from which files are left in the directory, which got #253 wrong in both
+    directions.
+
+    **Neither field is authority; both are a contributor's claim.** The proposal
+    directory is committed and arrives through a pull request (ADR-0013 point 7),
+    so this file is untrusted input like any other in it. ``migrationId`` alone
+    would let a never-accepted proposal name another proposal's landed migration
+    and read as accepted; ``itemId`` is what the accept path cross-checks against
+    that landed migration's operations, reducing the forge to landing a migration
+    for the same item. See :meth:`ProposalService._landed_migration_matching`.
 
     The anchors here are *not* the ones ``migrate apply`` enforces -- those are
     ``metadata.sourceAnchors`` on the revision (INV-8) -- and neither list
@@ -1199,6 +1356,7 @@ def _evidence_document(
     return {
         "proposalId": proposal_id.value,
         "migrationId": migration_id.value,
+        "itemId": item_id.value,
         "agentId": evidence.agent_id.value,
         "taskId": evidence.task_id.value,
         "model": evidence.model,

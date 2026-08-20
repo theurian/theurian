@@ -380,7 +380,7 @@ def test_re_accepting_an_accepted_proposal_exits_with_the_state_code(project: Pa
     code, payload = _invoke("propose", "accept", drafted["proposalId"])
 
     assert code == EXIT_STATE_ERROR
-    assert "already been accepted" in payload["error"]
+    assert "appears to have been accepted" in payload["error"]
     assert "pull request" in payload["remedy"]
 
 
@@ -448,6 +448,69 @@ def test_an_interrupted_draft_is_diagnosed_as_one_rather_than_as_accepted(
     assert "theurian propose" in payload["remedy"]
     assert not list((project / ".theurian/migrations").glob("*.yaml"))
     assert (project / drafted["bodyFile"]).is_file(), "the draft's body is still there to lose"
+
+
+def test_a_success_payload_cannot_forge_output_through_a_body_path(project: Path) -> None:
+    """#253 round three, CLASS C: the exit-0 stdout path escapes controls too.
+
+    ``propose accept`` emits ``bodyFiles`` and ``migrationFile`` on success via
+    ``_relative`` -> ``_emit`` -> ``_render``, which wrote raw. A hand-authored
+    ``contentFile`` carrying ``ESC``/``CR`` therefore forged the tool's *own
+    success output* -- a channel the refusal-path ``_names`` never covered, since
+    the accept succeeds. Reproduced end to end: the migration's ``contentFile`` is
+    rewritten to carry the control bytes and the body moved to the matching path,
+    so accept lands it and prints the path. The render sink escapes them now.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    migration = directory / drafted["migrationFile"]
+    forged_leaf = "architecture/\x1b[2Kx.\x1b[2Kforged.md"
+    document = yaml.safe_load(migration.read_text(encoding="utf-8"))
+    old_content_file = drafted["contentFile"]
+    new_content_file = f"../knowledge/{forged_leaf}"
+    for operation in document["operations"]:
+        if operation.get("contentFile") == old_content_file:
+            operation["contentFile"] = new_content_file
+    migration.write_text(yaml.safe_dump(document, allow_unicode=True), encoding="utf-8")
+    old_body = directory / Path(drafted["bodyFile"]).relative_to(Path(drafted["proposalDirectory"]))
+    new_body = directory / forged_leaf
+    new_body.parent.mkdir(parents=True, exist_ok=True)
+    old_body.rename(new_body)
+
+    result = runner.invoke(
+        app, ["propose", "accept", drafted["proposalId"]], catch_exceptions=False
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "\x1b" not in result.stdout and "\r" not in result.stdout
+    assert "\\x1b" in result.stdout, "the control byte is rendered as a visible escape"
+
+
+def test_the_render_sink_escapes_controls_and_keeps_printable_unicode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The central sink, driven directly: escape controls, keep CJK and whitespace.
+
+    ``_emit`` in text mode is the output path for every command's success payload,
+    so escaping controls here closes the class for all of them -- but it must not
+    mangle a Japanese title or fold a legitimately multi-line value onto one line.
+    """
+    from theurian.cli.commands import _emit
+
+    _emit(
+        {
+            "path": "a\x1b[2K\rforged",
+            "title": "再試行ポリシー",
+            "lines": ["one\ntwo\ttab", "x\x7f\x9by"],
+        },
+        as_json=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\r" not in out and "\x7f" not in out and "\x9b" not in out
+    assert "\\x1b" in out and "\\x7f" in out and "\\x9b" in out
+    assert "再試行ポリシー" in out, "printable non-ASCII is untouched"
+    assert "one\ntwo\ttab" in out, "newlines and tabs are legitimate whitespace"
 
 
 def test_accept_reports_an_unknown_proposal_with_a_remedy(project: Path) -> None:

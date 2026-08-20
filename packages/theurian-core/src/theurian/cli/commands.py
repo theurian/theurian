@@ -108,6 +108,48 @@ project_app = typer.Typer(help="Register and inspect projects.", no_args_is_help
 migrate_app = typer.Typer(help="Validate and apply knowledge migrations.", no_args_is_help=True)
 
 
+def _safe(value: object) -> str:
+    """A value's text with terminal-control characters escaped, printables kept.
+
+    The text-output sink for every command. A value in a payload can originate in
+    contributor-controlled input -- a proposal ``contentFile``, a body path built
+    from one -- and reach the terminal on the exit-0 success path (``propose
+    accept`` emits ``bodyFiles``/``migrationFile`` this way). A carriage return or
+    an ``ESC`` there rewrites a line the tool has already drawn and forges the
+    tool's own output (T-3 at the CLI edge). Escaping the controls at the sink
+    closes that for every command's payload at once, wherever the string came
+    from, rather than trusting each construction site to have quoted it.
+
+    ``\\n`` and ``\\t`` are left intact: a value legitimately spans lines (a
+    rendered list, a multi-line message), and neither moves the cursor up or to a
+    line's start, so neither overwrites drawn output. Everything else below
+    ``U+0020``, ``DEL``, and the ``C1`` block (``U+0080``-``U+009F``) becomes a
+    ``\\xHH`` escape. Printable non-ASCII -- a Japanese title -- is untouched,
+    which is why this is not ``repr`` (that would escape it to ``\\uXXXX``).
+    """
+    text = value if isinstance(value, str) else str(value)
+    if not any(_is_control(char) for char in text):
+        return text
+    return "".join(f"\\x{ord(char):02x}" if _is_control(char) else char for char in text)
+
+
+#: The control ranges :func:`_safe` escapes: the C0 block below ``U+0020``, the
+#: single ``DEL`` (``U+007F``), and the C1 block. ``\n`` and ``\t`` are the two
+#: C0 characters kept, because neither moves a terminal's cursor up or to a
+#: line's start and both appear in legitimate multi-line output.
+_C0_CEILING: Final = 0x20
+_DEL: Final = 0x7F
+_C1_FLOOR: Final = 0x80
+_C1_CEILING: Final = 0x9F
+
+
+def _is_control(char: str) -> bool:
+    if char in "\n\t":
+        return False
+    point = ord(char)
+    return point < _C0_CEILING or point == _DEL or _C1_FLOOR <= point <= _C1_CEILING
+
+
 def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
     if as_json:
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
@@ -124,9 +166,9 @@ def _render(payload: dict[str, Any], *, indent: int) -> None:
         elif isinstance(value, list):
             sys.stdout.write(f"{pad}{key}:\n")
             for entry in value:
-                sys.stdout.write(f"{pad}  - {entry}\n")
+                sys.stdout.write(f"{pad}  - {_safe(entry)}\n")
         else:
-            sys.stdout.write(f"{pad}{key}: {value}\n")
+            sys.stdout.write(f"{pad}{key}: {_safe(value)}\n")
 
 
 def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
@@ -134,7 +176,7 @@ def _fail(message: str, *, remedy: str, as_json: bool, code: int) -> None:
     if as_json:
         sys.stderr.write(json.dumps({"error": message, "remedy": remedy}, indent=2) + "\n")
     else:
-        sys.stderr.write(f"error: {message}\n{remedy}\n")
+        sys.stderr.write(f"error: {_safe(message)}\n{_safe(remedy)}\n")
     raise typer.Exit(code)
 
 
