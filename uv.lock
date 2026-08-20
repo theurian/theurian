@@ -1195,6 +1195,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-ulid" },
     { name = "pyyaml" },
+    { name = "referencing" },
     { name = "typer" },
 ]
 
@@ -1229,6 +1230,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "python-ulid", specifier = "==4.0.1" },
     { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "referencing", specifier = "==0.37.0" },
     { name = "sqlite-vec", marker = "extra == 'vector'", specifier = "==0.1.9" },
     { name = "theurian", extras = ["daemon", "vector", "telemetry"], marker = "extra == 'all'", editable = "packages/theurian-core" },
     { name = "typer", specifier = "==0.27.1" },

@@ -27,6 +27,81 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **The installed migration schema resolved `$ref`s over the network, and its
+  resolution failures escaped as raw tracebacks**
+  ([#235](https://github.com/theurian/theurian/issues/235)). The migration
+  schema was validated with `jsonschema`'s default registry, whose retrieve
+  callable fetches an external `$ref` over the network
+  (`urllib.request.urlopen`) at validate time — and reads a `file://` ref off
+  disk the same way. An SSRF-shaped read gated only on the installed schema
+  being corrupted or replaced (an operator-side precondition; `schema_root()`
+  never reads user-project paths), and covered by no existing claim:
+  `parsers/openapi.py`'s "external `$ref` targets are recorded, never fetched"
+  governs *ingested* documents, not the schema this build ships. Every
+  validator is now built with `referencing`'s `EMPTY_REGISTRY` — no retrieve
+  callable — so an external `$ref` fails closed; internal `#/$defs/…` refs
+  still resolve from the schema's own root resource, so the bundled schema
+  validates unchanged. Separately, the resulting resolution failures — an
+  unresolvable `$ref`/`$dynamicRef` raises `referencing.exceptions.Unresolvable`
+  and a self-recursive or empty `$ref` raises `RecursionError`, neither a
+  `ValidationError` — used to slip past every `except ValidationError` seam and
+  reach `resolve_context` as a raw traceback under `--json`. Both are now
+  translated to `SchemaUnreadableError`, the type every other
+  installed-schema-corruption failure already carries, at both validate seams
+  (`migrate validate` / `propose`, and any command that loads migrations from
+  disk).
+- **A path-containment refusal told the user to go somewhere they already were,
+  and could instruct them to delete their own work**
+  ([#233](https://github.com/theurian/theurian/issues/233)). With
+  `.theurian/migrations` — or one `*.yaml` file inside it — a symlink pointing
+  outside the project, `theurian migrate validate --json` printed
+  `{"error": "Path escapes the permitted root /<absolute>/<project>", "remedy":
+  "Run this inside an initialised Theurian project."}` at exit 1. The refusal
+  itself was correct and is unchanged; what it said about itself was not.
+  `PathEscapeError` set no `remedy` of its own, so the CLI's generic fallback
+  won — the "exception that does not describe itself" shape
+  [#205](https://github.com/theurian/theurian/issues/205) exists to end. It now
+  names, relative to the project root and with the `!r` quoting its siblings
+  use, *where* the problem is — and **no remedy names a file to delete.** That
+  is the substantive change: an escape happens through a symbolic link somewhere
+  on the entry's ancestor chain or its resolution chain, and which link it is
+  cannot be determined from the entry alone. Three successive attempts to
+  determine it anyway were each refuted by a deeper construction — the last by
+  `x.yaml → y.yaml → outside`, where following the remedy deleted two
+  Git-tracked files and ended at `valid: true` while the minimal cure was
+  repointing `y` alone. So the remedy now states only what `lstat` proves — that
+  the named entry is or is not itself a link — and then hands over the finite
+  checklist: this entry, the directories above it, the links it resolves
+  through. "Repoint that link, or remove that link" refers to whichever the
+  reader finds; Theurian never names it. Related: an outside-pointing
+  `.theurian` is reachable from a plain `git clone`
+  ([#237](https://github.com/theurian/theurian/issues/237)). The offending path
+  is still never echoed (SEC-7), and neither is the absolute project root.
+- **A `contentFile` refusal no longer denies the commonest cure.** The
+  path-escape remedy for a `contentFile` used to say that removing the `..` was
+  "not the cure" — wrong for a plain over-traversal typo, which involves no
+  symlink at all and is fixed by exactly that edit, and in conflict with the
+  sibling `MigrationContentUnreadableError`, which tells the author to fix the
+  path. It now offers both candidates: correct the path, or find the link
+  something it traverses goes through.
+- **Exit code:** a `PathEscapeError` raised while resolving a project now exits
+  `EXIT_STATE_ERROR` (4) rather than 1 for the commands routed through
+  `_require_project` — measured, all nine: `migrate validate`, `migrate status`,
+  `migrate apply`, `index build`, `index status`, `index gc`, `ingest`,
+  `propose` and `propose accept` — matching every sibling refusal on the same
+  load path (`MigrationsDirectoryUnreadableError`,
+  `MigrationFileUnreadableError`, `MigrationError`). A script keying on exit 1
+  for those must be updated. `init` and `project register` call
+  `resolve_context` directly and still exit 1; `project status` reports at exit
+  0 as it always has. All three now carry the new remedy text.
+- **A path refused only for nesting too deep no longer claims to have escaped**
+  ([#233](https://github.com/theurian/theurian/issues/233)). `resolve_within_root`
+  refuses a path past `MAX_PATH_DEPTH` whether or not it ever leaves the root,
+  and reported it as `Path escapes the permitted root` — false for a path
+  sitting entirely inside. It now raises `PathDepthExceededError` with its own
+  message and a remedy about flattening the nesting. The new type is a
+  `PathEscapeError` subclass, so every existing `except` and every exit-code
+  route catches it unchanged; only what the caller is told differs.
 - **An interrupted `theurian propose` was diagnosed as an accepted one**
   ([#253](https://github.com/theurian/theurian/issues/253)). `propose accept`
   read the presence of `evidence.json` as "this proposal has already been

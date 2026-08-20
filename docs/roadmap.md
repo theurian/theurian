@@ -589,7 +589,7 @@ Anything independent may run in parallel.
 | **Exit criteria** | 0.1.0 live on PyPI · `pre-1.0` open = 0 · every appendix contradiction cleared · SECURITY.md and README naming the current release · **the T-16 decision recorded — implement install-time verification, or record it as a non-goal with the reasoning**. Without this the Architecture row asks for a decision that nothing checks was ever taken. |
 | **Dependencies** | None. Can start immediately. |
 | **Risks** | Some of the 21 need a design decision (T-16, #119's defaults) rather than execution. Estimating the label as a queue of chores is how it overruns; apply the class-budget discipline from [CLAUDE.md](https://github.com/theurian/theurian/blob/main/CLAUDE.md). |
-| **Open design question** | Whether withheld-by-sensitivity rows are excluded from the index entirely or indexed-and-gated, and what entitlement decides "withheld" at all in a single-user loopback daemon, is design work for **#119's own ADR**. This roadmap does not decide it. |
+| **Open design question** | Whether withheld-by-sensitivity rows are excluded from the index entirely or indexed-and-gated, and what entitlement decides "withheld" at all in a single-user loopback daemon, is design work for **#119's own ADR**, now written as [ADR-0025](adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md) — which names both questions as open rather than settling them, and commits to being amended when the implementation does. This roadmap does not decide them either. |
 
 ### Phase A — Retrieval evaluation baseline (golden queries)
 
@@ -793,9 +793,11 @@ into Phase 0's truth-making:
   register — `ALL_PORTS`, or "a `Protocol` under `domain/ports/`" — the closed
   set is actually closed over.
 - **GOVERNANCE.md says an accepted ADR is never edited, only superseded; the
-  practice is to append amendments.** All 24 ADRs are `accepted`, none is
+  practice is to append amendments.** All 26 ADRs are `accepted`, none is
   `superseded`, and 10 of them carry at least one `Amended in Milestone N` block
-  (measured 2026-08-20 at `f702736`). One of the two has to become the rule.
+  (measured 2026-08-20; 24 at `f702736`, and 26 once ADR-0025 and ADR-0026 land
+  — neither of the two new ones carries an amendment, so the 10 is unmoved).
+  One of the two has to become the rule.
 
 ---
 
@@ -853,7 +855,10 @@ Three reasons, each grounded in the codebase.
 
 **Settled 2026-08-20. The positioning is "Evidence Plane / System of Record",
 not "Control Plane".** The surface of fact that agents, CI and humans all
-*refer to*.
+*refer to*. Recorded as
+[ADR-0026](adr/0026-evidence-plane-not-control-plane.md), which carries the
+three reasons below as its rejected alternative and says which half of the
+boundary is held by a test and which is policy.
 
 > **Theurian does not orchestrate, does not approve, does not enforce.**
 
@@ -888,14 +893,23 @@ Inconsistencies between documents, and between documents and the implementation.
 Each is the shape this project grades **HIGH** in its own review rubric: a
 published claim that is false.
 
-**Every item below was re-verified against `f702736` on 2026-08-20.** An item
-that had been fixed since the original research pass would have been dropped;
-none had been. Two further items were found during re-verification and added as
-items 11 and 12, and four of the original ten had their counts or populations
-corrected — the correction is recorded in the item rather than applied silently,
-because the population key is the part a later reader has to be able to attack.
+**Items are measured at the commit named in each cell; unless a cell says
+otherwise, that commit is `f702736`, 2026-08-20.** Several cells have been
+re-measured since, because later changes in this repository kept moving the
+numbers they cite — each of those names its own commit and says which change
+moved it.
 
-| # | The contradiction | Verified at `f702736` |
+**The table is a mixed list.** Rows marked *Discharged* are closed and kept for
+the record rather than deleted; the rest are Phase 0's to clear.
+
+Every item was re-verified against `f702736` on 2026-08-20. An item that had been
+fixed since the original research pass would have been dropped; none had been.
+Two further items were found during re-verification and added as items 11 and 12,
+and four of the original ten had their counts or populations corrected — the
+correction is recorded in the item rather than applied silently, because the
+population key is the part a later reader has to be able to attack.
+
+| # | The contradiction | Verified |
 | :-- | :-- | :-- |
 | 1 | [SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md) names `0.1.0.dev0` as the live release | The string `0.1.0.dev0` appears **8 times**; the status table row ("**Released**, at `0.1.0.dev0`") and the release-line discussion are the load-bearing ones. Measured against the PyPI JSON API on 2026-08-20: of eight releases, `dev0` through `dev5` are **yanked** and only `dev6` and `dev7` are live. `dev7` is the current version in `packages/theurian-core/pyproject.toml` |
 | 2 | README says Milestone 7 is `planned`; ADR-0013 says "Landed in Milestone 7" | Both still present. README's roadmap table row 7 reads `planned`; ADR-0013 records `theurian propose` as landed in Milestone 7, and it shipped in `0.1.0.dev5`. The definition of M7 also differs between documents |
@@ -903,10 +917,10 @@ because the population key is the part a later reader has to be able to attack.
 | 4 | "The port set is exactly these fourteen" | `ALL_PORTS` holds **15**, and **17 `Protocol` classes are declared under `domain/ports/`**. The claim stands in ADR-0003 (twice), `docs/architecture/overview.md`'s diagram (`PORT["14 ports (Protocols)"]`) and the root CHANGELOG ("fourteen ports as `Protocol`s"). Fixing the number is not the whole fix: `McpClientConfig` calls itself a port in its own docstring, is absent from `ALL_PORTS`, and is not imported by `ports/__init__.py`, so `test_port_set_is_closed` never sees it. Whichever number Phase 0 writes, the register the closed set is closed *over* has to be stated with it |
 | 5 | An `active_indexes` table is described as the publication mechanism | No such table exists; the mechanism is `.theurian/state/active-index.json`. ADR-0008 **already records this** in an amendment and names the remaining population as four: `docs/architecture/overview.md`, `docs/architecture/local-daemon.md`, `docs/architecture/requirements-analysis.md`, and the `indexing/__init__.py` docstring. `docs/architecture/raptor.md` was discharged by [#136](https://github.com/theurian/theurian/issues/136). All four still stand |
 | 6 | `docs/protocol/mcp-tools.md` documents tools in the present tense that do not exist | The page names **34 distinct tools**; **5** are registered (`knowledge.search`, `knowledge.get`, `knowledge.status`, `project.list`, `system.capabilities`). A single blanket disclaimer at the top of the page is the only qualification. The page also describes `snapshotId` as pinning a state hash so results stay reproducible, which is the unimplemented half of FR-R7 |
-| 7 | README says "23 ADRs" | There are **24** (`docs/adr/0001`–`0024`, excluding the template and the index) |
-| 8 | GOVERNANCE.md forbids editing an accepted ADR; the practice is to amend | GOVERNANCE.md: "Decisions are changed by superseding an ADR, never by editing an accepted one", echoed by `docs/adr/README.md` ("Do not edit an accepted ADR beyond typo fixes"). In fact all 24 ADRs are `accepted`, none is `superseded`, and **10 carry at least one `Amended in Milestone N` block** — which is what [CLAUDE.md](https://github.com/theurian/theurian/blob/main/CLAUDE.md) instructs. Two documents give opposite instructions |
+| 7 | ~~README says "23 ADRs"~~ **Discharged.** | **Fixed twice, because the first fix was overtaken.** The README said "23 ADRs" against 24 at `f702736`; the README-repositioning change (#282) corrected it to 24 but left this row asserting the old text, so the row was itself stale for one commit. The ADR-drafting change that added ADR-0025 and ADR-0026 sets the README to **26** and there are **26** (`docs/adr/0001`–`0026`, excluding the template and the index), measured in the same change. Nothing pins the number, so the next ADR falsifies it again — the durable fix is either a test or dropping the count from the link label, and neither is done |
+| 8 | GOVERNANCE.md forbids editing an accepted ADR; the practice is to amend | GOVERNANCE.md: "Decisions are changed by superseding an ADR, never by editing an accepted one", echoed by `docs/adr/README.md` ("Do not edit an accepted ADR beyond typo fixes"). In fact all **26** ADRs are `accepted` (24 at `f702736`, plus ADR-0025 and ADR-0026), none is `superseded`, and **10 carry at least one `Amended in Milestone N` block** — which is what [CLAUDE.md](https://github.com/theurian/theurian/blob/main/CLAUDE.md) instructs. Two documents give opposite instructions. ADR-0025 sharpens the conflict rather than easing it: it commits to being *amended* when #119 settles its open questions, which is the practice GOVERNANCE.md forbids |
 | 9 | "Every port ships a deterministic fake" | Population key: *any statement that a fake exists for every port*, not the literal string "deterministic fake" — the sixth site below phrases it differently and would be missed by a literal search. `tests/fakes/` defines **five** doubles (`FrozenClock`, `SeededIdGenerator`, `InMemoryWriter`, `FakeService`, `FakeMcpConfig`) against 15 `ALL_PORTS` entries, and `FakeMcpConfig` is a fake for `McpClientConfig` — a port `ALL_PORTS` does not contain (item 4). The claim stands in **six** places: ADR-0003 point 7, `docs/architecture/requirements-analysis.md`, `docs/contributing/development.md`, `CONTRIBUTING.md`, `domain/ports/__init__.py`, and **`packages/theurian-core/tests/fakes/__init__.py`**, which adds a second false claim — "a conformance test asserts it" — where `test_ports.py` contains no occurrence of "fake" at all. ADR-0003's own *Still owed* section already refutes its point 7, so the ADR contradicts itself within one file |
-| 10 | ADRs still carry *Still owed* items addressed to Milestone 6, which the README declares done | Population key: *any `Still owed` section*, not one literal heading. Under the exact string `Still owed, with the milestone that will satisfy it:` the count is **17 of 24**; under the concept it is **19**, because ADR-0012 heads its section `Still owed:` and **ADR-0013** heads its own `Still owed, with the milestone that brings the feature under test:` — ADR-0013 being the very ADR Phase B claims to discharge, so a literal-string sweep would skip the one that matters most to this roadmap. The clearest instance: ADR-0004, ADR-0005 and ADR-0017 each name an `empty-db-rebuild` CI job as the thing that would discharge FR-K4, and `rg empty-db-rebuild` returns four documents saying it does not exist and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). Each item needs to be discharged or re-addressed to a phase |
+| 10 | ADRs still carry *Still owed* items addressed to Milestone 6, which the README declares done | Population key: *any `Still owed` section*, not one literal heading. Under the exact string `Still owed, with the milestone that will satisfy it:` the count is **17 of 26**; under the concept it is **21**, across five distinct heading spellings. **Re-measured at the ADR-drafting change** that added ADR-0025 and ADR-0026: it was 17 of 24 and 19 by concept at `f702736`, and this document's own new ADRs joined the concept population — ADR-0025 heads its section `Still owed, with the part of the decision each discharges:` and ADR-0026 `Still owed, with the phase that would satisfy it:`, two more spellings a literal sweep misses. The two pre-existing variants are ADR-0012's `Still owed:` and **ADR-0013**'s `Still owed, with the milestone that brings the feature under test:` — ADR-0013 being the very ADR Phase B claims to discharge, so a literal-string sweep would skip the one that matters most to this roadmap. That the count moved because *this* document's changes moved it is the point of stating the key: the number is a measurement, and measurements have a date. The clearest instance: ADR-0004, ADR-0005 and ADR-0017 each name an `empty-db-rebuild` CI job as the thing that would discharge FR-K4, and `rg empty-db-rebuild` returns four documents saying it does not exist and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). Each item needs to be discharged or re-addressed to a phase |
 | 11 | **Found during this re-verification.** The root CHANGELOG says it records "milestone completions"; it records Milestone 0 and nothing after | [`CHANGELOG.md`](https://github.com/theurian/theurian/blob/main/CHANGELOG.md) has three entries — the 2026-08-20 note recording this roadmap's adoption, plus "Milestone 0 complete" and "Project started" — while the README declares Milestones 0 through 6 done. The file's own statement of scope is still false for **six** completed milestones, 1 through 6; the adoption note is a governance event, not one of them. (The evidence in this cell was "two entries" until the README-repositioning change added the third — a line this document falsified itself, corrected in the same change rather than left for Phase 0.) |
 | 12 | **Found during this re-verification.** SECURITY.md contradicts itself about whether `sensitivity` is refused at write time | One passage says the migration schema accepts `public\|internal\|confidential\|restricted` "with no refusal (unlike tenant and ACL group, which are refused at write time)"; another says "sensitivity, tenant and ACL group are refused at write time". The code agrees with the first: only `tenantId` and `aclGroup` raise `UnenforceableScopeError`, and `migration_engine.py` sets `sensitivity` unconditionally. This sits directly on #119's path, so Phase 0 must fix it before the axis gains a gate |
 

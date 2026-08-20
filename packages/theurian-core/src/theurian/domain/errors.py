@@ -7,7 +7,7 @@ message that says only "conflict" forces the reader back into the code.
 from __future__ import annotations
 
 import errno as _errno
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
@@ -414,8 +414,10 @@ class MigrationsDirectoryUnreadableError(MigrationError):
        "not a directory" case ``load_migrations`` already answers by returning
        an empty migration set -- but re-raises ``EACCES``. That escaped every
        command that resolves a project (`init`, `project register`, `project
-       status`, and every one of `_require_project`'s seven callers), `project
-       status` included, even though that command's whole contract is to
+       status`, and every one of `_require_project`'s callers -- nine as of
+       2026-08-20; re-count with ``grep -rn '_require_project(as_json)$'
+       packages/theurian-core/src/theurian/cli/`` rather than trusting this
+       number), `project status` included, even though its whole contract is to
        answer at exit 0 rather than crash. Measured against the real CLI:
        `chmod 000 .theurian` (also `chmod 400`, missing only the execute bit)
        crashed all of them with a raw `PermissionError` Rich traceback.
@@ -579,18 +581,228 @@ class SecurityError(TheurianError):
     """An operation was refused for a security reason."""
 
 
+#: Which *sentence* a refusal may open with (issue #233). A role selects wording
+#: and never an action: every remedy below ends in the same checklist, and none
+#: of them names a file to delete.
+#:
+#: * ``"symlink"`` -- ``lstat`` says this entry is itself a symbolic link. That
+#:   is the whole claim, and it is all ``lstat`` can support: being a link does
+#:   not make this entry *the* link that escapes.
+#: * ``"resolved"`` -- this entry resolves outside the root. Nothing is claimed
+#:   about what it is.
+#: * ``"referrer"`` -- this entry is the file that *names* the offending path.
+#:   It is where to look, and it is not itself outside.
+EscapeRole = Literal["symlink", "resolved", "referrer"]
+
+
+class EscapeSite(NamedTuple):
+    """A name a refusal may print, paired with the sentence it may open with.
+
+    **The closure argument.** On this branch a path can leave the root only
+    through a symbolic link somewhere on the entry's *ancestor chain* or its
+    *resolution chain*. The two non-symlink ways out are excluded by
+    construction rather than by a branch that runs here: an absolute path is
+    refused before an entry name is built, and a ``..`` component cannot appear
+    in a name this code derived by joining ``migrations_dir`` with what
+    ``iterdir()`` returned -- and a path nested past the depth limit is a
+    different refusal, :class:`PathDepthExceededError`, not an escape at all. So
+    the population that can hold the culprit is exactly three finite parts --
+    the entry, the directories above it, and the links it resolves through --
+    and the remedy instructs checking that population without asserting which
+    member is at fault. The only claim it makes beyond the checklist is the one
+    ``lstat`` proves: whether the entry is itself a link. Nothing in that
+    argument depends on state this code did not walk, which is what makes it
+    attackable and what makes it terminate.
+
+    **Why it is phrased as a checklist rather than an identification.** Three
+    earlier arguments tried to name the culprit, and each was refuted by a
+    deeper construction:
+
+    1. "a name ``iterdir()`` returned has no ``..`` to climb with, so a symlink
+       is the only way it escapes" -- refuted by an outside-pointing
+       ``.theurian`` (issue #237), which makes plain files resolve outside.
+    2. "``lstat`` says it is a link, so removing it cures the escape" --
+       refuted by a link to a sibling under such an ancestor, and by a
+       ``migrations`` link lexically in-project under one.
+    3. "the parent chain resolves inside and the result is outside, so the
+       final component is the only candidate" -- refuted by ``x -> y ->
+       outside`` between two siblings: resolution continues *through* the final
+       component's target chain, so the candidate set was never a singleton.
+       Measured: following that remedy deleted two Git-tracked files and ended
+       at ``valid: true``, while the minimal cure was repointing ``y`` alone.
+
+    Each fix added a probe to justify a stronger sentence, and each stronger
+    sentence was refuted in turn -- an escalation with no fixed point, because
+    the culprit genuinely can sit anywhere on either chain. The rebuild goes the
+    other way: **drop the unprovable assertion instead of strengthening the
+    probe.** No remedy here proposes removing a specific file as the cure,
+    because deletion-as-cure requires knowing the culprit and this code cannot
+    know it. "Repoint that link, or remove that link" refers to whichever link
+    the reader locates by walking the checklist, and the product never names it.
+
+    The probes are taken adjacently rather than atomically, so a concurrent
+    replacement can leave the opening sentence describing a path that has since
+    changed. The residual is bounded by what the sentence *does*: it is advice
+    to be acted on by a reader -- a person at a terminal, or an agent reading
+    ``exc.remedy`` through ``project status`` -- never an action Theurian takes.
+    """
+
+    name: str
+    role: EscapeRole
+
+
 class PathEscapeError(SecurityError):
     """A path resolved outside its permitted root.
 
-    Raised for ``..`` traversal, absolute paths, and symlinks that leave the root.
-    The offending path is not echoed verbatim into user-facing output to avoid
-    reflecting attacker-controlled text (SEC-7).
+    Raised for ``..`` traversal, absolute paths, and symlinks that leave the
+    root. A path merely nested too deep is refused by
+    :class:`PathDepthExceededError`, a subclass, because it need not have left
+    the root at all.
+
+    **What is never rendered.** The ``requested`` *field* is never read for
+    output -- at most of this class's call sites it holds attacker-controlled
+    text, a ``contentFile`` written by whoever authored the migration (SEC-7).
+    (Where an ``entry`` is given, its name can coincide with ``requested`` by
+    construction, and *that* string is rendered: what the rule forbids is
+    reaching for the field, not the accident of two variables holding equal
+    values.) The ``root`` field is likewise never read for output, because it
+    is absolute and no sibling refusal on this load path prints an absolute
+    path.
+
+    **What is rendered.** ``entry`` is how a refusal still says *where* the
+    problem is (issue #233), and it is supplied by the caller rather than
+    derived here, because only the caller knows whether it holds a name that is
+    safe to print: a ``project_root``-relative path Theurian itself produced by
+    listing its own directory, not one an author chose. It is rendered with the
+    same ``!r`` quoting :class:`MigrationFileUnreadableError` and
+    :class:`MigrationsDirectoryUnreadableError` apply to theirs, which is what
+    keeps a control character in a filename from reaching a terminal raw.
+
+    **Why the role exists.** It selects the sentence a refusal may open with,
+    and nothing else: the instruction that follows is the same checklist in
+    every case, and it names no file to delete. :class:`EscapeSite` records why
+    -- three successive attempts to identify the culprit were each refuted by a
+    deeper construction, and the culprit can sit anywhere on the entry's
+    ancestor or resolution chain.
+
+    Where no ``entry`` is given at all, the remedy names every mechanism and
+    stays root-agnostic: three raise sites in
+    ``application/proposal_service.py`` protect ``.theurian/knowledge`` rather
+    than the project root, so "keep it inside the project" would be advice a
+    caller has already followed.
+
+    Exported by name rather than through an ``__all__``: this module declares
+    none, and every consumer imports the symbol it needs directly.
+
+    Before this class carried a remedy, ``cli/commands.py::_context_remedy``
+    fell through to its generic default and told a user whose
+    ``.theurian/migrations`` was an outside-pointing symlink to "run this
+    inside an initialised Theurian project" -- which is where they already
+    were. That is the "exception that does not describe itself" shape issue
+    #205's :attr:`TheurianError.remedy` exists to end.
     """
 
-    def __init__(self, requested: str, root: str) -> None:
+    def __init__(self, requested: str, root: str, *, entry: EscapeSite | None = None) -> None:
         self.requested = requested
         self.root = root
-        super().__init__(f"Path escapes the permitted root {root}")
+        self.entry = entry
+        if entry is None:
+            # No depth clause: depth has its own subclass and its own message.
+            # The two edits named here are to the path *text*, not deletions of
+            # a file -- the same rule the named remedies keep.
+            self.remedy = (
+                "Keep the referenced path inside the permitted root: remove any `..` that "
+                "climbs above the root, remove any absolute prefix, and check whatever it "
+                "traverses for a symbolic link that leaves the root, then retry."
+            )
+            super().__init__("Path escapes the permitted root")
+            return
+        self.remedy = _path_escape_remedy(entry)
+        if entry.role == "referrer":
+            super().__init__(f"{entry.name!r} names a path that escapes the permitted root")
+            return
+        super().__init__(f"{entry.name!r} escapes the permitted root")
+
+
+#: The instruction every escape remedy converges on. It names the population
+#: :class:`EscapeSite`'s closure argument bounds -- the entry, its ancestors, the
+#: links it resolves through -- and leaves the culprit for the reader to find.
+#: "that link" is deliberately not a filename: the product cannot know which
+#: member of the population is at fault, and three attempts to name it were each
+#: refuted.
+_CHECK_THE_CHAIN = (
+    "Check it, each directory above it, and each link it resolves through, for the "
+    "link that leaves the project. Repoint that link so it resolves inside the "
+    "project, or remove that link, then retry."
+)
+
+
+def _path_escape_remedy(entry: EscapeSite) -> str:
+    """The cure, opened by whichever sentence the caller's probe supports.
+
+    The role changes only the first sentence. What follows is
+    :data:`_CHECK_THE_CHAIN` for both escape roles, because the culprit can sit
+    anywhere on either chain and no probe available here narrows it further --
+    see :class:`EscapeSite` for the three narrowing arguments that were tried
+    and refuted.
+
+    The ``"referrer"`` branch is the one place a second *candidate* is offered
+    rather than a single story, because a ``contentFile`` has two genuinely
+    different failure modes: the path is written wrong, or something it
+    traverses is a link. Naming only the second denied the cure for a plain
+    over-traversal typo, which is the commonest case of all.
+    """
+    if entry.role == "symlink":
+        return f"{entry.name!r} is itself a symbolic link. {_CHECK_THE_CHAIN}"
+    if entry.role == "referrer":
+        return (
+            f"Either the path that {entry.name!r} names is written wrong -- correct it so "
+            f"it stays inside the project (the examples in docs/protocol/migrations.md "
+            f"show the normal `../knowledge/...` form) -- or something it traverses is a "
+            f"symbolic link that leaves the project; find and fix that link."
+        )
+    return f"{entry.name!r} resolves outside the project. {_CHECK_THE_CHAIN}"
+
+
+class PathDepthExceededError(PathEscapeError):
+    """A path nested deeper below the root than the containment check will walk.
+
+    A subclass rather than a plain :class:`PathEscapeError`, because the two say
+    different things: this path may sit entirely *inside* the root and still be
+    refused, so "Path escapes the permitted root" was simply false for it. It
+    stays under :class:`PathEscapeError` so that every existing ``except`` and
+    every exit-code route keeps catching it unchanged -- what changes is only
+    what the caller is told.
+
+    ``limit`` is passed in rather than imported: the constant lives in
+    ``security/paths.py``, which imports *this* module, and reaching back for it
+    would close the cycle.
+
+    ``entry`` takes only the ``"referrer"`` role in practice, for the same
+    reason its escaping siblings do: a ``contentFile`` nesting too deep is
+    fixed by opening the migration file that names it, and that filename is
+    already printed by :class:`MigrationContentUnreadableError` for the same
+    file. Neither of the escape roles applies -- nothing here is a link, and
+    nothing has left the root.
+    """
+
+    def __init__(
+        self, requested: str, root: str, *, limit: int, entry: EscapeSite | None = None
+    ) -> None:
+        self.requested = requested
+        self.root = root
+        self.entry = entry
+        self.limit = limit
+        named = f"The path that {entry.name!r} names nests" if entry else "This path nests"
+        self.remedy = (
+            f"{named} more than {limit} path segments below the permitted root. Shorten "
+            f"it -- flatten the directories it nests through -- then retry."
+        )
+        # `SecurityError.__init__`, deliberately skipping `PathEscapeError`'s:
+        # that one composes the message from `entry`, and this refusal's message
+        # is not about an escape at all.
+        subject = f"{entry.name!r} names a path that exceeds" if entry else "Path exceeds"
+        SecurityError.__init__(self, f"{subject} the permitted depth limit of {limit} segments")
 
 
 class InputTooLargeError(SecurityError):
