@@ -2464,6 +2464,59 @@ def test_validate_migration_document_still_resolves_internal_defs_in_the_real_sc
         validate_migration_document(bad_item_id, real_schema_root())
 
 
+# -- issue #289: what a schema rejection is allowed to echo ------------------
+#
+# `jsonschema` builds `ValidationError.message` by interpolating the failing
+# instance with `{instance!r}` -- measured against the installed 4.26.0, all
+# twenty keyword interpolations use `!r`, and `_utils.extras_msg` reprs each
+# extra property name. Both seams in `migration_loader.py` --
+# `validate_migration_document`'s `except ValidationError` and `_load_one`'s --
+# forward that `exc.message` verbatim into a `MigrationError`.
+#
+# Two properties of the resulting message belong to Theurian and are pinned
+# here rather than left to a third party:
+#
+# 1. **Boundedness.** The echo is unbounded today: an author-controlled 100 KB
+#    string value is rendered whole into the refusal a reader receives.
+#    Measured on this branch at 100,198 characters for the document the first
+#    test below builds.
+# 2. **Control-character escaping.** `!r` already escapes an ESC byte and a
+#    newline, so no raw-ANSI injection is demonstrable today -- which is
+#    exactly why it is pinned: the guarantee currently lives in `jsonschema`
+#    internals that no test of ours holds, and a fix that reconstructs the
+#    message from `exc.absolute_path`/`exc.validator`/a truncated instance
+#    must not lose it on the way.
+#
+# The "still names the failing location" tests are the counterweight: a bound
+# and an escape must not be bought by deleting the diagnosis.
+
+#: Ceiling on a schema-rejection message, in characters. Deliberately generous
+#: -- today's real messages for these shapes run a little over 200 characters,
+#: and what is being pinned is that the echo is bounded by something Theurian
+#: chooses, not that it is short. A refusal lands in a terminal, so an
+#: unbounded echo is a resource the document's author spends on its reader.
+_MESSAGE_CHARACTER_CAP = 2000
+
+#: An author-controlled value large enough that echoing it whole is the defect
+#: rather than a matter of taste. `owner` carries it because the bundled
+#: schema caps that field's length, so a single oversized value is the whole
+#: reason the document is refused.
+_OVERSIZED_VALUE = "A" * 100_000
+
+#: A value carrying a raw ESC byte and a raw newline, long enough to break the
+#: root `author` field's 320-character ceiling.
+#:
+#: `author` carries it rather than a field inside the operation, and that
+#: choice is load-bearing: an operation is refused by `#/$defs/operation`'s
+#: `oneOf`, whose instance is the whole operation *mapping*, and a mapping's
+#: `str()` is its `repr()` -- so a mutation replacing `{instance!r}` with
+#: `{instance}` there escapes the value anyway and survives. `author` fails
+#: `maxLength` at the leaf, where the instance is the hostile string itself and
+#: the two renderings genuinely differ. Measured: the mapping-shaped version of
+#: this test passed with the mutation applied.
+_CONTROL_CHARACTER_AUTHOR = "\x1b[31mFORGED\x1b[0m\nSecond line" + "x" * 400
+
+
 def _document_with(
     *, author: str = "engineer@example.com", **operation_overrides: object
 ) -> dict[str, Any]:
@@ -2488,6 +2541,134 @@ def _document_with(
         "author": author,
         "operations": [operation],
     }
+
+
+def test_a_schema_rejection_does_not_echo_an_oversized_value_whole() -> None:
+    """Issue #289: the failing instance reaches the reader unbounded.
+
+    `validate_migration_document` forwards `jsonschema`'s `exc.message`, which
+    has already interpolated the whole failing operation -- including a 100 KB
+    author-written `owner` -- with `{instance!r}`. Measured on this branch:
+    `len(str(exc))` is 100,198.
+
+    The document is otherwise valid, so the oversized value is both the reason
+    for the refusal and the entire excess in it.
+    """
+    document = _document_with(owner=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the author-controlled value is echoed whole"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_a_schema_rejection_never_puts_a_raw_control_character_in_the_message() -> None:
+    """Issue #289, the half that is GREEN today and pinned for that reason.
+
+    `jsonschema` escapes an ESC byte and a newline only because every keyword
+    interpolates with `{instance!r}` -- a property of a third-party
+    implementation that this seam currently inherits by accident and no test of
+    ours holds. Issue #289's own stated mechanism (raw ANSI reaching stderr)
+    was measured false on this branch for exactly that reason.
+
+    The fix moves the message construction to our side of the seam, and this
+    test is what stops the escaping being lost in the move. A refusal from this
+    seam is one line, so a raw newline from the instance would let an
+    author-written value forge a second line of Theurian's own output.
+
+    The third assertion is what keeps the first two from being satisfiable by
+    echoing nothing: the offending value must still be *reported*, inert. Same
+    shape as
+    `test_an_escaping_entrys_control_characters_do_not_reach_output_raw`
+    above, which exists because a mutation dropping one `!r` survived the suite.
+
+    See `_CONTROL_CHARACTER_AUTHOR` for why the hostile value sits on `author`
+    and not inside the operation -- a mapping-shaped instance escapes its
+    members whichever rendering is used, and that version of this test survived
+    the mutation it exists to catch.
+    """
+    document = _document_with(author=_CONTROL_CHARACTER_AUTHOR)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "\x1b" not in message, "a raw ESC byte in a terminal is an injected escape sequence"
+    assert "\n" not in message, "an echoed value must not add a line to Theurian's own output"
+    assert "FORGED" in message, "the offending value is still reported, as inert text"
+
+
+def test_a_schema_rejection_still_names_where_in_the_document_it_failed() -> None:
+    """The counterweight to the bound and the escaping above.
+
+    Both are trivially satisfiable by echoing nothing at all, and a refusal
+    that says only "invalid" sends the reader back into the schema. The
+    location path is what makes the refusal actionable, so it is asserted
+    separately -- GREEN today, and the test that goes RED if the #289 fix pays
+    for its bound with the diagnosis.
+    """
+    document = _document_with(owner=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    assert "operations/0" in str(excinfo.value), "the reader needs the failing location"
+
+
+#: The migration file the two loader-seam tests below drive. Named once so the
+#: "still names the file" assertion and the fixture cannot drift apart.
+_OVERSIZED_MIGRATION_FILENAME = "01K1KKKKKK01234567890ABCDE-oversized-owner.yaml"
+
+
+def _write_oversized_owner_migration(project: Path) -> Path:
+    """A hand-authored migration whose only fault is a 100 KB `owner`.
+
+    100 KB is comfortably inside `load_yaml`'s own 4 MiB ceiling, so the
+    document really does reach the schema rather than being refused for size
+    one layer earlier.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / _OVERSIZED_MIGRATION_FILENAME).write_text(
+        _VALID_MIGRATION.replace("owner: platform-team", f"owner: {_OVERSIZED_VALUE}")
+    )
+    return migrations_dir
+
+
+def test_a_migration_file_rejected_by_the_schema_does_not_echo_an_oversized_value_whole(
+    project: Path,
+) -> None:
+    """`_load_one`'s wrap is the second seam with the same defect (issue #289).
+
+    It words the refusal differently -- with the file name -- but forwards the
+    same unbounded `exc.message`, so a fix applied only to
+    `validate_migration_document` would move the defect one call site over
+    rather than close it. This is the seam a repository author actually
+    reaches: the file is checked out and loaded, not passed in by a generator.
+    """
+    migrations_dir = _write_oversized_owner_migration(project)
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the author-controlled value is echoed whole"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_a_migration_file_rejected_by_the_schema_still_names_the_file(project: Path) -> None:
+    """The loader seam's own counterweight: with many files on disk, the name
+    is what tells the reader which one to open, and bounding the message must
+    not truncate it away. GREEN today; RED if a bound is applied from the
+    front of the message rather than to the echoed value.
+    """
+    migrations_dir = _write_oversized_owner_migration(project)
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert _OVERSIZED_MIGRATION_FILENAME in str(excinfo.value), "which file to open"
 
 
 # -- issue #291: a deep document is a document fault, not a broken install ---

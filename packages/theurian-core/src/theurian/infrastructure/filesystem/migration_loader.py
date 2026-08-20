@@ -113,6 +113,18 @@ MAX_MIGRATIONS: Final = 10_000
 #: stay well clear of a ceiling that moves with the ambient call stack.
 MAX_DOCUMENT_NESTING: Final = 64
 
+#: Ceiling on how much of an author-written value a schema rejection may echo,
+#: in characters. Applied by `_bounded` to every variable-length fragment
+#: `_schema_rejection` assembles (issue #289).
+#:
+#: Sized to show a *real* rejected operation whole and to bite only on a value
+#: written to be large: the 52 operations in this repository's own committed
+#: migrations render at 145-937 characters, median 501 (measured 2026-08-21 over
+#: `.theurian/migrations`). What the bound removes is the unbounded case behind
+#: the issue -- a 100 KB value rendering a 100,198-character refusal into
+#: someone's terminal.
+MAX_ECHOED_VALUE: Final = 1_000
+
 _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 
 
@@ -389,6 +401,89 @@ def _validate_document(
         raise SchemaUnreadableError(str(schema_validator.schema_path), reason) from exc
 
 
+def _bounded(rendered: str) -> str:
+    """``rendered``, cut to :data:`MAX_ECHOED_VALUE`, saying what was cut.
+
+    The full length is named because for the case this bound exists for -- a
+    value that is refused *for being large* -- the size is the diagnosis, and a
+    reader who is only shown a prefix cannot tell 300 characters from 300,000.
+    """
+    if len(rendered) <= MAX_ECHOED_VALUE:
+        return rendered
+    return f"{rendered[:MAX_ECHOED_VALUE]}... ({len(rendered)} characters in all)"
+
+
+def _missing_required_properties(exc: ValidationError) -> list[str]:
+    """The ``required`` names the failing instance does not carry.
+
+    Every name returned comes from the *schema's* ``required`` array, never
+    from the document -- which is why :func:`_schema_rejection` may print them
+    in full while it bounds everything the author wrote. The two ``isinstance``
+    guards are what keep that true: without them this would be reading whatever
+    a replaced schema put there, and the list is a plain ``Any`` in the stubs.
+
+    Empty when the keyword is not ``required``, when the instance is not a
+    mapping, or when nothing is missing -- each of which sends the caller back
+    to its generic wording rather than to a sentence that would be false.
+    """
+    required = exc.validator_value
+    instance = exc.instance
+    if not isinstance(required, list) or not isinstance(instance, Mapping):
+        return []
+    return [name for name in required if isinstance(name, str) and name not in instance]
+
+
+def _schema_rejection(exc: ValidationError) -> str:
+    """Where a document failed the schema and why, worded here (issue #289).
+
+    **One function for both seams**, because they are one message with two
+    prefixes: `validate_migration_document` says "invalid migration at ..." and
+    `_load_one` says "<file> is invalid at ...". A second hand-rolled builder
+    would drift, and the property most likely to be lost in the drift is the
+    one that leaves no trace when it goes -- the escaping below.
+
+    `jsonschema` builds `ValidationError.message` by interpolating the failing
+    instance with `{instance!r}`, which two properties of the refusal we
+    forwarded used to depend on:
+
+    * **Bounded.** It was not: a 100 KB author-written value rendered whole
+      into a message a reader receives, measured at 100,198 characters. A
+      migration file is written by whoever can commit to the repository, so
+      that echo is a terminal's worth of output the author chose. Every
+      variable-length fragment below goes through :func:`_bounded`.
+    * **Escaped.** It was, and by accident: an ESC or a newline in an authored
+      value arrived escaped only because a third-party internal happened to use
+      `!r` everywhere, which no test of ours held. Every author-written
+      fragment below is rendered with `repr` *here* -- the language's own
+      escaping, called by this seam rather than inherited from a dependency.
+
+    The location is the one fragment neither bounded nor repr'd, and it is not
+    author-written: `absolute_path` holds the property names the schema
+    descended through and array indices, and every object in the bundled schema
+    is `additionalProperties: false` with no `patternProperties`, so no key an
+    author invented is ever descended into. It is also rendered exactly as
+    before this change.
+
+    `required` is worded separately because it is the one rejection whose cause
+    appears *nowhere* in the instance: the missing name is in the schema. The
+    generic wording would have answered "does not satisfy 'required'" and then
+    printed the object the property is missing from, which is strictly less
+    than what was there before. `additionalProperties` needs no such branch --
+    the offending keys are in the instance, and the echo shows them.
+    """
+    location = "/".join(str(part) for part in exc.absolute_path) or "<root>"
+    missing = _missing_required_properties(exc)
+    if missing:
+        noun = "property" if len(missing) == 1 else "properties"
+        names = _bounded(", ".join(repr(name) for name in missing))
+        return f"{location}: missing the required {noun} {names}"
+    # `Unset` when `jsonschema` raised without a keyword: named rather than
+    # repr'd so the message says "the schema" instead of a sentinel's repr.
+    keyword = repr(exc.validator) if isinstance(exc.validator, str) else "the schema"
+    echoed = _bounded(repr(exc.instance))
+    return f"{location}: does not satisfy {keyword}; the value there is {echoed}"
+
+
 def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
     """Check a migration *document* against the published schema, without a file.
 
@@ -413,8 +508,7 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
     try:
         _validate_document(schema_validator, document)
     except ValidationError as exc:
-        location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
-        raise MigrationError(f"invalid migration at {location}: {exc.message}") from exc
+        raise MigrationError(f"invalid migration at {_schema_rejection(exc)}") from exc
 
 
 def load_migrations(
@@ -823,8 +917,10 @@ def _load_one(
         # two seams share.
         _validate_document(schema_validator, document, document_name=path.name)
     except ValidationError as exc:
-        location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
-        raise MigrationError(f"{path.name} is invalid at {location}: {exc.message}") from exc
+        # `_schema_rejection` and not this seam's own builder: the file name is
+        # the whole difference between the two wordings, and the rest -- the
+        # location, the bound, the escaping -- is one message (issue #289).
+        raise MigrationError(f"{path.name} is invalid at {_schema_rejection(exc)}") from exc
 
     if document["apiVersion"] != MIGRATION_API_VERSION:
         raise MigrationError(
