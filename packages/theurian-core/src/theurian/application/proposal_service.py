@@ -105,6 +105,15 @@ CurrentRevisionLookup = Callable[[ItemId], RevisionId | None]
 #: the schema check and the current-revision lookup arrive this way.
 LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 
+#: Every migration in the project's approved set. The same ``MigrationSet``
+#: :data:`LandedMigrationLookup` is keyed into, handed over whole because the pin
+#: guard's question -- "does *any* migration already in place pin the bytes at
+#: this path?" -- is not keyed by id and cannot be asked one lookup at a time.
+#: Injected for the identical reason: it is the loader's set, so the guard and the
+#: loader cannot disagree about which bodies are pinned (#234), and the loader
+#: itself stays an adapter this layer never imports (ADR-0003).
+LandedMigrations = Callable[[], Iterable[Migration]]
+
 
 class ProposalError(TheurianError):
     """A proposal could not be drafted or accepted.
@@ -282,6 +291,7 @@ class ProposalService:
         validate: MigrationDocumentValidator,
         current_revision: CurrentRevisionLookup,
         landed_migration: LandedMigrationLookup,
+        landed_migrations: LandedMigrations,
     ) -> None:
         self._paths = paths
         self._clock = clock
@@ -289,6 +299,7 @@ class ProposalService:
         self._validate = validate
         self._current_revision = current_revision
         self._landed_migration = landed_migration
+        self._landed_migrations = landed_migrations
 
     # -- generation --------------------------------------------------------
 
@@ -801,11 +812,14 @@ class ProposalService:
         loader twice: a symlinked landed migration read as absent (round five), and
         a landed migration renamed off its ULID prefix read as absent (round six),
         each an exit-1 "nothing landed" over a change on disk, each a duplicate-mint
-        (#89). **Residual, same class, not fixed here:** ``_pinned_digest_at`` is
-        the other member that re-detects landed migrations from the filesystem
-        (a ``glob("*.yaml")`` with a symlink skip); it is issue #234's box, a
-        security-sensitive pin guard with its own review, to be closed the same
-        way -- wire it to the loaded set -- in its own slot.
+        (#89). **The class is closed on both its members.** ``_pinned_digest_at``
+        was the other one that re-detected landed migrations from the filesystem
+        (a ``glob("*.yaml")`` with a symlink skip), and it reproduced round five's
+        disagreement on the pin guard rather than on this diagnosis: a landed
+        migration behind a symlink held a pin the guard could not see, so a body
+        replacement was allowed and the set stopped loading (#234). It reads the
+        same loaded set through :data:`LandedMigrations` as of that fix. No method
+        on the accept path enumerates ``.theurian/migrations/`` any more.
 
         ``None`` when nothing is filed under the id. Otherwise a
         :class:`_LandedMigration` whose ``confirmed`` says whether it also operates
@@ -936,6 +950,14 @@ class ProposalService:
             # A pin that already fails to match its body is a project that does
             # not validate now; only refuse where a *currently valid* pin would
             # be broken. And a byte-identical replacement changes nothing.
+            #
+            # Now that the pin comes from the loaded set, `pin == current` covers
+            # a narrower window than it did against the filesystem: the loader
+            # refuses a declared pin that does not match the body it reads, so a
+            # pin broken at load time takes the whole set down before `accept`
+            # dispatches at all. What is left for the conjunct to catch is a body
+            # edited between that load and this call. It stays because that
+            # window is real and the check is a hash of bytes already in hand.
             if pin == current and replacement != current:
                 relative = move.destination.relative_to(self._paths.knowledge.resolve())
                 raise ProposalError(
@@ -949,23 +971,72 @@ class ProposalService:
     def _pinned_digest_at(self, destination: Path) -> str | None:
         """The ``contentSha256`` an existing migration pins for ``destination``, if any.
 
-        Reads the migrations already in ``.theurian/migrations/`` -- not the
-        proposal -- so it can say whether landing this body would break one. A
-        malformed existing migration is skipped: it fails ``migrate validate``
-        regardless, and is not this command's to diagnose.
+        **Closure (the class this closes).** The pins come from the project's
+        *loaded* migration set, through the injected :data:`LandedMigrations` --
+        the same ``MigrationSet`` ``migrate validate`` and ``migrate apply`` read,
+        and the same one :meth:`_landed_state` is keyed into. So the guard and the
+        loader cannot disagree about which bodies are pinned, for any migration
+        and for any path: both answers are now readings of one object rather than
+        two enumerations that happen to agree.
+
+        A previous version had its own detector -- ``.theurian/migrations/*.yaml``
+        globbed off the filesystem, with ``is_symlink()`` entries skipped -- and it
+        disagreed with the loader exactly where ``_landed_state``'s did (#253): the
+        loader *follows* a symlinked migration that points at a real in-project
+        file and loads its pins, while the glob skipped it. A landed migration
+        relocated behind a link therefore held a pin this guard could not see,
+        ``accept`` allowed the replacement, and the set then failed to load
+        entirely -- *"hashes to abc7cdb70713 but the migration pins
+        539a4030033a"*, the exit-4 no-undo outcome
+        :meth:`_refuse_if_a_replacement_breaks_an_existing_pin` exists to
+        prevent (#234, reproduced end to end).
+
+        A *declared* pin is what counts, which is why the filter is
+        ``content_pinned`` and not merely "``content_sha256`` is set": the loader
+        fills the latter with the hash it just computed whether or not the
+        migration declared one, and only a declared pin freezes the body (#210).
+        Two migrations that pin the same path cannot disagree either -- the loader
+        refuses a declared pin that does not equal the body it reads, so within a
+        set that loaded at all, every pin on one path is the same string and the
+        iteration order cannot decide the answer. The set's order is the loader's
+        (topological, ULID tie-broken) and so deterministic regardless.
+
+        Nothing here is skipped for being malformed, because nothing here can be:
+        a migration that does not parse, whose ``contentFile`` cannot be resolved,
+        or whose pin is already broken fails the *load*, and the load happens in
+        the composition root before ``accept`` is called. The old skip existed
+        only because this method re-parsed the files itself.
         """
         resolved_destination = destination.resolve()
-        for migration in sorted(self._paths.migrations.glob("*.yaml")):
-            if migration.is_symlink() or not migration.is_file():
-                continue
-            try:
-                document = load_yaml_mapping(migration.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
-                continue
-            for content_file, pin in _pinned_content_files(document):
-                if (self._paths.migrations / content_file).resolve() == resolved_destination:
-                    return pin
+        for migration in self._landed_migrations():
+            for operation in migration.operations:
+                if not isinstance(operation, UpsertRevision) or not operation.content_pinned:
+                    continue
+                pin = operation.content_sha256
+                if pin is not None and self._pinned_body_path(operation) == resolved_destination:
+                    return pin.value
         return None
+
+    def _pinned_body_path(self, operation: UpsertRevision) -> Path:
+        """Where a loaded ``upsertRevision``'s body sits, fully resolved.
+
+        ``resolved_content_path`` is the loader's *own* resolution of that
+        operation's ``contentFile`` -- taken against ``.theurian/migrations/``,
+        with ``..`` collapsed and symlinks followed, then expressed relative to
+        the resolved project root. Reusing it is what keeps this reader and the
+        loader from resolving one string two ways, which is the whole point of
+        reading the loaded set.
+
+        It is ``None`` only for an operation built in memory rather than read from
+        a file. Such an operation has no tree behind it, so its declared path is
+        resolved here against ``.theurian/migrations/`` -- the base the loader
+        itself uses, and the base this method used for every migration before it
+        read the loaded set.
+        """
+        resolved = operation.resolved_content_path
+        if resolved is None:
+            return (self._paths.migrations / operation.content_file_path).resolve()
+        return self._paths.root.resolve() / resolved
 
     def _commit(
         self,
@@ -1350,20 +1421,6 @@ def _content_files(document: Mapping[str, object]) -> Iterable[str]:
         content_file = operation.get("contentFile")
         if isinstance(content_file, str) and content_file:
             yield content_file
-
-
-def _pinned_content_files(document: Mapping[str, object]) -> Iterable[tuple[str, str]]:
-    """Every ``(contentFile, contentSha256)`` an existing migration pins."""
-    operations = document.get("operations")
-    if not isinstance(operations, list):
-        return
-    for operation in operations:
-        if not isinstance(operation, Mapping):
-            continue
-        content_file = operation.get("contentFile")
-        pin = operation.get("contentSha256")
-        if isinstance(content_file, str) and content_file and isinstance(pin, str) and pin:
-            yield content_file, pin
 
 
 def _roll_back(created: Iterable[Path], restored: Iterable[tuple[Path, bytes]]) -> None:

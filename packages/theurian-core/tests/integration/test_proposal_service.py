@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -103,11 +103,12 @@ def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
 
 @pytest.fixture
 def service(paths: ProjectPaths) -> ProposalService:
-    # Both lookups read the project's *approved* migration set, freshly loaded on
-    # every call the same way the CLI's `resolve_context` loads it -- so a second
-    # draft sees the first proposal's accepted item (the #210 update guard), and
-    # `accept` reads the same set `migrate validate`/`apply` do when it asks
-    # whether a recorded migration id is in place (#253).
+    # All three lookups read the project's *approved* migration set, freshly
+    # loaded on every call the same way the CLI's `resolve_context` loads it --
+    # so a second draft sees the first proposal's accepted item (the #210 update
+    # guard), `accept` reads the same set `migrate validate`/`apply` do when it
+    # asks whether a recorded migration id is in place (#253), and the pin guard
+    # reads it when it asks which bodies are already pinned (#234).
     def current_revision(item_id: ItemId) -> RevisionId | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return current_revision_in(loaded.migration_set, item_id)
@@ -116,6 +117,10 @@ def service(paths: ProjectPaths) -> ProposalService:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return loaded.migration_set.get(migration_id)
 
+    def landed_migrations() -> Iterable[Migration]:
+        loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+        return loaded.migration_set
+
     return ProposalService(
         paths=paths,
         clock=FrozenClock(),
@@ -123,6 +128,7 @@ def service(paths: ProjectPaths) -> ProposalService:
         validate=_validator,
         current_revision=current_revision,
         landed_migration=landed_migration,
+        landed_migrations=landed_migrations,
     )
 
 
@@ -750,6 +756,76 @@ def test_accept_refuses_a_replacement_that_would_break_an_existing_pin(
         service.accept(second.proposal_id)
 
     # The first body is untouched and the whole set still loads.
+    assert first.body_destination.read_text() == BODY
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_the_pin_guard_sees_a_pin_held_by_a_symlinked_landed_migration(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#234: ``_pinned_digest_at`` skips a symlink the loader follows.
+
+    The same class ``_landed_state`` closed for the accepted-detector (#253), on
+    the guard above. ``_pinned_digest_at`` re-enumerates
+    ``.theurian/migrations/*.yaml`` from the filesystem and ``continue``s on
+    ``migration.is_symlink()``, while ``load_migrations`` follows a symlinked
+    entry that points at a real in-project migration and loads its pins -- so the
+    two readers disagree about which bodies are pinned, and the disagreement is
+    the guard's blind spot rather than a cosmetic one.
+
+    Confirmed end to end before the fix: with the landed migration moved to
+    ``<root>/migration-store/`` and a relative symlink left in its place, the
+    loader still loaded the set (count 1) and ``accept`` did **not** refuse the
+    replacement -- and the set then failed to load at all, with
+    *"... hashes to abc7cdb70713 but the migration pins 539a4030033a"*, the exit-4
+    shape ``_refuse_if_a_replacement_breaks_an_existing_pin`` exists to prevent.
+
+    The symlinked layout is not exotic input: a project that keeps its migrations
+    under version control elsewhere, or a contributor who relocates one, produces
+    it, and the loader is what decides whether the set is real. The fix direction
+    is recorded in :meth:`ProposalService._landed_state`'s docstring -- read the
+    loaded migration set, so no filename shape can make the guard and the loader
+    disagree.
+
+    The second proposal is drafted for a *different* item and its ``contentFile``
+    hand-repointed at the first item's body path, exactly as
+    :func:`test_accept_refuses_a_replacement_that_would_break_an_existing_pin`
+    does; only the shape of the landed migration differs.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
+    store = paths.root / "migration-store"
+    store.mkdir()
+    landed.rename(store / landed.name)
+    landed.symlink_to(Path("..") / ".." / store.name / landed.name)
+    # Preconditions, so this cannot pass by never reaching the guard: the entry
+    # is a symlink, and the loader reads the set through it.
+    assert landed.is_symlink(), "the landed migration is now a symlink"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(
+            second.content_file, first.content_file
+        ),
+        encoding="utf-8",
+    )
+    # `body_destination` is resolved on both sides: on macOS the project root
+    # reaches this test through /var, whose real path is /private/var, and an
+    # unresolved left-hand side is not relative to the resolved knowledge dir.
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="pins"):
+        service.accept(second.proposal_id)
+
+    # The first body is untouched and the whole set still loads -- the property
+    # the refusal exists for, checked rather than assumed.
     assert first.body_destination.read_text() == BODY
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 

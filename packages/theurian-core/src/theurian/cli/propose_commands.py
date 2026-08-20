@@ -658,6 +658,13 @@ def _service(context: CommandContext) -> ProposalService:
         # (keyed by inner id), so `propose accept` cannot disagree with
         # `migrate validate`/`apply` about what is in place (ADR-0003, #253).
         landed_migration=migrations.get,
+        # And the same set handed over whole, for the pin guard, whose question
+        # is not keyed by id: "does any migration already in place pin the bytes
+        # at this path?". It used to answer that by globbing
+        # `.theurian/migrations/*.yaml` itself and skipping symlinked entries the
+        # loader follows, so a pin held by a relocated migration was invisible to
+        # it and `accept` overwrote the body the set validates against (#234).
+        landed_migrations=lambda: migrations,
     )
 
 
