@@ -60,11 +60,11 @@ starts from that gap rather than from the label.
 | :-- | :-- | :-- |
 | AI proposes; humans approve | More precisely: **AI proposes. Git reviews. Humans approve.** ([ADR-0013](adr/0013-ai-writes-produce-proposals.md)). Approval *is* the act of merging a PR. There is no approval command and no approver field in Theurian — a search for `approver`, `approved_by` and `approvedBy` across `packages/theurian-core/src/` and `schemas/` returns nothing at `f702736`. The approval record lives in Git metadata. | shipped |
 | An agent cannot change approved knowledge directly | Stronger than usually stated. No write-intent MCP tool exists (`writeTools: false`), and a test walks the bytecode of every registered tool to hold that none reaches a canonical write (ADR-0013). | shipped |
-| Git-native | Canonical state rebuilds from Git-tracked YAML migrations and body files into an empty database (FR-K4, [ADR-0004](adr/0004-sqlite-is-a-derived-artifact.md)). SQLite is always derived. The CI job that would *prove* it — rebuild from empty and compare — does not exist; `rg empty-db-rebuild` returns four documents saying so and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). | shipped |
+| Git-native | Canonical state rebuilds from Git-tracked YAML migrations and body files into an empty database (FR-K4, [ADR-0004](adr/0004-sqlite-is-a-derived-artifact.md)). SQLite is always derived. But the CI job that would *prove* it — rebuild from empty and compare — does not exist; `rg empty-db-rebuild` returns four documents saying so and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). Mechanism ships; the proof is owed. | partial |
 | Evidence-backed knowledge | INV-8: every revision carries at least one `SourceAnchor` or the `authored-in-theurian` label, enforced in the dataclass constructor. Every search result carries provenance. | shipped |
-| Local-first, reached over MCP | Loopback-only daemon (127.0.0.1:7419, bearer token), and an offline CI job proves "no API key needed" on every commit ([ADR-0009](adr/0009-no-llm-vendor-lock-in.md)). MCP is Streamable HTTP with five read-only tools. | shipped |
+| Local-first, reached over MCP | Loopback-only daemon (127.0.0.1:7419, bearer token), and an offline CI job proves "no API key needed" on every commit that touches Core, its schemas, tests, tools or the toolchain ([ADR-0009](adr/0009-no-llm-vendor-lock-in.md)). `core.yml` is path-filtered and `docs/**` is not among its paths, so a docs-only commit — this one included — does not run it. MCP is Streamable HTTP with five read-only tools. | shipped |
 | Provenance | A revision carries `author`, `source_commit`, `source_anchors`; a proposal carries `evidence.json` (`agentId`, `model`, reasoning). But `evidence.json` is an input a human reads during review — Core does not read it — and the record of *who approved* exists only outside Theurian, in Git. | partial |
-| Trust and validity | Validity windows (`validFrom`/`validTo`) and `asOf` search are implemented. **`trustLevel` and `sensitivity` are published on every result and read by no query.** `SqliteIndexStore._scope` emits exactly two predicates, `chunks.project_id = ?` and, unless `include_unapproved`, `chunks.status = ?`; its own docstring names `sensitivity`, `trust_level` and `namespace` as columns "no query reads". Tracked as [#119](https://github.com/theurian/theurian/issues/119). "Theurian has a trust model" is not yet a true sentence. | partial |
+| Trust and validity | Validity windows (`validFrom`/`validTo`) and `asOf` search are implemented. **`trustLevel` and `sensitivity` are published on every result and filtered on by no query.** Both columns are selected and published; what is absent is any `WHERE` predicate over them. `SqliteIndexStore._scope` emits exactly two, `chunks.project_id = ?` and, unless `include_unapproved`, `chunks.status = ?`; its own docstring names `sensitivity`, `trust_level` and `namespace` as columns "no query reads". Tracked as [#119](https://github.com/theurian/theurian/issues/119). "Theurian has a trust model" is not yet a true sentence. | partial |
 | Knowledge lifecycle | Six statuses exist (`draft`, `proposed`, `approved`, `deprecated`, `superseded`, `rejected`). **No transition graph is enforced anywhere** — a case-insensitive search for `transition` across `packages/theurian-core/src/` returns nothing, so a migration writing `rejected → approved` applies. Separately, `SURFACEABLE_STATUSES` is `{APPROVED, DRAFT, PROPOSED}`, so `rejected`, `superseded` and `deprecated` are unreachable under any flag. | partial |
 | Reproducibility | `stateHash` and `snapshotId` are published on every response, but **passing a `snapshotId` back to re-query a past state is not implemented** (the second half of FR-R7). `knowledge.search` takes `projectId`, `query`, `limit`, `includeUnapproved`, `maxTokens`, `useDense`, `asOf` — and no snapshot parameter. | partial |
 | Vendor neutrality | The wire surface (MCP tools, versioned schemas, `protocolVersion`) names no vendor and is neutral. **The install surface is Claude Code only**: `McpClientConfig` has exactly one adapter, `infrastructure/claude/mcp_config.py`. There is no Codex, Gemini, or generic `.mcp.json` adapter. | partial |
@@ -107,16 +107,29 @@ not; **absent** — effectively nothing.
   content addressing by SHA-256, six statuses, approved-only by default, and
   `rejected` unreachable under any flag as the place a rejection's reasoning can
   safely live.
-- **"AI proposes" enforced structurally** — proposal directory → PR → human merge
-  → `migrate apply`. No write tool on the MCP surface.
+- **"AI proposes" enforced structurally *on the MCP surface*** — no write tool
+  exists there, and a bytecode-walk test over every registered tool holds that
+  none reaches a canonical write. **The rest of the chain — proposal directory →
+  PR → human merge → `migrate apply` — is intended, not enforced.** The threat
+  model records the residual under T-15: *nothing enforces the merge*.
+  `migrate apply` applies whatever is in `.theurian/migrations/`, committed or
+  not; the human's review is a workflow convention rather than a check the code
+  makes, and the actors table's untrusted same-UID process can run it directly.
 - **Typed relations, 14 of them** — `implements` / `implemented_by`,
   `supersedes` / `superseded_by`, `depends_on`, `constrained_by`, `verified_by`,
   `reviewed_by`, `contradicts`, `related_to`, `derived_from`, `evidenced_by`,
   `rejects`, `exception_to`. Direction-dependent ones are mirrored
   automatically, and `knowledge.get` puts every edge through the disclosure gate
-  individually — the lesson T-21 taught, written into the code.
+  individually. **Per-edge gating predates T-21 and was itself the leak path** —
+  `_relation_is_visible` gated each endpoint through a read that *resolved
+  aliases*, so an alias key equal to a withheld item's id evaluated the wrong
+  item's authority. T-21's fix is the non-resolving read: each endpoint is now
+  read with `get_item_exact`, the row the id literally names. The principle the
+  split records is **reachability may resolve an alias; authority — a visibility
+  decision on a referenced id — must read the literally-named row.**
 - **Temporal primitives** — validity windows, `asOf` search, `freshness`
-  (`isWithinValidity`, `ageDays`), and `deprecateItem --supersededBy` recording a
+  (`isWithinValidity`, `ageDays`), and the migration operation
+  `deprecateItem`'s `supersededBy` field recording a
   `supersedes` edge automatically.
 - **Hybrid retrieval** — FTS5 word index, a trigram index for CJK
   ([ADR-0023](adr/0023-trigram-index-beside-the-word-index.md)), RRF rank fusion
@@ -127,13 +140,24 @@ not; **absent** — effectively nothing.
   withheld documents and an index that never held them return the same response
   to the same query", pinned by hypothesis tests (SEC-13, T-15, T-17). Purging
   the index on withdrawal is implemented (T-17a,
-  [ADR-0024](adr/0024-a-purge-is-a-build.md)).
+  [ADR-0024](adr/0024-a-purge-is-a-build.md)) **for the status axis only**, and
+  the threat model records two residuals with it: a request already in flight at
+  the pointer swap can still answer from the pre-purge build, and a purge that
+  fails leaves the stale build serving — reported (`indexPurge` with
+  `published: false`, `failed: true`, and a remedy) rather than silent. The
+  sensitivity axis is #119's work, and Phase 0 states its shape.
 - **A RAPTOR forest** — implemented and opt-in (`raptor.enabled` defaults to
   `false` in `schemas/config/project-config.schema.json`). Summaries are
   **routing-only**: ADR-0008 decision 8 states that search may traverse a summary
   node and only leaf chunks are returned, so **a summary node is never a result
-  row** — pinned by
-  `tests/integration/test_forest_retrieval.py::test_a_summary_node_is_never_itself_a_result_row`.
+  row**. **What holds that is the visibility gate, not the test named after it**:
+  a summary node has no (item, current-revision) pair for
+  `CanonicalVisibility._may_surface` to clear, so it cannot reach a result row.
+  Under a mutation that publishes node ids as item and revision ids,
+  `test_a_summary_node_is_never_itself_a_result_row` still passed — two routing
+  tests killed the mutation instead. The test-strength gap is tracked as
+  [#269](https://github.com/theurian/theurian/issues/269); the property itself is
+  not in doubt, only what enforces it.
   The default summarizer is extractive — every emitted sentence is a
   verbatim substring of its children — deterministic, and uses no LLM. A summary
   cannot span a scope boundary (`project`, `tenant`, `sensitivity`, `acl_group`,
@@ -207,14 +231,29 @@ not; **absent** — effectively nothing.
   that a drift check would read.
 - **History and evolution queries.** Superseded knowledge survives only in
   `git log`.
-- **Security debt that gates widening the agent write path.** SEC-8 (resource
-  bounds), SEC-10 (SSRF allowlist), SEC-11 (secret scanning), SEC-12 (MCP input
-  schema validation) and SEC-16 (untrusted region) are unimplemented. T-16
-  (install-time artifact verification) is recorded as **Critical and
-  unmitigated** in [the threat model](security/threat-model.md), and carries no
-  `pre-1.0` label. **21 open issues carry `pre-1.0`, the label that gates 0.1.0
-  stable** (`gh issue list --label pre-1.0 --state open`, 21 as of 2026-08-20;
-  102 issues open in total).
+- **Security debt that gates widening the agent write path.** These are partly
+  shipped rather than absent, and the difference matters when scoping Phase 0:
+
+  | Requirement | What ships | What is owed |
+  | :-- | :-- | :-- |
+  | SEC-8 (resource bounds) | `MAX_YAML_BYTES` (4 MiB), the YAML loader's nesting-depth refusal, `read_source_file`'s `MAX_SOURCE_FILE_BYTES` cap, `MAX_BUDGET_TOKENS` (32,000) and `MAX_QUERY_CHARS` (2,000), `MAX_PROJECTION_CHARS` (2 MiB) | the wall-clock timeout and the archive expansion ratio ([#215](https://github.com/theurian/theurian/issues/215)), plus the discrete defects [#232](https://github.com/theurian/theurian/issues/232), [#245](https://github.com/theurian/theurian/issues/245) and [#26](https://github.com/theurian/theurian/issues/26) |
+  | SEC-10 (SSRF) | external `$ref` targets are **recorded, never fetched** (`parsers/openapi.py`, cited to SEC-10 and T-7) | the scheme and private-network allowlists, and the repository allowlist nothing reads ([#129](https://github.com/theurian/theurian/issues/129)) |
+  | SEC-11 (secret scanning) | nothing — no content scanner exists in `src/` | the whole control ([#198](https://github.com/theurian/theurian/issues/198)) |
+  | SEC-12 (MCP input schema validation) | nothing | the whole control |
+  | SEC-16 (untrusted region) | nothing | the whole control |
+
+  T-16 is graded **Critical** in [the threat model](security/threat-model.md) —
+  "publication ships, install-time verification does not". The production half is
+  real and substantial: a clean-environment install check before publish, a
+  reproducible CycloneDX SBOM built from that verified install, `SHA256SUMS` over
+  every artifact, PyPI Trusted Publishing with PEP 740 attestations, and
+  tag-signature verification against a per-run trust root. **Every one of those
+  acts on production; none acts on installation**, and that unmet half is what
+  the Critical grade names. Tracked by
+  [#80](https://github.com/theurian/theurian/issues/80) — the summary table still
+  points at #39, which is closed while its install-time half is not.
+  **21 open issues carry `pre-1.0`, the label that gates 0.1.0 stable**
+  (`gh issue list --label pre-1.0 --state open`, 21 measured 2026-08-20).
 
 ---
 
@@ -242,8 +281,11 @@ approval*, Theurian's responsibility is exactly three things:
    rejected approaches and constraints, with evidence attached.
 2. **Receive proposals.** Any agent can produce a proposal (migration, body,
    evidence). Its status stops at `proposed`.
-3. **Distribute what approval recorded.** Only a human's Git merge produces
-   `approved`, and then every agent sees the same truth.
+3. **Distribute what approval recorded.** A human's Git merge is the intended —
+   not the enforced — route to `approved`, and then every agent sees the same
+   truth. What is enforced is that no MCP tool writes; `migrate apply` will apply
+   an uncommitted migration a same-UID process put in `.theurian/migrations/`
+   (T-15's recorded residual, and Phase B's Security row carries it).
 
 **Sequencing, assignment, and progress state do not live in Theurian.** Starting
 an implementation agent once a spec is approved is the caller's job — a human, an
@@ -256,11 +298,19 @@ item of `kind=rejected-approach`. *No workflow-specific schema is added.*
 
 ## 3. Target architecture
 
-Four changes from the current architecture, and no others: ① write-intent tools
-join the MCP surface, ② trace and impact read tools join it, ③ the disclosure
-gate gains a sensitivity axis (#119), ④ CI joins as a *reader*, with enforcement
-staying on the CI side. Everything else — the canonical store, derived indexes,
-blue/green publication, approval-as-merge — is unchanged.
+Six changes from the current architecture: ① write-intent tools join the MCP
+surface, ② trace and impact read tools join it, ③ the disclosure gate gains a
+sensitivity axis (#119, and see the shape below), ④ CI joins as a *reader*, with
+enforcement staying on the CI side, ⑤ Phase B adds an `infrastructure/github/`
+adapter for review ingestion, and ⑥ Phase D changes the semantics of
+`SURFACEABLE_STATUSES` and adds an `includeSuperseded` opt-in. The diagram below
+shows the first four, which are the changes to the *published surface*; ⑤ and ⑥
+are named here so the count is not read as smaller than it is. Everything else —
+the canonical store, derived indexes, blue/green publication, approval-as-merge —
+is unchanged.
+
+③ is not a predicate-only change, and the diagram's single "sensitivity" line
+understates it: see Phase 0's `#119` rows for the four-part shape.
 
 ```mermaid
 flowchart TB
@@ -312,8 +362,9 @@ that both of them share.
 ### Approach: keep the model, add vocabulary and enforcement
 
 The current model — `KnowledgeItem` (mutable pointer) + `KnowledgeRevision`
-(immutable, content-addressed) + `kind` (a closed enum of 11) +
-`KnowledgeRelation` (a closed enum of 14) — already carries most of the
+(immutable, content-addressed) + `KnowledgeKind` (a closed enum of 11) +
+`KnowledgeRelation` edges typed by `RelationType` (a closed enum of 14) — already
+carries most of the
 expressiveness a traceability product needs. **No per-type schema is introduced**
 (one schema for ADRs, another for specs, and so on). A type is expressed as
 `kind` plus `structured` (an optional dict) plus relations, and the model stays
@@ -334,7 +385,8 @@ time.
 | verified-by | `verified_by` | exists |
 | evidence-for | `evidenced_by` | exists |
 
-Seven of the nine are already present verbatim. The conclusion is that **the
+Seven of the nine already exist, six of them verbatim — `evidence-for` maps onto
+`evidenced_by` with the direction inverted. The conclusion is that **the
 relation vocabulary is not an open "fixed graph schema or not" question**: the
 answer — a closed enum extended by ADR — is already implemented, and this
 roadmap keeps it. Free-string edge types are not introduced, because both search
@@ -445,9 +497,12 @@ violates one is wrong regardless of which phase it belongs to.
 
 Already load-bearing today: every result carries `untrusted-knowledge`,
 `mayContainInstructions` and `executable`, and acting on those labels is the
-calling agent's responsibility (README, T-3). This is the reason T-3 is graded
-High rather than Critical in the threat model, so it is not a slogan — grading
-depends on it. Nothing in this roadmap moves enforcement into Core.
+calling agent's responsibility (README, and the threat model's T-3 residual). It
+is not a slogan: [CLAUDE.md](https://github.com/theurian/theurian/blob/main/CLAUDE.md)'s
+review rubric anchors CRITICAL to *disclosure*, and cites T-3 being graded High
+rather than Critical as the reason — so how a finding is graded in this project
+depends on this line holding. Nothing in this roadmap moves enforcement into
+Core.
 
 ### 2. Any impact-style answer declares the population it was computed over
 
@@ -505,16 +560,18 @@ Anything independent may run in parallel.
 | :-- | :-- |
 | **Goal** | Take the `pre-1.0` label to zero, ship 0.1.0 stable, and make every statement in the repository agree with the implementation. |
 | **User value** | The first release that can promise an upgrade path. Every later phase's credibility rests on it. |
-| **Architecture** | Nothing new. #119 (query-time enforcement of sensitivity, tenant and ACL — adding axes to `_scope`), a decision on T-16 (implement install-time verification or record it as a non-goal), and [#67](https://github.com/theurian/theurian/issues/67) (required status checks). |
-| **#119 is mandatory before 0.1.0 stable** | Recorded as a decision on 2026-08-20 in [a comment on the issue itself](https://github.com/theurian/theurian/issues/119#issuecomment-5350556157). It was previously a recorded deferral; it is now a release gate. The reasoning: `sensitivity` and `trustLevel` are published on every retrieval result and read by no query, which by this project's own severity rubric is the shape of a published claim that misleads a security decision. It must be closed before Phase B lets more agents write. |
-| **Schema** | #119 adds predicates to the index's `_scope` filter; the columns already exist. No canonical change. |
-| **MCP / API** | No response-shape change from sensitivity enforcement — more rows are withheld, that is all. `system.capabilities` note updated. |
+| **Architecture** | #119 (enforcement of the sensitivity, tenant and ACL axes — four-part shape below), a decision on T-16 (implement install-time verification or record it as a non-goal), and [#67](https://github.com/theurian/theurian/issues/67) (required status checks). |
+| **#119 is mandatory before 0.1.0 stable** | Recorded as a decision on 2026-08-20 in [a comment on the issue itself](https://github.com/theurian/theurian/issues/119#issuecomment-5350556157). It was previously a recorded deferral; it is now a release gate. The reasoning: `sensitivity` and `trustLevel` are published on every retrieval result and filtered on by no query, which by this project's own severity rubric is the shape of a published claim that misleads a security decision. It must be closed before Phase B lets more agents write. |
+| **#119 is not a predicate change** | A read-side predicate alone ships two defects, both verified in source and [recorded on the issue](https://github.com/theurian/theurian/issues/119#issuecomment-5351154317). **(1) The index side is half the control**: `IndexBuilder._build` gates on status only and writes `sensitivity` into every chunk row (`index_builder.py:146,209`), so a query-time predicate leaves withheld-by-sensitivity chunk text in the FTS5 tables, where BM25 collection statistics still price the visible rows — T-17a's mechanism moved from the status axis to the sensitivity axis. **(2) `changeSensitivity` must become a purge trigger**: `migration_engine.py:658-670` deliberately excludes it from the withdrawal-purge set, on the recorded ground that the stale `sensitivity` column "is read by no gate before #119". The moment a gate reads it, that exclusion inverts into a defect — a document reclassified `internal → restricted` keeps clearing the gate under its stale label until the next manual `index build`, and there is no canonical re-check for sensitivity of the kind `CanonicalVisibility._may_surface` performs for status. So the shape is **at least four-part**: build-time gating and derivation · a `changeSensitivity`-triggered purge extending ADR-0024 decision 5 · the read-side predicate · the two-corpora equality suite parametrized over the sensitivity axis. |
+| **Schema** | Index-side only: `_scope` gains predicates and the builder gains a gate; the columns already exist. No canonical change. |
+| **MCP / API** | `system.capabilities` note updated. **The response shape is not the only observable** — withholding moves counts, budgets, rankings and collection statistics unless the equality property is held by construction, which is exactly what T-17 falsified about "more rows are withheld, that is all". |
 | **Migration** | None. The index is rebuilt. |
 | **Security** | SEC-8 resource bounds ([#215](https://github.com/theurian/theurian/issues/215), [#232](https://github.com/theurian/theurian/issues/232), [#245](https://github.com/theurian/theurian/issues/245), [#26](https://github.com/theurian/theurian/issues/26)), T-16, and the audit of every threat-model Controls line against `src` ([#199](https://github.com/theurian/theurian/issues/199)). |
-| **Tests** | #119 extends the existing two-corpora equality tests by parameterising them over the sensitivity axis. |
+| **Tests** | #119 extends the existing two-corpora equality tests by parameterising them over the sensitivity axis — over all four parts above, not the predicate alone. |
 | **Benchmark** | None — Phase A owns that. |
 | **Exit criteria** | 0.1.0 live on PyPI · `pre-1.0` open = 0 · every appendix contradiction cleared · SECURITY.md and README naming the current release. |
 | **Dependencies** | None. Can start immediately. |
+| **Open design question** | Whether withheld-by-sensitivity rows are excluded from the index entirely or indexed-and-gated, and what entitlement decides "withheld" at all in a single-user loopback daemon, is design work for **#119's own ADR**. This roadmap does not decide it. |
 | **Risks** | Some of the 21 need a design decision (T-16, #119's defaults) rather than execution. Estimating the label as a queue of chores is how it overruns; apply the class-budget discipline from [CLAUDE.md](https://github.com/theurian/theurian/blob/main/CLAUDE.md). |
 
 ### Phase A — Retrieval evaluation baseline (golden queries)
@@ -544,7 +601,7 @@ Anything independent may run in parallel.
 | **Schema** | The proposal format is unchanged. `KnowledgeCandidate` uses the domain model that already exists. |
 | **MCP / API** | New tools plus their wire schemas (additive; a protocol bump is not expected). `writeTools: true`, and the `system.capabilities` note updated with it. |
 | **Migration** | None. |
-| **Security** | **The preconditions are already recorded in the threat model.** SEC-10 (SSRF allowlist) and SEC-11 (secret scanning, [#198](https://github.com/theurian/theurian/issues/198) — T-15's only primary control, currently described as shipped and not implemented). SEC-12 (JSON Schema validation of MCP input) becomes mandatory the moment a write-intent tool opens. `evidence.json`'s `agentId` and `model` become the only record of origin in a multi-agent setting, so their being required is preserved. |
+| **Security** | **The preconditions are already recorded in the threat model.** SEC-10's repository and URL allowlists are owed ([#129](https://github.com/theurian/theurian/issues/129)). SEC-11 (secret scanning) is unimplemented — no content scanner exists anywhere in `src/` — and is tracked by [#198](https://github.com/theurian/theurian/issues/198); the *prose* that used to describe it as shipped, configurable and default-on was corrected by [#247](https://github.com/theurian/theurian/pull/247) across all four surfaces, and the correction is regression-pinned by `test_config_key_call_sites.py` and `test_examples.py`. SEC-12 (JSON Schema validation of MCP input) becomes mandatory the moment a write-intent tool opens. **T-15's "nothing enforces the merge" residual is a Phase B precondition, not a background fact**: opening a protocol-level write path multiplies the callers who can put a file in `.theurian/migrations/`, and `migrate apply` does not ask whether it was committed. `evidence.json`'s `agentId` and `model` become the only record of origin in a multi-agent setting, so their being required is preserved. |
 | **Tests** | The e2e ADR-0013 explicitly records as owed — after an agent session that calls every write-intent tool, approved state is unchanged — is discharged here. |
 | **Benchmark** | No retrieval impact. Candidate quality is judged by the human reviewing; automatic quality scoring is a non-goal. |
 | **Exit criteria** | A demonstration of propose → PR → merge → apply from both Claude Code and Codex (or any plain MCP client). `reviewIngestion: true`. |
@@ -561,8 +618,8 @@ Anything independent may run in parallel.
 | **Schema** | Promote the existing, unpopulated `traceability_edges` table to real use. Add apply-time enforcement of INV-6. |
 | **MCP / API** | One new read tool, `knowledge.trace`: a bounded traversal from an item id or a `TraceNode`, with direction, edge type and depth. `traceability: true`. **The nine tools `traceability.md` anticipates are not built** — start with `trace` alone (plus Phase E's `impact`) and add only what use demonstrates. |
 | **Migration** | If external-node edges need a migration operation, adding to the closed set is an `apiVersion` decision (ADR candidate #3). |
-| **Security** | **A graph response is a new disclosure family.** Edge counts, reachability, and where a traversal truncates can each carry the existence of a withheld node. Apply the existing per-edge visibility gate (T-21's legacy) at every hop, and **write the two-corpora equality test for trace responses in the same change as the implementation** — not afterwards. That is T-17's lesson. |
-| **Tests** | Equality extension · depth limits · cycle tolerance · confidence and evidence passed through faithfully. |
+| **Security** | **A graph response is a new disclosure family.** Edge counts, reachability, and where a traversal truncates can each carry the existence of a withheld node. Apply the per-edge visibility gate at every hop — and apply it in T-21's corrected form, because per-edge gating on its own is what leaked: **a traversal hop must not resolve an alias when deciding authority.** Reachability may resolve; the visibility decision on each hop's endpoint reads the literally-named row (`get_item_exact`). Multi-hop traversal multiplies the number of places that distinction can be lost, which is why it is stated here as a requirement rather than left to the implementer. **Write the two-corpora equality test for trace responses in the same change as the implementation** — not afterwards. That is T-17's lesson. |
+| **Tests** | Equality extension · depth limits · cycle tolerance · confidence and evidence passed through faithfully · **a test pinning that every hop's visibility decision goes through the non-resolving read path**, so a hop that reverts to a resolving read turns it red rather than reopening T-21 in graph form. |
 | **Benchmark** | Enable the golden set's spec → ADR → implementation and code → decision classes. Add citation correctness as a metric the harness measures. |
 | **Exit criteria** | A demonstration on this project's own corpus that "why is this module shaped this way" traces to an ADR. Equality tests green. |
 | **Dependencies** | Phase A, for the measuring stick. Independent of Phase B — they may run in parallel. |
@@ -578,7 +635,7 @@ Anything independent may run in parallel.
 | **Schema** | The transition graph is a domain constant checked by the migration engine. The disclosure change is a change to the semantics of `SURFACEABLE_STATUSES` and `may_surface`. |
 | **MCP / API** | `includeSuperseded` on `knowledge.get` and `knowledge.trace`: explicit opt-in, reachable only along a supersedes chain, every result labelled. **Not added to `search`** — history is traversed, not searched. |
 | **Migration** | None; semantics only. |
-| **Security** | **This is the phase's core risk.** §6 principle 3 applies in full: item ② is written as an ADR (candidate #2) and passed through security review before implementation. Consider in the threat model whether a superseded revision can contain a secret — in principle less likely than a rejection's reasoning, but not zero — and if so, add migration metadata that states disclosability at supersede time. |
+| **Security** | **This is the phase's core risk.** §6 principle 3 applies in full: item ② is written as an ADR (candidate #2) and passed through security review before implementation, and the change is write-side as well as read-side — two of `may_surface`'s six call sites are writers (the index builder, which decides what is written, and the withdrawal purge, which decides what a published index must stop holding), so a semantics change moves what gets indexed and what gets purged, not just what a query returns. **Design on the assumption that superseded bodies contain secrets.** That is not a worst case but the recorded procedure: the threat model's T-15 names superseding the revision or retiring the item as *the* operation for removing a secret that got in, so superseded revisions are where removed secrets collect by design — and T-17 records that performing exactly that remediation is what re-opened a channel to read the secret back. Supersede-time disclosability metadata is therefore **mandatory in this phase, not a contingency**. |
 | **Tests** | RED tests for transition enforcement · an equality test that history is reachable only through the opt-in and never leaks into `search` · determinism of snapshot re-query. |
 | **Benchmark** | Enable the golden set's historical and superseded classes. The superseded-knowledge error rate becomes meaningful here. |
 | **Exit criteria** | An evolution-shaped query is answerable from the supersedes chain with dates. An illegal transition is refused with an exit code. |
@@ -591,9 +648,9 @@ Anything independent may run in parallel.
 | :-- | :-- |
 | **Goal** | Answer *what happens if SPEC-104 changes?* **within the range of recorded edges**, and detect divergence between the graph and reality by machine. |
 | **User value** | Before starting a specification change, a list of ADRs to reconsider, implementations to touch, and tests to run, each with a citation. |
-| **Architecture** | `knowledge.impact` is a report layer that aggregates Phase C's traversal by node type. **It performs no semantic inference** — graph traversal only. The output is a set of counts by node type, each item's confidence, and **the population declaration §6 principle 2 requires**. Drift is the machine-decidable subset of D1–D7 (`scope.paths` against changed files, superseded dependencies, dangling `TraceNode`s), implemented as a CLI command CI can call. **No policy engine is built** — `traceability.md` itself warns that a policy which stops work gets disabled wholesale, so whether to block is CI's configuration to make. |
+| **Architecture** | `knowledge.impact` is a report layer that aggregates Phase C's traversal by node type. **It performs no semantic inference** — graph traversal only. The output is a set of counts by node type, each item's confidence, and **the population declaration §6 principle 2 requires**. Drift is the machine-decidable subset of D1–D7 (`scope.paths` against changed files, superseded dependencies, dangling `TraceNode`s), implemented as a CLI command CI can call. **No policy engine is built** — `traceability.md` itself warns that "a policy that blocks *unrelated* work gets disabled entirely, which is strictly worse than a partial one", so whether to block is CI's configuration to make. |
 | **Schema** | None; it sits on Phase C. |
-| **MCP / API** | `knowledge.impact` (read-only). Drift is a CLI command (`theurian drift`). |
+| **MCP / API** | `knowledge.impact` (read-only). Drift is a `drift` CLI subcommand — Phase E work, and not a registered command today. |
 | **Migration** | None. |
 | **Security** | The same disclosure family as trace — an aggregate count must not carry a withheld row, so the equality tests extend to impact responses. On resources, the traversal bound is documented as a SEC-8-class limit. |
 | **Tests** | Equality · limits · "an item with zero edges returns an empty report *plus* its population declaration". |
@@ -606,7 +663,7 @@ Anything independent may run in parallel.
 
 | | |
 | :-- | :-- |
-| **Goal / contents** | ① **A second client install adapter** (a generic `.mcp.json`, or Codex CLI configuration) — the second implementation of `McpClientConfig`. Small, and the shortest route from asserting vendor neutrality to demonstrating it. ② **Context package export** (`theurian export-context`): write a summary of approved knowledge to a static file of the AGENTS.md kind. Treated as an **Index-class derivative** — stamped with a generated-artifact label and the `stateHash` at generation, and never promoted to approved knowledge (ADR candidate #8). ③ **A real embedding adapter** (opt-in extra, only if Phase A justifies it). ④ **Abstractive RAPTOR** (only after SEC-16, and only if evaluation justifies it). ⑤ **Discovered traceability — experimental research, see below.** |
+| **Goal / contents** | ① **A second client install adapter** (a generic `.mcp.json`, or Codex CLI configuration) — the second implementation of `McpClientConfig`. Small, and the shortest route from asserting vendor neutrality to demonstrating it. ② **Context package export** — a context-package export command, not registered today: write a summary of approved knowledge to a static file of the AGENTS.md kind. Treated as an **Index-class derivative** — stamped with a generated-artifact label and the `stateHash` at generation, and never promoted to approved knowledge (ADR candidate #8). ③ **A real embedding adapter** (opt-in extra, only if Phase A justifies it). ④ **Abstractive RAPTOR** (only after SEC-16, and only if evaluation justifies it). ⑤ **Discovered traceability — experimental research, see below.** |
 | **Security** | ① widens the config-writing surface (extends T-14's scope). ② carries the risk of a derivative being misread as truth, absorbed by the label and the `stateHash`. ④ is T-3 and SEC-16's main battleground. ⑤ is bounded by the fact that a discovered edge is never applied without human approval. |
 | **Exit criteria** | Independent per item. ① is an e2e from Codex. ② is determinism across generate and regenerate. |
 | **Dependencies** | ② none. ③ and ④ need Phase A. ⑤ needs Phase C. |
@@ -702,10 +759,22 @@ flowchart LR
 **Existing ADRs needing reconciliation rather than replacement**, both folded
 into Phase 0's truth-making:
 
-- **ADR-0003's "the port set is exactly these fourteen" is already broken.**
-  `domain.ports.ALL_PORTS` holds **15 entries as of `f702736`, 2026-08-20** —
-  the fourteen ADR-0003 names, plus `IndexStore`. ADR-0003 point 5 says adding a
-  port requires an ADR, and none was written. An amendment is owed.
+- **ADR-0003's "the port set is exactly these fourteen" is already broken, and
+  the closed-set test does not see the whole break.** Measured at `f702736` on
+  2026-08-20: **17 `Protocol` classes are declared under
+  `packages/theurian-core/src/theurian/domain/ports/`, while `ALL_PORTS` names
+  15.** The two outside it are `CanonicalReadSession` — a read session
+  `CanonicalStore` returns rather than a separately wired port — and
+  **`McpClientConfig`, whose own module docstring calls itself a port
+  ("McpClientConfig port … ADR-0012, §24.2")**. It is not in `ALL_PORTS` and
+  `ports/__init__.py` does not import it, so `test_port_set_is_closed`, which
+  compares names drawn from `ALL_PORTS`, cannot see it at all. So the ADR-less
+  port additions past ADR-0003's fourteen are **at least two**: `IndexStore`,
+  which at least reached `ALL_PORTS` and the closure test, and `McpClientConfig`,
+  which reached neither. ADR-0003 point 5 says adding a port requires an ADR, and
+  none was written for either. An amendment is owed, and it should say which
+  register — `ALL_PORTS`, or "a `Protocol` under `domain/ports/`" — the closed
+  set is actually closed over.
 - **GOVERNANCE.md says an accepted ADR is never edited, only superseded; the
   practice is to append amendments.** All 24 ADRs are `accepted`, none is
   `superseded`, and 10 of them carry at least one `Amended in Milestone N` block
@@ -771,8 +840,8 @@ not "Control Plane".** The surface of fact that agents, CI and humans all
 
 > **Theurian does not orchestrate, does not approve, does not enforce.**
 
-CI calling `theurian drift` and blocking a PR on the result is a welcome
-configuration — and the thing that blocked was CI. That sentence is the
+CI calling the Phase E `drift` subcommand and blocking a PR on the result is a
+welcome configuration — and the thing that blocked was CI. That sentence is the
 definition of the boundary.
 
 ### Theurian in three years — the target, not the present
@@ -784,7 +853,9 @@ Theurian **would be** a local-first **system of record for engineering truth**,
 running alongside each repository. An AI agent from any vendor pulls, over MCP,
 the specifications, design decisions, constraints and rejected options that are
 currently in force, each with its evidence and its origin. Every proposed change
-lands in Git as a proposal, and **only a human's merge** updates truth. It holds
+lands in Git as a proposal, and **a human's merge** is what updates truth — by
+then enforced rather than merely intended, which is work T-15's residual still
+owes. It holds
 typed edges from requirement through to test, and answers "why does this code
 exist" and "what does changing this specification affect" — *while stating the
 range of recorded edges it answered from*. It does not orchestrate. It does not
@@ -802,22 +873,25 @@ published claim that is false.
 
 **Every item below was re-verified against `f702736` on 2026-08-20.** An item
 that had been fixed since the original research pass would have been dropped;
-none had been, and one further item was found during re-verification and added as
-item 11.
+none had been. Two further items were found during re-verification and added as
+items 11 and 12, and four of the original ten had their counts or populations
+corrected — the correction is recorded in the item rather than applied silently,
+because the population key is the part a later reader has to be able to attack.
 
 | # | The contradiction | Verified at `f702736` |
 | :-- | :-- | :-- |
 | 1 | [SECURITY.md](https://github.com/theurian/theurian/blob/main/SECURITY.md) names `0.1.0.dev0` as the live release | The string `0.1.0.dev0` appears **8 times**; the status table row ("**Released**, at `0.1.0.dev0`") and the release-line discussion are the load-bearing ones. Measured against the PyPI JSON API on 2026-08-20: of eight releases, `dev0` through `dev5` are **yanked** and only `dev6` and `dev7` are live. `dev7` is the current version in `packages/theurian-core/pyproject.toml` |
 | 2 | README says Milestone 7 is `planned`; ADR-0013 says "Landed in Milestone 7" | Both still present. README's roadmap table row 7 reads `planned`; ADR-0013 records `theurian propose` as landed in Milestone 7, and it shipped in `0.1.0.dev5`. The definition of M7 also differs between documents |
 | 3 | Three places state that the RAPTOR forest is built but never read | False since retrieval began routing through summaries. `docs/architecture/overview.md` ("the RAPTOR forest is *built* but never *read*"), `infrastructure/sqlite/index_schema.py` ("a forest is written, purged, and not yet retrieved from"), and `infrastructure/raptor/__init__.py` ("No traversal reads a node back at query time") all still say it, while `IndexStore.search_summaries` and `raptor_path` exist and `system.capabilities` reports `raptor: true` with a comment stating that this build reads the forest. Two further package docstrings — `indexing/__init__.py` and `retrieval/__init__.py` — assign RAPTOR work to "Milestone 6" in the future tense for work that has since landed |
-| 4 | "The port set is exactly these fourteen" | `ALL_PORTS` holds **15**. The claim stands in ADR-0003 (twice), `docs/architecture/overview.md`'s diagram (`PORT["14 ports (Protocols)"]`) and the root CHANGELOG ("fourteen ports as `Protocol`s") |
+| 4 | "The port set is exactly these fourteen" | `ALL_PORTS` holds **15**, and **17 `Protocol` classes are declared under `domain/ports/`**. The claim stands in ADR-0003 (twice), `docs/architecture/overview.md`'s diagram (`PORT["14 ports (Protocols)"]`) and the root CHANGELOG ("fourteen ports as `Protocol`s"). Fixing the number is not the whole fix: `McpClientConfig` calls itself a port in its own docstring, is absent from `ALL_PORTS`, and is not imported by `ports/__init__.py`, so `test_port_set_is_closed` never sees it. Whichever number Phase 0 writes, the register the closed set is closed *over* has to be stated with it |
 | 5 | An `active_indexes` table is described as the publication mechanism | No such table exists; the mechanism is `.theurian/state/active-index.json`. ADR-0008 **already records this** in an amendment and names the remaining population as four: `docs/architecture/overview.md`, `docs/architecture/local-daemon.md`, `docs/architecture/requirements-analysis.md`, and the `indexing/__init__.py` docstring. `docs/architecture/raptor.md` was discharged by [#136](https://github.com/theurian/theurian/issues/136). All four still stand |
 | 6 | `docs/protocol/mcp-tools.md` documents tools in the present tense that do not exist | The page names **34 distinct tools**; **5** are registered (`knowledge.search`, `knowledge.get`, `knowledge.status`, `project.list`, `system.capabilities`). A single blanket disclaimer at the top of the page is the only qualification. The page also describes `snapshotId` as pinning a state hash so results stay reproducible, which is the unimplemented half of FR-R7 |
 | 7 | README says "23 ADRs" | There are **24** (`docs/adr/0001`–`0024`, excluding the template and the index) |
 | 8 | GOVERNANCE.md forbids editing an accepted ADR; the practice is to amend | GOVERNANCE.md: "Decisions are changed by superseding an ADR, never by editing an accepted one", echoed by `docs/adr/README.md` ("Do not edit an accepted ADR beyond typo fixes"). In fact all 24 ADRs are `accepted`, none is `superseded`, and **10 carry at least one `Amended in Milestone N` block** — which is what [CLAUDE.md](https://github.com/theurian/theurian/blob/main/CLAUDE.md) instructs. Two documents give opposite instructions |
-| 9 | "Every port ships a deterministic fake" | `tests/fakes/` defines **five** doubles (`FrozenClock`, `SeededIdGenerator`, `InMemoryWriter`, `FakeService`, `FakeMcpConfig`) against 15 ports. The claim stands in **five** places: ADR-0003 point 7, `docs/architecture/requirements-analysis.md`, `docs/contributing/development.md`, `CONTRIBUTING.md`, and `domain/ports/__init__.py`. ADR-0003's own *Still owed* section already refutes its point 7 — the ADR contradicts itself in one file |
-| 10 | ADRs still carry *Still owed* items addressed to Milestone 6, which the README declares done | **17 of 24 ADRs carry a `Still owed, with the milestone that will satisfy it:` section.** The clearest instance: ADR-0004, ADR-0005 and ADR-0017 each name an `empty-db-rebuild` CI job as the thing that would discharge FR-K4, and `rg empty-db-rebuild` returns four documents saying it does not exist and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). Each item needs to be discharged or re-addressed to a phase |
-| 11 | **Found during this re-verification.** The root CHANGELOG says it records "milestone completions"; it records Milestone 0 and nothing after | [`CHANGELOG.md`](https://github.com/theurian/theurian/blob/main/CHANGELOG.md) has two entries — "Milestone 0 complete" and "Project started" — while the README declares Milestones 0 through 6 done. The file's own statement of scope is false for five completed milestones |
+| 9 | "Every port ships a deterministic fake" | Population key: *any statement that a fake exists for every port*, not the literal string "deterministic fake" — the sixth site below phrases it differently and would be missed by a literal search. `tests/fakes/` defines **five** doubles (`FrozenClock`, `SeededIdGenerator`, `InMemoryWriter`, `FakeService`, `FakeMcpConfig`) against 15 `ALL_PORTS` entries, and `FakeMcpConfig` is a fake for `McpClientConfig` — a port `ALL_PORTS` does not contain (item 4). The claim stands in **six** places: ADR-0003 point 7, `docs/architecture/requirements-analysis.md`, `docs/contributing/development.md`, `CONTRIBUTING.md`, `domain/ports/__init__.py`, and **`packages/theurian-core/tests/fakes/__init__.py`**, which adds a second false claim — "a conformance test asserts it" — where `test_ports.py` contains no occurrence of "fake" at all. ADR-0003's own *Still owed* section already refutes its point 7, so the ADR contradicts itself within one file |
+| 10 | ADRs still carry *Still owed* items addressed to Milestone 6, which the README declares done | Population key: *any `Still owed` section*, not one literal heading. Under the exact string `Still owed, with the milestone that will satisfy it:` the count is **17 of 24**; under the concept it is **19**, because ADR-0012 heads its section `Still owed:` and **ADR-0013** heads its own `Still owed, with the milestone that brings the feature under test:` — ADR-0013 being the very ADR Phase B claims to discharge, so a literal-string sweep would skip the one that matters most to this roadmap. The clearest instance: ADR-0004, ADR-0005 and ADR-0017 each name an `empty-db-rebuild` CI job as the thing that would discharge FR-K4, and `rg empty-db-rebuild` returns four documents saying it does not exist and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). Each item needs to be discharged or re-addressed to a phase |
+| 11 | **Found during this re-verification.** The root CHANGELOG says it records "milestone completions"; it records Milestone 0 and nothing after | [`CHANGELOG.md`](https://github.com/theurian/theurian/blob/main/CHANGELOG.md) has two entries — "Milestone 0 complete" and "Project started" — while the README declares Milestones 0 through 6 done. The file's own statement of scope is false for **six** completed milestones, 1 through 6 |
+| 12 | **Found during this re-verification.** SECURITY.md contradicts itself about whether `sensitivity` is refused at write time | One passage says the migration schema accepts `public\|internal\|confidential\|restricted` "with no refusal (unlike tenant and ACL group, which are refused at write time)"; another says "sensitivity, tenant and ACL group are refused at write time". The code agrees with the first: only `tenantId` and `aclGroup` raise `UnenforceableScopeError`, and `migration_engine.py` sets `sensitivity` unconditionally. This sits directly on #119's path, so Phase 0 must fix it before the axis gains a gate |
 
 ---
 
