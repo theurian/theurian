@@ -27,7 +27,7 @@ import os
 import shutil
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, override
@@ -2462,3 +2462,171 @@ def test_validate_migration_document_still_resolves_internal_defs_in_the_real_sc
     bad_item_id["operations"][0]["itemId"] = "Not A Valid Item Id"
     with pytest.raises(MigrationError):
         validate_migration_document(bad_item_id, real_schema_root())
+
+
+def _document_with(
+    *, author: str = "engineer@example.com", **operation_overrides: object
+) -> dict[str, Any]:
+    """A schema-valid migration document with one field overridden.
+
+    Built valid first so each test below breaks exactly one field and knows
+    which rejection it is driving -- a second, incidental violation would let a
+    message assertion pass for the wrong reason.
+    """
+    operation: dict[str, Any] = {
+        "op": "createItem",
+        "itemId": "architecture.auth-policy",
+        "kind": "architecture",
+        "namespace": "backend",
+        "owner": "platform-team",
+    }
+    operation.update(operation_overrides)
+    return {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K1KKKKKK01234567890ABCDE",
+        "createdAt": "2026-08-02T10:00:00+09:00",
+        "author": author,
+        "operations": [operation],
+    }
+
+
+# -- issue #291: a deep document is a document fault, not a broken install ---
+#
+# `_validate_document`'s `except RecursionError` attributes any recursion at
+# `validator.validate(document)` to a self-recursive schema `$ref` and raises
+# `SchemaUnreadableError`, whose remedy is "reinstall theurian". A deeply
+# nested *document* raises the identical `RecursionError` at that call, and the
+# two are indistinguishable once `validate` is running -- so a user-input fault
+# is diagnosed as a corrupt installation. `_validate_document`'s docstring
+# already records this honestly and cites #291; the behaviour is the gap.
+#
+# Measured on this branch, 2026-08-21, CPython 3.13.3 (arm64 macOS),
+# jsonschema 4.26.0. The recursion is raised by `_keywords.oneOf`'s own
+# `f"{instance!r} is not valid under any of the given schemas"` -- so #289's
+# unbounded echo is what recurses, and the traceback says so verbatim:
+# "maximum recursion depth exceeded while getting the repr of an object".
+#
+# That budget is CPython's C recursion limit, not `sys.setrecursionlimit`:
+# `repr` of a nested dict is unaffected by the Python limit (checked directly
+# at limits 100 through 100,000), so the depth at which this fires is set by
+# `Py_C_RECURSION_LIMIT` minus whatever the ambient call stack has already
+# consumed. Hence two tests at two ambient depths.
+
+#: A nesting depth past what this interpreter can render at *any* plausible
+#: ambient stack depth. The premise test below is what keeps this honest: it
+#: fails loudly if an interpreter ever renders it, which would mean these two
+#: tests had quietly stopped exercising #291 at all.
+_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER = 20_000
+
+#: Levels of the interpreter's C recursion budget the ambient-depth test burns
+#: before it calls. The shape issue #291's own harness used, and the dimension
+#: that made the same document produce different diagnoses there.
+_AMBIENT_FRAMES = 1200
+
+
+def _nested(depth: int) -> Any:
+    """A ``{"a": {"a": ...}}`` chain ``depth`` levels deep, built iteratively so
+    the *fixture* never depends on the recursion budget the test is about."""
+    value: Any = "leaf"
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+def _deeply_nested_document(depth: int) -> dict[str, Any]:
+    """A migration document carrying the deep value where validation reaches it.
+
+    It sits inside the single operation rather than at the document root: the
+    root's `additionalProperties: false` refuses an unknown key by name alone,
+    and `Draft202012Validator.validate` raises the *first* error `iter_errors`
+    yields, so a root-level placement is answered before anything reprs the
+    deep value at all. Inside the operation, the refusal is `#/$defs/operation`'s
+    `oneOf`, whose message reprs the whole operation.
+    """
+    return _document_with(extra=_nested(depth))
+
+
+def _burn_c_recursion_budget(frames: int, call: Callable[[], None]) -> None:
+    """Consume ``frames`` levels of the C recursion budget, then ``call``.
+
+    Each level re-enters the evaluation loop through C -- `map` calls its
+    callback from C -- and that is what spends the budget `repr` is limited by.
+    Measured three ways at 1,200 levels against a depth-8,000 value that
+    renders fine from a shallow stack: `map` leaves it unrenderable; a list
+    comprehension and a plain recursive call both leave it renderable, because
+    on CPython 3.13 neither adds a C frame. `C417`'s suggested rewrite to a
+    comprehension would leave this helper burning nothing and both callers
+    green for no reason, which is why it is suppressed rather than applied.
+    """
+    if frames <= 0:
+        call()
+        return
+    list(map(lambda _: _burn_c_recursion_budget(frames - 1, call), [0]))  # noqa: C417 - see above
+
+
+def test_the_nesting_depth_the_recursion_tests_use_really_does_defeat_repr() -> None:
+    """A premise of the two tests below, not a claim about Theurian.
+
+    Both assert that a document too deep to render is diagnosed as a document
+    fault. If an interpreter ever renders `_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER`
+    levels, both would pass without the recursion ever happening -- green, and
+    testing nothing. This is the assertion that fails first and says so.
+    """
+    with pytest.raises(RecursionError):
+        repr(_nested(_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER))
+
+
+def test_a_deeply_nested_document_is_a_document_fault_not_a_broken_installation() -> None:
+    """Issue #291, at ambient depth zero -- a direct call.
+
+    Measured on this branch: `SchemaUnreadableError`, reason "a schema $ref
+    resolves recursively without terminating", whose remedy tells the user to
+    reinstall Theurian. Nothing is wrong with the installation: the bundled
+    schema resolved every `$ref` it has, and the document is what nests. The
+    correct answer is `MigrationError` -- fix your document -- which is also
+    what every other document fault at this seam already raises.
+
+    `SchemaUnreadableError` is not a `MigrationError` subclass, so this
+    `pytest.raises` genuinely excludes today's answer rather than accepting it.
+    """
+    document = _deeply_nested_document(_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER)
+
+    with pytest.raises(MigrationError):
+        validate_migration_document(document, real_schema_root())
+
+
+def test_a_deeply_nested_document_is_a_document_fault_from_an_already_consumed_stack() -> None:
+    """Issue #291's second ambient depth: called with 1,200 C-recursion levels
+    already spent, the harness shape the issue used.
+
+    The issue recorded this ambient depth producing a *third* outcome -- the
+    `RecursionError` escaping the handler uncaught, a raw traceback and CP-2
+    violation. That face did not reproduce here: on CPython 3.13.3 the budget
+    is restored as the `repr` unwinds, so the handler has room to build its
+    error and this call answers `SchemaUnreadableError`, the same
+    mistranslation as the direct call above. Recorded rather than claimed --
+    the wrong answer is the same at both depths on this interpreter, and both
+    are wrong for the same reason.
+
+    Kept as its own test because ambient depth is the dimension that selects
+    the outcome for a *fixed* document: at 1,200 burned levels a depth-8,000
+    document is answered `SchemaUnreadableError` while the identical document
+    called directly is answered `MigrationError` (measured, same session). A
+    fix that bounds document depth, or that attributes the recursion by
+    measuring the document, holds at every ambient depth; one that tunes a
+    threshold does not.
+    """
+    document = _deeply_nested_document(_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER)
+    previous_limit = sys.getrecursionlimit()
+    # The burn spends Python frames as well as C budget; raising the Python
+    # limit keeps this test measuring the C budget and not the harness.
+    sys.setrecursionlimit(previous_limit + 10 * _AMBIENT_FRAMES)
+
+    try:
+        with pytest.raises(MigrationError):
+            _burn_c_recursion_budget(
+                _AMBIENT_FRAMES,
+                lambda: validate_migration_document(document, real_schema_root()),
+            )
+    finally:
+        sys.setrecursionlimit(previous_limit)

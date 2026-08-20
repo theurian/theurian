@@ -96,6 +96,23 @@ from theurian.security.yaml_loading import load_yaml_mapping
 #: load what it found; it does not bound the walk's own cost.
 MAX_MIGRATIONS: Final = 10_000
 
+#: Ceiling on how deeply a migration *document* may nest, counting the root
+#: mapping as level 1. Enforced by `_refuse_a_document_that_nests_too_deep`
+#: before a document is validated, because past the interpreter's C recursion
+#: budget `jsonschema` cannot even build its own refusal message and the
+#: `RecursionError` that follows is indistinguishable from a broken schema
+#: (issue #291; the measurements are on :func:`_validate_document`).
+#:
+#: Generous by two orders of magnitude, on purpose. A schema-valid document
+#: nests at most **7** levels including the root -- measured 2026-08-21 by
+#: walking the bundled schema's structural keywords (`properties`, `items`,
+#: `oneOf`, `$ref` into `$defs`) for the deepest instance path it permits --
+#: while the smallest measured rendering budget on this interpreter is around
+#: 8,000 levels. Neither number is close to this one, which is the point: the
+#: bound has to refuse nothing an author can legitimately write, and it has to
+#: stay well clear of a ceiling that moves with the ambient call stack.
+MAX_DOCUMENT_NESTING: Final = 64
+
 _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 
 
@@ -249,10 +266,58 @@ class _SchemaValidator:
     schema_path: Path
 
 
-def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str, object]) -> None:
+def _refuse_a_document_that_nests_too_deep(
+    document: Mapping[str, object], document_name: str | None
+) -> None:
+    """Refuse a document nested past :data:`MAX_DOCUMENT_NESTING` (issue #291).
+
+    **Iterative on purpose.** A recursive depth checker would exhaust the same
+    budget it exists to protect, and fail in the same way one level earlier.
+    The frontier holds ``(value, depth)`` pairs, so the only stack this uses is
+    the heap.
+
+    The check runs before ``validate`` rather than as a wider ``except`` around
+    it, because the two sources of a validate-time ``RecursionError`` cannot be
+    told apart once ``validate`` is running -- see :func:`_validate_document`,
+    whose schema attribution this function is what makes sound.
+
+    Mappings and sequences are the only containers a parsed document holds:
+    ``load_yaml``'s ``_StrictLoader`` produces ``dict``/``list``/scalars (its
+    timestamp resolver is dropped, so even dates arrive as ``str``), and the
+    ``propose`` path builds the same shapes. ``tuple`` is walked alongside
+    ``list`` for the in-memory caller: the schema would refuse one as a
+    non-array anyway, but only after ``jsonschema`` has repr'd it, which is the
+    step this bound exists to reach first. ``str`` is deliberately not a
+    container here -- it is a leaf, and its own length is bounded elsewhere.
+    """
+    frontier: list[tuple[object, int]] = [(document, 1)]
+    while frontier:
+        value, depth = frontier.pop()
+        if depth > MAX_DOCUMENT_NESTING:
+            # No part of the document is echoed: at this depth its rendering is
+            # exactly what cannot be produced safely, and the cure is the shape
+            # of the document rather than any one value in it.
+            subject = f"{document_name} nests" if document_name else "This document nests"
+            raise MigrationError(
+                f"{subject} more than {MAX_DOCUMENT_NESTING} levels deep. Flatten it: a "
+                f"migration is a fixed, shallow shape, and nothing the schema accepts "
+                f"nests past 7 levels."
+            )
+        if isinstance(value, Mapping):
+            frontier.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list | tuple):
+            frontier.extend((child, depth + 1) for child in value)
+
+
+def _validate_document(
+    schema_validator: _SchemaValidator,
+    document: Mapping[str, object],
+    *,
+    document_name: str | None = None,
+) -> None:
     """Run one document through the validator, translating a failed offline
-    `$ref` resolution -- and a validate-time recursion attributed to the schema
-    (see below) -- to `SchemaUnreadableError` (issue #235).
+    `$ref` resolution -- and a validate-time recursion, which by then can only
+    be the schema's (see below) -- to `SchemaUnreadableError` (issue #235).
 
     `_validator` builds every validator with a `referencing` registry that has
     no network or file retrieval (see its docstring), so an external `$ref`
@@ -265,27 +330,51 @@ def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str
     `except ValidationError` seam and reached `resolve_context` as a raw
     traceback under `--json`.
 
-    An `Unresolvable` is unambiguously a schema defect. A `RecursionError`
-    here is *attributed* to the schema, not proven to be one: a document nested
-    deep enough raises the identical `RecursionError` from
-    `validator.validate(document)`, and the two sources are indistinguishable
-    at this call. The attribution holds only because no shipped document path
-    reaches this seam deep enough to trip it -- the `load_migrations` path is
-    guarded by `load_yaml_mapping`'s depth limit, which raises `RecursionError`
-    -> `ValueError` -> `MigrationError` before a document is ever validated
-    (`security/yaml_loading.py`), and the `propose` path builds shallow,
-    fixed-structure documents. That leaves a latent gap at other ambient stack
-    depths, tracked as issue #291; the real fix there is build-time
-    schema-recursion detection, not a wider `except` here, since the two
-    sources cannot be told apart once `validate` is running. Both failures this
-    function does attribute to the schema carry `SchemaUnreadableError`, the
-    type every other install-corruption failure `_validator` translates.
+    An `Unresolvable` is unambiguously a schema defect. A `RecursionError` was
+    only ever *attributed* to one, and until issue #291 that attribution was
+    unsound: a deeply nested **document** raised the identical `RecursionError`
+    from `validator.validate(document)`, and a user-input fault was answered
+    "reinstall theurian". Measured on 2026-08-21, CPython 3.13.3, `jsonschema`
+    4.26.0, against a document carrying a ``{"a": {"a": ...}}`` chain inside
+    its single operation:
+
+    * The recursion is raised while `jsonschema` builds a *message*, not while
+      it walks the schema -- `_keywords.py`'s `oneOf` interpolating
+      `f"{instance!r} is not valid under any of the given schemas"`, and the
+      exception says so verbatim: "maximum recursion depth exceeded while
+      getting the repr of an object". It is instance-driven, so no amount of
+      schema inspection at build time detects it.
+    * The budget is CPython's C recursion limit, not `sys.getrecursionlimit()`:
+      `repr` of a 9,000-level chain renders identically at Python limits of
+      100, 1,000, 10,000 and 100,000, and the deepest chain that renders at all
+      from a shallow stack is 9,997.
+    * That budget is shared with the ambient call stack, so **the same document
+      got different answers depending on who called**: depth 8,000 answered
+      `MigrationError` from a direct call and `SchemaUnreadableError` from a
+      stack 1,200 C-frames deep. Depths 2,000 through 7,000 were answered
+      correctly at every ambient depth tried; 10,000 and 20,000 were
+      mistranslated at all of them.
+
+    :func:`_refuse_a_document_that_nests_too_deep` closes that gap by bounding
+    the document at :data:`MAX_DOCUMENT_NESTING` -- two orders of magnitude
+    below the smallest budget measured above -- before `validate` is reached.
+    Every document that gets as far as the call below is therefore *proven*
+    shallow, which is what turns the attribution from a hope into a deduction:
+    a `RecursionError` from a shallow instance is the schema's, and the
+    `SchemaUnreadableError` this raises is the honest answer rather than a
+    guess. Both failures this function attributes to the schema carry that
+    type, as every other install-corruption failure `_validator` translates
+    does.
 
     A `ValidationError` is a real fault in the *document* and is deliberately
     left to propagate: the two callers word it differently (with or without a
     file name), so each wraps it into its own `MigrationError`. Only the
     schema-integrity failures, identical from both seams, are handled here.
+    `document_name` exists for the same split -- the depth refusal above is
+    raised here rather than by a caller, so it is told the file name the
+    loading seam would otherwise have added itself.
     """
+    _refuse_a_document_that_nests_too_deep(document, document_name)
     try:
         schema_validator.validator.validate(document)
     except Unresolvable as exc:
@@ -310,7 +399,10 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
     knowledge is human review, not format conversion.
 
     Raises:
-        MigrationError: If the document does not satisfy the schema.
+        MigrationError: If the document does not satisfy the schema, or nests
+            past :data:`MAX_DOCUMENT_NESTING` -- a document fault that used to
+            be reported as a corrupt installation (issue #291; the mechanism is
+            recorded on :func:`_validate_document`).
         SchemaUnreadableError: If the installed schema cannot be read, parses
             to something this build cannot use as a schema (both from
             :func:`_validator`), or names a `$ref` that cannot be resolved
@@ -724,7 +816,12 @@ def _load_one(
         raise MigrationError(f"{path.name}: {exc}") from exc
 
     try:
-        _validate_document(schema_validator, document)
+        # `document_name` so the depth refusal (issue #291) names the file the
+        # same way this seam's own wrap below does. It is raised inside
+        # `_validate_document` rather than here because both seams need it and
+        # the check has to run *before* `validate`, which is the one call the
+        # two seams share.
+        _validate_document(schema_validator, document, document_name=path.name)
     except ValidationError as exc:
         location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
         raise MigrationError(f"{path.name} is invalid at {location}: {exc.message}") from exc
