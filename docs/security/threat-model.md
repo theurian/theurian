@@ -437,15 +437,25 @@ erase the line a terminal has already drawn and print another in its place: a
 planted value reproduced `propose accept`'s own output under this command's name,
 on both paths. The victim here is the human reading the terminal, not the agent —
 the label-based controls under T-3 do not apply. **Controls:** the CLI escapes
-terminal-control characters — the C0 block bar `\n`/`\t`, `DEL`, and C1 — at its
-text-output sink (`cli.commands._render` and `_fail`), so no value any command
-prints, from any source, can rewrite a drawn line, while printable Unicode and
-ordinary whitespace are kept. Proposal-derived *names in error messages* are
+every terminal-control character — the whole C0 block (`\n` and `\t` included),
+`DEL`, and C1, to `\xHH` — at one sink, `cli.output.escape_terminal_controls`,
+which is the *single* function every text-mode emitter routes each value and key
+through: `commands._render`, `commands._fail`, and `main._emit`. The last carries
+only fields already repr'd or type-validated upstream (`compat check`'s `error`
+is `repr`-formatted by the domain), so no CLI input reaches it raw; routing it
+through the sink anyway is what makes "every emitter uses the sink" a structural
+invariant rather than a per-field argument. So no value any command prints, from
+any source, reaches a terminal with a raw control byte — `\n`/`\t` are escaped
+because the output's structural whitespace is
+the emitters' own f-strings, added outside the sink, so a newline *inside a value*
+is always an injection. Printable Unicode (a Japanese title) is untouched, which
+is why this is not `repr`. Proposal-derived *names in error messages* are
 additionally quoted with `repr` and capped at five with a count, in
-`application.proposal_service._names`, for readability rather than for the escape.
+`application.proposal_service._names`, for readability, not for the escape.
 `--json` was never affected, because `json.dumps` escapes control characters.
 Tested: `test_propose_cli::test_a_success_payload_cannot_forge_output_through_a_body_path`,
-`::test_the_render_sink_escapes_controls_and_keeps_printable_unicode`, and
+`::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`,
+`::test_the_fail_sink_escapes_controls_on_the_error_path`, and
 `test_proposal_service::test_a_content_file_cannot_forge_this_command_s_own_error_output`.
 **Residual:** the sink is the closure; the constrained interpolations behind it
 (a migration filename, a validated identifier) and two library strings measured

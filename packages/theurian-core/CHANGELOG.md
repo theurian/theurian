@@ -45,10 +45,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   fallible branch points the reader at `.theurian/migrations/` first — no branch
   emits an unconditional "no action is needed" or "draft it again", so none can
   tell the author to discard work that may exist or duplicate a change that
-  already landed. Absent `evidence.json` (a legacy proposal, or one interrupted
-  before its evidence write) falls to inference over the directory, which reads
-  only the body shape the generator produces, so a reviewer's notes or a
-  `Thumbs.db` left beside an accepted proposal no longer flips the verdict.
+  already landed. The three states are kept distinct by their exit codes: a
+  migration in place under the recorded id — whether or not the item cross-checks
+  — exits 4 ("read before acting"), and only a recorded id that names *nothing*
+  landed exits 1 ("nothing landed, re-draft"), so following exit 1 can never mint
+  a duplicate of a change on disk. Absent `evidence.json` (a legacy proposal, or
+  one interrupted before its evidence write) falls to inference over the
+  directory, which reads only the body shape the generator produces, so a
+  reviewer's notes or a `Thumbs.db` left beside an accepted proposal no longer
+  flips the verdict.
 
 - **A committed proposal could forge `theurian propose accept`'s own output**
   ([#253](https://github.com/theurian/theurian/issues/253)). A proposal directory
@@ -57,9 +62,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   terminal has drawn and prints its own in place of it — reproduced printing this
   command's own output under its own name, on both the refusal path and the
   exit-0 **success** payload (`bodyFiles`, `migrationFile`). The CLI now escapes
-  terminal-control characters at its text-output sink, so no value a command
-  prints can rewrite a drawn line, while printable Unicode (a Japanese title) and
-  ordinary whitespace are kept. The `--json` output was never affected.
+  every terminal-control character — the whole C0 block, `DEL` and C1 — at one
+  shared sink that every text-mode emitter routes each value and key through, so
+  no value any command prints, from any source, reaches a terminal with a raw
+  control byte. A value's own newline is escaped too (the output's structural
+  newlines are the emitters' own), while printable Unicode (a Japanese title) is
+  kept. The `--json` output was never affected.
 
 ### Changed
 
