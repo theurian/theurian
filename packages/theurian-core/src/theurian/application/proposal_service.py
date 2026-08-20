@@ -718,8 +718,20 @@ class ProposalService:
           proposal's change is in place".
         * not confirmed -- a migration is filed under the id, but the item could
           not be cross-checked (the record names none, or names one the migration
-          does not operate on). *Something is landed under the id*, so this is not
-          "nothing landed": the caller answers read-before-acting, never re-draft.
+          does not operate on, **or the file is a symlink**). *Something is landed
+          under the id*, so this is not "nothing landed": the caller answers
+          read-before-acting, never re-draft.
+
+        A symlinked migration under the id is ``present``, never ``absent``: the
+        migration loader follows symlinks, so it is landed and ``migrate validate``
+        sees it, and reporting "nothing landed" would send the author to re-draft
+        a change already on disk (#89). It is *not* read to confirm the item,
+        though -- that read would follow a committed proposal's link (T-5) -- so a
+        symlink stays ``present`` ("cannot confirm"), never ``confirmed``. Setting
+        ``present`` only after the symlink skip was the bug that reported a landed
+        symlinked migration as "nothing landed". (The ``_pinned_digest_at``
+        symlink skip is a separate loader-vs-guard divergence, issue #234, not
+        touched here.)
 
         ``sorted`` for a stable order; in practice at most one file matches,
         because two migrations sharing an id are the duplicate the migration set
@@ -728,10 +740,10 @@ class ProposalService:
         claimed = _evidence_item_ids(evidence)
         present: Path | None = None
         for candidate in sorted(self._paths.migrations.glob(f"{migration_id.value}-*.yaml")):
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
             if present is None:
                 present = candidate
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
             if not claimed:
                 continue
             try:

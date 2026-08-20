@@ -899,6 +899,46 @@ def test_a_landed_migration_with_no_item_recorded_is_read_before_acting(
     assert "correct evidence.json" in caught.value.remedy
 
 
+def test_a_symlinked_landed_migration_is_present_not_nothing_landed(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH (round four): a symlinked migration under the recorded id is landed.
+
+    The migration loader follows symlinks, so a symlink at
+    ``.theurian/migrations/<id>-<slug>.yaml`` pointing at a real in-project
+    migration is landed and ``migrate validate`` sees it. ``_landed_state`` skipped
+    a symlinked candidate *before* it could record it as present, so it fell
+    through to ``absent`` -> exit 1 "nothing landed", whose #254 remedy re-drafts
+    a change already on disk (#89). It is ``present`` now: a
+    ``ChangeAlreadyInPlaceError`` (exit 4) that does not claim nothing landed, and
+    does not confirm either -- a symlink is never *read* to cross-check the item,
+    because that read would follow a committed proposal's link (T-5).
+
+    Dies both ways: fold the symlink back into the pre-``present`` skip and it
+    reads "nothing landed"; drop the symlink skip from the *read* guard and it
+    reads the link's target and reports "appears to have been accepted".
+    """
+    landed = service.draft(_request(item_id=ItemId("architecture.landed")))
+    service.accept(landed.proposal_id)
+    real = next(paths.migrations.glob(f"{landed.migration_id.value}-*.yaml"))
+    hidden = real.rename(real.with_suffix(".yaml.real"))
+    real.symlink_to(hidden.name)
+    assert real.is_symlink(), "the migration under the recorded id is now a symlink"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    proposal = service.draft(_request(item_id=ItemId("architecture.pointer")))
+    _edit_evidence(proposal, migrationId=landed.migration_id.value, itemId="architecture.landed")
+    proposal.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError, match="cannot confirm") as caught:
+        service.accept(proposal.proposal_id)
+
+    message = str(caught.value)
+    assert "nothing" not in message.lower(), "a symlinked migration is landed, not absent"
+    assert "operates on the item this proposal names" not in message, "a symlink is not confirmed"
+    assert landed.migration_id.value in message
+
+
 def test_an_interrupted_draft_with_a_recorded_id_is_not_reported_as_accepted(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
