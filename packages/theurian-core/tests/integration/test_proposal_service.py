@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -117,7 +117,7 @@ def service(paths: ProjectPaths) -> ProposalService:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return loaded.migration_set.get(migration_id)
 
-    def landed_migrations() -> Iterable[Migration]:
+    def landed_migrations() -> Collection[Migration]:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return loaded.migration_set
 
@@ -752,7 +752,7 @@ def test_accept_refuses_a_replacement_that_would_break_an_existing_pin(
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
     hand_authored.write_bytes(second.body_file.read_bytes())
 
-    with pytest.raises(ProposalError, match="pins"):
+    with pytest.raises(ProposalError, match="backing a landed revision"):
         service.accept(second.proposal_id)
 
     # The first body is untouched and the whole set still loads.
@@ -821,12 +821,161 @@ def test_the_pin_guard_sees_a_pin_held_by_a_symlinked_landed_migration(
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
     hand_authored.write_bytes(second.body_file.read_bytes())
 
-    with pytest.raises(ProposalError, match="pins"):
+    with pytest.raises(ProposalError, match="backing a landed revision"):
         service.accept(second.proposal_id)
 
     # The first body is untouched and the whole set still loads -- the property
     # the refusal exists for, checked rather than assumed.
     assert first.body_destination.read_text() == BODY
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def _fs_is_case_insensitive(directory: Path) -> bool:
+    """Whether ``directory``'s filesystem reaches one inode by many spellings.
+
+    The case-variant face exists only where the filesystem folds case (APFS,
+    NTFS): on a case-sensitive volume the variant names a *different* file, so
+    there is no shared inode to protect and nothing to reproduce. Probed against
+    the real directory the test writes into rather than inferred from
+    ``sys.platform`` -- a case-sensitive volume can be mounted on macOS and a
+    case-insensitive one on Linux.
+    """
+    probe = directory / "TheurianCaseProbe"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        return (directory / "theuriancaseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_accept_refuses_a_case_variant_of_a_landed_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-A: a ``contentFile`` differing only in case reaches a landed inode.
+
+    ``_pinned_digest_at`` compared resolved path *strings*, and ``Path.resolve()``
+    folds ``.``/``..``/symlinks but never case or NFC/NFD (the loader records this
+    on ``UpsertRevision.content_identity``, #210). So a hand-authored
+    ``contentFile`` spelling a landed body's path with a different case reached
+    the very same physical file while the guard, comparing strings, saw no pin --
+    ``accept`` overwrote a pinned body and ``migrate validate`` then exited 4 for
+    the whole project with no undo. Keying the guard on the destination's
+    ``(st_dev, st_ino)`` collapses every spelling onto one inode, so the variant
+    is refused. Reproduced end to end by the orchestrator (``probes/e1``).
+    """
+    if not _fs_is_case_insensitive(paths.knowledge):
+        pytest.skip("a case variant names a different file on a case-sensitive filesystem")
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
+    variant = first.content_file.replace("/architecture/", "/Architecture/")
+    assert variant != first.content_file, "the case variant must differ from the landed spelling"
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(second.content_file, variant),
+        encoding="utf-8",
+    )
+    # The hand-authored body sits at the variant tail; on a case-insensitive
+    # volume it is the same file the first proposal landed. `.resolve()` on the
+    # left for /var vs /private/var, as the symlink-pin sibling above documents.
+    tail = (paths.migrations / variant).resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_replacing_an_unpinned_landed_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-C(i): an *unpinned* landed body still backs a revision the set validates.
+
+    ``contentSha256`` is optional -- the loader adopts the body's current hash
+    where it is absent (#210) -- so a landed migration may reference a body it
+    does not freeze. The old guard filtered on ``content_pinned`` and so waved
+    such a replacement through, yet the *set* then holds two distinct revisions
+    on one physical file, which ``refuse_duplicate_content_files`` refuses for the
+    whole project (exit 4). The identity key carries no pinning filter, so the
+    already-claimed inode is refused whether or not the claim was frozen.
+    Reproduced by the orchestrator (``probes/e8``: accept exit 0 -> validate exit 4).
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # Strip the declared pin from the landed migration: the body is now
+    # referenced but not frozen -- the case the `content_pinned` filter missed.
+    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
+    landed.write_text(
+        "\n".join(
+            line
+            for line in landed.read_text(encoding="utf-8").splitlines()
+            if "contentSha256" not in line
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert "contentSha256" not in landed.read_text(encoding="utf-8")
+    # An unpinned reference is legal: the set still loads and would validate.
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(
+            second.content_file, first.content_file
+        ),
+        encoding="utf-8",
+    )
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-C(ii): "byte-identical changes nothing" is false of the *set*.
+
+    The old guard refused only ``pin == current and replacement != current``, so
+    a byte-identical replacement of a pinned body passed its second conjunct and
+    landed. The bytes never change, but the set afterwards has two revisions on
+    one body file (``refuse_duplicate_content_files``, exit 4). The identity key
+    refuses on the shared inode, not on a byte comparison, so it catches this.
+    Reproduced by the orchestrator (``probes/e9``: accept exit 0 -> validate exit 4).
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A second item whose body is byte-identical to the first's, repointed at the
+    # first's landed path.
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(
+            second.content_file, first.content_file
+        ),
+        encoding="utf-8",
+    )
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 

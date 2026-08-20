@@ -407,6 +407,12 @@ class MigrationSet:
     def __len__(self) -> int:
         return len(self.migrations)
 
+    def __contains__(self, migration: object) -> bool:
+        # Completes ``Collection`` alongside ``__iter__``/``__len__``: a consumer
+        # typed on ``Collection[Migration]`` -- the pin guard's landed set -- can
+        # then be handed this whole rather than a one-shot iterator it re-reads.
+        return migration in self.migrations
+
     def get(self, migration_id: MigrationId) -> Migration | None:
         return self._by_id.get(migration_id)
 

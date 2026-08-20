@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
@@ -106,13 +106,21 @@ CurrentRevisionLookup = Callable[[ItemId], RevisionId | None]
 LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 
 #: Every migration in the project's approved set. The same ``MigrationSet``
-#: :data:`LandedMigrationLookup` is keyed into, handed over whole because the pin
-#: guard's question -- "does *any* migration already in place pin the bytes at
-#: this path?" -- is not keyed by id and cannot be asked one lookup at a time.
-#: Injected for the identical reason: it is the loader's set, so the guard and the
-#: loader cannot disagree about which bodies are pinned (#234), and the loader
-#: itself stays an adapter this layer never imports (ADR-0003).
-LandedMigrations = Callable[[], Iterable[Migration]]
+#: :data:`LandedMigrationLookup` is keyed into, handed over whole because the
+#: replacement guard's question -- "does *any* migration already in place read
+#: the file at this destination?" -- is not keyed by id and cannot be asked one
+#: lookup at a time. Injected for the identical reason: it is the loader's set,
+#: so the guard and the loader cannot disagree about which bodies are backed
+#: (#234), and the loader itself stays an adapter this layer never imports
+#: (ADR-0003).
+#:
+#: The return is a :class:`~collections.abc.Collection`, not a bare
+#: ``Iterable``: the guard re-reads it once per replaced body, so a spent
+#: iterator would answer the first move and silently wave every later one
+#: through. ``Collection`` forbids that at the type edge -- the composition root
+#: must materialize the set at call time (both roots return the loaded
+#: ``MigrationSet``, which is re-iterable).
+LandedMigrations = Callable[[], Collection[Migration]]
 
 
 class ProposalError(TheurianError):
@@ -812,14 +820,18 @@ class ProposalService:
         loader twice: a symlinked landed migration read as absent (round five), and
         a landed migration renamed off its ULID prefix read as absent (round six),
         each an exit-1 "nothing landed" over a change on disk, each a duplicate-mint
-        (#89). **The class is closed on both its members.** ``_pinned_digest_at``
-        was the other one that re-detected landed migrations from the filesystem
-        (a ``glob("*.yaml")`` with a symlink skip), and it reproduced round five's
-        disagreement on the pin guard rather than on this diagnosis: a landed
-        migration behind a symlink held a pin the guard could not see, so a body
-        replacement was allowed and the set stopped loading (#234). It reads the
-        same loaded set through :data:`LandedMigrations` as of that fix. No method
-        on the accept path enumerates ``.theurian/migrations/`` any more.
+        (#89). **The class is closed on both its members.**
+        :meth:`_destination_backs_a_landed_revision` was the other one that
+        re-detected landed migrations from the filesystem (a ``glob("*.yaml")``
+        with a symlink skip), and it reproduced round five's disagreement on the
+        replacement guard rather than on this diagnosis: a landed migration behind
+        a symlink held a body the guard could not see, so a replacement was
+        allowed and the set stopped loading (#234). It reads the same loaded set
+        through :data:`LandedMigrations` as of that fix, and keys the comparison
+        on the loader's ``content_identity`` -- ``(st_dev, st_ino)`` -- so no
+        spelling of a body path, case or NFC/NFD included, can make the guard and
+        the loader disagree about which file a revision reads (#210, #227). No
+        method on the accept path enumerates ``.theurian/migrations/`` any more.
 
         ``None`` when nothing is filed under the id. Otherwise a
         :class:`_LandedMigration` whose ``confirmed`` says whether it also operates
@@ -865,7 +877,7 @@ class ProposalService:
         are the bytes that were checked.
         """
         knowledge = self._paths.knowledge.resolve()
-        for content_file in _content_files(document):
+        for content_file, revision_id in _upsert_bodies(document):
             destination = self._destination_of(content_file)
             tail = destination.relative_to(knowledge)
             source = directory / tail
@@ -881,6 +893,7 @@ class ProposalService:
                 destination=destination,
                 data=data,
                 replaced=destination.exists(),
+                revision_id=revision_id,
             )
 
     def _read_within_project(self, path: Path) -> bytes:
@@ -923,115 +936,132 @@ class ProposalService:
                 )
 
     def _refuse_if_a_replacement_breaks_an_existing_pin(self, moves: Iterable[_BodyMove]) -> None:
-        """Refuse a body replacement that would invalidate an applied migration.
+        """Refuse a body replacement that would invalidate the migration set.
 
-        The invariant ``accept`` must hold is that it never leaves the migration
-        set unable to validate. A body file a migration references is immutable:
-        the loader re-reads it and compares it against the ``contentSha256`` that
-        migration pinned. Replacing that body with different bytes makes the pin
-        wrong, and ``migrate validate`` / ``apply`` / ``status`` then all exit 4
-        for the whole project -- reproduced: *"hashes to abc7cdb70713 but the
-        migration pins 4f9c5503e198"*, with no undo command.
+        The invariant ``accept`` must hold is that it never leaves the set unable
+        to validate. Two ways a replacement breaks it, and both are one fault --
+        *the destination is a body a landed revision already reads*:
 
-        A generated proposal never reaches this: its ``contentFile`` carries a
-        fresh revision id, so no two of them target one path. What reaches it is
-        a hand-authored ``contentFile`` that reuses an existing body's path --
-        exactly the manual flow -- and refusing there breaks nothing legitimate,
-        because the honest way to change a body is a new revision at a new path.
+        * If that revision **pinned** the body, the loader re-reads it and finds
+          bytes the pin no longer matches: *"hashes to abc7cdb70713 but the
+          migration pins 4f9c5503e198"*, exit 4 with no undo.
+        * Whether pinned or not, the destination now backs **two** distinct
+          revisions -- the landed one and this proposal's -- and
+          ``refuse_duplicate_content_files`` refuses one body file behind two
+          revisions for the whole project (also exit 4).
+
+        **Keyed on the destination's ``(st_dev, st_ino)``, never a path string.**
+        A case-insensitive filesystem (APFS, NTFS) reaches one inode by many
+        spellings, and ``Path.resolve()`` folds ``.``/``..``/symlinks but not case
+        or NFC/NFD -- so a hand-authored ``contentFile`` differing only in case
+        (``RETRY-POLICY...`` vs the landed ``retry-policy...``) resolved to a
+        *different string* while landing on the *same file*, and a string key
+        waved it through (the disclosure this re-key closes; the identical fix
+        ``refuse_duplicate_content_files`` took for #210). ``move.replaced`` was
+        set from ``destination.exists()``, so the file is there and the ``stat``
+        resolves; a ``stat`` that fails anyway is an accept-path FS fault, left to
+        :meth:`accept`'s examination-phase ``except OSError`` (this method runs
+        inside it) rather than swallowed here.
+
+        A generated proposal never reaches a refusal: its ``contentFile`` carries
+        a fresh revision id, so it lands on no existing file. What reaches it is a
+        hand-authored ``contentFile`` reusing an existing body's path, and
+        refusing there breaks nothing legitimate -- the honest way to change a
+        body is a new revision at a new path. The one landed reference that is
+        *not* a break is this proposal's own revision re-declared against its own
+        body (an in-place status change, ADR-0024 decision 5): same revision id,
+        no second revision, nothing to break -- which is why the key is the
+        *pair* (identity, other revision id) and not identity alone.
         """
-        for move in moves:
-            if not move.replaced:
+        replaced = [move for move in moves if move.replaced]
+        if not replaced:
+            # Load the approved set only when a replacement is actually in hand:
+            # a generated proposal lands on no existing file, and reading the set
+            # for it would refuse an otherwise-valid accept whenever the set does
+            # not load -- the O_EXCL race path, which writes a non-migration file
+            # to the destination on purpose, is exactly that.
+            return
+        landed = tuple(self._landed_migrations())
+        for move in replaced:
+            stat = move.destination.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            if not self._destination_backs_a_landed_revision(landed, identity, move):
                 continue
-            pin = self._pinned_digest_at(move.destination)
-            if pin is None:
-                continue
-            current = ContentHash.of_bytes(move.destination.read_bytes()).value
-            replacement = ContentHash.of_bytes(move.data).value
-            # A pin that already fails to match its body is a project that does
-            # not validate now; only refuse where a *currently valid* pin would
-            # be broken. And a byte-identical replacement changes nothing.
-            #
-            # Now that the pin comes from the loaded set, `pin == current` covers
-            # a narrower window than it did against the filesystem: the loader
-            # refuses a declared pin that does not match the body it reads, so a
-            # pin broken at load time takes the whole set down before `accept`
-            # dispatches at all. What is left for the conjunct to catch is a body
-            # edited between that load and this call. It stays because that
-            # window is real and the check is a hash of bytes already in hand.
-            if pin == current and replacement != current:
-                relative = move.destination.relative_to(self._paths.knowledge.resolve())
-                raise ProposalError(
-                    f"Accepting this would overwrite {_names([relative.as_posix()])}, whose "
-                    "bytes an existing migration pins with contentSha256; the whole set "
-                    "would then fail to validate.",
-                    remedy="Draft this as a new revision -- a fresh contentFile -- rather than "
-                    "a replacement of an existing body.",
-                )
+            relative = move.destination.relative_to(self._paths.knowledge.resolve())
+            raise ProposalError(
+                f"Accepting this would overwrite {_names([relative.as_posix()])}, a body "
+                "already backing a landed revision; the whole set would then fail to validate.",
+                remedy="Draft this as a new revision -- a fresh contentFile -- rather than "
+                "a replacement of an existing body.",
+            )
 
-    def _pinned_digest_at(self, destination: Path) -> str | None:
-        """The ``contentSha256`` an existing migration pins for ``destination``, if any.
+    def _destination_backs_a_landed_revision(
+        self,
+        landed: Iterable[Migration],
+        identity: tuple[int, int],
+        move: _BodyMove,
+    ) -> bool:
+        """Does a landed ``upsertRevision`` other than this move's already read ``identity``?
 
-        **Closure (the class this closes).** The pins come from the project's
-        *loaded* migration set, through the injected :data:`LandedMigrations` --
+        **Closure (the class this closes).** The migrations come from the
+        project's *loaded* set, through the injected :data:`LandedMigrations` --
         the same ``MigrationSet`` ``migrate validate`` and ``migrate apply`` read,
         and the same one :meth:`_landed_state` is keyed into. So the guard and the
-        loader cannot disagree about which bodies are pinned, for any migration
-        and for any path: both answers are now readings of one object rather than
-        two enumerations that happen to agree.
+        loader cannot disagree about *which migrations are enumerated*: a landed
+        migration relocated behind a symlink is followed by both, where a previous
+        version globbed ``.theurian/migrations/*.yaml`` itself and skipped the
+        link -- a pin it could not see, ``accept`` allowed the replacement, and
+        the set stopped loading (#234, reproduced end to end). Enumerating the
+        loaded set is the whole benefit; how each operation's body path is spelled
+        is not, which is why the comparison is the loader's own
+        ``content_identity`` and not a path string.
 
-        A previous version had its own detector -- ``.theurian/migrations/*.yaml``
-        globbed off the filesystem, with ``is_symlink()`` entries skipped -- and it
-        disagreed with the loader exactly where ``_landed_state``'s did (#253): the
-        loader *follows* a symlinked migration that points at a real in-project
-        file and loads its pins, while the glob skipped it. A landed migration
-        relocated behind a link therefore held a pin this guard could not see,
-        ``accept`` allowed the replacement, and the set then failed to load
-        entirely -- *"hashes to abc7cdb70713 but the migration pins
-        539a4030033a"*, the exit-4 no-undo outcome
-        :meth:`_refuse_if_a_replacement_breaks_an_existing_pin` exists to
-        prevent (#234, reproduced end to end).
-
-        A *declared* pin is what counts, which is why the filter is
-        ``content_pinned`` and not merely "``content_sha256`` is set": the loader
-        fills the latter with the hash it just computed whether or not the
-        migration declared one, and only a declared pin freezes the body (#210).
-        Two migrations that pin the same path cannot disagree either -- the loader
-        refuses a declared pin that does not equal the body it reads, so within a
-        set that loaded at all, every pin on one path is the same string and the
-        iteration order cannot decide the answer. The set's order is the loader's
-        (topological, ULID tie-broken) and so deterministic regardless.
-
-        Nothing here is skipped for being malformed, because nothing here can be:
-        a migration that does not parse, whose ``contentFile`` cannot be resolved,
-        or whose pin is already broken fails the *load*, and the load happens in
-        the composition root before ``accept`` is called. The old skip existed
-        only because this method re-parsed the files itself.
+        The revision-id guard is what keeps the in-place re-declare working: a
+        landed operation reading this destination under *this move's own*
+        revision id is that legitimate case (ADR-0024 decision 5), not a second
+        revision, so it is skipped. Everything else on the same inode is a break.
         """
-        resolved_destination = destination.resolve()
-        for migration in self._landed_migrations():
+        for migration in landed:
             for operation in migration.operations:
-                if not isinstance(operation, UpsertRevision) or not operation.content_pinned:
+                if not isinstance(operation, UpsertRevision):
                     continue
-                pin = operation.content_sha256
-                if pin is not None and self._pinned_body_path(operation) == resolved_destination:
-                    return pin.value
-        return None
+                if operation.revision_id.value == move.revision_id:
+                    continue
+                if self._operation_reads(operation, identity, move.destination):
+                    return True
+        return False
+
+    def _operation_reads(
+        self, operation: UpsertRevision, identity: tuple[int, int], destination: Path
+    ) -> bool:
+        """Whether a loaded ``upsertRevision`` reads the body now at ``destination``.
+
+        The loader takes ``content_identity`` -- ``(st_dev, st_ino)`` -- from the
+        same ``stat`` that read the body, so a case or NFC/NFD variant of one file
+        compares equal here where its path *string* does not (#210). Every
+        operation a gate ever sees carries it, because the loader is the sole
+        production constructor of :class:`UpsertRevision`.
+
+        ``None`` only for an operation built in memory, which has no file on disk;
+        for that defensive case the fallback is a path comparison against
+        :meth:`_pinned_body_path` -- a spelling-sensitive key, but the only one
+        available without an inode, and unreachable from any loaded set.
+        """
+        if operation.content_identity is not None:
+            return operation.content_identity == identity
+        return self._pinned_body_path(operation) == destination.resolve()
 
     def _pinned_body_path(self, operation: UpsertRevision) -> Path:
         """Where a loaded ``upsertRevision``'s body sits, fully resolved.
 
-        ``resolved_content_path`` is the loader's *own* resolution of that
-        operation's ``contentFile`` -- taken against ``.theurian/migrations/``,
-        with ``..`` collapsed and symlinks followed, then expressed relative to
-        the resolved project root. Reusing it is what keeps this reader and the
-        loader from resolving one string two ways, which is the whole point of
-        reading the loaded set.
-
-        It is ``None`` only for an operation built in memory rather than read from
-        a file. Such an operation has no tree behind it, so its declared path is
-        resolved here against ``.theurian/migrations/`` -- the base the loader
-        itself uses, and the base this method used for every migration before it
-        read the loaded set.
+        The path fallback for :meth:`_operation_reads` when an operation carries
+        no ``content_identity`` -- an in-memory operation the loader never
+        produces. ``resolved_content_path`` is the loader's own resolution of the
+        ``contentFile`` (against ``.theurian/migrations/``, ``..`` collapsed and
+        symlinks followed, expressed relative to the resolved root); reusing it
+        keeps the fallback spelling the path the same way the loader did. It is
+        ``None`` for the same in-memory case, whose declared path is resolved here
+        against ``.theurian/migrations/`` -- the base the loader itself uses.
         """
         resolved = operation.resolved_content_path
         if resolved is None:
@@ -1136,6 +1166,12 @@ class _BodyMove:
     destination: Path
     data: bytes
     replaced: bool
+    #: The ``revisionId`` the proposal's own migration declares at this body, or
+    #: ``None`` when the operation names none. The replacement guard compares it
+    #: with the landed revision already reading the destination: an equal id is
+    #: the legitimate in-place re-declare (ADR-0024 decision 5), and only a
+    #: *different* id would put two revisions on one file.
+    revision_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1411,7 +1447,17 @@ def _evidence_failure_reason(error: BaseException | None) -> str:
     return "it is not a JSON object"
 
 
-def _content_files(document: Mapping[str, object]) -> Iterable[str]:
+def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | None]]:
+    """Each ``contentFile`` a migration names, paired with its ``revisionId``.
+
+    The revision id travels with the body because the replacement guard needs
+    both: whether the destination is already read by a landed revision, and
+    whether *this* proposal declares the same revision at it (the in-place
+    re-declare) or a different one (the case that puts two revisions on one file).
+    ``None`` when the operation names no revision -- a malformed hand-authored
+    migration -- which the guard reads as "cannot be the in-place case" and so
+    refuses conservatively.
+    """
     operations = document.get("operations")
     if not isinstance(operations, list):
         return
@@ -1419,8 +1465,10 @@ def _content_files(document: Mapping[str, object]) -> Iterable[str]:
         if not isinstance(operation, Mapping):
             continue
         content_file = operation.get("contentFile")
-        if isinstance(content_file, str) and content_file:
-            yield content_file
+        if not (isinstance(content_file, str) and content_file):
+            continue
+        revision = operation.get("revisionId")
+        yield content_file, revision if isinstance(revision, str) else None
 
 
 def _roll_back(created: Iterable[Path], restored: Iterable[tuple[Path, bytes]]) -> None:
