@@ -2692,9 +2692,61 @@ def test_validate_migration_document_translates_a_giant_integer_scalar() -> None
         validate_migration_document(document, real_schema_root())
 
     message = str(excinfo.value)
-    assert "too large to render" in message, "the diagnosis is the value's size, named"
+    assert "too large" in message, "the diagnosis is the value's size, named"
     assert "reduce it" in message, "the refusal carries a remedy"
     assert "9999" not in message and "0000" not in message, "the value itself is not echoed"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_validate_document_translates_a_giant_integer_overflowing_a_numeric_keyword(
+    tmp_path: Path,
+) -> None:
+    """RED before the fix: the `ValueError` face of #291's scalar CP-2 escape has
+    an `ArithmeticError` sibling the round-three catch missed by type.
+
+    `jsonschema` numeric-checks an instance against a float-valued `multipleOf`
+    by coercing it to `float`, and a giant integer raises `OverflowError` there
+    ("int too large to convert to float") -- which is an `ArithmeticError`, *not*
+    a `ValueError`, so `except ValueError` alone lets it escape as a raw
+    traceback exactly as the render face did. Measured on 8a97137: this call
+    raised a bare `OverflowError`. `except (ValueError, ArithmeticError)`
+    translates it to `MigrationError` like every other document fault at this
+    seam.
+
+    The keyword is latent in the *bundled* schema (it carries only
+    `minimum`/`maximum`, which compare int-to-int without coercion), so the
+    schema here is synthetic: it puts `multipleOf` on a property to reach the
+    coercion the shipped schema cannot. Written to disk and driven through the
+    real `validate_migration_document` path so the fix is exercised where the
+    escape lives, not around it. `pytest.raises(MigrationError)` excludes the raw
+    `OverflowError` today's code escapes, and the value is not echoed.
+    """
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"author": {"type": "number", "multipleOf": 1e-300}},
+            }
+        )
+    )
+    # One node whose float coercion overflows: `10**400 % 1e-300` raises
+    # `OverflowError` inside jsonschema's `multipleOf` check.
+    document: dict[str, Any] = {"author": 10**400}
+
+    _validator.cache_clear()
+    try:
+        with pytest.raises(MigrationError) as excinfo:
+            validate_migration_document(document, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    message = str(excinfo.value)
+    assert "too large" in message, "the diagnosis is the value's size, named"
+    assert "reduce it" in message, "the refusal carries a remedy"
+    assert "0000" not in message, "the value itself is not echoed"
     assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
 
 

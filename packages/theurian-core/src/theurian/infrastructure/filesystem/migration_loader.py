@@ -492,18 +492,28 @@ def _validate_document(
     raised here rather than by a caller, so it is told the file name the
     loading seam would otherwise have added itself.
 
-    A raw `ValueError`, by contrast, *is* translated here rather than left to
-    propagate. `jsonschema` renders the failing value into its message with
-    `{instance!r}`, and an integer past CPython's int->str conversion limit
-    (`sys.get_int_max_str_digits()`) raises `ValueError` from that render
-    *instead of* raising a `ValidationError` at all -- so it slipped past every
-    `except ValidationError` seam as a raw traceback (CP-2). A single integer is
-    one node, so :data:`MAX_DOCUMENT_NODES`, which bounds node *count*, cannot
-    catch it: this is the scalar face of issue #291's repr denial of service. It
-    is a document fault, named with `document_name` the way the depth refusal is,
-    and it becomes a `MigrationError` here because there is no `ValidationError`
-    for a caller to wrap; the value is never echoed, since rendering it is the
-    very thing that just failed.
+    A raw `ValueError` or `ArithmeticError`, by contrast, *is* translated here
+    rather than left to propagate. `jsonschema` renders the failing value into
+    its message with `{instance!r}` and numeric-checks it against the schema, and
+    a giant integer defeats both faces of that. Rendering one past CPython's
+    int->str conversion limit (`sys.get_int_max_str_digits()`) raises
+    `ValueError`; numeric-checking one against a float-valued `multipleOf`
+    coerces it to `float` and raises `OverflowError` -- an `ArithmeticError`,
+    *not* a `ValueError`. Neither is a `ValidationError`, so each slipped past
+    every `except ValidationError` seam as a raw traceback (CP-2). A single
+    integer is one node, so :data:`MAX_DOCUMENT_NODES`, which bounds node
+    *count*, cannot catch it: this is the scalar face of issue #291's repr denial
+    of service. The catch below is by *type* -- the whole
+    `ValueError`/`ArithmeticError` class -- so it closes both faces and any other
+    value or arithmetic error jsonschema can raise while rendering or converting
+    a document. The render face is reachable today; the overflow face is latent,
+    since the bundled schema carries only `minimum`/`maximum` (which compare
+    int-to-int without coercion) and no `multipleOf` -- but a schema that later
+    adds one must not reopen the escape. It is a document fault, named with
+    `document_name` the way the depth refusal is, and it becomes a
+    `MigrationError` here because there is no `ValidationError` for a caller to
+    wrap; the value is never echoed, since rendering it is the very thing that
+    just failed.
     """
     _refuse_a_document_that_nests_too_deep(document, document_name)
     try:
@@ -518,19 +528,25 @@ def _validate_document(
     except RecursionError as exc:
         reason = "a schema $ref resolves recursively without terminating"
         raise SchemaUnreadableError(str(schema_validator.schema_path), reason) from exc
-    except ValueError as exc:
-        # An integer past CPython's int->str conversion limit raises here while
-        # jsonschema renders the failing value with `{instance!r}` -- a document
-        # fault the node cap cannot catch (one scalar is one node), and not a
-        # `ValidationError`, so it escaped every `except ValidationError` seam as
-        # a raw traceback (CP-2, #291's scalar face). The value is not echoed:
-        # being too large to render is itself the diagnosis (SEC-7).
+    except (ValueError, ArithmeticError) as exc:
+        # A giant integer defeats jsonschema two ways while it processes this
+        # document, and neither is a `ValidationError` (CP-2, #291's scalar
+        # face): rendering the value into the rejection message with `{instance!r}`
+        # past CPython's int->str conversion limit raises `ValueError` (reachable
+        # today -- any oversized integer that fails a type check is rendered),
+        # and numeric-checking it against a float-valued `multipleOf` coerces it
+        # to float and raises `OverflowError`, an `ArithmeticError` that is *not*
+        # a `ValueError` (latent -- the bundled schema has only `minimum`/`maximum`,
+        # int-to-int comparisons that never overflow). The node cap cannot catch
+        # either (one scalar is one node). The catch is by *type* so a future
+        # schema adding such a numeric keyword cannot reopen the escape. The
+        # value is not echoed: being too large to process safely is itself the
+        # diagnosis (SEC-7).
         subject = f"{document_name} holds" if document_name else "This document holds"
         raise MigrationError(
-            f"{subject} a value too large to render. jsonschema builds its rejection "
-            f"message by rendering the failing value, and an integer past CPython's "
-            f"digit limit for that conversion cannot be rendered. A migration value is a "
-            f"short identifier, a string, or a small number; reduce it."
+            f"{subject} a value validate could not render or convert: it is too large "
+            f"for the parser to process safely. A migration value is a short identifier, "
+            f"a string, or a small number; reduce it."
         ) from exc
 
 
@@ -641,7 +657,11 @@ def _echo(instance: object) -> str:
     """
     rendered = _bounded(_ECHO.repr(instance))
     if isinstance(instance, str | bytes) and len(instance) > MAX_ECHOED_VALUE:
-        return f"{rendered} ({len(instance)} characters in all)"
+        # `len` counts code points on a `str` and octets on `bytes`; naming the
+        # wrong unit would misreport the size, which for a value refused *for
+        # being large* is the whole diagnosis.
+        unit = "bytes" if isinstance(instance, bytes) else "characters"
+        return f"{rendered} ({len(instance)} {unit} in all)"
     return rendered
 
 
