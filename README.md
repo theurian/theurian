@@ -263,19 +263,15 @@ then publishes an index of `chunks: 0`. `ingest` reads `.theurian/knowledge` and
 `.theurian/specifications` only — it does not walk the repository's own `docs/`.
 
 <details>
-<summary><b>Authoring a migration, and the field the shipped example is missing</b></summary>
+<summary><b>Authoring a migration with evidence</b></summary>
 
 The format is [docs/protocol/migrations.md](docs/protocol/migrations.md), and
 [`examples/sample-project/`](examples/sample-project/) has two migrations with
-their content files to copy the layout from. Every revision needs at least one
-entry under `metadata.sourceAnchors`, or the label `authored-in-theurian`;
-`migrate apply` refuses a revision with neither.
-
-**The first of the two omits that field, so the example does not satisfy its own
-rule** — it validates, then fails to apply with `has no source anchor` and exit
-4, leaving `applied: 0` and never reaching the second, which does carry anchors
-([#36](https://github.com/theurian/theurian/issues/36)). Copy the layout and
-add:
+their content files to copy the layout from. It also includes a first-query path
+that applies the sample, builds the index, and asks `knowledge.search` for the
+order-cancellation rule. Every revision needs at least one entry under
+`metadata.sourceAnchors`, or the label `authored-in-theurian`; `migrate apply`
+refuses a revision with neither.
 
 ```yaml
     metadata:

@@ -34,3 +34,10 @@ operations:
         paths:
           - services/**/auth/**
           - services/**/middleware/**
+      sourceAnchors:
+        - provider: git
+          repository: acme/order-service
+          sourceUri: git://local/docs/adr/0031-service-auth-policy.md
+          filePath: docs/adr/0031-service-auth-policy.md
+          lineStart: 12
+          lineEnd: 28
