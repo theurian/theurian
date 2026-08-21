@@ -1339,6 +1339,21 @@ def _load_one(
     except UnicodeDecodeError as exc:
         raise MigrationError(f"{path.name} is not valid UTF-8") from exc
     except ValueError as exc:
+        if "integer string conversion" in str(exc):
+            # A YAML integer literal past CPython's int->str conversion limit
+            # (`sys.get_int_max_str_digits`) raises `ValueError` at `int()` inside
+            # PyYAML's own constructor, before any guard in this file runs -- the
+            # load-path twin of the in-memory scalar face `_validate_document`
+            # closes. CPython's own message names `sys.set_int_max_str_digits()` as
+            # the cure, an interpreter tuning knob no migration author should reach
+            # for; forwarding it verbatim leaked that remedy (issue #291's scalar
+            # face). Translated to the same "reduce it" wording the in-memory face
+            # uses, and the digits themselves are never echoed (SEC-7).
+            raise MigrationError(
+                f"{path.name}: a numeric value is too large for the parser to process "
+                f"safely. A migration value is a short identifier, a string, or a small "
+                f"number; reduce it."
+            ) from exc
         raise MigrationError(f"{path.name}: {exc}") from exc
     except yaml.YAMLError as exc:
         # `load_yaml_mapping`'s own docstring names this as the type a parse

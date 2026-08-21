@@ -2752,19 +2752,33 @@ def test_validate_document_translates_a_giant_integer_overflowing_a_numeric_keyw
 
 
 def test_load_migrations_translates_a_giant_integer_literal(project: Path) -> None:
-    """The load path's regression pin (GREEN today): a giant-integer YAML
-    *literal* raises `ValueError` one layer earlier, at `load_yaml_mapping`'s own
-    `int()` of the 5001-digit token, and `_load_one`'s `except ValueError`
-    already translates it to `MigrationError`. Pinned so a change to either seam
-    cannot reopen the escape on the path a repository author actually reaches.
+    """The load path's regression pin: a giant-integer YAML *literal* raises
+    `ValueError` one layer earlier, at `load_yaml_mapping`'s own `int()` of the
+    5001-digit token, and `_load_one`'s `except ValueError` translates it to
+    `MigrationError`. Pinned so a change to either seam cannot reopen the escape on
+    the path a repository author actually reaches.
+
+    MEDIUM (round one): the previous version pinned only the exception *type*,
+    while its docstring claimed "a change to either seam cannot reopen the escape"
+    -- but nothing pinned the *wording*, and CPython's own int->str-limit
+    `ValueError` names `sys.set_int_max_str_digits()` as the cure, an interpreter
+    tuning knob. Forwarding `{exc}` verbatim leaked that remedy to a migration
+    author. The message is now translated to the same "reduce it" wording the
+    in-memory scalar face uses, and this asserts the leak is gone -- RED before
+    the translation, since the raw message contained it.
     """
     migrations_dir = project / ".theurian" / "migrations"
     (migrations_dir / "01K1KKKKKK01234567890ABCDE-big.yaml").write_text(
         _VALID_MIGRATION.replace("author: engineer@example.com", "author: " + "9" * 5001)
     )
 
-    with pytest.raises(MigrationError):
+    with pytest.raises(MigrationError) as excinfo:
         load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "sys.set_int_max_str_digits" not in message, "CPython's tuning-knob remedy must not leak"
+    assert "too large" in message and "reduce it" in message, "the size-face wording, with a remedy"
+    assert "9999" not in message, "the digits themselves are not echoed (SEC-7)"
 
 
 #: The migration file the two loader-seam tests below drive. Named once so the
