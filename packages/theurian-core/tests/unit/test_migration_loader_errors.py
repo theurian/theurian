@@ -3017,3 +3017,180 @@ def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
 
     assert "author" in message, "the location is still named"
     assert len(message) <= 2000, "the echo is bounded"
+
+
+# -- issue #289: a rejection must keep the schema-side fact, not just echo the ---
+# -- instance --------------------------------------------------------------------
+#
+# The #289 change replaced `jsonschema`'s `exc.message` with "keyword name + echo
+# of the instance", which discarded the fact the message carried: the expected
+# `const`, the `pattern`, the unexpected key. On all 26 of this repository's
+# committed migrations a single top-level typo (`dependsOnn`) rendered "does not
+# satisfy 'additionalProperties'; the value there is {...}" with the offending
+# key past the 1,000-character echo cap and truncated off -- strictly worse
+# diagnosis than the `('dependsOnn' was unexpected)` it replaced. These pin that
+# the schema-side fact is back: the unexpected key, the missing `required` names,
+# and each keyword's `validator_value`.
+
+
+def _rejection_message(document: dict[str, Any]) -> str:
+    """The refusal `validate_migration_document` raises for ``document``."""
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+    return str(excinfo.value)
+
+
+def test_a_schema_rejection_names_the_unexpected_key_it_used_to_truncate() -> None:
+    """RED before the fix: the offending key is echoed inside the instance, and on
+    a real-migration-sized document it falls past the 1,000-character cap.
+
+    A valid 1,500-character ``description`` (the schema allows 2,000) pushes the
+    root instance well past the echo cap, and the one fault -- a ``dependsOnn``
+    typo of ``dependsOn`` -- is added last, so the generic wording truncated it
+    away exactly as it did on all 26 committed migrations. The rejection must
+    name the key from the *schema* (the key not in its ``properties``), not from
+    the echo.
+    """
+    document = _document_with()
+    document["description"] = "a" * 1500
+    document["dependsOnn"] = ["x"]
+
+    message = _rejection_message(document)
+
+    assert "'dependsOnn'" in message, "the offending key is named, not truncated off the echo"
+    assert "does not satisfy 'additionalProperties'" not in message, (
+        "the generic wording that dropped the key is gone"
+    )
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expectation"),
+    [
+        ("apiVersion", "theurian.dev/v9", "'theurian.dev/v1'"),
+        ("id", "not a valid ulid", "^[0-7]"),
+        ("author", 123, "'string'"),
+        ("operations", [], "expected 1"),
+    ],
+    ids=["const", "pattern", "type", "minItems"],
+)
+def test_a_schema_rejection_names_the_schema_side_expectation(
+    field: str, value: object, expectation: str
+) -> None:
+    """RED before the fix: the generic wording named only the keyword and echoed
+    the instance, so the expected `const`, the `pattern`, the `type` and the
+    `minItems` -- the schema-derived fact that says what the value *should* have
+    been -- appeared nowhere. None of these expectations is present in the
+    failing instance, so echoing the instance can never recover them.
+    """
+    document = _document_with()
+    document[field] = value
+
+    message = _rejection_message(document)
+
+    assert expectation in message, f"the {field} rejection must name the schema-side expectation"
+    assert field in message, "the location -- the failing field -- is still named"
+
+
+def test_a_schema_rejection_marks_a_truncated_fragment_with_its_full_length() -> None:
+    """`_bounded`'s truncation marker, driven (MEDIUM: a mutation to the
+    ``(N characters in all)`` text survived the shipped suite).
+
+    A `oneOf` rejection's expectation -- the list of subschemas an operation must
+    match one of -- is longer than `MAX_ECHOED_EXPECTATION`, so it is truncated;
+    the marker naming its full length is what tells a reader the fragment was cut
+    rather than being that short.
+    """
+    document = _document_with(unexpectedOperationField=1)  # fails `#/$defs/operation`'s oneOf
+
+    message = _rejection_message(document)
+
+    assert "does not satisfy 'oneOf'" in message, "the fixture must drive the oneOf expectation"
+    assert "characters in all)" in message, "a truncated fragment names its full length"
+
+
+def test_a_schema_rejection_names_a_missing_required_property_and_not_a_present_one() -> None:
+    """The `required` face's positive path, driven (MEDIUM: mutations making
+    `_missing_required_properties` always return ``[]``, and flipping its
+    ``not in`` to ``in``, both survived the shipped suite).
+
+    Deleting one required root property must name *that* property and no other:
+    an always-empty result drops the name entirely, and an ``in``/``not in`` flip
+    reports every required property the instance still carries instead.
+    """
+    document = _document_with()
+    del document["id"]
+
+    message = _rejection_message(document)
+
+    assert "missing the required property 'id'" in message, "the missing name is named"
+    assert "'author'" not in message, (
+        "a property the instance still carries is not reported missing"
+    )
+
+
+def test_a_schema_rejection_pluralises_the_property_noun() -> None:
+    """The singular/plural noun on both schema-side faces (MEDIUM: the noun
+    selection survived mutation on the shipped suite).
+
+    One missing or unexpected property reads "property"; two read "properties".
+    """
+    base = _document_with()
+
+    one_missing = {k: v for k, v in base.items() if k != "id"}
+    assert "the required property 'id'" in _rejection_message(one_missing)
+    two_missing = {k: v for k, v in base.items() if k not in ("id", "author")}
+    assert "the required properties " in _rejection_message(two_missing)
+
+    assert "the unexpected property 'zzz'" in _rejection_message({**base, "zzz": 1})
+    assert "the unexpected properties " in _rejection_message({**base, "zzz": 1, "www": 2})
+
+
+def test_the_bundled_schema_never_descends_into_an_author_written_key() -> None:
+    """The premise `_location` and `_unexpected_properties` rest on.
+
+    `_location` bounds and escapes its segments, and `_unexpected_properties`
+    reads the offending keys as "instance keys not in ``properties``". Both are
+    correct only while the schema never descends the validator into a key an
+    author invented -- which it does through ``additionalProperties: {schema}``,
+    ``patternProperties``, ``dependentSchemas`` or ``unevaluatedProperties``.
+    None may appear: ``additionalProperties`` must be ``false`` everywhere it is
+    set, and the other three must be absent.
+    """
+    schema = json.loads((real_schema_root() / "migrations" / "migration.schema.json").read_text())
+    forbidden = {"patternProperties", "dependentSchemas", "unevaluatedProperties"}
+
+    def walk(node: object, where: str) -> None:
+        if isinstance(node, dict):
+            for keyword in forbidden:
+                assert keyword not in node, f"{keyword} at {where} descends into an author key"
+            if "additionalProperties" in node:
+                assert node["additionalProperties"] is False, (
+                    f"additionalProperties at {where} is a schema, not false, "
+                    f"and would descend into an author-written key"
+                )
+            for key, value in node.items():
+                walk(value, f"{where}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{where}/{index}")
+
+    walk(schema, "<root>")
+
+
+def test_a_rejected_migration_file_names_the_unexpected_key_and_the_file(project: Path) -> None:
+    """The loader seam's own wording (issue #289): the file name plus the
+    schema-side fact. A repository author reaches this seam -- the file is checked
+    out and loaded -- so the refusal must say which file and which key, not echo
+    the whole document with the key truncated off.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    name = "01K1KKKKKK01234567890ABCDE-typo.yaml"
+    (migrations_dir / name).write_text(_VALID_MIGRATION + "dependsOnn: [something]\n")
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert name in message, "which file to open"
+    assert "has the unexpected property 'dependsOnn'" in message, "which key is wrong"

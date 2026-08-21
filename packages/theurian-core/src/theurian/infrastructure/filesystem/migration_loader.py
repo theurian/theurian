@@ -159,6 +159,21 @@ MAX_DOCUMENT_NODES: Final = 100_000
 #: someone's terminal.
 MAX_ECHOED_VALUE: Final = 1_000
 
+#: Ceiling on the *schema-side* expectation a rejection names (the ``const`` a
+#: value must equal, the ``pattern`` it must match, the ``type`` it must be),
+#: in characters. Applied by `_schema_rejection` through :func:`_bounded`
+#: (issue #289).
+#:
+#: A real constraint is tiny -- measured 2026-08-21 against the bundled schema:
+#: ``const`` 17 characters, ``pattern`` 31, ``type`` 7, ``minItems`` 1. The one
+#: keyword whose expectation is large is ``oneOf``, whose ``validator_value`` is
+#: the list of subschemas an operation must match one of (524 characters). Kept
+#: well under :data:`MAX_ECHOED_VALUE` so that expectation and echoed value
+#: together stay bounded however the schema grows: for ``oneOf`` the echoed
+#: value and the location already localize the fault, so the schema dump is a
+#: hint, not the diagnosis, and is truncated to that role.
+MAX_ECHOED_EXPECTATION: Final = 120
+
 _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 
 
@@ -479,16 +494,23 @@ def _validate_document(
         raise SchemaUnreadableError(str(schema_validator.schema_path), reason) from exc
 
 
-def _bounded(rendered: str) -> str:
-    """``rendered``, cut to :data:`MAX_ECHOED_VALUE`, saying what was cut.
+def _bounded(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
+    """``rendered``, cut to ``limit`` (:data:`MAX_ECHOED_VALUE` by default),
+    saying what was cut.
 
     The full length is named because for the case this bound exists for -- a
     value that is refused *for being large* -- the size is the diagnosis, and a
     reader who is only shown a prefix cannot tell 300 characters from 300,000.
+
+    ``limit`` is a parameter, not a second constant, because the schema-side
+    expectation :func:`_schema_rejection` names is bounded tighter than the
+    author-written value it echoes (:data:`MAX_ECHOED_EXPECTATION`): a real
+    constraint is a handful of characters, and the one structural keyword whose
+    expectation is large is a hint rather than the diagnosis there.
     """
-    if len(rendered) <= MAX_ECHOED_VALUE:
+    if len(rendered) <= limit:
         return rendered
-    return f"{rendered[:MAX_ECHOED_VALUE]}... ({len(rendered)} characters in all)"
+    return f"{rendered[:limit]}... ({len(rendered)} characters in all)"
 
 
 #: A bounded renderer for the one author-written value a schema rejection
@@ -552,6 +574,63 @@ def _missing_required_properties(exc: ValidationError) -> list[str]:
     return [name for name in required if isinstance(name, str) and name not in instance]
 
 
+def _unexpected_properties(exc: ValidationError) -> list[object]:
+    """The instance keys an ``additionalProperties: false`` rejection refused.
+
+    These are the offending names `jsonschema` itself reported -- the ones the
+    generic echo pushed off the end of the instance and truncated away on every
+    real migration. Which keys are *unexpected* is fixed by the schema (the ones
+    not in its ``properties``), so naming them is as author-safe as naming the
+    missing ``required`` names; the names themselves are author-written, so
+    :func:`_schema_rejection` still bounds them.
+
+    Empty unless the keyword is ``additionalProperties`` refusing outright
+    (``validator_value`` is ``False``), the instance is a mapping, and the
+    failing schema is an object listing its allowed ``properties``. The bundled
+    schema has no ``patternProperties`` anywhere
+    (``test_the_bundled_schema_never_descends_into_an_author_written_key``), so
+    "not in ``properties``" is exactly `jsonschema`'s own set; a schema that grew
+    one would need this to consult it too.
+    """
+    if exc.validator != "additionalProperties" or exc.validator_value is not False:
+        return []
+    instance = exc.instance
+    schema = exc.schema
+    if not isinstance(instance, Mapping) or not isinstance(schema, Mapping):
+        return []
+    allowed = schema.get("properties", {})
+    allowed_names = set(allowed) if isinstance(allowed, Mapping) else set()
+    return [name for name in instance if name not in allowed_names]
+
+
+def _escape_control(text: str) -> str:
+    """``text`` with control characters (and non-ASCII) escaped, ASCII kept.
+
+    A schema property name -- all a location segment is today -- is unchanged, so
+    the common location reads as itself; a segment a future schema let descend
+    into an author-written key would arrive escaped, never raw in a terminal.
+    """
+    return text.encode("unicode_escape").decode("ascii")
+
+
+def _location(path: Iterable[object]) -> str:
+    """Where in the document a rejection fired, one bounded, escaped segment each.
+
+    Each string segment goes through the length bound and control-character
+    escaping the echoed value does. The bundled schema never descends into an
+    author-written key -- it is ``additionalProperties: false`` throughout with
+    no ``patternProperties`` (``test_the_bundled_schema_never_descends_into_an_
+    author_written_key``) -- so a segment is a schema property name today; the
+    bound is what keeps this fragment from reopening into an unbounded, unescaped
+    echo if that ever changes. Array indices are schema-derived integers,
+    rendered as-is.
+    """
+    segments = [
+        _bounded(_escape_control(part)) if isinstance(part, str) else str(part) for part in path
+    ]
+    return "/".join(segments) or "<root>"
+
+
 def _schema_rejection(exc: ValidationError) -> str:
     """Where a document failed the schema and why, worded here (issue #289).
 
@@ -576,31 +655,66 @@ def _schema_rejection(exc: ValidationError) -> str:
       fragment below is rendered with `repr` *here* -- the language's own
       escaping, called by this seam rather than inherited from a dependency.
 
-    The location is the one fragment neither bounded nor repr'd, and it is not
-    author-written: `absolute_path` holds the property names the schema
-    descended through and array indices, and every object in the bundled schema
-    is `additionalProperties: false` with no `patternProperties`, so no key an
-    author invented is ever descended into. It is also rendered exactly as
-    before this change.
+    The **schema-side fact** the refusal carries is the third property, and the
+    one an earlier version of this seam dropped. `jsonschema`'s own message named
+    it -- the expected `const`, the `pattern`, the unexpected key -- and replacing
+    that message with "keyword name + echo of the instance" lost it: on all 26 of
+    this repository's committed migrations a single top-level typo produced
+    "does not satisfy 'additionalProperties'; the value there is {...}" with the
+    offending key truncated off the end of the instance, strictly worse diagnosis
+    than the `Additional properties are not allowed ('dependsOnn' was unexpected)`
+    it replaced. So the schema-side fact is put back:
 
-    `required` is worded separately because it is the one rejection whose cause
-    appears *nowhere* in the instance: the missing name is in the schema. The
-    generic wording would have answered "does not satisfy 'required'" and then
-    printed the object the property is missing from, which is strictly less
-    than what was there before. `additionalProperties` needs no such branch --
-    the offending keys are in the instance, and the echo shows them.
+    * `required` and `additionalProperties` are worded from the *schema*: the
+      missing names (`_missing_required_properties`) and the unexpected ones
+      (`_unexpected_properties`). Both are fixed by the schema, not chosen by the
+      author, so both may be named in full while the names themselves are
+      bounded. The earlier docstring's claim that `required` is "the one
+      rejection whose cause appears nowhere in the instance" was false -- a
+      `const`'s expected value and a `pattern` are nowhere in the instance
+      either -- and its claim that `additionalProperties` "needs no branch, the
+      echo shows the keys" was the exact defect above: the echo truncates them.
+    * Every other keyword names its `validator_value` -- the `const`, the
+      `pattern`, the `type`, the `minItems` the value had to satisfy -- through
+      `_bounded` at :data:`MAX_ECHOED_EXPECTATION`. That value is schema-derived,
+      so it is as safe to print as the `required` names; it is bounded tighter
+      than the echoed value because a real constraint is a handful of characters
+      and the one large one (`oneOf`'s subschema list) is a hint there, not the
+      diagnosis.
+
+    The **location** (`_location`) and the **echoed value** (`_echo`) carry the
+    other two properties. `absolute_path` holds the schema property names
+    descended through and array indices; the bundled schema is
+    `additionalProperties: false` throughout with no `patternProperties`, so no
+    author-invented key is ever descended into, and `_location` bounds and
+    escapes each segment so a future schema that did could not reopen an
+    unbounded, unescaped echo. `_echo` renders the failing instance with
+    `reprlib` -- bounded in depth and length, control characters escaped -- so an
+    ESC or newline an author wrote cannot forge a line of this seam's output, and
+    an alias graph or a chain too deep for plain `repr` cannot cost unbounded
+    work here.
     """
-    location = "/".join(str(part) for part in exc.absolute_path) or "<root>"
+    location = _location(exc.absolute_path)
     missing = _missing_required_properties(exc)
     if missing:
         noun = "property" if len(missing) == 1 else "properties"
         names = _bounded(", ".join(repr(name) for name in missing))
         return f"{location}: missing the required {noun} {names}"
-    # `Unset` when `jsonschema` raised without a keyword: named rather than
-    # repr'd so the message says "the schema" instead of a sentinel's repr.
-    keyword = repr(exc.validator) if isinstance(exc.validator, str) else "the schema"
+    unexpected = _unexpected_properties(exc)
+    if unexpected:
+        noun = "property" if len(unexpected) == 1 else "properties"
+        names = _bounded(", ".join(repr(name) for name in unexpected))
+        return f"{location}: has the unexpected {noun} {names}"
     echoed = _echo(exc.instance)
-    return f"{location}: does not satisfy {keyword}; the value there is {echoed}"
+    if isinstance(exc.validator, str):
+        expected = _bounded(repr(exc.validator_value), MAX_ECHOED_EXPECTATION)
+        return (
+            f"{location}: does not satisfy {exc.validator!r} (expected {expected}); "
+            f"the value there is {echoed}"
+        )
+    # `Unset` when `jsonschema` raised without a keyword: no expectation to name,
+    # and "the schema" rather than a sentinel's repr.
+    return f"{location}: does not satisfy the schema; the value there is {echoed}"
 
 
 def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
