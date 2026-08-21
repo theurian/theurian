@@ -92,6 +92,35 @@ over the file's bytes rather than over a YAML-escaped copy of them.
 - YAML has sharp edges (the Norway problem, anchors, billion-laughs). Mitigated by
   strict JSON Schema validation, `yaml.safe_load`, and parser input limits (SEC-8).
 
+  > **Amended in Milestone 7, by the migrate-validate error-translation CL
+  > ([#291](https://github.com/theurian/theurian/issues/291)).** For the
+  > billion-laughs / alias-DAG case this was backwards: "strict JSON Schema
+  > validation" was the amplifier, not the mitigation. `yaml.safe_load`
+  > collapses a YAML anchor referenced through a doubling alias chain to shared
+  > object identity, so the *parsed* structure stays small — but `jsonschema`
+  > interpolates the failing instance with `{instance!r}`, and that repr
+  > re-expands every shared reference, building a 46 MB rejection message from a
+  > ~500-byte file at alias level 22 (measured 2026-08-21, `jsonschema` 4.26.0)
+  > before any refusal string exists. None of the three accepted controls caught
+  > it: JSON Schema validation *is* where the blow-up happens, and neither
+  > `safe_load` nor the parser byte cap (a ~500-byte file passes both) ever sees
+  > the expansion.
+  >
+  > The actual mitigation is the migration loader's own un-memoised node walk,
+  > `migration_loader.py`'s `MAX_DOCUMENT_NODES` (100,000), which counts the
+  > *expanded* node count ahead of `validate` and refuses the bomb before
+  > `jsonschema` reaches it — deliberately not collapsing shared references,
+  > because a collapsed count would wave the ~24-distinct-node file through. Its
+  > sibling `MAX_DOCUMENT_NESTING` (64) bounds depth for the same reason: past
+  > the interpreter's C recursion budget `jsonschema` cannot build its own
+  > refusal message, and the `RecursionError` that follows is indistinguishable
+  > from a corrupt schema. This is the same un-memoised-walk shape as
+  > [#245](https://github.com/theurian/theurian/issues/245)'s OpenAPI `$ref`
+  > walk, in another seam, and it is recorded under T-6 in the threat model. The
+  > `safe_load` and parser-limit half of the sentence still holds for the Norway
+  > problem and for load-time anchor handling; what it did not cover is
+  > validate-time re-expansion.
+
 ### Neutral
 
 - The separation means two `migrate` commands with distinct semantics. Named

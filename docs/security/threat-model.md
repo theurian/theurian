@@ -480,6 +480,39 @@ files.
 expansion ratio, wall clock timeout, `yaml.safe_load` only. Size is re-checked
 after read, because a file can grow between `stat` and `read`.
 
+**A migration document is validated on its own path, and it carries its own
+ingestion bounds ([#291](https://github.com/theurian/theurian/issues/291),
+[#289](https://github.com/theurian/theurian/issues/289)).** `migration_loader.py`
+validates a parsed migration document against the bundled JSON Schema, and three
+shapes of that document cost unbounded work *before* `jsonschema` produces a
+rejection. All three are measured (`jsonschema` 4.26.0, 2026-08-21) and refused
+ahead of `validate`, not aspirations:
+
+- **`MAX_DOCUMENT_NESTING` (64)** bounds nesting depth. Past the interpreter's C
+  recursion budget `jsonschema` cannot build its own refusal message, and the
+  `RecursionError` that follows is indistinguishable from a corrupt schema. A
+  schema-valid migration nests at most 7 levels, so 64 refuses nothing an author
+  can legitimately write.
+- **`MAX_DOCUMENT_NODES` (100,000)** bounds the *expanded* node count, walked
+  without collapsing shared references. A YAML anchor aliased into a doubling
+  chain is a ~500-byte file whose expansion is 2^N nodes — `yaml.safe_load`
+  collapses those aliases to shared object identity so the *parsed* structure
+  stays small, but `jsonschema` interpolates the failing instance with
+  `{instance!r}` and that repr re-expands every shared reference, building a
+  46 MB message from a 500-byte file at alias level 22. The walk is un-memoised
+  on purpose: a collapsed count would wave the bomb through to `validate`. This
+  is the same un-memoised-walk shape as the OpenAPI `$ref` ref-walk cap in
+  [#245](https://github.com/theurian/theurian/issues/245), in another seam.
+- **`MAX_ECHOED_VALUE` (1,000)** and **`_MAX_ECHOED_INT_BITS` (2,000 bits)**
+  bound the *rejection message* itself. A single giant-integer scalar is one
+  node the node cap cannot catch; `reprlib` stringifies an integer before
+  truncating it, so past CPython's int→str limit the render raises. `_echo`
+  renders through a `_BoundedRepr` that refuses an integer wider than 2,000 bits
+  (rendered as a placeholder) and clamps every echoed fragment to 1,000
+  characters. On the reachable validate path such a scalar is refused upstream
+  (translated to a `MigrationError`); `_echo`'s bound is defense in depth for a
+  value reaching the rejection builder out-of-band.
+
 **Those controls bound ingestion, and the expensive operations added in Milestone
 5 are queries.** There are **three**, and they are enumerated below rather than
 described, because this entry was written naming one of them and the impact
