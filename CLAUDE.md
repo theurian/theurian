@@ -126,6 +126,40 @@ before opening another PR in that class:
 A warm-up slice must end at warm-up weight, review rounds included. If it does
 not, it was never a warm-up.
 
+### Round three is a defect in the closure argument, not a step
+
+Round one is full (all three reviewers at scope). Round two is for what the fixes
+newly claim. **A third round on the same PR is the exception, not the cadence,
+and reaching it is itself the finding: the round-two closure argument was
+incomplete.** Measured on this project, PR throughput per day held flat once the
+reviewers arrived while the *hours per unit of work tripled* — the cost is not
+the reviewers, it is rounds that do not converge and sessions that stall. Two
+enforced rules keep the round count down without weakening round one:
+
+- **Pre-empt round two before dispatching it.** Run the reviewers' own methods
+  first — the adversarial reviewer's is mutation over the suite, the security
+  reviewer's is timing measurement across the changed paths. A finding you
+  surface yourself does not cost a round.
+- **Round three does not block on anything below the gate.** Entering a third
+  round, every finding that is not a reproducible CRITICAL or HIGH is *filed as
+  an issue and the PR ships* — it does not earn another cycle. Only a CRITICAL or
+  HIGH still open holds the PR, and if one is open after round two the core is
+  hard and that is stated plainly, not chased through a fourth round. A round-4
+  that finds a new family means the closure argument was rebuilt too late.
+
+### Stalls are flow debt too — keep sessions small
+
+A session that dies mid-verification — thinking with no output, no commit landing
+— loses every hour since its last green with nothing to show, and the recovery is
+the user noticing. Measured on this project, session stalls were a larger
+wall-clock sink on a bad night than any single review round. They come from one
+session carrying too much: a cluster of parallel fixes plus their verification in
+one context. Prevent them structurally: **commit at every green** (the work
+survives the death), **keep a cluster small enough to verify in one sitting**, and
+**`/new` at each clean transition** rather than letting one session run a whole
+milestone. A stall is not bad luck; it is a session that was asked to hold more
+than it could.
+
 ### Merge-ready work is checked at every transition
 
 A finished, reviewed, CI-green PR left open is flow debt: the milestone is not
@@ -414,6 +448,33 @@ name something, whether a comment is accurate.
 
 When escalating, give the options, the trade-off in one line each, and a
 recommendation. Do not stop with an open question and no analysis.
+
+### A non-Blocking judgment goes to the reviewer node, not through the user
+
+A judgment that is *not* a Blocking Issue but that the orchestrator cannot settle
+from the request, the code, or the recorded rules does **not** wait on the user.
+Route it, in one message, to the second reader and act on what comes back:
+
+- **Codex (`codex exec`)** for anything settled by reading code or reasoning
+  about a mechanism.
+- **The `watchdog` agent** (`Agent` tool, `subagent_type: watchdog`) for process,
+  priority, severity-grading, release/disclosure-handling, and closure-
+  sufficiency judgment. It measures repo/CI/tracker state itself before it
+  answers.
+
+Form your own position first — options, one-line trade-offs, a marked
+recommendation — then hand it over; a consult without a position is offloading.
+The answer is a claim, not an order: you still apply the severity table and
+record the decision, naming who was consulted. Only if the two readers disagree,
+or the doubt survives both, does it become a Blocking Issue for the user.
+
+**Why this is a rule and not a preference:** routing every judgment through the
+user makes the user the bottleneck — the orchestrator idles waiting on a decision
+a second reader could have settled in-session, and the human is consumed as a
+router rather than reserved for the decisions only they can make. Measured on
+this project, that routing was the largest single sink of the user's own hours.
+The user's time is spent on Blocking Issues; everything else is settled between
+the orchestrator, Codex, and the `watchdog` agent.
 
 ## Relaying subagent output
 
