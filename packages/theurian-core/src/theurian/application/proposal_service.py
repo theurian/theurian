@@ -475,16 +475,22 @@ class ProposalService:
         check, which would refuse legitimate files.
 
         **CP-2 invariant: no accept-path filesystem or path fault escapes
-        ``accept`` untranslated.** Every raw ``OSError`` (and every ``resolve()``
-        ``ValueError``) is caught at one of exactly two sites: the examination
-        phase's ``except OSError`` in this method, and :meth:`_commit`'s own
-        clause -- deliberately separate, because a failed *write* must roll the
-        destinations back before it reports, and one clause spanning both would
-        describe a half-written tree as an unreadable proposal. (:meth:`_destination_of`
-        translates its own ``resolve()`` fault in place; it runs inside the first
-        clause.) An editor adding a filesystem call to the accept path must land it
-        under one of those two clauses, or add a third that translates -- a raw
-        escape publishes no ``{error, remedy}`` under ``--json`` (#227).
+        ``accept`` untranslated.** A fault that must abort ``accept`` is turned
+        into a ``ProposalError`` at one of three *translation* sites: the
+        examination phase's ``except OSError`` in this method, :meth:`_commit`'s
+        own clause, and :meth:`_destination_of`, which catches its ``resolve()``
+        ``ValueError`` -- not an ``OSError``, so the examination clause never sees
+        it -- in place. The examination and commit clauses are deliberately
+        separate, because a failed *write* must roll the destinations back before
+        it reports, and one clause spanning both would describe a half-written
+        tree as an unreadable proposal. Two further sites catch ``OSError`` on the
+        accept path but deliberately do *not* translate: :meth:`_remove_proposal_sources`
+        degrades a post-landing cleanup failure to a remedy and still returns
+        success, and :func:`_roll_back` stays silent so a raise cannot mask the
+        error already propagating. An editor adding a filesystem call that must
+        abort ``accept`` has to land it under one of the three translation sites,
+        or add a fourth -- a raw escape publishes no ``{error, remedy}`` under
+        ``--json`` (#227).
 
         Raises:
             ProposalAlreadyAcceptedError: If this proposal's own migration is
@@ -1103,7 +1109,7 @@ class ProposalService:
         ``ProposalError``, not a raw escape.
         """
         landed = operation.content_sha256
-        if landed is None:
+        if landed is None:  # pragma: no cover - loader always sets it
             landed = ContentHash.of_bytes(destination.read_bytes())
         return incoming.value == landed.value
 
@@ -1123,9 +1129,9 @@ class ProposalService:
         :meth:`_pinned_body_path` -- a spelling-sensitive key, but the only one
         available without an inode, and unreachable from any loaded set.
         """
-        if operation.content_identity is not None:
-            return operation.content_identity == identity
-        return self._pinned_body_path(operation) == destination.resolve()
+        if operation.content_identity is None:  # pragma: no cover - loader always sets it
+            return self._pinned_body_path(operation) == destination.resolve()
+        return operation.content_identity == identity
 
     def _pinned_body_path(self, operation: UpsertRevision) -> Path:
         """Where a loaded ``upsertRevision``'s body sits, fully resolved.
@@ -1260,13 +1266,17 @@ class ProposalService:
         hook that runs on the maintainer's next commit.
 
         ``resolve()`` is the one call here that can raise before any check runs,
-        and on a caller-influenced value: ``ValueError`` on an embedded NUL,
-        ``UnicodeEncodeError`` (a ``ValueError``) on an unpaired surrogate,
-        ``OSError`` on ELOOP/ENAMETOOLONG. None is a ``TheurianError`` or an
-        ``OSError`` the examination clause catches, so each escaped ``accept`` raw
-        and ``--json`` published zero bytes (CP-2). The loader guards its own
-        ``resolve()`` with the same ``(ValueError, OSError)`` (``_parse_upsert``);
-        this matches it. Neither the author's ``content_file`` (SEC-7 forbids
+        and on a caller-influenced value. Measured on CPython 3.13,
+        ``resolve(strict=False)`` swallows ELOOP and ENAMETOOLONG, so the only
+        fault that reaches this clause is a ``ValueError``: on an embedded NUL,
+        or -- as ``UnicodeEncodeError``, a ``ValueError`` -- on an unpaired
+        surrogate. Neither is a ``TheurianError`` nor an ``OSError`` the
+        examination clause catches, so an untranslated one would escape ``accept``
+        raw and ``--json`` would publish zero bytes (CP-2). The ``OSError`` half of
+        the catch is defensive: the loader guards its own ``resolve()`` with the
+        same ``(ValueError, OSError)`` (``_parse_upsert``) and this matches it, so
+        a filesystem fault on some other platform is translated rather than
+        escaping raw. Neither the author's ``content_file`` (SEC-7 forbids
         reflecting it, #233) nor the ``OSError``'s absolute filename is echoed.
         """
         knowledge = self._paths.knowledge.resolve()
@@ -1274,9 +1284,8 @@ class ProposalService:
             resolved = (self._paths.migrations / content_file).resolve()
         except (ValueError, OSError) as exc:
             raise ProposalError(
-                "The migration names a contentFile the filesystem cannot resolve to a path "
-                "-- it may be malformed (a NUL byte or an unpaired surrogate) or otherwise "
-                "unresolvable (a symlink loop, or a path past the system's length limit).",
+                "The migration names a contentFile whose path the filesystem cannot "
+                "resolve -- it contains a NUL byte or an unpaired surrogate.",
                 remedy="Correct the contentFile the migration names, then accept it again.",
             ) from exc
         try:
