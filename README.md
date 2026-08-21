@@ -275,7 +275,8 @@ The format is [docs/protocol/migrations.md](docs/protocol/migrations.md), and
 [`examples/sample-project/`](examples/sample-project/) has two migrations with
 their content files to copy the layout from. It also includes a first-query path
 that applies the sample, builds the index, and asks `knowledge.search` for the
-order-cancellation rule. Every revision needs at least one entry under
+order-cancellation rule; [`query-output.txt`](examples/sample-project/query-output.txt)
+shows the compact output before you run it. Every revision needs at least one entry under
 `metadata.sourceAnchors`, or the label `authored-in-theurian`; `migrate apply`
 refuses a revision with neither.
 
