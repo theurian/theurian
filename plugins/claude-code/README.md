@@ -142,8 +142,8 @@ a tax you pay all day for a benefit you notice once.
 | `/theurian:doctor` | Diagnose problems and print remedies. Never auto-repairs. |
 | `/theurian:register-project` | Register this repository. |
 | `/theurian:unregister-project` | Stop serving a project. Keeps Git-tracked knowledge. |
-| `/theurian:index` | Incremental index update. |
-| `/theurian:reindex` | Full rebuild of derived index data. |
+| `/theurian:index` | Build a fresh derived index from current state. |
+| `/theurian:reindex` | Run the same build, then reclaim superseded builds after confirmation. |
 | `/theurian:migrate` | Validate and apply knowledge migrations. |
 | `/theurian:ingest` | Ingest local sources — docs and specs. |
 | `/theurian:propose` | Draft a reviewable knowledge change. |
