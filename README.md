@@ -181,6 +181,12 @@ The approved decision that rejected it is what comes back.
 > Theurian is the second one — not a Markdown search tool, and not a
 > general-purpose long-term memory.
 
+Files such as `AGENTS.md` and `CLAUDE.md` can give an agent working guidance for
+a project. Theurian is the separate evidence record it can query for engineering
+decisions and their context, with declared status, trust, and provenance on
+knowledge results. Teams can use both; Theurian does not replace instruction
+files or enforce how an agent follows either source.
+
 ## Four properties that define it
 
 |  |  |
