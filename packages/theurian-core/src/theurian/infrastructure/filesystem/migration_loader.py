@@ -147,12 +147,48 @@ MAX_DOCUMENT_NESTING: Final = 64
 #: `{instance!r}` *structural* re-expansion of a document that passes it -- at
 #: this many steps: that repr re-expands the same shared references this walk
 #: counted, so a document held to N un-collapsed nodes reprs at most N of them.
-#: It does *not* cap a single scalar's repr magnitude -- a giant integer is one
+#: It does *not* cap a single scalar's *numeric* render -- a giant integer is one
 #: node whose decimal render is unbounded by any node count, and jsonschema
 #: renders it into its own rejection message. That face is one integer, so this
 #: count cannot catch it; it is closed separately in :func:`_validate_document`
-#: (issue #291's scalar face).
+#: (issue #291's scalar face). A giant *string* face is different: a node count
+#: does not bound total rendered characters either, and that face is closed in the
+#: same walk by :data:`MAX_DOCUMENT_RENDERED_CHARS`.
 MAX_DOCUMENT_NODES: Final = 100_000
+
+#: Ceiling on the total number of characters of *string* content a migration
+#: *document* may hold, counting every ``str``/``bytes`` leaf the walk reaches
+#: *without* collapsing shared references -- the string counterpart of
+#: :data:`MAX_DOCUMENT_NODES`. Enforced by
+#: `_refuse_a_document_that_nests_too_deep` in the same iterative walk (issue
+#: #291's aliased-string face).
+#:
+#: The node count alone does not bound rendered magnitude. A single large string
+#: (say 100,000 characters) anchored once and aliased into N slots of one
+#: operation is only N+1 nodes -- well under :data:`MAX_DOCUMENT_NODES` -- so the
+#: node ceiling waves it through to ``validate``, where `jsonschema` builds the
+#: ``oneOf`` rejection message with ``{instance!r}`` and re-expands the shared
+#: string once per slot: an N*100,000-character transient before
+#: :func:`_schema_rejection` is ever reached. At the recorded limits (a
+#: :data:`~theurian.security.yaml_loading.MAX_YAML_BYTES` 4 MiB source expanded to
+#: at most :data:`MAX_DOCUMENT_NODES` references) that product reaches hundreds of
+#: gigabytes and raises `MemoryError` -- which is neither a `ValueError` nor an
+#: `ArithmeticError`, so it escapes :func:`_validate_document`'s scalar catch as a
+#: raw traceback, the exact CP-2 escape issue #291 exists to close. Accumulating
+#: ``len(child)`` per un-memoised reference and refusing here, ahead of
+#: ``validate``, is what bounds that transient -- ``len`` is O(1), so the walk's
+#: own cost is unchanged.
+#:
+#: Generous by three orders of magnitude, on purpose, and larger than the node
+#: ceiling because a legitimate migration is mostly short scalars while a
+#: single field is only length-bounded by the schema. This repository's own 26
+#: committed migrations render at most ~1 KB of string content per operation
+#: (measured 2026-08-21 over `.theurian/migrations`). The bound refuses nothing an
+#: author legitimately writes while capping the transient jsonschema builds from a
+#: document that passes the node ceiling: an oversized *single* value still
+#: reaches ``validate``, where :func:`_echo` bounds it (100,000 < this) -- what is
+#: refused here is the aliased or aggregate case a node count cannot see.
+MAX_DOCUMENT_RENDERED_CHARS: Final = 1_000_000
 
 #: Ceiling on how much of an author-written value a schema rejection may echo,
 #: in characters. Applied by `_bounded` to every variable-length fragment
@@ -337,8 +373,10 @@ class _SchemaValidator:
 def _refuse_a_document_that_nests_too_deep(
     document: Mapping[str, object], document_name: str | None
 ) -> None:
-    """Refuse a document that nests past :data:`MAX_DOCUMENT_NESTING` or holds
-    more than :data:`MAX_DOCUMENT_NODES` nodes (issues #291, #245).
+    """Refuse a document that nests past :data:`MAX_DOCUMENT_NESTING`, holds
+    more than :data:`MAX_DOCUMENT_NODES` nodes, or carries more than
+    :data:`MAX_DOCUMENT_RENDERED_CHARS` characters of string content (issues
+    #291, #245).
 
     **Iterative on purpose.** A recursive depth checker spends the very budget
     it exists to protect, so it would raise `RecursionError` on exactly the
@@ -358,13 +396,30 @@ def _refuse_a_document_that_nests_too_deep(
     :data:`MAX_DOCUMENT_NODES` -- which bounds both this walk's own cost and
     jsonschema's own ``{instance!r}`` *structural* re-expansion on a document
     that passes it: that repr re-expands the same shared references this walk
-    counted. What the node count does *not* bound is a single scalar's repr
-    magnitude -- a giant integer is one node whose decimal render is unbounded,
-    and jsonschema renders it into its rejection message; that face is closed
-    separately, in :func:`_validate_document`, by translating the ``ValueError``
-    the render raises (issue #291's scalar face). The node count is checked as
-    each child is *discovered*, so the frontier itself never grows past the cap
-    even for a single very wide node.
+    counted.
+
+    **Two things the node count does not bound, both closed here.** The same
+    ``{instance!r}`` re-expansion that this walk's node count matches structurally
+    also re-emits every *scalar* it reaches, and a node count is blind to how big
+    each scalar is:
+
+    * A single large *string*, anchored once and aliased into N slots, is only
+      N+1 nodes but re-expands to N times its length in jsonschema's message. The
+      same walk accumulates ``len(child)`` for every ``str``/``bytes`` leaf --
+      un-memoised, exactly as the node count is, so aliased repeats are charged
+      every time, the way jsonschema charges them -- and refuses at
+      :data:`MAX_DOCUMENT_RENDERED_CHARS`. ``len`` is O(1), so the walk's cost is
+      unchanged.
+    * A single giant *integer* is one node whose decimal render is unbounded and
+      is not a ``str``/``bytes`` leaf, so neither the node count nor the character
+      budget above catches it. That one face is closed separately, in
+      :func:`_validate_document`, by translating the ``ValueError`` the render
+      raises (issue #291's scalar face).
+
+    All three checks are made as each child is *discovered*, so the frontier
+    itself never grows past the node cap even for a single very wide node, and the
+    character budget refuses an aliased-string bomb before the frontier holds more
+    than a handful of its slots.
 
     Both checks run before ``validate`` rather than as a wider ``except`` around
     it, because the two sources of a validate-time ``RecursionError`` cannot be
@@ -388,6 +443,7 @@ def _refuse_a_document_that_nests_too_deep(
     """
     frontier: list[tuple[object, int]] = [(document, 1)]
     discovered = 1
+    rendered = 0
     while frontier:
         value, depth = frontier.pop()
         if depth > MAX_DOCUMENT_NESTING:
@@ -418,6 +474,24 @@ def _refuse_a_document_that_nests_too_deep(
                     f"fixed, shallow shape; a document this large is a mistake or an attempt "
                     f"to exhaust memory. Reduce it, or split it into separate migration files."
                 )
+            if isinstance(child, str | bytes):
+                # `len` is O(1), and this is charged per reference rather than per
+                # distinct object, so an anchored string aliased into N slots costs
+                # N*len here -- exactly what jsonschema's `{instance!r}` re-expands
+                # it to. `str`/`bytes` are the leaves the walk stops at, so their
+                # length is not seen anywhere else; every other leaf either has no
+                # meaningful render length (a bool, None) or is the integer face
+                # closed in `_validate_document`.
+                rendered += len(child)
+                if rendered > MAX_DOCUMENT_RENDERED_CHARS:
+                    subject = f"{document_name} holds" if document_name else "This document holds"
+                    raise MigrationError(
+                        f"{subject} more than {MAX_DOCUMENT_RENDERED_CHARS} characters of "
+                        f"string content once its shared references are expanded. A migration "
+                        f"is a fixed, shallow shape; a document this large is a mistake or an "
+                        f"attempt to exhaust memory. Reduce it, or split it into separate "
+                        f"migration files."
+                    )
             frontier.append((child, depth + 1))
 
 
@@ -469,8 +543,10 @@ def _validate_document(
 
     :func:`_refuse_a_document_that_nests_too_deep` closes that gap by bounding
     the document at :data:`MAX_DOCUMENT_NESTING` before `validate` is reached,
-    and at :data:`MAX_DOCUMENT_NODES` so that a shallow but alias-expanded
-    document cannot make `validate` itself do unbounded work. The attribution
+    and at :data:`MAX_DOCUMENT_NODES` and :data:`MAX_DOCUMENT_RENDERED_CHARS` so
+    that a shallow but alias-expanded document -- expanded in node count or in
+    total rendered string length -- cannot make `validate` itself do unbounded
+    work. The attribution
     below is a deduction only under the premise those two bounds establish: the
     document is shallow (past `MAX_DOCUMENT_NESTING` it was refused, not
     validated) *and* the ambient call stack the guard ran on is not itself near
@@ -850,12 +926,14 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
 
     Raises:
         MigrationError: If the document does not satisfy the schema, nests past
-            :data:`MAX_DOCUMENT_NESTING`, or holds more than
-            :data:`MAX_DOCUMENT_NODES` nodes once its shared references are
-            expanded -- document faults that used to be reported as a corrupt
-            installation, or to cost unbounded work in `jsonschema`'s own
-            message building (issues #291, #245; the mechanism is recorded on
-            :func:`_validate_document` and :data:`MAX_DOCUMENT_NODES`).
+            :data:`MAX_DOCUMENT_NESTING`, holds more than
+            :data:`MAX_DOCUMENT_NODES` nodes, or carries more than
+            :data:`MAX_DOCUMENT_RENDERED_CHARS` characters of string content once
+            its shared references are expanded -- document faults that used to be
+            reported as a corrupt installation, or to cost unbounded work in
+            `jsonschema`'s own message building (issues #291, #245; the mechanism
+            is recorded on :func:`_validate_document`, :data:`MAX_DOCUMENT_NODES`
+            and :data:`MAX_DOCUMENT_RENDERED_CHARS`).
         SchemaUnreadableError: If the installed schema cannot be read, parses
             to something this build cannot use as a schema (both from
             :func:`_validator`), or names a `$ref` that cannot be resolved
@@ -881,8 +959,10 @@ def load_migrations(
 
     Raises:
         MigrationError: On a malformed, duplicate, cyclic, or unresolvable
-            file, or one whose document nests past :data:`MAX_DOCUMENT_NESTING`
-            or expands past :data:`MAX_DOCUMENT_NODES` nodes (issues #291, #245).
+            file, or one whose document nests past :data:`MAX_DOCUMENT_NESTING`,
+            expands past :data:`MAX_DOCUMENT_NODES` nodes, or carries more than
+            :data:`MAX_DOCUMENT_RENDERED_CHARS` characters of string content
+            (issues #291, #245).
         PathEscapeError: If a ``contentFile`` points outside ``project_root``;
             if ``migrations_dir`` itself is a symlink that resolves outside
             ``project_root`` (round four; checked directly, at the probe --

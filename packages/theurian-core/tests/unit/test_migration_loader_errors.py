@@ -52,6 +52,7 @@ from theurian.infrastructure.filesystem import migration_loader
 from theurian.infrastructure.filesystem.migration_loader import (
     MAX_DOCUMENT_NESTING,
     MAX_DOCUMENT_NODES,
+    MAX_DOCUMENT_RENDERED_CHARS,
     _echo,
     _escape_role_of,
     _refuse_a_document_that_nests_too_deep,
@@ -3059,6 +3060,104 @@ def test_an_alias_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
     )
     assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
     assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def _aliased_string_bomb(anchor_chars: int, slots: int) -> str:
+    """The aliased-large-*string* DAG, as a YAML migration document.
+
+    One large string is anchored on the first slot of a single operation and
+    aliased into ``slots`` further slots. The node count is O(``slots``) -- far
+    under `MAX_DOCUMENT_NODES` -- so the node ceiling accepts it, but jsonschema's
+    ``{instance!r}`` would re-expand the shared string once per slot: an
+    ``anchor_chars * slots``-character transient. This is the few-nodes /
+    huge-scalar shape the node ceiling cannot see, distinct from `_alias_bomb`'s
+    node-heavy branching graph.
+    """
+    lines = [
+        "apiVersion: theurian.dev/v1",
+        "id: 01K1KKKKKK01234567890ABCDE",
+        "createdAt: '2026-08-02T10:00:00+09:00'",
+        "author: engineer@example.com",
+        "operations:",
+        "  - op: createItem",
+        "    itemId: a.b",
+        "    kind: architecture",
+        "    namespace: n",
+        "    owner: o",
+        "    x0: &big " + "A" * anchor_chars,
+    ]
+    lines += [f"    x{i}: *big" for i in range(1, slots)]
+    return "\n".join(lines) + "\n"
+
+
+def test_an_aliased_string_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """HIGH (round one): the node ceiling bounds node *count*, and jsonschema's
+    ``{instance!r}`` re-expands shared references at that same count -- but a
+    single large string aliased into N slots is N+1 nodes whose *rendered* size is
+    N times its length. The node count is blind to it, so the shipped guard
+    accepts it and `validate` builds an ``anchor*slots``-character message; at the
+    recorded limits that product reaches `MemoryError`, which is neither a
+    `ValueError` nor an `ArithmeticError` and escapes `_validate_document`'s
+    scalar catch as a raw CP-2 traceback.
+
+    RED before the fix: the shipped guard raises nothing for this document (it
+    nests only two levels, holds only ~2*slots nodes, and had no rendered-size
+    ceiling at all), so the first ``pytest.raises`` fails on it outright --
+    confirmed against the unfixed tip.
+
+    ``anchor 100_000 * 20 slots`` = 2 M rendered characters, well past
+    `MAX_DOCUMENT_RENDERED_CHARS`, while the node count stays trivial. The refusal
+    that reaches the caller must be the character ceiling's, proving the document
+    was stopped *before* `validate` rather than after jsonschema had already paid
+    the expansion.
+    """
+    document = load_yaml_mapping(_aliased_string_bomb(100_000, 20))
+
+    with pytest.raises(MigrationError):
+        _refuse_a_document_that_nests_too_deep(document, None)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in message and "characters of string content" in message
+    ), "the refusal must be the character ceiling's, i.e. raised before `validate`"
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def test_the_document_rendered_size_ceiling_holds_at_its_boundary() -> None:
+    """`MAX_DOCUMENT_RENDERED_CHARS` and the refusal it drives.
+
+    The literal assertion kills a value-changing mutant; the behavioural half
+    kills a dropped rendered-size check. A single oversized *value* (100,000
+    characters -- the size the #289 echo tests use) stays under the ceiling and is
+    left for `validate` and `_echo` to bound, so it passes here; the same string
+    aliased into eleven slots (1.1 M characters) is refused, un-memoised, as its
+    references are read. A flat sequence of small integers one longer than
+    `MAX_DOCUMENT_NODES` is *not* refused by this budget -- integers carry no
+    string length -- which keeps the two ceilings distinct.
+    """
+    assert MAX_DOCUMENT_RENDERED_CHARS == 1_000_000, (
+        "load-bearing; changing it is a security decision"
+    )
+
+    # A single oversized value is under the budget: reachable, left for `_echo`.
+    _refuse_a_document_that_nests_too_deep({"operations": ["A" * 100_000]}, None)
+
+    # The same string aliased into eleven slots exceeds it, counted per reference.
+    big = "A" * 100_000
+    aliased = {"operations": [{f"x{i}": big for i in range(11)}]}
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(aliased, None)
+    assert str(MAX_DOCUMENT_RENDERED_CHARS) in str(excinfo.value), "the message names the ceiling"
+
+    # Integer nodes carry no rendered length, so the node ceiling -- not this one
+    # -- is what refuses a wide sequence of them.
+    with pytest.raises(MigrationError) as int_excinfo:
+        _refuse_a_document_that_nests_too_deep({"operations": [0] * (MAX_DOCUMENT_NODES + 1)}, None)
+    assert str(MAX_DOCUMENT_NODES) in str(int_excinfo.value), "an integer bomb is a node fault"
 
 
 def test_the_document_nesting_ceiling_holds_at_its_boundary() -> None:
