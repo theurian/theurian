@@ -3,14 +3,16 @@
 > Invoke your engineering knowledge.
 
 This plugin connects Claude Code to a **Theurian daemon** running on your
-machine, so every agent in your session can search your team's specifications,
-architecture decisions, review history, and traceability graph.
+machine, so every agent in your session can search the engineering knowledge
+your team has stored in Theurian: specifications, architecture decisions, and
+other reviewed records. The intended path for approved team knowledge is human
+review and merge in Git; Core does not verify that a migration was merged before
+it is applied locally.
 
-It is an independently versioned artifact. Eleven of its twelve commands are
-thin adapters over the `theurian` CLI and ship no Theurian logic of their own.
-The twelfth, `/theurian:propose`, writes the proposal directory by hand, because
-the CLI subcommand that would do it is not registered yet
-([#89](https://github.com/theurian/theurian/issues/89)).
+It is an independently versioned artifact. All twelve commands are thin adapters
+over the `theurian` CLI and ship no Theurian logic of their own. That includes
+`/theurian:propose`, which delegates to `theurian propose` and
+`theurian propose accept`.
 
 ---
 
@@ -87,30 +89,28 @@ field, that is a bug. Run `/theurian:doctor`.
 
 ## Using Theurian alongside Serena
 
-They answer different questions, and they work well together.
+They answer different questions and can be configured as independent MCP servers.
 
 | Question | Tool |
 | :-- | :-- |
 | What did we decide about auth, and why? | **Theurian** |
-| Was this approach rejected before? | **Theurian** |
 | What does the order-cancellation spec require? | **Theurian** |
-| Which tests verify this specification? | **Theurian** |
 | Where is `validateOrder` defined? | **Serena** |
 | Who calls this function? | **Serena** |
-| What is this type's hierarchy? | **Serena** |
+| What symbols reference this one? | **Serena** |
 
 A workflow that uses both:
 
 ```text
-1. spec.get              — what are we supposed to build?
+1. knowledge.search      — what does the approved spec or ADR say?
 2. knowledge.search      — what have we already decided?
-3. review.findSimilar    — has this come up in review before?
-4. Serena: find_symbol   — where does this live in the code?
-5. Serena: find_referencing_symbols — what would this change break?
-6. implement
-7. trace.findTests       — what verifies this?
-8. spec.getCoverage      — did we miss anything?
+3. Serena: find_symbol   — where does this live in the code?
+4. Serena: find_referencing_symbols — what would this change break?
+5. implement
 ```
+
+Review, specification, and traceability-specific MCP tools are part of
+Theurian's protocol design, not callable tools in the current server.
 
 Configure both as independent MCP servers. Theurian never calls Serena, and
 Serena never calls Theurian. Full detail:

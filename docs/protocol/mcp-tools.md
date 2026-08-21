@@ -3,65 +3,80 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-> Tools land across Milestones 3–8. This page is the contract they are being
-> built against; each schema is published under
-> [`schemas/mcp/`](https://github.com/theurian/theurian/tree/main/schemas/mcp) as it ships.
+Today, Core registers five callable MCP tools:
 
-## Every call carries its own context
+- `knowledge.search`
+- `knowledge.get`
+- `knowledge.status`
+- `project.list`
+- `system.capabilities`
+
+`system.capabilities` is the runtime boundary for clients. In this build it
+reports `writeTools: false`, `reviewIngestion: false`, and
+`traceability: false`; those values mean the write-intent, review, and
+traceability tools described below are designed protocol shape, not callable
+tools in the current server.
+
+## Every project-scoped call names its project
 
 ```json
 {
-  "context": {
-    "projectId": "backend-service",
-    "snapshotId": null,
-    "agentId": null,
-    "taskId": null
-  }
+  "projectId": "backend-service"
 }
 ```
 
-`projectId` is **required** on every project-scoped tool. Omitting it is a
+`projectId` is **required** on every project-scoped tool that ships today:
+`knowledge.search`, `knowledge.get`, and `knowledge.status`. Omitting it is a
 validation error, never a fallback to "the last one used". With ten subagents
 sharing one daemon, an implicit default resolves one agent's query against
 another agent's project ([ADR-0002](../adr/0002-single-local-daemon-over-streamable-http.md)).
 
-`snapshotId` pins a state hash so results stay reproducible for the lifetime of a
-task, even if the developer switches branches mid-run.
+`snapshotId` is response provenance today. `knowledge.search` returns it in the
+`retrieval` envelope, and `knowledge.status` returns the same state as
+`stateHash`, so a caller can compare which canonical state answered. Passing a
+`snapshotId` back as a request pin is designed behavior, not implemented in the
+current MCP tools.
 
-`agentId` and `taskId` are provenance only. Theurian does not authenticate
-agents; these label which run produced a proposal.
+`agentId` and `taskId` are designed proposal provenance fields. Theurian does
+not authenticate agents, and no MCP proposal tool accepts them today.
 
 Schema: [`tool-context.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/tool-context.schema.json).
 
 ## Knowledge
 
-| Tool | Purpose |
-| :-- | :-- |
-| `knowledge.search` | Hybrid search with provenance and trust labels |
-| `knowledge.get` | Fetch an item or a specific revision |
-| `knowledge.getContext` | Assemble a token-budgeted context pack |
-| `knowledge.trace` | Follow relations from an item |
-| `knowledge.listChanges` | What changed between two snapshots |
-| `knowledge.status` | Migration state, index state, proposal ages |
-| `knowledge.checkFreshness` | Which knowledge is outside its validity window |
-| `knowledge.proposeChange` | **Write-intent** — emits a proposal |
-| `knowledge.submitFeedback` | Record retrieval quality signals |
-| `knowledge.generateMigrationDraft` | **Write-intent** — emits a proposal |
+| Tool | Status | Purpose |
+| :-- | :-- | :-- |
+| `knowledge.search` | Shipped | Hybrid-capable search with provenance and trust labels; falls back to substring retrieval when no index can answer |
+| `knowledge.get` | Shipped | Fetch one knowledge item's current revision, with provenance |
+| `knowledge.status` | Shipped | Canonical state hash, surfaceable item counts, applied-migration count, schema version, and optional integrity signal |
+| `knowledge.getContext` | Planned | Assemble a token-budgeted context pack |
+| `knowledge.trace` | Planned | Follow relations from an item |
+| `knowledge.listChanges` | Planned | What changed between two snapshots |
+| `knowledge.checkFreshness` | Planned | Which knowledge is outside its validity window |
+| `knowledge.proposeChange` | Planned write-intent | Emit a proposal; no approved-state write |
+| `knowledge.submitFeedback` | Planned | Record retrieval quality signals |
+| `knowledge.generateMigrationDraft` | Planned write-intent | Emit a proposal; no approved-state write |
 
-### Write-intent tools do not write
+### Planned write-intent tools do not write approved state
 
-The three marked tools produce:
+No MCP write-intent tool exists in the current server. ADR-0013's designed
+write-intent tools produce proposal directories like this illustrative shape:
 
 ```text
 .theurian/proposals/<proposal-id>/
-├── migration.yaml     # schema-valid and directly applicable
-├── content.md         # or .yaml / .json, matching the knowledge format
+├── <migration-id>-<slug>.yaml  # schema-valid and directly applicable
+├── knowledge/...               # content files, matching the knowledge format
 └── evidence.json      # anchors and the reasoning trail
 ```
 
-There is no MCP path to approved state — not a flag, not a permission. A test
-enumerates every registered tool and asserts none reaches a canonical write
-([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)).
+There is no MCP path to approved state today — not a flag, not a permission.
+`system.capabilities` reports `writeTools: false`, and a test enumerates every
+registered tool and asserts none reaches a canonical write
+([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)). Proposals happen
+through the CLI today: `theurian propose` drafts one, and `theurian propose
+accept` moves the files into place. The intended approval path is human review
+and merge in Git; Core does not verify that a migration was merged before
+`theurian migrate apply` reads it.
 
 ### Result shape
 
@@ -319,55 +334,66 @@ The reasoning, the measurements and what remains uncovered are in
 
 ## Review
 
-| Tool | Purpose |
-| :-- | :-- |
-| `review.search` | Search review history |
-| `review.getThread` | One thread with comments and resolution |
-| `review.findSimilar` | Threads resembling a described situation |
-| `review.getDecisions` | Decisions reached in review |
-| `review.generateKnowledgeCandidate` | **Write-intent** — emits a proposal |
-| `review.listUnresolved` | Open threads |
+Review ingestion is planned, not shipped. The current server reports
+`reviewIngestion: false`, and none of these tools are callable today.
 
-`review.findSimilar` is the one that changes outcomes: it answers "has this come
-up before?" before an agent reimplements something the team already rejected.
+| Tool | Status | Purpose |
+| :-- | :-- | :-- |
+| `review.search` | Planned | Search review history |
+| `review.getThread` | Planned | One thread with comments and resolution |
+| `review.findSimilar` | Planned | Threads resembling a described situation |
+| `review.getDecisions` | Planned | Decisions reached in review |
+| `review.generateKnowledgeCandidate` | Planned write-intent | Emit a proposal; no approved-state write |
+| `review.listUnresolved` | Planned | Open threads |
+
+The designed `review.findSimilar` tool is the one expected to change outcomes:
+it would answer "has this come up before?" before an agent reimplements something
+the team already rejected.
 
 ## Specification
 
-| Tool | Purpose |
-| :-- | :-- |
-| `spec.search` | Search specifications |
-| `spec.get` | Fetch a spec with its **structured** fields intact |
-| `spec.getDependencies` | What this spec depends on |
-| `spec.getImplementationStatus` | Implemented, partial, or not started |
-| `spec.getCoverage` | Which declared outcomes have verifying tests |
-| `spec.findContradictions` | Specs that disagree |
-| `spec.findStaleImplementations` | Code referencing superseded specs |
+Specification-specific MCP tools are planned, not shipped. Specification content
+can be stored and searched as knowledge today, but none of these callable tools
+exist in the current server.
 
-`spec.get` returns the native structure, not a prose rendering. `getCoverage`
-depends on that: coverage means "which of these declared outcomes has a test",
-and the outcomes must still exist as data
+| Tool | Status | Purpose |
+| :-- | :-- | :-- |
+| `spec.search` | Planned | Search specifications |
+| `spec.get` | Planned | Fetch a spec with its **structured** fields intact |
+| `spec.getDependencies` | Planned | What this spec depends on |
+| `spec.getImplementationStatus` | Planned | Implemented, partial, or not started |
+| `spec.getCoverage` | Planned | Which declared outcomes have verifying tests |
+| `spec.findContradictions` | Planned | Specs that disagree |
+| `spec.findStaleImplementations` | Planned | Code referencing superseded specs |
+
+In the planned specification surface, `spec.get` returns the native structure,
+not a prose rendering. `getCoverage` depends on that: coverage means "which of
+these declared outcomes has a test", and the outcomes must still exist as data
 ([ADR-0010](../adr/0010-three-layer-knowledge-model.md)).
 
 ## Traceability
 
-| Tool | Purpose |
-| :-- | :-- |
-| `trace.get` | Edges touching a node |
-| `trace.findImplementations` | What implements a spec |
-| `trace.findTests` | What verifies a spec |
-| `trace.findUnimplementedSpecs` | Specified, not built |
-| `trace.findUnverifiedSpecs` | Built, not tested |
-| `trace.findCodeWithoutSpec` | Maintained, never specified |
+Traceability graph queries are planned, not shipped. The current server reports
+`traceability: false`, and none of these tools are callable today.
+
+| Tool | Status | Purpose |
+| :-- | :-- | :-- |
+| `trace.get` | Planned | Edges touching a node |
+| `trace.findImplementations` | Planned | What implements a spec |
+| `trace.findTests` | Planned | What verifies a spec |
+| `trace.findUnimplementedSpecs` | Planned | Specified, not built |
+| `trace.findUnverifiedSpecs` | Planned | Built, not tested |
+| `trace.findCodeWithoutSpec` | Planned | Maintained, never specified |
 
 ## Project and system
 
-| Tool | Purpose | Project-scoped |
-| :-- | :-- | :-- |
-| `project.list` | Registered projects, and the ids nothing can serve | no |
-| `project.status` | Migration, index, and commit state | yes |
-| `system.health` | Liveness and version | no |
-| `system.capabilities` | What this build supports | no |
-| `system.indexStatus` | Active build, staleness, builds in progress | yes |
+| Tool | Status | Purpose | Project-scoped |
+| :-- | :-- | :-- | :-- |
+| `project.list` | Shipped | Registered projects, and the ids nothing can serve | no |
+| `project.status` | Planned | Migration, index, and commit state | yes |
+| `system.health` | HTTP route, not an MCP tool | Liveness and version | no |
+| `system.capabilities` | Shipped | What this build supports | no |
+| `system.indexStatus` | Planned | Active build, staleness, builds in progress | yes |
 
 `system.capabilities` exists so a client can degrade per feature rather than
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
