@@ -20,6 +20,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: 01K1ABCREV01234567890ABCDE
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: 9cfd9b19030da602ea3339ef6f65ac176ce776c0c467a98bf9d11639241dc69f
     metadata:
       title: Authentication and authorization policy
       contentType: text/markdown

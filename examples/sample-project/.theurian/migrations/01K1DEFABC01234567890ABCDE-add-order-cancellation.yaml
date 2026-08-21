@@ -22,6 +22,7 @@ operations:
     itemId: domain.order-cancellation
     revisionId: 01K1DEFREV01234567890ABCDE
     contentFile: ../knowledge/domain/order-cancellation.md
+    contentSha256: 08bb9731aae7158a5d81796f3218e0f1b34ae2e46053ca71bace1fe9c5e9f1a7
     metadata:
       title: Order cancellation
       contentType: text/markdown
