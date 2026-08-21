@@ -172,8 +172,33 @@ signal — do not wait for a GitHub review that this workflow never posts.
 
 ## The review round
 
-Before opening any PR, launch all three **in a single message** so they run
-concurrently:
+### Review weight is set by blast radius, and the default is light
+
+The full three-reviewer round is the instrument for changes whose failure
+discloses withheld content, corrupts governed state, or falsifies a security
+claim — the write path, the gates, the daemon surface, the threat model. There
+it earns its hour: it has caught four CRITICAL disclosures and one fabricated
+"tests GREEN" report. **Everywhere else, that hour is overhead, and the measured
+cost of spending it everywhere was hours-per-unit-of-work tripling while output
+stayed flat.**
+
+So weigh the review before dispatching it, not after:
+
+| Blast radius of a wrong change | Review weight |
+| :-- | :-- |
+| Disclosure, governed state, security claims, wire contract | Full round — all three, no shortcut |
+| Behaviour a trier runs, but no disclosure surface | Code review, plus adversarial only for the claims table below |
+| Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round structure |
+
+The routing table below decides who reviews a *claim*; this table decides how
+much apparatus a *change* gets. When the two disagree, the claims table wins —
+a prose file asserting a measured property is a disclosure-class claim in a
+light-class file. The failure mode this section exists to stop is uniform
+weight: pushing a wording fix through the same machinery as a gate change
+spends the reviewers' credibility on work that cannot pay for it.
+
+Before opening any PR that takes the full round, launch all three **in a single
+message** so they run concurrently:
 
 | Agent | Answers |
 | :-- | :-- |
