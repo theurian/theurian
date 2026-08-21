@@ -2649,6 +2649,36 @@ def test_a_schema_rejection_names_the_true_size_of_an_oversized_scalar() -> None
     assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
 
 
+def test_a_schema_rejection_names_the_true_size_of_a_scalar_inside_an_operation() -> None:
+    """MEDIUM (round one): the leaf-path size restore above does not run when the
+    oversized scalar sits *inside* an operation. An operation that fails
+    ``#/$defs/operation``'s ``oneOf`` hands `jsonschema` the whole operation
+    *mapping*, so `_echo`'s ``str``/``bytes`` branch never runs; the renderer
+    truncated the 100,000-character ``owner`` at ``maxstring`` before `_bounded`
+    could measure it, and the ``(N characters in all)`` marker then reported the
+    *operation repr's* length -- measured at 1,101 -- not the value's.
+    ``_bounded``'s "size is the diagnosis" claim was false for this reachable
+    path.
+
+    `_echo` now records the longest string the render reached
+    (`_BoundedRepr.longest_scalar`) and names *that* true length. RED before the
+    fix: the number the reader saw was 1,101, so ``str(100_000)`` appeared nowhere
+    in the message.
+    """
+    document = _document_with(owner=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the value itself is still not echoed whole"
+    assert f"({len(_OVERSIZED_VALUE)} characters in all)" in message, (
+        "the nested scalar's true length is the reported size, not the operation repr's ~1 KB"
+    )
+    assert "operations/0" in message, "the failing operation is still located"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
 # -- issue #291's scalar face: a giant integer's repr is not bounded by node ---
 # -- count -----------------------------------------------------------------------
 #

@@ -633,6 +633,11 @@ def _bounded(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
     The full length is named because for the case this bound exists for -- a
     value that is refused *for being large* -- the size is the diagnosis, and a
     reader who is only shown a prefix cannot tell 300 characters from 300,000.
+    That holds for a *leaf* fragment, where the string this cuts is the value
+    itself. When `_echo` renders a *container* instance the string this would cut
+    is the container's repr, whose length is not any one value's -- so `_echo`
+    names the longest scalar's true length itself and truncates with
+    :func:`_truncate` (no count) rather than routing through this.
 
     ``limit`` is a parameter, not a second constant, because the schema-side
     expectation :func:`_schema_rejection` names is bounded tighter than the
@@ -663,7 +668,8 @@ _MAX_ECHOED_INT_BITS: Final = 2_000
 
 
 class _BoundedRepr(reprlib.Repr):
-    """A `reprlib.Repr` that also bounds an integer by magnitude, not only width.
+    """A `reprlib.Repr` that bounds an integer by magnitude and records the true
+    length of the longest string it renders.
 
     Every other value `reprlib` renders is bounded by depth (`maxlevel`), by
     per-container width, or by string length. An *integer* is not: `repr_int`
@@ -672,7 +678,24 @@ class _BoundedRepr(reprlib.Repr):
     refuses to render such an integer at all, keying on `bit_length` so no
     decimal string is ever built -- which keeps the render total, a giant integer
     inside a container becoming a placeholder while the rest still renders.
+
+    ``maxstring`` truncates a string before anything downstream can measure it,
+    which hides the true length -- and for a value refused *for being large* that
+    length is the diagnosis (`_bounded`'s docstring). For a bare string leaf
+    `_echo` knows the length directly; for a string *nested inside a container*
+    instance it does not, so this records ``max`` of the pre-truncation lengths in
+    :attr:`longest_scalar` as they are rendered, at no extra traversal cost. An
+    instance is measured by a *fresh* renderer each call (:func:`_new_echo_repr`),
+    so the attribute never carries across calls.
     """
+
+    #: The greatest ``len`` of any ``str`` this renderer has rendered, before
+    #: ``maxstring`` truncation. A class-level default rather than an ``__init__``
+    #: override: `reprlib.Repr.__init__` takes a ``str`` ``fillvalue`` that a
+    #: ``**int`` unpack cannot satisfy under strict typing, and the first
+    #: `repr_str` shadows this with a per-instance value, so the fresh renderers
+    #: :func:`_new_echo_repr` hands out never share the measurement.
+    longest_scalar: int = 0
 
     @override
     def repr_int(self, x: int, level: int) -> str:
@@ -683,33 +706,67 @@ class _BoundedRepr(reprlib.Repr):
             return f"<integer too large to render: {x.bit_length()} bits>"
         return super().repr_int(x, level)
 
+    @override
+    def repr_str(self, x: str, level: int) -> str:
+        self.longest_scalar = max(self.longest_scalar, len(x))
+        return super().repr_str(x, level)
 
-#: A bounded renderer for the one author-written value a schema rejection echoes.
-#: `maxstring`/`maxother` track :data:`MAX_ECHOED_VALUE` (they bound the *output
-#: length*, later re-bounded by `_bounded`); `maxlevel` and the per-container
-#: width budgets (12) bound the render *work*, and they are load-bearing DoS
-#: knobs. Because `reprlib` does not collapse shared references, a walk to
-#: `maxlevel` that re-expands up to 12 children per level is up to 12**maxlevel
-#: renders: raising either constant re-introduces that width**level blow-up. So
-#: `reprlib` bounds render *depth*, not total work -- a *chain* too deep for
-#: plain `repr` to render without a `RecursionError` is rendered (it stops at
-#: `maxlevel`), but a *branching* alias graph reached out-of-band still costs
-#: width**level (measured: ~12**8, 14.3 s at level 7, unfinished at level 8). The
-#: bound on the reachable path is the *guard* above, which refuses such a
-#: document before `validate` (:data:`MAX_DOCUMENT_NODES`); this echo is defense
-#: in depth for a value reaching :func:`_schema_rejection` some other way, and it
-#: is not itself bounded on a branching graph reached that way (issues #289,
-#: #291).
-_ECHO: Final = _BoundedRepr(
-    maxlevel=8,
-    maxtuple=12,
-    maxlist=12,
-    maxdict=12,
-    maxset=12,
-    maxfrozenset=12,
-    maxstring=MAX_ECHOED_VALUE,
-    maxother=MAX_ECHOED_VALUE,
-)
+
+#: The per-container width the echo renderer allows. Load-bearing DoS knob: with
+#: `maxlevel`, a walk to `maxlevel` that re-expands up to this many children per
+#: level is up to ``width**maxlevel`` renders, since `reprlib` does not collapse
+#: shared references -- raising it re-introduces that width**level blow-up.
+_ECHO_WIDTH: Final = 12
+
+#: How deep the echo renderer descends. Load-bearing DoS knob, paired with
+#: :data:`_ECHO_WIDTH` above.
+_ECHO_MAXLEVEL: Final = 8
+
+
+def _new_echo_repr() -> _BoundedRepr:
+    """A fresh renderer for the one author-written value a schema rejection echoes.
+
+    Fresh per call because :class:`_BoundedRepr` records the longest string it
+    renders (:attr:`_BoundedRepr.longest_scalar`) so `_echo` can name an oversized
+    value's true length even when it is nested inside a container instance; a
+    shared singleton would carry that measurement across calls.
+
+    `maxstring`/`maxother` track :data:`MAX_ECHOED_VALUE` (they bound the *output
+    length*, later re-bounded by `_bounded`); :data:`_ECHO_MAXLEVEL` and the
+    per-container width :data:`_ECHO_WIDTH` bound the render *work*. So `reprlib`
+    bounds render *depth*, not total work -- a *chain* too deep for plain `repr`
+    to render without a `RecursionError` is rendered (it stops at `maxlevel`), but
+    a *branching* alias graph reached out-of-band still costs width**level
+    (measured: ~12**8, 14.3 s at level 7, unfinished at level 8). The bound on the
+    reachable path is the *guard*, which refuses such a document before `validate`
+    (:data:`MAX_DOCUMENT_NODES`, :data:`MAX_DOCUMENT_RENDERED_CHARS`); this echo is
+    defense in depth for a value reaching :func:`_schema_rejection` some other way,
+    and is not itself bounded on a branching graph reached that way (issues #289,
+    #291).
+    """
+    return _BoundedRepr(
+        maxlevel=_ECHO_MAXLEVEL,
+        maxtuple=_ECHO_WIDTH,
+        maxlist=_ECHO_WIDTH,
+        maxdict=_ECHO_WIDTH,
+        maxset=_ECHO_WIDTH,
+        maxfrozenset=_ECHO_WIDTH,
+        maxstring=MAX_ECHOED_VALUE,
+        maxother=MAX_ECHOED_VALUE,
+    )
+
+
+def _truncate(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
+    """``rendered`` cut to ``limit`` with an inert ellipsis but *no* length count.
+
+    The counting twin of :func:`_bounded`, for the one case where `_echo` names
+    the diagnostic size itself: a container instance carrying an oversized scalar.
+    `_bounded`'s own ``(N characters in all)`` there would report the *container
+    repr's* length -- ~1,100 characters for a 100,000-character value inside an
+    operation -- so `_echo` truncates with this instead and appends the scalar's
+    true length, one honest number rather than two misleading ones.
+    """
+    return rendered if len(rendered) <= limit else f"{rendered[:limit]}..."
 
 
 def _echo(instance: object) -> str:
@@ -720,25 +777,43 @@ def _echo(instance: object) -> str:
     at ``maxstring`` -- so a chain too deep for plain ``repr``, or a scalar too
     large for it, is rendered without raising, and the control characters `repr`
     escapes stay escaped. It does *not* bound total work on a *branching* alias
-    graph reached out-of-band (see :data:`_ECHO`); the reachable-path bound is
-    the guard, not this. `_bounded` then bounds the *length* of what is left, so
-    the total is capped at :data:`MAX_ECHOED_VALUE` however the per-element
-    budgets happen to sum.
+    graph reached out-of-band (see :func:`_new_echo_repr`); the reachable-path
+    bound is the guard, not this.
 
-    `reprlib`'s ``maxstring`` truncates a string *before* `_bounded` can measure
-    it, which would hide the true length -- and for a value refused *for being
-    large*, that length is the diagnosis (`_bounded`'s docstring). So the true
-    length is restored here for a `str`/`bytes` instance, where it is known in
-    O(1); a reader cannot otherwise tell a 1 KB value from a 100 KB one.
+    For a value refused *for being large*, its length is the diagnosis
+    (`_bounded`'s docstring), and ``maxstring`` truncates it before `_bounded` can
+    measure it. That length is restored two ways depending on where the oversized
+    value sits:
+
+    * A bare ``str``/``bytes`` *leaf* instance: its own ``len`` is the true length,
+      known in O(1), with the correct unit (code points or octets).
+    * An oversized scalar *nested inside a container* instance -- the reachable
+      shape, since an operation that fails ``#/$defs/operation``'s ``oneOf`` hands
+      `jsonschema` the whole operation *mapping* -- is truncated at ``maxstring``
+      before `_bounded` sees it, so `_bounded` would report the container repr's
+      length (~1,100), not the value's. :attr:`_BoundedRepr.longest_scalar` records
+      the longest string the render actually reached, and `_echo` names that true
+      length instead (MEDIUM, round one).
+
+    Where no scalar is oversized, `_bounded` bounds the *length* of the whole
+    render, so a wide operation of many medium fields is still capped at
+    :data:`MAX_ECHOED_VALUE` and says how large it was.
     """
-    rendered = _bounded(_ECHO.repr(instance))
-    if isinstance(instance, str | bytes) and len(instance) > MAX_ECHOED_VALUE:
-        # `len` counts code points on a `str` and octets on `bytes`; naming the
-        # wrong unit would misreport the size, which for a value refused *for
-        # being large* is the whole diagnosis.
-        unit = "bytes" if isinstance(instance, bytes) else "characters"
-        return f"{rendered} ({len(instance)} {unit} in all)"
-    return rendered
+    renderer = _new_echo_repr()
+    rendered = renderer.repr(instance)
+    if isinstance(instance, str | bytes):
+        # A leaf: its own `len` is the true length. `len` counts code points on a
+        # `str` and octets on `bytes`; naming the wrong unit would misreport the
+        # size, which for a value refused *for being large* is the whole diagnosis.
+        if len(instance) > MAX_ECHOED_VALUE:
+            unit = "bytes" if isinstance(instance, bytes) else "characters"
+            return f"{_truncate(rendered)} ({len(instance)} {unit} in all)"
+        return _bounded(rendered)
+    if renderer.longest_scalar > MAX_ECHOED_VALUE:
+        # A container holding an oversized scalar: name the scalar's true length,
+        # not the container repr's (see the docstring and `_truncate`).
+        return f"{_truncate(rendered)} ({renderer.longest_scalar} characters in all)"
+    return _bounded(rendered)
 
 
 def _missing_required_properties(exc: ValidationError) -> list[str]:
@@ -890,7 +965,8 @@ def _schema_rejection(exc: ValidationError) -> str:
     without raising. What bounds a *branching* alias graph -- which `reprlib`
     would still re-expand at width**level -- is the guard that refuses such a
     document before `validate`, not `_echo` itself, which is defense in depth for
-    a value reaching here out-of-band (:data:`_ECHO`, :data:`MAX_DOCUMENT_NODES`).
+    a value reaching here out-of-band (:func:`_new_echo_repr`,
+    :data:`MAX_DOCUMENT_NODES`, :data:`MAX_DOCUMENT_RENDERED_CHARS`).
     """
     location = _location(exc.absolute_path)
     missing = _missing_required_properties(exc)
