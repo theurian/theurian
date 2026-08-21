@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import errno
 import json
+import reprlib
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
@@ -103,15 +105,47 @@ MAX_MIGRATIONS: Final = 10_000
 #: `RecursionError` that follows is indistinguishable from a broken schema
 #: (issue #291; the measurements are on :func:`_validate_document`).
 #:
-#: Generous by two orders of magnitude, on purpose. A schema-valid document
-#: nests at most **7** levels including the root -- measured 2026-08-21 by
-#: walking the bundled schema's structural keywords (`properties`, `items`,
-#: `oneOf`, `$ref` into `$defs`) for the deepest instance path it permits --
-#: while the smallest measured rendering budget on this interpreter is around
-#: 8,000 levels. Neither number is close to this one, which is the point: the
-#: bound has to refuse nothing an author can legitimately write, and it has to
-#: stay well clear of a ceiling that moves with the ambient call stack.
+#: A schema-valid document nests at most **7** levels including the root --
+#: measured 2026-08-21 by walking the bundled schema's structural keywords
+#: (`properties`, `items`, `oneOf`, `$ref` into `$defs`) for the deepest
+#: instance path it permits -- so 64 refuses nothing an author can legitimately
+#: write. It is not, however, "two orders of magnitude below the rendering
+#: budget": that budget moves with the ambient call stack. From a shallow stack
+#: `repr` renders ~9,997 levels, but with ~2,400 C-frames already spent the
+#: mistranslation onset was measured near depth 6,000 -- and 64x100 is 6,400,
+#: *above* that. 64 is chosen to sit far below even the ambient-reduced budget,
+#: which is what the guard needs; the earlier "two orders below ~8,000" framing
+#: compared against the shallow-stack budget only and did not hold once the
+#: ambient stack was charged against the same ceiling.
 MAX_DOCUMENT_NESTING: Final = 64
+
+#: Ceiling on how many nodes a migration *document* may hold, counting every
+#: value the walk reaches -- keys, mapping values and sequence elements alike --
+#: *without* collapsing shared references. Enforced by
+#: `_refuse_a_document_that_nests_too_deep` alongside `MAX_DOCUMENT_NESTING`,
+#: and it is the node count, not the nesting depth, that closes the
+#: alias-expansion denial of service (issue #291's guard was itself one; same
+#: shape as #245's un-memoised `$ref` walk).
+#:
+#: A YAML anchor referenced from two aliases, each referenced from two more, is
+#: a ~500-byte file whose *expanded* node count is 2**N -- 24 levels reach 100
+#: million nodes. The walk is deliberately *not* memoised on object identity: a
+#: collapsed walk would count that file as its ~24 distinct nodes and wave it
+#: through to `validate`, and `jsonschema` does not collapse it -- `validate`
+#: interpolates the failing instance with `{instance!r}`, and that repr
+#: re-expands every shared reference, building a 46 MB message for a 500-byte
+#: file (measured 2026-08-21, jsonschema 4.26.0, alias level 22) *before*
+#: :func:`_schema_rejection` is ever reached. Counting the expanded nodes and
+#: refusing here, ahead of `validate`, is what keeps that repr bounded;
+#: memoising the walk would only move the cost into a dependency this module
+#: cannot bound.
+#:
+#: Generous by three orders of magnitude, on purpose. This repository's own 26
+#: committed migrations walk to 67-73 nodes each (measured 2026-08-21 over
+#: `.theurian/migrations`). The bound refuses nothing an author legitimately
+#: writes while capping the guard's own walk -- and every repr `validate`
+#: performs on a document that passes it -- at this many steps.
+MAX_DOCUMENT_NODES: Final = 100_000
 
 #: Ceiling on how much of an author-written value a schema rejection may echo,
 #: in characters. Applied by `_bounded` to every variable-length fragment
@@ -281,7 +315,8 @@ class _SchemaValidator:
 def _refuse_a_document_that_nests_too_deep(
     document: Mapping[str, object], document_name: str | None
 ) -> None:
-    """Refuse a document nested past :data:`MAX_DOCUMENT_NESTING` (issue #291).
+    """Refuse a document that nests past :data:`MAX_DOCUMENT_NESTING` or holds
+    more than :data:`MAX_DOCUMENT_NODES` nodes (issues #291, #245).
 
     **Iterative on purpose.** A recursive depth checker spends the very budget
     it exists to protect, so it would raise `RecursionError` on exactly the
@@ -289,23 +324,42 @@ def _refuse_a_document_that_nests_too_deep(
     The frontier holds ``(value, depth)`` pairs, so the only stack this uses is
     the heap.
 
-    The check runs before ``validate`` rather than as a wider ``except`` around
+    **Un-collapsed on purpose.** The walk does not memoise the nodes it has
+    seen. A YAML anchor referenced from two aliases, each referenced from two
+    more, expands to 2**N nodes from an N-line file -- and `jsonschema`'s own
+    ``{instance!r}`` message interpolation re-expands it the identical way,
+    building a multi-megabyte message from a sub-kilobyte file *before*
+    :func:`_schema_rejection` is ever reached. Collapsing the walk on object
+    identity would count that file as its handful of distinct nodes and wave it
+    through to ``validate``, moving the cost into a dependency this module
+    cannot bound. So the walk counts every reference and refuses at
+    :data:`MAX_DOCUMENT_NODES` -- which bounds both this walk's own cost and
+    every repr ``validate`` performs on a document that passes it. The node
+    count is checked as each child is *discovered*, so the frontier itself never
+    grows past the cap even for a single very wide node.
+
+    Both checks run before ``validate`` rather than as a wider ``except`` around
     it, because the two sources of a validate-time ``RecursionError`` cannot be
     told apart once ``validate`` is running -- see :func:`_validate_document`,
     whose schema attribution this function is what makes sound.
 
-    Mappings and sequences are the only containers a parsed document holds:
+    Mappings and sequences are the containers a *parsed* document holds:
     ``load_yaml``'s ``_StrictLoader`` produces ``dict``/``list``/scalars (its
     timestamp resolver is dropped, so even dates arrive as ``str``), and the
-    ``propose`` path builds the same shapes. ``tuple`` is walked alongside
-    ``list`` for the in-memory caller: the schema would refuse one as a
-    non-array anyway, but only after ``jsonschema`` has repr'd it, which is the
-    step this bound exists to reach first. The check is ``list | tuple`` and not
-    ``Sequence`` so that a ``str`` stays a leaf: its characters are not nesting,
-    and descending into them would make this pass cost the length of the text
-    for nothing.
+    ``propose`` seam builds ``dict[str, object]`` with string keys and
+    list/scalar values (`_migration_document`, ``application/proposal_service.py``).
+    Neither seam produces a ``set``, a ``frozenset``, a ``tuple`` or a
+    non-string key. Those are walked anyway -- ``set``/``frozenset``/``tuple``
+    as containers, and mapping *keys* as well as values -- purely as defense for
+    an in-memory caller of :func:`validate_migration_document` that hands in
+    something those seams never build: a container sitting in a key, or inside a
+    set, would otherwise slip past this bound and reach ``validate``, where a
+    deep one is mistranslated as a corrupt schema. ``str`` and ``bytes`` stay
+    leaves: their elements are characters and integers, not nesting, and
+    descending into them would make this pass cost the length of the text.
     """
     frontier: list[tuple[object, int]] = [(document, 1)]
+    discovered = 1
     while frontier:
         value, depth = frontier.pop()
         if depth > MAX_DOCUMENT_NESTING:
@@ -319,9 +373,24 @@ def _refuse_a_document_that_nests_too_deep(
                 f"nests past 7 levels."
             )
         if isinstance(value, Mapping):
-            frontier.extend((child, depth + 1) for child in value.values())
-        elif isinstance(value, list | tuple):
-            frontier.extend((child, depth + 1) for child in value)
+            children: Iterable[object] = chain(value.keys(), value.values())
+        elif isinstance(value, list | tuple | set | frozenset):
+            children = value
+        else:
+            continue
+        for child in children:
+            discovered += 1
+            if discovered > MAX_DOCUMENT_NODES:
+                # Bounded before the frontier is: a single node with more
+                # children than the whole budget is refused as it is read, not
+                # after it has been fully expanded into memory.
+                subject = f"{document_name} holds" if document_name else "This document holds"
+                raise MigrationError(
+                    f"{subject} more than {MAX_DOCUMENT_NODES} values. A migration is a "
+                    f"fixed, shallow shape; a document this large is a mistake or an attempt "
+                    f"to exhaust memory. Reduce it, or split it into separate migration files."
+                )
+            frontier.append((child, depth + 1))
 
 
 def _validate_document(
@@ -371,15 +440,21 @@ def _validate_document(
       mistranslated at all of them.
 
     :func:`_refuse_a_document_that_nests_too_deep` closes that gap by bounding
-    the document at :data:`MAX_DOCUMENT_NESTING` -- two orders of magnitude
-    below the smallest budget measured above -- before `validate` is reached.
-    Every document that gets as far as the call below is therefore *proven*
-    shallow, which is what turns the attribution from a hope into a deduction:
-    a `RecursionError` from a shallow instance is the schema's, and the
-    `SchemaUnreadableError` this raises is the honest answer rather than a
-    guess. Both failures this function attributes to the schema carry that
-    type, as every other install-corruption failure `_validator` translates
-    does.
+    the document at :data:`MAX_DOCUMENT_NESTING` before `validate` is reached,
+    and at :data:`MAX_DOCUMENT_NODES` so that a shallow but alias-expanded
+    document cannot make `validate` itself do unbounded work. The attribution
+    below is a deduction only under the premise those two bounds establish: the
+    document is shallow (past `MAX_DOCUMENT_NESTING` it was refused, not
+    validated) *and* the ambient call stack the guard ran on is not itself near
+    the C-recursion budget. `MAX_DOCUMENT_NESTING` is 64 and the shallow-stack
+    budget is ~9,997, so an ordinary caller leaves ample headroom; a caller that
+    had already spent most of the budget before reaching here could in principle
+    make even a 64-level document recurse, which is why the premise is stated
+    rather than claimed unconditionally. Within it, a `RecursionError` from a
+    proven-shallow instance is the schema's, and the `SchemaUnreadableError`
+    this raises is the honest answer. Both failures this function attributes to
+    the schema carry that type, as every other install-corruption failure
+    `_validator` translates does.
 
     A `ValidationError` is a real fault in the *document* and is deliberately
     left to propagate: the two callers word it differently (with or without a
@@ -414,6 +489,39 @@ def _bounded(rendered: str) -> str:
     if len(rendered) <= MAX_ECHOED_VALUE:
         return rendered
     return f"{rendered[:MAX_ECHOED_VALUE]}... ({len(rendered)} characters in all)"
+
+
+#: A bounded renderer for the one author-written value a schema rejection
+#: echoes. `reprlib.Repr` truncates *while* rendering -- it stops at ``maxlevel``
+#: and at each container's element budget -- so a shared-reference (alias) graph
+#: that plain ``repr`` would re-expand into millions of nodes, or a chain too
+#: deep for ``repr`` to render without a `RecursionError`, is rendered in
+#: bounded time and depth. The guard above refuses either shape before a
+#: document reaches `validate`, so this is defense in depth for a value that
+#: reaches :func:`_schema_rejection` some other way (issues #289, #291).
+_ECHO: Final = reprlib.Repr(
+    maxlevel=8,
+    maxtuple=12,
+    maxlist=12,
+    maxdict=12,
+    maxset=12,
+    maxfrozenset=12,
+    maxstring=MAX_ECHOED_VALUE,
+    maxother=MAX_ECHOED_VALUE,
+)
+
+
+def _echo(instance: object) -> str:
+    """``instance`` rendered for a schema-rejection message, bounded twice over.
+
+    `reprlib` bounds the *work* -- it never recurses past ``maxlevel`` or renders
+    past each container's element budget, so an alias graph or a chain deep
+    enough to defeat plain ``repr`` is rendered in bounded time and depth, and
+    the control characters `repr` escapes stay escaped. `_bounded` then bounds
+    the *length* of what is left, so the total is capped at
+    :data:`MAX_ECHOED_VALUE` however the per-element budgets happen to sum.
+    """
+    return _bounded(_ECHO.repr(instance))
 
 
 def _missing_required_properties(exc: ValidationError) -> list[str]:
@@ -491,7 +599,7 @@ def _schema_rejection(exc: ValidationError) -> str:
     # `Unset` when `jsonschema` raised without a keyword: named rather than
     # repr'd so the message says "the schema" instead of a sentinel's repr.
     keyword = repr(exc.validator) if isinstance(exc.validator, str) else "the schema"
-    echoed = _bounded(repr(exc.instance))
+    echoed = _echo(exc.instance)
     return f"{location}: does not satisfy {keyword}; the value there is {echoed}"
 
 
@@ -505,10 +613,13 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
     knowledge is human review, not format conversion.
 
     Raises:
-        MigrationError: If the document does not satisfy the schema, or nests
-            past :data:`MAX_DOCUMENT_NESTING` -- a document fault that used to
-            be reported as a corrupt installation (issue #291; the mechanism is
-            recorded on :func:`_validate_document`).
+        MigrationError: If the document does not satisfy the schema, nests past
+            :data:`MAX_DOCUMENT_NESTING`, or holds more than
+            :data:`MAX_DOCUMENT_NODES` nodes once its shared references are
+            expanded -- document faults that used to be reported as a corrupt
+            installation, or to cost unbounded work in `jsonschema`'s own
+            message building (issues #291, #245; the mechanism is recorded on
+            :func:`_validate_document` and :data:`MAX_DOCUMENT_NODES`).
         SchemaUnreadableError: If the installed schema cannot be read, parses
             to something this build cannot use as a schema (both from
             :func:`_validator`), or names a `$ref` that cannot be resolved
@@ -534,8 +645,8 @@ def load_migrations(
 
     Raises:
         MigrationError: On a malformed, duplicate, cyclic, or unresolvable
-            file, or one whose document nests past
-            :data:`MAX_DOCUMENT_NESTING` (issue #291).
+            file, or one whose document nests past :data:`MAX_DOCUMENT_NESTING`
+            or expands past :data:`MAX_DOCUMENT_NODES` nodes (issues #291, #245).
         PathEscapeError: If a ``contentFile`` points outside ``project_root``;
             if ``migrations_dir`` itself is a symlink that resolves outside
             ``project_root`` (round four; checked directly, at the probe --

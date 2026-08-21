@@ -34,6 +34,7 @@ from typing import Any, override
 
 import pytest
 import yaml
+from jsonschema.exceptions import ValidationError
 
 from theurian.cli.context import schema_root as real_schema_root
 from theurian.domain.errors import (
@@ -49,7 +50,11 @@ from theurian.domain.errors import (
 from theurian.domain.migration import LoadedMigrations
 from theurian.infrastructure.filesystem import migration_loader
 from theurian.infrastructure.filesystem.migration_loader import (
+    MAX_DOCUMENT_NESTING,
+    MAX_DOCUMENT_NODES,
     _escape_role_of,
+    _refuse_a_document_that_nests_too_deep,
+    _schema_rejection,
     _validator,
     load_migrations,
     validate_migration_document,
@@ -2843,3 +2848,172 @@ def test_a_list_valued_keyword_other_than_required_is_not_read_as_missing_proper
     message = str(excinfo.value)
     assert "missing the required" not in message, "a type keyword lists types, not properties"
     assert "'type'" in message, "the reader is still told which keyword refused"
+
+
+# -- issue #291's guard was itself an unbounded-work DoS over YAML aliases -----
+#
+# `_refuse_a_document_that_nests_too_deep` walks the parsed document, and a
+# PyYAML anchor referenced from two aliases -- each referenced from two more --
+# is a shared-reference DAG that expands to 2**N nodes from an N-line file. The
+# shipped guard walked it as a tree, so a ~500-byte file cost 2**24 = 100 M node
+# visits (orchestrator-measured 42.5 s), and even had it finished, `jsonschema`'s
+# own `validate` interpolates the failing instance with `{instance!r}` -- which
+# re-expands the identical DAG, building a 46 MB message at alias level 22
+# (measured 2026-08-21, jsonschema 4.26.0) *before* `_schema_rejection` is
+# reached. Memoising the walk on object identity would make the guard fast but
+# leave that second cost untouched: a memoised walk counts the file as its ~24
+# distinct nodes and waves it through to `validate`. So the guard stays
+# un-collapsed and refuses at `MAX_DOCUMENT_NODES` -- ahead of `validate`, which
+# is the only place the dependency's own repr cost can be stopped.
+
+
+def _alias_bomb(levels: int) -> str:
+    """The exponential shared-reference DAG, as a YAML migration document.
+
+    ``l0`` anchors a small mapping; each ``l{k}`` references ``l{k-1}`` twice, so
+    the expanded node count doubles per level while the source grows by one line.
+    Placed at ``author`` as well, where the schema's ``type`` keyword would repr
+    the whole DAG if it ever reached `validate`.
+    """
+    lines = ["l0: &l0 {v: 0}"]
+    for level in range(1, levels):
+        lines.append(f"l{level}: &l{level} {{a: *l{level - 1}, b: *l{level - 1}}}")
+    return (
+        "\n".join(lines)
+        + "\napiVersion: theurian.dev/v1\nid: 01K1KKKKKK01234567890ABCDE\n"
+        + "createdAt: 2026-08-02T10:00:00+09:00\n"
+        + f"author: *l{levels - 1}\n"
+        + "operations:\n  - op: createItem\n    itemId: a.b\n    kind: architecture\n"
+        + "    namespace: n\n    owner: o\n"
+    )
+
+
+def test_an_alias_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """RED before the fix: the guard walks the DAG as a tree and never returns
+    for level 20 (2**20 visits), and if it did, `validate` would build a
+    multi-megabyte message from the same DAG.
+
+    Level 20 expands to ~1 M nodes, well past `MAX_DOCUMENT_NODES`, so the guard
+    must refuse it -- and the refusal that reaches the caller must be the node
+    ceiling's, proving the document was stopped *before* `validate` rather than
+    after `jsonschema` had already paid the expansion. The shipped guard raises
+    nothing for this document (it nests only 20 levels, under
+    `MAX_DOCUMENT_NESTING`, and had no node ceiling at all), so
+    ``pytest.raises`` fails on it outright.
+    """
+    document = load_yaml_mapping(_alias_bomb(20))
+
+    with pytest.raises(MigrationError):
+        _refuse_a_document_that_nests_too_deep(document, None)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert str(MAX_DOCUMENT_NODES) in message and "values" in message, (
+        "the refusal must be the node ceiling's, i.e. raised before `validate`"
+    )
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def test_the_document_nesting_ceiling_holds_at_its_boundary() -> None:
+    """`MAX_DOCUMENT_NESTING` and the depth at which the guard first refuses.
+
+    The literal assertion kills a mutant that changes the constant's value (a
+    survivor the shipped tests never pinned); the boundary -- driven with literal
+    depths so it stays sensitive when the constant is mutated -- kills an
+    off-by-one in where the frontier starts and a dropped depth check. A document
+    is a chain of mappings, so a leaf at depth ``d`` needs ``d - 1`` wrappers.
+    """
+    assert MAX_DOCUMENT_NESTING == 64, "load-bearing; changing it is a security decision"
+
+    _refuse_a_document_that_nests_too_deep(_nested(63), None)  # leaf at depth 64: allowed
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(_nested(64), None)  # leaf at depth 65: refused
+    message = str(excinfo.value)
+    assert "64" in message and "7 levels" in message, (
+        "the message names the ceiling and the real max"
+    )
+
+
+def test_the_document_node_ceiling_holds_at_its_boundary() -> None:
+    """`MAX_DOCUMENT_NODES` and the refusal it drives.
+
+    The literal assertion kills a value-changing mutant; the behavioural half
+    kills a dropped node check. A flat sequence one longer than the ceiling is
+    refused as it is read (the frontier never holds all of it); a small one
+    passes.
+    """
+    assert MAX_DOCUMENT_NODES == 100_000, "load-bearing; changing it is a security decision"
+
+    _refuse_a_document_that_nests_too_deep({"operations": [0] * 10}, None)  # tiny: allowed
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep({"operations": [0] * MAX_DOCUMENT_NODES}, None)
+    assert str(MAX_DOCUMENT_NODES) in str(excinfo.value), "the message names the ceiling"
+
+
+def test_the_guard_walks_a_mapping_key_not_only_its_value() -> None:
+    """MEDIUM: the shipped guard read ``value.values()`` and never the keys, so a
+    container sitting in a *key* slipped past the depth bound and reached
+    `validate`. The parsed and propose seams never build a non-string key, so
+    this is defense for an in-memory caller of `validate_migration_document`.
+
+    A tuple nested past `MAX_DOCUMENT_NESTING`, used as a key, is refused by the
+    depth bound now that keys are walked. Before the fix the key was ignored and
+    the (shallow) values let the document through to `validate`, where it was
+    reported as a schema rejection rather than a nesting fault -- so the message,
+    not merely the exception type, is what this pins.
+    """
+    deep_key: object = "leaf"
+    for _ in range(MAX_DOCUMENT_NESTING + 6):
+        deep_key = (deep_key,)
+    document = {deep_key: 1, "apiVersion": "theurian.dev/v1"}
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(document, None)  # type: ignore[arg-type]
+    assert "nests more than" in str(excinfo.value), "a container key must trip the depth bound"
+
+
+def test_the_guard_walks_a_set_not_only_lists_and_tuples() -> None:
+    """MEDIUM: the shipped container check was ``list | tuple``, so a ``set`` or
+    ``frozenset`` was treated as a leaf and its contents never counted. An
+    in-memory caller could hide an oversized structure inside one and have it
+    reach `validate` unbounded.
+
+    A ``frozenset`` holding more than `MAX_DOCUMENT_NODES` elements is refused by
+    the node bound now that sets are walked; before the fix it was a single leaf,
+    counted as one node, and waved through.
+    """
+    document = {"operations": frozenset(range(MAX_DOCUMENT_NODES + 10))}
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(document, None)
+    assert str(MAX_DOCUMENT_NODES) in str(excinfo.value), "a set's contents must count as nodes"
+
+
+def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
+    """Issue #289 face two: `_schema_rejection` echoed the instance with
+    ``_bounded(repr(...))``, which builds the *whole* repr before truncating.
+
+    On a value too deep for `repr` to render, that ``repr`` raises
+    `RecursionError` -- so the refusal builder itself crashes rather than
+    bounding the echo. `reprlib` stops at its ``maxlevel`` and never recurses
+    that far, so the message is produced whatever the instance's depth. The
+    guard refuses such a document before it reaches `validate`, so this drives
+    `_schema_rejection` directly: it is the seam's own robustness that is pinned,
+    not a reachable path.
+    """
+    deep: object = "leaf"
+    for _ in range(12_000):  # past the ~9,997 a shallow stack can repr
+        deep = [deep]
+    exc = ValidationError(
+        "unused", validator="type", validator_value="string", instance=deep, path=["author"]
+    )
+
+    message = _schema_rejection(exc)  # must not raise RecursionError
+
+    assert "author" in message, "the location is still named"
+    assert len(message) <= 2000, "the echo is bounded"
