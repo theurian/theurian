@@ -1129,6 +1129,54 @@ def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
 
 
+def test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The guard refuses the matched inode alone, not every replacement while a set exists.
+
+    ``_operation_reads`` discriminates by the destination's ``(st_dev, st_ino)``:
+    a landed revision reading body *A* does not make a replacement of a
+    *different* body *B* a break. Nothing pinned that discrimination -- measured
+    (adversarial round two, mutation ``opreads-always-true``): replacing the
+    inode comparison with ``operation.content_identity is not None`` -- always
+    true for a loaded operation -- made every ``replaced`` move match the first
+    landed operation, over-refusing this legitimate replacement, and the whole
+    proposal suite still passed (92 green under the mutation).
+
+    One migration lands, reading body A. A second proposal, for a different item,
+    replaces a stray file at its own fresh path (inode B) that no landed revision
+    reads -- the permissive case ``_refuse_if_a_replacement_breaks_an_existing_pin``
+    must allow. It only reaches the guard *because* the set is non-empty and the
+    move is a replacement, which is exactly the state the always-true mutation
+    turns into a false break; the earlier permissive test lands on an empty set,
+    so ``_operation_reads`` is never called there and the mutation survives it.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+
+    # A second item with distinct content, so B shares neither path nor bytes
+    # with the landed body A.
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Timeout policy\n\nThirty seconds.\n")
+    )
+    # A stray file at B: read by no landed revision, so replacing it is
+    # legitimate. Without it the move is a create, not a replace, and the guard
+    # loop is never entered.
+    second.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    second.body_destination.write_text("stale, pinned by nothing\n", encoding="utf-8")
+    # Preconditions, so a pass cannot come from never reaching the discrimination:
+    # A and B are different inodes, and the landed set (reading A) is non-empty.
+    assert first.body_destination.stat().st_ino != second.body_destination.stat().st_ino
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    accepted = service.accept(second.proposal_id)
+
+    assert accepted.bodies[0].replaced, "the stray file at B was replaced"
+    assert second.body_destination.read_text() == "# Timeout policy\n\nThirty seconds.\n"
+    assert first.body_destination.read_text() == BODY, "the landed body A is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
+
+
 def test_accept_leaves_the_evidence_where_a_reviewer_will_read_it(
     service: ProposalService,
 ) -> None:

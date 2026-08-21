@@ -115,11 +115,16 @@ LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 #: (ADR-0003).
 #:
 #: The return is a :class:`~collections.abc.Collection`, not a bare
-#: ``Iterable``: the guard re-reads it once per replaced body, so a spent
-#: iterator would answer the first move and silently wave every later one
-#: through. ``Collection`` forbids that at the type edge -- the composition root
-#: must materialize the set at call time (both roots return the loaded
-#: ``MigrationSet``, which is re-iterable).
+#: ``Iterable``, as a defensive constraint on the callable rather than a
+#: description of the current caller. The guard invokes this once and
+#: materializes the result with ``tuple(...)`` before scanning that tuple per
+#: replaced body, so today it would stay correct even against a single-use
+#: generator. ``Collection`` guards a *future* refactor: one that iterated the
+#: returned value directly per move -- dropping the ``tuple(...)`` -- would, on a
+#: spent iterator, answer the first move and silently wave every later one
+#: through, and requiring re-iterability at the type edge forbids that shape from
+#: ever type-checking. Both roots return the loaded ``MigrationSet``, which is
+#: re-iterable, so the constraint costs nothing.
 LandedMigrations = Callable[[], Collection[Migration]]
 
 
@@ -468,6 +473,18 @@ class ProposalService:
         where the secret is already readable. Recorded as an accepted residual
         under the local-write boundary rather than closed with an ``st_nlink``
         check, which would refuse legitimate files.
+
+        **CP-2 invariant: no accept-path filesystem or path fault escapes
+        ``accept`` untranslated.** Every raw ``OSError`` (and every ``resolve()``
+        ``ValueError``) is caught at one of exactly two sites: the examination
+        phase's ``except OSError`` in this method, and :meth:`_commit`'s own
+        clause -- deliberately separate, because a failed *write* must roll the
+        destinations back before it reports, and one clause spanning both would
+        describe a half-written tree as an unreadable proposal. (:meth:`_destination_of`
+        translates its own ``resolve()`` fault in place; it runs inside the first
+        clause.) An editor adding a filesystem call to the accept path must land it
+        under one of those two clauses, or add a third that translates -- a raw
+        escape publishes no ``{error, remedy}`` under ``--json`` (#227).
 
         Raises:
             ProposalAlreadyAcceptedError: If this proposal's own migration is
@@ -1258,7 +1275,8 @@ class ProposalService:
         except (ValueError, OSError) as exc:
             raise ProposalError(
                 "The migration names a contentFile the filesystem cannot resolve to a path "
-                "-- it may hold a NUL byte or an unpaired surrogate.",
+                "-- it may be malformed (a NUL byte or an unpaired surrogate) or otherwise "
+                "unresolvable (a symlink loop, or a path past the system's length limit).",
                 remedy="Correct the contentFile the migration names, then accept it again.",
             ) from exc
         try:
