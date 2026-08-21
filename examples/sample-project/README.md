@@ -80,6 +80,8 @@ export THEURIAN_PORT=17419
 uv run --python 3.13 --with 'mcp==2.0.0' python query.py
 ```
 
+[`query-output.txt`](query-output.txt) shows that compact output.
+
 The top hit should be `domain.order-cancellation`. The useful part is not just
 that text matched the query; the result also carries the sample's approved
 status, review trust level, validity metadata, and declared GitHub review-thread

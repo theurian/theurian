@@ -1,0 +1,16 @@
+Command:
+
+  uv run --python 3.13 --with 'mcp==2.0.0' python query.py
+
+Regeneration source: the sample project at repository commit c7db7036ce81911e42d2532b807b753c0614f0c4.
+The evidence URI below is declared sample metadata, not fetched from or ingested
+from GitHub; it is illustrative and does not prove that the placeholder GitHub
+review exists.
+
+Output:
+
+  Found: domain.order-cancellation
+  Title: Order cancellation
+  Status: approved / trust=reviewed / valid=True
+  Evidence: https://github.com/acme/order-service/pull/431#discussion_r123
+  Excerpt: Order cancellation  # Order cancellation  ## Rule  An order may be cancelled while its status is `pending` and the current time is before `cancellationDeadline`. Both conditions are checked **before** any state mutation.
