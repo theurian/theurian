@@ -4156,7 +4156,7 @@ already built.
 
 **Control, part B — write-side, prevention.** A whole-set static guard,
 `refuse_alias_item_id_collision`
-([`application/migration_alias_guards.py`](../../packages/theurian-core/src/theurian/application/migration_alias_guards.py)),
+([`application/migration_alias_guards.py`](https://github.com/theurian/theurian/blob/main/packages/theurian-core/src/theurian/application/migration_alias_guards.py)),
 refuses a migration set that leaves an alias key colliding with an item id whose
 *final* status across the set is anything but `deprecated`. It runs at `migrate
 validate`, at `migrate apply`, and inside `MigrationEngine.apply`
