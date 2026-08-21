@@ -224,6 +224,49 @@ Landed in Milestone 7, by the `theurian propose` CL:
   accept` cannot disagree with `migrate validate`/`apply` about what has landed.
   The terminal-injection channel these messages could open is closed at the CLI's
   output sink, tested in `test_propose_cli.py::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`.
+- Every accept-path filesystem or path fault is translated to a `ProposalError`,
+  so `--json` always publishes an `{error, remedy}` document rather than escaping
+  a raw traceback (#227). The point-7 guarantee above only holds if the untrusted
+  proposal directory cannot crash the command that reads it. At the service layer,
+  `test_proposal_service.py::test_a_proposal_directory_that_cannot_be_read_is_answered_rather_than_crashing`,
+  `::test_a_proposal_directory_whose_entries_cannot_be_examined_is_answered`,
+  `::test_a_migration_file_that_cannot_be_opened_is_answered_rather_than_crashing`,
+  `::test_a_directory_that_lists_but_does_not_stat_is_examined_not_declared_absent`,
+  `::test_accept_translates_a_nul_in_the_content_file_path` and
+  `::test_accept_translates_a_lone_surrogate_in_the_content_file_path` cover the
+  directory, file and `resolve()` faults; the message names the offending path
+  relative to the project root, never the absolute path (SEC-7). At the CLI,
+  `test_propose_cli.py::test_accept_publishes_a_json_document_for_a_proposal_it_cannot_read`,
+  `::test_accept_publishes_a_json_document_when_the_migrations_dir_cannot_be_made`,
+  `::test_accept_publishes_a_json_document_for_a_nul_in_the_content_file` and
+  `::test_accept_publishes_a_json_document_for_a_surrogate_in_the_content_file`
+  assert the document reaches stdout.
+  `::test_accept_reports_a_completed_move_whose_source_cleanup_could_not_finish`
+  pins the one fault that must *not* fail: a landed move whose trailing cleanup
+  could not run degrades to success with a leftover-note remedy, because exit 1
+  would send the caller to re-draft and mint a duplicate migration (#89).
+- The replacement guard reads the project's loaded `MigrationSet` and keys on the
+  body's filesystem identity `(st_dev, st_ino)`, so it cannot disagree with the
+  loader about which body a landed revision reads (#234). This is what keeps the
+  amendment's per-revision-body reasoning true against a hand-authored proposal:
+  `test_proposal_service.py::test_the_pin_guard_sees_a_pin_held_by_a_symlinked_landed_migration`
+  drives the reproduction — a pin held by a relocated migration the old
+  `glob`-and-skip guard could not see, which let `accept` overwrite the body the
+  set validates against — and
+  `::test_accept_refuses_a_case_variant_of_a_landed_body` pins the inode key
+  against a case/NFC-NFD path variant that resolved to a different string on the
+  same file. The skip for the one legitimate replacement — this proposal's own
+  revision re-declared byte-for-byte, the in-place status change of ADR-0024
+  decision 5 — is a conjunction of equal revision id *and* equal bytes:
+  `::test_accept_allows_the_same_revision_re_declared_against_its_own_body` keeps
+  it, while `::test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision`
+  and `::test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision`
+  refuse a re-declare that reuses the id with different bytes, and
+  `::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body` with
+  `::test_accept_refuses_replacing_an_unpinned_landed_body` refuse a *different*
+  revision landing on the same body.
+  `::test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads` is the
+  control that an ordinary replacement is untouched.
 
 Still owed, with the milestone that brings the feature under test:
 

@@ -12,6 +12,47 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`propose accept` translates every accept-path filesystem or path fault into
+  an `{error, remedy}` document instead of escaping a raw traceback**
+  ([#227](https://github.com/theurian/theurian/issues/227)). A proposal directory
+  this process cannot list, stat or read; a migration or evidence file it cannot
+  open; a `contentFile` whose path `resolve()` refuses (a NUL byte or an unpaired
+  surrogate); an unwritable `.theurian/migrations/` — each used to leave `accept`
+  as a bare `OSError`/`ValueError`, so `--json` published nothing where it
+  promises a document. Each is now a `ProposalError` naming the offending path
+  relative to the project root — never the absolute path, which is the machine's
+  home directory (SEC-7) — whose remedy sends the reader to
+  `.theurian/migrations/` before re-drafting: a refused read establishes nothing
+  about whether the migration landed, and re-drafting an accepted proposal mints a
+  duplicate migration (#89). A move that landed but whose trailing cleanup of the
+  proposal's own copied files could not run (a read-only `0o555` proposal
+  directory) now degrades to success with a `remedy` naming the leftover, rather
+  than reporting a non-landing that would send the caller to re-draft.
+- **`propose accept`'s replacement guard reads the loaded migration set and keys
+  on the body's filesystem identity, closing a disagreement with the loader**
+  ([#234](https://github.com/theurian/theurian/issues/234)). The guard that
+  refuses a body replacement which would leave the migration set unable to
+  validate used to enumerate `.theurian/migrations/*.yaml` itself and skip the
+  symlinked entries the loader follows, so a pin held by a relocated (symlinked)
+  migration was invisible to it: the replacement was allowed, and the set then
+  stopped loading at exit 4 with no undo. It now reads the same `MigrationSet` the
+  loader produced, and compares on the body's `(st_dev, st_ino)` rather than a
+  path string.
+
+  **Behaviour change:** `accept` now refuses two inputs it previously let through,
+  both of which broke the set at exit 4. A `contentFile` differing from a landed
+  body only in path case or Unicode normalisation (`RETRY-POLICY.md` against a
+  landed `retry-policy.md`) is refused, because the identity key reaches one inode
+  by every spelling. And a re-declare that reuses a landed revision id while
+  supplying *different* bytes is refused: the one in-place re-declare `accept`
+  still allows — this proposal's own revision re-declared byte-for-byte, the
+  in-place status change of ADR-0024 decision 5 — now requires byte-identity as an
+  explicit conjunct, since a revision's content is immutable and overwriting the
+  body that id already froze breaks the pin. There are no users yet, but the
+  refusals change what `accept` exits on, so they are named here.
+
 ## [0.1.0.dev8] - 2026-08-20
 
 ### Added
