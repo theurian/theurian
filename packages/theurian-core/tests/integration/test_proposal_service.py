@@ -979,6 +979,114 @@ def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
+def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-two HIGH-1: an equal revision id is not a licence to change the bytes.
+
+    The equal-id skip once fired on the revision id alone, on the premise that a
+    landed revision re-declared under its own id must carry its own body. That is
+    false of contributor-authored input (ADR-0013 point 7): a hand-authored
+    proposal can reuse an *existing* landed revision id, point its ``contentFile``
+    at that revision's pinned body, and supply *different* bytes. The old guard
+    waved it through, the overwrite made the pin wrong, and ``migrate validate``
+    exited 4 for the whole set with no undo -- reproduced end to end
+    (``repro_high1_r2``: accept exit 0 -> set fails to load).
+
+    A revision's content is immutable, so the only legitimate in-place re-declare
+    (ADR-0024 decision 5) carries byte-identical content. Making byte-identity a
+    tested conjunct of the skip refuses this destructive face while
+    :func:`test_accept_allows_the_same_revision_re_declared_against_its_own_body`
+    keeps the legitimate one. The second proposal is drafted for a *different*
+    item so the draft-side guard does not fire, then its ``contentFile`` and
+    ``revisionId`` are hand-repointed at the first's -- exactly the committed,
+    contributor-authored shape that reaches this check.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(
+        _request(
+            item_id=ItemId("architecture.other"),
+            body="# Retry policy\n\nFIVE HUNDRED attempts.\n",
+        )
+    )
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the pinned body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The unpinned face of the same class: no pin to break, content still immutable.
+
+    ``contentSha256`` is optional (the loader adopts the body's current hash where
+    it is absent, #210), so a landed revision may reference a body it does not
+    freeze. There is no pin to break here, but re-declaring that revision under
+    its own id with *different* bytes still silently mutates immutable content and
+    leaves the set at exit 4 (``refuse_duplicate_content_files``). The byte-identity
+    conjunct refuses both faces at once: the guard reads the loaded operation's
+    ``content_sha256`` -- populated pinned or not -- and compares it with the
+    incoming bytes, so the missing pin does not open the gap.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # Strip the declared pin from the landed migration: the body is now referenced
+    # but not frozen -- the loader still records its hash, so the guard still sees
+    # the bytes the re-declare would overwrite.
+    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
+    landed.write_text(
+        "\n".join(
+            line
+            for line in landed.read_text(encoding="utf-8").splitlines()
+            if "contentSha256" not in line
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert "contentSha256" not in landed.read_text(encoding="utf-8")
+
+    second = service.draft(
+        _request(
+            item_id=ItemId("architecture.other"),
+            body="# Retry policy\n\nFIVE HUNDRED attempts.\n",
+        )
+    )
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the immutable body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
 def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
     service: ProposalService, paths: ProjectPaths
 ) -> None:

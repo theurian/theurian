@@ -981,10 +981,14 @@ class ProposalService:
         hand-authored ``contentFile`` reusing an existing body's path, and
         refusing there breaks nothing legitimate -- the honest way to change a
         body is a new revision at a new path. The one landed reference that is
-        *not* a break is this proposal's own revision re-declared against its own
-        body (an in-place status change, ADR-0024 decision 5): same revision id,
-        no second revision, nothing to break -- which is why the key is the
-        *pair* (identity, other revision id) and not identity alone.
+        *not* a break is this proposal's own revision re-declared **byte for
+        byte** against its own body (an in-place status change, ADR-0024
+        decision 5): the revision id does not move and, because a revision's
+        content is immutable, the bytes do not either, so nothing changes. Both
+        conjuncts are required. A re-declare that keeps the revision id but
+        supplies *different* bytes is a break -- it overwrites the immutable body
+        that id already froze -- so the skip is keyed on the triple (identity,
+        equal revision id, equal bytes), not on the id alone.
         """
         replaced = [move for move in moves if move.replaced]
         if not replaced:
@@ -1014,7 +1018,7 @@ class ProposalService:
         identity: tuple[int, int],
         move: _BodyMove,
     ) -> bool:
-        """Does a landed ``upsertRevision`` other than this move's already read ``identity``?
+        """Does a landed ``upsertRevision`` already read ``identity`` in a way this move breaks?
 
         **Closure (the class this closes).** The migrations come from the
         project's *loaded* set, through the injected :data:`LandedMigrations` --
@@ -1029,20 +1033,62 @@ class ProposalService:
         is not, which is why the comparison is the loader's own
         ``content_identity`` and not a path string.
 
-        The revision-id guard is what keeps the in-place re-declare working: a
-        landed operation reading this destination under *this move's own*
-        revision id is that legitimate case (ADR-0024 decision 5), not a second
-        revision, so it is skipped. Everything else on the same inode is a break.
+        The one landed reference that is *not* a break is this proposal's own
+        revision re-declared **byte for byte** against its own body -- an in-place
+        status change (ADR-0024 decision 5), which carries identical content
+        because a revision's content is immutable. The skip therefore has two
+        conjuncts, not one: the landed operation's revision id equals this move's,
+        *and* this move's bytes hash to what that operation reads. Keying on the
+        id alone let a hand-authored proposal reuse a landed revision id while
+        supplying *different* bytes, overwriting the pinned body that id already
+        froze and leaving the set at exit 4 with no undo -- the prior premise
+        "same revision id implies its own body implies byte-identical" made
+        byte-identity an assumed consequence, and making it a tested conjunct is
+        what closes the class. Requiring it refuses both destructive faces at
+        once: the pinned face (the overwrite breaks the pin) and the unpinned
+        face (immutable content silently mutated, which
+        ``refuse_duplicate_content_files`` then rejects). Everything else on the
+        same inode -- a different revision, or the same revision with different
+        bytes -- is a break.
         """
+        incoming = ContentHash.of_bytes(move.data)
         for migration in landed:
             for operation in migration.operations:
                 if not isinstance(operation, UpsertRevision):
                     continue
-                if operation.revision_id.value == move.revision_id:
+                if not self._operation_reads(operation, identity, move.destination):
                     continue
-                if self._operation_reads(operation, identity, move.destination):
-                    return True
+                # A landed revision already reads the body this move would
+                # overwrite. That is a break unless it is this proposal's own
+                # revision re-declared byte-for-byte -- the sole in-place
+                # re-declare ADR-0024 decision 5 admits, and the only case in
+                # which overwriting the body changes nothing the set has pinned.
+                if operation.revision_id.value == move.revision_id and self._reads_identical_bytes(
+                    operation, incoming, move.destination
+                ):
+                    continue
+                return True
         return False
+
+    def _reads_identical_bytes(
+        self, operation: UpsertRevision, incoming: ContentHash, destination: Path
+    ) -> bool:
+        """Whether ``operation`` reads exactly ``incoming``'s bytes.
+
+        The loader records every operation's body hash in ``content_sha256`` --
+        the declared pin, or the body's hash as it read it, but always one
+        (:class:`UpsertRevision`), and this guard only ever iterates the loaded
+        set. ``None`` is therefore the in-memory case the loader never produces;
+        for it the bytes now at ``destination`` -- the file the operation was
+        already matched to read (:meth:`_operation_reads`) -- are hashed instead.
+        That read sits inside :meth:`accept`'s examination-phase ``except
+        OSError``, so a filesystem refusal to read it becomes a CP-2
+        ``ProposalError``, not a raw escape.
+        """
+        landed = operation.content_sha256
+        if landed is None:
+            landed = ContentHash.of_bytes(destination.read_bytes())
+        return incoming.value == landed.value
 
     def _operation_reads(
         self, operation: UpsertRevision, identity: tuple[int, int], destination: Path
