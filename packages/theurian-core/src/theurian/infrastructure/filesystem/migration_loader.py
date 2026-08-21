@@ -17,7 +17,7 @@ from datetime import datetime
 from functools import lru_cache
 from itertools import chain
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import Any, Final, override
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -143,8 +143,15 @@ MAX_DOCUMENT_NESTING: Final = 64
 #: Generous by three orders of magnitude, on purpose. This repository's own 26
 #: committed migrations walk to 67-73 nodes each (measured 2026-08-21 over
 #: `.theurian/migrations`). The bound refuses nothing an author legitimately
-#: writes while capping the guard's own walk -- and every repr `validate`
-#: performs on a document that passes it -- at this many steps.
+#: writes while capping the guard's own walk -- and jsonschema's own
+#: `{instance!r}` *structural* re-expansion of a document that passes it -- at
+#: this many steps: that repr re-expands the same shared references this walk
+#: counted, so a document held to N un-collapsed nodes reprs at most N of them.
+#: It does *not* cap a single scalar's repr magnitude -- a giant integer is one
+#: node whose decimal render is unbounded by any node count, and jsonschema
+#: renders it into its own rejection message. That face is one integer, so this
+#: count cannot catch it; it is closed separately in :func:`_validate_document`
+#: (issue #291's scalar face).
 MAX_DOCUMENT_NODES: Final = 100_000
 
 #: Ceiling on how much of an author-written value a schema rejection may echo,
@@ -349,9 +356,15 @@ def _refuse_a_document_that_nests_too_deep(
     through to ``validate``, moving the cost into a dependency this module
     cannot bound. So the walk counts every reference and refuses at
     :data:`MAX_DOCUMENT_NODES` -- which bounds both this walk's own cost and
-    every repr ``validate`` performs on a document that passes it. The node
-    count is checked as each child is *discovered*, so the frontier itself never
-    grows past the cap even for a single very wide node.
+    jsonschema's own ``{instance!r}`` *structural* re-expansion on a document
+    that passes it: that repr re-expands the same shared references this walk
+    counted. What the node count does *not* bound is a single scalar's repr
+    magnitude -- a giant integer is one node whose decimal render is unbounded,
+    and jsonschema renders it into its rejection message; that face is closed
+    separately, in :func:`_validate_document`, by translating the ``ValueError``
+    the render raises (issue #291's scalar face). The node count is checked as
+    each child is *discovered*, so the frontier itself never grows past the cap
+    even for a single very wide node.
 
     Both checks run before ``validate`` rather than as a wider ``except`` around
     it, because the two sources of a validate-time ``RecursionError`` cannot be
@@ -478,6 +491,19 @@ def _validate_document(
     `document_name` exists for the same split -- the depth refusal above is
     raised here rather than by a caller, so it is told the file name the
     loading seam would otherwise have added itself.
+
+    A raw `ValueError`, by contrast, *is* translated here rather than left to
+    propagate. `jsonschema` renders the failing value into its message with
+    `{instance!r}`, and an integer past CPython's int->str conversion limit
+    (`sys.get_int_max_str_digits()`) raises `ValueError` from that render
+    *instead of* raising a `ValidationError` at all -- so it slipped past every
+    `except ValidationError` seam as a raw traceback (CP-2). A single integer is
+    one node, so :data:`MAX_DOCUMENT_NODES`, which bounds node *count*, cannot
+    catch it: this is the scalar face of issue #291's repr denial of service. It
+    is a document fault, named with `document_name` the way the depth refusal is,
+    and it becomes a `MigrationError` here because there is no `ValidationError`
+    for a caller to wrap; the value is never echoed, since rendering it is the
+    very thing that just failed.
     """
     _refuse_a_document_that_nests_too_deep(document, document_name)
     try:
@@ -492,6 +518,20 @@ def _validate_document(
     except RecursionError as exc:
         reason = "a schema $ref resolves recursively without terminating"
         raise SchemaUnreadableError(str(schema_validator.schema_path), reason) from exc
+    except ValueError as exc:
+        # An integer past CPython's int->str conversion limit raises here while
+        # jsonschema renders the failing value with `{instance!r}` -- a document
+        # fault the node cap cannot catch (one scalar is one node), and not a
+        # `ValidationError`, so it escaped every `except ValidationError` seam as
+        # a raw traceback (CP-2, #291's scalar face). The value is not echoed:
+        # being too large to render is itself the diagnosis (SEC-7).
+        subject = f"{document_name} holds" if document_name else "This document holds"
+        raise MigrationError(
+            f"{subject} a value too large to render. jsonschema builds its rejection "
+            f"message by rendering the failing value, and an integer past CPython's "
+            f"digit limit for that conversion cannot be rendered. A migration value is a "
+            f"short identifier, a string, or a small number; reduce it."
+        ) from exc
 
 
 def _bounded(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
@@ -513,15 +553,62 @@ def _bounded(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
     return f"{rendered[:limit]}... ({len(rendered)} characters in all)"
 
 
-#: A bounded renderer for the one author-written value a schema rejection
-#: echoes. `reprlib.Repr` truncates *while* rendering -- it stops at ``maxlevel``
-#: and at each container's element budget -- so a shared-reference (alias) graph
-#: that plain ``repr`` would re-expand into millions of nodes, or a chain too
-#: deep for ``repr`` to render without a `RecursionError`, is rendered in
-#: bounded time and depth. The guard above refuses either shape before a
-#: document reaches `validate`, so this is defense in depth for a value that
-#: reaches :func:`_schema_rejection` some other way (issues #289, #291).
-_ECHO: Final = reprlib.Repr(
+#: Ceiling on the bit length of an integer :func:`_echo` will render in decimal.
+#: `reprlib.repr_int` converts the whole integer to a decimal string *before*
+#: truncating it, so an integer past CPython's int->str conversion limit raises
+#: `ValueError` from that conversion (measured: ``10**5000``) -- which would
+#: crash the rejection builder. `bit_length` is O(bits) with no decimal
+#: conversion, so keying on it refuses the render before any string exists. 2000
+#: bits is at most 603 decimal digits, below the 640-digit floor
+#: `sys.set_int_max_str_digits` cannot be set beneath, so every integer that
+#: *reaches* `repr_int` converts without raising however that process limit is
+#: tuned; any integer larger than this is a denial of service rather than a real
+#: migration value (a `confidence` float or a small count) and renders as a
+#: placeholder. A giant integer reaching `validate` is refused upstream, in
+#: :func:`_validate_document`; this keeps `_echo`, reached out-of-band, from
+#: raising too (issue #291's scalar face).
+_MAX_ECHOED_INT_BITS: Final = 2_000
+
+
+class _BoundedRepr(reprlib.Repr):
+    """A `reprlib.Repr` that also bounds an integer by magnitude, not only width.
+
+    Every other value `reprlib` renders is bounded by depth (`maxlevel`), by
+    per-container width, or by string length. An *integer* is not: `repr_int`
+    stringifies the whole value first, so a large enough integer raises
+    `ValueError` at CPython's int->str limit before any truncation runs. This
+    refuses to render such an integer at all, keying on `bit_length` so no
+    decimal string is ever built -- which keeps the render total, a giant integer
+    inside a container becoming a placeholder while the rest still renders.
+    """
+
+    @override
+    def repr_int(self, x: int, level: int) -> str:
+        if x.bit_length() > _MAX_ECHOED_INT_BITS:
+            # The size is the whole diagnosis for a value refused for being large
+            # (SEC-7); the exact bit length is free and never triggers the
+            # conversion that would raise.
+            return f"<integer too large to render: {x.bit_length()} bits>"
+        return super().repr_int(x, level)
+
+
+#: A bounded renderer for the one author-written value a schema rejection echoes.
+#: `maxstring`/`maxother` track :data:`MAX_ECHOED_VALUE` (they bound the *output
+#: length*, later re-bounded by `_bounded`); `maxlevel` and the per-container
+#: width budgets (12) bound the render *work*, and they are load-bearing DoS
+#: knobs. Because `reprlib` does not collapse shared references, a walk to
+#: `maxlevel` that re-expands up to 12 children per level is up to 12**maxlevel
+#: renders: raising either constant re-introduces that width**level blow-up. So
+#: `reprlib` bounds render *depth*, not total work -- a *chain* too deep for
+#: plain `repr` to render without a `RecursionError` is rendered (it stops at
+#: `maxlevel`), but a *branching* alias graph reached out-of-band still costs
+#: width**level (measured: ~12**8, 14.3 s at level 7, unfinished at level 8). The
+#: bound on the reachable path is the *guard* above, which refuses such a
+#: document before `validate` (:data:`MAX_DOCUMENT_NODES`); this echo is defense
+#: in depth for a value reaching :func:`_schema_rejection` some other way, and it
+#: is not itself bounded on a branching graph reached that way (issues #289,
+#: #291).
+_ECHO: Final = _BoundedRepr(
     maxlevel=8,
     maxtuple=12,
     maxlist=12,
@@ -536,14 +623,26 @@ _ECHO: Final = reprlib.Repr(
 def _echo(instance: object) -> str:
     """``instance`` rendered for a schema-rejection message, bounded twice over.
 
-    `reprlib` bounds the *work* -- it never recurses past ``maxlevel`` or renders
-    past each container's element budget, so an alias graph or a chain deep
-    enough to defeat plain ``repr`` is rendered in bounded time and depth, and
-    the control characters `repr` escapes stay escaped. `_bounded` then bounds
-    the *length* of what is left, so the total is capped at
-    :data:`MAX_ECHOED_VALUE` however the per-element budgets happen to sum.
+    `reprlib` bounds render *depth* (``maxlevel``) and per-container *width*, and
+    truncates a giant integer by magnitude (:class:`_BoundedRepr`) and a string
+    at ``maxstring`` -- so a chain too deep for plain ``repr``, or a scalar too
+    large for it, is rendered without raising, and the control characters `repr`
+    escapes stay escaped. It does *not* bound total work on a *branching* alias
+    graph reached out-of-band (see :data:`_ECHO`); the reachable-path bound is
+    the guard, not this. `_bounded` then bounds the *length* of what is left, so
+    the total is capped at :data:`MAX_ECHOED_VALUE` however the per-element
+    budgets happen to sum.
+
+    `reprlib`'s ``maxstring`` truncates a string *before* `_bounded` can measure
+    it, which would hide the true length -- and for a value refused *for being
+    large*, that length is the diagnosis (`_bounded`'s docstring). So the true
+    length is restored here for a `str`/`bytes` instance, where it is known in
+    O(1); a reader cannot otherwise tell a 1 KB value from a 100 KB one.
     """
-    return _bounded(_ECHO.repr(instance))
+    rendered = _bounded(_ECHO.repr(instance))
+    if isinstance(instance, str | bytes) and len(instance) > MAX_ECHOED_VALUE:
+        return f"{rendered} ({len(instance)} characters in all)"
+    return rendered
 
 
 def _missing_required_properties(exc: ValidationError) -> list[str]:
@@ -691,8 +790,11 @@ def _schema_rejection(exc: ValidationError) -> str:
     unbounded, unescaped echo. `_echo` renders the failing instance with
     `reprlib` -- bounded in depth and length, control characters escaped -- so an
     ESC or newline an author wrote cannot forge a line of this seam's output, and
-    an alias graph or a chain too deep for plain `repr` cannot cost unbounded
-    work here.
+    a chain too deep for plain `repr`, or a scalar too large for it, is rendered
+    without raising. What bounds a *branching* alias graph -- which `reprlib`
+    would still re-expand at width**level -- is the guard that refuses such a
+    document before `validate`, not `_echo` itself, which is defense in depth for
+    a value reaching here out-of-band (:data:`_ECHO`, :data:`MAX_DOCUMENT_NODES`).
     """
     location = _location(exc.absolute_path)
     missing = _missing_required_properties(exc)

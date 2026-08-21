@@ -52,6 +52,7 @@ from theurian.infrastructure.filesystem import migration_loader
 from theurian.infrastructure.filesystem.migration_loader import (
     MAX_DOCUMENT_NESTING,
     MAX_DOCUMENT_NODES,
+    _echo,
     _escape_role_of,
     _refuse_a_document_that_nests_too_deep,
     _schema_rejection,
@@ -2622,6 +2623,97 @@ def test_a_schema_rejection_still_names_where_in_the_document_it_failed() -> Non
     assert "operations/0" in str(excinfo.value), "the reader needs the failing location"
 
 
+def test_a_schema_rejection_names_the_true_size_of_an_oversized_scalar() -> None:
+    """MEDIUM: round two's switch from ``_bounded(repr(...))`` to ``_echo(...)``
+    dropped the size diagnosis for a scalar. ``_ECHO``'s ``maxstring`` truncates
+    the string *before* ``_bounded`` can measure it, so the ``(N characters in
+    all)`` marker that lets a reader tell 1 KB from 100 KB was lost --
+    ``_bounded``'s "size is the diagnosis" docstring falsified for this path.
+
+    An oversized ``author`` fails ``maxLength`` at the *leaf*, where the failing
+    instance is the hostile string itself (the reason ``_CONTROL_CHARACTER_AUTHOR``
+    also sits on ``author`` rather than inside the operation, whose instance is a
+    mapping). ``_echo`` now restores the true length for a ``str`` instance, so
+    the message names 100000. RED before the fix: measured, the true length
+    appeared nowhere in the message.
+    """
+    document = _document_with(author=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the value itself is still not echoed whole"
+    assert str(len(_OVERSIZED_VALUE)) in message, "the true size is the diagnosis, and named"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+# -- issue #291's scalar face: a giant integer's repr is not bounded by node ---
+# -- count -----------------------------------------------------------------------
+#
+# `MAX_DOCUMENT_NODES` bounds how many nodes a document holds, and jsonschema's
+# `{instance!r}` re-expands shared references at that same count -- but a single
+# integer is one node whose *decimal* render is unbounded. Past CPython's
+# int->str conversion limit (`sys.get_int_max_str_digits()`, default 4300),
+# rendering it raises `ValueError`, not a `ValidationError`, so it escaped every
+# `except ValidationError` seam as a raw traceback (CP-2). Orchestrator-
+# reproduced with `10**5000`.
+
+
+def test_validate_migration_document_translates_a_giant_integer_scalar() -> None:
+    """RED before the fix: `validator.validate` renders the failing `author`
+    with `{instance!r}`, and an integer past the int->str limit raises a raw
+    `ValueError` there -- not a `ValidationError`, so it reaches the caller as a
+    traceback rather than a translated refusal.
+
+    A single integer is one node, so `MAX_DOCUMENT_NODES` (a count) cannot catch
+    it; `_validate_document` translates the `ValueError` to `MigrationError`
+    instead -- what every other document fault at this seam raises.
+    `pytest.raises(MigrationError)` excludes the raw `ValueError` today's code
+    escapes, and the value is not echoed (rendering it is what just failed).
+    """
+    document: dict[str, Any] = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K1KKKKKK01234567890ABCDE",
+        "createdAt": "2026-08-02T10:00:00+09:00",
+        "author": 10**5000,  # one node, but its decimal render is unbounded
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": "architecture.auth-policy",
+                "kind": "architecture",
+                "namespace": "backend",
+                "owner": "platform-team",
+            }
+        ],
+    }
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "too large to render" in message, "the diagnosis is the value's size, named"
+    assert "reduce it" in message, "the refusal carries a remedy"
+    assert "9999" not in message and "0000" not in message, "the value itself is not echoed"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_load_migrations_translates_a_giant_integer_literal(project: Path) -> None:
+    """The load path's regression pin (GREEN today): a giant-integer YAML
+    *literal* raises `ValueError` one layer earlier, at `load_yaml_mapping`'s own
+    `int()` of the 5001-digit token, and `_load_one`'s `except ValueError`
+    already translates it to `MigrationError`. Pinned so a change to either seam
+    cannot reopen the escape on the path a repository author actually reaches.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-big.yaml").write_text(
+        _VALID_MIGRATION.replace("author: engineer@example.com", "author: " + "9" * 5001)
+    )
+
+    with pytest.raises(MigrationError):
+        load_migrations(project, migrations_dir, real_schema_root())
+
+
 #: The migration file the two loader-seam tests below drive. Named once so the
 #: "still names the file" assertion and the fixture cannot drift apart.
 _OVERSIZED_MIGRATION_FILENAME = "01K1KKKKKK01234567890ABCDE-oversized-owner.yaml"
@@ -3017,6 +3109,58 @@ def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
 
     assert "author" in message, "the location is still named"
     assert len(message) <= 2000, "the echo is bounded"
+
+
+def test_echo_bounds_a_giant_integer_instead_of_raising() -> None:
+    """Issue #291's scalar face at the renderer. RED before the fix: `_ECHO.repr`
+    defers to `reprlib.repr_int`, which stringifies the whole integer before
+    truncating and raises `ValueError` at the int->str limit -- so `_echo`, the
+    defense-in-depth renderer, crashed on the very value it exists to render
+    safely (`_schema_rejection` hands it `exc.instance`).
+
+    `_BoundedRepr` refuses to convert an integer past `_MAX_ECHOED_INT_BITS`,
+    keying on `bit_length` so no decimal string is ever built. The render stays
+    *total*: a giant integer inside a container becomes a placeholder while the
+    rest of the container still renders.
+    """
+    placeholder = _echo(10**5000)  # must not raise ValueError
+    assert "too large to render" in placeholder, "the size is named, inert"
+    assert len(placeholder) <= 2000, "the echo is bounded"
+
+    in_container = _echo({"author": 10**5000, "sibling": 1})  # must not raise
+    assert "too large to render" in in_container, "the giant scalar is bounded in place"
+    assert "'sibling': 1" in in_container, "the rest of the container still renders"
+
+
+def test_a_schema_rejection_bounds_and_escapes_a_hostile_location_segment() -> None:
+    """MEDIUM: `_location`'s per-segment escape and length bound had no driving
+    test, and two mutations survived it -- `escape-control-to-identity` (drop
+    `_escape_control`) and `location-drop-bound-and-escape` (echo the raw
+    segment). The bundled schema descends into no author-written key today
+    (`additionalProperties: false`, no `patternProperties`), so this drives
+    `_schema_rejection`/`_location` directly with a location `jsonschema` would
+    only build if a future schema let it descend into a hostile key.
+
+    A location segment lands in a terminal and in a JSON payload an agent reads,
+    so a raw ESC repaints the terminal and a raw newline forges a line of
+    Theurian's own output; the segment must arrive escaped and bounded. The last
+    assertion keeps the first two from being met by echoing nothing at all.
+    """
+    hostile_segment = "\x1b[31mRED\x1b[0m\ninjected" + "A" * 5000
+    exc = ValidationError(
+        "unused",
+        validator="type",
+        validator_value="string",
+        instance="x",
+        path=[hostile_segment],
+    )
+
+    message = _schema_rejection(exc)
+
+    assert "\x1b" not in message, "a raw ESC byte in the location repaints the terminal"
+    assert "\n" not in message, "a raw newline in the location forges a line of output"
+    assert "\\x1b[31mRED\\x1b[0m" in message, "the escape survives as inert text"
+    assert "characters in all" in message, "the oversized segment is bounded, and says so"
 
 
 # -- issue #289: a rejection must keep the schema-side fact, not just echo the ---
