@@ -24,6 +24,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -3292,6 +3293,15 @@ def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
     guard refuses such a document before it reaches `validate`, so this drives
     `_schema_rejection` directly: it is the seam's own robustness that is pinned,
     not a reachable path.
+
+    The bracket-depth assertion pins ``maxlevel`` itself (MEDIUM, round one: a
+    mutation widening it from 8 to 200 survived the suite -- length alone misses
+    it, since the outer bound caps the message either way). ``maxlevel`` is the
+    knob that stops the render descending, and it is a load-bearing DoS knob on a
+    *branching* graph reached out-of-band: this deep *chain* renders one bracket
+    per level, so 8 levels give ~9 open brackets and 200 give ~201 -- far apart,
+    and a widened `maxlevel` re-opens the width**level blow-up the knob exists to
+    cap.
     """
     deep: object = "leaf"
     for _ in range(12_000):  # past the ~9,997 a shallow stack can repr
@@ -3304,6 +3314,9 @@ def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
 
     assert "author" in message, "the location is still named"
     assert len(message) <= 2000, "the echo is bounded"
+    assert message.count("[") < 20, (
+        "the render must stop at maxlevel; a widened maxlevel descends far deeper"
+    )
 
 
 def test_echo_bounds_a_giant_integer_instead_of_raising() -> None:
@@ -3325,6 +3338,47 @@ def test_echo_bounds_a_giant_integer_instead_of_raising() -> None:
     in_container = _echo({"author": 10**5000, "sibling": 1})  # must not raise
     assert "too large to render" in in_container, "the giant scalar is bounded in place"
     assert "'sibling': 1" in in_container, "the rest of the container still renders"
+
+
+def test_a_schema_rejection_bounds_a_fat_multi_field_operation() -> None:
+    """MEDIUM (round one): the echo renderer's message-boundary knobs -- the outer
+    `_bounded` in `_echo`, and the per-container width -- were pinned by no test,
+    and adversarial mutations widening the width (12 -> 1200) and dropping the
+    outer `_bounded` both survived the suite.
+
+    A "fat" operation of 40 unknown fields, each 500 characters and none over
+    `MAX_ECHOED_VALUE` on its own, fails ``#/$defs/operation``'s ``oneOf`` and is
+    echoed whole as a mapping. Its pre-bound repr runs to ~6,000 characters:
+
+    * The outer `_bounded` is what caps the message. Drop it and the echo is the
+      full ~6,000-character repr, so the message blows past the cap -- RED under
+      the mutation removing the outer `_bounded` in `_echo`, confirmed directly.
+    * The per-container width bounds how many of the 40 fields the repr reaches,
+      and thus the ``(N characters in all)`` total the outer bound then reports:
+      ~6,200 at width 12, ~20,700 at width 1200 (measured). The message length
+      stays capped either way, so a length assertion alone misses the widening;
+      the reported total is what catches it.
+
+    The message stays bounded (kills the dropped-outer-bound mutation) and its
+    echoed total reflects the width-12 render (kills the width-widening one).
+    """
+    fat_fields = {f"extra{i}": "v" * 500 for i in range(40)}
+    document = _document_with(**fat_fields)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "does not satisfy 'oneOf'" in message, "the fixture must drive the oneOf echo"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, (
+        f"the outer bound must cap the message; it is {len(message)} characters"
+    )
+    echoed_totals = [int(n) for n in re.findall(r"\((\d+) characters in all\)", message)]
+    assert echoed_totals, "the echo names how large the rendered operation was"
+    assert echoed_totals[-1] < 12_000, (
+        f"the width bound must limit the fields rendered; total is {echoed_totals[-1]} "
+        f"(width 12 renders ~6 K, an unbounded width ~20 K)"
+    )
 
 
 def test_a_schema_rejection_bounds_and_escapes_a_hostile_location_segment() -> None:
