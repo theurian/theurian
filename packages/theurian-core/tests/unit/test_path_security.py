@@ -353,20 +353,22 @@ def test_oversized_file_is_refused(project_root: Path, monkeypatch: pytest.Monke
 )
 def test_input_too_large_error_carries_its_own_actionable_remedy(limit_name: str) -> None:
     """Issue #287: ``InputTooLargeError.__init__`` never set ``self.remedy``, so
-    every one of its four raise sites -- ``security/paths.py`` (bytes),
-    ``security/yaml_loading.py``, ``normalization/projection.py`` (characters),
-    and ``parsers/structured.py`` -- left ``TheurianError.remedy``'s empty-string
-    default in place. ``cli/commands.py::_context_remedy`` prefers a non-empty
-    ``exc.remedy`` over a type-keyed default (checked first, not per type), so
-    an empty one here sent an oversized input to a generic fallback that says
-    nothing about the size problem at all.
+    every one of its raise sites -- five statements across four modules:
+    ``security/paths.py`` (bytes, which raises it twice), ``security/yaml_loading.py``,
+    ``normalization/projection.py`` (characters), and ``parsers/structured.py`` --
+    left ``TheurianError.remedy``'s empty-string default in place.
+    ``cli/commands.py::_context_remedy`` prefers a non-empty ``exc.remedy`` over a
+    type-keyed default (checked first, not per type), so an empty one here sent an
+    oversized input to a generic fallback that says nothing about the size problem
+    at all.
 
-    ``limit_name`` is parametrized over the exact strings every raise site
-    passes, and its *unit* varies between them (bytes for a source file,
-    characters for projected text) -- so this pins only the wording the remedy
-    must share regardless of unit: that the input is too large, and that
-    shrinking or splitting it is the fix. It does not pin a whole sentence,
-    which would force one raise site's unit onto every other one.
+    ``limit_name`` is parametrized over the four distinct strings the raise sites
+    pass (the two in ``security/paths.py`` share ``"source file size"``), and its
+    *unit* varies between them (bytes for a source file, characters for projected
+    text) -- so this pins only the wording the remedy must share regardless of
+    unit: that the input is too large, and that shrinking or splitting it is the
+    fix. It does not pin a whole sentence, which would force one raise site's unit
+    onto every other one.
     """
     error = InputTooLargeError(limit_name, 100, 200)
 
