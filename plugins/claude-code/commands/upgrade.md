@@ -90,8 +90,8 @@ there is one place to correct if the vendor's behaviour changes.
   `theurian[daemon]` keeps it across an upgrade. Naming the extra here would
   imply that upgrading repairs a bare install, and it does not — measured, a bare
   install re-resolves to a bare install. That user needs
-  `uv tool install 'theurian[daemon]'` instead, which is what `/theurian:setup`
-  and the `SessionStart` hook already tell them.
+  `uv tool install --python 3.13 'theurian[daemon]'` instead, which is what
+  `/theurian:setup` and the `SessionStart` hook already tell them.
 - If the outcome is `core-too-new`, the answer is to update the plugin, not to
   downgrade Core. Downgrading Core to satisfy one plugin breaks every other
   client on the machine.
