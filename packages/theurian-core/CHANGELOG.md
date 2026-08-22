@@ -17,11 +17,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - **`propose accept` translates every accept-path filesystem or path fault into
   an `{error, remedy}` document instead of escaping a raw traceback**
   ([#227](https://github.com/theurian/theurian/issues/227)). A proposal directory
-  this process cannot list, stat or read; a migration or evidence file it cannot
-  open; a `contentFile` whose path `resolve()` refuses (a NUL byte or an unpaired
+  this process cannot list, stat or read; a migration file it cannot open; a
+  `contentFile` whose path `resolve()` refuses (a NUL byte or an unpaired
   surrogate); an unwritable `.theurian/migrations/` — each used to leave `accept`
   as a bare `OSError`/`ValueError`, so `--json` published nothing where it
-  promises a document. Each is now a `ProposalError` naming the offending path
+  promises a document. (An unreadable `evidence.json` is not in this set: it was
+  already translated to an indeterminate document in 0.1.0.dev8,
+  [#253](https://github.com/theurian/theurian/issues/253).) Each is now a `ProposalError` naming the offending path
   relative to the project root — never the absolute path, which is the machine's
   home directory (SEC-7) — whose remedy sends the reader to
   `.theurian/migrations/` before re-drafting: a refused read establishes nothing
@@ -41,17 +43,82 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   loader produced, and compares on the body's `(st_dev, st_ino)` rather than a
   path string.
 
-  **Behaviour change:** `accept` now refuses two inputs it previously let through,
-  both of which broke the set at exit 4. A `contentFile` differing from a landed
-  body only in path case or Unicode normalisation (`RETRY-POLICY.md` against a
-  landed `retry-policy.md`) is refused, because the identity key reaches one inode
-  by every spelling. And a re-declare that reuses a landed revision id while
-  supplying *different* bytes is refused: the one in-place re-declare `accept`
-  still allows — this proposal's own revision re-declared byte-for-byte, the
-  in-place status change of ADR-0024 decision 5 — now requires byte-identity as an
-  explicit conjunct, since a revision's content is immutable and overwriting the
-  body that id already froze breaks the pin. There are no users yet, but the
-  refusals change what `accept` exits on, so they are named here.
+  **Behaviour change:** `accept` now refuses four inputs it previously let
+  through, each of which then broke the loaded set at exit 4:
+
+  - a *different* revision replacing an **unpinned** landed body — the old guard
+    filtered on the pin and waved this through, yet the set then holds two
+    revisions on one physical file (`refuse_duplicate_content_files`, exit 4);
+  - a byte-identical replacement of a **pinned** landed body under a *different*
+    revision id — the old guard treated "byte-identical changes nothing" as true
+    of the *set*, but it is the same two-revisions-on-one-file break;
+  - a **hardlink** to a landed body — the identity key `(st_dev, st_ino)` reaches
+    the same inode by every alias, where the old path-string compare saw none;
+  - a **case variant** of a landed body's path (`RETRY-POLICY.md` against a landed
+    `retry-policy.md`) — likewise one inode by every spelling. A Unicode
+    normalisation variant reaches it the same way, though no test exercises that
+    face.
+
+  The one in-place re-declare `accept` still allows — this proposal's own revision
+  re-declared byte-for-byte **on the same item**, the in-place status change of
+  ADR-0024 decision 5 — is an explicit conjunction of equal item id, revision id
+  and bytes. A byte-*different* re-declare of a *pinned* landed revision was
+  already refused before this branch and is unchanged. There are no users yet, but
+  the refusals change what `accept` exits on, so they are named here.
+- **`propose accept` refuses a cross-item re-declare of a landed revision id**
+  (round-one review finding). The replacement-guard skip that admits the one
+  legitimate in-place re-declare (ADR-0024 decision 5) fired on two conjuncts —
+  equal revision id and equal bytes — so a byte-identical body re-declared under a
+  *different* item's id passed it. `accept` returned 0, and `migrate validate`
+  passed too (it does not check cross-item revision ownership); then `migrate
+  apply` refused the whole set at exit 4 ("a revision id belongs to one item",
+  INV-1/SEC-13) after the pull request had merged and the proposal was already
+  consumed, with no undo. The skip now carries the item id as a third conjunct
+  (item id, revision id, bytes), moving that refusal to the accept door. No
+  rejected-item content is disclosed either way — `store.py` refuses a cross-item
+  revision-id reuse before it reads content (SEC-13) — so this spares the operator
+  a consumed proposal; it does not add a disclosure control.
+- **`propose accept` refuses a migration whose id the loaded set already holds
+  under another filename** (round-one review finding). The "already in place"
+  refusal keyed only on the destination filename (`<id>-<slug>.yaml`), but the
+  loader keys migrations by their *inner* `id`. A hand-authored proposal named
+  `<landed-id>-other-slug.yaml` carrying `id: <landed-id>` collided on the inner
+  id while its filename was free: the name check waved it through, the
+  filename/id agreement check was satisfied (the prefix equals the id), and
+  `accept` landed a *duplicate* migration id, on which `migrate
+  validate`/`status`/`apply` then all exit 4. The refusal now also answers the id
+  against the same loaded migration set the loader, `migrate validate` and
+  `migrate apply` read (#234/#253/#254). This is the third and last accept-path
+  procedure moved off a filesystem enumeration and onto the loaded set; no method
+  on the accept path enumerates `.theurian/migrations/` any more.
+- **The accept-path read-failure remedy is chosen by `errno`, not a blanket
+  `chmod`** (round-one review finding, extending
+  [#227](https://github.com/theurian/theurian/issues/227)). The remedy prescribed
+  "Make _path_ readable — chmod u+rX on it" for every accept-path read failure —
+  the same over-claim [#233](https://github.com/theurian/theurian/issues/233)
+  corrected for `PathEscapeError`, reopened here. A `contentFile` naming a
+  directory raises `EISDIR`, which no `chmod` cures: the fault is the authored
+  input, so the remedy now names the `contentFile` to correct and says nothing
+  about permissions. A `stat`/`open` refused for a *child* is the parent directory
+  lacking its search bit, so `chmod u+rX` on the child cures the wrong file — the
+  remedy now points `chmod u+x` at the unsearchable directory instead.
+  `EACCES`/`EPERM` still earn a `chmod`; a `None` errno is treated as
+  non-permission, since a `chmod` prescribed for an unknown cause is the very
+  over-claim this avoids. Every branch still points at `.theurian/migrations/`
+  before any re-draft (#89).
+- **Scope note, not a behaviour change: `propose accept` does not self-validate
+  the proposal it is accepting**
+  ([#307](https://github.com/theurian/theurian/issues/307)). The replacement
+  guard's docstring claimed it holds the invariant that `accept` "never leaves the
+  set unable to validate." That is false as a global invariant: `accept` does not
+  schema-validate the incoming migration and does not check it against itself, so
+  a self-contained breakage in a single proposal — two operations naming one
+  `contentFile`, a self-inconsistent pin, an empty `contentFile` — lands and is
+  caught by `migrate validate` in CI, which is the check by design (ADR-0013 §4).
+  The docstring is narrowed to what the guard actually holds: it refuses a
+  replacement that would break a pin *already landed* in the approved set, the one
+  fault it can judge from the landed set alone. No behaviour changed here;
+  hardening `accept` itself against a self-contained breakage is deferred to #307.
 
 ## [0.1.0.dev8] - 2026-08-20
 
