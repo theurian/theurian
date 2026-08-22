@@ -1,12 +1,20 @@
 """Which files are the committed corpus, given what git says the repository ships.
 
-:func:`corpus_drift.migration_paths` is the whole population rule, and it is
-deliberately neither the loader's nor the directory's:
+:func:`corpus_drift.migration_paths` is the whole population rule: it is the
+key the *loader* enumerates by, applied to what git says the repository ships.
 
-- **wider than the loader**, which only reads a ULID-prefixed name. A YAML the
-  loader would ignore is still a file this repository publishes, and a checker
-  that inherited the loader's predicate would go quiet on exactly the corpus
-  file somebody renamed by hand.
+- **the loader's key, and the loader does not gate on the shape of a name.**
+  ``load_migrations`` lists the directory with ``iterdir()`` and keeps every
+  entry whose name ends ``.yaml``; ``_entry_is_migration_file`` then classifies
+  the *entry* -- file, symlink, enumeration race -- and never reads the name.
+  Measured 2026-08-22: a committed migration copied to ``seed-adr-0001.yaml``
+  loads and is applied, while ``is_migration_file_name`` returns ``False`` for
+  that name. So the rationale is not that this checker is wider than the
+  loader; it is that **anything the loader applies has to be checked**, and a
+  population that inherited ``is_migration_file_name`` -- a *proposal*-directory
+  predicate that never runs over ``.theurian/migrations/`` -- would go quiet on
+  exactly the corpus file somebody renamed by hand while the product carried on
+  serving it.
 - **narrower than the directory**, on two axes. A nested path is not a migration
   -- ``.theurian/migrations/archive/old.yaml`` is somebody's holding area, not a
   document this tool is entitled to hold ``docs/`` to -- and a non-``.yaml``
@@ -89,10 +97,14 @@ def test_a_yml_suffix_is_not_a_migration_because_the_loader_does_not_read_one_ei
 
 
 def test_a_migration_whose_name_is_not_ulid_prefixed_is_still_in_the_population() -> None:
-    """Wider than the loader on purpose: a hand-renamed corpus file must not go quiet.
+    """The loader applies it too, so this checker has to hold `docs/` to it.
 
-    The loader ignores it, so nothing else in this repository would notice it
-    had stopped being checked.
+    Name shape gates nothing on the loader's side: it enumerates `*.yaml` and
+    classifies the entry, not the name (measured 2026-08-22 -- a committed
+    migration copied to `seed-adr-0001.yaml` loads, while
+    `is_migration_file_name` is `False` for it). Dropping this file from the
+    population would leave a migration Theurian's own agents are served from
+    with nothing comparing it to the document it snapshots.
     """
     hand_named = ".theurian/migrations/seed-adr-0005.yaml"
 
