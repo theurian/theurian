@@ -36,6 +36,7 @@ asymmetry is the whole of what #89 measured:
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -83,6 +84,12 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: The directory is committed input, so its file count is the contributor's:
 #: 50,000 files produced a 600 KB error string in 1.5 s before this bound.
 _MAX_NAMES_LISTED: Final = 5
+
+#: The errnos a ``chmod`` actually cures, for the accept-path read-failure remedy.
+#: An ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP`` is the proposal's own input
+#: at fault, not a permission bit, so prescribing ``chmod`` for it over-claims the
+#: cause -- the mistake ``c7cf455`` corrected for :class:`PathEscapeError` (#233).
+_PERMISSION_ERRNOS: Final = frozenset({errno.EACCES, errno.EPERM})
 
 #: Checks a built migration document against the published JSON Schema, raising
 #: on failure. Supplied by the composition root, because locating and reading
@@ -809,33 +816,87 @@ class ProposalService:
         it, and :func:`_names` quotes the result, because a proposal directory's
         filenames are the contributor's (ADR-0013 point 7).
 
-        **The remedy names the path that failed, not the proposal directory.**
-        The examination phase probes ``.theurian/proposals/`` but also stats under
-        ``.theurian/knowledge/`` (the destination's containment check) and the
-        migration destination, so the refused call is not always in the proposal
-        directory. The message already names the offending path via
-        :func:`_project_relative`; the remedy points a ``chmod`` at that same
-        path rather than at a proposal directory it may not be under.
+        **The remedy is chosen by errno, never a blanket ``chmod``.** The failure
+        the examination phase reports is not always a permission one, and not
+        every permission one is cured on the path the ``OSError`` names -- the
+        same over-claim ``c7cf455`` corrected for :class:`PathEscapeError`,
+        reopened here:
+
+        * On ``EACCES``/``EPERM`` the cure is a permission change, but a
+          ``stat``/``open`` refused for a *child* is the parent lacking its search
+          bit, not the child lacking read -- ``chmod u+rX`` on the child would be a
+          cure for the wrong file. :meth:`_permission_remedy` points ``chmod u+x``
+          at the unsearchable directory when the parent is the one refused, and
+          ``chmod u+rX`` at the named path otherwise.
+        * On any other errno -- ``EISDIR`` (a ``contentFile`` naming a directory),
+          ``ENOTDIR``, ``ENAMETOOLONG``, ``ELOOP`` -- no ``chmod`` cures it: the
+          cause is the proposal's own input, so the remedy names the
+          ``contentFile`` to correct and says nothing about permissions.
 
         **The remedy never sends the reader to draft again.** A read the
         filesystem refused says nothing about whether this proposal's migration
         has already landed -- the two facts are unrelated -- and re-drafting an
         accepted proposal mints a second migration for a change already in
-        history (#89). So it points at ``.theurian/migrations/`` first, exactly
-        as the indeterminate-evidence remedy above does. What it *can* state
-        outright is that nothing moved: every write on this path is in
-        :meth:`_commit`, which the clause in :meth:`accept` deliberately
-        excludes.
+        history (#89). So both branches point at ``.theurian/migrations/`` first,
+        exactly as the indeterminate-evidence remedy above does. What they *can*
+        state outright is that nothing moved: every write on this path is in
+        :meth:`_commit`, which the clause in :meth:`accept` deliberately excludes.
         """
         named = _names([_project_relative(error.filename, self._paths.root)])
         return ProposalError(
             f"Proposal {proposal_id.value} could not be examined: "
             f"{error.strerror or 'it could not be read'} at {named}. Nothing has been "
             "moved, and whether it can be accepted cannot be answered without reading it.",
-            remedy=f"Make {named} readable -- chmod u+rX on it -- then run theurian propose "
-            "accept again. If it cannot be recovered, look in .theurian/migrations/ for the "
-            "migration this proposal drafted before re-drafting: a refused read is not evidence "
-            "that nothing landed.",
+            remedy=self._read_failure_remedy(error, named),
+        )
+
+    #: What every read-failure remedy ends with, whatever cured the read: the
+    #: refused read is not evidence that nothing landed, so the reader is sent to
+    #: ``.theurian/migrations/`` before any re-draft (#89), never told to draft
+    #: again outright.
+    _MIGRATIONS_TAIL: Final = (
+        " If it cannot be recovered, look in .theurian/migrations/ for the migration this "
+        "proposal drafted before re-drafting: a refused read is not evidence that nothing landed."
+    )
+
+    def _read_failure_remedy(self, error: OSError, named: str) -> str:
+        """The cure for one accept-path read failure, chosen by its errno.
+
+        Permission failures earn a ``chmod``; everything else earns a neutral
+        remedy that names the input to correct, because ``chmod`` cures none of
+        ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP``. A ``None`` errno is
+        treated as non-permission: a ``chmod`` prescribed for an unknown cause is
+        the over-claim this method exists to avoid.
+        """
+        if error.errno in _PERMISSION_ERRNOS:
+            return f"{self._permission_remedy(error, named)}{self._MIGRATIONS_TAIL}"
+        return (
+            f"The migration names a contentFile the filesystem cannot read as a file ({named}); "
+            "no permission change cures that. Correct the contentFile the migration names, then "
+            f"run theurian propose accept again.{self._MIGRATIONS_TAIL}"
+        )
+
+    def _permission_remedy(self, error: OSError, named: str) -> str:
+        """The ``chmod`` for a permission failure, pointed at the path truly at fault.
+
+        A refused ``stat``/``open`` of a *child* is the parent directory lacking
+        its search (execute) bit, not the child lacking read: the child is
+        unreachable, so ``chmod u+rX`` on it is a cure for a file the reader
+        cannot even name yet. When the named path's parent is the unsearchable
+        one, the cure is ``chmod u+x`` on that directory; otherwise the named path
+        itself is read-refused and takes ``chmod u+rX``.
+        """
+        filename = error.filename
+        if isinstance(filename, str):
+            parent = Path(filename).parent
+            if parent != Path(filename) and not os.access(parent, os.X_OK):
+                named_parent = _names([_project_relative(str(parent), self._paths.root)])
+                return (
+                    f"Make {named_parent} searchable -- chmod u+x on it -- then run theurian "
+                    "propose accept again."
+                )
+        return (
+            f"Make {named} readable -- chmod u+rX on it -- then run theurian propose accept again."
         )
 
     def _landed_state(

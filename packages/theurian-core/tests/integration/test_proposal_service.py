@@ -1426,6 +1426,97 @@ def test_accept_translates_a_lone_surrogate_in_the_content_file_path(
     assert caught.value.remedy.strip(), "a translated failure carries a remedy"
 
 
+def test_the_unreadable_remedy_does_not_prescribe_chmod_for_a_non_permission_fault(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-one HIGH (CLASS-B): ``_unreadable`` prescribed ``chmod`` for any errno.
+
+    A ``contentFile`` naming a directory reaches ``read_source_file`` as
+    ``../knowledge`` -- accept does not schema-validate (ADR-0013 §4) -- and the
+    open raises ``IsADirectoryError`` (``EISDIR``), which the examination clause
+    translates. The old remedy said *"Make ... readable -- chmod u+rX on it"*
+    regardless, but no ``chmod`` cures ``EISDIR``: the fault is the authored
+    ``contentFile``, which is what the remedy must name. This is the class
+    ``c7cf455`` (#233) closed for :class:`PathEscapeError`, reopened at this site.
+    Reproduced end to end (``repro_classB_remedy`` face 2).
+    """
+    drafted = service.draft(_request())
+    _poison_content_file(drafted, "../knowledge")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    remedy = caught.value.remedy
+    assert "chmod" not in remedy.lower(), f"chmod cures no EISDIR: {remedy}"
+    # The cause is the input, so the remedy names it rather than a permission bit.
+    assert "contentFile" in remedy, remedy
+    # The absolute path still must not leak (the discipline `_project_relative` keeps).
+    assert str(paths.root) not in f"{caught.value} {remedy}", "the absolute path must not leak"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_the_unreadable_remedy_names_the_directory_when_the_parent_is_unsearchable(
+    service: ProposalService,
+) -> None:
+    """Round-one HIGH (CLASS-B): the ``chmod`` was pointed at an unreachable file.
+
+    At ``0o444`` the proposal directory lists but cannot be traversed, so the
+    ``is_symlink`` stat of the migration file inside it raises ``EACCES`` -- and
+    the failing path is the *child* ``.yaml``. The old remedy said *"Make
+    <that .yaml> readable -- chmod u+rX on it"*, but the child is unreachable: the
+    cure is ``chmod u+x`` on the parent directory, which is what lacks the search
+    bit. The remedy must name the directory, not the file it cannot reach.
+    Reproduced end to end (``repro_classB_remedy`` face 1).
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o444)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    remedy = caught.value.remedy
+    # The directory is what is at fault, so it is what the cure names -- and the
+    # unreachable file, which chmod-ing does nothing for, is *not* the target.
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy, remedy
+    assert drafted.migration_file.name not in remedy, (
+        f"the unreachable file must not be the chmod target: {remedy}"
+    )
+    assert "chmod u+x" in remedy, f"the cure is a search bit on the directory: {remedy}"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_the_unreadable_remedy_points_at_migrations_before_re_drafting(
+    service: ProposalService,
+) -> None:
+    """#89 half (adversarial ``unreadable-remedy-drops-migrations-pointer``): a
+    refused read is not evidence that nothing landed.
+
+    A read the filesystem refused says nothing about whether this proposal's
+    migration has already landed, so re-drafting one that *has* mints a duplicate
+    (#89). The remedy therefore sends the reader to ``.theurian/migrations/``
+    first and never says *"draft the proposal again"* outright. The surviving
+    mutation dropped the ``.theurian/migrations/`` pointer and replaced the tail
+    with exactly that instruction; nothing pinned it, so it survived. This pins
+    it on the ``0o000`` permission face, where the tail is reached.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    remedy = caught.value.remedy
+    assert ".theurian/migrations/" in remedy, remedy
+    assert "draft the proposal again" not in remedy.lower(), remedy
+    # The migrations pointer comes before any re-draft mention, so the reader
+    # reads what is there before minting a second migration.
+    assert remedy.index(".theurian/migrations/") < remedy.lower().index("re-draft"), remedy
+
+
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 def test_a_directory_that_lists_but_does_not_stat_is_examined_not_declared_absent(
     service: ProposalService,
