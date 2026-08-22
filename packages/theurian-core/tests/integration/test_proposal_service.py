@@ -994,25 +994,46 @@ def test_accept_refuses_replacing_an_unpinned_landed_body(
 def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """HIGH-C(ii): "byte-identical changes nothing" is false of the *set*.
+    """The revision conjunct decides: a byte-identical body under a *new* revision id.
 
-    The old guard refused only ``pin == current and replacement != current``, so
-    a byte-identical replacement of a pinned body passed its second conjunct and
-    landed. The bytes never change, but the set afterwards has two revisions on
-    one body file (``refuse_duplicate_content_files``, exit 4). The identity key
-    refuses on the shared inode, not on a byte comparison, so it catches this.
-    Reproduced by the orchestrator (``probes/e9``: accept exit 0 -> validate exit 4).
+    "Byte-identical changes nothing" is false of the *set*. Re-pointing a second
+    revision's ``contentFile`` at a landed body -- on the **same item**, with the
+    identical bytes, but under its own fresh revision id -- leaves two revisions
+    naming one physical file (``refuse_duplicate_content_files``, exit 4) even
+    though nothing about the bytes moved. The skip that admits the one legitimate
+    in-place re-declare fires only when item id, revision id *and* bytes all match
+    (proposal_service ``_refuse_if_a_replacement_breaks_an_existing_pin``); here
+    item and bytes match, so the **revision** conjunct is the sole decider, and it
+    refuses. Reproduced by the orchestrator (``probe_classa`` shape 2: same item,
+    different revision, identical bytes -> REFUSED).
+
+    This is the only same-item byte-identical face that is *not* the allowed
+    in-place re-declare -- the sibling test
+    ``test_accept_allows_the_same_revision_re_declared_against_its_own_body`` keeps
+    the same revision id, and that one difference is what flips accept from allowed
+    to refused: the revision id is left the second's own here, so the test pins the
+    revision conjunct rather than the byte one. Before this
+    branch's rewrite the second kept a *different item id* too, so the item
+    conjunct short-circuited the skip and the revision conjunct was never
+    evaluated -- a mutation neutering it survived the whole suite.
+
+    The second proposal is drafted for a throwaway item so the draft-side #210
+    guard does not fire, then its ``contentFile`` and *item id* are hand-repointed
+    at the first's while its own revision id is deliberately left in place -- the
+    committed, contributor-authored shape ADR-0013 point 7 admits.
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
-    # A second item whose body is byte-identical to the first's, repointed at the
-    # first's landed path.
+    # Same item, byte-identical body, but the second's own (fresh) revision id: a
+    # byte-identical body landing as a *second* revision on the first's body file.
     second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
-    second.migration_file.write_text(
-        second.migration_file.read_text(encoding="utf-8").replace(
-            second.content_file, first.content_file
-        ),
-        encoding="utf-8",
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace("architecture.other", "architecture.retry-policy")
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert "architecture.other" not in text, "the item id re-declare failed"
+    assert f"revisionId: '{first.revision_id.value}'" not in text, (
+        "the revision id must stay the second's own, or the revision conjunct is not the decider"
     )
     tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
     hand_authored = second.directory / tail
@@ -1029,25 +1050,32 @@ def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
 def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """Round-two HIGH-1: an equal revision id is not a licence to change the bytes.
+    """The byte conjunct decides: the same revision, re-declared with *different* bytes.
 
+    Round-two HIGH-1: an equal revision id is not a licence to change the bytes.
     The equal-id skip once fired on the revision id alone, on the premise that a
     landed revision re-declared under its own id must carry its own body. That is
     false of contributor-authored input (ADR-0013 point 7): a hand-authored
-    proposal can reuse an *existing* landed revision id, point its ``contentFile``
-    at that revision's pinned body, and supply *different* bytes. The old guard
-    waved it through, the overwrite made the pin wrong, and ``migrate validate``
-    exited 4 for the whole set with no undo -- reproduced end to end
-    (``repro_high1_r2``: accept exit 0 -> set fails to load).
+    proposal can reuse an *existing* landed revision id **on its own item**, point
+    its ``contentFile`` at that revision's pinned body, and supply *different*
+    bytes. The old guard waved it through, the overwrite made the pin wrong, and
+    ``migrate validate`` exited 4 for the whole set with no undo -- reproduced end
+    to end (``repro_high1_r2``: accept exit 0 -> set fails to load).
 
     A revision's content is immutable, so the only legitimate in-place re-declare
-    (ADR-0024 decision 5) carries byte-identical content. Making byte-identity a
-    tested conjunct of the skip refuses this destructive face while
-    :func:`test_accept_allows_the_same_revision_re_declared_against_its_own_body`
-    keeps the legitimate one. The second proposal is drafted for a *different*
-    item so the draft-side guard does not fire, then its ``contentFile`` and
-    ``revisionId`` are hand-repointed at the first's -- exactly the committed,
-    contributor-authored shape that reaches this check.
+    (ADR-0024 decision 5) carries byte-identical content. Here the item id **and**
+    the revision id are re-pointed to match the landed revision, so both of those
+    conjuncts pass and byte-identity is the *sole* conjunct left to decide: the
+    proposal carries different bytes, so the guard refuses. That isolation is the
+    whole point of the rewrite -- the prior version left a *different item id*, so
+    the item conjunct short-circuited the skip and a mutation making
+    ``_reads_identical_bytes`` trivially true survived. The one legitimate face
+    (identical item, revision and bytes) stays allowed by
+    :func:`test_accept_allows_the_same_revision_re_declared_against_its_own_body`.
+    The second proposal is drafted for a throwaway item so the draft-side guard
+    does not fire, then its ``contentFile``, ``revisionId`` and *item id* are
+    hand-repointed at the first's -- exactly the committed, contributor-authored
+    shape that reaches this check.
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
@@ -1063,8 +1091,10 @@ def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
         f"revisionId: '{second.revision_id.value}'",
         f"revisionId: '{first.revision_id.value}'",
     )
+    text = text.replace("architecture.other", "architecture.retry-policy")
     second.migration_file.write_text(text, encoding="utf-8")
     assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" not in text, "the item id re-declare failed"
     tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
     hand_authored = second.directory / tail
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
@@ -1080,16 +1110,19 @@ def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
 def test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
-    """The unpinned face of the same class: no pin to break, content still immutable.
+    """The unpinned face of the byte conjunct: no pin to break, content still immutable.
 
     ``contentSha256`` is optional (the loader adopts the body's current hash where
     it is absent, #210), so a landed revision may reference a body it does not
-    freeze. There is no pin to break here, but re-declaring that revision under
-    its own id with *different* bytes still silently mutates immutable content and
-    leaves the set at exit 4 (``refuse_duplicate_content_files``). The byte-identity
-    conjunct refuses both faces at once: the guard reads the loaded operation's
-    ``content_sha256`` -- populated pinned or not -- and compares it with the
-    incoming bytes, so the missing pin does not open the gap.
+    freeze. There is no pin to break here, but re-declaring that revision -- same
+    item, same revision id -- with *different* bytes still silently mutates
+    immutable content and leaves the set at exit 4 (``refuse_duplicate_content_files``).
+    The byte-identity conjunct refuses both faces at once: the guard reads the
+    loaded operation's ``content_sha256`` -- populated pinned or not -- and
+    compares it with the incoming bytes, so the missing pin does not open the gap.
+    As in the pinned face, the item id and revision id are re-pointed to match the
+    landed revision so that byte-identity is the sole deciding conjunct; the prior
+    cross-item shape let the item conjunct short-circuit the check.
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
@@ -1120,8 +1153,10 @@ def test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revisio
         f"revisionId: '{second.revision_id.value}'",
         f"revisionId: '{first.revision_id.value}'",
     )
+    text = text.replace("architecture.other", "architecture.retry-policy")
     second.migration_file.write_text(text, encoding="utf-8")
     assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" not in text, "the item id re-declare failed"
     tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
     hand_authored = second.directory / tail
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
