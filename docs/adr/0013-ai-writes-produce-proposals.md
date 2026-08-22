@@ -248,9 +248,14 @@ Landed in Milestone 7, by the `theurian propose` CL:
   `::test_accept_publishes_a_json_document_when_the_migrations_dir_cannot_be_made`,
   `::test_accept_publishes_a_json_document_for_a_nul_in_the_content_file` and
   `::test_accept_publishes_a_json_document_for_a_surrogate_in_the_content_file`
-  assert the error document reaches stderr — the machine-readable `--json` error
-  stream a caller parses (the tests read `result.stderr or result.stdout`); a
-  success payload with its `remedy` is written to stdout instead.
+  assert the `--json` failure publishes a parseable `{error, remedy}` document
+  rather than a raw traceback. These four read the *concatenation* of stdout and
+  stderr (`_accept_catching`), so they pin the document's shape, not which stream
+  it lands on. The stream split is pinned separately by
+  `::test_accept_writes_its_json_failure_document_to_stderr_leaving_stdout_clean`,
+  which asserts stdout is exactly empty and parses `{error, remedy}` from stderr:
+  the error document is the machine-readable `--json` error stream on stderr, and
+  a success payload with its `remedy` is written to stdout instead.
   `::test_accept_reports_a_completed_move_whose_source_cleanup_could_not_finish`
   pins the one fault that must *not* fail: a landed move whose trailing cleanup
   could not run degrades to success with a leftover-note remedy, because exit 1
