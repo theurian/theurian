@@ -3282,6 +3282,116 @@ def test_the_guard_walks_a_set_not_only_lists_and_tuples() -> None:
     assert str(MAX_DOCUMENT_NODES) in str(excinfo.value), "a set's contents must count as nodes"
 
 
+# -- issue #291's guard branches are reachable from a *file*, not only in-memory -
+#
+# The guard's docstring long claimed the `set`/`frozenset` and non-string-key
+# branches were "purely defense for an in-memory caller", on the premise that
+# neither the parse nor the propose seam produces a set or a non-string key. That
+# premise is false: `load_yaml`'s `_StrictLoader` is a `SafeLoader` subclass, so
+# `!!set` in a migration file produces a Python `set` and `1234: v`/`true: v`
+# produce non-string scalar keys -- both reach the guard from a file and are
+# refused only because those branches are walked. The three tests below drive
+# each branch through `load_migrations`, the path a repository author reaches, so
+# the guard's file-name attribution (`document_name`) is exercised too. Only a
+# *container* sitting in a key or set element stays in-memory-only: PyYAML rejects
+# an unhashable key or member with `ConstructorError`.
+
+
+def _write_migration(project: Path, name: str, text: str) -> Path:
+    migrations_dir = project / ".theurian" / "migrations"
+    path = migrations_dir / name
+    path.write_text(text)
+    return migrations_dir
+
+
+def test_a_yaml_set_from_a_file_is_walked_by_the_rendered_budget(project: Path) -> None:
+    """RED (round one): a `!!set` in a migration file produces a Python `set`, and
+    its string members are charged against `MAX_DOCUMENT_RENDERED_CHARS` only
+    because the set is walked. Four distinct 300,000-character members
+    (1.2 M > the budget) are refused by the rendered-size ceiling, naming the file.
+
+    Drives the ``set`` container branch from a file: the shipped guard's docstring
+    called it in-memory-only, and a mutation dropping ``set``/``frozenset`` from
+    the container check would treat the set as a leaf, never reaching its members,
+    so the document would pass the guard and be refused later as a schema fault --
+    a different message this pins against. Block form with quoted keys because a
+    300,000-character *plain* scalar is not a legal flow-mapping key.
+    """
+    members = "".join(f'  ? "{chr(65 + i) * 300_000}"\n' for i in range(4))
+    migrations_dir = _write_migration(
+        project, "01K1KKKKKK01234567890ABCDE-set.yaml", "k: !!set\n" + members
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in message and "characters of string content" in message
+    ), "a set's string members must be charged, i.e. the set is walked"
+    assert "01K1KKKKKK01234567890ABCDE-set.yaml" in message, "the refusal names the file"
+
+
+def test_a_yaml_mapping_with_non_string_keys_from_a_file_has_its_keys_walked(
+    project: Path,
+) -> None:
+    """RED (round one): a migration file's mapping may carry non-string scalar
+    keys -- ``_StrictLoader`` produces ``int`` keys for ``0:``/``1:`` -- and the
+    node count charges them only because *keys* are walked, not just values.
+
+    A mapping of 50,001 integer keys is 100,002 nodes counting keys and values,
+    over `MAX_DOCUMENT_NODES`; drop the key walk and only the 50,001 values count,
+    under the ceiling, so the document passes the guard. Driven through
+    `load_migrations` so the node refusal's own file-name attribution
+    (``document_name``) is exercised: a mutation dropping that name survived the
+    suite because every guard unit test passed ``document_name=None``.
+    """
+    inner = "".join(f"  {i}:\n" for i in range(50_001))
+    migrations_dir = _write_migration(
+        project, "01K1KKKKKK01234567890ABCDE-keys.yaml", "outer:\n" + inner
+    )
+
+    # The keys really are non-string, falsifying the old docstring's premise.
+    parsed = load_yaml_mapping("outer:\n  1234:\n  true:\n  1.5:\n")
+    assert [type(k).__name__ for k in parsed["outer"]] == ["int", "bool", "float"]
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert str(MAX_DOCUMENT_NODES) in message and "values" in message, (
+        "the integer keys must be charged, i.e. keys are walked"
+    )
+    assert "01K1KKKKKK01234567890ABCDE-keys.yaml" in message, "the node refusal names the file"
+
+
+def test_a_document_nested_past_the_limit_from_a_file_names_the_file(project: Path) -> None:
+    """RED (round one, mutation m12 SURVIVED): the depth refusal names the
+    offending file via ``document_name``, but every guard unit test passed
+    ``document_name=None`` and the only deep-document loader test used ``[``x1000,
+    which fails in PyYAML's parser (`RecursionError` -> `ValueError`) before the
+    guard is reached. ``[``x100 parses cleanly (100 nesting levels, well under
+    PyYAML's own recursion limit) and reaches the guard, which refuses it past
+    `MAX_DOCUMENT_NESTING` -- so this exercises the depth refusal's file-name
+    attribution the mutation dropped.
+
+    The deep list sits under a mapping key so the document root is a mapping (a
+    bare ``[``x100 is a list root, refused earlier by `load_yaml_mapping`).
+    """
+    migrations_dir = _write_migration(
+        project,
+        "01K1KKKKKK01234567890ABCDE-deep.yaml",
+        "operations: " + "[" * 100 + "]" * 100 + "\n",
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert f"more than {MAX_DOCUMENT_NESTING} levels deep" in message, "a depth refusal, not a leak"
+    assert "01K1KKKKKK01234567890ABCDE-deep.yaml" in message, "the depth refusal names the file"
+
+
 def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
     """Issue #289 face two: `_schema_rejection` echoed the instance with
     ``_bounded(repr(...))``, which builds the *whole* repr before truncating.

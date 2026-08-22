@@ -426,20 +426,31 @@ def _refuse_a_document_that_nests_too_deep(
     told apart once ``validate`` is running -- see :func:`_validate_document`,
     whose schema attribution this function is what makes sound.
 
-    Mappings and sequences are the containers a *parsed* document holds:
-    ``load_yaml``'s ``_StrictLoader`` produces ``dict``/``list``/scalars (its
-    timestamp resolver is dropped, so even dates arrive as ``str``), and the
-    ``propose`` seam builds ``dict[str, object]`` with string keys and
-    list/scalar values (`_migration_document`, ``application/proposal_service.py``).
-    Neither seam produces a ``set``, a ``frozenset``, a ``tuple`` or a
-    non-string key. Those are walked anyway -- ``set``/``frozenset``/``tuple``
-    as containers, and mapping *keys* as well as values -- purely as defense for
-    an in-memory caller of :func:`validate_migration_document` that hands in
-    something those seams never build: a container sitting in a key, or inside a
-    set, would otherwise slip past this bound and reach ``validate``, where a
-    deep one is mistranslated as a corrupt schema. ``str`` and ``bytes`` stay
-    leaves: their elements are characters and integers, not nesting, and
-    descending into them would make this pass cost the length of the text.
+    Mappings, sequences and sets are all containers a *parsed* document holds,
+    and the ``set``/``frozenset``/``tuple`` and non-string-key branches are
+    reachable from a file, not merely from an in-memory caller. ``load_yaml``'s
+    ``_StrictLoader`` is a ``SafeLoader`` subclass with only its timestamp
+    resolver dropped, so ``!!set`` in a migration file produces a Python ``set``
+    (an ``!!set`` of 200,000 elements is refused *only because the set is
+    walked*), and a non-string scalar key -- ``1234: v``, ``true: v``, ``~: v``,
+    ``1.5: v`` -- produces an ``int``/``bool``/``None``/``float`` key that the
+    node count charges *only because keys are walked*. The ``propose`` seam
+    (`_migration_document`, ``application/proposal_service.py``) does build
+    ``dict[str, object]`` with string keys and list/scalar values, but the file
+    seam is wider than that.
+
+    What *is* in-memory-only is a *container* sitting in a key or a set element:
+    PyYAML rejects an unhashable key or set member with ``ConstructorError``, so a
+    ``dict``/``list``/``set`` cannot be a key or a set element from a file -- only
+    an in-memory caller of :func:`validate_migration_document` can hand one in.
+    That is the residual the ``tuple`` and container-key handling defends, and a
+    deep such container would otherwise slip past this bound and reach
+    ``validate``, where it is mistranslated as a corrupt schema.
+
+    ``str`` and ``bytes`` stay leaves for *nesting* -- their elements are
+    characters and integers, not structure -- but their length is charged against
+    :data:`MAX_DOCUMENT_RENDERED_CHARS` as they are discovered; descending into
+    them for depth would make this pass cost the length of the text.
     """
     frontier: list[tuple[object, int]] = [(document, 1)]
     discovered = 1
