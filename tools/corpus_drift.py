@@ -47,9 +47,22 @@ Corpus membership (mandatory declaration, per the class closure in f2f5d77)
 This is a repo-wide walker, so it states which side of the frozen corpus it
 walks rather than leaving a reader to find out.
 
-**The committed corpus under `.theurian/migrations/` is IN, deliberately and
-exclusively -- it is the subject.** Nothing else under `.theurian/` is read:
-bodies and `evidence.json` files belong to the governance test.
+**The committed corpus under `.theurian/migrations/` is IN -- it is the
+subject.** Every tracked `*.yaml` directly under that directory is read.
+
+**One further file is read, conditionally: a pinned body.** For a revision that
+declares no `contentSha256` -- a shape the published schema allows -- the body
+its own `contentFile` names is hashed instead, so that deleting the pin line
+does not quietly turn that revision's check off (:func:`_expected_digest`).
+`contentFile` is resolved against the migration and required to land inside
+`.theurian/`, so this reads exactly one file per such revision and never leaves
+the corpus. Every anchor in the corpus today is pinned, so this path is
+currently exercised only by the suite -- and it is still declared here, because
+a declaration that describes the corpus rather than the code stops being true
+the moment somebody commits an unpinned revision.
+
+**`evidence.json` is never read here**, nor is anything else under
+`.theurian/`. Those belong to the governance test.
 
 **On the `docs/` side there is no walk at all.** This tool opens exactly the
 files the anchors name, one per anchor, and never enumerates `docs/`. A document
@@ -79,10 +92,13 @@ reimplemented here: a second implementation of the hash is a second thing that
 can disagree with the product.
 
 An anchor this tool cannot honestly compare is reported as **uncheckable** and
-named, never silently skipped. Three shapes reach that today, and only the first
-exists in the corpus as it stands (measured 2026-08-22: 26 revisions, 26 anchors,
-one anchor each, none line-ranged, all 26 pinned, all 26 naming
-``https://github.com/theurian/theurian.git`` and a path under ``docs/``):
+named, never silently skipped. Three shapes reach that, and **none of them
+appears in the corpus as it stands** -- every committed anchor is compared
+(measured 2026-08-22 at 64e33da: 26 revisions, 26 anchors, one anchor each, none
+line-ranged, all 26 pinned, all 26 naming
+``https://github.com/theurian/theurian.git`` and a path under ``docs/``; the run
+reported 26 compared, 0 uncheckable). They are enumerated because each is a way
+a future re-seed could take an item out of the compared set:
 
 - an anchor naming another repository, another provider, or no file at all;
 - **a line range.** `sourceAnchor` accepts `lineStart`/`lineEnd` (the published
@@ -116,7 +132,7 @@ import yaml
 
 from theurian.domain.values import ContentHash
 
-#: ``parents[1]`` is ``tools/`` -> the repository root.
+#: ``parents[0]`` is ``tools/``, so ``parents[1]`` is the repository root.
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 
 CORPUS_PREFIX: Final = ".theurian/"
@@ -294,9 +310,22 @@ def tracked_paths(repo_root: Path) -> frozenset[str] | None:
 def migration_paths(tracked: Iterable[str]) -> tuple[str, ...]:
     """Tracked ``*.yaml`` **directly** under ``.theurian/migrations/``, sorted.
 
-    Wider than the loader's own ULID-prefixed predicate, and narrower than the
-    directory: a nested path is not a migration, and a YAML the loader would
-    ignore is still a file this repository publishes.
+    The same key the loader enumerates by, because anything the loader applies
+    is knowledge this repository serves and so has to be checked here.
+    ``load_migrations`` lists the directory with ``iterdir()`` and keeps every
+    entry whose name ends ``.yaml``; ``_entry_is_migration_file`` then classifies
+    the *entry* -- file, symlink, enumeration race -- and never looks at the
+    shape of the name. A migration renamed ``seed-adr-0005.yaml`` therefore
+    loads, and is in this population too.
+
+    ``is_migration_file_name`` does require a ULID prefix, but it is a
+    *proposal*-directory predicate: ``accept`` uses it to pick the migration out
+    of a directory that also holds bodies (``ProposalService``), and it never
+    runs over ``.theurian/migrations/``. Reading it as the loader's own filter
+    is what makes this population look wider than the loader's; it is not.
+
+    Non-recursive for the same reason: ``iterdir()`` does not descend, so a
+    nested path is not something the loader would ever apply.
     """
     return tuple(
         sorted(

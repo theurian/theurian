@@ -102,9 +102,12 @@ jobs:
               # hand. The leading `.` is written literally, so nothing here
               # depends on whether the filter's globs cross a dot-directory.
               #
-              # Neither `core.yml` nor any other workflow watches `docs/**`, so
-              # without this entry the drift this job exists for -- an ADR edit
-              # and nothing else -- would start no run at all.
+              # `pages.yml` watches `docs/**` too (its own `paths:`, checked
+              # 2026-08-22), but only to rebuild the published site on a push to
+              # `main`, and it never runs this checker. This filter is the only
+              # path that starts `corpus-drift`, so without this entry the drift
+              # this job exists for -- an ADR edit and nothing else -- would
+              # start no run at all.
               - 'docs/**'
               - '.theurian/**'
               - 'tools/corpus_drift.py'
