@@ -37,12 +37,14 @@ Exit codes
     Drift. Suppressed by ``--advisory``; see that flag's help for the call.
 ``2``
     **The check did not check enough to mean anything.** No tracked migrations,
-    or git could not be asked what is tracked, or fewer anchors were compared
-    than the floor the tree is held to -- which is every anchor being
-    uncheckable, and also 25 of 26 (see ``--minimum-compared``).
-    ``--advisory`` does *not* suppress this: a checker that quietly stopped
-    checking is a regression, not a pass, and it is the one outcome that must
-    never read as green.
+    or git could not be asked what is tracked, or every anchor reached was
+    uncheckable, or fewer anchors were compared than the floor the tree is held
+    to -- 25 of 26 being the case a bare "compared nothing" never catches (see
+    ``--minimum-compared``). Each of those four keeps its own diagnosis: the
+    floor states its own only when the run had a verdict to overturn, never on
+    top of one of the first three. ``--advisory`` does *not* suppress this: a
+    checker that quietly stopped checking is a regression, not a pass, and it is
+    the one outcome that must never read as green.
 
 Corpus membership (mandatory declaration, per the class closure in f2f5d77)
 --------------------------------------------------------------------------
@@ -769,6 +771,18 @@ def held_to_floor(report: Report, minimum: int) -> Report:
     untouched: the drift lines, the annotations and the remedy are all still
     rendered from them, and only the run's own verdict changes.
 
+    **A report that is already ``NOTHING_COMPARED`` is returned as it stands.**
+    :func:`scan` reaches that status by three routes, each with a diagnosis of
+    its own: nothing tracked under ``.theurian/migrations/`` at all, git
+    declining to say what is tracked, and every anchor it did reach being
+    uncheckable. All three compare zero anchors, so without this the floor fires
+    over the top of them and replaces the one sentence saying what happened --
+    with text that then claims "each anchor that stopped being comparable is
+    named", when the first two routes name none because there are none, and that
+    offers "restore it, or lower the floor" as the remedy for a git that would
+    not answer. The exit status is 2 either way; what survives is *which*
+    failure a maintainer is looking at.
+
     **The floor outranks drift**, which is deliberate and is the whole point of
     binding it here. ``--advisory`` turns drift into exit 0, so a run that found
     one drifted anchor and lost the other twenty-five to uncheckability would
@@ -781,6 +795,8 @@ def held_to_floor(report: Report, minimum: int) -> Report:
     Keeping them apart is what lets the floor be strict without making ``scan``
     refuse the small inputs it exists to be driven with.
     """
+    if report.status is Status.NOTHING_COMPARED:
+        return report
     compared = len(report.compared)
     if minimum <= 0 or compared >= minimum:
         return report
@@ -788,9 +804,9 @@ def held_to_floor(report: Report, minimum: int) -> Report:
         report.comparisons,
         Status.NOTHING_COMPARED,
         f"compared {compared} anchor(s), fewer than the {minimum} this corpus is held to, so "
-        f"most of it went unchecked and a clean result would prove almost nothing. Each anchor "
-        f"that stopped being comparable is named above: restore it, or lower the floor in the "
-        f"same change that says why.",
+        f"most of it went unchecked and a clean result would prove almost nothing. Every anchor "
+        f"that stopped being comparable is named in this report, one SKIP line each: restore "
+        f"them, or lower the floor in the same change that says why.",
     )
 
 
@@ -817,12 +833,13 @@ def render_github(report: Report) -> tuple[str, ...]:
     A run that compared nothing, or too little, is an ``error`` whatever the
     flags say: it is the outcome that must never read as green.
 
-    The error's title names the shape rather than the extreme case: two things
-    reach it, zero compared and fewer compared than :func:`held_to_floor`
-    demands, and zero is only the far end of the second. The detail beside the
-    title says which one happened. Titled *ran empty*, a breach on a corpus with
-    twenty-five healthy anchors in it would be announced as a corpus that had
-    vanished.
+    The error's title names the shape rather than the extreme case: a run that
+    compared nothing at all reaches it, and so does one that compared less than
+    :func:`held_to_floor` demands. Each arrives carrying its own detail -- which
+    is what :func:`held_to_floor` leaving an already-``NOTHING_COMPARED`` report
+    untouched is for, so that the sentence beside the title still says which one
+    happened. Titled *ran empty*, a breach on a corpus with twenty-five healthy
+    anchors in it would be announced as a corpus that had vanished.
     """
     commands = [
         f"::warning file={item.file_path},title=Corpus drift::"
