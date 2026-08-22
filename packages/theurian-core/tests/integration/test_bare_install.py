@@ -140,8 +140,8 @@ def test_daemon_start_names_the_extra_and_the_command_that_installs_it() -> None
     text = _output(result)
     assert result.exit_code == 1, text
     assert "daemon" in text
-    assert "uv tool install 'theurian[daemon]'" in text
-    assert "pipx install --force 'theurian[daemon]'" in text
+    assert "uv tool install --python 3.13 'theurian[daemon]'" in text
+    assert "pipx install --force --python 3.13 'theurian[daemon]'" in text
 
 
 def test_daemon_start_does_not_hand_the_user_a_traceback() -> None:
@@ -172,7 +172,7 @@ def test_daemon_start_says_it_on_the_json_channel_too() -> None:
 
     payload = json.loads(_output(result))
     assert payload["error"]
-    assert "uv tool install 'theurian[daemon]'" in payload["remedy"]
+    assert "uv tool install --python 3.13 'theurian[daemon]'" in payload["remedy"]
 
 
 def test_daemon_status_answers_normally_without_the_extra() -> None:
@@ -289,7 +289,7 @@ def test_core_present_is_not_satisfied_by_a_core_whose_daemon_cannot_start(
 
     assert step.status is StepStatus.CONFLICTING
     assert DAEMON_EXTRA in step.summary
-    assert "uv tool install 'theurian[daemon]'" in step.detail
+    assert "uv tool install --python 3.13 'theurian[daemon]'" in step.detail
 
 
 def test_core_present_is_satisfied_when_the_extra_is_there(tmp_path: Path) -> None:

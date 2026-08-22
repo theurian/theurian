@@ -147,8 +147,8 @@ SESSION_START_HOOK: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[2]
 #: describes, arriving one indirection further away. What makes the check mean
 #: anything is that the two are written independently and asserted equal.
 INSTALLERS: Final = (
-    "uv tool install 'theurian[daemon]'",
-    "pipx install 'theurian[daemon]'",
+    "uv tool install --python 3.13 'theurian[daemon]'",
+    "pipx install --python 3.13 'theurian[daemon]'",
 )
 
 #: Commands that legitimately contain "install theurian": the two Core
@@ -364,10 +364,10 @@ def _paragraphs(text: str) -> list[str]:
 def _install_claims_naming_no_installer(text: str) -> list[str]:
     """Every "X installs Theurian" that neither denies it nor says who does.
 
-    "Install Core with `uv tool install 'theurian[daemon]'`" is the sentence
-    these surfaces are supposed to contain, so a claim whose own words name an
-    installer is exactly right. What is left over is a claim that leaves the
-    reader believing something else puts Core on the machine.
+    "Install Core with `uv tool install --python 3.13 'theurian[daemon]'`" is
+    the sentence these surfaces are supposed to contain, so a claim whose own
+    words name an installer is exactly right. What is left over is a claim that
+    leaves the reader believing something else puts Core on the machine.
 
     The masking in :func:`_paragraphs` is what makes "names an installer" mean
     *the current* installer: :data:`_INSTALL_COMMANDS` no longer contains the

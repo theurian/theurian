@@ -161,12 +161,16 @@ def test_the_guard_disclaims_everything_else(name: str | None) -> None:
 def test_the_remedy_names_a_command_for_each_installer_the_surfaces_offer() -> None:
     """Every surface tells the user to install with uv *or* pipx, so both need one.
 
-    Measured against pipx 1.16.6: ``pipx install 'theurian[daemon]'`` over an
-    existing bare install changes nothing and exits 0. A remedy that named only
-    the uv form would leave every pipx user without one; a remedy that named the
-    plain pipx form would leave them following it and still broken.
+    Measured against pipx 1.16.6: ``pipx install --python 3.13
+    'theurian[daemon]'`` over an existing bare install changes nothing and exits
+    0. A remedy that named only the uv form would leave every pipx user without
+    one; a remedy that named the plain pipx form would leave them following it
+    and still broken.
     """
     assert "uv tool install" in DAEMON_EXTRA_REMEDY
-    assert f"pipx install --force 'theurian[{DAEMON_EXTRA}]'" in DAEMON_EXTRA_REMEDY
+    assert (
+        f"pipx install --force --python 3.13 'theurian[{DAEMON_EXTRA}]'"
+        in DAEMON_EXTRA_REMEDY
+    )
     for installer in DAEMON_INSTALLERS:
         assert f"theurian[{DAEMON_EXTRA}]" in installer

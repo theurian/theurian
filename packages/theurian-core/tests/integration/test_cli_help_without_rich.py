@@ -53,8 +53,8 @@ pytestmark = pytest.mark.integration
 #: ``uv tool install 'theurian\[daemon]'`` is not an installable requirement,
 #: and single quotes carry the backslash through the shell to the installer.
 INSTALLERS: Final = (
-    "uv tool install 'theurian[daemon]'",
-    "pipx install 'theurian[daemon]'",
+    "uv tool install --python 3.13 'theurian[daemon]'",
+    "pipx install --python 3.13 'theurian[daemon]'",
 )
 
 #: Renders what it is told to and reports whether Rich was actually off.
