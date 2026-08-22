@@ -10,9 +10,12 @@ migration commands actually applies.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
@@ -29,6 +32,11 @@ from theurian.cli.propose_commands import _DRAFT_STEPS
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
+
+#: A ``chmod 0o000`` denies nothing to root and nothing on Windows, so a test
+#: that needs the mode to actually refuse cannot run there (the offline CI job
+#: runs as root). Same guard the service-level permission tests carry.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 EXIT_INVALID_INPUT = 2
 EXIT_STATE_ERROR = 4
@@ -593,6 +601,221 @@ def test_accept_refuses_an_id_that_is_not_a_ulid(project: Path) -> None:
 
     assert code == EXIT_INVALID_INPUT
     assert payload["remedy"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_accept_publishes_a_json_document_for_a_proposal_it_cannot_read(project: Path) -> None:
+    """#227: ``--json`` published nothing at all when the directory was unreadable.
+
+    Confirmed through the installed CLI in a sandbox: after ``chmod 000`` on
+    ``.theurian/proposals/<id>``, ``theurian propose accept <id> --json`` exited 1
+    having written **zero bytes** to stdout, with the traceback bottoming at
+    ``PermissionError: [Errno 13] Permission denied: .../evidence.json``. CP-2
+    says a ``--json`` failure is an ``{error, remedy}`` document, so a caller
+    parsing stdout gets a decode error and no remedy -- the one failure mode
+    ``--json`` exists to remove.
+
+    Invoked with ``catch_exceptions=True``, unlike the ``_invoke`` helper: the
+    defect is precisely that an exception escapes the command, so it is caught
+    here and named in a failed assertion rather than propagated as a test error.
+    ``SystemExit`` is what a *translated* failure exits with, so it is the one
+    exception this asserts nothing about.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    directory.chmod(0o000)
+    try:
+        result = runner.invoke(
+            app, ["propose", "accept", drafted["proposalId"], "--json"], catch_exceptions=True
+        )
+    finally:
+        directory.chmod(0o755)
+
+    escaped = None if isinstance(result.exception, SystemExit) else result.exception
+    assert escaped is None, f"an exception escaped instead of a --json document: {escaped!r}"
+    assert result.exit_code != 0, "an unreadable proposal is not an acceptance"
+    # The *whole* stream is parsed, not searched: that is what rules out a
+    # traceback printed beside the document as well as one printed instead of it.
+    # (In-process the runner captures the exception rather than printing it, so a
+    # `"Traceback" not in output` check would hold here whatever the code did.)
+    payload = json.loads(result.stderr or result.stdout)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
+
+
+def _accept_catching(proposal_id: str) -> tuple[int, object, str]:
+    """Invoke ``propose accept --json`` and return exit, escaped exception, stream.
+
+    ``catch_exceptions=True`` unlike ``_invoke``: class B is precisely that an
+    exception escapes the command, so it is caught and named here rather than
+    raised as a test error. ``SystemExit`` is what a *translated* failure exits
+    with, so it is the one exception this reports as "none escaped".
+    """
+    result = runner.invoke(app, ["propose", "accept", proposal_id, "--json"], catch_exceptions=True)
+    escaped = None if isinstance(result.exception, SystemExit) else result.exception
+    return result.exit_code, escaped, (result.stdout or "") + (result.stderr or "")
+
+
+def _poison_content_file(root: Path, drafted: dict[str, Any], quoted_value: str) -> None:
+    """Repoint the drafted migration's ``contentFile`` at a hand-authored value.
+
+    ``accept`` does not schema-validate the proposal's migration, so a value the
+    schema rejects reaches ``_destination_of``'s ``resolve()`` unfiltered.
+    ``quoted_value`` is a YAML double-quoted scalar so its escapes decode to the
+    real code points.
+    """
+    migration = root / drafted["proposalDirectory"] / drafted["migrationFile"]
+    text = migration.read_text(encoding="utf-8")
+    replaced = text.replace(
+        f"contentFile: {drafted['contentFile']}", f"contentFile: {quoted_value}"
+    )
+    assert replaced != text, "the contentFile anchor did not match"
+    migration.write_text(replaced, encoding="utf-8")
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_accept_reports_a_completed_move_whose_source_cleanup_could_not_finish(
+    project: Path,
+) -> None:
+    """CP-2 (code review + orchestrator ``repro_readonly_proposal_dir``): a landed
+    accept whose trailing cleanup fails must not read as a non-landing.
+
+    At ``0o555`` the proposal directory lists, stats and reads, so the examination
+    phase and ``_commit``'s writes all succeed and the migration and body land.
+    Only the trailing ``unlink`` of the proposal's own now-copied files -- outside
+    ``_commit``'s write guard -- cannot run, and its ``PermissionError`` escaped
+    ``accept`` raw: exit 1, both streams empty. Exit 1's contract is "nothing
+    landed", so a caller re-drafts and mints a duplicate migration (#89). The move
+    completed, so this reports success with a remedy naming the leftover, never a
+    failure.
+    """
+    _, drafted = _draft(project)
+    directory = project / ".theurian/proposals" / drafted["proposalId"]
+    directory.chmod(0o555)
+    try:
+        code, escaped, stream = _accept_catching(drafted["proposalId"])
+    finally:
+        directory.chmod(0o755)
+
+    assert escaped is None, f"an exception escaped instead of a document: {escaped!r}"
+    assert code == 0, f"the migration and body landed, so this is a success: {stream}"
+    assert (project / ".theurian/migrations" / drafted["migrationFile"]).is_file()
+    assert (project / drafted["bodyDestination"]).read_text() == BODY
+    payload = json.loads(stream)
+    assert payload["proposalId"] == drafted["proposalId"]
+    # The leftover is named so an operator can finish the cleanup by hand.
+    assert f".theurian/proposals/{drafted['proposalId']}" in payload["remedy"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_accept_publishes_a_json_document_when_the_migrations_dir_cannot_be_made(
+    project: Path,
+) -> None:
+    """CP-2 (security review + orchestrator ``repro_cli_cp2``): ``_commit``'s
+    opening ``mkdir`` escaped ``accept`` raw.
+
+    With ``.theurian/migrations/`` absent and ``.theurian/`` unwritable,
+    ``_commit``'s ``self._paths.migrations.mkdir(...)`` -- outside its own write
+    guard -- raised ``PermissionError`` and it left ``accept`` untranslated: exit
+    1, zero bytes on both streams. Moving the ``mkdir`` inside the guard (the
+    rollback set is empty there) makes it a CP-2 ``{error, remedy}`` document, and
+    nothing lands.
+    """
+    _, drafted = _draft(project)
+    shutil.rmtree(project / ".theurian/migrations")
+    (project / ".theurian").chmod(0o555)
+    try:
+        code, escaped, stream = _accept_catching(drafted["proposalId"])
+    finally:
+        (project / ".theurian").chmod(0o755)
+
+    assert escaped is None, f"an exception escaped instead of a document: {escaped!r}"
+    assert code != 0, "an accept that could not write is not a success"
+    payload = json.loads(stream)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
+    assert not (project / ".theurian/migrations" / drafted["migrationFile"]).exists()
+    # The OSError's text carries the absolute path; the translated document names
+    # it project-relative and must not leak the machine's own directory.
+    assert str(project) not in json.dumps(payload), "the absolute path must not leak"
+
+
+def test_accept_publishes_a_json_document_for_a_nul_in_the_content_file(project: Path) -> None:
+    """CP-2 (adversarial e14): a NUL in ``contentFile`` escaped ``accept`` raw.
+
+    ``resolve()`` raises ``ValueError`` (*"embedded null character in path"*)
+    before any containment check, and it is not an ``OSError``, so the examination
+    clause did not catch it: exit 1, a Rich traceback, zero bytes on stdout. The
+    fix widens the ``resolve()`` translation to ``(ValueError, OSError)`` as the
+    loader does.
+    """
+    _, drafted = _draft(project)
+    _poison_content_file(project, drafted, '"../knowledge/architecture/a\\0b.md"')
+
+    code, escaped, stream = _accept_catching(drafted["proposalId"])
+
+    assert escaped is None, f"an exception escaped instead of a document: {escaped!r}"
+    assert code != 0
+    payload = json.loads(stream)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
+
+
+def test_accept_publishes_a_json_document_for_a_surrogate_in_the_content_file(
+    project: Path,
+) -> None:
+    """CP-2 (adversarial e14): a lone surrogate in ``contentFile`` escaped ``accept`` raw.
+
+    Its ``resolve()`` raises ``UnicodeEncodeError`` -- a ``ValueError`` subclass,
+    which is why the widening is ``ValueError`` and not the NUL's exact type.
+    """
+    _, drafted = _draft(project)
+    _poison_content_file(project, drafted, '"../knowledge/architecture/a\\uD800b.md"')
+
+    code, escaped, stream = _accept_catching(drafted["proposalId"])
+
+    assert escaped is None, f"an exception escaped instead of a document: {escaped!r}"
+    assert code != 0
+    payload = json.loads(stream)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
+
+
+def test_accept_writes_its_json_failure_document_to_stderr_leaving_stdout_clean(
+    project: Path,
+) -> None:
+    """CP-2 / ADR-0013: a ``--json`` accept failure is an ``{error, remedy}``
+    document on *stderr*, and stdout stays a clean machine channel.
+
+    ``_fail`` writes the failure document to stderr while ``_emit`` writes the
+    success payload to stdout (``cli/commands.py``), so a caller can read stdout
+    for a result and stderr for a fault without the two colliding. The ADR-cited
+    accept-failure tests read a *concatenation* of both streams
+    (:func:`_accept_catching` returns ``stdout + stderr``), so none of them would
+    notice the document drifting onto stdout -- a regression that would let a
+    caller parsing stdout read an error as a success payload, or miss the remedy
+    where the contract puts it. This is the one accept-path test that pins the
+    split the others assume.
+
+    The failing input is a NUL in ``contentFile`` (adversarial e14): deterministic
+    and mode-independent, so this needs no root skip. Measured here: on this
+    failure stdout is exactly empty and stderr carries the whole document.
+    """
+    _, drafted = _draft(project)
+    _poison_content_file(project, drafted, '"../knowledge/architecture/a\\0b.md"')
+
+    result = runner.invoke(
+        app, ["propose", "accept", drafted["proposalId"], "--json"], catch_exceptions=True
+    )
+
+    assert result.exit_code != 0, "a poisoned contentFile is not an acceptance"
+    # stdout is the machine result channel; a failure must leave it empty, not
+    # print the error document there where a success parser would consume it.
+    assert result.stdout == "", f"stdout must stay a clean channel on a failure: {result.stdout!r}"
+    # The whole document is on stderr, parseable as one object -- error and remedy.
+    payload = json.loads(result.stderr)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
 
 
 # -- governed metadata (#249) ----------------------------------------------

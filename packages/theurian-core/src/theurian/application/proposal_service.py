@@ -36,9 +36,10 @@ asymmetry is the whole of what #89 measured:
 
 from __future__ import annotations
 
+import errno
 import json
 import os
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
@@ -84,6 +85,12 @@ EVIDENCE_FILE: Final = "evidence.json"
 #: 50,000 files produced a 600 KB error string in 1.5 s before this bound.
 _MAX_NAMES_LISTED: Final = 5
 
+#: The errnos a ``chmod`` actually cures, for the accept-path read-failure remedy.
+#: An ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP`` is the proposal's own input
+#: at fault, not a permission bit, so prescribing ``chmod`` for it over-claims the
+#: cause -- the mistake ``c7cf455`` corrected for :class:`PathEscapeError` (#233).
+_PERMISSION_ERRNOS: Final = frozenset({errno.EACCES, errno.EPERM})
+
 #: Checks a built migration document against the published JSON Schema, raising
 #: on failure. Supplied by the composition root, because locating and reading
 #: ``schemas/`` is an adapter's job (ADR-0003).
@@ -104,6 +111,28 @@ CurrentRevisionLookup = Callable[[ItemId], RevisionId | None]
 #: filesystem. That the loader is not imported here is ADR-0003, the same reason
 #: the schema check and the current-revision lookup arrive this way.
 LandedMigrationLookup = Callable[[MigrationId], Migration | None]
+
+#: Every migration in the project's approved set. The same ``MigrationSet``
+#: :data:`LandedMigrationLookup` is keyed into, handed over whole because the
+#: replacement guard's question -- "does *any* migration already in place read
+#: the file at this destination?" -- is not keyed by id and cannot be asked one
+#: lookup at a time. Injected for the identical reason: it is the loader's set,
+#: so the guard and the loader cannot disagree about which bodies are backed
+#: (#234), and the loader itself stays an adapter this layer never imports
+#: (ADR-0003).
+#:
+#: The return is a :class:`~collections.abc.Collection`, not a bare
+#: ``Iterable``, as a defensive constraint on the callable rather than a
+#: description of the current caller. The guard invokes this once and
+#: materializes the result with ``tuple(...)`` before scanning that tuple per
+#: replaced body, so today it would stay correct even against a single-use
+#: generator. ``Collection`` guards a *future* refactor: one that iterated the
+#: returned value directly per move -- dropping the ``tuple(...)`` -- would, on a
+#: spent iterator, answer the first move and silently wave every later one
+#: through, and requiring re-iterability at the type edge forbids that shape from
+#: ever type-checking. Both roots return the loaded ``MigrationSet``, which is
+#: re-iterable, so the constraint costs nothing.
+LandedMigrations = Callable[[], Collection[Migration]]
 
 
 class ProposalError(TheurianError):
@@ -268,6 +297,12 @@ class AcceptedProposal:
     proposal_id: ProposalId
     migration: MovedFile
     bodies: tuple[MovedFile, ...] = ()
+    #: A remedy set only when the move landed but the proposal's own source files
+    #: could not then be removed (a read-only proposal directory). The acceptance
+    #: succeeded, so this rides on the success result rather than turning it into
+    #: a failure -- reporting a non-landing would send the caller to re-draft and
+    #: mint a duplicate migration (#89). ``None`` on a clean move.
+    cleanup_remedy: str | None = None
 
 
 class ProposalService:
@@ -282,6 +317,7 @@ class ProposalService:
         validate: MigrationDocumentValidator,
         current_revision: CurrentRevisionLookup,
         landed_migration: LandedMigrationLookup,
+        landed_migrations: LandedMigrations,
     ) -> None:
         self._paths = paths
         self._clock = clock
@@ -289,6 +325,7 @@ class ProposalService:
         self._validate = validate
         self._current_revision = current_revision
         self._landed_migration = landed_migration
+        self._landed_migrations = landed_migrations
 
     # -- generation --------------------------------------------------------
 
@@ -444,6 +481,24 @@ class ProposalService:
         under the local-write boundary rather than closed with an ``st_nlink``
         check, which would refuse legitimate files.
 
+        **CP-2 invariant: no accept-path filesystem or path fault escapes
+        ``accept`` untranslated.** A fault that must abort ``accept`` is turned
+        into a ``ProposalError`` at one of three *translation* sites: the
+        examination phase's ``except OSError`` in this method, :meth:`_commit`'s
+        own clause, and :meth:`_destination_of`, which catches its ``resolve()``
+        ``ValueError`` -- not an ``OSError``, so the examination clause never sees
+        it -- in place. The examination and commit clauses are deliberately
+        separate, because a failed *write* must roll the destinations back before
+        it reports, and one clause spanning both would describe a half-written
+        tree as an unreadable proposal. Two further sites catch ``OSError`` on the
+        accept path but deliberately do *not* translate: :meth:`_remove_proposal_sources`
+        degrades a post-landing cleanup failure to a remedy and still returns
+        success, and :func:`_roll_back` stays silent so a raise cannot mask the
+        error already propagating. An editor adding a filesystem call that must
+        abort ``accept`` has to land it under one of the three translation sites,
+        or add a fourth -- a raw escape publishes no ``{error, remedy}`` under
+        ``--json`` (#227).
+
         Raises:
             ProposalAlreadyAcceptedError: If this proposal's own migration is
                 already in ``.theurian/migrations/``. A composition root reports
@@ -454,26 +509,49 @@ class ProposalService:
                 a previous acceptance of this proposal or by a different change
                 that collided.
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
-                could not be fully examined, or names a file the security layer
-                refuses. Both types above are subclasses, so a caller that
-                catches only this still catches everything.
+                could not be fully examined -- including a directory or a file
+                in it the filesystem refuses to list, stat or read -- or names a
+                file the security layer refuses. Both types above are
+                subclasses, so a caller that catches only this still catches
+                everything.
             PathEscapeError: If a ``contentFile`` resolves outside
                 ``.theurian/knowledge/``.
             InputTooLargeError: If a file the accept path reads exceeds SEC-8's
                 size cap.
         """
-        directory = self._require_directory(proposal_id)
-        migration_file = self._require_migration(directory, proposal_id)
-        migration_bytes = self._read_within_project(migration_file)
-        document = _parse_migration(migration_bytes, migration_file)
-        destination = self._paths.migrations / migration_file.name
-        # "Already in place" is the harder stop and is reported first; the
-        # filename/id agreement is checked next, on a name nothing holds.
-        self._refuse_if_migration_present(destination)
-        _require_filename_matches_id(migration_file, document)
+        try:
+            directory = self._require_directory(proposal_id)
+            migration_file = self._require_migration(directory, proposal_id)
+            migration_bytes = self._read_within_project(migration_file)
+            document = _parse_migration(migration_bytes, migration_file)
+            destination = self._paths.migrations / migration_file.name
+            # "Already in place" is the harder stop and is reported first -- both
+            # by the destination *name* and by the migration *id* the loaded set
+            # already holds; the filename/id agreement is checked next, on a name
+            # nothing holds.
+            self._refuse_if_migration_present(destination, document)
+            _require_filename_matches_id(migration_file, document)
 
-        moves = tuple(self._body_moves(directory, document))
-        self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
+            moves = tuple(self._body_moves(directory, document))
+            self._refuse_if_a_replacement_breaks_an_existing_pin(moves)
+        except OSError as exc:
+            # Every line above probes or reads a directory whose permissions are
+            # a contributor's, through raw `is_symlink`/`is_file`/`exists`/`stat`
+            # and read calls, and not one of them translated its own `OSError`:
+            # the failure left `accept` as a bare `PermissionError`, so `--json`
+            # published no `{error, remedy}` document at all (CP-2, #227). Which
+            # call fires is an accident of the mode -- `0o000` on the directory
+            # reaches the evidence probe, `0o444` the `is_symlink` above it, and
+            # an unreadable migration file the read inside the security layer --
+            # so the clause spans the examination phase rather than any one of
+            # them.
+            #
+            # It stops there deliberately. `_commit` below keeps its own
+            # `except OSError`, because a failed write must roll the
+            # destinations back before it reports; a clause spanning both would
+            # swallow that and describe a half-written tree as an unreadable
+            # proposal.
+            raise self._unreadable(proposal_id, exc) from exc
 
         return self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
 
@@ -500,15 +578,24 @@ class ProposalService:
 
     def _require_migration(self, directory: Path, proposal_id: ProposalId) -> Path:
         # The migration is identified by its `<ulid>-<slug>.yaml` name, not by
-        # globbing `*.yaml`: a YAML or YML *body* is a `*.yaml` too, so globbing
-        # counted the body as a second migration and a YAML-bodied proposal could
-        # never be accepted ("holds two or more migration files"). Body files
-        # also mirror their `knowledge/` sub-path and so sit in a subdirectory,
-        # while the migration is always at the top level -- another reason a
-        # top-level, name-matched lookup finds exactly the migration.
-        entries = sorted(
-            path for path in directory.glob("*.yaml") if is_migration_file_name(path.name)
-        )
+        # any `*.yaml`: a YAML or YML *body* is a `*.yaml` too, so matching the
+        # suffix counted the body as a second migration and a YAML-bodied
+        # proposal could never be accepted ("holds two or more migration
+        # files"). Body files also mirror their `knowledge/` sub-path and so sit
+        # in a subdirectory, while the migration is always at the top level --
+        # another reason a top-level, name-matched lookup finds exactly the
+        # migration. The name pattern is anchored on a ULID, so listing the
+        # directory and filtering by name selects exactly what `glob("*.yaml")`
+        # used to.
+        #
+        # `iterdir()` and not `glob()`: `Path.glob` runs its `scandir` inside a
+        # `try` that swallows every `OSError`, so a proposal directory this
+        # process cannot read yielded *nothing* and the migration sitting in it
+        # read as absent -- the silent false negative #214 fixed on the loader's
+        # own enumeration, here handing an unreadable directory to the
+        # already-accepted diagnosis below. `iterdir()` raises instead, and
+        # `accept` translates it (#227).
+        entries = sorted(path for path in directory.iterdir() if is_migration_file_name(path.name))
         # `is_file()` follows a symlink, so a name-matching link to an
         # out-of-project file would otherwise count as the migration and have its
         # target's bytes read into a tracked file. It is rejected by name rather
@@ -717,6 +804,103 @@ class ProposalService:
             "in .theurian/migrations/ for the migration this proposal drafted before re-drafting.",
         )
 
+    def _unreadable(self, proposal_id: ProposalId, error: OSError) -> ProposalError:
+        """The answer when the filesystem refuses a probe or a read on the accept path.
+
+        Raised from the single clause in :meth:`accept` that spans the
+        examination phase, so *which* raw call the mode happens to select does
+        not change the answer the caller gets.
+
+        The reason is ``strerror`` -- the OS's own category for the failure --
+        and never ``str(exc)``, whose text carries the absolute filename and with
+        it the developer's home directory. :meth:`_evidence_indeterminate` records
+        that discipline; :func:`_project_relative` is what names the file without
+        it, and :func:`_names` quotes the result, because a proposal directory's
+        filenames are the contributor's (ADR-0013 point 7).
+
+        **The remedy is chosen by errno, never a blanket ``chmod``.** The failure
+        the examination phase reports is not always a permission one, and not
+        every permission one is cured on the path the ``OSError`` names -- the
+        same over-claim ``c7cf455`` corrected for :class:`PathEscapeError`,
+        reopened here:
+
+        * On ``EACCES``/``EPERM`` the cure is a permission change, but a
+          ``stat``/``open`` refused for a *child* is the parent lacking its search
+          bit, not the child lacking read -- ``chmod u+rX`` on the child would be a
+          cure for the wrong file. :meth:`_permission_remedy` points ``chmod u+x``
+          at the unsearchable directory when the parent is the one refused, and
+          ``chmod u+rX`` at the named path otherwise.
+        * On any other errno -- ``EISDIR`` (a ``contentFile`` naming a directory),
+          ``ENOTDIR``, ``ENAMETOOLONG``, ``ELOOP`` -- no ``chmod`` cures it: the
+          cause is the proposal's own input, so the remedy names the
+          ``contentFile`` to correct and says nothing about permissions.
+
+        **The remedy never sends the reader to draft again.** A read the
+        filesystem refused says nothing about whether this proposal's migration
+        has already landed -- the two facts are unrelated -- and re-drafting an
+        accepted proposal mints a second migration for a change already in
+        history (#89). So both branches point at ``.theurian/migrations/`` first,
+        exactly as the indeterminate-evidence remedy above does. What they *can*
+        state outright is that nothing moved: every write on this path is in
+        :meth:`_commit`, which the clause in :meth:`accept` deliberately excludes.
+        """
+        named = _names([_project_relative(error.filename, self._paths.root)])
+        return ProposalError(
+            f"Proposal {proposal_id.value} could not be examined: "
+            f"{error.strerror or 'it could not be read'} at {named}. Nothing has been "
+            "moved, and whether it can be accepted cannot be answered without reading it.",
+            remedy=self._read_failure_remedy(error, named),
+        )
+
+    #: What every read-failure remedy ends with, whatever cured the read: the
+    #: refused read is not evidence that nothing landed, so the reader is sent to
+    #: ``.theurian/migrations/`` before any re-draft (#89), never told to draft
+    #: again outright.
+    _MIGRATIONS_TAIL: Final = (
+        " If it cannot be recovered, look in .theurian/migrations/ for the migration this "
+        "proposal drafted before re-drafting: a refused read is not evidence that nothing landed."
+    )
+
+    def _read_failure_remedy(self, error: OSError, named: str) -> str:
+        """The cure for one accept-path read failure, chosen by its errno.
+
+        Permission failures earn a ``chmod``; everything else earns a neutral
+        remedy that names the input to correct, because ``chmod`` cures none of
+        ``EISDIR``/``ENOTDIR``/``ENAMETOOLONG``/``ELOOP``. A ``None`` errno is
+        treated as non-permission: a ``chmod`` prescribed for an unknown cause is
+        the over-claim this method exists to avoid.
+        """
+        if error.errno in _PERMISSION_ERRNOS:
+            return f"{self._permission_remedy(error, named)}{self._MIGRATIONS_TAIL}"
+        return (
+            f"The migration names a contentFile the filesystem cannot read as a file ({named}); "
+            "no permission change cures that. Correct the contentFile the migration names, then "
+            f"run theurian propose accept again.{self._MIGRATIONS_TAIL}"
+        )
+
+    def _permission_remedy(self, error: OSError, named: str) -> str:
+        """The ``chmod`` for a permission failure, pointed at the path truly at fault.
+
+        A refused ``stat``/``open`` of a *child* is the parent directory lacking
+        its search (execute) bit, not the child lacking read: the child is
+        unreachable, so ``chmod u+rX`` on it is a cure for a file the reader
+        cannot even name yet. When the named path's parent is the unsearchable
+        one, the cure is ``chmod u+x`` on that directory; otherwise the named path
+        itself is read-refused and takes ``chmod u+rX``.
+        """
+        filename = error.filename
+        if isinstance(filename, str):
+            parent = Path(filename).parent
+            if parent != Path(filename) and not os.access(parent, os.X_OK):
+                named_parent = _names([_project_relative(str(parent), self._paths.root)])
+                return (
+                    f"Make {named_parent} searchable -- chmod u+x on it -- then run theurian "
+                    "propose accept again."
+                )
+        return (
+            f"Make {named} readable -- chmod u+rX on it -- then run theurian propose accept again."
+        )
+
     def _landed_state(
         self, migration_id: MigrationId, evidence: Mapping[str, object]
     ) -> _LandedMigration | None:
@@ -735,11 +919,26 @@ class ProposalService:
         loader twice: a symlinked landed migration read as absent (round five), and
         a landed migration renamed off its ULID prefix read as absent (round six),
         each an exit-1 "nothing landed" over a change on disk, each a duplicate-mint
-        (#89). **Residual, same class, not fixed here:** ``_pinned_digest_at`` is
-        the other member that re-detects landed migrations from the filesystem
-        (a ``glob("*.yaml")`` with a symlink skip); it is issue #234's box, a
-        security-sensitive pin guard with its own review, to be closed the same
-        way -- wire it to the loaded set -- in its own slot.
+        (#89).
+
+        **The class is the accept-path procedures that judge whether a migration
+        is landed, and all three now consult the loaded set.**
+        :meth:`_destination_backs_a_landed_revision` was the second: it
+        re-detected landed migrations from the filesystem (a ``glob("*.yaml")``
+        with a symlink skip), and reproduced round five's disagreement on the
+        replacement guard rather than on this diagnosis: a landed migration behind
+        a symlink held a body the guard could not see, so a replacement was
+        allowed and the set stopped loading (#234). It reads the same loaded set
+        through :data:`LandedMigrations` as of that fix, and keys the comparison
+        on the loader's ``content_identity`` -- ``(st_dev, st_ino)`` -- so no
+        spelling of a body path, case or NFC/NFD included, can make the guard and
+        the loader disagree about which file a revision reads (#210, #227).
+        :meth:`_refuse_if_migration_present` was the third and last: it keyed the
+        "already in place" refusal on the destination *filename* alone, so a
+        same-id different-slug proposal collided on the loader's inner id while
+        its name was free and landed a duplicate migration id (p15). It consults
+        the loaded set through :data:`LandedMigrationLookup` as of this fix. No
+        method on the accept path enumerates ``.theurian/migrations/`` any more.
 
         ``None`` when nothing is filed under the id. Otherwise a
         :class:`_LandedMigration` whose ``confirmed`` says whether it also operates
@@ -759,7 +958,37 @@ class ProposalService:
         claimed = _evidence_item_ids(evidence)
         return _LandedMigration(name=name, confirmed=bool(claimed & _migration_item_ids(migration)))
 
-    def _refuse_if_migration_present(self, destination: Path) -> None:
+    def _refuse_if_migration_present(
+        self, destination: Path, document: Mapping[str, object]
+    ) -> None:
+        """Refuse a migration whose name *or* id the project already holds.
+
+        **Closure (the class this closes).** The migration set keys by *inner*
+        ``id`` (``MigrationSet._by_id``), so "already in place" has two faces and
+        a filename check sees only one:
+
+        * The **name** is taken: ``<id>-<slug>.yaml`` already exists in
+          ``.theurian/migrations/`` (or is a symlink there). The name carries the
+          id, so that very migration is in place under this name.
+        * The **id** is landed under a *different* name: a hand-authored proposal
+          named ``<id>-other-slug.yaml`` carrying ``id: <id>`` collides on the
+          inner id while the destination name is free, so the filename check waved
+          it through and ``accept`` landed a duplicate id -- ``migrate
+          validate``/``status``/``apply`` then all exit 4 on "duplicate migration
+          id" (reproduced end to end, p15).
+
+        The id face is answered against the *loaded* ``MigrationSet`` through
+        :data:`LandedMigrationLookup` -- the same set the loader,
+        ``migrate validate`` and ``migrate apply`` read, keyed the same way -- so
+        this cannot disagree with them about which ids are landed. This is the
+        third and last accept-path procedure to be moved off a filesystem
+        heuristic and onto the loaded set (#234/#253/#254 converted the sibling
+        two, :meth:`_landed_state` and :meth:`_destination_backs_a_landed_revision`);
+        the population is the accept-path procedures that judge whether a migration
+        is landed, and all three now consult the loaded set. A malformed or absent
+        inner ``id`` yields no lookup and falls to the name check plus
+        :func:`_require_filename_matches_id`, which run either side of this.
+        """
         if destination.exists() or destination.is_symlink():
             raise MigrationNameTakenError(
                 f"{destination.name} is already in .theurian/migrations/. The name "
@@ -768,6 +997,24 @@ class ProposalService:
                     "Read the migration that is already there. If this proposal is a "
                     "different change, draft it again to mint a new migration id; if it "
                     "is the same one, delete the proposal directory."
+                ),
+            )
+        migration_id = _migration_id_or_none(document.get("id"))
+        if migration_id is None:
+            return
+        landed = self._landed_migration(migration_id)
+        if landed is not None:
+            landed_name = (
+                Path(landed.source_path).name if landed.source_path else migration_id.value
+            )
+            raise MigrationNameTakenError(
+                f"A migration with id {migration_id.value} is already in .theurian/migrations/ "
+                f"as {_names([landed_name])}; that id is already in place, so accepting this "
+                "would land a duplicate migration id the whole set then fails to validate on.",
+                remedy=(
+                    "Read the migration already filed under that id. If this proposal is a "
+                    "different change, draft it again to mint a new migration id; if it is the "
+                    "same one, delete the proposal directory."
                 ),
             )
 
@@ -785,7 +1032,7 @@ class ProposalService:
         are the bytes that were checked.
         """
         knowledge = self._paths.knowledge.resolve()
-        for content_file in _content_files(document):
+        for content_file, revision_id, item_id in _upsert_bodies(document):
             destination = self._destination_of(content_file)
             tail = destination.relative_to(knowledge)
             source = directory / tail
@@ -801,6 +1048,8 @@ class ProposalService:
                 destination=destination,
                 data=data,
                 replaced=destination.exists(),
+                revision_id=revision_id,
+                item_id=item_id,
             )
 
     def _read_within_project(self, path: Path) -> bytes:
@@ -843,63 +1092,209 @@ class ProposalService:
                 )
 
     def _refuse_if_a_replacement_breaks_an_existing_pin(self, moves: Iterable[_BodyMove]) -> None:
-        """Refuse a body replacement that would invalidate an applied migration.
+        """Refuse a body replacement that would break an existing landed pin.
 
-        The invariant ``accept`` must hold is that it never leaves the migration
-        set unable to validate. A body file a migration references is immutable:
-        the loader re-reads it and compares it against the ``contentSha256`` that
-        migration pinned. Replacing that body with different bytes makes the pin
-        wrong, and ``migrate validate`` / ``apply`` / ``status`` then all exit 4
-        for the whole project -- reproduced: *"hashes to abc7cdb70713 but the
-        migration pins 4f9c5503e198"*, with no undo command.
+        This guard holds one narrow invariant, not a global one: a replacement
+        never breaks a pin **already landed** in the approved set. It is *not* the
+        claim that ``accept`` leaves the set able to validate -- ``accept`` does
+        not schema-validate the incoming migration and does not check it against
+        itself, so a self-contained breakage in one proposal (two operations
+        naming one ``contentFile``, a self-inconsistent pin, an empty
+        ``contentFile``) lands here and is caught by ``migrate validate`` in CI,
+        which is the check by design (ADR-0013 §4). What this method refuses is the
+        one fault it can judge from the *landed* set alone -- *the destination is
+        a body a landed revision already reads*:
 
-        A generated proposal never reaches this: its ``contentFile`` carries a
-        fresh revision id, so no two of them target one path. What reaches it is
-        a hand-authored ``contentFile`` that reuses an existing body's path --
-        exactly the manual flow -- and refusing there breaks nothing legitimate,
-        because the honest way to change a body is a new revision at a new path.
+        * If that landed revision **pinned** the body, the loader re-reads it and
+          finds bytes the pin no longer matches: *"hashes to abc7cdb70713 but the
+          migration pins 4f9c5503e198"*, exit 4 with no undo.
+        * Whether pinned or not, the destination now backs **two** distinct
+          revisions -- the landed one and this proposal's -- and
+          ``refuse_duplicate_content_files`` refuses one body file behind two
+          revisions for the whole project (also exit 4).
+
+        **Keyed on the destination's ``(st_dev, st_ino)``, never a path string.**
+        A case-insensitive filesystem (APFS, NTFS) reaches one inode by many
+        spellings, and ``Path.resolve()`` folds ``.``/``..``/symlinks but not case
+        or NFC/NFD -- so a hand-authored ``contentFile`` differing only in case
+        (``RETRY-POLICY...`` vs the landed ``retry-policy...``) resolved to a
+        *different string* while landing on the *same file*, and a string key
+        waved it through (the disclosure this re-key closes; the identical fix
+        ``refuse_duplicate_content_files`` took for #210). ``move.replaced`` was
+        set from ``destination.exists()``, so the file is there and the ``stat``
+        resolves; a ``stat`` that fails anyway is an accept-path FS fault, left to
+        :meth:`accept`'s examination-phase ``except OSError`` (this method runs
+        inside it) rather than swallowed here.
+
+        A generated proposal never reaches a refusal: its ``contentFile`` carries
+        a fresh revision id, so it lands on no existing file. What reaches it is a
+        hand-authored ``contentFile`` reusing an existing body's path, and
+        refusing there breaks nothing legitimate -- the honest way to change a
+        body is a new revision at a new path. The one landed reference that is
+        *not* a break is this proposal's own revision re-declared **byte for
+        byte** against its own body **on the same item** (an in-place status
+        change, ADR-0024 decision 5): the item and revision ids do not move and,
+        because a revision's content is immutable, the bytes do not either, so
+        nothing changes. All three conjuncts are required. A re-declare that keeps
+        the revision id but supplies *different* bytes overwrites the immutable
+        body that id already froze; one that keeps the id and bytes but names a
+        *different* item is a cross-item revision reuse ``migrate apply`` refuses
+        -- so the skip is keyed on the quadruple (identity, equal item id, equal
+        revision id, equal bytes), not on the id alone.
         """
-        for move in moves:
-            if not move.replaced:
+        replaced = [move for move in moves if move.replaced]
+        if not replaced:
+            # Load the approved set only when a replacement is actually in hand:
+            # a generated proposal lands on no existing file, and reading the set
+            # for it would refuse an otherwise-valid accept whenever the set does
+            # not load -- the O_EXCL race path, which writes a non-migration file
+            # to the destination on purpose, is exactly that.
+            return
+        landed = tuple(self._landed_migrations())
+        for move in replaced:
+            stat = move.destination.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            if not self._destination_backs_a_landed_revision(landed, identity, move):
                 continue
-            pin = self._pinned_digest_at(move.destination)
-            if pin is None:
-                continue
-            current = ContentHash.of_bytes(move.destination.read_bytes()).value
-            replacement = ContentHash.of_bytes(move.data).value
-            # A pin that already fails to match its body is a project that does
-            # not validate now; only refuse where a *currently valid* pin would
-            # be broken. And a byte-identical replacement changes nothing.
-            if pin == current and replacement != current:
-                relative = move.destination.relative_to(self._paths.knowledge.resolve())
-                raise ProposalError(
-                    f"Accepting this would overwrite {_names([relative.as_posix()])}, whose "
-                    "bytes an existing migration pins with contentSha256; the whole set "
-                    "would then fail to validate.",
-                    remedy="Draft this as a new revision -- a fresh contentFile -- rather than "
-                    "a replacement of an existing body.",
-                )
+            relative = move.destination.relative_to(self._paths.knowledge.resolve())
+            raise ProposalError(
+                f"Accepting this would overwrite {_names([relative.as_posix()])}, a body "
+                "already backing a landed revision; the whole set would then fail to validate.",
+                remedy="Draft this as a new revision -- a fresh contentFile -- rather than "
+                "a replacement of an existing body.",
+            )
 
-    def _pinned_digest_at(self, destination: Path) -> str | None:
-        """The ``contentSha256`` an existing migration pins for ``destination``, if any.
+    def _destination_backs_a_landed_revision(
+        self,
+        landed: Iterable[Migration],
+        identity: tuple[int, int],
+        move: _BodyMove,
+    ) -> bool:
+        """Does a landed ``upsertRevision`` already read ``identity`` in a way this move breaks?
 
-        Reads the migrations already in ``.theurian/migrations/`` -- not the
-        proposal -- so it can say whether landing this body would break one. A
-        malformed existing migration is skipped: it fails ``migrate validate``
-        regardless, and is not this command's to diagnose.
+        **Closure (the class this closes).** The migrations come from the
+        project's *loaded* set, through the injected :data:`LandedMigrations` --
+        the same ``MigrationSet`` ``migrate validate`` and ``migrate apply`` read,
+        and the same one :meth:`_landed_state` is keyed into. So the guard and the
+        loader cannot disagree about *which migrations are enumerated*: a landed
+        migration relocated behind a symlink is followed by both, where a previous
+        version globbed ``.theurian/migrations/*.yaml`` itself and skipped the
+        link -- a pin it could not see, ``accept`` allowed the replacement, and
+        the set stopped loading (#234, reproduced end to end). Enumerating the
+        loaded set is the whole benefit; how each operation's body path is spelled
+        is not, which is why the comparison is the loader's own
+        ``content_identity`` and not a path string.
+
+        The one landed reference that is *not* a break is this proposal's own
+        revision re-declared **byte for byte** against its own body **on the same
+        item** -- an in-place status change (ADR-0024 decision 5), which carries
+        identical content because a revision's content is immutable. The skip
+        therefore has three conjuncts, not one: the landed operation's item id
+        equals this move's, its revision id equals this move's, *and* this move's
+        bytes hash to what that operation reads.
+
+        Each conjunct closes a demonstrated face. Keying on the id alone let a
+        hand-authored proposal reuse a landed revision id while supplying
+        *different* bytes, overwriting the pinned body that id already froze and
+        leaving the set at exit 4 with no undo. Adding byte-identity closed that
+        but not the *cross-item* face: a byte-identical body re-declared under a
+        *different* item's id matches on revision id and bytes, so the two-conjunct
+        skip fired and ``accept`` let it land -- ``migrate validate`` did not catch
+        it (it does not check cross-item revision ownership) and ``migrate apply``
+        then refused the whole set at exit 4 ("a revision id belongs to one item",
+        INV-1/SEC-13) after the pull request had merged, the proposal already
+        consumed. The item conjunct moves that refusal to the accept door. It does
+        not create the disclosure protection -- ``store.py``'s
+        ``_refuse_unless_it_is_the_same_revision`` refuses a cross-item revision-id
+        reuse before it reads content, so no rejected-item body is ever disclosed,
+        which is why this face is HIGH and not CRITICAL; the accept-side conjunct
+        only spares the operator a consumed proposal with no undo.
+
+        Everything else on the same inode -- a different revision, the same
+        revision with different bytes, or the same revision on a different item --
+        is a break.
         """
-        resolved_destination = destination.resolve()
-        for migration in sorted(self._paths.migrations.glob("*.yaml")):
-            if migration.is_symlink() or not migration.is_file():
-                continue
-            try:
-                document = load_yaml_mapping(migration.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
-                continue
-            for content_file, pin in _pinned_content_files(document):
-                if (self._paths.migrations / content_file).resolve() == resolved_destination:
-                    return pin
-        return None
+        incoming = ContentHash.of_bytes(move.data)
+        for migration in landed:
+            for operation in migration.operations:
+                if not isinstance(operation, UpsertRevision):
+                    continue
+                if not self._operation_reads(operation, identity, move.destination):
+                    continue
+                # A landed revision already reads the body this move would
+                # overwrite. That is a break unless it is this proposal's own
+                # revision re-declared byte-for-byte on the same item -- the sole
+                # in-place re-declare ADR-0024 decision 5 admits, and the only
+                # case in which overwriting the body changes nothing the set has
+                # pinned. The item conjunct is load-bearing: a byte-identical body
+                # re-declared under a *different* item's id matches on id and
+                # bytes but is a cross-item revision reuse, which `migrate apply`
+                # refuses (INV-1/SEC-13) after the pull request has merged.
+                if (
+                    operation.item_id.value == move.item_id
+                    and operation.revision_id.value == move.revision_id
+                    and self._reads_identical_bytes(operation, incoming, move.destination)
+                ):
+                    continue
+                return True
+        return False
+
+    def _reads_identical_bytes(
+        self, operation: UpsertRevision, incoming: ContentHash, destination: Path
+    ) -> bool:
+        """Whether ``operation`` reads exactly ``incoming``'s bytes.
+
+        The loader records every operation's body hash in ``content_sha256`` --
+        the declared pin, or the body's hash as it read it, but always one
+        (:class:`UpsertRevision`), and this guard only ever iterates the loaded
+        set. ``None`` is therefore the in-memory case the loader never produces;
+        for it the bytes now at ``destination`` -- the file the operation was
+        already matched to read (:meth:`_operation_reads`) -- are hashed instead.
+        That read sits inside :meth:`accept`'s examination-phase ``except
+        OSError``, so a filesystem refusal to read it becomes a CP-2
+        ``ProposalError``, not a raw escape.
+        """
+        landed = operation.content_sha256
+        if landed is None:  # pragma: no cover - loader always sets it
+            landed = ContentHash.of_bytes(destination.read_bytes())
+        return incoming.value == landed.value
+
+    def _operation_reads(
+        self, operation: UpsertRevision, identity: tuple[int, int], destination: Path
+    ) -> bool:
+        """Whether a loaded ``upsertRevision`` reads the body now at ``destination``.
+
+        The loader takes ``content_identity`` -- ``(st_dev, st_ino)`` -- from the
+        same ``stat`` that read the body, so a case or NFC/NFD variant of one file
+        compares equal here where its path *string* does not (#210). Every
+        operation a gate ever sees carries it, because the loader is the sole
+        production constructor of :class:`UpsertRevision`.
+
+        ``None`` only for an operation built in memory, which has no file on disk;
+        for that defensive case the fallback is a path comparison against
+        :meth:`_pinned_body_path` -- a spelling-sensitive key, but the only one
+        available without an inode, and unreachable from any loaded set.
+        """
+        if operation.content_identity is None:  # pragma: no cover - loader always sets it
+            return self._pinned_body_path(operation) == destination.resolve()
+        return operation.content_identity == identity
+
+    def _pinned_body_path(self, operation: UpsertRevision) -> Path:
+        """Where a loaded ``upsertRevision``'s body sits, fully resolved.
+
+        The path fallback for :meth:`_operation_reads` when an operation carries
+        no ``content_identity`` -- an in-memory operation the loader never
+        produces. ``resolved_content_path`` is the loader's own resolution of the
+        ``contentFile`` (against ``.theurian/migrations/``, ``..`` collapsed and
+        symlinks followed, expressed relative to the resolved root); reusing it
+        keeps the fallback spelling the path the same way the loader did. It is
+        ``None`` for the same in-memory case, whose declared path is resolved here
+        against ``.theurian/migrations/`` -- the base the loader itself uses.
+        """
+        resolved = operation.resolved_content_path
+        if resolved is None:
+            return (self._paths.migrations / operation.content_file_path).resolve()
+        return self._paths.root.resolve() / resolved
 
     def _commit(
         self,
@@ -921,11 +1316,18 @@ class ProposalService:
         the window since the check, the bodies already written are rolled back
         rather than left as orphans a previous version stranded in
         ``knowledge/``.
+
+        Every write and directory creation is inside the guard, including the
+        opening ``mkdir`` of ``.theurian/migrations/``: its ``OSError`` used to
+        escape ``accept`` raw (``.theurian/`` unwritable and the directory
+        absent), and the examination clause in :meth:`accept` deliberately does
+        not span this method, so nothing translated it (CP-2). The rollback set
+        is empty when the ``mkdir`` runs, so folding it in changes no rollback.
         """
-        self._paths.migrations.mkdir(parents=True, exist_ok=True)
         created: list[Path] = []
         restored: list[tuple[Path, bytes]] = []
         try:
+            self._paths.migrations.mkdir(parents=True, exist_ok=True)
             for move in moves:
                 move.destination.parent.mkdir(parents=True, exist_ok=True)
                 if move.replaced:
@@ -948,14 +1350,16 @@ class ProposalService:
             raise
         except OSError as exc:
             _roll_back(created, restored)
+            # `strerror` and a project-relative name, never `str(exc)`: an
+            # OSError's text carries the absolute filename, which is the
+            # machine's home directory (the discipline `_unreadable` records).
             raise ProposalError(
-                f"accept could not write a file: {exc}.",
+                f"accept could not write "
+                f"{_names([_project_relative(exc.filename, self._paths.root)])}: "
+                f"{exc.strerror or 'the write failed'}.",
                 remedy="Check the contentFile the migration names, then accept it again.",
             ) from exc
 
-        for move in moves:
-            move.source.unlink(missing_ok=True)
-        migration_file.unlink(missing_ok=True)
         return AcceptedProposal(
             proposal_id=proposal_id,
             migration=MovedFile(
@@ -965,7 +1369,34 @@ class ProposalService:
                 MovedFile(source=m.source, destination=m.destination, replaced=m.replaced)
                 for m in moves
             ),
+            cleanup_remedy=self._remove_proposal_sources(moves, migration_file),
         )
+
+    def _remove_proposal_sources(
+        self, moves: tuple[_BodyMove, ...], migration_file: Path
+    ) -> str | None:
+        """Delete the proposal's now-copied files; report, don't raise, on failure.
+
+        Runs only after the migration and every body have landed, so the move is
+        already a success: a failure here is a cleanup that could not finish, not
+        a non-landing. Reporting it as a failure would exit 1 -- whose contract is
+        "nothing landed" -- and send the caller to re-draft, minting a duplicate
+        migration (#89). So a refused ``unlink`` (a read-only proposal directory,
+        ``0o555``) is degraded to a remedy naming the leftover for a human to
+        remove, and ``accept`` still returns success.
+        """
+        try:
+            for move in moves:
+                move.source.unlink(missing_ok=True)
+            migration_file.unlink(missing_ok=True)
+        except OSError:
+            leftover = _names([_project_relative(str(migration_file.parent), self._paths.root)])
+            return (
+                f"The migration and its bodies landed; the proposal's own files in {leftover} "
+                "could not be removed. Delete that directory by hand once it is writable -- the "
+                "acceptance is complete and does not need running again."
+            )
+        return None
 
     def _destination_of(self, content_file: str) -> Path:
         """Where one ``contentFile`` points, proved to be inside ``knowledge/``.
@@ -979,9 +1410,30 @@ class ProposalService:
         ``../knowledge/...``, and confining to the root instead would let a
         hand-authored ``../../.git/hooks/pre-commit`` write an executable git
         hook that runs on the maintainer's next commit.
+
+        ``resolve()`` is the one call here that can raise before any check runs,
+        and on a caller-influenced value. Measured on CPython 3.13,
+        ``resolve(strict=False)`` swallows ELOOP and ENAMETOOLONG, so the only
+        fault that reaches this clause is a ``ValueError``: on an embedded NUL,
+        or -- as ``UnicodeEncodeError``, a ``ValueError`` -- on an unpaired
+        surrogate. Neither is a ``TheurianError`` nor an ``OSError`` the
+        examination clause catches, so an untranslated one would escape ``accept``
+        raw and ``--json`` would publish zero bytes (CP-2). The ``OSError`` half of
+        the catch is defensive: the loader guards its own ``resolve()`` with the
+        same ``(ValueError, OSError)`` (``_parse_upsert``) and this matches it, so
+        a filesystem fault on some other platform is translated rather than
+        escaping raw. Neither the author's ``content_file`` (SEC-7 forbids
+        reflecting it, #233) nor the ``OSError``'s absolute filename is echoed.
         """
         knowledge = self._paths.knowledge.resolve()
-        resolved = (self._paths.migrations / content_file).resolve()
+        try:
+            resolved = (self._paths.migrations / content_file).resolve()
+        except (ValueError, OSError) as exc:
+            raise ProposalError(
+                "The migration names a contentFile whose path the filesystem cannot "
+                "resolve -- it contains a NUL byte or an unpaired surrogate.",
+                remedy="Correct the contentFile the migration names, then accept it again.",
+            ) from exc
         try:
             relative = resolved.relative_to(knowledge)
         except ValueError as exc:
@@ -999,6 +1451,18 @@ class _BodyMove:
     destination: Path
     data: bytes
     replaced: bool
+    #: The ``revisionId`` the proposal's own migration declares at this body, or
+    #: ``None`` when the operation names none. The replacement guard compares it
+    #: with the landed revision already reading the destination: an equal id is
+    #: the legitimate in-place re-declare (ADR-0024 decision 5), and only a
+    #: *different* id would put two revisions on one file.
+    revision_id: str | None
+    #: The ``itemId`` the proposal's own migration declares at this body, or
+    #: ``None`` when the operation names none. The in-place re-declare skip
+    #: requires it to equal the landed revision's item: a body re-declared under a
+    #: *different* item's id is a cross-item revision reuse, which ``migrate
+    #: apply`` refuses (INV-1/SEC-13) after the pull request has merged.
+    item_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1076,6 +1540,40 @@ def _within(filename: object, directory: Path) -> str:
         return Path(filename).relative_to(directory).as_posix() or "."
     except ValueError:
         return filename
+
+
+def _project_relative(filename: object, root: Path) -> str:
+    """``filename`` from an ``OSError``, relative to the project root.
+
+    :func:`_within`'s sibling, for the accept path, where the refused call can be
+    anywhere the command reached rather than only inside one proposal directory:
+    a probe under ``.theurian/proposals/``, a body under ``.theurian/knowledge/``,
+    the migration destination. The absolute path is never returned, for the reason
+    :func:`_within` records -- it is the machine's home directory, not the
+    proposal's.
+
+    Both spellings of the root are tried because this path produces both. A probe
+    built as ``self._paths.root / ...`` carries the root as the project was
+    configured, while a read through :func:`read_source_file` carries the
+    *resolved* one, and the two differ wherever the root is reached through a
+    symlink (``/var`` against ``/private/var`` on macOS). The suite does not
+    exercise that difference -- pytest's ``tmp_path`` is already the resolved
+    ``/private/var/...``, so both spellings coincide here; the two branches earn
+    their keep on a real project configured under an unresolved root (the shape
+    the orchestrator's ``probes/e7`` shows). A path under neither is named by a
+    phrase and not by its own text: that is where this is deliberately stricter
+    than :func:`_within`, whose odd path is at least known to be inside a
+    committed proposal directory.
+    """
+    if not isinstance(filename, str):
+        return "an unreadable path"
+    candidate = Path(filename)
+    for base in (root, root.resolve()):
+        try:
+            return candidate.relative_to(base).as_posix() or "."
+        except ValueError:
+            continue
+    return "a path outside the project"
 
 
 def _names(names: Sequence[str]) -> str:
@@ -1244,7 +1742,21 @@ def _evidence_failure_reason(error: BaseException | None) -> str:
     return "it is not a JSON object"
 
 
-def _content_files(document: Mapping[str, object]) -> Iterable[str]:
+def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | None, str | None]]:
+    """Each ``contentFile`` a migration names, with its ``revisionId`` and ``itemId``.
+
+    Both identifiers travel with the body because the replacement guard needs all
+    three: whether the destination is already read by a landed revision, and
+    whether *this* proposal re-declares that revision **on the same item** (the
+    in-place re-declare, ADR-0024 decision 5) or claims it for a different one.
+    The item id is what separates the legitimate re-declare from a cross-item
+    reuse: a body re-declared under a *different* item's id passes an id-and-bytes
+    skip while ``migrate apply`` still refuses it (INV-1/SEC-13, a revision id
+    belongs to one item), so the skip carries the item conjunct too. ``None`` for
+    either when the operation names none -- a malformed hand-authored migration --
+    which the guard reads as "cannot be the in-place case" and so refuses
+    conservatively.
+    """
     operations = document.get("operations")
     if not isinstance(operations, list):
         return
@@ -1252,22 +1764,15 @@ def _content_files(document: Mapping[str, object]) -> Iterable[str]:
         if not isinstance(operation, Mapping):
             continue
         content_file = operation.get("contentFile")
-        if isinstance(content_file, str) and content_file:
-            yield content_file
-
-
-def _pinned_content_files(document: Mapping[str, object]) -> Iterable[tuple[str, str]]:
-    """Every ``(contentFile, contentSha256)`` an existing migration pins."""
-    operations = document.get("operations")
-    if not isinstance(operations, list):
-        return
-    for operation in operations:
-        if not isinstance(operation, Mapping):
+        if not (isinstance(content_file, str) and content_file):
             continue
-        content_file = operation.get("contentFile")
-        pin = operation.get("contentSha256")
-        if isinstance(content_file, str) and content_file and isinstance(pin, str) and pin:
-            yield content_file, pin
+        revision = operation.get("revisionId")
+        item = operation.get("itemId")
+        yield (
+            content_file,
+            revision if isinstance(revision, str) else None,
+            item if isinstance(item, str) else None,
+        )
 
 
 def _roll_back(created: Iterable[Path], restored: Iterable[tuple[Path, bytes]]) -> None:

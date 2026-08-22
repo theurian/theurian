@@ -349,13 +349,18 @@ def propose_accept(
     that migration is already in place. The body file *may* replace what is at
     its path, because on an update to existing knowledge that is the intent.
 
-    Exit codes: 0 the files moved; 1 this proposal could not be used as it stands
-    -- no such proposal, a draft interrupted before its migration was written, a
-    directory or an evidence file that could not be fully read, a file the
-    security layer refuses; 2 the id is not a ULID; 4 the project's knowledge
-    state refuses the move -- this proposal was accepted before, that migration id
-    is already in ``.theurian/migrations/``, or the approved migration set does
-    not resolve (it is unreadable, tampered, or internally inconsistent).
+    Exit codes: 0 the files moved -- and, if the migration and bodies landed but
+    the proposal's own source files could not then be removed (a read-only
+    proposal directory), a ``remedy`` naming the leftover; the move still
+    succeeded, so this is not a failure; 1 this proposal could not be used as it
+    stands -- no such proposal, a draft interrupted before its migration was
+    written, a proposal directory or a file in it the filesystem refuses to list,
+    examine or read, a contentFile the filesystem cannot resolve or the security
+    layer refuses; 2 the id is not a ULID; 4 the
+    project's knowledge state refuses the move -- this proposal was accepted
+    before, that migration id is already in ``.theurian/migrations/``, or the
+    approved migration set does not resolve (it is unreadable, tampered, or
+    internally inconsistent).
 
     **4 means "read the knowledge state before doing anything", not "already
     done".** Its migration-set case -- raised while resolving the project, so
@@ -364,7 +369,10 @@ def propose_accept(
     means nothing landed and drafting again is the recovery; normally, because a
     part-way write is rolled back on a best-effort basis, and a rollback that
     itself fails leaves a body in ``.theurian/knowledge/`` while this still
-    reports the original failure.
+    reports the original failure -- and because a read the filesystem refused
+    exits 1 without having established anything either way, so its own remedy
+    sends the reader to ``.theurian/migrations/`` before re-drafting rather than
+    straight to a second draft (#227).
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,
@@ -410,18 +418,21 @@ def propose_accept(
         return
 
     root = context.paths.root
-    _emit(
-        {
-            "proposalId": accepted.proposal_id.value,
-            "migrationFile": _relative(accepted.migration.destination, root),
-            "bodyFiles": [_relative(move.destination, root) for move in accepted.bodies],
-            "replacedBodies": [
-                _relative(move.destination, root) for move in accepted.bodies if move.replaced
-            ],
-            "nextSteps": list(_ACCEPT_STEPS),
-        },
-        as_json=as_json,
-    )
+    payload: dict[str, object] = {
+        "proposalId": accepted.proposal_id.value,
+        "migrationFile": _relative(accepted.migration.destination, root),
+        "bodyFiles": [_relative(move.destination, root) for move in accepted.bodies],
+        "replacedBodies": [
+            _relative(move.destination, root) for move in accepted.bodies if move.replaced
+        ],
+        "nextSteps": list(_ACCEPT_STEPS),
+    }
+    # Set only when the move landed but the proposal's own source files could not
+    # then be removed: the acceptance succeeded, and this names the leftover so it
+    # does not read as a failed run the caller re-drafts (#89).
+    if accepted.cleanup_remedy is not None:
+        payload["remedy"] = accepted.cleanup_remedy
+    _emit(payload, as_json=as_json)
 
 
 #: What a caller does next, and the one thing about it that surprises people:
@@ -654,6 +665,13 @@ def _service(context: CommandContext) -> ProposalService:
         # (keyed by inner id), so `propose accept` cannot disagree with
         # `migrate validate`/`apply` about what is in place (ADR-0003, #253).
         landed_migration=migrations.get,
+        # And the same set handed over whole, for the pin guard, whose question
+        # is not keyed by id: "does any migration already in place pin the bytes
+        # at this path?". It used to answer that by globbing
+        # `.theurian/migrations/*.yaml` itself and skipping symlinked entries the
+        # loader follows, so a pin held by a relocated migration was invisible to
+        # it and `accept` overwrote the body the set validates against (#234).
+        landed_migrations=lambda: migrations,
     )
 
 

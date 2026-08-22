@@ -7,11 +7,12 @@ it directly, so a defect is located in the packaging rather than in Typer.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _PERMISSION_ERRNOS,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalAlreadyAcceptedError,
@@ -46,6 +48,14 @@ from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 #: that needs the mode to actually refuse cannot run there (the offline CI job
 #: runs as root). Same guard the sibling permission tests carry.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
+#: Spellings that tell a reader the cure for a refused read is a permission
+#: change (#227). The contract is that the remedy *names* the permission, not
+#: that it uses one verb: the shipped remedy for an unreadable ``evidence.json``
+#: says "Make ... readable" while :func:`_within`'s sibling says ``chmod``, and
+#: both discharge it. What none of these matches is the answer that would be
+#: wrong here -- "draft it again", or "list .theurian/proposals/".
+_PERMISSION_REMEDY_WORDS = ("chmod", "readable", "permission")
 
 pytestmark = pytest.mark.integration
 
@@ -95,11 +105,12 @@ def paths(tmp_path: Path) -> Iterator[ProjectPaths]:
 
 @pytest.fixture
 def service(paths: ProjectPaths) -> ProposalService:
-    # Both lookups read the project's *approved* migration set, freshly loaded on
-    # every call the same way the CLI's `resolve_context` loads it -- so a second
-    # draft sees the first proposal's accepted item (the #210 update guard), and
-    # `accept` reads the same set `migrate validate`/`apply` do when it asks
-    # whether a recorded migration id is in place (#253).
+    # All three lookups read the project's *approved* migration set, freshly
+    # loaded on every call the same way the CLI's `resolve_context` loads it --
+    # so a second draft sees the first proposal's accepted item (the #210 update
+    # guard), `accept` reads the same set `migrate validate`/`apply` do when it
+    # asks whether a recorded migration id is in place (#253), and the pin guard
+    # reads it when it asks which bodies are already pinned (#234).
     def current_revision(item_id: ItemId) -> RevisionId | None:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return current_revision_in(loaded.migration_set, item_id)
@@ -108,6 +119,10 @@ def service(paths: ProjectPaths) -> ProposalService:
         loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
         return loaded.migration_set.get(migration_id)
 
+    def landed_migrations() -> Collection[Migration]:
+        loaded = load_migrations(paths.root, paths.migrations, SCHEMAS)
+        return loaded.migration_set
+
     return ProposalService(
         paths=paths,
         clock=FrozenClock(),
@@ -115,6 +130,7 @@ def service(paths: ProjectPaths) -> ProposalService:
         validate=_validator,
         current_revision=current_revision,
         landed_migration=landed_migration,
+        landed_migrations=landed_migrations,
     )
 
 
@@ -589,6 +605,51 @@ def test_accept_refuses_to_land_a_migration_on_an_existing_name(
     assert not drafted.body_destination.exists()
 
 
+def test_accept_refuses_a_migration_id_the_loaded_set_holds_under_another_name(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-one HIGH (CLASS-D): the "already in place" refusal keyed on the filename.
+
+    ``_refuse_if_migration_present`` checked only ``destination.exists()``, and the
+    destination name is ``<id>-<slug>.yaml``. The loader keys migrations by their
+    *inner* ``id`` (``MigrationSet._by_id``), so a hand-authored proposal named
+    ``<landed-id>-other-slug.yaml`` carrying ``id: <landed-id>`` collided on the
+    inner id while its filename was free: the name check waved it through,
+    ``_require_filename_matches_id`` was satisfied (prefix equals id), and
+    ``accept`` landed a *duplicate* migration id. ``migrate
+    validate``/``status``/``apply`` then all exit 4 on "duplicate migration id"
+    (reproduced end to end, ``p15_duplicate_migration_id``).
+
+    This is the third accept-path detector to be moved off a filesystem heuristic
+    and onto the loaded set (#234/#253/#254 did the sibling two). The fix keeps
+    the filename check for the on-disk-name-collision case and adds an id check
+    against the same ``MigrationSet`` the loader reads.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A genuinely different change, then its migration id rewritten to the landed
+    # one and its file renamed to a different slug -- the committed shape that
+    # collides on the inner id while its destination name stays free.
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Other\n\nFive.\n")
+    )
+    text = second.migration_file.read_text(encoding="utf-8").replace(
+        second.migration_id.value, first.migration_id.value
+    )
+    renamed = second.directory / f"{first.migration_id.value}-other-slug.yaml"
+    renamed.write_text(text, encoding="utf-8")
+    second.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError, match="duplicate migration id"):
+        service.accept(second.proposal_id)
+
+    # Nothing landed: the migrations directory still holds only the first, and the
+    # loaded set is still the single valid migration `migrate validate` would read.
+    landed_names = sorted(p.name for p in paths.migrations.glob("*.yaml"))
+    assert landed_names == [first.migration_file.name], landed_names
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
 def test_accept_moves_the_body_out_of_the_proposal_directory(
     service: ProposalService,
 ) -> None:
@@ -623,7 +684,9 @@ def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
     drafted = service.draft(_request())
     landed = paths.migrations / drafted.migration_file.name
 
-    def _no_precheck(_self: ProposalService, _destination: Path) -> None:
+    def _no_precheck(
+        _self: ProposalService, _destination: Path, _document: Mapping[str, object]
+    ) -> None:
         return None
 
     monkeypatch.setattr(ProposalService, "_refuse_if_migration_present", _no_precheck)
@@ -738,11 +801,573 @@ def test_accept_refuses_a_replacement_that_would_break_an_existing_pin(
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
     hand_authored.write_bytes(second.body_file.read_bytes())
 
-    with pytest.raises(ProposalError, match="pins"):
+    with pytest.raises(ProposalError, match="backing a landed revision"):
         service.accept(second.proposal_id)
 
     # The first body is untouched and the whole set still loads.
     assert first.body_destination.read_text() == BODY
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_the_pin_guard_sees_a_pin_held_by_a_symlinked_landed_migration(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#234: the replacement guard once skipped a symlink the loader follows.
+
+    The same class ``_landed_state`` closed for the accepted-detector (#253), on
+    the guard above. That guard once re-enumerated
+    ``.theurian/migrations/*.yaml`` from the filesystem and ``continue``d on
+    ``migration.is_symlink()``, while ``load_migrations`` follows a symlinked
+    entry that points at a real in-project migration and loads its pins -- so the
+    two readers disagree about which bodies are pinned, and the disagreement is
+    the guard's blind spot rather than a cosmetic one.
+
+    Confirmed end to end before the fix: with the landed migration moved to
+    ``<root>/migration-store/`` and a relative symlink left in its place, the
+    loader still loaded the set (count 1) and ``accept`` did **not** refuse the
+    replacement -- and the set then failed to load at all, with
+    *"... hashes to abc7cdb70713 but the migration pins 539a4030033a"*, the exit-4
+    shape ``_refuse_if_a_replacement_breaks_an_existing_pin`` exists to prevent.
+
+    The symlinked layout is not exotic input: a project that keeps its migrations
+    under version control elsewhere, or a contributor who relocates one, produces
+    it, and the loader is what decides whether the set is real. The fix direction
+    is recorded in :meth:`ProposalService._landed_state`'s docstring -- read the
+    loaded migration set, so no filename shape can make the guard and the loader
+    disagree.
+
+    The second proposal is drafted for a *different* item and its ``contentFile``
+    hand-repointed at the first item's body path, exactly as
+    :func:`test_accept_refuses_a_replacement_that_would_break_an_existing_pin`
+    does; only the shape of the landed migration differs.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
+    store = paths.root / "migration-store"
+    store.mkdir()
+    landed.rename(store / landed.name)
+    landed.symlink_to(Path("..") / ".." / store.name / landed.name)
+    # Preconditions, so this cannot pass by never reaching the guard: the entry
+    # is a symlink, and the loader reads the set through it.
+    assert landed.is_symlink(), "the landed migration is now a symlink"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(
+            second.content_file, first.content_file
+        ),
+        encoding="utf-8",
+    )
+    # `body_destination` is resolved on both sides: on macOS the project root
+    # reaches this test through /var, whose real path is /private/var, and an
+    # unresolved left-hand side is not relative to the resolved knowledge dir.
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    # The first body is untouched and the whole set still loads -- the property
+    # the refusal exists for, checked rather than assumed.
+    assert first.body_destination.read_text() == BODY
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def _fs_is_case_insensitive(directory: Path) -> bool:
+    """Whether ``directory``'s filesystem reaches one inode by many spellings.
+
+    The case-variant face exists only where the filesystem folds case (APFS,
+    NTFS): on a case-sensitive volume the variant names a *different* file, so
+    there is no shared inode to protect and nothing to reproduce. Probed against
+    the real directory the test writes into rather than inferred from
+    ``sys.platform`` -- a case-sensitive volume can be mounted on macOS and a
+    case-insensitive one on Linux.
+    """
+    probe = directory / "TheurianCaseProbe"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        return (directory / "theuriancaseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_accept_refuses_a_case_variant_of_a_landed_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-A: a ``contentFile`` differing only in case reaches a landed inode.
+
+    The replacement guard compared resolved path *strings*, and ``Path.resolve()``
+    folds ``.``/``..``/symlinks but never case or NFC/NFD (the loader records this
+    on ``UpsertRevision.content_identity``, #210). So a hand-authored
+    ``contentFile`` spelling a landed body's path with a different case reached
+    the very same physical file while the guard, comparing strings, saw no pin --
+    ``accept`` overwrote a pinned body and ``migrate validate`` then exited 4 for
+    the whole project with no undo. Keying the guard on the destination's
+    ``(st_dev, st_ino)`` collapses every spelling onto one inode, so the variant
+    is refused. Reproduced end to end by the orchestrator (``probes/e1``).
+    """
+    if not _fs_is_case_insensitive(paths.knowledge):
+        pytest.skip("a case variant names a different file on a case-sensitive filesystem")
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
+    variant = first.content_file.replace("/architecture/", "/Architecture/")
+    assert variant != first.content_file, "the case variant must differ from the landed spelling"
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(second.content_file, variant),
+        encoding="utf-8",
+    )
+    # The hand-authored body sits at the variant tail; on a case-insensitive
+    # volume it is the same file the first proposal landed. `.resolve()` on the
+    # left for /var vs /private/var, as the symlink-pin sibling above documents.
+    tail = (paths.migrations / variant).resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_replacing_an_unpinned_landed_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """HIGH-C(i): an *unpinned* landed body still backs a revision the set validates.
+
+    ``contentSha256`` is optional -- the loader adopts the body's current hash
+    where it is absent (#210) -- so a landed migration may reference a body it
+    does not freeze. The old guard filtered on ``content_pinned`` and so waved
+    such a replacement through, yet the *set* then holds two distinct revisions
+    on one physical file, which ``refuse_duplicate_content_files`` refuses for the
+    whole project (exit 4). The identity key carries no pinning filter, so the
+    already-claimed inode is refused whether or not the claim was frozen.
+    Reproduced by the orchestrator (``probes/e8``: accept exit 0 -> validate exit 4).
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # Strip the declared pin from the landed migration: the body is now
+    # referenced but not frozen -- the case the `content_pinned` filter missed.
+    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
+    landed.write_text(
+        "\n".join(
+            line
+            for line in landed.read_text(encoding="utf-8").splitlines()
+            if "contentSha256" not in line
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert "contentSha256" not in landed.read_text(encoding="utf-8")
+    # An unpinned reference is legal: the set still loads and would validate.
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
+    )
+    second.migration_file.write_text(
+        second.migration_file.read_text(encoding="utf-8").replace(
+            second.content_file, first.content_file
+        ),
+        encoding="utf-8",
+    )
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The revision conjunct decides: a byte-identical body under a *new* revision id.
+
+    "Byte-identical changes nothing" is false of the *set*. Re-pointing a second
+    revision's ``contentFile`` at a landed body -- on the **same item**, with the
+    identical bytes, but under its own fresh revision id -- leaves two revisions
+    naming one physical file (``refuse_duplicate_content_files``, exit 4) even
+    though nothing about the bytes moved. The skip that admits the one legitimate
+    in-place re-declare fires only when item id, revision id *and* bytes all match
+    (proposal_service ``_refuse_if_a_replacement_breaks_an_existing_pin``); here
+    item and bytes match, so the **revision** conjunct is the sole decider, and it
+    refuses. Reproduced by the orchestrator (``probe_classa`` shape 2: same item,
+    different revision, identical bytes -> REFUSED).
+
+    This is the only same-item byte-identical face that is *not* the allowed
+    in-place re-declare -- the sibling test
+    ``test_accept_allows_the_same_revision_re_declared_against_its_own_body`` keeps
+    the same revision id, and that one difference is what flips accept from allowed
+    to refused: the revision id is left the second's own here, so the test pins the
+    revision conjunct rather than the byte one. Before this
+    branch's rewrite the second kept a *different item id* too, so the item
+    conjunct short-circuited the skip and the revision conjunct was never
+    evaluated -- a mutation neutering it survived the whole suite.
+
+    The second proposal is drafted for a throwaway item so the draft-side #210
+    guard does not fire, then its ``contentFile`` and *item id* are hand-repointed
+    at the first's while its own revision id is deliberately left in place -- the
+    committed, contributor-authored shape ADR-0013 point 7 admits.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # Same item, byte-identical body, but the second's own (fresh) revision id: a
+    # byte-identical body landing as a *second* revision on the first's body file.
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace("architecture.other", "architecture.retry-policy")
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert "architecture.other" not in text, "the item id re-declare failed"
+    assert f"revisionId: '{first.revision_id.value}'" not in text, (
+        "the revision id must stay the second's own, or the revision conjunct is not the decider"
+    )
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The byte conjunct decides: the same revision, re-declared with *different* bytes.
+
+    Round-two HIGH-1: an equal revision id is not a licence to change the bytes.
+    The equal-id skip once fired on the revision id alone, on the premise that a
+    landed revision re-declared under its own id must carry its own body. That is
+    false of contributor-authored input (ADR-0013 point 7): a hand-authored
+    proposal can reuse an *existing* landed revision id **on its own item**, point
+    its ``contentFile`` at that revision's pinned body, and supply *different*
+    bytes. The old guard waved it through, the overwrite made the pin wrong, and
+    ``migrate validate`` exited 4 for the whole set with no undo -- reproduced end
+    to end (``repro_high1_r2``: accept exit 0 -> set fails to load).
+
+    A revision's content is immutable, so the only legitimate in-place re-declare
+    (ADR-0024 decision 5) carries byte-identical content. Here the item id **and**
+    the revision id are re-pointed to match the landed revision, so both of those
+    conjuncts pass and byte-identity is the *sole* conjunct left to decide: the
+    proposal carries different bytes, so the guard refuses. That isolation is the
+    whole point of the rewrite -- the prior version left a *different item id*, so
+    the item conjunct short-circuited the skip and a mutation making
+    ``_reads_identical_bytes`` trivially true survived. The one legitimate face
+    (identical item, revision and bytes) stays allowed by
+    :func:`test_accept_allows_the_same_revision_re_declared_against_its_own_body`.
+    The second proposal is drafted for a throwaway item so the draft-side guard
+    does not fire, then its ``contentFile``, ``revisionId`` and *item id* are
+    hand-repointed at the first's -- exactly the committed, contributor-authored
+    shape that reaches this check.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    second = service.draft(
+        _request(
+            item_id=ItemId("architecture.other"),
+            body="# Retry policy\n\nFIVE HUNDRED attempts.\n",
+        )
+    )
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    text = text.replace("architecture.other", "architecture.retry-policy")
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" not in text, "the item id re-declare failed"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the pinned body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The unpinned face of the byte conjunct: no pin to break, content still immutable.
+
+    ``contentSha256`` is optional (the loader adopts the body's current hash where
+    it is absent, #210), so a landed revision may reference a body it does not
+    freeze. There is no pin to break here, but re-declaring that revision -- same
+    item, same revision id -- with *different* bytes still silently mutates
+    immutable content and leaves the set at exit 4 (``refuse_duplicate_content_files``).
+    The byte-identity conjunct refuses both faces at once: the guard reads the
+    loaded operation's ``content_sha256`` -- populated pinned or not -- and
+    compares it with the incoming bytes, so the missing pin does not open the gap.
+    As in the pinned face, the item id and revision id are re-pointed to match the
+    landed revision so that byte-identity is the sole deciding conjunct; the prior
+    cross-item shape let the item conjunct short-circuit the check.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # Strip the declared pin from the landed migration: the body is now referenced
+    # but not frozen -- the loader still records its hash, so the guard still sees
+    # the bytes the re-declare would overwrite.
+    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
+    landed.write_text(
+        "\n".join(
+            line
+            for line in landed.read_text(encoding="utf-8").splitlines()
+            if "contentSha256" not in line
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert "contentSha256" not in landed.read_text(encoding="utf-8")
+
+    second = service.draft(
+        _request(
+            item_id=ItemId("architecture.other"),
+            body="# Retry policy\n\nFIVE HUNDRED attempts.\n",
+        )
+    )
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    text = text.replace("architecture.other", "architecture.retry-policy")
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" not in text, "the item id re-declare failed"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(second.body_file.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the immutable body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The one landed reference the identity guard must *not* refuse.
+
+    Re-declaring one revision against its own body **on the same item** is how an
+    in-place status change is written -- the item and revision ids do not move,
+    ``append_revision`` is a no-op, only ``status`` differs (the
+    ``reject``/``inplace-draft`` faces, ADR-0024 decision 5). It lands on the same
+    body path (the path carries the revision id), so it *is* a replacement -- but
+    of a body its own revision already reads, not a second one. The guard keys on
+    the *quadruple* (identity, item id, revision id, bytes) for exactly this: an
+    equal item id, revision id and byte content are skipped, so the legitimate
+    re-declare is allowed while every different-item, different-revision and
+    different-byte face is refused. Without the skip the guard would refuse this
+    too, breaking a supported flow; this pins that it does not.
+
+    The re-declare is hand-authored because ``draft`` cannot produce it: a second
+    proposal for the existing item would require ``--expected-revision`` and then
+    mint a *fresh* revision id. So a proposal drafted for a throwaway item is
+    hand-edited to re-declare the first item's own item id, revision id and body
+    -- the committed shape ADR-0013 point 7 admits.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A fresh migration id (so the "already in place" pre-check passes), then the
+    # first item's own item id, revision id and byte-identical body re-declared --
+    # what a hand-authored in-place status change looks like.
+    second = service.draft(_request(item_id=ItemId("architecture.other")))
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    # The item id is re-declared alongside the revision id: this is the *same
+    # item*, which is the whole of what makes the re-declare legitimate and the
+    # cross-item test below a refusal.
+    text = text.replace("architecture.other", "architecture.retry-policy")
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" not in text, "the item id re-declare failed"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(first.body_destination.read_bytes())
+
+    accepted = service.accept(second.proposal_id)
+
+    assert accepted.bodies[0].replaced, "the re-declare lands on the existing body"
+    assert first.body_destination.read_text() == BODY, "the body is unchanged"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
+
+
+def test_accept_refuses_a_cross_item_byte_identical_redeclare_of_a_landed_revision(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-one HIGH: an equal revision id and equal bytes under a *different* item.
+
+    The two-conjunct skip (equal revision id, equal bytes) let a byte-identical
+    body re-declared under a *different* item's id through: id and bytes both
+    match, so the skip fired and ``accept`` returned 0. ``migrate validate`` does
+    not check cross-item revision ownership, so it too passed -- and ``migrate
+    apply`` then refused the whole set at exit 4 ("a revision id belongs to one
+    item", INV-1/SEC-13) after the pull request had merged, the proposal already
+    consumed with no undo. Reproduced end to end by the orchestrator
+    (``repro_propose_high1``: accept 0 -> validate 0 -> apply 4).
+
+    The item conjunct moves that refusal to the accept door. This is the only
+    difference from
+    :func:`test_accept_allows_the_same_revision_re_declared_against_its_own_body`:
+    there the item id is re-declared to match, here it is left pointing at a
+    different item, and that alone flips accept from allowed to refused.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A different item, but the first's revision id and byte-identical body: the
+    # cross-item reuse the two-conjunct skip missed.
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" in text, "the item id must stay a different item"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(first.body_destination.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
+def test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The guard refuses the matched inode alone, not every replacement while a set exists.
+
+    ``_operation_reads`` discriminates by the destination's ``(st_dev, st_ino)``:
+    a landed revision reading body *A* does not make a replacement of a
+    *different* body *B* a break. Nothing pinned that discrimination -- measured
+    (adversarial round two, mutation ``opreads-always-true``): replacing the
+    inode comparison with ``operation.content_identity is not None`` -- always
+    true for a loaded operation -- made every ``replaced`` move match the first
+    landed operation, over-refusing this legitimate replacement, and the whole
+    proposal suite still passed (92 green under the mutation).
+
+    One migration lands, reading body A. A second proposal, for a different item,
+    replaces a stray file at its own fresh path (inode B) that no landed revision
+    reads -- the permissive case ``_refuse_if_a_replacement_breaks_an_existing_pin``
+    must allow. It only reaches the guard *because* the set is non-empty and the
+    move is a replacement, which is exactly the state the always-true mutation
+    turns into a false break; the earlier permissive test lands on an empty set,
+    so ``_operation_reads`` is never called there and the mutation survives it.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+
+    # A second item with distinct content, so B shares neither path nor bytes
+    # with the landed body A.
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Timeout policy\n\nThirty seconds.\n")
+    )
+    # A stray file at B: read by no landed revision, so replacing it is
+    # legitimate. Without it the move is a create, not a replace, and the guard
+    # loop is never entered.
+    second.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    second.body_destination.write_text("stale, pinned by nothing\n", encoding="utf-8")
+    # Preconditions, so a pass cannot come from never reaching the discrimination:
+    # A and B are different inodes, and the landed set (reading A) is non-empty.
+    assert first.body_destination.stat().st_ino != second.body_destination.stat().st_ino
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+    accepted = service.accept(second.proposal_id)
+
+    assert accepted.bodies[0].replaced, "the stray file at B was replaced"
+    assert second.body_destination.read_text() == "# Timeout policy\n\nThirty seconds.\n"
+    assert first.body_destination.read_text() == BODY, "the landed body A is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
+
+
+def test_accept_refuses_a_content_file_hardlinked_to_a_landed_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The hardlink face of the identity guard (#234): one inode, two names.
+
+    ``_operation_reads`` keys on ``(st_dev, st_ino)`` -- the identity the loader
+    took from the same ``stat`` that read the body -- so it reaches a landed body
+    by *every* name that resolves to its inode, where the old path-string compare
+    saw a distinct file. A second proposal for a different item, at its own
+    distinct path, whose body destination is a **hardlink** to a landed body has a
+    different path *string* but the same inode; accepting it would leave two
+    revisions naming one physical file (``refuse_duplicate_content_files``, exit
+    4). The guard refuses it -- the inode match reaches the landed operation, and
+    the differing item id then makes it a break -- where a path compare would have
+    let it land. This is the CHANGELOG's ``hardlink`` face, previously untested
+    (the case-variant face is covered by the loader's identity tests; a Unicode
+    NFC/NFD variant reaches the same inode but stays honestly noted as untested).
+    Reproduced by the orchestrator (``probe_hardlink``: same inode -> REFUSED).
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    landed_body = first.body_destination.resolve()
+
+    # A second item at its own distinct path; its body destination is a hardlink
+    # to the landed body, so the two paths share one inode.
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    dest = second.body_destination
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(landed_body, dest)
+    except OSError as exc:  # pragma: no cover - only on a filesystem without hardlinks
+        pytest.skip(f"the filesystem does not support hardlinks here: {exc}")
+
+    # Preconditions, so a pass cannot come from the two being the same file: a
+    # different path string, but the same (st_dev, st_ino) a string compare misses.
+    assert dest.resolve() != landed_body, "the hardlink must live at a different path"
+    assert dest.stat().st_ino == landed_body.stat().st_ino, "the hardlink must share the inode"
+
+    # Identical bytes in the proposal directory so the move is a replacement the
+    # guard examines, not a create.
+    tail = dest.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(BODY.encode("utf-8"))
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
@@ -762,6 +1387,347 @@ def test_accept_reports_an_unknown_proposal_rather_than_raising_from_the_filesys
 ) -> None:
     with pytest.raises(ProposalError, match="No proposal"):
         service.accept(ProposalId("01K9C7VN4TQZB2M8XR5HD3JFEW"))
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_proposal_directory_that_cannot_be_read_is_answered_rather_than_crashing(
+    service: ProposalService,
+) -> None:
+    """#227: a raw ``PermissionError`` escapes ``accept`` for an unreadable proposal.
+
+    Confirmed through the real CLI: ``propose accept <id> --json`` on a proposal
+    directory at mode ``0o000`` exited 1 with an empty stdout and a traceback
+    bottoming at ``PermissionError: [Errno 13] Permission denied: .../evidence.json``
+    -- so ``--json`` published no ``{error, remedy}`` document at all (CP-2), and
+    the reader is handed a stack trace instead of the one-line ``chmod`` that
+    fixes it.
+
+    Measured mechanism at mode ``0o000`` (CPython 3.13): ``directory.iterdir()``
+    in :meth:`ProposalService._require_migration` needs the read bit and raises
+    ``PermissionError``, which :meth:`accept`'s examination clause translates. A
+    previous ``directory.glob("*.yaml")`` swallowed that error and yielded
+    nothing, so ``_require_migration`` found no candidate and fell to
+    ``_no_migration_error`` over a migration sitting right there, unread -- the
+    silent false negative #214/#227 replaced. Either way the answer must not
+    conclude: "could not read it" is not "it has been accepted"
+    (:meth:`ProposalService._read_evidence_record`).
+
+    The permission is not exotic: a proposal directory arrives through a pull
+    request and a contributor's umask, an interrupted checkout, or a
+    root-owned file in a container all produce one this process cannot read.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError), (
+        "an unreadable directory cannot prove the change is in place"
+    )
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
+    # Project-relative, not the developer's home directory: an `OSError`'s own
+    # text carries the absolute path, so a message built from `str(exc)` leaks it
+    # (:meth:`ProposalService._evidence_indeterminate`, :func:`_within`).
+    published = f"{caught.value} {remedy}"
+    assert str(drafted.directory) not in published, "the absolute path must not leak"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_proposal_directory_whose_entries_cannot_be_examined_is_answered(
+    service: ProposalService,
+) -> None:
+    """#227 at a second unguarded call: the directory lists, but nothing stats.
+
+    At mode ``0o444`` the directory can be *listed* -- ``iterdir()`` returns the
+    migration -- while every ``stat`` under it is refused. Measured: the raw
+    ``path.is_symlink()`` probe in :meth:`ProposalService._require_migration` is
+    what raises here, not the evidence read the sibling above reaches.
+
+    One defect, several unguarded calls: the accept path probes the filesystem
+    with raw ``iterdir`` / ``is_symlink`` / ``is_file`` / read calls and
+    translates none of their ``OSError``s, so *which* one fires is an accident of
+    the mode.
+    A fix that guards only the call the first test happens to reach leaves this
+    one crashing, which is why the mode that selects a different probe is pinned
+    separately rather than folded into a parametrize.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o444)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError), (
+        "a directory that cannot be examined cannot prove the change is in place"
+    )
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_migration_file_that_cannot_be_opened_is_answered_rather_than_crashing(
+    service: ProposalService,
+) -> None:
+    """#227 at the read itself, which no mode on the *directory* can reach.
+
+    The shape a container produces: the proposal directory is perfectly normal --
+    it lists, and every entry stats -- and the migration file alone cannot be
+    opened, because it belongs to another user. Every probe in
+    :meth:`ProposalService._require_migration` therefore succeeds, and the
+    ``PermissionError`` comes out of the read one line later, from
+    :func:`read_source_file` inside the security layer.
+
+    Measured, and the reason this is not a duplicate of the ``0o444`` sibling:
+    with the directory at ``0o444`` the failure lands at ``is_symlink`` and the
+    read is never attempted, so *neither* of the other two tests exercises the
+    read. A fix that wraps only ``_require_migration``'s probes passes both of
+    them and still crashes here.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.migration_file.chmod(0o644)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError), (
+        "a migration that cannot be opened cannot prove the change is in place"
+    )
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy
+
+
+def _poison_content_file(drafted: DraftedProposal, quoted_value: str) -> None:
+    """Repoint the drafted migration's ``contentFile`` at a hand-authored value.
+
+    ``accept`` does not schema-validate the proposal's migration, so a value the
+    JSON Schema would reject -- one holding a NUL byte or an unpaired surrogate --
+    reaches ``_destination_of``'s ``resolve()`` unfiltered. ``quoted_value`` is a
+    YAML double-quoted scalar so its ``\\0`` / ``\\uXXXX`` escapes decode to the
+    real code points.
+    """
+    text = drafted.migration_file.read_text(encoding="utf-8")
+    replaced = text.replace(f"contentFile: {drafted.content_file}", f"contentFile: {quoted_value}")
+    assert replaced != text, "the contentFile anchor did not match"
+    drafted.migration_file.write_text(replaced, encoding="utf-8")
+
+
+def test_accept_translates_a_nul_in_the_content_file_path(service: ProposalService) -> None:
+    """CP-2 (adversarial e14): a NUL in ``contentFile`` escaped ``accept`` raw.
+
+    ``Path.resolve()`` -> ``os.path.realpath`` -> ``lstat`` raises ``ValueError``
+    (*"embedded null character in path"*) before any containment check, and
+    ``ValueError`` is not an ``OSError``, so the examination clause did not catch
+    it: the raw exception left ``accept`` and ``--json`` published zero bytes. The
+    loader translates its own ``resolve()`` with ``except (ValueError, OSError)``;
+    ``accept`` must match. Every accept-path exception is a ``ProposalError``
+    carrying a remedy.
+    """
+    drafted = service.draft(_request())
+    _poison_content_file(drafted, '"../knowledge/architecture/a\\0b.md"')
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy.strip(), "a translated failure carries a remedy"
+
+
+def test_accept_translates_a_lone_surrogate_in_the_content_file_path(
+    service: ProposalService,
+) -> None:
+    """CP-2 (adversarial e14): a lone surrogate in ``contentFile`` escaped ``accept`` raw.
+
+    The sibling of the NUL above, and the reason the widening is ``ValueError``
+    and not just the NUL's exact type: an unpaired surrogate cannot be encoded to
+    UTF-8 for the ``lstat``, so ``resolve()`` raises ``UnicodeEncodeError`` -- a
+    ``ValueError`` subclass, caught by the same clause, and neither an ``OSError``
+    nor a ``TheurianError`` before the fix.
+    """
+    drafted = service.draft(_request())
+    _poison_content_file(drafted, '"../knowledge/architecture/a\\uD800b.md"')
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy.strip(), "a translated failure carries a remedy"
+
+
+def test_the_unreadable_remedy_does_not_prescribe_chmod_for_a_non_permission_fault(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-one HIGH (CLASS-B): ``_unreadable`` prescribed ``chmod`` for any errno.
+
+    A ``contentFile`` naming a directory reaches ``read_source_file`` as
+    ``../knowledge`` -- accept does not schema-validate (ADR-0013 §4) -- and the
+    open raises ``IsADirectoryError`` (``EISDIR``), which the examination clause
+    translates. The old remedy said *"Make ... readable -- chmod u+rX on it"*
+    regardless, but no ``chmod`` cures ``EISDIR``: the fault is the authored
+    ``contentFile``, which is what the remedy must name. This is the class
+    ``c7cf455`` (#233) closed for :class:`PathEscapeError`, reopened at this site.
+    Reproduced end to end (``repro_classB_remedy`` face 2).
+    """
+    drafted = service.draft(_request())
+    _poison_content_file(drafted, "../knowledge")
+
+    with pytest.raises(ProposalError, match="could not be examined") as caught:
+        service.accept(drafted.proposal_id)
+
+    remedy = caught.value.remedy
+    assert "chmod" not in remedy.lower(), f"chmod cures no EISDIR: {remedy}"
+    # The cause is the input, so the remedy names it rather than a permission bit.
+    assert "contentFile" in remedy, remedy
+    # The absolute path still must not leak (the discipline `_project_relative` keeps).
+    assert str(paths.root) not in f"{caught.value} {remedy}", "the absolute path must not leak"
+
+
+def test_an_eperm_read_failure_earns_the_permission_remedy_like_eacces(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """EPERM routes to the ``chmod`` remedy, exactly as EACCES does (#227).
+
+    The accept-path read-failure remedy branches on ``_PERMISSION_ERRNOS``: a
+    permission errno earns a ``chmod`` cure, and every other errno earns the
+    neutral "no permission change cures that" text (:meth:`_read_failure_remedy`).
+    A read can be refused with ``EPERM`` as well as ``EACCES`` -- a mandatory
+    lock, a MAC policy, or an immutable/append-only flag all surface as ``EPERM``
+    -- so both belong in the set and both must reach the permission remedy.
+    Nothing induced ``EPERM`` end to end (a ``chmod`` fixture yields ``EACCES``),
+    so dropping it from the set sent a genuine permission failure to the
+    unactionable remedy and the drop survived the whole suite (adversarial round
+    two, mutation ``eperm-out``). This pins the routing at the errno, not at a
+    ``chmod`` that happens to reproduce EACCES.
+
+    A unit test of the routing: it constructs the ``OSError`` objects directly, so
+    it does not depend on a mode actually refusing a read and needs no root skip.
+    """
+    readable = paths.root / "child.md"
+    readable.write_text("body\n", encoding="utf-8")
+    filename = str(readable)
+
+    assert errno.EPERM in _PERMISSION_ERRNOS
+
+    eperm = OSError(errno.EPERM, os.strerror(errno.EPERM), filename)
+    eacces = OSError(errno.EACCES, os.strerror(errno.EACCES), filename)
+    eisdir = OSError(errno.EISDIR, os.strerror(errno.EISDIR), filename)
+
+    eperm_remedy = service._read_failure_remedy(eperm, "child.md")
+
+    # EPERM earns the permission remedy -- the same one EACCES earns -- not the
+    # neutral "no permission change cures that" text a non-permission errno gets.
+    assert any(word in eperm_remedy.lower() for word in _PERMISSION_REMEDY_WORDS), eperm_remedy
+    assert eperm_remedy == service._read_failure_remedy(eacces, "child.md"), (
+        "EPERM and EACCES are both permission failures and must route to one remedy"
+    )
+    assert "chmod" not in service._read_failure_remedy(eisdir, "child.md").lower(), (
+        "the routing is by errno: a non-permission fault earns no chmod"
+    )
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_the_unreadable_remedy_names_the_directory_when_the_parent_is_unsearchable(
+    service: ProposalService,
+) -> None:
+    """Round-one HIGH (CLASS-B): the ``chmod`` was pointed at an unreachable file.
+
+    At ``0o444`` the proposal directory lists but cannot be traversed, so the
+    ``is_symlink`` stat of the migration file inside it raises ``EACCES`` -- and
+    the failing path is the *child* ``.yaml``. The old remedy said *"Make
+    <that .yaml> readable -- chmod u+rX on it"*, but the child is unreachable: the
+    cure is ``chmod u+x`` on the parent directory, which is what lacks the search
+    bit. The remedy must name the directory, not the file it cannot reach.
+    Reproduced end to end (``repro_classB_remedy`` face 1).
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o444)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    remedy = caught.value.remedy
+    # The directory is what is at fault, so it is what the cure names -- and the
+    # unreachable file, which chmod-ing does nothing for, is *not* the target.
+    assert f".theurian/proposals/{drafted.proposal_id.value}" in remedy, remedy
+    assert drafted.migration_file.name not in remedy, (
+        f"the unreachable file must not be the chmod target: {remedy}"
+    )
+    assert "chmod u+x" in remedy, f"the cure is a search bit on the directory: {remedy}"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_the_unreadable_remedy_points_at_migrations_before_re_drafting(
+    service: ProposalService,
+) -> None:
+    """#89 half (adversarial ``unreadable-remedy-drops-migrations-pointer``): a
+    refused read is not evidence that nothing landed.
+
+    A read the filesystem refused says nothing about whether this proposal's
+    migration has already landed, so re-drafting one that *has* mints a duplicate
+    (#89). The remedy therefore sends the reader to ``.theurian/migrations/``
+    first and never says *"draft the proposal again"* outright. The surviving
+    mutation dropped the ``.theurian/migrations/`` pointer and replaced the tail
+    with exactly that instruction; nothing pinned it, so it survived. This pins
+    it on the ``0o000`` permission face, where the tail is reached.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o000)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    remedy = caught.value.remedy
+    assert ".theurian/migrations/" in remedy, remedy
+    assert "draft the proposal again" not in remedy.lower(), remedy
+    # The migrations pointer comes before any re-draft mention, so the reader
+    # reads what is there before minting a second migration.
+    assert remedy.index(".theurian/migrations/") < remedy.lower().index("re-draft"), remedy
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_directory_that_lists_but_does_not_stat_is_examined_not_declared_absent(
+    service: ProposalService,
+) -> None:
+    """MEDIUM (adversarial e5): ``iterdir`` raises where ``glob`` would swallow.
+
+    ``0o111`` is the one mode that separates the two: the directory can be
+    *traversed* (every known child stats and opens) but not *listed*.
+    ``iterdir()`` needs the read bit and raises ``PermissionError``, which
+    ``accept`` translates to "could not be examined" -- correct, since the
+    migration is right there, unread. ``glob("*.yaml")`` swallows the same error
+    and yields nothing, so ``_require_migration`` would fall to the missing-file
+    diagnosis and, finding the recorded id absent from ``.theurian/migrations/``,
+    conclude *"nothing it drafted has been accepted"* -- the re-draft answer, over
+    a migration that is present. The three ``#227`` tests use ``0o000``/``0o444``,
+    where the diagnosis itself raises whichever enumerator is used, so none of
+    them pins the ``iterdir`` choice; this one does.
+    """
+    drafted = service.draft(_request())
+    drafted.directory.chmod(0o111)
+    try:
+        with pytest.raises(ProposalError) as caught:
+            service.accept(drafted.proposal_id)
+    finally:
+        drafted.directory.chmod(0o755)
+
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    # The signal that separates `iterdir` from `glob`: a permission remedy, not
+    # the "draft it again" answer `glob`'s swallowed listing would reach.
+    remedy = caught.value.remedy
+    assert any(word in remedy.lower() for word in _PERMISSION_REMEDY_WORDS), remedy
+    assert "could not be examined" in str(caught.value)
 
 
 # -- has this proposal been accepted? (#253) -------------------------------
