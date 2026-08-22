@@ -107,8 +107,9 @@ _DRIFTED = Comparison(
 #: ``Status.NOTHING_COMPARED`` by. Paraphrased rather than imported on purpose:
 #: what the floor must not do is overwrite *whichever* sentence arrived with the
 #: status, so a test that only held ``scan``'s current wording would go quiet the
-#: day that wording is reworded. The verbatim strings are pinned where they are
-#: produced, in ``tests/integration/tools/test_corpus_drift_scan.py``.
+#: day that wording is reworded. A fragment of each sentence is asserted where
+#: it is produced, in ``tests/integration/tools/test_corpus_drift_scan.py``;
+#: no test holds any of the three verbatim.
 _GIT_WOULD_NOT_ANSWER = (
     "`git ls-files --cached` did not answer in /elsewhere/not-a-working-copy, and there is no "
     "filesystem fallback on purpose."

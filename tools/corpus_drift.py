@@ -777,10 +777,10 @@ def held_to_floor(report: Report, minimum: int) -> Report:
     declining to say what is tracked, and every anchor it did reach being
     uncheckable. All three compare zero anchors, so without this the floor fires
     over the top of them and replaces the one sentence saying what happened --
-    with text that then claims "each anchor that stopped being comparable is
-    named", when the first two routes name none because there are none, and that
-    offers "restore it, or lower the floor" as the remedy for a git that would
-    not answer. The exit status is 2 either way; what survives is *which*
+    with text that then claims "Every anchor that stopped being comparable is
+    named in this report", when the first two routes name none because there are
+    none, and that offers "restore them, or lower the floor" as the remedy for a
+    git that would not answer. The exit status is 2 either way; what survives is *which*
     failure a maintainer is looking at.
 
     **The floor outranks drift**, which is deliberate and is the whole point of
