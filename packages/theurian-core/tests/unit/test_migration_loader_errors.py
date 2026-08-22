@@ -3222,6 +3222,86 @@ def test_an_aliased_string_bomb_is_refused_before_jsonschema_can_expand_it() -> 
     assert len(message) < 2000, "the refusal itself must be bounded"
 
 
+def _aliased_integer_bomb(digits: int, slots: int) -> str:
+    """The aliased-large-*integer* DAG, as a YAML migration document.
+
+    One large integer is anchored on the first slot of a single operation and
+    aliased into ``slots`` further slots. Its node count is O(``slots``) -- far
+    under `MAX_DOCUMENT_NODES` -- and each individual integer is under CPython's
+    int->str limit, so it reprs without raising: neither the node ceiling nor
+    `_validate_document`'s ``ValueError`` catch sees it. But jsonschema's
+    ``{instance!r}`` re-emits all ``digits`` of the shared integer once per slot: a
+    ``digits * slots``-character transient. This is the integer counterpart of
+    `_aliased_string_bomb` -- the same few-nodes / huge-aggregate shape the node
+    count cannot see, in the one leaf type the round-one rendered budget did not
+    charge.
+    """
+    lines = [
+        "apiVersion: theurian.dev/v1",
+        "id: 01K1KKKKKK01234567890ABCDE",
+        "createdAt: '2026-08-02T10:00:00+09:00'",
+        "author: engineer@example.com",
+        "operations:",
+        "  - op: createItem",
+        "    itemId: a.b",
+        "    kind: architecture",
+        "    namespace: n",
+        "    owner: o",
+        "    x0: &big " + "9" * digits,
+    ]
+    lines += [f"    x{i}: *big" for i in range(1, slots)]
+    return "\n".join(lines) + "\n"
+
+
+def test_an_aliased_integer_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """HIGH (round two): the round-one rendered budget charged only ``str``/``bytes``
+    leaves, so an aliased *integer* sailed through every control. An integer of a
+    few thousand digits is under CPython's int->str limit -- it reprs without
+    raising, so `_validate_document`'s ``ValueError`` catch never fires -- and one
+    such integer aliased into N slots is O(N) nodes, under `MAX_DOCUMENT_NODES`. Yet
+    jsonschema's ``{instance!r}`` re-emits all its digits once per slot, a
+    ``digits*slots``-character message the node count is blind to. The fix charges
+    every leaf's rendered width, estimating a giant integer's decimal width from
+    ``bit_length`` without ever stringifying it (that stringification is the cost
+    the bound exists to refuse, and past the int->str limit it raises).
+
+    RED before the fix: the shipped guard charges nothing for an integer leaf, so
+    the first ``pytest.raises`` fails on it outright -- the guard accepts the
+    document and jsonschema pays the expansion. ``4000 digits * 300 slots`` = 1.2 M
+    rendered characters, past `MAX_DOCUMENT_RENDERED_CHARS`, while the node count
+    stays in the hundreds and every individual integer is under the 4300-digit
+    int->str limit. The refusal that reaches the caller must be the rendered
+    ceiling's, proving the document was stopped *before* `validate`.
+    """
+    document = load_yaml_mapping(_aliased_integer_bomb(4000, 300))
+
+    with pytest.raises(MigrationError):
+        _refuse_a_document_that_nests_too_deep(document, None)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert str(MAX_DOCUMENT_RENDERED_CHARS) in message, (
+        "the refusal must be the rendered-character ceiling's, i.e. raised before `validate`"
+    )
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def test_the_rendered_budget_passes_a_migration_of_ordinary_integers() -> None:
+    """The counterweight to the integer-alias refusal: charging every leaf must not
+    refuse a legitimate migration whose numbers are small -- a ``lineStart``, a
+    ``lineEnd``, a ``confidence`` -- which the corpus carries. A handful of short
+    integers and a float render to a few characters each, nowhere near
+    `MAX_DOCUMENT_RENDERED_CHARS`, so the guard must not raise.
+    """
+    ordinary = {
+        "operations": [{"op": "createItem", "lineStart": 1, "lineEnd": 4200, "confidence": 0.87}]
+    }
+    _refuse_a_document_that_nests_too_deep(ordinary, None)  # must not raise
+
+
 def test_the_document_rendered_size_ceiling_holds_at_its_boundary() -> None:
     """`MAX_DOCUMENT_RENDERED_CHARS` and the refusal it drives.
 
@@ -3231,8 +3311,10 @@ def test_the_document_rendered_size_ceiling_holds_at_its_boundary() -> None:
     left for `validate` and `_echo` to bound, so it passes here; the same string
     aliased into eleven slots (1.1 M characters) is refused, un-memoised, as its
     references are read. A flat sequence of small integers one longer than
-    `MAX_DOCUMENT_NODES` is *not* refused by this budget -- integers carry no
-    string length -- which keeps the two ceilings distinct.
+    `MAX_DOCUMENT_NODES` renders to ~1 character each, so 100,001 of them stay far
+    under this million-character budget while tripping the node ceiling first --
+    which keeps the two ceilings distinct (an integer *bomb* is a node fault, as
+    opposed to an aliased *giant* integer, which this budget catches by width).
     """
     assert MAX_DOCUMENT_RENDERED_CHARS == 1_000_000, (
         "load-bearing; changing it is a security decision"

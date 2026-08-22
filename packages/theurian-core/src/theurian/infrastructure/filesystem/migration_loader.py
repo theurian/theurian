@@ -147,37 +147,41 @@ MAX_DOCUMENT_NESTING: Final = 64
 #: `{instance!r}` *structural* re-expansion of a document that passes it -- at
 #: this many steps: that repr re-expands the same shared references this walk
 #: counted, so a document held to N un-collapsed nodes reprs at most N of them.
-#: It does *not* cap a single scalar's *numeric* render -- a giant integer is one
-#: node whose decimal render is unbounded by any node count, and jsonschema
-#: renders it into its own rejection message. That face is one integer, so this
-#: count cannot catch it; it is closed separately in :func:`_validate_document`
-#: (issue #291's scalar face). A giant *string* face is different: a node count
-#: does not bound total rendered characters either, and that face is closed in the
-#: same walk by :data:`MAX_DOCUMENT_RENDERED_CHARS`.
+#: It does *not* cap a single scalar's *rendered* magnitude -- a long string or a
+#: giant integer is one node (or, aliased, N+1 nodes) whose render is unbounded by
+#: any node count, and jsonschema re-emits it into its own rejection message. Two
+#: complementary bounds catch that, neither of them this count: the *aggregate* an
+#: aliased scalar re-expands to is bounded in the same walk by
+#: :data:`MAX_DOCUMENT_RENDERED_CHARS`, which charges every leaf's rendered width;
+#: and a *single* integer whose own ``{instance!r}`` render raises past CPython's
+#: int->str limit -- its lone width passing that aggregate budget -- is translated
+#: in :func:`_validate_document` (issue #291's scalar face).
 MAX_DOCUMENT_NODES: Final = 100_000
 
-#: Ceiling on the total number of characters of *string* content a migration
-#: *document* may hold, counting every ``str``/``bytes`` leaf the walk reaches
-#: *without* collapsing shared references -- the string counterpart of
+#: Ceiling on the total number of characters of *rendered scalar* content a
+#: migration *document* may hold, counting every leaf the walk reaches *without*
+#: collapsing shared references -- the rendered-magnitude counterpart of
 #: :data:`MAX_DOCUMENT_NODES`. Enforced by
 #: `_refuse_a_document_that_nests_too_deep` in the same iterative walk (issue
-#: #291's aliased-string face).
+#: #291's aliased-scalar face).
 #:
-#: The node count alone does not bound rendered magnitude. A single large string
-#: (say 100,000 characters) anchored once and aliased into N slots of one
-#: operation is only N+1 nodes -- well under :data:`MAX_DOCUMENT_NODES` -- so the
-#: node ceiling waves it through to ``validate``, where `jsonschema` builds the
-#: ``oneOf`` rejection message with ``{instance!r}`` and re-expands the shared
-#: string once per slot: an N*100,000-character transient before
-#: :func:`_schema_rejection` is ever reached. At the recorded limits (a
-#: :data:`~theurian.security.yaml_loading.MAX_YAML_BYTES` 4 MiB source expanded to
-#: at most :data:`MAX_DOCUMENT_NODES` references) that product reaches hundreds of
-#: gigabytes and raises `MemoryError` -- which is neither a `ValueError` nor an
-#: `ArithmeticError`, so it escapes :func:`_validate_document`'s scalar catch as a
-#: raw traceback, the exact CP-2 escape issue #291 exists to close. Accumulating
-#: ``len(child)`` per un-memoised reference and refusing here, ahead of
-#: ``validate``, is what bounds that transient -- ``len`` is O(1), so the walk's
-#: own cost is unchanged.
+#: The node count alone does not bound rendered magnitude. A single large scalar --
+#: a 100,000-character string, or an integer of a few thousand digits -- anchored
+#: once and aliased into N slots of one operation is only N+1 nodes -- well under
+#: :data:`MAX_DOCUMENT_NODES` -- so the node ceiling waves it through to
+#: ``validate``, where `jsonschema` builds the ``oneOf`` rejection message with
+#: ``{instance!r}`` and re-expands the shared scalar once per slot: an
+#: N*width-character transient before :func:`_schema_rejection` is ever reached. At
+#: the recorded limits (a :data:`~theurian.security.yaml_loading.MAX_YAML_BYTES`
+#: 4 MiB source expanded to at most :data:`MAX_DOCUMENT_NODES` references) that
+#: product reaches hundreds of gigabytes and raises `MemoryError` -- which is
+#: neither a `ValueError` nor an `ArithmeticError`, so it escapes
+#: :func:`_validate_document`'s scalar catch as a raw traceback, the exact CP-2
+#: escape issue #291 exists to close. Accumulating each leaf's rendered width
+#: (:func:`_rendered_width`) per un-memoised reference and refusing here, ahead of
+#: ``validate``, is what bounds that transient -- that width is O(1) per leaf (a
+#: giant integer's is estimated from ``bit_length``, never stringified), so the
+#: walk's own cost is unchanged.
 #:
 #: Generous by three orders of magnitude, on purpose, and larger than the node
 #: ceiling because a legitimate migration is mostly short scalars while a
@@ -370,6 +374,45 @@ class _SchemaValidator:
     schema_path: Path
 
 
+def _rendered_width(value: object) -> int:
+    """How many characters ``value`` contributes to jsonschema's ``{instance!r}``
+    re-expansion, computed in O(1) *without* materialising a giant render.
+
+    :data:`MAX_DOCUMENT_RENDERED_CHARS` charges this for every leaf the walk
+    discovers, un-memoised, so an aliased scalar's *aggregate* magnitude across N
+    references is bounded whatever the leaf's type -- the class the node count
+    alone cannot see:
+
+    * ``str``/``bytes`` report their own ``len`` -- a lower bound on the
+      quoted-and-escaped render `jsonschema` actually emits.
+    * An ``int`` reports its decimal digit count, estimated from ``bit_length``.
+      Never ``str(value)``: stringifying a giant integer is quadratic and, past
+      CPython's int->str limit, *raises* -- the very cost this bound exists to
+      refuse. The estimate rounds ``log10(2)`` up, so it never under-charges.
+    * ``bool``/``float``/``None`` render to a small, bounded width, charged by
+      their actual ``repr`` length -- cheap, since none of them is unbounded.
+      ``bool`` is matched before ``int`` (of which it is a subclass) only so its
+      one-bit ``bit_length`` does not under-report ``"True"``/``"False"``.
+    * A container contributes nothing here: its structural characters are O(1) per
+      node, already bounded by :data:`MAX_DOCUMENT_NODES`, and its own leaves are
+      charged as the walk reaches them. A parsed document holds only the scalar
+      types above; an arbitrary in-memory object (never a parsed leaf) is charged
+      nothing rather than having a possibly hostile ``repr`` invoked here.
+    """
+    if isinstance(value, str | bytes):
+        return len(value)
+    if isinstance(value, bool):
+        return len(repr(value))
+    if isinstance(value, int):
+        # digits <= floor(bit_length * log10(2)) + 1; 30103/100000 rounds
+        # log10(2) up, so this never under-counts, and integer arithmetic keeps a
+        # float rounding out of a budget threshold.
+        return (value.bit_length() * 30103) // 100_000 + 1
+    if isinstance(value, float) or value is None:
+        return len(repr(value))
+    return 0
+
+
 def _refuse_a_document_that_nests_too_deep(
     document: Mapping[str, object], document_name: str | None
 ) -> None:
@@ -398,27 +441,31 @@ def _refuse_a_document_that_nests_too_deep(
     that passes it: that repr re-expands the same shared references this walk
     counted.
 
-    **Two things the node count does not bound, both closed here.** The same
-    ``{instance!r}`` re-expansion that this walk's node count matches structurally
-    also re-emits every *scalar* it reaches, and a node count is blind to how big
-    each scalar is:
+    **What the node count does not bound, closed here.** The same ``{instance!r}``
+    re-expansion that this walk's node count matches structurally also re-emits
+    every *scalar* it reaches, and a node count is blind to how big each scalar is.
+    An anchored scalar aliased into N slots is only N+1 nodes but re-expands to N
+    times its rendered width in jsonschema's message. So the same walk accumulates
+    :func:`_rendered_width` for *every* leaf it discovers -- un-memoised, exactly
+    as the node count is, so aliased repeats are charged every time, the way
+    jsonschema charges them -- and refuses at :data:`MAX_DOCUMENT_RENDERED_CHARS`.
+    That width is O(1) for every leaf type: ``len`` for a ``str``/``bytes``, and a
+    ``bit_length``-derived decimal-digit estimate for an ``int`` (never
+    ``str(int)``, which a giant integer makes quadratic and, past CPython's
+    int->str limit, raises), so the walk's cost is unchanged.
 
-    * A single large *string*, anchored once and aliased into N slots, is only
-      N+1 nodes but re-expands to N times its length in jsonschema's message. The
-      same walk accumulates ``len(child)`` for every ``str``/``bytes`` leaf --
-      un-memoised, exactly as the node count is, so aliased repeats are charged
-      every time, the way jsonschema charges them -- and refuses at
-      :data:`MAX_DOCUMENT_RENDERED_CHARS`. ``len`` is O(1), so the walk's cost is
-      unchanged.
-    * A single giant *integer* is one node whose decimal render is unbounded and
-      is not a ``str``/``bytes`` leaf, so neither the node count nor the character
-      budget above catches it. That one face is closed separately, in
-      :func:`_validate_document`, by translating the ``ValueError`` the render
-      raises (issue #291's scalar face).
+    This bounds the *aggregate* magnitude an aliased scalar re-expands to. It does
+    not bound a *single* integer whose own render is large but under that aggregate
+    budget: a lone integer of a few thousand digits is one node, passes this budget
+    (its own width is well under it), and reaches ``validate``, where rendering it
+    with ``{instance!r}`` raises ``ValueError``. That single-value face stays closed
+    separately, in :func:`_validate_document`, by translating that ``ValueError``
+    (issue #291's scalar face) -- this budget and that catch are complementary, not
+    redundant.
 
     All three checks are made as each child is *discovered*, so the frontier
     itself never grows past the node cap even for a single very wide node, and the
-    character budget refuses an aliased-string bomb before the frontier holds more
+    character budget refuses an aliased-scalar bomb before the frontier holds more
     than a handful of its slots.
 
     Both checks run before ``validate`` rather than as a wider ``except`` around
@@ -485,24 +532,28 @@ def _refuse_a_document_that_nests_too_deep(
                     f"fixed, shallow shape; a document this large is a mistake or an attempt "
                     f"to exhaust memory. Reduce it, or split it into separate migration files."
                 )
-            if isinstance(child, str | bytes):
-                # `len` is O(1), and this is charged per reference rather than per
-                # distinct object, so an anchored string aliased into N slots costs
-                # N*len here -- exactly what jsonschema's `{instance!r}` re-expands
-                # it to. `str`/`bytes` are the leaves the walk stops at, so their
-                # length is not seen anywhere else; every other leaf either has no
-                # meaningful render length (a bool, None) or is the integer face
-                # closed in `_validate_document`.
-                rendered += len(child)
-                if rendered > MAX_DOCUMENT_RENDERED_CHARS:
-                    subject = f"{document_name} holds" if document_name else "This document holds"
-                    raise MigrationError(
-                        f"{subject} more than {MAX_DOCUMENT_RENDERED_CHARS} characters of "
-                        f"string content once its shared references are expanded. A migration "
-                        f"is a fixed, shallow shape; a document this large is a mistake or an "
-                        f"attempt to exhaust memory. Reduce it, or split it into separate "
-                        f"migration files."
-                    )
+            # Charged for *every* leaf via `_rendered_width` (O(1) per leaf), and
+            # per reference rather than per distinct object, so an anchored scalar
+            # aliased into N slots costs N times its width here -- *at least* what
+            # jsonschema's `{instance!r}` re-expands it to, since that repr adds
+            # quotes and escapes to a `str`/`bytes` value and re-emits every digit
+            # of an integer once per slot. Charging integers too is what closes the
+            # aliased-integer face the earlier str/bytes-only budget missed: a
+            # few-thousand-digit integer reprs without raising and is O(N) nodes
+            # aliased, so neither the node ceiling nor `_validate_document`'s
+            # `ValueError` catch would see it. Containers charge nothing here (their
+            # leaves are charged as the walk reaches them), so this line is safe to
+            # run for every child.
+            rendered += _rendered_width(child)
+            if rendered > MAX_DOCUMENT_RENDERED_CHARS:
+                subject = f"{document_name} holds" if document_name else "This document holds"
+                raise MigrationError(
+                    f"{subject} more than {MAX_DOCUMENT_RENDERED_CHARS} characters of "
+                    f"string content once its shared references are expanded. A migration "
+                    f"is a fixed, shallow shape; a document this large is a mistake or an "
+                    f"attempt to exhaust memory. Reduce it, or split it into separate "
+                    f"migration files."
+                )
             frontier.append((child, depth + 1))
 
 
@@ -710,6 +761,19 @@ class _BoundedRepr(reprlib.Repr):
     :attr:`longest_scalar` as they are rendered, at no extra traversal cost. An
     instance is measured by a *fresh* renderer each call (:func:`_new_echo_repr`),
     so the attribute never carries across calls.
+
+    Only ``str`` is tracked, not ``bytes``: `reprlib.Repr` has no ``repr_bytes``
+    hook (bytes fall through ``repr_instance``, bounded by ``maxother``), so a
+    ``bytes`` value *nested inside a container* instance is reported at the
+    container repr's length rather than its own -- a diagnostic-precision residual
+    (LOW, round two), not a leak or a denial of service. An oversized ``bytes`` is
+    refused for its own length by the rendered budget
+    (:data:`MAX_DOCUMENT_RENDERED_CHARS`) before ``validate`` is ever reached, so
+    the only ``bytes`` that reaches this renderer is already small; a bare ``bytes``
+    *leaf* is measured directly by :func:`_echo` from its own ``len``, in octets.
+    Tracking a nested ``bytes`` here would also have to carry its unit ("octets",
+    not "characters") through :func:`_echo`, which is why it is recorded rather
+    than added.
     """
 
     #: The greatest ``len`` of any ``str`` this renderer has rendered, before
@@ -1438,16 +1502,24 @@ def _load_one(
     except UnicodeDecodeError as exc:
         raise MigrationError(f"{path.name} is not valid UTF-8") from exc
     except ValueError as exc:
-        if "integer string conversion" in str(exc):
-            # A YAML integer literal past CPython's int->str conversion limit
-            # (`sys.get_int_max_str_digits`) raises `ValueError` at `int()` inside
-            # PyYAML's own constructor, before any guard in this file runs -- the
-            # load-path twin of the in-memory scalar face `_validate_document`
-            # closes. CPython's own message names `sys.set_int_max_str_digits()` as
-            # the cure, an interpreter tuning knob no migration author should reach
-            # for; forwarding it verbatim leaked that remedy (issue #291's scalar
-            # face). Translated to the same "reduce it" wording the in-memory face
-            # uses, and the digits themselves are never echoed (SEC-7).
+        detail = str(exc)
+        # A YAML integer literal past CPython's int->str conversion limit
+        # (`sys.get_int_max_str_digits`) raises `ValueError` at `int()` inside
+        # PyYAML's own constructor, before any guard in this file runs -- the
+        # load-path twin of the in-memory scalar face `_validate_document` closes.
+        # CPython's own message names `sys.set_int_max_str_digits()` as the cure, an
+        # interpreter tuning knob no migration author should reach for; forwarding
+        # it verbatim leaked that remedy (issue #291's scalar face). The detection
+        # keys on the message phrasing *and* on the tuning knob's own name: if a
+        # future CPython reworded "integer string conversion", the size face would
+        # still be caught -- and the knob still kept out of the message -- as long
+        # as its message named `set_int_max_str_digits`, rather than falling through
+        # to the verbatim branch below and re-leaking it (LOW, round two). Keying on
+        # the leak string itself is more robust than the phrasing, since CPython is
+        # far likelier to reword the error than to rename the public API. Translated
+        # to the same "reduce it" wording the in-memory face uses, and the digits
+        # themselves are never echoed (SEC-7).
+        if "integer string conversion" in detail or "set_int_max_str_digits" in detail:
             raise MigrationError(
                 f"{path.name}: a numeric value is too large for the parser to process "
                 f"safely. A migration value is a short identifier, a string, or a small "
