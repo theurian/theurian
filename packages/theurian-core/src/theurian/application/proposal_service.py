@@ -1092,14 +1092,21 @@ class ProposalService:
                 )
 
     def _refuse_if_a_replacement_breaks_an_existing_pin(self, moves: Iterable[_BodyMove]) -> None:
-        """Refuse a body replacement that would invalidate the migration set.
+        """Refuse a body replacement that would break an existing landed pin.
 
-        The invariant ``accept`` must hold is that it never leaves the set unable
-        to validate. Two ways a replacement breaks it, and both are one fault --
-        *the destination is a body a landed revision already reads*:
+        This guard holds one narrow invariant, not a global one: a replacement
+        never breaks a pin **already landed** in the approved set. It is *not* the
+        claim that ``accept`` leaves the set able to validate -- ``accept`` does
+        not schema-validate the incoming migration and does not check it against
+        itself, so a self-contained breakage in one proposal (two operations
+        naming one ``contentFile``, a self-inconsistent pin, an empty
+        ``contentFile``) lands here and is caught by ``migrate validate`` in CI,
+        which is the check by design (ADR-0013 §4). What this method refuses is the
+        one fault it can judge from the *landed* set alone -- *the destination is
+        a body a landed revision already reads*:
 
-        * If that revision **pinned** the body, the loader re-reads it and finds
-          bytes the pin no longer matches: *"hashes to abc7cdb70713 but the
+        * If that landed revision **pinned** the body, the loader re-reads it and
+          finds bytes the pin no longer matches: *"hashes to abc7cdb70713 but the
           migration pins 4f9c5503e198"*, exit 4 with no undo.
         * Whether pinned or not, the destination now backs **two** distinct
           revisions -- the landed one and this proposal's -- and
