@@ -14,9 +14,14 @@ questions.
 :func:`corpus_drift.minimum_compared_for` decides **which floor a tree is held
 to**. ``MINIMUM_COMPARED`` is a measurement of *this* repository's corpus, so it
 binds on this tree and on no other: asserting 26 against a fixture would be
-inventing a number, and it would take every small-corpus caller -- including the
-one- and two-migration corpora the rest of this suite drives ``scan`` with -- to
-exit 2. Another tree states its own floor with ``--minimum-compared``.
+inventing a number, and it would take every small-corpus caller of
+:func:`corpus_drift.main` -- the one- and two-migration corpora
+``tests/integration/tools/test_corpus_drift_cli.py`` drives the CLI with -- to
+exit 2. The suite's ``scan`` callers are *not* among them, and naming them here
+would misdescribe where the floor binds: it is applied in ``main`` and never
+inside :func:`corpus_drift.scan`, so a corpus of one compared anchor stays an
+ordinary input to ``scan`` whatever floor this tree is held to. Another tree
+states its own floor with ``--minimum-compared``.
 
 :func:`corpus_drift.held_to_floor` decides **what a breach does to the report**,
 and it outranks drift. ``--advisory`` turns drift into exit 0; exit 2 is the code
@@ -118,10 +123,11 @@ def test_this_repositorys_own_tree_is_held_to_the_floor_its_corpus_was_measured_
 def test_a_tree_that_is_not_this_repository_is_held_to_no_floor_it_never_measured() -> None:
     """26 was measured here and nowhere else; asserting it elsewhere invents a number.
 
-    This is what keeps ``--repo-root`` usable at all. Every synthetic corpus in
-    ``tests/integration/tools/`` holds one or two migrations, and a floor of 26
-    applied to whatever tree it is handed would take all of them -- and any
-    downstream project vendoring this script -- straight to exit 2.
+    This is what keeps ``--repo-root`` usable at all. Every synthetic corpus the
+    CLI tests in ``tests/integration/tools/test_corpus_drift_cli.py`` build holds
+    one or two migrations, and a floor of 26 applied to whatever tree it is
+    handed would take all of them -- and any downstream project vendoring this
+    script -- straight to exit 2.
     """
     assert minimum_compared_for(_ANOTHER_TREE, None) == 0
 
