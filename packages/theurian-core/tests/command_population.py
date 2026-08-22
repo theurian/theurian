@@ -101,6 +101,22 @@ SCANNED_SURFACES: Final = (
         frozenset({".py"}),
         python_command_lines,
     ),
+    # examples/ ships runnable `.py` whose help strings and comments name real
+    # commands -- `query.py` documents the token file as one "written by
+    # `theurian daemon start`" -- so it is a user-facing instructional surface
+    # and its commands are verified against the CLI, not exempted: a dead command
+    # in a shipped example misleads the reader this module exists to protect, and
+    # `examples/sample-project/smoke-test.sh` (which would fail on one) runs in no
+    # CI job, so the static scan is the only guard here. It needs its own root
+    # because the Python surface above is deliberately scoped to Core's `src/` to
+    # keep the `.py` scan clear of the two test trees, which name dead commands on
+    # purpose (see UNREAD); examples is neither of those.
+    Surface(
+        "python-examples",
+        REPO_ROOT / "examples",
+        frozenset({".py"}),
+        python_command_lines,
+    ),
     Surface("json", REPO_ROOT, frozenset({".json"}), json_command_lines),
     Surface("plain", REPO_ROOT, frozenset({".sh", ".yml", ".yaml"}), plain_command_lines),
 )
@@ -434,10 +450,10 @@ def _files(
 ) -> Iterator[pathlib.Path]:
     """Every shipped file of those suffixes under ``root``, in path order.
 
-    ``root`` selects a subtree of ``repository``: the Python surface reads only
-    Core's ``src/`` while the rest read from the top. Both are filtered out of
-    one population rather than walked separately, so a file cannot be part of
-    one answer and not the other.
+    ``root`` selects a subtree of ``repository``: the Python reader runs over
+    two roots -- Core's ``src/`` and ``examples/`` -- while the rest read from the
+    top. All are filtered out of one population rather than walked separately, so
+    a file cannot be part of one answer and not the other.
 
     ``repository`` is a parameter and not just :data:`REPO_ROOT` because that is
     what makes the population testable: a sandbox with one tracked and one
