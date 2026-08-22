@@ -25,8 +25,8 @@ Four readers over four file families, walked from the repository root:
 ``*.md`` anywhere                  fenced blocks, inline code spans, YAML
                                    frontmatter values, and any line whose
                                    own content is a command
-``*.py`` under Core's ``src/`` or   ``#`` comment runs, and string literals with
-``examples/``                      f-strings and implicit concatenation resolved
+``*.py`` under Core's ``src/``,    ``#`` comment runs, and string literals with
+``examples/`` or ``tools/``        f-strings and implicit concatenation resolved
 ``*.json`` anywhere                code spans inside string literals
 ``*.sh`` / ``*.yml`` / ``*.yaml``  every logical line
 =================================  ==========================================

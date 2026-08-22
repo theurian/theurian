@@ -23,6 +23,7 @@ jobs:
       plugin: ${{ steps.filter.outputs.plugin }}
       schemas: ${{ steps.filter.outputs.schemas }}
       docs: ${{ steps.filter.outputs.docs }}
+      corpus: ${{ steps.filter.outputs.corpus }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -82,6 +83,34 @@ jobs:
               # 13 if directories are excluded, 20 if links are counted instead.
               - 'docs/**'
               - '**/*.md'
+              - '.github/workflows/shared.yml'
+            corpus:
+              # What `corpus-drift` below reads. Two sides, and the first is the
+              # one that actually moves: editing an ADR is what takes a `docs/`
+              # document out from under the frozen snapshot pinned to it. The
+              # second is a re-seed, or a corpus item added or removed.
+              #
+              # `docs/**` rather than `docs/**/*.md`, so that *deleting* a
+              # source document runs the job that reports it gone.
+              #
+              # `.theurian/**` is wider than the checker's own population --
+              # which is `.theurian/migrations/*.yaml`, plus a pinned body only
+              # for a revision that declares no `contentSha256` -- and stays
+              # wider for the reason the `docs` filter above does: a job that
+              # runs and finds nothing costs one run, while narrowing the filter
+              # to match would put the population in two places kept in step by
+              # hand. The leading `.` is written literally, so nothing here
+              # depends on whether the filter's globs cross a dot-directory.
+              #
+              # `pages.yml` watches `docs/**` too (its own `paths:`, checked
+              # 2026-08-22), but only to rebuild the published site on a push to
+              # `main`, and it never runs this checker. This filter is the only
+              # path that starts `corpus-drift`, so without this entry the drift
+              # this job exists for -- an ADR edit and nothing else -- would
+              # start no run at all.
+              - 'docs/**'
+              - '.theurian/**'
+              - 'tools/corpus_drift.py'
               - '.github/workflows/shared.yml'
 
   schemas:
@@ -235,3 +264,62 @@ jobs:
               sys.exit(1)
           print("All relative links resolve.")
           PY
+
+  # The corpus under `.theurian/` is 26 verbatim snapshots of documents under
+  # `docs/`. `test_dogfood_corpus_governance.py` keeps each snapshot honest
+  # against its own pin and against the blob at its own anchor commit, and both
+  # of those compare a fixed object to a fixed object -- so neither notices when
+  # the ADR itself is edited. This is the live half (#263): the document each
+  # anchor names, hashed now, against the digest the corpus recorded.
+  #
+  # ADVISORY -- the operational call, and why.
+  #
+  # Editing an ADR is a normal, correct thing to do, and it is the *only* thing
+  # that produces this finding. A red build on it would land on the pull request
+  # that improved the documentation rather than on the maintainer who owes the
+  # re-seed, and the reliable outcome of that is a job people learn to bypass.
+  # The finding is also not actionable inside the same change: re-seeding runs
+  # `theurian propose` -- its own commit, against the corpus, with its own
+  # review. So drift warns, visibly -- `::warning` annotations land on the
+  # changed `docs/` file in the pull request's Files view, and the step summary
+  # carries the table and the fix.
+  #
+  # What is NOT advisory, and this is the part worth reading before touching the
+  # step below. The checker exits 2 when it compared too little to mean anything
+  # -- no tracked migrations, git unable to say what is tracked, or fewer
+  # anchors compared than `MINIMUM_COMPARED` (26, the corpus as it stands) --
+  # and `--advisory` deliberately does not suppress that. A checker that has
+  # stopped checking is a regression, not a pass, and it stops one item at a
+  # time: an anchor re-seeded under an SSH remote is uncheckable for good, so
+  # without that floor the count could walk from 26 to 1 with every run in
+  # between reporting a clean corpus. That is why this job has no
+  # `continue-on-error: true` and no `|| true`: either would swallow exit 2
+  # along with exit 1 and leave a green tick over a check that had gone silent.
+  # The step passes no `--minimum-compared`, so the floor is the tool's own; it
+  # binds here because this job runs against the tree the number was measured
+  # on.
+  #
+  # Nothing that was previously enforced becomes advisory here. Every hard rule
+  # over the corpus stays hard, in `core.yml`'s test job, where it already was.
+  corpus-drift:
+    name: Corpus drift (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.corpus == 'true'
+    steps:
+      # The default depth-1 clone is enough: the checker reads the index and the
+      # working tree, never history. It does not need the `fetch-depth: 0` that
+      # `core.yml` gives its own jobs for the anchor-commit byte-identity rule.
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.7.2"
+          enable-cache: true
+      # Needed because the checker imports `ContentHash` from the product rather
+      # than reimplementing SHA-256 over the body: a second implementation of
+      # the digest is a second thing that can disagree with what `propose`
+      # actually writes.
+      - run: uv sync --frozen
+      - name: The committed corpus still matches its `docs/` sources
+        run: uv run python tools/corpus_drift.py --advisory --format github --summary

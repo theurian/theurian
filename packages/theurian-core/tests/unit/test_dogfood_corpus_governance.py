@@ -36,9 +36,18 @@ each deliberate:
   holding both corpora could not state the rule below at all. The example has its
   own guard in ``test_examples.py``.
 - **Every tracked ``*.yaml`` directly under ``.theurian/migrations/``**, which is
-  wider than ``is_migration_file_name`` -- the loader's own predicate, which
-  requires a ULID-prefixed name. A YAML the loader ignores is still a file this
-  repository publishes, so it is governed here rather than skipped.
+  the key the loader itself enumerates by: ``load_migrations`` lists the
+  directory with ``iterdir()`` and keeps every entry ending ``.yaml``, and
+  ``_entry_is_migration_file`` then classifies the *entry* rather than the shape
+  of its name. A migration hand-renamed off its ULID prefix is therefore still
+  loaded and served (measured 2026-08-22: a committed migration copied to
+  ``seed-adr-0001.yaml`` loads, while ``is_migration_file_name`` returns
+  ``False`` for that name), so anything the loader applies is governed here.
+  ``is_migration_file_name`` does require the prefix, but it is a
+  *proposal*-directory predicate -- ``accept`` uses it to pick the migration out
+  of a directory that also holds bodies -- and it never runs over
+  ``.theurian/migrations/``; reading it as the loader's own filter is what makes
+  this population look wider than the loader's, and it is not.
 
 **Three sources answer "what is tracked", in order, and only the first is a
 definition.** :func:`_index` asks **git**; failing that it reads the
