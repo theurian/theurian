@@ -146,11 +146,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 - **A hostile migration document could exhaust CPU or memory at validate time,
   and a giant-integer scalar escaped `--json` as a raw traceback**
-  ([#291](https://github.com/theurian/theurian/issues/291)). Four shapes of a
+  ([#291](https://github.com/theurian/theurian/issues/291)). Several shapes of a
   parsed migration document defeated `jsonschema`'s own message building at
-  validate time — three are now refused ahead of `validate` by the loader's own
-  un-memoised walk, and the fourth is translated by type after `validate`
-  raises:
+  validate time. The loader now applies three bounds ahead of `validate` in its
+  own un-memoised walk — nesting depth, node count, and total rendered magnitude
+  — and translates a single giant integer by type after `validate` raises:
   - **Nesting** is refused ahead of `validate` at `MAX_DOCUMENT_NESTING` (64).
     Past the interpreter's C recursion budget `jsonschema` cannot build its own
     refusal message, and the `RecursionError` that follows is indistinguishable
@@ -165,24 +165,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     count would wave the bomb through. Same un-memoised-walk shape as the OpenAPI
     `$ref` ref-walk in
     [#245](https://github.com/theurian/theurian/issues/245), in another seam.
-  - **An aliased large string** is refused ahead of `validate` at
+  - **Total rendered magnitude** is refused ahead of `validate` at
     `MAX_DOCUMENT_RENDERED_CHARS` (1,000,000) — a new bound in the same walk that
     the node count could not stand in for. One large scalar aliased into many
     slots is only a handful of nodes, well under `MAX_DOCUMENT_NODES`, but
-    `{instance!r}` re-expands it to N times its length: a hundreds-of-gigabytes
-    transient that raises `MemoryError`, which is neither a `ValueError` nor an
-    `ArithmeticError` and so escaped the scalar catch below as a raw traceback.
-    The walk now accumulates `len(child)` per un-memoised reference (`len` is
-    O(1)) and refuses this face before `validate` like the other two.
-  - **A giant-integer scalar** is one node no pre-walk can see, so it is
-    *translated by type* after `validate` raises rather than refused ahead. Its
-    work is not unbounded: CPython's int→str limit and PyYAML's parse cut it off
-    first, raising rather than churning. `jsonschema` renders the value past that
-    limit and raises `ValueError` (reachable today), or a float `multipleOf`
+    `{instance!r}` re-expands it to N times its rendered width. The walk charges
+    every leaf's width via a new O(1) `_rendered_width` per un-memoised reference
+    — `len` for a `str`/`bytes`, a `bit_length`-derived decimal-digit estimate
+    for an `int` (never `str(int)`, which is quadratic and raises past CPython's
+    int→str limit), and the `repr` length of a bounded `bool`/`float`/`None`.
+    This closes two aliased-scalar faces. The first is a large *string* aliased
+    into N slots: a hundreds-of-gigabytes transient that raises `MemoryError`,
+    which is neither a `ValueError` nor an `ArithmeticError` and so escaped the
+    scalar catch below as a raw traceback. The second was found by the round-two
+    review and missed by the round-one bound, which charged only `str`/`bytes`: a
+    *medium integer* — a few thousand digits, so its own `repr` does not raise —
+    aliased into N slots is O(N) nodes under `MAX_DOCUMENT_NODES` and not a
+    `ValueError`, so it defeated every round-one control while `{instance!r}`
+    re-emitted its digits once per slot, a `digits × slots`-character message.
+    Charging every leaf per reference refuses both faces before `validate`. The
+    refusal message still says "characters of string content", but the bound now
+    covers every leaf type, integers and bytes included.
+  - **A single giant integer** — one whose own `{instance!r}` render raises,
+    past CPython's int→str limit (4300 digits by default) — is one node whose
+    lone width passes the aggregate budget above, so it reaches `validate` and is
+    *translated by type* rather than refused ahead. `jsonschema` renders it past
+    that limit and raises `ValueError` (reachable today), or a float `multipleOf`
     coerces it and raises `OverflowError` (latent — the bundled schema carries
     only `minimum`/`maximum`). `_validate_document` catches the whole
     `(ValueError, ArithmeticError)` class as a `MigrationError` so a future
-    numeric keyword cannot reopen the escape. The file-load path closes the same
+    numeric keyword cannot reopen the escape. This catch and the rendered budget
+    are complementary, not redundant: the budget refuses the *aliased* integer
+    whose aggregate render is large, and this catch handles the *single* integer
+    whose lone render raises. The file-load path closes the same single-value
     face: a YAML integer literal past CPython's limit is now translated to the
     same bounded "reduce it" wording instead of forwarding CPython's message,
     which named `sys.set_int_max_str_digits()` — an interpreter tuning knob no
