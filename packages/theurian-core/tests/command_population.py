@@ -117,6 +117,24 @@ SCANNED_SURFACES: Final = (
         frozenset({".py"}),
         python_command_lines,
     ),
+    # tools/ for the same reason as examples/, one reader further along: a
+    # development tool's console output is an instruction somebody follows.
+    # `tools/corpus_drift.py` prints a remedy naming `theurian propose` into a CI
+    # job log and a step summary, and a maintainer runs what it says. Added when
+    # that file landed, on the report of
+    # `test_no_file_that_names_a_command_escapes_the_scan` -- which is the guard
+    # working: `tools/` held no `theurian <command>` before, so it was neither
+    # scanned nor exempted, and the first one to arrive was reported rather than
+    # absorbed. Scanned rather than added to UNREAD, because a dead command here
+    # misleads exactly the reader this module protects; the test trees are in
+    # UNREAD because they name dead commands *on purpose*, which is not true of
+    # anything under `tools/`.
+    Surface(
+        "python-tools",
+        REPO_ROOT / "tools",
+        frozenset({".py"}),
+        python_command_lines,
+    ),
     Surface("json", REPO_ROOT, frozenset({".json"}), json_command_lines),
     Surface("plain", REPO_ROOT, frozenset({".sh", ".yml", ".yaml"}), plain_command_lines),
 )
