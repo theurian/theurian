@@ -1092,22 +1092,29 @@ def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
 ) -> None:
     """The one landed reference the identity guard must *not* refuse.
 
-    Re-declaring one revision against its own body is how an in-place status
-    change is written -- the revision id does not move, ``append_revision`` is a
-    no-op, only ``status`` differs (the ``reject``/``inplace-draft`` faces,
-    ADR-0024 decision 5). It lands on the same body path (the path carries the
-    revision id), so it *is* a replacement -- but of a body its own revision
-    already reads, not a second one. The guard keys on the *pair* (identity,
-    other revision id) for exactly this: an equal revision id is skipped, so the
-    legitimate re-declare is allowed while every different-revision face above is
-    refused. Without the skip the guard would refuse this too, breaking a
-    supported flow; this pins that it does not.
+    Re-declaring one revision against its own body **on the same item** is how an
+    in-place status change is written -- the item and revision ids do not move,
+    ``append_revision`` is a no-op, only ``status`` differs (the
+    ``reject``/``inplace-draft`` faces, ADR-0024 decision 5). It lands on the same
+    body path (the path carries the revision id), so it *is* a replacement -- but
+    of a body its own revision already reads, not a second one. The guard keys on
+    the *quadruple* (identity, item id, revision id, bytes) for exactly this: an
+    equal item id, revision id and byte content are skipped, so the legitimate
+    re-declare is allowed while every different-item, different-revision and
+    different-byte face is refused. Without the skip the guard would refuse this
+    too, breaking a supported flow; this pins that it does not.
+
+    The re-declare is hand-authored because ``draft`` cannot produce it: a second
+    proposal for the existing item would require ``--expected-revision`` and then
+    mint a *fresh* revision id. So a proposal drafted for a throwaway item is
+    hand-edited to re-declare the first item's own item id, revision id and body
+    -- the committed shape ADR-0013 point 7 admits.
     """
     first = service.draft(_request())
     service.accept(first.proposal_id)
-    # A fresh migration id (so the "already in place" pre-check passes), but the
-    # first item's own revision id re-declared against its own byte-identical
-    # body -- what a hand-authored in-place status change looks like.
+    # A fresh migration id (so the "already in place" pre-check passes), then the
+    # first item's own item id, revision id and byte-identical body re-declared --
+    # what a hand-authored in-place status change looks like.
     second = service.draft(_request(item_id=ItemId("architecture.other")))
     text = second.migration_file.read_text(encoding="utf-8")
     text = text.replace(second.content_file, first.content_file)
@@ -1115,8 +1122,13 @@ def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
         f"revisionId: '{second.revision_id.value}'",
         f"revisionId: '{first.revision_id.value}'",
     )
+    # The item id is re-declared alongside the revision id: this is the *same
+    # item*, which is the whole of what makes the re-declare legitimate and the
+    # cross-item test below a refusal.
+    text = text.replace("architecture.other", "architecture.retry-policy")
     second.migration_file.write_text(text, encoding="utf-8")
     assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" not in text, "the item id re-declare failed"
     tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
     hand_authored = second.directory / tail
     hand_authored.parent.mkdir(parents=True, exist_ok=True)
@@ -1127,6 +1139,52 @@ def test_accept_allows_the_same_revision_re_declared_against_its_own_body(
     assert accepted.bodies[0].replaced, "the re-declare lands on the existing body"
     assert first.body_destination.read_text() == BODY, "the body is unchanged"
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
+
+
+def test_accept_refuses_a_cross_item_byte_identical_redeclare_of_a_landed_revision(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-one HIGH: an equal revision id and equal bytes under a *different* item.
+
+    The two-conjunct skip (equal revision id, equal bytes) let a byte-identical
+    body re-declared under a *different* item's id through: id and bytes both
+    match, so the skip fired and ``accept`` returned 0. ``migrate validate`` does
+    not check cross-item revision ownership, so it too passed -- and ``migrate
+    apply`` then refused the whole set at exit 4 ("a revision id belongs to one
+    item", INV-1/SEC-13) after the pull request had merged, the proposal already
+    consumed with no undo. Reproduced end to end by the orchestrator
+    (``repro_propose_high1``: accept 0 -> validate 0 -> apply 4).
+
+    The item conjunct moves that refusal to the accept door. This is the only
+    difference from
+    :func:`test_accept_allows_the_same_revision_re_declared_against_its_own_body`:
+    there the item id is re-declared to match, here it is left pointing at a
+    different item, and that alone flips accept from allowed to refused.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A different item, but the first's revision id and byte-identical body: the
+    # cross-item reuse the two-conjunct skip missed.
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    text = second.migration_file.read_text(encoding="utf-8")
+    text = text.replace(second.content_file, first.content_file)
+    text = text.replace(
+        f"revisionId: '{second.revision_id.value}'",
+        f"revisionId: '{first.revision_id.value}'",
+    )
+    second.migration_file.write_text(text, encoding="utf-8")
+    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
+    assert "architecture.other" in text, "the item id must stay a different item"
+    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(first.body_destination.read_bytes())
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
 def test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads(

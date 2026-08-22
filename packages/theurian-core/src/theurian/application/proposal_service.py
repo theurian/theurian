@@ -913,7 +913,7 @@ class ProposalService:
         are the bytes that were checked.
         """
         knowledge = self._paths.knowledge.resolve()
-        for content_file, revision_id in _upsert_bodies(document):
+        for content_file, revision_id, item_id in _upsert_bodies(document):
             destination = self._destination_of(content_file)
             tail = destination.relative_to(knowledge)
             source = directory / tail
@@ -930,6 +930,7 @@ class ProposalService:
                 data=data,
                 replaced=destination.exists(),
                 revision_id=revision_id,
+                item_id=item_id,
             )
 
     def _read_within_project(self, path: Path) -> bytes:
@@ -1005,13 +1006,15 @@ class ProposalService:
         refusing there breaks nothing legitimate -- the honest way to change a
         body is a new revision at a new path. The one landed reference that is
         *not* a break is this proposal's own revision re-declared **byte for
-        byte** against its own body (an in-place status change, ADR-0024
-        decision 5): the revision id does not move and, because a revision's
-        content is immutable, the bytes do not either, so nothing changes. Both
-        conjuncts are required. A re-declare that keeps the revision id but
-        supplies *different* bytes is a break -- it overwrites the immutable body
-        that id already froze -- so the skip is keyed on the triple (identity,
-        equal revision id, equal bytes), not on the id alone.
+        byte** against its own body **on the same item** (an in-place status
+        change, ADR-0024 decision 5): the item and revision ids do not move and,
+        because a revision's content is immutable, the bytes do not either, so
+        nothing changes. All three conjuncts are required. A re-declare that keeps
+        the revision id but supplies *different* bytes overwrites the immutable
+        body that id already froze; one that keeps the id and bytes but names a
+        *different* item is a cross-item revision reuse ``migrate apply`` refuses
+        -- so the skip is keyed on the quadruple (identity, equal item id, equal
+        revision id, equal bytes), not on the id alone.
         """
         replaced = [move for move in moves if move.replaced]
         if not replaced:
@@ -1057,22 +1060,33 @@ class ProposalService:
         ``content_identity`` and not a path string.
 
         The one landed reference that is *not* a break is this proposal's own
-        revision re-declared **byte for byte** against its own body -- an in-place
-        status change (ADR-0024 decision 5), which carries identical content
-        because a revision's content is immutable. The skip therefore has two
-        conjuncts, not one: the landed operation's revision id equals this move's,
-        *and* this move's bytes hash to what that operation reads. Keying on the
-        id alone let a hand-authored proposal reuse a landed revision id while
-        supplying *different* bytes, overwriting the pinned body that id already
-        froze and leaving the set at exit 4 with no undo -- the prior premise
-        "same revision id implies its own body implies byte-identical" made
-        byte-identity an assumed consequence, and making it a tested conjunct is
-        what closes the class. Requiring it refuses both destructive faces at
-        once: the pinned face (the overwrite breaks the pin) and the unpinned
-        face (immutable content silently mutated, which
-        ``refuse_duplicate_content_files`` then rejects). Everything else on the
-        same inode -- a different revision, or the same revision with different
-        bytes -- is a break.
+        revision re-declared **byte for byte** against its own body **on the same
+        item** -- an in-place status change (ADR-0024 decision 5), which carries
+        identical content because a revision's content is immutable. The skip
+        therefore has three conjuncts, not one: the landed operation's item id
+        equals this move's, its revision id equals this move's, *and* this move's
+        bytes hash to what that operation reads.
+
+        Each conjunct closes a demonstrated face. Keying on the id alone let a
+        hand-authored proposal reuse a landed revision id while supplying
+        *different* bytes, overwriting the pinned body that id already froze and
+        leaving the set at exit 4 with no undo. Adding byte-identity closed that
+        but not the *cross-item* face: a byte-identical body re-declared under a
+        *different* item's id matches on revision id and bytes, so the two-conjunct
+        skip fired and ``accept`` let it land -- ``migrate validate`` did not catch
+        it (it does not check cross-item revision ownership) and ``migrate apply``
+        then refused the whole set at exit 4 ("a revision id belongs to one item",
+        INV-1/SEC-13) after the pull request had merged, the proposal already
+        consumed. The item conjunct moves that refusal to the accept door. It does
+        not create the disclosure protection -- ``store.py``'s
+        ``_refuse_unless_it_is_the_same_revision`` refuses a cross-item revision-id
+        reuse before it reads content, so no rejected-item body is ever disclosed,
+        which is why this face is HIGH and not CRITICAL; the accept-side conjunct
+        only spares the operator a consumed proposal with no undo.
+
+        Everything else on the same inode -- a different revision, the same
+        revision with different bytes, or the same revision on a different item --
+        is a break.
         """
         incoming = ContentHash.of_bytes(move.data)
         for migration in landed:
@@ -1083,11 +1097,17 @@ class ProposalService:
                     continue
                 # A landed revision already reads the body this move would
                 # overwrite. That is a break unless it is this proposal's own
-                # revision re-declared byte-for-byte -- the sole in-place
-                # re-declare ADR-0024 decision 5 admits, and the only case in
-                # which overwriting the body changes nothing the set has pinned.
-                if operation.revision_id.value == move.revision_id and self._reads_identical_bytes(
-                    operation, incoming, move.destination
+                # revision re-declared byte-for-byte on the same item -- the sole
+                # in-place re-declare ADR-0024 decision 5 admits, and the only
+                # case in which overwriting the body changes nothing the set has
+                # pinned. The item conjunct is load-bearing: a byte-identical body
+                # re-declared under a *different* item's id matches on id and
+                # bytes but is a cross-item revision reuse, which `migrate apply`
+                # refuses (INV-1/SEC-13) after the pull request has merged.
+                if (
+                    operation.item_id.value == move.item_id
+                    and operation.revision_id.value == move.revision_id
+                    and self._reads_identical_bytes(operation, incoming, move.destination)
                 ):
                     continue
                 return True
@@ -1311,6 +1331,12 @@ class _BodyMove:
     #: the legitimate in-place re-declare (ADR-0024 decision 5), and only a
     #: *different* id would put two revisions on one file.
     revision_id: str | None
+    #: The ``itemId`` the proposal's own migration declares at this body, or
+    #: ``None`` when the operation names none. The in-place re-declare skip
+    #: requires it to equal the landed revision's item: a body re-declared under a
+    #: *different* item's id is a cross-item revision reuse, which ``migrate
+    #: apply`` refuses (INV-1/SEC-13) after the pull request has merged.
+    item_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1590,16 +1616,20 @@ def _evidence_failure_reason(error: BaseException | None) -> str:
     return "it is not a JSON object"
 
 
-def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | None]]:
-    """Each ``contentFile`` a migration names, paired with its ``revisionId``.
+def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | None, str | None]]:
+    """Each ``contentFile`` a migration names, with its ``revisionId`` and ``itemId``.
 
-    The revision id travels with the body because the replacement guard needs
-    both: whether the destination is already read by a landed revision, and
-    whether *this* proposal declares the same revision at it (the in-place
-    re-declare) or a different one (the case that puts two revisions on one file).
-    ``None`` when the operation names no revision -- a malformed hand-authored
-    migration -- which the guard reads as "cannot be the in-place case" and so
-    refuses conservatively.
+    Both identifiers travel with the body because the replacement guard needs all
+    three: whether the destination is already read by a landed revision, and
+    whether *this* proposal re-declares that revision **on the same item** (the
+    in-place re-declare, ADR-0024 decision 5) or claims it for a different one.
+    The item id is what separates the legitimate re-declare from a cross-item
+    reuse: a body re-declared under a *different* item's id passes an id-and-bytes
+    skip while ``migrate apply`` still refuses it (INV-1/SEC-13, a revision id
+    belongs to one item), so the skip carries the item conjunct too. ``None`` for
+    either when the operation names none -- a malformed hand-authored migration --
+    which the guard reads as "cannot be the in-place case" and so refuses
+    conservatively.
     """
     operations = document.get("operations")
     if not isinstance(operations, list):
@@ -1611,7 +1641,12 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
         if not (isinstance(content_file, str) and content_file):
             continue
         revision = operation.get("revisionId")
-        yield content_file, revision if isinstance(revision, str) else None
+        item = operation.get("itemId")
+        yield (
+            content_file,
+            revision if isinstance(revision, str) else None,
+            item if isinstance(item, str) else None,
+        )
 
 
 def _roll_back(created: Iterable[Path], restored: Iterable[tuple[Path, bytes]]) -> None:
