@@ -629,6 +629,18 @@ def _validate_document(
         # schema adding such a numeric keyword cannot reopen the escape. The
         # value is not echoed: being too large to process safely is itself the
         # diagnosis (SEC-7).
+        #
+        # Recorded residual (MEDIUM): the *wording* below assumes the cause is
+        # value size, which is true of every `ValueError`/`ArithmeticError`
+        # reachable through the bundled schema -- both faces above are size. No
+        # non-size one is reachable today (the schema carries no format checker or
+        # other keyword whose implementation raises a non-size `ValueError`). If a
+        # future schema keyword made one reachable, this message would misdiagnose
+        # it as "too large"; the by-type closure would still hold (no raw
+        # traceback), and the size-face wording is pinned by
+        # `test_validate_migration_document_translates_a_giant_integer_scalar` and
+        # `test_validate_document_translates_a_giant_integer_overflowing_a_numeric_keyword`
+        # so that divergence is visible.
         subject = f"{document_name} holds" if document_name else "This document holds"
         raise MigrationError(
             f"{subject} a value validate could not render or convert: it is too large "

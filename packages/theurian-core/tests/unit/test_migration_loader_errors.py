@@ -35,6 +35,7 @@ from typing import Any, override
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from theurian.cli.context import schema_root as real_schema_root
@@ -58,6 +59,8 @@ from theurian.infrastructure.filesystem.migration_loader import (
     _escape_role_of,
     _refuse_a_document_that_nests_too_deep,
     _schema_rejection,
+    _SchemaValidator,
+    _validate_document,
     _validator,
     load_migrations,
     validate_migration_document,
@@ -2780,6 +2783,53 @@ def test_validate_document_translates_a_giant_integer_overflowing_a_numeric_keyw
     assert "reduce it" in message, "the refusal carries a remedy"
     assert "0000" not in message, "the value itself is not echoed"
     assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_validate_document_translates_any_value_error_though_it_assumes_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MEDIUM (round one, recorded residual): `_validate_document`'s
+    ``except (ValueError, ArithmeticError)`` closes the CP-2 escape *by type* --
+    any such error while `validate` processes the document becomes a
+    `MigrationError`, not a raw traceback. Its message, though, assumes the cause
+    is value *size* ("too large ... reduce it"), which is true of every
+    `ValueError`/`ArithmeticError` reachable through the bundled schema: the render
+    face (int->str limit) and the latent overflow face (a float ``multipleOf``),
+    both size. No non-size one is reachable today.
+
+    This drives a *synthetic* non-size `ValueError` -- injected by replacing
+    `Draft202012Validator.validate` (its per-instance ``validate`` is a read-only
+    slot), since the bundled schema cannot raise one -- to pin the by-type closure
+    (the file is named, nothing escapes as a traceback) and to record the
+    residual: the wording still says "too large". If a future schema keyword makes
+    a non-size `ValueError` reachable, this is where the misdiagnosis surfaces. A
+    fresh validator over a copied schema so nothing else observes the patched
+    ``validate`` through the `lru_cache`d validator other tests share.
+    """
+    schema_dir = _copy_real_schema(tmp_path)
+    _validator.cache_clear()
+
+    def _raise_non_size(_self: object, _instance: object) -> None:
+        raise ValueError("a synthetic fault unrelated to value size")
+
+    monkeypatch.setattr(Draft202012Validator, "validate", _raise_non_size)
+    try:
+        schema_validator = _SchemaValidator(
+            _validator(schema_dir), schema_dir / "migrations" / "migration.schema.json"
+        )
+        with pytest.raises(MigrationError) as excinfo:
+            _validate_document(
+                schema_validator, {"apiVersion": "x"}, document_name="synthetic.yaml"
+            )
+    finally:
+        _validator.cache_clear()
+
+    message = str(excinfo.value)
+    assert "synthetic.yaml" in message, (
+        "the by-type catch closes the CP-2 escape and names the file"
+    )
+    assert "a synthetic fault unrelated to value size" not in message, "the raw cause is not echoed"
+    assert "too large" in message, "recorded residual: the wording assumes a size cause"
 
 
 def test_load_migrations_translates_a_giant_integer_literal(project: Path) -> None:
