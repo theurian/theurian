@@ -603,6 +603,51 @@ def test_accept_refuses_to_land_a_migration_on_an_existing_name(
     assert not drafted.body_destination.exists()
 
 
+def test_accept_refuses_a_migration_id_the_loaded_set_holds_under_another_name(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """Round-one HIGH (CLASS-D): the "already in place" refusal keyed on the filename.
+
+    ``_refuse_if_migration_present`` checked only ``destination.exists()``, and the
+    destination name is ``<id>-<slug>.yaml``. The loader keys migrations by their
+    *inner* ``id`` (``MigrationSet._by_id``), so a hand-authored proposal named
+    ``<landed-id>-other-slug.yaml`` carrying ``id: <landed-id>`` collided on the
+    inner id while its filename was free: the name check waved it through,
+    ``_require_filename_matches_id`` was satisfied (prefix equals id), and
+    ``accept`` landed a *duplicate* migration id. ``migrate
+    validate``/``status``/``apply`` then all exit 4 on "duplicate migration id"
+    (reproduced end to end, ``p15_duplicate_migration_id``).
+
+    This is the third accept-path detector to be moved off a filesystem heuristic
+    and onto the loaded set (#234/#253/#254 did the sibling two). The fix keeps
+    the filename check for the on-disk-name-collision case and adds an id check
+    against the same ``MigrationSet`` the loader reads.
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    # A genuinely different change, then its migration id rewritten to the landed
+    # one and its file renamed to a different slug -- the committed shape that
+    # collides on the inner id while its destination name stays free.
+    second = service.draft(
+        _request(item_id=ItemId("architecture.other"), body="# Other\n\nFive.\n")
+    )
+    text = second.migration_file.read_text(encoding="utf-8").replace(
+        second.migration_id.value, first.migration_id.value
+    )
+    renamed = second.directory / f"{first.migration_id.value}-other-slug.yaml"
+    renamed.write_text(text, encoding="utf-8")
+    second.migration_file.unlink()
+
+    with pytest.raises(ChangeAlreadyInPlaceError, match="duplicate migration id"):
+        service.accept(second.proposal_id)
+
+    # Nothing landed: the migrations directory still holds only the first, and the
+    # loaded set is still the single valid migration `migrate validate` would read.
+    landed_names = sorted(p.name for p in paths.migrations.glob("*.yaml"))
+    assert landed_names == [first.migration_file.name], landed_names
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
 def test_accept_moves_the_body_out_of_the_proposal_directory(
     service: ProposalService,
 ) -> None:
@@ -637,7 +682,9 @@ def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
     drafted = service.draft(_request())
     landed = paths.migrations / drafted.migration_file.name
 
-    def _no_precheck(_self: ProposalService, _destination: Path) -> None:
+    def _no_precheck(
+        _self: ProposalService, _destination: Path, _document: Mapping[str, object]
+    ) -> None:
         return None
 
     monkeypatch.setattr(ProposalService, "_refuse_if_migration_present", _no_precheck)

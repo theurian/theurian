@@ -525,9 +525,11 @@ class ProposalService:
             migration_bytes = self._read_within_project(migration_file)
             document = _parse_migration(migration_bytes, migration_file)
             destination = self._paths.migrations / migration_file.name
-            # "Already in place" is the harder stop and is reported first; the
-            # filename/id agreement is checked next, on a name nothing holds.
-            self._refuse_if_migration_present(destination)
+            # "Already in place" is the harder stop and is reported first -- both
+            # by the destination *name* and by the migration *id* the loaded set
+            # already holds; the filename/id agreement is checked next, on a name
+            # nothing holds.
+            self._refuse_if_migration_present(destination, document)
             _require_filename_matches_id(migration_file, document)
 
             moves = tuple(self._body_moves(directory, document))
@@ -917,17 +919,25 @@ class ProposalService:
         loader twice: a symlinked landed migration read as absent (round five), and
         a landed migration renamed off its ULID prefix read as absent (round six),
         each an exit-1 "nothing landed" over a change on disk, each a duplicate-mint
-        (#89). **The class is closed on both its members.**
-        :meth:`_destination_backs_a_landed_revision` was the other one that
+        (#89).
+
+        **The class is the accept-path procedures that judge whether a migration
+        is landed, and all three now consult the loaded set.**
+        :meth:`_destination_backs_a_landed_revision` was the second: it
         re-detected landed migrations from the filesystem (a ``glob("*.yaml")``
-        with a symlink skip), and it reproduced round five's disagreement on the
+        with a symlink skip), and reproduced round five's disagreement on the
         replacement guard rather than on this diagnosis: a landed migration behind
         a symlink held a body the guard could not see, so a replacement was
         allowed and the set stopped loading (#234). It reads the same loaded set
         through :data:`LandedMigrations` as of that fix, and keys the comparison
         on the loader's ``content_identity`` -- ``(st_dev, st_ino)`` -- so no
         spelling of a body path, case or NFC/NFD included, can make the guard and
-        the loader disagree about which file a revision reads (#210, #227). No
+        the loader disagree about which file a revision reads (#210, #227).
+        :meth:`_refuse_if_migration_present` was the third and last: it keyed the
+        "already in place" refusal on the destination *filename* alone, so a
+        same-id different-slug proposal collided on the loader's inner id while
+        its name was free and landed a duplicate migration id (p15). It consults
+        the loaded set through :data:`LandedMigrationLookup` as of this fix. No
         method on the accept path enumerates ``.theurian/migrations/`` any more.
 
         ``None`` when nothing is filed under the id. Otherwise a
@@ -948,7 +958,37 @@ class ProposalService:
         claimed = _evidence_item_ids(evidence)
         return _LandedMigration(name=name, confirmed=bool(claimed & _migration_item_ids(migration)))
 
-    def _refuse_if_migration_present(self, destination: Path) -> None:
+    def _refuse_if_migration_present(
+        self, destination: Path, document: Mapping[str, object]
+    ) -> None:
+        """Refuse a migration whose name *or* id the project already holds.
+
+        **Closure (the class this closes).** The migration set keys by *inner*
+        ``id`` (``MigrationSet._by_id``), so "already in place" has two faces and
+        a filename check sees only one:
+
+        * The **name** is taken: ``<id>-<slug>.yaml`` already exists in
+          ``.theurian/migrations/`` (or is a symlink there). The name carries the
+          id, so that very migration is in place under this name.
+        * The **id** is landed under a *different* name: a hand-authored proposal
+          named ``<id>-other-slug.yaml`` carrying ``id: <id>`` collides on the
+          inner id while the destination name is free, so the filename check waved
+          it through and ``accept`` landed a duplicate id -- ``migrate
+          validate``/``status``/``apply`` then all exit 4 on "duplicate migration
+          id" (reproduced end to end, p15).
+
+        The id face is answered against the *loaded* ``MigrationSet`` through
+        :data:`LandedMigrationLookup` -- the same set the loader,
+        ``migrate validate`` and ``migrate apply`` read, keyed the same way -- so
+        this cannot disagree with them about which ids are landed. This is the
+        third and last accept-path procedure to be moved off a filesystem
+        heuristic and onto the loaded set (#234/#253/#254 converted the sibling
+        two, :meth:`_landed_state` and :meth:`_destination_backs_a_landed_revision`);
+        the population is the accept-path procedures that judge whether a migration
+        is landed, and all three now consult the loaded set. A malformed or absent
+        inner ``id`` yields no lookup and falls to the name check plus
+        :func:`_require_filename_matches_id`, which run either side of this.
+        """
         if destination.exists() or destination.is_symlink():
             raise MigrationNameTakenError(
                 f"{destination.name} is already in .theurian/migrations/. The name "
@@ -957,6 +997,24 @@ class ProposalService:
                     "Read the migration that is already there. If this proposal is a "
                     "different change, draft it again to mint a new migration id; if it "
                     "is the same one, delete the proposal directory."
+                ),
+            )
+        migration_id = _migration_id_or_none(document.get("id"))
+        if migration_id is None:
+            return
+        landed = self._landed_migration(migration_id)
+        if landed is not None:
+            landed_name = (
+                Path(landed.source_path).name if landed.source_path else migration_id.value
+            )
+            raise MigrationNameTakenError(
+                f"A migration with id {migration_id.value} is already in .theurian/migrations/ "
+                f"as {_names([landed_name])}; that id is already in place, so accepting this "
+                "would land a duplicate migration id the whole set then fails to validate on.",
+                remedy=(
+                    "Read the migration already filed under that id. If this proposal is a "
+                    "different change, draft it again to mint a new migration id; if it is the "
+                    "same one, delete the proposal directory."
                 ),
             )
 
