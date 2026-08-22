@@ -781,6 +781,43 @@ def test_accept_publishes_a_json_document_for_a_surrogate_in_the_content_file(
     assert payload["remedy"].strip()
 
 
+def test_accept_writes_its_json_failure_document_to_stderr_leaving_stdout_clean(
+    project: Path,
+) -> None:
+    """CP-2 / ADR-0013: a ``--json`` accept failure is an ``{error, remedy}``
+    document on *stderr*, and stdout stays a clean machine channel.
+
+    ``_fail`` writes the failure document to stderr while ``_emit`` writes the
+    success payload to stdout (``cli/commands.py``), so a caller can read stdout
+    for a result and stderr for a fault without the two colliding. The ADR-cited
+    accept-failure tests read a *concatenation* of both streams
+    (:func:`_accept_catching` returns ``stdout + stderr``), so none of them would
+    notice the document drifting onto stdout -- a regression that would let a
+    caller parsing stdout read an error as a success payload, or miss the remedy
+    where the contract puts it. This is the one accept-path test that pins the
+    split the others assume.
+
+    The failing input is a NUL in ``contentFile`` (adversarial e14): deterministic
+    and mode-independent, so this needs no root skip. Measured here: on this
+    failure stdout is exactly empty and stderr carries the whole document.
+    """
+    _, drafted = _draft(project)
+    _poison_content_file(project, drafted, '"../knowledge/architecture/a\\0b.md"')
+
+    result = runner.invoke(
+        app, ["propose", "accept", drafted["proposalId"], "--json"], catch_exceptions=True
+    )
+
+    assert result.exit_code != 0, "a poisoned contentFile is not an acceptance"
+    # stdout is the machine result channel; a failure must leave it empty, not
+    # print the error document there where a success parser would consume it.
+    assert result.stdout == "", f"stdout must stay a clean channel on a failure: {result.stdout!r}"
+    # The whole document is on stderr, parseable as one object -- error and remedy.
+    payload = json.loads(result.stderr)
+    assert payload["error"].strip()
+    assert payload["remedy"].strip()
+
+
 # -- governed metadata (#249) ----------------------------------------------
 #
 # `propose` could express no migration-governed metadata beyond the label
