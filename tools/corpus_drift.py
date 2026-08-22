@@ -56,15 +56,29 @@ subject.** Every tracked `*.yaml` directly under that directory is read.
 declares no `contentSha256` -- a shape the published schema allows -- the body
 its own `contentFile` names is hashed instead, so that deleting the pin line
 does not quietly turn that revision's check off (:func:`_expected_digest`).
-`contentFile` is resolved against the migration and required to land inside
-`.theurian/`, so this reads exactly one file per such revision and never leaves
-the corpus. Every anchor in the corpus today is pinned, so this path is
+`contentFile` is joined onto the migration's own directory and the result is
+required to start with `.theurian/`, so this reads exactly one file per such
+revision.
+
+**That constraint binds the unresolved path; the read that follows it does
+not.** :func:`_inside` is path arithmetic and deliberately makes no filesystem
+call, so it settles where the *written* path lands and says nothing about where
+the final component points: a committed symlink under `.theurian/` clears the
+prefix check and is then followed by ``read_bytes()``, putting an out-of-tree
+file's digest prefix into the report (measured 2026-08-22). The docs-side read
+in :func:`_compare_one` is the same shape. Planting either takes commit access
+to this repository and what surfaces is 12 hex characters, so the hardening --
+resolve-and-compare, as `security/paths.py` already does in the product -- is
+filed as #318 rather than taken here.
+
+Every anchor in the corpus today is pinned, so the conditional read is
 currently exercised only by the suite -- and it is still declared here, because
 a declaration that describes the corpus rather than the code stops being true
 the moment somebody commits an unpinned revision.
 
-**`evidence.json` is never read here**, nor is anything else under
-`.theurian/`. Those belong to the governance test.
+**Beyond those migrations and the conditional pinned body, nothing under
+`.theurian/` is read here -- `evidence.json` included.** Those belong to the
+governance test.
 
 **On the `docs/` side there is no walk at all.** This tool opens exactly the
 files the anchors name, one per anchor, and never enumerates `docs/`. A document
@@ -388,6 +402,11 @@ def _inside(base: PurePosixPath, reference: str) -> str | None:
     absolute in the first place -- ``PurePosixPath.__truediv__`` *discards* the
     left side when the right is absolute, so ``/etc/passwd`` would otherwise
     resolve and then be read.
+
+    The other half of that trade is what this does **not** give a caller: the
+    path it returns is contained as *written*, and every caller here goes on to
+    ``read_bytes()`` it, which follows symlinks. Containment of the bytes that
+    are actually hashed needs resolve-and-compare, which is #318.
     """
     joined = base / reference
     if joined.is_absolute():
