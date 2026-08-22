@@ -13,7 +13,7 @@ import reprlib
 import stat
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from itertools import chain
 from pathlib import Path, PurePosixPath
@@ -385,19 +385,28 @@ def _rendered_width(value: object) -> int:
 
     * ``str``/``bytes`` report their own ``len`` -- a lower bound on the
       quoted-and-escaped render `jsonschema` actually emits.
-    * An ``int`` reports its decimal digit count, estimated from ``bit_length``.
-      Never ``str(value)``: stringifying a giant integer is quadratic and, past
-      CPython's int->str limit, *raises* -- the very cost this bound exists to
-      refuse. The estimate rounds ``log10(2)`` up, so it never under-charges.
-    * ``bool``/``float``/``None`` render to a small, bounded width, charged by
-      their actual ``repr`` length -- cheap, since none of them is unbounded.
-      ``bool`` is matched before ``int`` (of which it is a subclass) only so its
-      one-bit ``bit_length`` does not under-report ``"True"``/``"False"``.
+    * An ``int`` reports its decimal digit count, estimated from ``bit_length``,
+      plus one for a negative value's sign character. Never ``str(value)``:
+      stringifying a giant integer is quadratic and, past CPython's int->str
+      limit, *raises* -- the very cost this bound exists to refuse. The estimate
+      rounds ``log10(2)`` up, so it never under-charges.
+    * ``bool``/``float``/``None`` and ``datetime``/``date`` render to a small,
+      bounded width, charged by their actual ``repr`` length -- cheap, since none
+      of them is unbounded. ``bool`` is matched before ``int`` (of which it is a
+      subclass) only so its one-bit ``bit_length`` does not under-report
+      ``"True"``/``"False"``. ``datetime`` and ``date`` are parsed leaves too:
+      ``_StrictLoader`` drops the implicit timestamp *resolver* but keeps the
+      ``!!timestamp`` *constructor*, so an explicit ``!!timestamp`` tag in a file
+      yields a ``datetime.datetime`` (or a ``datetime.date`` for a date-only
+      value); charging its ``repr`` keeps that leaf under the aliased-scalar bound
+      the same way the other bounded-render scalars are. ``date`` is matched
+      before the ``None`` test and covers ``datetime``, its subclass.
     * A container contributes nothing here: its structural characters are O(1) per
       node, already bounded by :data:`MAX_DOCUMENT_NODES`, and its own leaves are
-      charged as the walk reaches them. A parsed document holds only the scalar
-      types above; an arbitrary in-memory object (never a parsed leaf) is charged
-      nothing rather than having a possibly hostile ``repr`` invoked here.
+      charged as the walk reaches them. Every scalar a parsed document can hold is
+      one of the leaf types above, so the ``return 0`` fall-through is reached only
+      by an arbitrary in-memory object the loader never produces -- charged nothing
+      rather than having a possibly hostile ``repr`` invoked here.
     """
     if isinstance(value, str | bytes):
         return len(value)
@@ -406,9 +415,11 @@ def _rendered_width(value: object) -> int:
     if isinstance(value, int):
         # digits <= floor(bit_length * log10(2)) + 1; 30103/100000 rounds
         # log10(2) up, so this never under-counts, and integer arithmetic keeps a
-        # float rounding out of a budget threshold.
-        return (value.bit_length() * 30103) // 100_000 + 1
-    if isinstance(value, float) or value is None:
+        # float rounding out of a budget threshold. A negative value adds one for
+        # the sign character `repr` prepends, so the estimate stays an upper bound.
+        digits = (value.bit_length() * 30103) // 100_000 + 1
+        return digits + 1 if value < 0 else digits
+    if isinstance(value, float | date) or value is None:
         return len(repr(value))
     return 0
 
@@ -477,11 +488,15 @@ def _refuse_a_document_that_nests_too_deep(
     and the ``set``/``frozenset``/``tuple`` and non-string-key branches are
     reachable from a file, not merely from an in-memory caller. ``load_yaml``'s
     ``_StrictLoader`` is a ``SafeLoader`` subclass with only its timestamp
-    resolver dropped, so ``!!set`` in a migration file produces a Python ``set``
-    (an ``!!set`` of 200,000 elements is refused *only because the set is
-    walked*), and a non-string scalar key -- ``1234: v``, ``true: v``, ``~: v``,
-    ``1.5: v`` -- produces an ``int``/``bool``/``None``/``float`` key that the
-    node count charges *only because keys are walked*. The ``propose`` seam
+    *resolver* dropped -- the ``!!timestamp`` *constructor* is kept -- so ``!!set``
+    in a migration file produces a Python ``set`` (an ``!!set`` of 200,000 elements
+    is refused *only because the set is walked*), and a non-string scalar key --
+    ``1234: v``, ``true: v``, ``~: v``, ``1.5: v``, ``? !!timestamp 2020-01-01`` --
+    produces an ``int``/``bool``/``None``/``float``/``date`` key that the node count
+    charges *only because keys are walked* and :func:`_rendered_width` charges
+    *only because it recognises that leaf type* (the implicit ``2020-01-01: v`` is
+    a ``str`` key, the dropped resolver's doing; the explicit ``!!timestamp`` tag
+    is what yields a ``date``). The ``propose`` seam
     (`_migration_document`, ``application/proposal_service.py``) does build
     ``dict[str, object]`` with string keys and list/scalar values, but the file
     seam is wider than that.

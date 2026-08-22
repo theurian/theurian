@@ -3289,6 +3289,111 @@ def test_an_aliased_integer_bomb_is_refused_before_jsonschema_can_expand_it() ->
     assert len(message) < 2000, "the refusal itself must be bounded"
 
 
+def _aliased_timestamp_bomb(slots: int) -> str:
+    """The aliased-large-*timestamp* DAG, as a YAML migration document.
+
+    One ``!!timestamp`` value is anchored on the first slot of a single operation
+    and aliased into ``slots`` further slots. ``_StrictLoader`` drops the implicit
+    timestamp *resolver* but keeps the ``!!timestamp`` *constructor*, so an explicit
+    tag yields a ``datetime.datetime`` -- a leaf whose ``repr`` runs ~109 characters
+    (``datetime.datetime(2026, 7, 15, 10, 0, 0, 123456, tzinfo=...)``). Its node
+    count is O(``slots``) -- far under `MAX_DOCUMENT_NODES` -- but jsonschema's
+    ``{instance!r}`` re-emits that ~109-character ``repr`` once per slot: a
+    ``~109 * slots``-character transient. This is the third leaf type of the
+    few-nodes / huge-aggregate shape, the one the round-two rendered budget still
+    charged nothing for because a ``datetime``/``date`` is not
+    ``str``/``bytes``/``int``/``bool``/``float``/``None``.
+    """
+    lines = [
+        "apiVersion: theurian.dev/v1",
+        "id: 01K1KKKKKK01234567890ABCDE",
+        "createdAt: '2026-08-02T10:00:00+09:00'",
+        "author: engineer@example.com",
+        "operations:",
+        "  - op: createItem",
+        "    itemId: a.b",
+        "    kind: architecture",
+        "    namespace: n",
+        "    owner: o",
+        "    x0: &big !!timestamp 2026-07-15T10:00:00.123456+09:00",
+    ]
+    lines += [f"    x{i}: *big" for i in range(1, slots)]
+    return "\n".join(lines) + "\n"
+
+
+def test_an_aliased_timestamp_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """MEDIUM (round three): the rendered budget charged every leaf *except*
+    ``datetime``/``date``. ``_StrictLoader`` keeps the ``!!timestamp`` constructor,
+    so an explicit tag yields a ``datetime`` -- not one of the scalar types
+    `_rendered_width` recognised, so it was charged 0 and an aliased timestamp
+    sailed through the rendered budget, bounded only by `MAX_DOCUMENT_NODES`
+    (~10.9 MB worst case at the node ceiling: bounded, hence MEDIUM). The fix
+    charges a ``datetime``/``date`` by its ``repr`` width, the same O(1) treatment
+    ``float``/``None`` already got.
+
+    RED before the fix: with the timestamp charged 0, a document of 10,000 aliased
+    slots holds ~20,000 nodes (under `MAX_DOCUMENT_NODES`) and ~50,000 charged
+    key-string characters (under `MAX_DOCUMENT_RENDERED_CHARS`), so the shipped
+    guard raises *nothing* and the document reaches `validate`, where jsonschema
+    re-expands the shared ``datetime`` once per slot into a ~1.09 MB message. The
+    first ``pytest.raises`` fails outright against the unfixed tip -- confirmed by
+    stashing the source fix and running this test RED.
+
+    ``10,000 slots * ~109 repr chars`` = ~1.09 M rendered characters, past
+    `MAX_DOCUMENT_RENDERED_CHARS`, while the node count stays ~20,000. The refusal
+    that reaches the caller must be the character ceiling's, not the node ceiling's
+    and not a schema rejection, proving the timestamp was charged and the document
+    stopped *before* `validate`.
+    """
+    document = load_yaml_mapping(_aliased_timestamp_bomb(10_000))
+
+    with pytest.raises(MigrationError) as guard_excinfo:
+        _refuse_a_document_that_nests_too_deep(document, None)
+    guard_message = str(guard_excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in guard_message
+        and "characters of string content" in guard_message
+    ), "the timestamp must be charged, so the rendered ceiling -- not the node ceiling -- fires"
+    # "values" is the node-ceiling message's own word; its absence proves the
+    # ~20,000-node document tripped the rendered budget, not the node ceiling.
+    # (A substring test on the node count is unsafe: "100000" is inside "1000000".)
+    assert "values" not in guard_message, (
+        "~20,000 nodes are under the node ceiling; the refusal is the rendered budget's"
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+    message = str(excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in message and "characters of string content" in message
+    ), "the refusal must be the character ceiling's, i.e. raised before `validate`"
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def test_the_rendered_budget_passes_a_migration_with_an_ordinary_timestamp() -> None:
+    """The counterweight to the timestamp-alias refusal: charging a ``datetime``/
+    ``date`` leaf must not refuse a migration that carries a single ordinary one. A
+    lone ``!!timestamp`` renders to ~109 characters, and a plain ISO date *string*
+    (the resolver being dropped, an untagged ``2026-07-15`` stays a ``str``) to
+    ten -- both nowhere near `MAX_DOCUMENT_RENDERED_CHARS`, so the guard must not
+    raise for either.
+    """
+    tagged = load_yaml_mapping(
+        "operations:\n  - op: createItem\n    at: !!timestamp 2026-07-15T10:00:00+09:00\n"
+    )
+    assert type(tagged["operations"][0]["at"]).__name__ == "datetime", (
+        "an explicit !!timestamp tag yields a datetime -- the constructor is kept"
+    )
+    _refuse_a_document_that_nests_too_deep(tagged, None)  # must not raise
+
+    untagged = load_yaml_mapping("operations:\n  - op: createItem\n    at: '2026-07-15'\n")
+    assert type(untagged["operations"][0]["at"]).__name__ == "str", (
+        "an untagged ISO date stays a string -- the implicit resolver is dropped"
+    )
+    _refuse_a_document_that_nests_too_deep(untagged, None)  # must not raise
+
+
 def test_the_rendered_budget_passes_a_migration_of_ordinary_integers() -> None:
     """The counterweight to the integer-alias refusal: charging every leaf must not
     refuse a legitimate migration whose numbers are small -- a ``lineStart``, a
