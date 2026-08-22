@@ -7,6 +7,7 @@ it directly, so a defect is located in the packaging rather than in Typer.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _PERMISSION_ERRNOS,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalAlreadyAcceptedError,
@@ -1534,6 +1536,49 @@ def test_the_unreadable_remedy_does_not_prescribe_chmod_for_a_non_permission_fau
     assert "contentFile" in remedy, remedy
     # The absolute path still must not leak (the discipline `_project_relative` keeps).
     assert str(paths.root) not in f"{caught.value} {remedy}", "the absolute path must not leak"
+
+
+def test_an_eperm_read_failure_earns_the_permission_remedy_like_eacces(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """EPERM routes to the ``chmod`` remedy, exactly as EACCES does (#227).
+
+    The accept-path read-failure remedy branches on ``_PERMISSION_ERRNOS``: a
+    permission errno earns a ``chmod`` cure, and every other errno earns the
+    neutral "no permission change cures that" text (:meth:`_read_failure_remedy`).
+    A read can be refused with ``EPERM`` as well as ``EACCES`` -- a mandatory
+    lock, a MAC policy, or an immutable/append-only flag all surface as ``EPERM``
+    -- so both belong in the set and both must reach the permission remedy.
+    Nothing induced ``EPERM`` end to end (a ``chmod`` fixture yields ``EACCES``),
+    so dropping it from the set sent a genuine permission failure to the
+    unactionable remedy and the drop survived the whole suite (adversarial round
+    two, mutation ``eperm-out``). This pins the routing at the errno, not at a
+    ``chmod`` that happens to reproduce EACCES.
+
+    A unit test of the routing: it constructs the ``OSError`` objects directly, so
+    it does not depend on a mode actually refusing a read and needs no root skip.
+    """
+    readable = paths.root / "child.md"
+    readable.write_text("body\n", encoding="utf-8")
+    filename = str(readable)
+
+    assert errno.EPERM in _PERMISSION_ERRNOS
+
+    eperm = OSError(errno.EPERM, os.strerror(errno.EPERM), filename)
+    eacces = OSError(errno.EACCES, os.strerror(errno.EACCES), filename)
+    eisdir = OSError(errno.EISDIR, os.strerror(errno.EISDIR), filename)
+
+    eperm_remedy = service._read_failure_remedy(eperm, "child.md")
+
+    # EPERM earns the permission remedy -- the same one EACCES earns -- not the
+    # neutral "no permission change cures that" text a non-permission errno gets.
+    assert any(word in eperm_remedy.lower() for word in _PERMISSION_REMEDY_WORDS), eperm_remedy
+    assert eperm_remedy == service._read_failure_remedy(eacces, "child.md"), (
+        "EPERM and EACCES are both permission failures and must route to one remedy"
+    )
+    assert "chmod" not in service._read_failure_remedy(eisdir, "child.md").lower(), (
+        "the routing is by errno: a non-permission fault earns no chmod"
+    )
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
