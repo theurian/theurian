@@ -12,6 +12,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`InputTooLargeError` now carries its own remedy** telling the user which
+  input exceeded a size limit and to shrink or split it before retrying,
+  instead of falling through to the generic "run this inside an initialised
+  Theurian project" diagnosis `resolve_context` gives every error with no
+  remedy of its own ([#287](https://github.com/theurian/theurian/issues/287)).
+
 ## [0.1.0.dev9] - 2026-08-22
 
 ### Fixed
