@@ -408,6 +408,46 @@ def test_status_reports_an_unbuilt_state(project: Path) -> None:
     assert status["indexStale"]
 
 
+# -- issue #287: InputTooLargeError never set its own remedy ----------------
+
+
+def test_an_oversized_content_file_is_diagnosed_by_its_own_remedy(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #287: ``InputTooLargeError`` never set ``.remedy`` (``domain/errors.py``),
+    so ``_context_remedy`` (``cli/commands.py``) found nothing to prefer and fell
+    through to ``_require_project``'s generic default -- "Run this inside an
+    initialised Theurian project." -- printed to a user who was already inside
+    one, whose actual problem was a ``contentFile`` too large to read.
+
+    ``InputTooLargeError`` is a ``SecurityError``, not a ``MigrationError`` or a
+    ``PathEscapeError``, so it skips both of ``_require_project``'s type-keyed
+    branches (commands.py:1890, :1909) and lands in the generic
+    ``except TheurianError`` clause (commands.py:1912) instead. This exercises
+    that through the real CLI on the real load path every ``_require_project``
+    caller shares -- reading a migration's ``contentFile`` via
+    ``read_source_file`` -- rather than calling ``_context_remedy`` directly:
+    what matters is the diagnosis the command actually prints, and a synthetic
+    call could pass while the real wiring between the loader and the CLI stayed
+    broken.
+    """
+    _invoke("init")
+    monkeypatch.setattr("theurian.security.paths.MAX_SOURCE_FILE_BYTES", 16)
+    _write_migration(project, body="x" * 64)
+
+    code, payload = _invoke("migrate", "validate")
+
+    assert code == 1
+    assert payload["remedy"] != "Run this inside an initialised Theurian project.", (
+        "the diagnosis must name the actual problem -- an oversized input -- "
+        "not the generic project-resolution fallback"
+    )
+    assert "too large" in payload["remedy"]
+    assert "shrink" in payload["remedy"] or "split" in payload["remedy"], (
+        "the remedy must tell the user how to fix it, not only that it failed"
+    )
+
+
 def test_status_outside_a_repository_reports_unregistered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

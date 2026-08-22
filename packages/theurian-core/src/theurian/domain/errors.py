@@ -806,12 +806,22 @@ class PathDepthExceededError(PathEscapeError):
 
 
 class InputTooLargeError(SecurityError):
-    """Input exceeded a configured parser limit (SEC-8)."""
+    """Input exceeded a configured parser limit (SEC-8).
+
+    ``limit_name`` names the measured quantity, not its unit -- raise sites mix
+    bytes ("source file size") and characters ("projected text size"), so the
+    remedy below cannot name a unit either and speaks only in the caller's own
+    ``limit``/``observed`` numbers.
+    """
 
     def __init__(self, limit_name: str, limit: int, observed: int) -> None:
         self.limit_name = limit_name
         self.limit = limit
         self.observed = observed
+        self.remedy = (
+            f"{limit_name} is too large: {observed} exceeds the limit of {limit}. "
+            f"Reduce it -- shrink or split it into smaller pieces -- then retry."
+        )
         super().__init__(f"{limit_name} exceeded: limit {limit}, observed {observed}")
 
 
