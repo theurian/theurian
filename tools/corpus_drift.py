@@ -476,9 +476,19 @@ def _compare(repo_root: Path, migration: str, operation: Mapping[str, Any]) -> l
     if not anchors:
         return [unchecked("", "declares no sourceAnchors, so it names no document to compare")]
 
-    refused = [(anchor, refusal) for anchor in anchors if (refusal := anchor_refusal(anchor))]
-    comparable = [anchor for anchor in anchors if anchor_refusal(anchor) is None]
-    results = [unchecked(_named_path(anchor), refusal) for anchor, refusal in refused]
+    # Judged once per anchor, and both sides of the split test `is None`. A
+    # refused side filtered on truthiness would drop an anchor whose refusal is
+    # an empty string out of *both* lists at once -- unreachable today, because
+    # every branch of `anchor_refusal` returns a written sentence, but the cost
+    # of it becoming reachable is an anchor that is neither compared nor
+    # reported, which is the one outcome this checker promises never to
+    # produce. Evaluating once also stops a future `anchor_refusal` that is not
+    # a pure function from answering the two questions differently.
+    judged = [(anchor, anchor_refusal(anchor)) for anchor in anchors]
+    comparable = [anchor for anchor, refusal in judged if refusal is None]
+    results = [
+        unchecked(_named_path(anchor), refusal) for anchor, refusal in judged if refusal is not None
+    ]
 
     if len(comparable) > 1:
         return results + [
