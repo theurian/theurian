@@ -222,7 +222,15 @@ Landed in Milestone 7, by the `theurian propose` CL:
   `::test_a_symlinked_landed_migration_is_recognised_as_landed` pin that "in
   place" is read from the loaded `MigrationSet` (inner-id keyed), so `propose
   accept` cannot disagree with `migrate validate`/`apply` about what has landed.
-  The terminal-injection channel these messages could open is closed at the CLI's
+  `::test_accept_refuses_a_migration_id_the_loaded_set_holds_under_another_name`
+  extends that agreement to the accept-time "already in place" refusal: a
+  hand-authored proposal named `<landed-id>-other-slug.yaml` collided on the
+  loader's inner id while its destination filename was free, so `accept` landed a
+  duplicate id the whole set then failed to validate on. The id is now checked
+  against that same loaded `MigrationSet`, making this the third and last
+  accept-path procedure moved off a filesystem enumeration and onto the loaded set
+  (#234/#253/#254 converted the sibling two). The terminal-injection channel these
+  messages could open is closed at the CLI's
   output sink, tested in `test_propose_cli.py::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`.
 - Every accept-path filesystem or path fault is translated to a `ProposalError`,
   so `--json` always publishes an `{error, remedy}` document rather than escaping
@@ -240,11 +248,24 @@ Landed in Milestone 7, by the `theurian propose` CL:
   `::test_accept_publishes_a_json_document_when_the_migrations_dir_cannot_be_made`,
   `::test_accept_publishes_a_json_document_for_a_nul_in_the_content_file` and
   `::test_accept_publishes_a_json_document_for_a_surrogate_in_the_content_file`
-  assert the document reaches stdout.
+  assert the error document reaches stderr — the machine-readable `--json` error
+  stream a caller parses (the tests read `result.stderr or result.stdout`); a
+  success payload with its `remedy` is written to stdout instead.
   `::test_accept_reports_a_completed_move_whose_source_cleanup_could_not_finish`
   pins the one fault that must *not* fail: a landed move whose trailing cleanup
   could not run degrades to success with a leftover-note remedy, because exit 1
-  would send the caller to re-draft and mint a duplicate migration (#89).
+  would send the caller to re-draft and mint a duplicate migration (#89). The
+  remedy each read failure carries is chosen by `errno`, never a blanket `chmod` —
+  the over-claim [#233](https://github.com/theurian/theurian/issues/233) corrected
+  for `PathEscapeError`, reopened at this site.
+  `::test_the_unreadable_remedy_does_not_prescribe_chmod_for_a_non_permission_fault`
+  pins that an `EISDIR` (a `contentFile` naming a directory) earns a remedy naming
+  the input to correct and no `chmod`;
+  `::test_the_unreadable_remedy_names_the_directory_when_the_parent_is_unsearchable`
+  pins that a child's `EACCES` points `chmod u+x` at the unsearchable parent, not
+  `chmod u+rX` at the child the reader cannot yet name; and
+  `::test_the_unreadable_remedy_points_at_migrations_before_re_drafting` keeps
+  every branch pointing at `.theurian/migrations/` before any re-draft (#89).
 - The replacement guard reads the project's loaded `MigrationSet` and keys on the
   body's filesystem identity `(st_dev, st_ino)`, so it cannot disagree with the
   loader about which body a landed revision reads (#234). This is what keeps the
@@ -254,12 +275,19 @@ Landed in Milestone 7, by the `theurian propose` CL:
   `glob`-and-skip guard could not see, which let `accept` overwrite the body the
   set validates against — and
   `::test_accept_refuses_a_case_variant_of_a_landed_body` pins the inode key
-  against a case/NFC-NFD path variant that resolved to a different string on the
-  same file. The skip for the one legitimate replacement — this proposal's own
-  revision re-declared byte-for-byte, the in-place status change of ADR-0024
-  decision 5 — is a conjunction of equal revision id *and* equal bytes:
+  against a *case* variant (`/architecture/` against `/Architecture/`) that
+  resolved to a different string on the same file. The NFC/NFD face is closed by
+  the same `(st_dev, st_ino)` key in principle — `resolve()` folds neither case
+  nor Unicode normalisation — but no test exercises it. The skip for the one
+  legitimate replacement — this proposal's own revision re-declared byte-for-byte
+  **on the same item**, the in-place status change of ADR-0024 decision 5 — is a
+  conjunction of equal item id, equal revision id *and* equal bytes:
   `::test_accept_allows_the_same_revision_re_declared_against_its_own_body` keeps
-  it, while `::test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision`
+  it — re-declaring the first proposal's own item id, revision id and body — while
+  `::test_accept_refuses_a_cross_item_byte_identical_redeclare_of_a_landed_revision`
+  refuses a byte-identical body re-declared under a *different* item's id (a
+  cross-item revision reuse `migrate apply` refuses, INV-1/SEC-13),
+  `::test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision`
   and `::test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision`
   refuse a re-declare that reuses the id with different bytes, and
   `::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body` with
