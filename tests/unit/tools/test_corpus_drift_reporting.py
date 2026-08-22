@@ -19,7 +19,10 @@ actually compared".
 edits the body to match takes that governance test RED and destroys the thing
 that made it a snapshot. The text says re-seed through `theurian propose`, and
 this file holds it to that -- including holding it to *not* appearing under a
-clean report, where it would be advice about nothing.
+clean report, where it would be advice about nothing, and to spelling
+``--source-uri`` out in full rather than eliding it into the trailing ``...``,
+because a re-seed under a different remote string is how an item leaves the
+compared set for good.
 """
 
 from __future__ import annotations
@@ -124,6 +127,23 @@ def test_the_remedy_sends_the_maintainer_to_propose_and_not_to_the_committed_bod
     assert "do not edit the\ncommitted body, which is pinned verbatim" in REMEDY
 
 
+def test_the_remedy_spells_out_the_source_uri_a_re_seed_has_to_carry() -> None:
+    """The one option in that command whose value decides if the item is checked again.
+
+    `anchor_refusal` matches `sourceUri` exactly against `THIS_REPOSITORY`, so a
+    re-seed under `git@github.com:theurian/theurian.git`, or under the same URL
+    without the `.git` suffix, retires that item from this check permanently --
+    reported as a single `::notice` on a job that is advisory by design, which
+    is how a corpus goes uncheckable one item at a time.
+
+    The literal is pinned rather than the presence of some `--source-uri`,
+    because the failure being prevented is textual: the option previously sat
+    inside the command's trailing `...`, and a maintainer following the printed
+    remedy could not see that the value mattered.
+    """
+    assert '--source-uri "https://github.com/theurian/theurian.git"' in REMEDY
+
+
 def test_a_text_report_of_drift_carries_the_remedy() -> None:
     """The finding and the fix arrive together, in the job log and on a local run."""
     assert REMEDY in render_text(_DRIFT)
@@ -180,10 +200,15 @@ def test_a_run_that_compared_nothing_is_annotated_as_an_error() -> None:
     Drift is deliberately only a `::warning` because the job is advisory. That
     choice is exactly why the empty run needs its own `::error`: without it, a
     corpus that vanished produces a quieter log than an edited ADR.
+
+    The title names the shape both routes share -- too few anchors compared --
+    rather than the empty extreme, since a floor breach on a corpus with
+    twenty-five healthy anchors reaches this same annotation
+    (`tools/corpus_drift.py`'s `held_to_floor`, and the floor's own tests).
     """
     commands = render_github(_EMPTY)
 
-    assert commands[-1].startswith("::error title=Corpus drift check ran empty::")
+    assert commands[-1].startswith("::error title=Corpus drift check compared too few anchors::")
 
 
 def test_a_clean_run_emits_no_annotations_at_all() -> None:

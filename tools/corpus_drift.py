@@ -766,13 +766,12 @@ def render_github(report: Report) -> tuple[str, ...]:
     A run that compared nothing, or too little, is an ``error`` whatever the
     flags say: it is the outcome that must never read as green.
 
-    The error's title still says *ran empty*, which now covers two shapes --
-    zero compared, and fewer compared than :func:`held_to_floor` demands -- and
-    is exact only for the first. The detail beside it states which one happened.
-    Renaming it takes this line and
-    ``tests/unit/tools/test_corpus_drift_reporting.py``'s own assertion on the
-    prefix together, so it is left for whoever owns that file next rather than
-    changed here on one side.
+    The error's title names the shape rather than the extreme case: two things
+    reach it, zero compared and fewer compared than :func:`held_to_floor`
+    demands, and zero is only the far end of the second. The detail beside the
+    title says which one happened. Titled *ran empty*, a breach on a corpus with
+    twenty-five healthy anchors in it would be announced as a corpus that had
+    vanished.
     """
     commands = [
         f"::warning file={item.file_path},title=Corpus drift::"
@@ -785,7 +784,9 @@ def render_github(report: Report) -> tuple[str, ...]:
         for item in report.uncheckable
     )
     if report.status is Status.NOTHING_COMPARED:
-        commands.append(f"::error title=Corpus drift check ran empty::{report.detail}")
+        commands.append(
+            f"::error title=Corpus drift check compared too few anchors::{report.detail}"
+        )
     return tuple(commands)
 
 

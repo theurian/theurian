@@ -13,6 +13,13 @@ to exercise.
 a second implementation cannot disagree with it; a test that reused it too would
 agree with any hash function at all, including a broken one.
 
+**One test here replaces `anchor_refusal`, and it is the only fake in the
+file.** The seam it drives -- a refusal that is falsy but not ``None`` -- is not
+reachable through the shipped clauses, every one of which returns a written
+sentence, and the behaviour it protects is an anchor silently leaving the run
+through neither list. A corpus cannot produce that input; only a future clause
+can.
+
 The uncomparable shapes get scan-level tests as well as the pure ones in
 ``tests/unit/tools/test_corpus_drift_uncomparable_anchors.py``, because the
 refusal is only half the behaviour. The other half is what the run does with it:
@@ -27,6 +34,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+import corpus_drift
 import pytest
 import yaml
 from corpus_drift import Status, Verdict, scan
@@ -302,6 +310,42 @@ def test_an_anchor_naming_a_path_outside_the_tree_is_not_opened(tmp_path: Path) 
 
     assert [item.verdict for item in report.comparisons] == [Verdict.UNCHECKABLE]
     assert "resolves outside the repository" in report.comparisons[0].detail
+
+
+def _refuses_without_saying_why(anchor: Any) -> str:
+    """Stands in for a future `anchor_refusal` clause that returns an empty reason."""
+    return ""
+
+
+def test_an_anchor_whose_refusal_says_nothing_is_still_named_rather_than_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An anchor must never leave the run through neither list.
+
+    `_compare` splits the anchors into refused and comparable. When those two
+    sides disagreed -- one filtering on truthiness, the other testing `is None`
+    -- an empty-string refusal satisfied neither, and the anchor was reported
+    nowhere: not compared, not annotated, not counted. That is the one outcome
+    this checker states it never produces, and it is silent by construction.
+
+    Unreachable through the shipped clauses, every one of which returns a
+    written sentence, so it is driven through the seam instead: a stand-in
+    refusal that is falsy but not `None`, which is what the next clause somebody
+    adds may well return.
+
+    The assertion is on the named comparison and not on the status, deliberately.
+    Before the fix this same corpus also reported `NOTHING_COMPARED` -- from zero
+    comparisons rather than from one uncheckable anchor -- so a status assertion
+    here would pass against the defect it is meant to catch.
+    """
+    migration = _seed(tmp_path)
+    monkeypatch.setattr(corpus_drift, "anchor_refusal", _refuses_without_saying_why)
+
+    report = scan(tmp_path, tracked=[migration])
+
+    assert [item.verdict for item in report.comparisons] == [Verdict.UNCHECKABLE]
+    assert report.uncheckable[0].file_path == _DOCUMENT
+    assert report.uncheckable[0].migration == migration
 
 
 def test_a_revision_that_declares_no_anchors_names_no_document_to_compare(

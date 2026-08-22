@@ -12,7 +12,10 @@ depends on, and this file is where they are exercised for real:
   ``continue-on-error: true`` nor ``|| true``, deliberately: either would
   swallow exit 2 alongside exit 1 and leave a green tick over a check that had
   gone silent. Nothing else in the repository stops that, so the CLI's own
-  handling of exit 2 is the last guard.
+  handling of exit 2 is the last guard. The compared-count floor reaches the
+  exit status through the same path and is driven here with
+  ``--minimum-compared``, because the tool's own default binds only on this
+  repository's tree and none of these fixtures is that tree.
 
 ``HOME`` is redirected for every test here, and the developer's real
 ``~/.gitconfig`` is read before and compared after: these tests shell out to
@@ -259,3 +262,87 @@ def test_a_migration_that_is_only_on_disk_is_not_in_the_population_git_reports(
     )
 
     assert corpus_drift.main(["--repo-root", str(root)]) == 0
+
+
+# -- the floor, through the flags ---------------------------------------------
+
+
+def test_a_run_that_compared_less_than_its_floor_exits_two_even_though_it_found_no_drift(
+    tmp_path: Path,
+) -> None:
+    """A healthy-looking clean run is exactly what a shrinking corpus produces.
+
+    One anchor, matching its document, and a stated floor of two: the compared
+    count is the only thing wrong, and it is the thing `Status.CLEAN` cannot
+    express. Run without the floor this same tree is exit 0 -- which is what
+    every run between 26 anchors and 1 used to report.
+    """
+    root = _repository(tmp_path / "clean", document=_SNAPSHOT)
+
+    assert corpus_drift.main(["--repo-root", str(root)]) == 0
+    assert corpus_drift.main(["--repo-root", str(root), "--minimum-compared", "2"]) == 2
+
+
+def test_the_floor_outranks_drift_so_advisory_cannot_downgrade_a_breach(tmp_path: Path) -> None:
+    """The load-bearing case: a finding *and* a green tick is the worst outcome available.
+
+    `--advisory` turns drift into exit 0, deliberately, so that editing an ADR
+    does not redden its own pull request. A run that also compared too little has
+    two things to say, and the exit status can only carry one of them -- so it
+    carries the one no flag downgrades. Were the order reversed, a corpus that
+    had lost twenty-five of twenty-six anchors would report its one surviving
+    drift as an advisory warning and pass.
+
+    The CI step in `.github/workflows/shared.yml` passes `--advisory` and carries
+    neither `continue-on-error` nor `|| true`, so this exit status is what
+    reaches the build.
+    """
+    root = _repository(tmp_path / "drifted", document=_EDITED)
+
+    assert corpus_drift.main(["--repo-root", str(root), "--advisory"]) == 0
+    assert (
+        corpus_drift.main(["--repo-root", str(root), "--advisory", "--minimum-compared", "2"]) == 2
+    )
+
+
+def test_a_breach_still_prints_the_drift_and_the_remedy_it_found(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit 2 says the run cannot be trusted; the report still has to say what it saw.
+
+    A maintainer meeting this in CI needs both halves: which anchors stopped
+    being comparable (so they can be restored) and which document drifted (so it
+    can be re-seeded). Replacing the report with a bare "compared too little"
+    would make the exit status actionable and the output not.
+    """
+    root = _repository(tmp_path / "drifted", document=_EDITED)
+
+    corpus_drift.main(["--repo-root", str(root), "--advisory", "--minimum-compared", "2"])
+
+    printed = capsys.readouterr().out
+    assert "compared 1 anchor(s), fewer than the 2 this corpus is held to" in printed
+    assert f"DRIFT  {_ITEM}: {_DOCUMENT} now hashes to" in printed
+    assert corpus_drift.REMEDY in printed
+
+
+@pytest.mark.parametrize("floor", ["0", "1"], ids=["disabled", "met"])
+def test_a_floor_the_run_clears_leaves_the_ordinary_exit_codes_alone(
+    tmp_path: Path, floor: str
+) -> None:
+    """Drift is still exit 1: the floor decides whether a verdict is trustworthy, not what it is.
+
+    Without this, "always 2 once `--minimum-compared` is passed" satisfies the
+    three tests above, and the flag becomes a way to fail the build rather than a
+    way to state what a tree can meet.
+
+    What the `0` case does *not* pin, stated so nobody reads it as covered: that
+    an explicit zero beats a non-zero default. It cannot be pinned from here,
+    because the default for any tree that is not this repository's own is already
+    zero, so the two answers agree whatever `minimum_compared_for` does with a
+    falsy request. `tests/unit/tools/test_corpus_drift_floor.py` holds that one
+    against `REPO_ROOT`, the only tree where the two can disagree, as
+    `test_a_requested_floor_of_zero_turns_the_floor_off_rather_than_reading_as_absent`.
+    """
+    root = _repository(tmp_path / "drifted", document=_EDITED)
+
+    assert corpus_drift.main(["--repo-root", str(root), "--minimum-compared", floor]) == 1
