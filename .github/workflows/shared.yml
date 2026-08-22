@@ -285,12 +285,19 @@ jobs:
   # carries the table and the fix.
   #
   # What is NOT advisory, and this is the part worth reading before touching the
-  # step below. The checker exits 2 when it compared *nothing* -- no tracked
-  # migrations, git unable to say what is tracked, or every anchor uncheckable
-  # -- and `--advisory` deliberately does not suppress that. A checker that has
-  # stopped checking is a regression, not a pass. That is why this job has no
+  # step below. The checker exits 2 when it compared too little to mean anything
+  # -- no tracked migrations, git unable to say what is tracked, or fewer
+  # anchors compared than `MINIMUM_COMPARED` (26, the corpus as it stands) --
+  # and `--advisory` deliberately does not suppress that. A checker that has
+  # stopped checking is a regression, not a pass, and it stops one item at a
+  # time: an anchor re-seeded under an SSH remote is uncheckable for good, so
+  # without that floor the count could walk from 26 to 1 with every run in
+  # between reporting a clean corpus. That is why this job has no
   # `continue-on-error: true` and no `|| true`: either would swallow exit 2
   # along with exit 1 and leave a green tick over a check that had gone silent.
+  # The step passes no `--minimum-compared`, so the floor is the tool's own; it
+  # binds here because this job runs against the tree the number was measured
+  # on.
   #
   # Nothing that was previously enforced becomes advisory here. Every hard rule
   # over the corpus stays hard, in `core.yml`'s test job, where it already was.

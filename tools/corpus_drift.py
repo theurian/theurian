@@ -36,8 +36,10 @@ Exit codes
 ``1``
     Drift. Suppressed by ``--advisory``; see that flag's help for the call.
 ``2``
-    **The check could not check anything.** No tracked migrations, or every
-    anchor was uncheckable, or git could not be asked what is tracked.
+    **The check did not check enough to mean anything.** No tracked migrations,
+    or git could not be asked what is tracked, or fewer anchors were compared
+    than the floor the tree is held to -- which is every anchor being
+    uncheckable, and also 25 of 26 (see ``--minimum-compared``).
     ``--advisory`` does *not* suppress this: a checker that quietly stopped
     checking is a regression, not a pass, and it is the one outcome that must
     never read as green.
@@ -109,6 +111,16 @@ a future re-seed could take an item out of the compared set:
 - **more than one comparable anchor on one revision.** One recorded digest
   cannot speak for two source files, so neither of them is compared.
 
+**Going uncheckable is not free.** A run that compares fewer anchors than the
+floor (``--minimum-compared``, 26 for this tree) is exit 2 whatever else it
+found. Without a floor, "compared nothing" fires only at zero, so the corpus can
+go uncheckable one item at a time and every run in between reads *clean, exit
+0*, reporting each loss as a single ``::notice`` on a job that is advisory by
+design. The realistic way there is the first shape above: ``sourceUri`` is
+matched exactly, so one re-seed under ``git@github.com:theurian/theurian.git``,
+or under the same URL without the ``.git`` suffix, retires that item from the
+check permanently.
+
 Not verified here at all: whether the corpus body still matches its own pin, and
 whether it matches the blob at its anchor commit. Those are
 `test_dogfood_corpus_governance.py`'s, they are hard failures there, and nothing
@@ -144,6 +156,24 @@ MIGRATIONS_PREFIX: Final = ".theurian/migrations/"
 #: local path that would mean something different.
 THIS_REPOSITORY: Final = "https://github.com/theurian/theurian.git"
 
+#: How many anchors a run against *this* tree has to compare before its verdict
+#: means anything. 26 is what the corpus ships (measured 2026-08-22 at 64e33da:
+#: 26 compared, 0 uncheckable), and it is the same number and the same shape as
+#: ``MINIMUM_MIGRATIONS`` in
+#: ``packages/theurian-core/tests/unit/test_dogfood_corpus_governance.py``: a
+#: **lower bound, not an equality**, because the corpus is expected to grow and
+#: the direction that is never routine is committed knowledge disappearing.
+#:
+#: What it buys that ``NOTHING_COMPARED`` alone does not: that status fires only
+#: when the compared count reaches *zero*, so 25 of 26 anchors going uncheckable
+#: -- one re-seed at a time, each reported as a single notice on an advisory job
+#: -- reads clean and exits 0 the whole way down.
+#:
+#: Inherited, and stated rather than rounded up: like its counterpart, this is a
+#: floor on a count and not on a ratio, so a corpus that grows to 40 while 14 go
+#: uncheckable still clears it.
+MINIMUM_COMPARED: Final = 26
+
 _SHA256: Final = re.compile(r"\A[0-9a-f]{64}\Z")
 
 #: What a maintainer does about drift. One string so the message is written once
@@ -163,12 +193,21 @@ _SHA256: Final = re.compile(r"\A[0-9a-f]{64}\Z")
 #: bare invocation line inside a literal (`command_extraction.python_command_lines`,
 #: and `json_command_lines`' docstring for why). Without this line the scan opens
 #: this file and still never checks that the remedy it prints is runnable.
-REMEDY: Final = """\
+#:
+#: `--source-uri` is written out in full and interpolated from
+#: :data:`THIS_REPOSITORY`, never elided into the trailing `...`, because it is
+#: the one option that decides whether the re-seeded item is ever checked again:
+#: :func:`anchor_refusal` matches it exactly, so a re-seed under an SSH remote or
+#: a suffix-less URL retires that item from this check for good. Interpolated
+#: rather than typed so the string a maintainer is told to pass cannot drift from
+#: the string it will be compared against.
+REMEDY: Final = f"""\
 Fix: propose an update revision for the drifted item -- do not edit the
 committed body, which is pinned verbatim.
 
     theurian propose --item-id <itemId> --expected-revision <revisionId> \\
         --body-file <filePath> --source-path <filePath> \\
+        --source-uri "{THIS_REPOSITORY}" \\
         --source-commit "$(git rev-parse HEAD)" ...
     theurian propose accept <proposal-id>
 
@@ -653,6 +692,57 @@ def _verdict(comparisons: Sequence[Comparison], migrations: int) -> tuple[Status
     return Status.CLEAN, f"no drift -- {counted}."
 
 
+# -- The floor -----------------------------------------------------------------
+
+
+def minimum_compared_for(repo_root: Path, requested: int | None) -> int:
+    """The floor to hold a run against ``repo_root`` to.
+
+    :data:`MINIMUM_COMPARED` is a **measurement of this repository's corpus**,
+    so it is applied to this repository's tree and to nothing else. A run
+    pointed at another checkout, or at a fixture, is a tree where 26 was never
+    measured; asserting it there would be inventing a number, and it would take
+    every small-corpus caller of the CLI to exit 2. ``requested`` -- the
+    ``--minimum-compared`` flag -- overrides both, and is how any other tree
+    states its own floor.
+    """
+    if requested is not None:
+        return requested
+    return MINIMUM_COMPARED if repo_root == REPO_ROOT else 0
+
+
+def held_to_floor(report: Report, minimum: int) -> Report:
+    """``report``, or a ``NOTHING_COMPARED`` one when it compared fewer than ``minimum``.
+
+    A new report rather than a mutation, so the comparisons are carried through
+    untouched: the drift lines, the annotations and the remedy are all still
+    rendered from them, and only the run's own verdict changes.
+
+    **The floor outranks drift**, which is deliberate and is the whole point of
+    binding it here. ``--advisory`` turns drift into exit 0, so a run that found
+    one drifted anchor and lost the other twenty-five to uncheckability would
+    otherwise report a finding and a green tick. Exit 2 is the code advisory
+    mode does not touch.
+
+    Applied in :func:`main` and not inside :func:`scan`, because ``scan`` is the
+    comparison over whatever population it is handed -- tests drive it with
+    corpora of one or two -- while the floor is a claim about a specific corpus.
+    Keeping them apart is what lets the floor be strict without making ``scan``
+    refuse the small inputs it exists to be driven with.
+    """
+    compared = len(report.compared)
+    if minimum <= 0 or compared >= minimum:
+        return report
+    return Report(
+        report.comparisons,
+        Status.NOTHING_COMPARED,
+        f"compared {compared} anchor(s), fewer than the {minimum} this corpus is held to, so "
+        f"most of it went unchecked and a clean result would prove almost nothing. Each anchor "
+        f"that stopped being comparable is named above: restore it, or lower the floor in the "
+        f"same change that says why.",
+    )
+
+
 # -- Rendering ---------------------------------------------------------------
 
 
@@ -673,8 +763,16 @@ def render_github(report: Report) -> tuple[str, ...]:
     """Workflow commands, so the findings land in the job log and on the PR.
 
     Drift is a ``warning`` because this check is advisory (see ``--advisory``).
-    A run that compared nothing is an ``error`` whatever the flags say: it is
-    the outcome that must never read as green.
+    A run that compared nothing, or too little, is an ``error`` whatever the
+    flags say: it is the outcome that must never read as green.
+
+    The error's title still says *ran empty*, which now covers two shapes --
+    zero compared, and fewer compared than :func:`held_to_floor` demands -- and
+    is exact only for the first. The detail beside it states which one happened.
+    Renaming it takes this line and
+    ``tests/unit/tools/test_corpus_drift_reporting.py``'s own assertion on the
+    prefix together, so it is left for whoever owns that file next rather than
+    changed here on one side.
     """
     commands = [
         f"::warning file={item.file_path},title=Corpus drift::"
@@ -733,13 +831,14 @@ def render_summary(report: Report) -> str:
 
 
 def exit_code(report: Report, *, advisory: bool) -> int:
-    """0 clean, 1 drift, 2 nothing compared. ``advisory`` suppresses only the 1.
+    """0 clean, 1 drift, 2 too little compared. ``advisory`` suppresses only the 1.
 
     The asymmetry is the point. Drift is a maintenance signal on a normal
     action -- somebody edited an ADR -- so failing the build on it would train
-    people to bypass the job. A run that compared nothing is not a signal about
-    the corpus at all; it is this tool reporting that it has stopped working,
-    and advisory mode must not launder that into a pass.
+    people to bypass the job. A run that compared nothing, or too little to mean
+    anything (:func:`held_to_floor`), is not a signal about the corpus at all;
+    it is this tool reporting that it has stopped working, and advisory mode
+    must not launder that into a pass.
     """
     if report.status is Status.NOTHING_COMPARED:
         return 2
@@ -769,9 +868,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Append a Markdown summary to $GITHUB_STEP_SUMMARY, when it is set.",
     )
+    parser.add_argument(
+        "--minimum-compared",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"Exit 2 unless at least N anchors were compared, whatever else the run found. "
+            f"Defaults to {MINIMUM_COMPARED} for this repository's own tree, where that number "
+            f"was measured, and to 0 -- no floor -- for any other. 0 disables it."
+        ),
+    )
     arguments = parser.parse_args(argv)
 
-    report = scan(arguments.repo_root.resolve())
+    repo_root = arguments.repo_root.resolve()
+    report = held_to_floor(
+        scan(repo_root), minimum_compared_for(repo_root, arguments.minimum_compared)
+    )
     print(render_text(report))
     if arguments.format == "github":
         for command in render_github(report):
