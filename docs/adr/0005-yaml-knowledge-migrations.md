@@ -121,18 +121,27 @@ over the file's bytes rather than over a YAML-escaped copy of them.
   > The migration path's validate-time controls are **four**, not one, and they
   > split by *where* they act. Three are refused ahead of `validate` in the same
   > walk — nesting (`MAX_DOCUMENT_NESTING`, 64), the node count above
-  > (`MAX_DOCUMENT_NODES`, 100,000), and total string length
-  > (`MAX_DOCUMENT_RENDERED_CHARS`, 1,000,000). The third closes a face the node
-  > count cannot: one large scalar aliased into many slots is only a handful of
-  > nodes but re-expands under `{instance!r}` to a hundreds-of-gigabytes transient
+  > (`MAX_DOCUMENT_NODES`, 100,000), and total *rendered magnitude*
+  > (`MAX_DOCUMENT_RENDERED_CHARS`, 1,000,000). The third closes a class the node
+  > count cannot see — one large scalar aliased into many slots is only a handful
+  > of nodes but re-expands under `{instance!r}` to N times its rendered width —
+  > by charging every leaf's O(1) width (`_rendered_width`) per un-memoised
+  > reference, whatever the leaf's type. It catches both faces of that class: a
+  > large *string* aliased into many slots (a hundreds-of-gigabytes transient
   > that raises `MemoryError`, which is not a `ValueError` and would escape the
-  > scalar catch below as a raw traceback. The fourth face — a single giant
-  > *integer* — is one node no pre-walk can see, so it is not refused ahead of
-  > `validate` but *translated by type* after it: `jsonschema` renders it past
-  > CPython's `int`→`str` limit and raises `ValueError` (a float `multipleOf`
-  > would raise `OverflowError`), and `_validate_document` catches the whole
+  > scalar catch below as a raw traceback), and — added by the round-two review,
+  > which the round-one budget missed because it charged only `str`/`bytes` — a
+  > medium *integer* of a few thousand digits aliased into many slots, which
+  > reprs without raising and is O(N) nodes, so it defeated the node count and
+  > the scalar catch alike until the budget began charging integers too. The
+  > fourth control is for the *single* giant integer the pre-walk cannot refuse:
+  > one node whose lone width passes the aggregate budget, it reaches `validate`
+  > and is *translated by type* — `jsonschema` renders it past CPython's
+  > `int`→`str` limit and raises `ValueError` (a float `multipleOf` would raise
+  > `OverflowError`), and `_validate_document` catches the whole
   > `(ValueError, ArithmeticError)` class as a `MigrationError` rather than a raw
-  > `--json` traceback.
+  > `--json` traceback. The budget and the catch are complementary, not
+  > redundant.
   >
   > The `safe_load` and parser-limit half of the sentence still holds for the
   > Norway problem and for load-time anchor handling; what it did not cover is
