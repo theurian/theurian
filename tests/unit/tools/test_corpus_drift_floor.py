@@ -103,6 +103,26 @@ _DRIFTED = Comparison(
 )
 
 
+#: One sentence per route :func:`corpus_drift.scan` reaches
+#: ``Status.NOTHING_COMPARED`` by. Paraphrased rather than imported on purpose:
+#: what the floor must not do is overwrite *whichever* sentence arrived with the
+#: status, so a test that only held ``scan``'s current wording would go quiet the
+#: day that wording is reworded. The verbatim strings are pinned where they are
+#: produced, in ``tests/integration/tools/test_corpus_drift_scan.py``.
+_GIT_WOULD_NOT_ANSWER = (
+    "`git ls-files --cached` did not answer in /elsewhere/not-a-working-copy, and there is no "
+    "filesystem fallback on purpose."
+)
+_CORPUS_IS_GONE = (
+    "nothing tracked under .theurian/migrations/. The committed corpus is gone -- which is a "
+    "finding, not a reason for this check to report drift-free."
+)
+_EVERY_ANCHOR_UNCHECKABLE = (
+    "all 25 anchor(s) across 25 committed migration(s) were uncheckable, so this run compared "
+    "nothing and proves nothing."
+)
+
+
 # -- which floor a tree is held to -------------------------------------------
 
 
@@ -150,6 +170,49 @@ def test_a_requested_floor_of_zero_turns_the_floor_off_rather_than_reading_as_ab
     indication that the flag they passed was ignored.
     """
     assert minimum_compared_for(REPO_ROOT, 0) == 0
+
+
+# -- a run that already said why it compared nothing --------------------------
+
+
+@pytest.mark.parametrize(
+    ("comparisons", "detail"),
+    [
+        pytest.param((), _GIT_WOULD_NOT_ANSWER, id="git-would-not-answer"),
+        pytest.param((), _CORPUS_IS_GONE, id="corpus-is-gone"),
+        pytest.param(
+            tuple(_uncheckable(index) for index in range(1, 26)),
+            _EVERY_ANCHOR_UNCHECKABLE,
+            id="every-anchor-uncheckable",
+        ),
+    ],
+)
+def test_a_report_that_already_said_why_it_compared_nothing_keeps_that_sentence(
+    comparisons: tuple[Comparison, ...], detail: str
+) -> None:
+    """The floor may only overturn a verdict, never talk over a stated diagnosis.
+
+    Zero compared anchors is *below* any floor above zero, so the arithmetic
+    alone fires on all three of these -- and replaces the one sentence that says
+    which failure a maintainer is looking at with text written for a different
+    one. That text offers "restore them, or lower the floor" as the remedy for a
+    git that would not answer, and promises "every anchor that stopped being
+    comparable is named in this report" over the two routes that name none
+    because there are none. The exit status is 2 either way (see
+    ``tests/unit/tools/test_corpus_drift_exit_codes.py``), so the diagnosis is
+    the entire difference between the three.
+
+    The input class the rest of this module never reaches: every other report
+    built here arrives ``CLEAN`` or ``DRIFTED``, which is exactly the class the
+    floor is *supposed* to overturn.
+    """
+    report = Report(comparisons, Status.NOTHING_COMPARED, detail)
+
+    held = held_to_floor(report, 26)
+
+    assert held.detail == detail
+    assert held.status is Status.NOTHING_COMPARED
+    assert held == report
 
 
 # -- what a breach does to the report ----------------------------------------

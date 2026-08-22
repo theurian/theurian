@@ -13,9 +13,14 @@ depends on, and this file is where they are exercised for real:
   swallow exit 2 alongside exit 1 and leave a green tick over a check that had
   gone silent. Nothing else in the repository stops that, so the CLI's own
   handling of exit 2 is the last guard. The compared-count floor reaches the
-  exit status through the same path and is driven here with
+  exit status through the same path and is mostly driven here with
   ``--minimum-compared``, because the tool's own default binds only on this
-  repository's tree and none of these fixtures is that tree.
+  repository's tree and none of these fixtures is that tree. One test drives the
+  *default* instead, by repointing ``corpus_drift.REPO_ROOT`` at a fixture so
+  that ``main`` with no flags at all takes the branch the CI job takes:
+  ``test_the_default_floor_binds_the_one_tree_its_number_was_measured_against``.
+  Without it, ``minimum_compared_for(...)`` can be cut out of ``main`` and this
+  whole suite stays green.
 
 ``HOME`` is redirected for every test here, and the developer's real
 ``~/.gitconfig`` is read before and compared after: these tests shell out to
@@ -323,6 +328,91 @@ def test_a_breach_still_prints_the_drift_and_the_remedy_it_found(
     assert "compared 1 anchor(s), fewer than the 2 this corpus is held to" in printed
     assert f"DRIFT  {_ITEM}: {_DOCUMENT} now hashes to" in printed
     assert corpus_drift.REMEDY in printed
+
+
+def test_a_floor_leaves_a_tree_git_would_not_answer_for_saying_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit 2 twice over, and the two reasons are not interchangeable in the job log.
+
+    A run that could not establish its population compared zero anchors, so it is
+    below every floor above zero and the floor's arithmetic fires on it too --
+    with text that offers "restore them, or lower the floor" to a maintainer
+    whose actual problem is that git was never asked or never answered. Lowering
+    the floor would not make this tree checkable, and there are no anchors to
+    restore.
+
+    The status cannot carry the difference (both are 2, and ``--advisory``
+    downgrades neither), so the printed diagnosis is the whole of it.
+    """
+    root = tmp_path / "not-a-repository"
+    root.mkdir()
+
+    status = corpus_drift.main(["--repo-root", str(root), "--minimum-compared", "26", "--advisory"])
+
+    printed = capsys.readouterr().out
+    assert status == 2
+    assert "did not answer" in printed
+    assert "no filesystem fallback on purpose" in printed
+    assert "fewer than the 26 this corpus is held to" not in printed
+
+
+def test_a_floor_leaves_a_repository_whose_corpus_is_gone_saying_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other zero-compared route, and the one a bad merge actually produces.
+
+    Here git answers and the index is real; what is missing is
+    ``.theurian/migrations/``. "The committed corpus is gone" is a finding a
+    maintainer acts on immediately, and the floor's "most of it went unchecked"
+    describes a corpus that is still mostly there -- the opposite diagnosis, at
+    the same exit status.
+    """
+    root = tmp_path / "empty"
+    root.mkdir()
+    (root / "README.md").write_text("# Empty\n", encoding="utf-8")
+    _git("init", "-q", str(root))
+    _git("-C", str(root), "add", "README.md")
+
+    status = corpus_drift.main(["--repo-root", str(root), "--minimum-compared", "26", "--advisory"])
+
+    printed = capsys.readouterr().out
+    assert status == 2
+    assert "The committed corpus is gone" in printed
+    assert "fewer than the 26 this corpus is held to" not in printed
+
+
+def test_the_default_floor_binds_the_one_tree_its_number_was_measured_against(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing else drives `main`'s default floor: every other call states one.
+
+    ``main`` defaults ``--repo-root`` to ``corpus_drift.REPO_ROOT`` and then asks
+    :func:`corpus_drift.minimum_compared_for` which floor that tree is held to,
+    so the default is reachable only from a run that passes *neither* flag.
+    Every other call site in this suite passes ``--repo-root <tmp>``, and every
+    floor-exercising one passes ``--minimum-compared`` as well -- which left
+    ``minimum_compared_for(repo_root, arguments.minimum_compared)`` replaceable
+    by ``arguments.minimum_compared or 0`` with the whole suite still green.
+
+    Repointing ``REPO_ROOT`` at a one-anchor repository is what makes the default
+    branch fire against a tree small enough to breach it: the constant is 26, the
+    corpus here compares 1. The floor's own sentence is asserted rather than the
+    status alone, because exit 2 has three other producers and a fixture that
+    quietly failed to build would reach one of them.
+
+    The second run pins the same tree as otherwise healthy, so the 2 above is the
+    floor and not a corpus this test broke on its way in.
+    """
+    root = _repository(tmp_path / "the-measured-tree", document=_SNAPSHOT).resolve()
+    monkeypatch.setattr(corpus_drift, "REPO_ROOT", root)
+
+    status = corpus_drift.main([])
+
+    printed = capsys.readouterr().out
+    assert status == 2
+    assert "compared 1 anchor(s), fewer than the 26 this corpus is held to" in printed
+    assert corpus_drift.main(["--minimum-compared", "0"]) == 0
 
 
 @pytest.mark.parametrize("floor", ["0", "1"], ids=["disabled", "met"])
