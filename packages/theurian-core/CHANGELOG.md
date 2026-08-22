@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev9] - 2026-08-22
+
 ### Fixed
 
 - **`propose accept` translates every accept-path filesystem or path fault into
