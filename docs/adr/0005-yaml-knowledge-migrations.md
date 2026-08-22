@@ -116,9 +116,26 @@ over the file's bytes rather than over a YAML-escaped copy of them.
   > refusal message, and the `RecursionError` that follows is indistinguishable
   > from a corrupt schema. This is the same un-memoised-walk shape as
   > [#245](https://github.com/theurian/theurian/issues/245)'s OpenAPI `$ref`
-  > walk, in another seam, and it is recorded under T-6 in the threat model. The
-  > `safe_load` and parser-limit half of the sentence still holds for the Norway
-  > problem and for load-time anchor handling; what it did not cover is
+  > walk, in another seam, and it is recorded under T-6 in the threat model.
+  >
+  > The migration path's validate-time controls are **four**, not one, and they
+  > split by *where* they act. Three are refused ahead of `validate` in the same
+  > walk — nesting (`MAX_DOCUMENT_NESTING`, 64), the node count above
+  > (`MAX_DOCUMENT_NODES`, 100,000), and total string length
+  > (`MAX_DOCUMENT_RENDERED_CHARS`, 1,000,000). The third closes a face the node
+  > count cannot: one large scalar aliased into many slots is only a handful of
+  > nodes but re-expands under `{instance!r}` to a hundreds-of-gigabytes transient
+  > that raises `MemoryError`, which is not a `ValueError` and would escape the
+  > scalar catch below as a raw traceback. The fourth face — a single giant
+  > *integer* — is one node no pre-walk can see, so it is not refused ahead of
+  > `validate` but *translated by type* after it: `jsonschema` renders it past
+  > CPython's `int`→`str` limit and raises `ValueError` (a float `multipleOf`
+  > would raise `OverflowError`), and `_validate_document` catches the whole
+  > `(ValueError, ArithmeticError)` class as a `MigrationError` rather than a raw
+  > `--json` traceback.
+  >
+  > The `safe_load` and parser-limit half of the sentence still holds for the
+  > Norway problem and for load-time anchor handling; what it did not cover is
   > validate-time re-expansion.
 
 ### Neutral

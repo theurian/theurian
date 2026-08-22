@@ -483,35 +483,64 @@ after read, because a file can grow between `stat` and `read`.
 **A migration document is validated on its own path, and it carries its own
 ingestion bounds ([#291](https://github.com/theurian/theurian/issues/291),
 [#289](https://github.com/theurian/theurian/issues/289)).** `migration_loader.py`
-validates a parsed migration document against the bundled JSON Schema, and three
-shapes of that document cost unbounded work *before* `jsonschema` produces a
-rejection. All three are measured (`jsonschema` 4.26.0, 2026-08-21) and refused
-ahead of `validate`, not aspirations:
+validates a parsed migration document against the bundled JSON Schema. A giant
+*source file* is refused before any of this runs: the file-load path parses
+through `load_yaml_mapping`, bounded at `MAX_YAML_BYTES` (4 MiB), so the guard
+below is the second line of defence over the *parsed* structure, not the first
+over the bytes. Four shapes of that parsed document then defeat `jsonschema`'s own
+message building (each measured, `jsonschema` 4.26.0, 2026-08-21). **Three are
+refused ahead of `validate` by `_refuse_a_document_that_nests_too_deep`; the
+fourth is translated by type after `validate` raises** — the split is real, not
+cosmetic, because a giant integer is one node no pre-walk can see:
 
-- **`MAX_DOCUMENT_NESTING` (64)** bounds nesting depth. Past the interpreter's C
-  recursion budget `jsonschema` cannot build its own refusal message, and the
-  `RecursionError` that follows is indistinguishable from a corrupt schema. A
-  schema-valid migration nests at most 7 levels, so 64 refuses nothing an author
-  can legitimately write.
-- **`MAX_DOCUMENT_NODES` (100,000)** bounds the *expanded* node count, walked
-  without collapsing shared references. A YAML anchor aliased into a doubling
-  chain is a ~500-byte file whose expansion is 2^N nodes — `yaml.safe_load`
-  collapses those aliases to shared object identity so the *parsed* structure
-  stays small, but `jsonschema` interpolates the failing instance with
-  `{instance!r}` and that repr re-expands every shared reference, building a
-  46 MB message from a 500-byte file at alias level 22. The walk is un-memoised
-  on purpose: a collapsed count would wave the bomb through to `validate`. This
-  is the same un-memoised-walk shape as the OpenAPI `$ref` ref-walk cap in
+- **`MAX_DOCUMENT_NESTING` (64)** — *refused ahead of `validate`*. Bounds nesting
+  depth. Past the interpreter's C recursion budget `jsonschema` cannot build its
+  own refusal message, and the `RecursionError` that follows is indistinguishable
+  from a corrupt schema. A schema-valid migration nests at most 7 levels, so 64
+  refuses nothing an author can legitimately write.
+- **`MAX_DOCUMENT_NODES` (100,000)** — *refused ahead of `validate`*. Bounds the
+  *expanded* node count, walked without collapsing shared references. This closes
+  the node-heavy branching-alias bomb: a YAML anchor aliased into a doubling chain
+  is a ~500-byte file whose expansion is 2^N nodes — `yaml.safe_load` collapses
+  those aliases to shared object identity so the *parsed* structure stays small,
+  but `jsonschema` interpolates the failing instance with `{instance!r}` and that
+  repr re-expands every shared reference, building a 46 MB message from a 500-byte
+  file at alias level 22. The walk is un-memoised on purpose: a collapsed count
+  would wave the bomb through to `validate`. Same un-memoised-walk shape as the
+  OpenAPI `$ref` ref-walk cap in
   [#245](https://github.com/theurian/theurian/issues/245), in another seam.
-- **`MAX_ECHOED_VALUE` (1,000)** and **`_MAX_ECHOED_INT_BITS` (2,000 bits)**
-  bound the *rejection message* itself. A single giant-integer scalar is one
-  node the node cap cannot catch; `reprlib` stringifies an integer before
-  truncating it, so past CPython's int→str limit the render raises. `_echo`
-  renders through a `_BoundedRepr` that refuses an integer wider than 2,000 bits
-  (rendered as a placeholder) and clamps every echoed fragment to 1,000
-  characters. On the reachable validate path such a scalar is refused upstream
-  (translated to a `MigrationError`); `_echo`'s bound is defense in depth for a
-  value reaching the rejection builder out-of-band.
+- **`MAX_DOCUMENT_RENDERED_CHARS` (1,000,000)** — *refused ahead of `validate`*,
+  in the same walk. Bounds the total length of *string* content, accumulating
+  `len(child)` per un-memoised reference. This closes a distinct face the node
+  ceiling cannot see: the *aliased-large-string* bomb, where one large scalar —
+  few nodes, well under `MAX_DOCUMENT_NODES` — is aliased into many slots of one
+  operation and re-expands under `{instance!r}` to N times its length. At the
+  recorded limits (a 4 MiB source expanded to at most `MAX_DOCUMENT_NODES`
+  references) that transient reaches hundreds of gigabytes and raises
+  `MemoryError` — which is neither a `ValueError` nor an `ArithmeticError`, so it
+  would otherwise escape the scalar catch below as a raw traceback. `len` is O(1),
+  so the walk's cost is unchanged.
+- **The giant-integer scalar** — *translated by type after `validate` raises*, not
+  refused ahead. A single giant integer is one node, so neither the node count nor
+  the character budget above can see it, and its work is *not* unbounded: CPython's
+  int→str conversion limit (`sys.get_int_max_str_digits()`, 4300 digits by
+  default) and PyYAML's own parse cut it off first, raising rather than churning.
+  `jsonschema` renders such a value with `{instance!r}` past that limit and raises
+  `ValueError` (reachable today); a float-valued `multipleOf` would coerce it and
+  raise `OverflowError`, an `ArithmeticError` (latent — the bundled schema carries
+  only `minimum`/`maximum`, int-to-int comparisons that never overflow). Neither
+  is a `ValidationError`, so each used to escape `--json` as a raw traceback.
+  `_validate_document` catches the whole `(ValueError, ArithmeticError)` class and
+  translates it to a `MigrationError`, so a future numeric keyword cannot reopen
+  the escape. The file-load path closes the same face upstream: a YAML integer
+  literal past CPython's limit raises inside PyYAML's constructor, and `_load_one`
+  translates it to the same bounded "reduce it" wording rather than forwarding
+  CPython's message, which names `sys.set_int_max_str_digits()` — a tuning knob no
+  migration author should reach for. As defence in depth, the rejection builder's
+  own `_echo` renders through a `_BoundedRepr` that refuses an integer wider than
+  `_MAX_ECHOED_INT_BITS` (2,000 bits) as a placeholder and clamps every echoed
+  fragment to `MAX_ECHOED_VALUE` (1,000 characters), so a giant value reaching it
+  out-of-band cannot raise there either.
 
 **Those controls bound ingestion, and the expensive operations added in Milestone
 5 are queries.** There are **three**, and they are enumerated below rather than

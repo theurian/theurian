@@ -134,33 +134,61 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   while removing the unbounded echo — a 100 KB value no longer renders a
   100,198-character refusal into a terminal.
 
+- **An oversized scalar nested in a rejected operation reported its
+  post-truncation length, not its true length**
+  ([#289](https://github.com/theurian/theurian/issues/289)). When a rejected
+  operation carried an oversized string, the echo truncated the container's
+  render first, so the "N characters in all" count reported the *container
+  repr's* length (~1,100), not the offending value's. The renderer now records
+  the longest scalar's pre-truncation length and the rejection names that true
+  length — the one number that is the diagnosis for a value refused for being
+  large.
+
 - **A hostile migration document could exhaust CPU or memory at validate time,
   and a giant-integer scalar escaped `--json` as a raw traceback**
-  ([#291](https://github.com/theurian/theurian/issues/291)). Three shapes of a
-  parsed migration document cost unbounded work before `jsonschema` produced a
-  rejection, each now refused ahead of `validate`:
-  - **Nesting** is bounded at `MAX_DOCUMENT_NESTING` (64). Past the
-    interpreter's C recursion budget `jsonschema` cannot build its own refusal
-    message, and the `RecursionError` that follows is indistinguishable from a
-    corrupt schema — so a deep *document* was answered "reinstall theurian". A
-    schema-valid migration nests at most 7 levels.
-  - **Alias expansion** is bounded at `MAX_DOCUMENT_NODES` (100,000) by an
-    un-memoised node walk. A YAML anchor aliased into a doubling chain is a
-    ~500-byte file whose expansion is 2^N nodes; `jsonschema`'s `{instance!r}`
-    re-expands it the same way, building a 46 MB message from a 500-byte file at
-    alias level 22 (measured 2026-08-21, `jsonschema` 4.26.0). The walk
-    deliberately does not collapse shared references — a collapsed count would
-    wave the bomb through. This is the same un-memoised-walk shape as the
-    OpenAPI `$ref` ref-walk in
+  ([#291](https://github.com/theurian/theurian/issues/291)). Four shapes of a
+  parsed migration document defeated `jsonschema`'s own message building at
+  validate time — three are now refused ahead of `validate` by the loader's own
+  un-memoised walk, and the fourth is translated by type after `validate`
+  raises:
+  - **Nesting** is refused ahead of `validate` at `MAX_DOCUMENT_NESTING` (64).
+    Past the interpreter's C recursion budget `jsonschema` cannot build its own
+    refusal message, and the `RecursionError` that follows is indistinguishable
+    from a corrupt schema — so a deep *document* was answered "reinstall
+    theurian". A schema-valid migration nests at most 7 levels.
+  - **Branching alias expansion** is refused ahead of `validate` at
+    `MAX_DOCUMENT_NODES` (100,000). A YAML anchor aliased into a doubling chain
+    is a ~500-byte file whose expansion is 2^N nodes; `jsonschema`'s
+    `{instance!r}` re-expands it the same way, building a 46 MB message from a
+    500-byte file at alias level 22 (measured 2026-08-21, `jsonschema` 4.26.0).
+    The walk deliberately does not collapse shared references — a collapsed
+    count would wave the bomb through. Same un-memoised-walk shape as the OpenAPI
+    `$ref` ref-walk in
     [#245](https://github.com/theurian/theurian/issues/245), in another seam.
-  - **A giant-integer scalar** is one node the node cap cannot catch:
-    `reprlib` stringifies an integer before truncating it, so past CPython's
-    int→str limit the render raises — reachable as an int→str render, latent as
-    an int→float `multipleOf` overflow. Both are translated to a `MigrationError`
-    instead of escaping `--json` as a raw traceback, by catching the whole
-    `(ValueError, ArithmeticError)` class so it closes by type. The rejection
-    builder's own `_echo` renders through a `_BoundedRepr` that refuses an
-    integer wider than `_MAX_ECHOED_INT_BITS` (2,000 bits) as a placeholder.
+  - **An aliased large string** is refused ahead of `validate` at
+    `MAX_DOCUMENT_RENDERED_CHARS` (1,000,000) — a new bound in the same walk that
+    the node count could not stand in for. One large scalar aliased into many
+    slots is only a handful of nodes, well under `MAX_DOCUMENT_NODES`, but
+    `{instance!r}` re-expands it to N times its length: a hundreds-of-gigabytes
+    transient that raises `MemoryError`, which is neither a `ValueError` nor an
+    `ArithmeticError` and so escaped the scalar catch below as a raw traceback.
+    The walk now accumulates `len(child)` per un-memoised reference (`len` is
+    O(1)) and refuses this face before `validate` like the other two.
+  - **A giant-integer scalar** is one node no pre-walk can see, so it is
+    *translated by type* after `validate` raises rather than refused ahead. Its
+    work is not unbounded: CPython's int→str limit and PyYAML's parse cut it off
+    first, raising rather than churning. `jsonschema` renders the value past that
+    limit and raises `ValueError` (reachable today), or a float `multipleOf`
+    coerces it and raises `OverflowError` (latent — the bundled schema carries
+    only `minimum`/`maximum`). `_validate_document` catches the whole
+    `(ValueError, ArithmeticError)` class as a `MigrationError` so a future
+    numeric keyword cannot reopen the escape. The file-load path closes the same
+    face: a YAML integer literal past CPython's limit is now translated to the
+    same bounded "reduce it" wording instead of forwarding CPython's message,
+    which named `sys.set_int_max_str_digits()` — an interpreter tuning knob no
+    migration author should reach for. As defence in depth, the rejection
+    builder's `_echo` refuses an integer wider than `_MAX_ECHOED_INT_BITS`
+    (2,000 bits) as a placeholder.
 
 ## [0.1.0.dev8] - 2026-08-20
 
