@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import errno
 import json
+import reprlib
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
+from itertools import chain
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import Any, Final, override
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -95,6 +97,129 @@ from theurian.security.yaml_loading import load_yaml_mapping
 #: generated directory still pays for the full walk before this refuses to
 #: load what it found; it does not bound the walk's own cost.
 MAX_MIGRATIONS: Final = 10_000
+
+#: Ceiling on how deeply a migration *document* may nest, counting the root
+#: mapping as level 1. Enforced by `_refuse_a_document_that_nests_too_deep`
+#: before a document is validated, because past the interpreter's C recursion
+#: budget `jsonschema` cannot even build its own refusal message and the
+#: `RecursionError` that follows is indistinguishable from a broken schema
+#: (issue #291; the measurements are on :func:`_validate_document`).
+#:
+#: A schema-valid document nests at most **7** levels including the root --
+#: measured 2026-08-21 by walking the bundled schema's structural keywords
+#: (`properties`, `items`, `oneOf`, `$ref` into `$defs`) for the deepest
+#: instance path it permits -- so 64 refuses nothing an author can legitimately
+#: write. It is not, however, "two orders of magnitude below the rendering
+#: budget": that budget moves with the ambient call stack. From a shallow stack
+#: `repr` renders ~9,997 levels, but with ~2,400 C-frames already spent the
+#: mistranslation onset was measured near depth 6,000 -- and 64x100 is 6,400,
+#: *above* that. 64 is chosen to sit far below even the ambient-reduced budget,
+#: which is what the guard needs; the earlier "two orders below ~8,000" framing
+#: compared against the shallow-stack budget only and did not hold once the
+#: ambient stack was charged against the same ceiling.
+MAX_DOCUMENT_NESTING: Final = 64
+
+#: Ceiling on how many nodes a migration *document* may hold, counting every
+#: value the walk reaches -- keys, mapping values and sequence elements alike --
+#: *without* collapsing shared references. Enforced by
+#: `_refuse_a_document_that_nests_too_deep` alongside `MAX_DOCUMENT_NESTING`,
+#: and it is the node count, not the nesting depth, that closes the
+#: alias-expansion denial of service (issue #291's guard was itself one; same
+#: shape as #245's un-memoised `$ref` walk).
+#:
+#: A YAML anchor referenced from two aliases, each referenced from two more, is
+#: a ~500-byte file whose *expanded* node count is 2**N -- 24 levels reach 100
+#: million nodes. The walk is deliberately *not* memoised on object identity: a
+#: collapsed walk would count that file as its ~24 distinct nodes and wave it
+#: through to `validate`, and `jsonschema` does not collapse it -- `validate`
+#: interpolates the failing instance with `{instance!r}`, and that repr
+#: re-expands every shared reference, building a 46 MB message for a 500-byte
+#: file (measured 2026-08-21, jsonschema 4.26.0, alias level 22) *before*
+#: :func:`_schema_rejection` is ever reached. Counting the expanded nodes and
+#: refusing here, ahead of `validate`, is what keeps that repr bounded;
+#: memoising the walk would only move the cost into a dependency this module
+#: cannot bound.
+#:
+#: Generous by three orders of magnitude, on purpose. This repository's own 26
+#: committed migrations walk to 67-73 nodes each (measured 2026-08-21 over
+#: `.theurian/migrations`). The bound refuses nothing an author legitimately
+#: writes while capping the guard's own walk -- and jsonschema's own
+#: `{instance!r}` *structural* re-expansion of a document that passes it -- at
+#: this many steps: that repr re-expands the same shared references this walk
+#: counted, so a document held to N un-collapsed nodes reprs at most N of them.
+#: It does *not* cap a single scalar's *rendered* magnitude -- a long string or a
+#: giant integer is one node (or, aliased, N+1 nodes) whose render is unbounded by
+#: any node count, and jsonschema re-emits it into its own rejection message. Two
+#: complementary bounds catch that, neither of them this count: the *aggregate* an
+#: aliased scalar re-expands to is bounded in the same walk by
+#: :data:`MAX_DOCUMENT_RENDERED_CHARS`, which charges every leaf's rendered width;
+#: and a *single* integer whose own ``{instance!r}`` render raises past CPython's
+#: int->str limit -- its lone width passing that aggregate budget -- is translated
+#: in :func:`_validate_document` (issue #291's scalar face).
+MAX_DOCUMENT_NODES: Final = 100_000
+
+#: Ceiling on the total number of characters of *rendered scalar* content a
+#: migration *document* may hold, counting every leaf the walk reaches *without*
+#: collapsing shared references -- the rendered-magnitude counterpart of
+#: :data:`MAX_DOCUMENT_NODES`. Enforced by
+#: `_refuse_a_document_that_nests_too_deep` in the same iterative walk (issue
+#: #291's aliased-scalar face).
+#:
+#: The node count alone does not bound rendered magnitude. A single large scalar --
+#: a 100,000-character string, or an integer of a few thousand digits -- anchored
+#: once and aliased into N slots of one operation is only N+1 nodes -- well under
+#: :data:`MAX_DOCUMENT_NODES` -- so the node ceiling waves it through to
+#: ``validate``, where `jsonschema` builds the ``oneOf`` rejection message with
+#: ``{instance!r}`` and re-expands the shared scalar once per slot: an
+#: N*width-character transient before :func:`_schema_rejection` is ever reached. At
+#: the recorded limits (a :data:`~theurian.security.yaml_loading.MAX_YAML_BYTES`
+#: 4 MiB source expanded to at most :data:`MAX_DOCUMENT_NODES` references) that
+#: product reaches hundreds of gigabytes and raises `MemoryError` -- which is
+#: neither a `ValueError` nor an `ArithmeticError`, so it escapes
+#: :func:`_validate_document`'s scalar catch as a raw traceback, the exact CP-2
+#: escape issue #291 exists to close. Accumulating each leaf's rendered width
+#: (:func:`_rendered_width`) per un-memoised reference and refusing here, ahead of
+#: ``validate``, is what bounds that transient -- that width is O(1) per leaf (a
+#: giant integer's is estimated from ``bit_length``, never stringified), so the
+#: walk's own cost is unchanged.
+#:
+#: Generous by three orders of magnitude, on purpose, and larger than the node
+#: ceiling because a legitimate migration is mostly short scalars while a
+#: single field is only length-bounded by the schema. This repository's own 26
+#: committed migrations render at most ~1 KB of string content per operation
+#: (measured 2026-08-21 over `.theurian/migrations`). The bound refuses nothing an
+#: author legitimately writes while capping the transient jsonschema builds from a
+#: document that passes the node ceiling: an oversized *single* value still
+#: reaches ``validate``, where :func:`_echo` bounds it (100,000 < this) -- what is
+#: refused here is the aliased or aggregate case a node count cannot see.
+MAX_DOCUMENT_RENDERED_CHARS: Final = 1_000_000
+
+#: Ceiling on how much of an author-written value a schema rejection may echo,
+#: in characters. Applied by `_bounded` to every variable-length fragment
+#: `_schema_rejection` assembles (issue #289).
+#:
+#: Sized to show a *real* rejected operation whole and to bite only on a value
+#: written to be large: the 52 operations in this repository's own committed
+#: migrations render at 145-937 characters, median 501 (measured 2026-08-21 over
+#: `.theurian/migrations`). What the bound removes is the unbounded case behind
+#: the issue -- a 100 KB value rendering a 100,198-character refusal into
+#: someone's terminal.
+MAX_ECHOED_VALUE: Final = 1_000
+
+#: Ceiling on the *schema-side* expectation a rejection names (the ``const`` a
+#: value must equal, the ``pattern`` it must match, the ``type`` it must be),
+#: in characters. Applied by `_schema_rejection` through :func:`_bounded`
+#: (issue #289).
+#:
+#: A real constraint is tiny -- measured 2026-08-21 against the bundled schema:
+#: ``const`` 17 characters, ``pattern`` 31, ``type`` 7, ``minItems`` 1. The one
+#: keyword whose expectation is large is ``oneOf``, whose ``validator_value`` is
+#: the list of subschemas an operation must match one of (524 characters). Kept
+#: well under :data:`MAX_ECHOED_VALUE` so that expectation and echoed value
+#: together stay bounded however the schema grows: for ``oneOf`` the echoed
+#: value and the location already localize the fault, so the schema dump is a
+#: hint, not the diagnosis, and is truncated to that role.
+MAX_ECHOED_EXPECTATION: Final = 120
 
 _SCHEMA_RELATIVE: Final = "migrations/migration.schema.json"
 
@@ -249,10 +374,213 @@ class _SchemaValidator:
     schema_path: Path
 
 
-def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str, object]) -> None:
+def _rendered_width(value: object) -> int:
+    """How many characters ``value`` contributes to jsonschema's ``{instance!r}``
+    re-expansion, computed in O(1) *without* materialising a giant render.
+
+    :data:`MAX_DOCUMENT_RENDERED_CHARS` charges this for every leaf the walk
+    discovers, un-memoised, so an aliased scalar's *aggregate* magnitude across N
+    references is bounded whatever the leaf's type -- the class the node count
+    alone cannot see:
+
+    * ``str``/``bytes`` report their own ``len`` -- a lower bound on the
+      quoted-and-escaped render `jsonschema` actually emits.
+    * An ``int`` reports its decimal digit count, estimated from ``bit_length``,
+      plus one for a negative value's sign character. Never ``str(value)``:
+      stringifying a giant integer is quadratic and, past CPython's int->str
+      limit, *raises* -- the very cost this bound exists to refuse. The estimate
+      rounds ``log10(2)`` up, so it never under-charges.
+    * ``bool``/``float``/``None`` and ``datetime``/``date`` render to a small,
+      bounded width, charged by their actual ``repr`` length -- cheap, since none
+      of them is unbounded. ``bool`` is matched before ``int`` (of which it is a
+      subclass) only so its one-bit ``bit_length`` does not under-report
+      ``"True"``/``"False"``. ``datetime`` and ``date`` are parsed leaves too:
+      ``_StrictLoader`` drops the implicit timestamp *resolver* but keeps the
+      ``!!timestamp`` *constructor*, so an explicit ``!!timestamp`` tag in a file
+      yields a ``datetime.datetime`` (or a ``datetime.date`` for a date-only
+      value); charging its ``repr`` keeps that leaf under the aliased-scalar bound
+      the same way the other bounded-render scalars are. ``date`` is matched
+      before the ``None`` test and covers ``datetime``, its subclass.
+    * A container contributes nothing here: its structural characters are O(1) per
+      node, already bounded by :data:`MAX_DOCUMENT_NODES`, and its own leaves are
+      charged as the walk reaches them. Every scalar a parsed document can hold is
+      one of the leaf types above, so the ``return 0`` fall-through is reached only
+      by an arbitrary in-memory object the loader never produces -- charged nothing
+      rather than having a possibly hostile ``repr`` invoked here.
+    """
+    if isinstance(value, str | bytes):
+        return len(value)
+    if isinstance(value, bool):
+        return len(repr(value))
+    if isinstance(value, int):
+        # digits <= floor(bit_length * log10(2)) + 1; 30103/100000 rounds
+        # log10(2) up, so this never under-counts, and integer arithmetic keeps a
+        # float rounding out of a budget threshold. A negative value adds one for
+        # the sign character `repr` prepends, so the estimate stays an upper bound.
+        digits = (value.bit_length() * 30103) // 100_000 + 1
+        return digits + 1 if value < 0 else digits
+    if isinstance(value, float | date) or value is None:
+        return len(repr(value))
+    return 0
+
+
+def _refuse_a_document_that_nests_too_deep(
+    document: Mapping[str, object], document_name: str | None
+) -> None:
+    """Refuse a document that nests past :data:`MAX_DOCUMENT_NESTING`, holds
+    more than :data:`MAX_DOCUMENT_NODES` nodes, or carries more than
+    :data:`MAX_DOCUMENT_RENDERED_CHARS` characters of string content (issues
+    #291, #245).
+
+    **Iterative on purpose.** A recursive depth checker spends the very budget
+    it exists to protect, so it would raise `RecursionError` on exactly the
+    documents it is meant to refuse -- moving the fault rather than closing it.
+    The frontier holds ``(value, depth)`` pairs, so the only stack this uses is
+    the heap.
+
+    **Un-collapsed on purpose.** The walk does not memoise the nodes it has
+    seen. A YAML anchor referenced from two aliases, each referenced from two
+    more, expands to 2**N nodes from an N-line file -- and `jsonschema`'s own
+    ``{instance!r}`` message interpolation re-expands it the identical way,
+    building a multi-megabyte message from a sub-kilobyte file *before*
+    :func:`_schema_rejection` is ever reached. Collapsing the walk on object
+    identity would count that file as its handful of distinct nodes and wave it
+    through to ``validate``, moving the cost into a dependency this module
+    cannot bound. So the walk counts every reference and refuses at
+    :data:`MAX_DOCUMENT_NODES` -- which bounds both this walk's own cost and
+    jsonschema's own ``{instance!r}`` *structural* re-expansion on a document
+    that passes it: that repr re-expands the same shared references this walk
+    counted.
+
+    **What the node count does not bound, closed here.** The same ``{instance!r}``
+    re-expansion that this walk's node count matches structurally also re-emits
+    every *scalar* it reaches, and a node count is blind to how big each scalar is.
+    An anchored scalar aliased into N slots is only N+1 nodes but re-expands to N
+    times its rendered width in jsonschema's message. So the same walk accumulates
+    :func:`_rendered_width` for *every* leaf it discovers -- un-memoised, exactly
+    as the node count is, so aliased repeats are charged every time, the way
+    jsonschema charges them -- and refuses at :data:`MAX_DOCUMENT_RENDERED_CHARS`.
+    That width is O(1) for every leaf type: ``len`` for a ``str``/``bytes``, and a
+    ``bit_length``-derived decimal-digit estimate for an ``int`` (never
+    ``str(int)``, which a giant integer makes quadratic and, past CPython's
+    int->str limit, raises), so the walk's cost is unchanged.
+
+    This bounds the *aggregate* magnitude an aliased scalar re-expands to. It does
+    not bound a *single* integer whose own render is large but under that aggregate
+    budget: a lone integer of a few thousand digits is one node, passes this budget
+    (its own width is well under it), and reaches ``validate``, where rendering it
+    with ``{instance!r}`` raises ``ValueError``. That single-value face stays closed
+    separately, in :func:`_validate_document`, by translating that ``ValueError``
+    (issue #291's scalar face) -- this budget and that catch are complementary, not
+    redundant.
+
+    All three checks are made as each child is *discovered*, so the frontier
+    itself never grows past the node cap even for a single very wide node, and the
+    character budget refuses an aliased-scalar bomb before the frontier holds more
+    than a handful of its slots.
+
+    Both checks run before ``validate`` rather than as a wider ``except`` around
+    it, because the two sources of a validate-time ``RecursionError`` cannot be
+    told apart once ``validate`` is running -- see :func:`_validate_document`,
+    whose schema attribution this function is what makes sound.
+
+    Mappings, sequences and sets are all containers a *parsed* document holds,
+    and the ``set``/``frozenset``/``tuple`` and non-string-key branches are
+    reachable from a file, not merely from an in-memory caller. ``load_yaml``'s
+    ``_StrictLoader`` is a ``SafeLoader`` subclass with only its timestamp
+    *resolver* dropped -- the ``!!timestamp`` *constructor* is kept -- so ``!!set``
+    in a migration file produces a Python ``set`` (an ``!!set`` of 200,000 elements
+    is refused *only because the set is walked*), and a non-string scalar key --
+    ``1234: v``, ``true: v``, ``~: v``, ``1.5: v``, ``? !!timestamp 2020-01-01`` --
+    produces an ``int``/``bool``/``None``/``float``/``date`` key that the node count
+    charges *only because keys are walked* and :func:`_rendered_width` charges
+    *only because it recognises that leaf type* (the implicit ``2020-01-01: v`` is
+    a ``str`` key, the dropped resolver's doing; the explicit ``!!timestamp`` tag
+    is what yields a ``date``). The ``propose`` seam
+    (`_migration_document`, ``application/proposal_service.py``) does build
+    ``dict[str, object]`` with string keys and list/scalar values, but the file
+    seam is wider than that.
+
+    What *is* in-memory-only is a *container* sitting in a key or a set element:
+    PyYAML rejects an unhashable key or set member with ``ConstructorError``, so a
+    ``dict``/``list``/``set`` cannot be a key or a set element from a file -- only
+    an in-memory caller of :func:`validate_migration_document` can hand one in.
+    That is the residual the ``tuple`` and container-key handling defends, and a
+    deep such container would otherwise slip past this bound and reach
+    ``validate``, where it is mistranslated as a corrupt schema.
+
+    ``str`` and ``bytes`` stay leaves for *nesting* -- their elements are
+    characters and integers, not structure -- but their length is charged against
+    :data:`MAX_DOCUMENT_RENDERED_CHARS` as they are discovered; descending into
+    them for depth would make this pass cost the length of the text.
+    """
+    frontier: list[tuple[object, int]] = [(document, 1)]
+    discovered = 1
+    rendered = 0
+    while frontier:
+        value, depth = frontier.pop()
+        if depth > MAX_DOCUMENT_NESTING:
+            # No part of the document is echoed: at this depth its rendering is
+            # exactly what cannot be produced safely, and the cure is the shape
+            # of the document rather than any one value in it.
+            subject = f"{document_name} nests" if document_name else "This document nests"
+            raise MigrationError(
+                f"{subject} more than {MAX_DOCUMENT_NESTING} levels deep. Flatten it: a "
+                f"migration is a fixed, shallow shape, and nothing the schema accepts "
+                f"nests past 7 levels."
+            )
+        if isinstance(value, Mapping):
+            children: Iterable[object] = chain(value.keys(), value.values())
+        elif isinstance(value, list | tuple | set | frozenset):
+            children = value
+        else:
+            continue
+        for child in children:
+            discovered += 1
+            if discovered > MAX_DOCUMENT_NODES:
+                # Bounded before the frontier is: a single node with more
+                # children than the whole budget is refused as it is read, not
+                # after it has been fully expanded into memory.
+                subject = f"{document_name} holds" if document_name else "This document holds"
+                raise MigrationError(
+                    f"{subject} more than {MAX_DOCUMENT_NODES} values. A migration is a "
+                    f"fixed, shallow shape; a document this large is a mistake or an attempt "
+                    f"to exhaust memory. Reduce it, or split it into separate migration files."
+                )
+            # Charged for *every* leaf via `_rendered_width` (O(1) per leaf), and
+            # per reference rather than per distinct object, so an anchored scalar
+            # aliased into N slots costs N times its width here -- *at least* what
+            # jsonschema's `{instance!r}` re-expands it to, since that repr adds
+            # quotes and escapes to a `str`/`bytes` value and re-emits every digit
+            # of an integer once per slot. Charging integers too is what closes the
+            # aliased-integer face the earlier str/bytes-only budget missed: a
+            # few-thousand-digit integer reprs without raising and is O(N) nodes
+            # aliased, so neither the node ceiling nor `_validate_document`'s
+            # `ValueError` catch would see it. Containers charge nothing here (their
+            # leaves are charged as the walk reaches them), so this line is safe to
+            # run for every child.
+            rendered += _rendered_width(child)
+            if rendered > MAX_DOCUMENT_RENDERED_CHARS:
+                subject = f"{document_name} holds" if document_name else "This document holds"
+                raise MigrationError(
+                    f"{subject} more than {MAX_DOCUMENT_RENDERED_CHARS} characters of "
+                    f"string content once its shared references are expanded. A migration "
+                    f"is a fixed, shallow shape; a document this large is a mistake or an "
+                    f"attempt to exhaust memory. Reduce it, or split it into separate "
+                    f"migration files."
+                )
+            frontier.append((child, depth + 1))
+
+
+def _validate_document(
+    schema_validator: _SchemaValidator,
+    document: Mapping[str, object],
+    *,
+    document_name: str | None = None,
+) -> None:
     """Run one document through the validator, translating a failed offline
-    `$ref` resolution -- and a validate-time recursion attributed to the schema
-    (see below) -- to `SchemaUnreadableError` (issue #235).
+    `$ref` resolution -- and a validate-time recursion, which by then can only
+    be the schema's (see below) -- to `SchemaUnreadableError` (issue #235).
 
     `_validator` builds every validator with a `referencing` registry that has
     no network or file retrieval (see its docstring), so an external `$ref`
@@ -265,27 +593,82 @@ def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str
     `except ValidationError` seam and reached `resolve_context` as a raw
     traceback under `--json`.
 
-    An `Unresolvable` is unambiguously a schema defect. A `RecursionError`
-    here is *attributed* to the schema, not proven to be one: a document nested
-    deep enough raises the identical `RecursionError` from
-    `validator.validate(document)`, and the two sources are indistinguishable
-    at this call. The attribution holds only because no shipped document path
-    reaches this seam deep enough to trip it -- the `load_migrations` path is
-    guarded by `load_yaml_mapping`'s depth limit, which raises `RecursionError`
-    -> `ValueError` -> `MigrationError` before a document is ever validated
-    (`security/yaml_loading.py`), and the `propose` path builds shallow,
-    fixed-structure documents. That leaves a latent gap at other ambient stack
-    depths, tracked as issue #291; the real fix there is build-time
-    schema-recursion detection, not a wider `except` here, since the two
-    sources cannot be told apart once `validate` is running. Both failures this
-    function does attribute to the schema carry `SchemaUnreadableError`, the
-    type every other install-corruption failure `_validator` translates.
+    An `Unresolvable` is unambiguously a schema defect. A `RecursionError` was
+    only ever *attributed* to one, and until issue #291 that attribution was
+    unsound: a deeply nested **document** raised the identical `RecursionError`
+    from `validator.validate(document)`, and a user-input fault was answered
+    "reinstall theurian". Measured on 2026-08-21, CPython 3.13.3, `jsonschema`
+    4.26.0, against a document carrying a ``{"a": {"a": ...}}`` chain inside
+    its single operation:
+
+    * The recursion is raised while `jsonschema` builds a *message*, not while
+      it walks the schema -- `_keywords.py`'s `oneOf` interpolating
+      `f"{instance!r} is not valid under any of the given schemas"`, and the
+      exception says so verbatim: "maximum recursion depth exceeded while
+      getting the repr of an object". It is instance-driven, so no amount of
+      schema inspection at build time detects it.
+    * The budget is CPython's C recursion limit, not `sys.getrecursionlimit()`:
+      `repr` of a 9,000-level chain renders identically at Python limits of
+      100, 1,000, 10,000 and 100,000, and the deepest chain that renders at all
+      from a shallow stack is 9,997.
+    * That budget is shared with the ambient call stack, so **the same document
+      got different answers depending on who called**: depth 8,000 answered
+      `MigrationError` from a direct call and `SchemaUnreadableError` from a
+      stack 1,200 C-frames deep. Depths 2,000 through 7,000 were answered
+      correctly at every ambient depth tried; 10,000 and 20,000 were
+      mistranslated at all of them.
+
+    :func:`_refuse_a_document_that_nests_too_deep` closes that gap by bounding
+    the document at :data:`MAX_DOCUMENT_NESTING` before `validate` is reached,
+    and at :data:`MAX_DOCUMENT_NODES` and :data:`MAX_DOCUMENT_RENDERED_CHARS` so
+    that a shallow but alias-expanded document -- expanded in node count or in
+    total rendered string length -- cannot make `validate` itself do unbounded
+    work. The attribution
+    below is a deduction only under the premise those two bounds establish: the
+    document is shallow (past `MAX_DOCUMENT_NESTING` it was refused, not
+    validated) *and* the ambient call stack the guard ran on is not itself near
+    the C-recursion budget. `MAX_DOCUMENT_NESTING` is 64 and the shallow-stack
+    budget is ~9,997, so an ordinary caller leaves ample headroom; a caller that
+    had already spent most of the budget before reaching here could in principle
+    make even a 64-level document recurse, which is why the premise is stated
+    rather than claimed unconditionally. Within it, a `RecursionError` from a
+    proven-shallow instance is the schema's, and the `SchemaUnreadableError`
+    this raises is the honest answer. Both failures this function attributes to
+    the schema carry that type, as every other install-corruption failure
+    `_validator` translates does.
 
     A `ValidationError` is a real fault in the *document* and is deliberately
     left to propagate: the two callers word it differently (with or without a
     file name), so each wraps it into its own `MigrationError`. Only the
     schema-integrity failures, identical from both seams, are handled here.
+    `document_name` exists for the same split -- the depth refusal above is
+    raised here rather than by a caller, so it is told the file name the
+    loading seam would otherwise have added itself.
+
+    A raw `ValueError` or `ArithmeticError`, by contrast, *is* translated here
+    rather than left to propagate. `jsonschema` renders the failing value into
+    its message with `{instance!r}` and numeric-checks it against the schema, and
+    a giant integer defeats both faces of that. Rendering one past CPython's
+    int->str conversion limit (`sys.get_int_max_str_digits()`) raises
+    `ValueError`; numeric-checking one against a float-valued `multipleOf`
+    coerces it to `float` and raises `OverflowError` -- an `ArithmeticError`,
+    *not* a `ValueError`. Neither is a `ValidationError`, so each slipped past
+    every `except ValidationError` seam as a raw traceback (CP-2). A single
+    integer is one node, so :data:`MAX_DOCUMENT_NODES`, which bounds node
+    *count*, cannot catch it: this is the scalar face of issue #291's repr denial
+    of service. The catch below is by *type* -- the whole
+    `ValueError`/`ArithmeticError` class -- so it closes both faces and any other
+    value or arithmetic error jsonschema can raise while rendering or converting
+    a document. The render face is reachable today; the overflow face is latent,
+    since the bundled schema carries only `minimum`/`maximum` (which compare
+    int-to-int without coercion) and no `multipleOf` -- but a schema that later
+    adds one must not reopen the escape. It is a document fault, named with
+    `document_name` the way the depth refusal is, and it becomes a
+    `MigrationError` here because there is no `ValidationError` for a caller to
+    wrap; the value is never echoed, since rendering it is the very thing that
+    just failed.
     """
+    _refuse_a_document_that_nests_too_deep(document, document_name)
     try:
         schema_validator.validator.validate(document)
     except Unresolvable as exc:
@@ -298,6 +681,416 @@ def _validate_document(schema_validator: _SchemaValidator, document: Mapping[str
     except RecursionError as exc:
         reason = "a schema $ref resolves recursively without terminating"
         raise SchemaUnreadableError(str(schema_validator.schema_path), reason) from exc
+    except (ValueError, ArithmeticError) as exc:
+        # A giant integer defeats jsonschema two ways while it processes this
+        # document, and neither is a `ValidationError` (CP-2, #291's scalar
+        # face): rendering the value into the rejection message with `{instance!r}`
+        # past CPython's int->str conversion limit raises `ValueError` (reachable
+        # today -- any oversized integer that fails a type check is rendered),
+        # and numeric-checking it against a float-valued `multipleOf` coerces it
+        # to float and raises `OverflowError`, an `ArithmeticError` that is *not*
+        # a `ValueError` (latent -- the bundled schema has only `minimum`/`maximum`,
+        # int-to-int comparisons that never overflow). The node cap cannot catch
+        # either (one scalar is one node). The catch is by *type* so a future
+        # schema adding such a numeric keyword cannot reopen the escape. The
+        # value is not echoed: being too large to process safely is itself the
+        # diagnosis (SEC-7).
+        #
+        # Recorded residual (MEDIUM): the *wording* below assumes the cause is
+        # value size, which is true of every `ValueError`/`ArithmeticError`
+        # reachable through the bundled schema -- both faces above are size. No
+        # non-size one is reachable today (the schema carries no format checker or
+        # other keyword whose implementation raises a non-size `ValueError`). If a
+        # future schema keyword made one reachable, this message would misdiagnose
+        # it as "too large"; the by-type closure would still hold (no raw
+        # traceback), and the size-face wording is pinned by
+        # `test_validate_migration_document_translates_a_giant_integer_scalar` and
+        # `test_validate_document_translates_a_giant_integer_overflowing_a_numeric_keyword`
+        # so that divergence is visible.
+        subject = f"{document_name} holds" if document_name else "This document holds"
+        raise MigrationError(
+            f"{subject} a value validate could not render or convert: it is too large "
+            f"for the parser to process safely. A migration value is a short identifier, "
+            f"a string, or a small number; reduce it."
+        ) from exc
+
+
+def _bounded(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
+    """``rendered``, cut to ``limit`` (:data:`MAX_ECHOED_VALUE` by default),
+    saying what was cut.
+
+    The full length is named because for the case this bound exists for -- a
+    value that is refused *for being large* -- the size is the diagnosis, and a
+    reader who is only shown a prefix cannot tell 300 characters from 300,000.
+    That holds for a *leaf* fragment, where the string this cuts is the value
+    itself. When `_echo` renders a *container* instance the string this would cut
+    is the container's repr, whose length is not any one value's -- so `_echo`
+    names the longest scalar's true length itself and truncates with
+    :func:`_truncate` (no count) rather than routing through this.
+
+    ``limit`` is a parameter, not a second constant, because the schema-side
+    expectation :func:`_schema_rejection` names is bounded tighter than the
+    author-written value it echoes (:data:`MAX_ECHOED_EXPECTATION`): a real
+    constraint is a handful of characters, and the one structural keyword whose
+    expectation is large is a hint rather than the diagnosis there.
+    """
+    if len(rendered) <= limit:
+        return rendered
+    return f"{rendered[:limit]}... ({len(rendered)} characters in all)"
+
+
+#: Ceiling on the bit length of an integer :func:`_echo` will render in decimal.
+#: `reprlib.repr_int` converts the whole integer to a decimal string *before*
+#: truncating it, so an integer past CPython's int->str conversion limit raises
+#: `ValueError` from that conversion (measured: ``10**5000``) -- which would
+#: crash the rejection builder. `bit_length` is O(bits) with no decimal
+#: conversion, so keying on it refuses the render before any string exists. 2000
+#: bits is at most 603 decimal digits, below the 640-digit floor
+#: `sys.set_int_max_str_digits` cannot be set beneath, so every integer that
+#: *reaches* `repr_int` converts without raising however that process limit is
+#: tuned; any integer larger than this is a denial of service rather than a real
+#: migration value (a `confidence` float or a small count) and renders as a
+#: placeholder. A giant integer reaching `validate` is refused upstream, in
+#: :func:`_validate_document`; this keeps `_echo`, reached out-of-band, from
+#: raising too (issue #291's scalar face).
+_MAX_ECHOED_INT_BITS: Final = 2_000
+
+
+class _BoundedRepr(reprlib.Repr):
+    """A `reprlib.Repr` that bounds an integer by magnitude and records the true
+    length of the longest string it renders.
+
+    Every other value `reprlib` renders is bounded by depth (`maxlevel`), by
+    per-container width, or by string length. An *integer* is not: `repr_int`
+    stringifies the whole value first, so a large enough integer raises
+    `ValueError` at CPython's int->str limit before any truncation runs. This
+    refuses to render such an integer at all, keying on `bit_length` so no
+    decimal string is ever built -- which keeps the render total, a giant integer
+    inside a container becoming a placeholder while the rest still renders.
+
+    ``maxstring`` truncates a string before anything downstream can measure it,
+    which hides the true length -- and for a value refused *for being large* that
+    length is the diagnosis (`_bounded`'s docstring). For a bare string leaf
+    `_echo` knows the length directly; for a string *nested inside a container*
+    instance it does not, so this records ``max`` of the pre-truncation lengths in
+    :attr:`longest_scalar` as they are rendered, at no extra traversal cost. An
+    instance is measured by a *fresh* renderer each call (:func:`_new_echo_repr`),
+    so the attribute never carries across calls.
+
+    Only ``str`` is tracked, not ``bytes``: `reprlib.Repr` has no ``repr_bytes``
+    hook (bytes fall through ``repr_instance``, bounded by ``maxother``), so a
+    ``bytes`` value *nested inside a container* instance is reported at the
+    container repr's length rather than its own -- a diagnostic-precision residual
+    (LOW, round two), not a leak or a denial of service. An oversized ``bytes`` is
+    refused for its own length by the rendered budget
+    (:data:`MAX_DOCUMENT_RENDERED_CHARS`) before ``validate`` is ever reached, so
+    the only ``bytes`` that reaches this renderer is already small; a bare ``bytes``
+    *leaf* is measured directly by :func:`_echo` from its own ``len``, in octets.
+    Tracking a nested ``bytes`` here would also have to carry its unit ("octets",
+    not "characters") through :func:`_echo`, which is why it is recorded rather
+    than added.
+    """
+
+    #: The greatest ``len`` of any ``str`` this renderer has rendered, before
+    #: ``maxstring`` truncation. A class-level default rather than an ``__init__``
+    #: override: `reprlib.Repr.__init__` takes a ``str`` ``fillvalue`` that a
+    #: ``**int`` unpack cannot satisfy under strict typing, and the first
+    #: `repr_str` shadows this with a per-instance value, so the fresh renderers
+    #: :func:`_new_echo_repr` hands out never share the measurement.
+    longest_scalar: int = 0
+
+    @override
+    def repr_int(self, x: int, level: int) -> str:
+        if x.bit_length() > _MAX_ECHOED_INT_BITS:
+            # The size is the whole diagnosis for a value refused for being large
+            # (SEC-7); the exact bit length is free and never triggers the
+            # conversion that would raise.
+            return f"<integer too large to render: {x.bit_length()} bits>"
+        return super().repr_int(x, level)
+
+    @override
+    def repr_str(self, x: str, level: int) -> str:
+        self.longest_scalar = max(self.longest_scalar, len(x))
+        return super().repr_str(x, level)
+
+
+#: The per-container width the echo renderer allows. Load-bearing DoS knob: with
+#: `maxlevel`, a walk to `maxlevel` that re-expands up to this many children per
+#: level is up to ``width**maxlevel`` renders, since `reprlib` does not collapse
+#: shared references -- raising it re-introduces that width**level blow-up.
+_ECHO_WIDTH: Final = 12
+
+#: How deep the echo renderer descends. Load-bearing DoS knob, paired with
+#: :data:`_ECHO_WIDTH` above.
+_ECHO_MAXLEVEL: Final = 8
+
+
+def _new_echo_repr() -> _BoundedRepr:
+    """A fresh renderer for the one author-written value a schema rejection echoes.
+
+    Fresh per call because :class:`_BoundedRepr` records the longest string it
+    renders (:attr:`_BoundedRepr.longest_scalar`) so `_echo` can name an oversized
+    value's true length even when it is nested inside a container instance; a
+    shared singleton would carry that measurement across calls.
+
+    `maxstring`/`maxother` track :data:`MAX_ECHOED_VALUE` (they bound the *output
+    length*, later re-bounded by `_bounded`); :data:`_ECHO_MAXLEVEL` and the
+    per-container width :data:`_ECHO_WIDTH` bound the render *work*. So `reprlib`
+    bounds render *depth*, not total work -- a *chain* too deep for plain `repr`
+    to render without a `RecursionError` is rendered (it stops at `maxlevel`), but
+    a *branching* alias graph reached out-of-band still costs width**level
+    (measured: ~12**8, 14.3 s at level 7, unfinished at level 8). The bound on the
+    reachable path is the *guard*, which refuses such a document before `validate`
+    (:data:`MAX_DOCUMENT_NODES`, :data:`MAX_DOCUMENT_RENDERED_CHARS`); this echo is
+    defense in depth for a value reaching :func:`_schema_rejection` some other way,
+    and is not itself bounded on a branching graph reached that way (issues #289,
+    #291).
+    """
+    return _BoundedRepr(
+        maxlevel=_ECHO_MAXLEVEL,
+        maxtuple=_ECHO_WIDTH,
+        maxlist=_ECHO_WIDTH,
+        maxdict=_ECHO_WIDTH,
+        maxset=_ECHO_WIDTH,
+        maxfrozenset=_ECHO_WIDTH,
+        maxstring=MAX_ECHOED_VALUE,
+        maxother=MAX_ECHOED_VALUE,
+    )
+
+
+def _truncate(rendered: str, limit: int = MAX_ECHOED_VALUE) -> str:
+    """``rendered`` cut to ``limit`` with an inert ellipsis but *no* length count.
+
+    The counting twin of :func:`_bounded`, for the one case where `_echo` names
+    the diagnostic size itself: a container instance carrying an oversized scalar.
+    `_bounded`'s own ``(N characters in all)`` there would report the *container
+    repr's* length -- ~1,100 characters for a 100,000-character value inside an
+    operation -- so `_echo` truncates with this instead and appends the scalar's
+    true length, one honest number rather than two misleading ones.
+    """
+    return rendered if len(rendered) <= limit else f"{rendered[:limit]}..."
+
+
+def _echo(instance: object) -> str:
+    """``instance`` rendered for a schema-rejection message, bounded twice over.
+
+    `reprlib` bounds render *depth* (``maxlevel``) and per-container *width*, and
+    truncates a giant integer by magnitude (:class:`_BoundedRepr`) and a string
+    at ``maxstring`` -- so a chain too deep for plain ``repr``, or a scalar too
+    large for it, is rendered without raising, and the control characters `repr`
+    escapes stay escaped. It does *not* bound total work on a *branching* alias
+    graph reached out-of-band (see :func:`_new_echo_repr`); the reachable-path
+    bound is the guard, not this.
+
+    For a value refused *for being large*, its length is the diagnosis
+    (`_bounded`'s docstring), and ``maxstring`` truncates it before `_bounded` can
+    measure it. That length is restored two ways depending on where the oversized
+    value sits:
+
+    * A bare ``str``/``bytes`` *leaf* instance: its own ``len`` is the true length,
+      known in O(1), with the correct unit (code points or octets).
+    * An oversized scalar *nested inside a container* instance -- the reachable
+      shape, since an operation that fails ``#/$defs/operation``'s ``oneOf`` hands
+      `jsonschema` the whole operation *mapping* -- is truncated at ``maxstring``
+      before `_bounded` sees it, so `_bounded` would report the container repr's
+      length (~1,100), not the value's. :attr:`_BoundedRepr.longest_scalar` records
+      the longest string the render actually reached, and `_echo` names that true
+      length instead (MEDIUM, round one).
+
+    Where no scalar is oversized, `_bounded` bounds the *length* of the whole
+    render, so a wide operation of many medium fields is still capped at
+    :data:`MAX_ECHOED_VALUE` and says how large it was.
+    """
+    renderer = _new_echo_repr()
+    rendered = renderer.repr(instance)
+    if isinstance(instance, str | bytes):
+        # A leaf: its own `len` is the true length. `len` counts code points on a
+        # `str` and octets on `bytes`; naming the wrong unit would misreport the
+        # size, which for a value refused *for being large* is the whole diagnosis.
+        if len(instance) > MAX_ECHOED_VALUE:
+            unit = "bytes" if isinstance(instance, bytes) else "characters"
+            return f"{_truncate(rendered)} ({len(instance)} {unit} in all)"
+        return _bounded(rendered)
+    if renderer.longest_scalar > MAX_ECHOED_VALUE:
+        # A container holding an oversized scalar: name the scalar's true length,
+        # not the container repr's (see the docstring and `_truncate`).
+        return f"{_truncate(rendered)} ({renderer.longest_scalar} characters in all)"
+    return _bounded(rendered)
+
+
+def _missing_required_properties(exc: ValidationError) -> list[str]:
+    """The ``required`` names the failing instance does not carry.
+
+    Every name returned comes from the *schema's* ``required`` array, never
+    from the document -- which is why :func:`_schema_rejection` may print them
+    in full while it bounds everything the author wrote. The two ``isinstance``
+    guards are what keep that true: without them this would be reading whatever
+    a replaced schema put there, and the list is a plain ``Any`` in the stubs.
+
+    Empty when the keyword is not ``required``, when the instance is not a
+    mapping, or when nothing is missing -- each of which sends the caller back
+    to its generic wording rather than to a sentence that would be false.
+
+    The keyword check is not redundant with the type checks below it. Other
+    keywords carry a list of strings too: an array-valued ``type``, or an
+    ``enum``, against a mapping instance would otherwise have every name it
+    lists reported as a *missing property*, which is not what either keyword
+    means.
+    """
+    required = exc.validator_value
+    instance = exc.instance
+    if exc.validator != "required":
+        return []
+    if not isinstance(required, list) or not isinstance(instance, Mapping):
+        return []
+    return [name for name in required if isinstance(name, str) and name not in instance]
+
+
+def _unexpected_properties(exc: ValidationError) -> list[object]:
+    """The instance keys an ``additionalProperties: false`` rejection refused.
+
+    These are the offending names `jsonschema` itself reported -- the ones the
+    generic echo pushed off the end of the instance and truncated away on every
+    real migration. Which keys are *unexpected* is fixed by the schema (the ones
+    not in its ``properties``), so naming them is as author-safe as naming the
+    missing ``required`` names; the names themselves are author-written, so
+    :func:`_schema_rejection` still bounds them.
+
+    Empty unless the keyword is ``additionalProperties`` refusing outright
+    (``validator_value`` is ``False``), the instance is a mapping, and the
+    failing schema is an object listing its allowed ``properties``. The bundled
+    schema has no ``patternProperties`` anywhere
+    (``test_the_bundled_schema_never_descends_into_an_author_written_key``), so
+    "not in ``properties``" is exactly `jsonschema`'s own set; a schema that grew
+    one would need this to consult it too.
+    """
+    if exc.validator != "additionalProperties" or exc.validator_value is not False:
+        return []
+    instance = exc.instance
+    schema = exc.schema
+    if not isinstance(instance, Mapping) or not isinstance(schema, Mapping):
+        return []
+    allowed = schema.get("properties", {})
+    allowed_names = set(allowed) if isinstance(allowed, Mapping) else set()
+    return [name for name in instance if name not in allowed_names]
+
+
+def _escape_control(text: str) -> str:
+    """``text`` with control characters (and non-ASCII) escaped, ASCII kept.
+
+    A schema property name -- all a location segment is today -- is unchanged, so
+    the common location reads as itself; a segment a future schema let descend
+    into an author-written key would arrive escaped, never raw in a terminal.
+    """
+    return text.encode("unicode_escape").decode("ascii")
+
+
+def _location(path: Iterable[object]) -> str:
+    """Where in the document a rejection fired, one bounded, escaped segment each.
+
+    Each string segment goes through the length bound and control-character
+    escaping the echoed value does. The bundled schema never descends into an
+    author-written key -- it is ``additionalProperties: false`` throughout with
+    no ``patternProperties`` (``test_the_bundled_schema_never_descends_into_an_
+    author_written_key``) -- so a segment is a schema property name today; the
+    bound is what keeps this fragment from reopening into an unbounded, unescaped
+    echo if that ever changes. Array indices are schema-derived integers,
+    rendered as-is.
+    """
+    segments = [
+        _bounded(_escape_control(part)) if isinstance(part, str) else str(part) for part in path
+    ]
+    return "/".join(segments) or "<root>"
+
+
+def _schema_rejection(exc: ValidationError) -> str:
+    """Where a document failed the schema and why, worded here (issue #289).
+
+    **One function for both seams**, because they are one message with two
+    prefixes: `validate_migration_document` says "invalid migration at ..." and
+    `_load_one` says "<file> is invalid at ...". A second hand-rolled builder
+    would drift, and the property most likely to be lost in the drift is the
+    one that leaves no trace when it goes -- the escaping below.
+
+    `jsonschema` builds `ValidationError.message` by interpolating the failing
+    instance with `{instance!r}`, and two properties of the refusal this seam
+    hands a reader used to rest on that:
+
+    * **Bounded.** It was not: a 100 KB author-written value rendered whole
+      into a message a reader receives, measured at 100,198 characters. A
+      migration file is written by whoever can commit to the repository, so
+      that echo is a terminal's worth of output the author chose. Every
+      variable-length fragment below goes through :func:`_bounded`.
+    * **Escaped.** It was, and by accident: an ESC or a newline in an authored
+      value arrived escaped only because a third-party internal happened to use
+      `!r` everywhere, which no test of ours held. Every author-written
+      fragment below is rendered with `repr` *here* -- the language's own
+      escaping, called by this seam rather than inherited from a dependency.
+
+    The **schema-side fact** the refusal carries is the third property, and the
+    one an earlier version of this seam dropped. `jsonschema`'s own message named
+    it -- the expected `const`, the `pattern`, the unexpected key -- and replacing
+    that message with "keyword name + echo of the instance" lost it: on all 26 of
+    this repository's committed migrations a single top-level typo produced
+    "does not satisfy 'additionalProperties'; the value there is {...}" with the
+    offending key truncated off the end of the instance, strictly worse diagnosis
+    than the `Additional properties are not allowed ('dependsOnn' was unexpected)`
+    it replaced. So the schema-side fact is put back:
+
+    * `required` and `additionalProperties` are worded from the *schema*: the
+      missing names (`_missing_required_properties`) and the unexpected ones
+      (`_unexpected_properties`). Both are fixed by the schema, not chosen by the
+      author, so both may be named in full while the names themselves are
+      bounded. The earlier docstring's claim that `required` is "the one
+      rejection whose cause appears nowhere in the instance" was false -- a
+      `const`'s expected value and a `pattern` are nowhere in the instance
+      either -- and its claim that `additionalProperties` "needs no branch, the
+      echo shows the keys" was the exact defect above: the echo truncates them.
+    * Every other keyword names its `validator_value` -- the `const`, the
+      `pattern`, the `type`, the `minItems` the value had to satisfy -- through
+      `_bounded` at :data:`MAX_ECHOED_EXPECTATION`. That value is schema-derived,
+      so it is as safe to print as the `required` names; it is bounded tighter
+      than the echoed value because a real constraint is a handful of characters
+      and the one large one (`oneOf`'s subschema list) is a hint there, not the
+      diagnosis.
+
+    The **location** (`_location`) and the **echoed value** (`_echo`) carry the
+    other two properties. `absolute_path` holds the schema property names
+    descended through and array indices; the bundled schema is
+    `additionalProperties: false` throughout with no `patternProperties`, so no
+    author-invented key is ever descended into, and `_location` bounds and
+    escapes each segment so a future schema that did could not reopen an
+    unbounded, unescaped echo. `_echo` renders the failing instance with
+    `reprlib` -- bounded in depth and length, control characters escaped -- so an
+    ESC or newline an author wrote cannot forge a line of this seam's output, and
+    a chain too deep for plain `repr`, or a scalar too large for it, is rendered
+    without raising. What bounds a *branching* alias graph -- which `reprlib`
+    would still re-expand at width**level -- is the guard that refuses such a
+    document before `validate`, not `_echo` itself, which is defense in depth for
+    a value reaching here out-of-band (:func:`_new_echo_repr`,
+    :data:`MAX_DOCUMENT_NODES`, :data:`MAX_DOCUMENT_RENDERED_CHARS`).
+    """
+    location = _location(exc.absolute_path)
+    missing = _missing_required_properties(exc)
+    if missing:
+        noun = "property" if len(missing) == 1 else "properties"
+        names = _bounded(", ".join(repr(name) for name in missing))
+        return f"{location}: missing the required {noun} {names}"
+    unexpected = _unexpected_properties(exc)
+    if unexpected:
+        noun = "property" if len(unexpected) == 1 else "properties"
+        names = _bounded(", ".join(repr(name) for name in unexpected))
+        return f"{location}: has the unexpected {noun} {names}"
+    echoed = _echo(exc.instance)
+    if isinstance(exc.validator, str):
+        expected = _bounded(repr(exc.validator_value), MAX_ECHOED_EXPECTATION)
+        return (
+            f"{location}: does not satisfy {exc.validator!r} (expected {expected}); "
+            f"the value there is {echoed}"
+        )
+    # `Unset` when `jsonschema` raised without a keyword: no expectation to name,
+    # and "the schema" rather than a sentinel's repr.
+    return f"{location}: does not satisfy the schema; the value there is {echoed}"
 
 
 def validate_migration_document(document: Mapping[str, object], schema_root: Path) -> None:
@@ -310,7 +1103,15 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
     knowledge is human review, not format conversion.
 
     Raises:
-        MigrationError: If the document does not satisfy the schema.
+        MigrationError: If the document does not satisfy the schema, nests past
+            :data:`MAX_DOCUMENT_NESTING`, holds more than
+            :data:`MAX_DOCUMENT_NODES` nodes, or carries more than
+            :data:`MAX_DOCUMENT_RENDERED_CHARS` characters of string content once
+            its shared references are expanded -- document faults that used to be
+            reported as a corrupt installation, or to cost unbounded work in
+            `jsonschema`'s own message building (issues #291, #245; the mechanism
+            is recorded on :func:`_validate_document`, :data:`MAX_DOCUMENT_NODES`
+            and :data:`MAX_DOCUMENT_RENDERED_CHARS`).
         SchemaUnreadableError: If the installed schema cannot be read, parses
             to something this build cannot use as a schema (both from
             :func:`_validator`), or names a `$ref` that cannot be resolved
@@ -321,8 +1122,7 @@ def validate_migration_document(document: Mapping[str, object], schema_root: Pat
     try:
         _validate_document(schema_validator, document)
     except ValidationError as exc:
-        location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
-        raise MigrationError(f"invalid migration at {location}: {exc.message}") from exc
+        raise MigrationError(f"invalid migration at {_schema_rejection(exc)}") from exc
 
 
 def load_migrations(
@@ -336,7 +1136,11 @@ def load_migrations(
         schema_root: The repository's ``schemas/`` directory.
 
     Raises:
-        MigrationError: On a malformed, duplicate, cyclic, or unresolvable file.
+        MigrationError: On a malformed, duplicate, cyclic, or unresolvable
+            file, or one whose document nests past :data:`MAX_DOCUMENT_NESTING`,
+            expands past :data:`MAX_DOCUMENT_NODES` nodes, or carries more than
+            :data:`MAX_DOCUMENT_RENDERED_CHARS` characters of string content
+            (issues #291, #245).
         PathEscapeError: If a ``contentFile`` points outside ``project_root``;
             if ``migrations_dir`` itself is a symlink that resolves outside
             ``project_root`` (round four; checked directly, at the probe --
@@ -713,6 +1517,29 @@ def _load_one(
     except UnicodeDecodeError as exc:
         raise MigrationError(f"{path.name} is not valid UTF-8") from exc
     except ValueError as exc:
+        detail = str(exc)
+        # A YAML integer literal past CPython's int->str conversion limit
+        # (`sys.get_int_max_str_digits`) raises `ValueError` at `int()` inside
+        # PyYAML's own constructor, before any guard in this file runs -- the
+        # load-path twin of the in-memory scalar face `_validate_document` closes.
+        # CPython's own message names `sys.set_int_max_str_digits()` as the cure, an
+        # interpreter tuning knob no migration author should reach for; forwarding
+        # it verbatim leaked that remedy (issue #291's scalar face). The detection
+        # keys on the message phrasing *and* on the tuning knob's own name: if a
+        # future CPython reworded "integer string conversion", the size face would
+        # still be caught -- and the knob still kept out of the message -- as long
+        # as its message named `set_int_max_str_digits`, rather than falling through
+        # to the verbatim branch below and re-leaking it (LOW, round two). Keying on
+        # the leak string itself is more robust than the phrasing, since CPython is
+        # far likelier to reword the error than to rename the public API. Translated
+        # to the same "reduce it" wording the in-memory face uses, and the digits
+        # themselves are never echoed (SEC-7).
+        if "integer string conversion" in detail or "set_int_max_str_digits" in detail:
+            raise MigrationError(
+                f"{path.name}: a numeric value is too large for the parser to process "
+                f"safely. A migration value is a short identifier, a string, or a small "
+                f"number; reduce it."
+            ) from exc
         raise MigrationError(f"{path.name}: {exc}") from exc
     except yaml.YAMLError as exc:
         # `load_yaml_mapping`'s own docstring names this as the type a parse
@@ -724,10 +1551,17 @@ def _load_one(
         raise MigrationError(f"{path.name}: {exc}") from exc
 
     try:
-        _validate_document(schema_validator, document)
+        # `document_name` so the depth refusal (issue #291) names the file the
+        # same way this seam's own wrap below does. It is raised inside
+        # `_validate_document` rather than here because both seams need it and
+        # the check has to run *before* `validate`, which is the one call the
+        # two seams share.
+        _validate_document(schema_validator, document, document_name=path.name)
     except ValidationError as exc:
-        location = "/".join(str(p) for p in exc.absolute_path) or "<root>"
-        raise MigrationError(f"{path.name} is invalid at {location}: {exc.message}") from exc
+        # `_schema_rejection` and not this seam's own builder: the file name is
+        # the whole difference between the two wordings, and the rest -- the
+        # location, the bound, the escaping -- is one message (issue #289).
+        raise MigrationError(f"{path.name} is invalid at {_schema_rejection(exc)}") from exc
 
     if document["apiVersion"] != MIGRATION_API_VERSION:
         raise MigrationError(

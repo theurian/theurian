@@ -24,16 +24,19 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import shutil
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, override
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from theurian.cli.context import schema_root as real_schema_root
 from theurian.domain.errors import (
@@ -49,7 +52,15 @@ from theurian.domain.errors import (
 from theurian.domain.migration import LoadedMigrations
 from theurian.infrastructure.filesystem import migration_loader
 from theurian.infrastructure.filesystem.migration_loader import (
+    MAX_DOCUMENT_NESTING,
+    MAX_DOCUMENT_NODES,
+    MAX_DOCUMENT_RENDERED_CHARS,
+    _echo,
     _escape_role_of,
+    _refuse_a_document_that_nests_too_deep,
+    _schema_rejection,
+    _SchemaValidator,
+    _validate_document,
     _validator,
     load_migrations,
     validate_migration_document,
@@ -2462,3 +2473,1464 @@ def test_validate_migration_document_still_resolves_internal_defs_in_the_real_sc
     bad_item_id["operations"][0]["itemId"] = "Not A Valid Item Id"
     with pytest.raises(MigrationError):
         validate_migration_document(bad_item_id, real_schema_root())
+
+
+# -- issue #289: what a schema rejection is allowed to echo ------------------
+#
+# `jsonschema` builds `ValidationError.message` by interpolating the failing
+# instance with `{instance!r}` -- measured against the installed 4.26.0, all
+# twenty keyword interpolations use `!r`, and `_utils.extras_msg` reprs each
+# extra property name. Both seams in `migration_loader.py` --
+# `validate_migration_document`'s `except ValidationError` and `_load_one`'s --
+# forward that `exc.message` verbatim into a `MigrationError`.
+#
+# Two properties of the resulting message belong to Theurian and are pinned
+# here rather than left to a third party:
+#
+# 1. **Boundedness.** The echo is unbounded today: an author-controlled 100 KB
+#    string value is rendered whole into the refusal a reader receives.
+#    Measured on this branch at 100,198 characters for the document the first
+#    test below builds.
+# 2. **Control-character escaping.** `!r` already escapes an ESC byte and a
+#    newline, so no raw-ANSI injection is demonstrable today -- which is
+#    exactly why it is pinned: the guarantee currently lives in `jsonschema`
+#    internals that no test of ours holds, and a fix that reconstructs the
+#    message from `exc.absolute_path`/`exc.validator`/a truncated instance
+#    must not lose it on the way.
+#
+# The "still names the failing location" tests are the counterweight: a bound
+# and an escape must not be bought by deleting the diagnosis.
+
+#: Ceiling on a schema-rejection message, in characters. Deliberately generous
+#: -- today's real messages for these shapes run a little over 200 characters,
+#: and what is being pinned is that the echo is bounded by something Theurian
+#: chooses, not that it is short. A refusal lands in a terminal, so an
+#: unbounded echo is a resource the document's author spends on its reader.
+_MESSAGE_CHARACTER_CAP = 2000
+
+#: An author-controlled value large enough that echoing it whole is the defect
+#: rather than a matter of taste. `owner` carries it because the bundled
+#: schema caps that field's length, so a single oversized value is the whole
+#: reason the document is refused.
+_OVERSIZED_VALUE = "A" * 100_000
+
+#: A value carrying a raw ESC byte and a raw newline, long enough to break the
+#: root `author` field's 320-character ceiling.
+#:
+#: `author` carries it rather than a field inside the operation, and that
+#: choice is load-bearing: an operation is refused by `#/$defs/operation`'s
+#: `oneOf`, whose instance is the whole operation *mapping*, and a mapping's
+#: `str()` is its `repr()` -- so a mutation replacing `{instance!r}` with
+#: `{instance}` there escapes the value anyway and survives. `author` fails
+#: `maxLength` at the leaf, where the instance is the hostile string itself and
+#: the two renderings genuinely differ. Measured: the mapping-shaped version of
+#: this test passed with the mutation applied.
+_CONTROL_CHARACTER_AUTHOR = "\x1b[31mFORGED\x1b[0m\nSecond line" + "x" * 400
+
+
+def _document_with(
+    *, author: str = "engineer@example.com", **operation_overrides: object
+) -> dict[str, Any]:
+    """A schema-valid migration document with one field overridden.
+
+    Built valid first so each test below breaks exactly one field and knows
+    which rejection it is driving -- a second, incidental violation would let a
+    message assertion pass for the wrong reason.
+    """
+    operation: dict[str, Any] = {
+        "op": "createItem",
+        "itemId": "architecture.auth-policy",
+        "kind": "architecture",
+        "namespace": "backend",
+        "owner": "platform-team",
+    }
+    operation.update(operation_overrides)
+    return {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K1KKKKKK01234567890ABCDE",
+        "createdAt": "2026-08-02T10:00:00+09:00",
+        "author": author,
+        "operations": [operation],
+    }
+
+
+def test_a_schema_rejection_does_not_echo_an_oversized_value_whole() -> None:
+    """Issue #289: the failing instance reaches the reader unbounded.
+
+    `validate_migration_document` forwards `jsonschema`'s `exc.message`, which
+    has already interpolated the whole failing operation -- including a 100 KB
+    author-written `owner` -- with `{instance!r}`. Measured on this branch:
+    `len(str(exc))` is 100,198.
+
+    The document is otherwise valid, so the oversized value is both the reason
+    for the refusal and the entire excess in it.
+    """
+    document = _document_with(owner=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the author-controlled value is echoed whole"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_a_schema_rejection_never_puts_a_raw_control_character_in_the_message() -> None:
+    """Issue #289, the half that is GREEN today and pinned for that reason.
+
+    `jsonschema` escapes an ESC byte and a newline only because every keyword
+    interpolates with `{instance!r}` -- a property of a third-party
+    implementation that this seam currently inherits by accident and no test of
+    ours holds. Issue #289's own stated mechanism (raw ANSI reaching stderr)
+    was measured false on this branch for exactly that reason.
+
+    The fix moves the message construction to our side of the seam, and this
+    test is what stops the escaping being lost in the move. A refusal from this
+    seam is one line, so a raw newline from the instance would let an
+    author-written value forge a second line of Theurian's own output.
+
+    The third assertion is what keeps the first two from being satisfiable by
+    echoing nothing: the offending value must still be *reported*, inert. Same
+    shape as
+    `test_an_escaping_entrys_control_characters_do_not_reach_output_raw`
+    above, which exists because a mutation dropping one `!r` survived the suite.
+
+    See `_CONTROL_CHARACTER_AUTHOR` for why the hostile value sits on `author`
+    and not inside the operation -- a mapping-shaped instance escapes its
+    members whichever rendering is used, and that version of this test survived
+    the mutation it exists to catch.
+    """
+    document = _document_with(author=_CONTROL_CHARACTER_AUTHOR)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "\x1b" not in message, "a raw ESC byte in a terminal is an injected escape sequence"
+    assert "\n" not in message, "an echoed value must not add a line to Theurian's own output"
+    assert "FORGED" in message, "the offending value is still reported, as inert text"
+
+
+def test_a_schema_rejection_still_names_where_in_the_document_it_failed() -> None:
+    """The counterweight to the bound and the escaping above.
+
+    Both are trivially satisfiable by echoing nothing at all, and a refusal
+    that says only "invalid" sends the reader back into the schema. The
+    location path is what makes the refusal actionable, so it is asserted
+    separately -- GREEN today, and the test that goes RED if the #289 fix pays
+    for its bound with the diagnosis.
+    """
+    document = _document_with(owner=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    assert "operations/0" in str(excinfo.value), "the reader needs the failing location"
+
+
+def test_a_schema_rejection_names_the_true_size_of_an_oversized_scalar() -> None:
+    """MEDIUM: round two's switch from ``_bounded(repr(...))`` to ``_echo(...)``
+    dropped the size diagnosis for a scalar. ``_ECHO``'s ``maxstring`` truncates
+    the string *before* ``_bounded`` can measure it, so the ``(N characters in
+    all)`` marker that lets a reader tell 1 KB from 100 KB was lost --
+    ``_bounded``'s "size is the diagnosis" docstring falsified for this path.
+
+    An oversized ``author`` fails ``maxLength`` at the *leaf*, where the failing
+    instance is the hostile string itself (the reason ``_CONTROL_CHARACTER_AUTHOR``
+    also sits on ``author`` rather than inside the operation, whose instance is a
+    mapping). ``_echo`` now restores the true length for a ``str`` instance, so
+    the message names 100000. RED before the fix: measured, the true length
+    appeared nowhere in the message.
+    """
+    document = _document_with(author=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the value itself is still not echoed whole"
+    assert str(len(_OVERSIZED_VALUE)) in message, "the true size is the diagnosis, and named"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_a_schema_rejection_names_the_true_size_of_a_scalar_inside_an_operation() -> None:
+    """MEDIUM (round one): the leaf-path size restore above does not run when the
+    oversized scalar sits *inside* an operation. An operation that fails
+    ``#/$defs/operation``'s ``oneOf`` hands `jsonschema` the whole operation
+    *mapping*, so `_echo`'s ``str``/``bytes`` branch never runs; the renderer
+    truncated the 100,000-character ``owner`` at ``maxstring`` before `_bounded`
+    could measure it, and the ``(N characters in all)`` marker then reported the
+    *operation repr's* length -- measured at 1,101 -- not the value's.
+    ``_bounded``'s "size is the diagnosis" claim was false for this reachable
+    path.
+
+    `_echo` now records the longest string the render reached
+    (`_BoundedRepr.longest_scalar`) and names *that* true length. RED before the
+    fix: the number the reader saw was 1,101, so ``str(100_000)`` appeared nowhere
+    in the message.
+    """
+    document = _document_with(owner=_OVERSIZED_VALUE)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the value itself is still not echoed whole"
+    assert f"({len(_OVERSIZED_VALUE)} characters in all)" in message, (
+        "the nested scalar's true length is the reported size, not the operation repr's ~1 KB"
+    )
+    assert "operations/0" in message, "the failing operation is still located"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+# -- issue #291's scalar face: a giant integer's repr is not bounded by node ---
+# -- count -----------------------------------------------------------------------
+#
+# `MAX_DOCUMENT_NODES` bounds how many nodes a document holds, and jsonschema's
+# `{instance!r}` re-expands shared references at that same count -- but a single
+# integer is one node whose *decimal* render is unbounded. Past CPython's
+# int->str conversion limit (`sys.get_int_max_str_digits()`, default 4300),
+# rendering it raises `ValueError`, not a `ValidationError`, so it escaped every
+# `except ValidationError` seam as a raw traceback (CP-2). Orchestrator-
+# reproduced with `10**5000`.
+
+
+def test_validate_migration_document_translates_a_giant_integer_scalar() -> None:
+    """RED before the fix: `validator.validate` renders the failing `author`
+    with `{instance!r}`, and an integer past the int->str limit raises a raw
+    `ValueError` there -- not a `ValidationError`, so it reaches the caller as a
+    traceback rather than a translated refusal.
+
+    A single integer is one node, so `MAX_DOCUMENT_NODES` (a count) cannot catch
+    it; `_validate_document` translates the `ValueError` to `MigrationError`
+    instead -- what every other document fault at this seam raises.
+    `pytest.raises(MigrationError)` excludes the raw `ValueError` today's code
+    escapes, and the value is not echoed (rendering it is what just failed).
+    """
+    document: dict[str, Any] = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K1KKKKKK01234567890ABCDE",
+        "createdAt": "2026-08-02T10:00:00+09:00",
+        "author": 10**5000,  # one node, but its decimal render is unbounded
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": "architecture.auth-policy",
+                "kind": "architecture",
+                "namespace": "backend",
+                "owner": "platform-team",
+            }
+        ],
+    }
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "too large" in message, "the diagnosis is the value's size, named"
+    assert "reduce it" in message, "the refusal carries a remedy"
+    assert "9999" not in message and "0000" not in message, "the value itself is not echoed"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_validate_document_translates_a_giant_integer_overflowing_a_numeric_keyword(
+    tmp_path: Path,
+) -> None:
+    """RED before the fix: the `ValueError` face of #291's scalar CP-2 escape has
+    an `ArithmeticError` sibling the round-three catch missed by type.
+
+    `jsonschema` numeric-checks an instance against a float-valued `multipleOf`
+    by coercing it to `float`, and a giant integer raises `OverflowError` there
+    ("int too large to convert to float") -- which is an `ArithmeticError`, *not*
+    a `ValueError`, so `except ValueError` alone lets it escape as a raw
+    traceback exactly as the render face did. Measured on 8a97137: this call
+    raised a bare `OverflowError`. `except (ValueError, ArithmeticError)`
+    translates it to `MigrationError` like every other document fault at this
+    seam.
+
+    The keyword is latent in the *bundled* schema (it carries only
+    `minimum`/`maximum`, which compare int-to-int without coercion), so the
+    schema here is synthetic: it puts `multipleOf` on a property to reach the
+    coercion the shipped schema cannot. Written to disk and driven through the
+    real `validate_migration_document` path so the fix is exercised where the
+    escape lives, not around it. `pytest.raises(MigrationError)` excludes the raw
+    `OverflowError` today's code escapes, and the value is not echoed.
+    """
+    schema_dir = tmp_path / "schema"
+    schema_file = schema_dir / "migrations" / "migration.schema.json"
+    schema_file.parent.mkdir(parents=True)
+    schema_file.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"author": {"type": "number", "multipleOf": 1e-300}},
+            }
+        )
+    )
+    # One node whose float coercion overflows: `10**400 % 1e-300` raises
+    # `OverflowError` inside jsonschema's `multipleOf` check.
+    document: dict[str, Any] = {"author": 10**400}
+
+    _validator.cache_clear()
+    try:
+        with pytest.raises(MigrationError) as excinfo:
+            validate_migration_document(document, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    message = str(excinfo.value)
+    assert "too large" in message, "the diagnosis is the value's size, named"
+    assert "reduce it" in message, "the refusal carries a remedy"
+    assert "0000" not in message, "the value itself is not echoed"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_validate_document_translates_any_value_error_though_it_assumes_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MEDIUM (round one, recorded residual): `_validate_document`'s
+    ``except (ValueError, ArithmeticError)`` closes the CP-2 escape *by type* --
+    any such error while `validate` processes the document becomes a
+    `MigrationError`, not a raw traceback. Its message, though, assumes the cause
+    is value *size* ("too large ... reduce it"), which is true of every
+    `ValueError`/`ArithmeticError` reachable through the bundled schema: the render
+    face (int->str limit) and the latent overflow face (a float ``multipleOf``),
+    both size. No non-size one is reachable today.
+
+    This drives a *synthetic* non-size `ValueError` -- injected by replacing
+    `Draft202012Validator.validate` (its per-instance ``validate`` is a read-only
+    slot), since the bundled schema cannot raise one -- to pin the by-type closure
+    (the file is named, nothing escapes as a traceback) and to record the
+    residual: the wording still says "too large". If a future schema keyword makes
+    a non-size `ValueError` reachable, this is where the misdiagnosis surfaces. A
+    fresh validator over a copied schema so nothing else observes the patched
+    ``validate`` through the `lru_cache`d validator other tests share.
+    """
+    schema_dir = _copy_real_schema(tmp_path)
+    _validator.cache_clear()
+
+    def _raise_non_size(_self: object, _instance: object) -> None:
+        raise ValueError("a synthetic fault unrelated to value size")
+
+    monkeypatch.setattr(Draft202012Validator, "validate", _raise_non_size)
+    try:
+        schema_validator = _SchemaValidator(
+            _validator(schema_dir), schema_dir / "migrations" / "migration.schema.json"
+        )
+        with pytest.raises(MigrationError) as excinfo:
+            _validate_document(
+                schema_validator, {"apiVersion": "x"}, document_name="synthetic.yaml"
+            )
+    finally:
+        _validator.cache_clear()
+
+    message = str(excinfo.value)
+    assert "synthetic.yaml" in message, (
+        "the by-type catch closes the CP-2 escape and names the file"
+    )
+    assert "a synthetic fault unrelated to value size" not in message, "the raw cause is not echoed"
+    assert "too large" in message, "recorded residual: the wording assumes a size cause"
+
+
+def test_load_migrations_translates_a_giant_integer_literal(project: Path) -> None:
+    """The load path's regression pin: a giant-integer YAML *literal* raises
+    `ValueError` one layer earlier, at `load_yaml_mapping`'s own `int()` of the
+    5001-digit token, and `_load_one`'s `except ValueError` translates it to
+    `MigrationError`. Pinned so a change to either seam cannot reopen the escape on
+    the path a repository author actually reaches.
+
+    MEDIUM (round one): the previous version pinned only the exception *type*,
+    while its docstring claimed "a change to either seam cannot reopen the escape"
+    -- but nothing pinned the *wording*, and CPython's own int->str-limit
+    `ValueError` names `sys.set_int_max_str_digits()` as the cure, an interpreter
+    tuning knob. Forwarding `{exc}` verbatim leaked that remedy to a migration
+    author. The message is now translated to the same "reduce it" wording the
+    in-memory scalar face uses, and this asserts the leak is gone -- RED before
+    the translation, since the raw message contained it.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / "01K1KKKKKK01234567890ABCDE-big.yaml").write_text(
+        _VALID_MIGRATION.replace("author: engineer@example.com", "author: " + "9" * 5001)
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "sys.set_int_max_str_digits" not in message, "CPython's tuning-knob remedy must not leak"
+    assert "too large" in message and "reduce it" in message, "the size-face wording, with a remedy"
+    assert "9999" not in message, "the digits themselves are not echoed (SEC-7)"
+
+
+#: The migration file the two loader-seam tests below drive. Named once so the
+#: "still names the file" assertion and the fixture cannot drift apart.
+_OVERSIZED_MIGRATION_FILENAME = "01K1KKKKKK01234567890ABCDE-oversized-owner.yaml"
+
+
+def _write_oversized_owner_migration(project: Path) -> Path:
+    """A hand-authored migration whose only fault is a 100 KB `owner`.
+
+    100 KB is comfortably inside `load_yaml`'s own 4 MiB ceiling, so the
+    document really does reach the schema rather than being refused for size
+    one layer earlier.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    (migrations_dir / _OVERSIZED_MIGRATION_FILENAME).write_text(
+        _VALID_MIGRATION.replace("owner: platform-team", f"owner: {_OVERSIZED_VALUE}")
+    )
+    return migrations_dir
+
+
+def test_a_migration_file_rejected_by_the_schema_does_not_echo_an_oversized_value_whole(
+    project: Path,
+) -> None:
+    """`_load_one`'s wrap is the second seam with the same defect (issue #289).
+
+    It words the refusal differently -- with the file name -- but forwards the
+    same unbounded `exc.message`, so a fix applied only to
+    `validate_migration_document` would move the defect one call site over
+    rather than close it. This is the seam a repository author actually
+    reaches: the file is checked out and loaded, not passed in by a generator.
+    """
+    migrations_dir = _write_oversized_owner_migration(project)
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert _OVERSIZED_VALUE not in message, "the author-controlled value is echoed whole"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+def test_a_migration_file_rejected_by_the_schema_still_names_the_file(project: Path) -> None:
+    """The loader seam's own counterweight: with many files on disk, the name
+    is what tells the reader which one to open, and bounding the message must
+    not truncate it away. GREEN today; RED if a bound is applied from the
+    front of the message rather than to the echoed value.
+    """
+    migrations_dir = _write_oversized_owner_migration(project)
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    assert _OVERSIZED_MIGRATION_FILENAME in str(excinfo.value), "which file to open"
+
+
+# -- issue #291: a deep document is a document fault, not a broken install ---
+#
+# `_validate_document`'s `except RecursionError` attributes any recursion at
+# `validator.validate(document)` to a self-recursive schema `$ref` and raises
+# `SchemaUnreadableError`, whose remedy is "reinstall theurian". A deeply
+# nested *document* raises the identical `RecursionError` at that call, and the
+# two are indistinguishable once `validate` is running -- so a user-input fault
+# is diagnosed as a corrupt installation. `_validate_document`'s docstring
+# already records this honestly and cites #291; the behaviour is the gap.
+#
+# Measured on this branch, 2026-08-21, CPython 3.13.3 (arm64 macOS),
+# jsonschema 4.26.0. The recursion is raised by `_keywords.oneOf`'s own
+# `f"{instance!r} is not valid under any of the given schemas"` -- so #289's
+# unbounded echo is what recurses, and the traceback says so verbatim:
+# "maximum recursion depth exceeded while getting the repr of an object".
+#
+# That budget is CPython's C recursion limit, not `sys.setrecursionlimit`:
+# `repr` of a nested dict is unaffected by the Python limit (checked directly
+# at limits 100 through 100,000), so the depth at which this fires is set by
+# `Py_C_RECURSION_LIMIT` minus whatever the ambient call stack has already
+# consumed. Hence two tests at two ambient depths.
+
+#: A nesting depth past what this interpreter can render at *any* plausible
+#: ambient stack depth. The premise test below is what keeps this honest: it
+#: fails loudly if an interpreter ever renders it, which would mean these two
+#: tests had quietly stopped exercising #291 at all.
+_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER = 20_000
+
+#: Levels of the interpreter's C recursion budget the ambient-depth test burns
+#: before it calls. The shape issue #291's own harness used, and the dimension
+#: that made the same document produce different diagnoses there.
+_AMBIENT_FRAMES = 1200
+
+
+def _nested(depth: int) -> Any:
+    """A ``{"a": {"a": ...}}`` chain ``depth`` levels deep, built iteratively so
+    the *fixture* never depends on the recursion budget the test is about."""
+    value: Any = "leaf"
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+def _deeply_nested_document(depth: int) -> dict[str, Any]:
+    """A migration document carrying the deep value where validation reaches it.
+
+    It sits inside the single operation rather than at the document root: the
+    root's `additionalProperties: false` refuses an unknown key by name alone,
+    and `Draft202012Validator.validate` raises the *first* error `iter_errors`
+    yields, so a root-level placement is answered before anything reprs the
+    deep value at all. Inside the operation, the refusal is `#/$defs/operation`'s
+    `oneOf`, whose message reprs the whole operation.
+    """
+    return _document_with(extra=_nested(depth))
+
+
+def _burn_c_recursion_budget(frames: int, call: Callable[[], None]) -> None:
+    """Consume ``frames`` levels of the C recursion budget, then ``call``.
+
+    Each level re-enters the evaluation loop through C -- `map` calls its
+    callback from C -- and that is what spends the budget `repr` is limited by.
+    Measured three ways at 1,200 levels against a depth-8,000 value that
+    renders fine from a shallow stack: `map` leaves it unrenderable; a list
+    comprehension and a plain recursive call both leave it renderable, because
+    on CPython 3.13 neither adds a C frame. `C417`'s suggested rewrite to a
+    comprehension would leave this helper burning nothing and both callers
+    green for no reason, which is why it is suppressed rather than applied.
+    """
+    if frames <= 0:
+        call()
+        return
+    list(map(lambda _: _burn_c_recursion_budget(frames - 1, call), [0]))  # noqa: C417 - see above
+
+
+def test_the_nesting_depth_the_recursion_tests_use_really_does_defeat_repr() -> None:
+    """A premise of the two tests below, not a claim about Theurian.
+
+    Both assert that a document too deep to render is diagnosed as a document
+    fault. If an interpreter ever renders `_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER`
+    levels, both would pass without the recursion ever happening -- green, and
+    testing nothing. This is the assertion that fails first and says so.
+    """
+    with pytest.raises(RecursionError):
+        repr(_nested(_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER))
+
+
+def test_a_deeply_nested_document_is_a_document_fault_not_a_broken_installation() -> None:
+    """Issue #291, at ambient depth zero -- a direct call.
+
+    Measured on this branch: `SchemaUnreadableError`, reason "a schema $ref
+    resolves recursively without terminating", whose remedy tells the user to
+    reinstall Theurian. Nothing is wrong with the installation: the bundled
+    schema resolved every `$ref` it has, and the document is what nests. The
+    correct answer is `MigrationError` -- fix your document -- which is also
+    what every other document fault at this seam already raises.
+
+    `SchemaUnreadableError` is not a `MigrationError` subclass, so this
+    `pytest.raises` genuinely excludes today's answer rather than accepting it.
+    """
+    document = _deeply_nested_document(_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER)
+
+    with pytest.raises(MigrationError):
+        validate_migration_document(document, real_schema_root())
+
+
+def test_a_deeply_nested_document_is_a_document_fault_from_an_already_consumed_stack() -> None:
+    """Issue #291's second ambient depth: called with 1,200 C-recursion levels
+    already spent, the harness shape the issue used.
+
+    The issue recorded this ambient depth producing a *third* outcome -- the
+    `RecursionError` escaping the handler uncaught, a raw traceback and CP-2
+    violation. That face did not reproduce here: on CPython 3.13.3 the budget
+    is restored as the `repr` unwinds, so the handler has room to build its
+    error and this call answers `SchemaUnreadableError`, the same
+    mistranslation as the direct call above. Recorded rather than claimed --
+    the wrong answer is the same at both depths on this interpreter, and both
+    are wrong for the same reason.
+
+    Kept as its own test because ambient depth is the dimension that selects
+    the outcome for a *fixed* document: at 1,200 burned levels a depth-8,000
+    document is answered `SchemaUnreadableError` while the identical document
+    called directly is answered `MigrationError` (measured, same session). A
+    fix that bounds document depth, or that attributes the recursion by
+    measuring the document, holds at every ambient depth; one that tunes a
+    threshold does not.
+    """
+    document = _deeply_nested_document(_DEEPER_THAN_THE_INTERPRETER_CAN_RENDER)
+    previous_limit = sys.getrecursionlimit()
+    # The burn spends Python frames as well as C budget; raising the Python
+    # limit keeps this test measuring the C budget and not the harness.
+    sys.setrecursionlimit(previous_limit + 10 * _AMBIENT_FRAMES)
+
+    try:
+        with pytest.raises(MigrationError):
+            _burn_c_recursion_budget(
+                _AMBIENT_FRAMES,
+                lambda: validate_migration_document(document, real_schema_root()),
+            )
+    finally:
+        sys.setrecursionlimit(previous_limit)
+
+
+def test_a_list_valued_keyword_other_than_required_is_not_read_as_missing_properties(
+    tmp_path: Path,
+) -> None:
+    """The guard inside the #289 fix's `required` wording, driven.
+
+    `_schema_rejection` words a `required` rejection from the schema's own list
+    of names -- the one rejection whose cause is nowhere in the instance. That
+    branch is selected by the *keyword*, and this test is why the keyword check
+    is there rather than being inferred from the shapes: `type` and `enum` also
+    carry a list of strings, and against a mapping instance every name they
+    list would otherwise be reported as a missing property. Deleting the
+    `exc.validator != "required"` line turns the message below into "missing
+    the required properties 'string', 'null'", which is not what `type` means.
+
+    The bundled schema cannot drive it -- its one array-valued `type`
+    (`validTo`) sits inside `#/$defs/operation`'s `oneOf`, which answers first
+    with a list of *subschemas* -- so the schema is written here instead.
+    """
+    _validator.cache_clear()
+    schema_dir = _write_schema(tmp_path, {"type": ["string", "null"]})
+
+    try:
+        with pytest.raises(MigrationError) as excinfo:
+            validate_migration_document({"apiVersion": "theurian.dev/v1"}, schema_dir)
+    finally:
+        _validator.cache_clear()
+
+    message = str(excinfo.value)
+    assert "missing the required" not in message, "a type keyword lists types, not properties"
+    assert "'type'" in message, "the reader is still told which keyword refused"
+
+
+# -- issue #291's guard was itself an unbounded-work DoS over YAML aliases -----
+#
+# `_refuse_a_document_that_nests_too_deep` walks the parsed document, and a
+# PyYAML anchor referenced from two aliases -- each referenced from two more --
+# is a shared-reference DAG that expands to 2**N nodes from an N-line file. The
+# shipped guard walked it as a tree, so a ~500-byte file cost 2**24 = 100 M node
+# visits (orchestrator-measured 42.5 s), and even had it finished, `jsonschema`'s
+# own `validate` interpolates the failing instance with `{instance!r}` -- which
+# re-expands the identical DAG, building a 46 MB message at alias level 22
+# (measured 2026-08-21, jsonschema 4.26.0) *before* `_schema_rejection` is
+# reached. Memoising the walk on object identity would make the guard fast but
+# leave that second cost untouched: a memoised walk counts the file as its ~24
+# distinct nodes and waves it through to `validate`. So the guard stays
+# un-collapsed and refuses at `MAX_DOCUMENT_NODES` -- ahead of `validate`, which
+# is the only place the dependency's own repr cost can be stopped.
+
+
+def _alias_bomb(levels: int) -> str:
+    """The exponential shared-reference DAG, as a YAML migration document.
+
+    ``l0`` anchors a small mapping; each ``l{k}`` references ``l{k-1}`` twice, so
+    the expanded node count doubles per level while the source grows by one line.
+    Placed at ``author`` as well, where the schema's ``type`` keyword would repr
+    the whole DAG if it ever reached `validate`.
+    """
+    lines = ["l0: &l0 {v: 0}"]
+    for level in range(1, levels):
+        lines.append(f"l{level}: &l{level} {{a: *l{level - 1}, b: *l{level - 1}}}")
+    return (
+        "\n".join(lines)
+        + "\napiVersion: theurian.dev/v1\nid: 01K1KKKKKK01234567890ABCDE\n"
+        + "createdAt: 2026-08-02T10:00:00+09:00\n"
+        + f"author: *l{levels - 1}\n"
+        + "operations:\n  - op: createItem\n    itemId: a.b\n    kind: architecture\n"
+        + "    namespace: n\n    owner: o\n"
+    )
+
+
+def test_an_alias_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """RED before the fix: the guard walks the DAG as a tree and never returns
+    for level 20 (2**20 visits), and if it did, `validate` would build a
+    multi-megabyte message from the same DAG.
+
+    Level 20 expands to ~1 M nodes, well past `MAX_DOCUMENT_NODES`, so the guard
+    must refuse it -- and the refusal that reaches the caller must be the node
+    ceiling's, proving the document was stopped *before* `validate` rather than
+    after `jsonschema` had already paid the expansion. The shipped guard raises
+    nothing for this document (it nests only 20 levels, under
+    `MAX_DOCUMENT_NESTING`, and had no node ceiling at all), so
+    ``pytest.raises`` fails on it outright.
+    """
+    document = load_yaml_mapping(_alias_bomb(20))
+
+    with pytest.raises(MigrationError):
+        _refuse_a_document_that_nests_too_deep(document, None)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert str(MAX_DOCUMENT_NODES) in message and "values" in message, (
+        "the refusal must be the node ceiling's, i.e. raised before `validate`"
+    )
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def _aliased_string_bomb(anchor_chars: int, slots: int) -> str:
+    """The aliased-large-*string* DAG, as a YAML migration document.
+
+    One large string is anchored on the first slot of a single operation and
+    aliased into ``slots`` further slots. The node count is O(``slots``) -- far
+    under `MAX_DOCUMENT_NODES` -- so the node ceiling accepts it, but jsonschema's
+    ``{instance!r}`` would re-expand the shared string once per slot: an
+    ``anchor_chars * slots``-character transient. This is the few-nodes /
+    huge-scalar shape the node ceiling cannot see, distinct from `_alias_bomb`'s
+    node-heavy branching graph.
+    """
+    lines = [
+        "apiVersion: theurian.dev/v1",
+        "id: 01K1KKKKKK01234567890ABCDE",
+        "createdAt: '2026-08-02T10:00:00+09:00'",
+        "author: engineer@example.com",
+        "operations:",
+        "  - op: createItem",
+        "    itemId: a.b",
+        "    kind: architecture",
+        "    namespace: n",
+        "    owner: o",
+        "    x0: &big " + "A" * anchor_chars,
+    ]
+    lines += [f"    x{i}: *big" for i in range(1, slots)]
+    return "\n".join(lines) + "\n"
+
+
+def test_an_aliased_string_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """HIGH (round one): the node ceiling bounds node *count*, and jsonschema's
+    ``{instance!r}`` re-expands shared references at that same count -- but a
+    single large string aliased into N slots is N+1 nodes whose *rendered* size is
+    N times its length. The node count is blind to it, so the shipped guard
+    accepts it and `validate` builds an ``anchor*slots``-character message; at the
+    recorded limits that product reaches `MemoryError`, which is neither a
+    `ValueError` nor an `ArithmeticError` and escapes `_validate_document`'s
+    scalar catch as a raw CP-2 traceback.
+
+    RED before the fix: the shipped guard raises nothing for this document (it
+    nests only two levels, holds only ~2*slots nodes, and had no rendered-size
+    ceiling at all), so the first ``pytest.raises`` fails on it outright --
+    confirmed against the unfixed tip.
+
+    ``anchor 100_000 * 20 slots`` = 2 M rendered characters, well past
+    `MAX_DOCUMENT_RENDERED_CHARS`, while the node count stays trivial. The refusal
+    that reaches the caller must be the character ceiling's, proving the document
+    was stopped *before* `validate` rather than after jsonschema had already paid
+    the expansion.
+    """
+    document = load_yaml_mapping(_aliased_string_bomb(100_000, 20))
+
+    with pytest.raises(MigrationError):
+        _refuse_a_document_that_nests_too_deep(document, None)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in message and "characters of string content" in message
+    ), "the refusal must be the character ceiling's, i.e. raised before `validate`"
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def _aliased_integer_bomb(digits: int, slots: int) -> str:
+    """The aliased-large-*integer* DAG, as a YAML migration document.
+
+    One large integer is anchored on the first slot of a single operation and
+    aliased into ``slots`` further slots. Its node count is O(``slots``) -- far
+    under `MAX_DOCUMENT_NODES` -- and each individual integer is under CPython's
+    int->str limit, so it reprs without raising: neither the node ceiling nor
+    `_validate_document`'s ``ValueError`` catch sees it. But jsonschema's
+    ``{instance!r}`` re-emits all ``digits`` of the shared integer once per slot: a
+    ``digits * slots``-character transient. This is the integer counterpart of
+    `_aliased_string_bomb` -- the same few-nodes / huge-aggregate shape the node
+    count cannot see, in the one leaf type the round-one rendered budget did not
+    charge.
+    """
+    lines = [
+        "apiVersion: theurian.dev/v1",
+        "id: 01K1KKKKKK01234567890ABCDE",
+        "createdAt: '2026-08-02T10:00:00+09:00'",
+        "author: engineer@example.com",
+        "operations:",
+        "  - op: createItem",
+        "    itemId: a.b",
+        "    kind: architecture",
+        "    namespace: n",
+        "    owner: o",
+        "    x0: &big " + "9" * digits,
+    ]
+    lines += [f"    x{i}: *big" for i in range(1, slots)]
+    return "\n".join(lines) + "\n"
+
+
+def test_an_aliased_integer_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """HIGH (round two): the round-one rendered budget charged only ``str``/``bytes``
+    leaves, so an aliased *integer* sailed through every control. An integer of a
+    few thousand digits is under CPython's int->str limit -- it reprs without
+    raising, so `_validate_document`'s ``ValueError`` catch never fires -- and one
+    such integer aliased into N slots is O(N) nodes, under `MAX_DOCUMENT_NODES`. Yet
+    jsonschema's ``{instance!r}`` re-emits all its digits once per slot, a
+    ``digits*slots``-character message the node count is blind to. The fix charges
+    every leaf's rendered width, estimating a giant integer's decimal width from
+    ``bit_length`` without ever stringifying it (that stringification is the cost
+    the bound exists to refuse, and past the int->str limit it raises).
+
+    RED before the fix: the shipped guard charges nothing for an integer leaf, so
+    the first ``pytest.raises`` fails on it outright -- the guard accepts the
+    document and jsonschema pays the expansion. ``4000 digits * 300 slots`` = 1.2 M
+    rendered characters, past `MAX_DOCUMENT_RENDERED_CHARS`, while the node count
+    stays in the hundreds and every individual integer is under the 4300-digit
+    int->str limit. The refusal that reaches the caller must be the rendered
+    ceiling's, proving the document was stopped *before* `validate`.
+    """
+    document = load_yaml_mapping(_aliased_integer_bomb(4000, 300))
+
+    with pytest.raises(MigrationError):
+        _refuse_a_document_that_nests_too_deep(document, None)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert str(MAX_DOCUMENT_RENDERED_CHARS) in message, (
+        "the refusal must be the rendered-character ceiling's, i.e. raised before `validate`"
+    )
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def _aliased_timestamp_bomb(slots: int) -> str:
+    """The aliased-large-*timestamp* DAG, as a YAML migration document.
+
+    One ``!!timestamp`` value is anchored on the first slot of a single operation
+    and aliased into ``slots`` further slots. ``_StrictLoader`` drops the implicit
+    timestamp *resolver* but keeps the ``!!timestamp`` *constructor*, so an explicit
+    tag yields a ``datetime.datetime`` -- a leaf whose ``repr`` runs ~109 characters
+    (``datetime.datetime(2026, 7, 15, 10, 0, 0, 123456, tzinfo=...)``). Its node
+    count is O(``slots``) -- far under `MAX_DOCUMENT_NODES` -- but jsonschema's
+    ``{instance!r}`` re-emits that ~109-character ``repr`` once per slot: a
+    ``~109 * slots``-character transient. This is the third leaf type of the
+    few-nodes / huge-aggregate shape, the one the round-two rendered budget still
+    charged nothing for because a ``datetime``/``date`` is not
+    ``str``/``bytes``/``int``/``bool``/``float``/``None``.
+    """
+    lines = [
+        "apiVersion: theurian.dev/v1",
+        "id: 01K1KKKKKK01234567890ABCDE",
+        "createdAt: '2026-08-02T10:00:00+09:00'",
+        "author: engineer@example.com",
+        "operations:",
+        "  - op: createItem",
+        "    itemId: a.b",
+        "    kind: architecture",
+        "    namespace: n",
+        "    owner: o",
+        "    x0: &big !!timestamp 2026-07-15T10:00:00.123456+09:00",
+    ]
+    lines += [f"    x{i}: *big" for i in range(1, slots)]
+    return "\n".join(lines) + "\n"
+
+
+def test_an_aliased_timestamp_bomb_is_refused_before_jsonschema_can_expand_it() -> None:
+    """MEDIUM (round three): the rendered budget charged every leaf *except*
+    ``datetime``/``date``. ``_StrictLoader`` keeps the ``!!timestamp`` constructor,
+    so an explicit tag yields a ``datetime`` -- not one of the scalar types
+    `_rendered_width` recognised, so it was charged 0 and an aliased timestamp
+    sailed through the rendered budget, bounded only by `MAX_DOCUMENT_NODES`
+    (~10.9 MB worst case at the node ceiling: bounded, hence MEDIUM). The fix
+    charges a ``datetime``/``date`` by its ``repr`` width, the same O(1) treatment
+    ``float``/``None`` already got.
+
+    RED before the fix: with the timestamp charged 0, a document of 10,000 aliased
+    slots holds ~20,000 nodes (under `MAX_DOCUMENT_NODES`) and ~50,000 charged
+    key-string characters (under `MAX_DOCUMENT_RENDERED_CHARS`), so the shipped
+    guard raises *nothing* and the document reaches `validate`, where jsonschema
+    re-expands the shared ``datetime`` once per slot into a ~1.09 MB message. The
+    first ``pytest.raises`` fails outright against the unfixed tip -- confirmed by
+    stashing the source fix and running this test RED.
+
+    ``10,000 slots * ~109 repr chars`` = ~1.09 M rendered characters, past
+    `MAX_DOCUMENT_RENDERED_CHARS`, while the node count stays ~20,000. The refusal
+    that reaches the caller must be the character ceiling's, not the node ceiling's
+    and not a schema rejection, proving the timestamp was charged and the document
+    stopped *before* `validate`.
+    """
+    document = load_yaml_mapping(_aliased_timestamp_bomb(10_000))
+
+    with pytest.raises(MigrationError) as guard_excinfo:
+        _refuse_a_document_that_nests_too_deep(document, None)
+    guard_message = str(guard_excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in guard_message
+        and "characters of string content" in guard_message
+    ), "the timestamp must be charged, so the rendered ceiling -- not the node ceiling -- fires"
+    # "values" is the node-ceiling message's own word; its absence proves the
+    # ~20,000-node document tripped the rendered budget, not the node ceiling.
+    # (A substring test on the node count is unsafe: "100000" is inside "1000000".)
+    assert "values" not in guard_message, (
+        "~20,000 nodes are under the node ceiling; the refusal is the rendered budget's"
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+    message = str(excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in message and "characters of string content" in message
+    ), "the refusal must be the character ceiling's, i.e. raised before `validate`"
+    assert "does not satisfy" not in message, "a schema rejection means it reached `validate`"
+    assert len(message) < 2000, "the refusal itself must be bounded"
+
+
+def test_the_rendered_budget_passes_a_migration_with_an_ordinary_timestamp() -> None:
+    """The counterweight to the timestamp-alias refusal: charging a ``datetime``/
+    ``date`` leaf must not refuse a migration that carries a single ordinary one. A
+    lone ``!!timestamp`` renders to ~109 characters, and a plain ISO date *string*
+    (the resolver being dropped, an untagged ``2026-07-15`` stays a ``str``) to
+    ten -- both nowhere near `MAX_DOCUMENT_RENDERED_CHARS`, so the guard must not
+    raise for either.
+    """
+    tagged = load_yaml_mapping(
+        "operations:\n  - op: createItem\n    at: !!timestamp 2026-07-15T10:00:00+09:00\n"
+    )
+    assert type(tagged["operations"][0]["at"]).__name__ == "datetime", (
+        "an explicit !!timestamp tag yields a datetime -- the constructor is kept"
+    )
+    _refuse_a_document_that_nests_too_deep(tagged, None)  # must not raise
+
+    untagged = load_yaml_mapping("operations:\n  - op: createItem\n    at: '2026-07-15'\n")
+    assert type(untagged["operations"][0]["at"]).__name__ == "str", (
+        "an untagged ISO date stays a string -- the implicit resolver is dropped"
+    )
+    _refuse_a_document_that_nests_too_deep(untagged, None)  # must not raise
+
+
+def test_the_rendered_budget_passes_a_migration_of_ordinary_integers() -> None:
+    """The counterweight to the integer-alias refusal: charging every leaf must not
+    refuse a legitimate migration whose numbers are small -- a ``lineStart``, a
+    ``lineEnd``, a ``confidence`` -- which the corpus carries. A handful of short
+    integers and a float render to a few characters each, nowhere near
+    `MAX_DOCUMENT_RENDERED_CHARS`, so the guard must not raise.
+    """
+    ordinary = {
+        "operations": [{"op": "createItem", "lineStart": 1, "lineEnd": 4200, "confidence": 0.87}]
+    }
+    _refuse_a_document_that_nests_too_deep(ordinary, None)  # must not raise
+
+
+def test_the_document_rendered_size_ceiling_holds_at_its_boundary() -> None:
+    """`MAX_DOCUMENT_RENDERED_CHARS` and the refusal it drives.
+
+    The literal assertion kills a value-changing mutant; the behavioural half
+    kills a dropped rendered-size check. A single oversized *value* (100,000
+    characters -- the size the #289 echo tests use) stays under the ceiling and is
+    left for `validate` and `_echo` to bound, so it passes here; the same string
+    aliased into eleven slots (1.1 M characters) is refused, un-memoised, as its
+    references are read. A flat sequence of small integers one longer than
+    `MAX_DOCUMENT_NODES` renders to ~1 character each, so 100,001 of them stay far
+    under this million-character budget while tripping the node ceiling first --
+    which keeps the two ceilings distinct (an integer *bomb* is a node fault, as
+    opposed to an aliased *giant* integer, which this budget catches by width).
+    """
+    assert MAX_DOCUMENT_RENDERED_CHARS == 1_000_000, (
+        "load-bearing; changing it is a security decision"
+    )
+
+    # A single oversized value is under the budget: reachable, left for `_echo`.
+    _refuse_a_document_that_nests_too_deep({"operations": ["A" * 100_000]}, None)
+
+    # The same string aliased into eleven slots exceeds it, counted per reference.
+    big = "A" * 100_000
+    aliased = {"operations": [{f"x{i}": big for i in range(11)}]}
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(aliased, None)
+    assert str(MAX_DOCUMENT_RENDERED_CHARS) in str(excinfo.value), "the message names the ceiling"
+
+    # Integer nodes carry no rendered length, so the node ceiling -- not this one
+    # -- is what refuses a wide sequence of them.
+    with pytest.raises(MigrationError) as int_excinfo:
+        _refuse_a_document_that_nests_too_deep({"operations": [0] * (MAX_DOCUMENT_NODES + 1)}, None)
+    assert str(MAX_DOCUMENT_NODES) in str(int_excinfo.value), "an integer bomb is a node fault"
+
+
+def test_the_document_nesting_ceiling_holds_at_its_boundary() -> None:
+    """`MAX_DOCUMENT_NESTING` and the depth at which the guard first refuses.
+
+    The literal assertion kills a mutant that changes the constant's value (a
+    survivor the shipped tests never pinned); the boundary -- driven with literal
+    depths so it stays sensitive when the constant is mutated -- kills an
+    off-by-one in where the frontier starts and a dropped depth check. A document
+    is a chain of mappings, so a leaf at depth ``d`` needs ``d - 1`` wrappers.
+    """
+    assert MAX_DOCUMENT_NESTING == 64, "load-bearing; changing it is a security decision"
+
+    _refuse_a_document_that_nests_too_deep(_nested(63), None)  # leaf at depth 64: allowed
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(_nested(64), None)  # leaf at depth 65: refused
+    message = str(excinfo.value)
+    assert "64" in message and "7 levels" in message, (
+        "the message names the ceiling and the real max"
+    )
+
+
+def test_the_document_node_ceiling_holds_at_its_boundary() -> None:
+    """`MAX_DOCUMENT_NODES` and the refusal it drives.
+
+    The literal assertion kills a value-changing mutant; the behavioural half
+    kills a dropped node check. A flat sequence one longer than the ceiling is
+    refused as it is read (the frontier never holds all of it); a small one
+    passes.
+    """
+    assert MAX_DOCUMENT_NODES == 100_000, "load-bearing; changing it is a security decision"
+
+    _refuse_a_document_that_nests_too_deep({"operations": [0] * 10}, None)  # tiny: allowed
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep({"operations": [0] * MAX_DOCUMENT_NODES}, None)
+    assert str(MAX_DOCUMENT_NODES) in str(excinfo.value), "the message names the ceiling"
+
+
+def test_the_guard_walks_a_mapping_key_not_only_its_value() -> None:
+    """MEDIUM: the shipped guard read ``value.values()`` and never the keys, so a
+    container sitting in a *key* slipped past the depth bound and reached
+    `validate`. The parsed and propose seams never build a non-string key, so
+    this is defense for an in-memory caller of `validate_migration_document`.
+
+    A tuple nested past `MAX_DOCUMENT_NESTING`, used as a key, is refused by the
+    depth bound now that keys are walked. Before the fix the key was ignored and
+    the (shallow) values let the document through to `validate`, where it was
+    reported as a schema rejection rather than a nesting fault -- so the message,
+    not merely the exception type, is what this pins.
+    """
+    deep_key: object = "leaf"
+    for _ in range(MAX_DOCUMENT_NESTING + 6):
+        deep_key = (deep_key,)
+    document = {deep_key: 1, "apiVersion": "theurian.dev/v1"}
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(document, None)  # type: ignore[arg-type]
+    assert "nests more than" in str(excinfo.value), "a container key must trip the depth bound"
+
+
+def test_the_guard_walks_a_set_not_only_lists_and_tuples() -> None:
+    """MEDIUM: the shipped container check was ``list | tuple``, so a ``set`` or
+    ``frozenset`` was treated as a leaf and its contents never counted. An
+    in-memory caller could hide an oversized structure inside one and have it
+    reach `validate` unbounded.
+
+    A ``frozenset`` holding more than `MAX_DOCUMENT_NODES` elements is refused by
+    the node bound now that sets are walked; before the fix it was a single leaf,
+    counted as one node, and waved through.
+    """
+    document = {"operations": frozenset(range(MAX_DOCUMENT_NODES + 10))}
+
+    with pytest.raises(MigrationError) as excinfo:
+        _refuse_a_document_that_nests_too_deep(document, None)
+    assert str(MAX_DOCUMENT_NODES) in str(excinfo.value), "a set's contents must count as nodes"
+
+
+# -- issue #291's guard branches are reachable from a *file*, not only in-memory -
+#
+# The guard's docstring long claimed the `set`/`frozenset` and non-string-key
+# branches were "purely defense for an in-memory caller", on the premise that
+# neither the parse nor the propose seam produces a set or a non-string key. That
+# premise is false: `load_yaml`'s `_StrictLoader` is a `SafeLoader` subclass, so
+# `!!set` in a migration file produces a Python `set` and `1234: v`/`true: v`
+# produce non-string scalar keys -- both reach the guard from a file and are
+# refused only because those branches are walked. The three tests below drive
+# each branch through `load_migrations`, the path a repository author reaches, so
+# the guard's file-name attribution (`document_name`) is exercised too. Only a
+# *container* sitting in a key or set element stays in-memory-only: PyYAML rejects
+# an unhashable key or member with `ConstructorError`.
+
+
+def _write_migration(project: Path, name: str, text: str) -> Path:
+    migrations_dir = project / ".theurian" / "migrations"
+    path = migrations_dir / name
+    path.write_text(text)
+    return migrations_dir
+
+
+def test_a_yaml_set_from_a_file_is_walked_by_the_rendered_budget(project: Path) -> None:
+    """RED (round one): a `!!set` in a migration file produces a Python `set`, and
+    its string members are charged against `MAX_DOCUMENT_RENDERED_CHARS` only
+    because the set is walked. Four distinct 300,000-character members
+    (1.2 M > the budget) are refused by the rendered-size ceiling, naming the file.
+
+    Drives the ``set`` container branch from a file: the shipped guard's docstring
+    called it in-memory-only, and a mutation dropping ``set``/``frozenset`` from
+    the container check would treat the set as a leaf, never reaching its members,
+    so the document would pass the guard and be refused later as a schema fault --
+    a different message this pins against. Block form with quoted keys because a
+    300,000-character *plain* scalar is not a legal flow-mapping key.
+    """
+    members = "".join(f'  ? "{chr(65 + i) * 300_000}"\n' for i in range(4))
+    migrations_dir = _write_migration(
+        project, "01K1KKKKKK01234567890ABCDE-set.yaml", "k: !!set\n" + members
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert (
+        str(MAX_DOCUMENT_RENDERED_CHARS) in message and "characters of string content" in message
+    ), "a set's string members must be charged, i.e. the set is walked"
+    assert "01K1KKKKKK01234567890ABCDE-set.yaml" in message, "the refusal names the file"
+
+
+def test_a_yaml_mapping_with_non_string_keys_from_a_file_has_its_keys_walked(
+    project: Path,
+) -> None:
+    """RED (round one): a migration file's mapping may carry non-string scalar
+    keys -- ``_StrictLoader`` produces ``int`` keys for ``0:``/``1:`` -- and the
+    node count charges them only because *keys* are walked, not just values.
+
+    A mapping of 50,001 integer keys is 100,002 nodes counting keys and values,
+    over `MAX_DOCUMENT_NODES`; drop the key walk and only the 50,001 values count,
+    under the ceiling, so the document passes the guard. Driven through
+    `load_migrations` so the node refusal's own file-name attribution
+    (``document_name``) is exercised: a mutation dropping that name survived the
+    suite because every guard unit test passed ``document_name=None``.
+    """
+    inner = "".join(f"  {i}:\n" for i in range(50_001))
+    migrations_dir = _write_migration(
+        project, "01K1KKKKKK01234567890ABCDE-keys.yaml", "outer:\n" + inner
+    )
+
+    # The keys really are non-string, falsifying the old docstring's premise.
+    parsed = load_yaml_mapping("outer:\n  1234:\n  true:\n  1.5:\n")
+    assert [type(k).__name__ for k in parsed["outer"]] == ["int", "bool", "float"]
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert str(MAX_DOCUMENT_NODES) in message and "values" in message, (
+        "the integer keys must be charged, i.e. keys are walked"
+    )
+    assert "01K1KKKKKK01234567890ABCDE-keys.yaml" in message, "the node refusal names the file"
+
+
+def test_a_document_nested_past_the_limit_from_a_file_names_the_file(project: Path) -> None:
+    """RED (round one, mutation m12 SURVIVED): the depth refusal names the
+    offending file via ``document_name``, but every guard unit test passed
+    ``document_name=None`` and the only deep-document loader test used ``[``x1000,
+    which fails in PyYAML's parser (`RecursionError` -> `ValueError`) before the
+    guard is reached. ``[``x100 parses cleanly (100 nesting levels, well under
+    PyYAML's own recursion limit) and reaches the guard, which refuses it past
+    `MAX_DOCUMENT_NESTING` -- so this exercises the depth refusal's file-name
+    attribution the mutation dropped.
+
+    The deep list sits under a mapping key so the document root is a mapping (a
+    bare ``[``x100 is a list root, refused earlier by `load_yaml_mapping`).
+    """
+    migrations_dir = _write_migration(
+        project,
+        "01K1KKKKKK01234567890ABCDE-deep.yaml",
+        "operations: " + "[" * 100 + "]" * 100 + "\n",
+    )
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert f"more than {MAX_DOCUMENT_NESTING} levels deep" in message, "a depth refusal, not a leak"
+    assert "01K1KKKKKK01234567890ABCDE-deep.yaml" in message, "the depth refusal names the file"
+
+
+def test_a_schema_rejection_renders_a_deep_instance_without_recursing() -> None:
+    """Issue #289 face two: `_schema_rejection` echoed the instance with
+    ``_bounded(repr(...))``, which builds the *whole* repr before truncating.
+
+    On a value too deep for `repr` to render, that ``repr`` raises
+    `RecursionError` -- so the refusal builder itself crashes rather than
+    bounding the echo. `reprlib` stops at its ``maxlevel`` and never recurses
+    that far, so the message is produced whatever the instance's depth. The
+    guard refuses such a document before it reaches `validate`, so this drives
+    `_schema_rejection` directly: it is the seam's own robustness that is pinned,
+    not a reachable path.
+
+    The bracket-depth assertion pins ``maxlevel`` itself (MEDIUM, round one: a
+    mutation widening it from 8 to 200 survived the suite -- length alone misses
+    it, since the outer bound caps the message either way). ``maxlevel`` is the
+    knob that stops the render descending, and it is a load-bearing DoS knob on a
+    *branching* graph reached out-of-band: this deep *chain* renders one bracket
+    per level, so 8 levels give ~9 open brackets and 200 give ~201 -- far apart,
+    and a widened `maxlevel` re-opens the width**level blow-up the knob exists to
+    cap.
+    """
+    deep: object = "leaf"
+    for _ in range(12_000):  # past the ~9,997 a shallow stack can repr
+        deep = [deep]
+    exc = ValidationError(
+        "unused", validator="type", validator_value="string", instance=deep, path=["author"]
+    )
+
+    message = _schema_rejection(exc)  # must not raise RecursionError
+
+    assert "author" in message, "the location is still named"
+    assert len(message) <= 2000, "the echo is bounded"
+    assert message.count("[") < 20, (
+        "the render must stop at maxlevel; a widened maxlevel descends far deeper"
+    )
+
+
+def test_echo_bounds_a_giant_integer_instead_of_raising() -> None:
+    """Issue #291's scalar face at the renderer. RED before the fix: `_ECHO.repr`
+    defers to `reprlib.repr_int`, which stringifies the whole integer before
+    truncating and raises `ValueError` at the int->str limit -- so `_echo`, the
+    defense-in-depth renderer, crashed on the very value it exists to render
+    safely (`_schema_rejection` hands it `exc.instance`).
+
+    `_BoundedRepr` refuses to convert an integer past `_MAX_ECHOED_INT_BITS`,
+    keying on `bit_length` so no decimal string is ever built. The render stays
+    *total*: a giant integer inside a container becomes a placeholder while the
+    rest of the container still renders.
+    """
+    placeholder = _echo(10**5000)  # must not raise ValueError
+    assert "too large to render" in placeholder, "the size is named, inert"
+    assert len(placeholder) <= 2000, "the echo is bounded"
+
+    in_container = _echo({"author": 10**5000, "sibling": 1})  # must not raise
+    assert "too large to render" in in_container, "the giant scalar is bounded in place"
+    assert "'sibling': 1" in in_container, "the rest of the container still renders"
+
+
+def test_a_schema_rejection_bounds_a_fat_multi_field_operation() -> None:
+    """MEDIUM (round one): the echo renderer's message-boundary knobs -- the outer
+    `_bounded` in `_echo`, and the per-container width -- were pinned by no test,
+    and adversarial mutations widening the width (12 -> 1200) and dropping the
+    outer `_bounded` both survived the suite.
+
+    A "fat" operation of 40 unknown fields, each 500 characters and none over
+    `MAX_ECHOED_VALUE` on its own, fails ``#/$defs/operation``'s ``oneOf`` and is
+    echoed whole as a mapping. Its pre-bound repr runs to ~6,000 characters:
+
+    * The outer `_bounded` is what caps the message. Drop it and the echo is the
+      full ~6,000-character repr, so the message blows past the cap -- RED under
+      the mutation removing the outer `_bounded` in `_echo`, confirmed directly.
+    * The per-container width bounds how many of the 40 fields the repr reaches,
+      and thus the ``(N characters in all)`` total the outer bound then reports:
+      ~6,200 at width 12, ~20,700 at width 1200 (measured). The message length
+      stays capped either way, so a length assertion alone misses the widening;
+      the reported total is what catches it.
+
+    The message stays bounded (kills the dropped-outer-bound mutation) and its
+    echoed total reflects the width-12 render (kills the width-widening one).
+    """
+    fat_fields = {f"extra{i}": "v" * 500 for i in range(40)}
+    document = _document_with(**fat_fields)
+
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+
+    message = str(excinfo.value)
+    assert "does not satisfy 'oneOf'" in message, "the fixture must drive the oneOf echo"
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, (
+        f"the outer bound must cap the message; it is {len(message)} characters"
+    )
+    echoed_totals = [int(n) for n in re.findall(r"\((\d+) characters in all\)", message)]
+    assert echoed_totals, "the echo names how large the rendered operation was"
+    assert echoed_totals[-1] < 12_000, (
+        f"the width bound must limit the fields rendered; total is {echoed_totals[-1]} "
+        f"(width 12 renders ~6 K, an unbounded width ~20 K)"
+    )
+
+
+def test_a_schema_rejection_bounds_and_escapes_a_hostile_location_segment() -> None:
+    """MEDIUM: `_location`'s per-segment escape and length bound had no driving
+    test, and two mutations survived it -- `escape-control-to-identity` (drop
+    `_escape_control`) and `location-drop-bound-and-escape` (echo the raw
+    segment). The bundled schema descends into no author-written key today
+    (`additionalProperties: false`, no `patternProperties`), so this drives
+    `_schema_rejection`/`_location` directly with a location `jsonschema` would
+    only build if a future schema let it descend into a hostile key.
+
+    A location segment lands in a terminal and in a JSON payload an agent reads,
+    so a raw ESC repaints the terminal and a raw newline forges a line of
+    Theurian's own output; the segment must arrive escaped and bounded. The last
+    assertion keeps the first two from being met by echoing nothing at all.
+    """
+    hostile_segment = "\x1b[31mRED\x1b[0m\ninjected" + "A" * 5000
+    exc = ValidationError(
+        "unused",
+        validator="type",
+        validator_value="string",
+        instance="x",
+        path=[hostile_segment],
+    )
+
+    message = _schema_rejection(exc)
+
+    assert "\x1b" not in message, "a raw ESC byte in the location repaints the terminal"
+    assert "\n" not in message, "a raw newline in the location forges a line of output"
+    assert "\\x1b[31mRED\\x1b[0m" in message, "the escape survives as inert text"
+    assert "characters in all" in message, "the oversized segment is bounded, and says so"
+
+
+# -- issue #289: a rejection must keep the schema-side fact, not just echo the ---
+# -- instance --------------------------------------------------------------------
+#
+# The #289 change replaced `jsonschema`'s `exc.message` with "keyword name + echo
+# of the instance", which discarded the fact the message carried: the expected
+# `const`, the `pattern`, the unexpected key. On all 26 of this repository's
+# committed migrations a single top-level typo (`dependsOnn`) rendered "does not
+# satisfy 'additionalProperties'; the value there is {...}" with the offending
+# key past the 1,000-character echo cap and truncated off -- strictly worse
+# diagnosis than the `('dependsOnn' was unexpected)` it replaced. These pin that
+# the schema-side fact is back: the unexpected key, the missing `required` names,
+# and each keyword's `validator_value`.
+
+
+def _rejection_message(document: dict[str, Any]) -> str:
+    """The refusal `validate_migration_document` raises for ``document``."""
+    with pytest.raises(MigrationError) as excinfo:
+        validate_migration_document(document, real_schema_root())
+    return str(excinfo.value)
+
+
+def test_a_schema_rejection_names_the_unexpected_key_it_used_to_truncate() -> None:
+    """RED before the fix: the offending key is echoed inside the instance, and on
+    a real-migration-sized document it falls past the 1,000-character cap.
+
+    A valid 1,500-character ``description`` (the schema allows 2,000) pushes the
+    root instance well past the echo cap, and the one fault -- a ``dependsOnn``
+    typo of ``dependsOn`` -- is added last, so the generic wording truncated it
+    away exactly as it did on all 26 committed migrations. The rejection must
+    name the key from the *schema* (the key not in its ``properties``), not from
+    the echo.
+    """
+    document = _document_with()
+    document["description"] = "a" * 1500
+    document["dependsOnn"] = ["x"]
+
+    message = _rejection_message(document)
+
+    assert "'dependsOnn'" in message, "the offending key is named, not truncated off the echo"
+    assert "does not satisfy 'additionalProperties'" not in message, (
+        "the generic wording that dropped the key is gone"
+    )
+    assert len(message) <= _MESSAGE_CHARACTER_CAP, f"message is {len(message)} characters"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expectation"),
+    [
+        ("apiVersion", "theurian.dev/v9", "'theurian.dev/v1'"),
+        ("id", "not a valid ulid", "^[0-7]"),
+        ("author", 123, "'string'"),
+        ("operations", [], "expected 1"),
+    ],
+    ids=["const", "pattern", "type", "minItems"],
+)
+def test_a_schema_rejection_names_the_schema_side_expectation(
+    field: str, value: object, expectation: str
+) -> None:
+    """RED before the fix: the generic wording named only the keyword and echoed
+    the instance, so the expected `const`, the `pattern`, the `type` and the
+    `minItems` -- the schema-derived fact that says what the value *should* have
+    been -- appeared nowhere. None of these expectations is present in the
+    failing instance, so echoing the instance can never recover them.
+    """
+    document = _document_with()
+    document[field] = value
+
+    message = _rejection_message(document)
+
+    assert expectation in message, f"the {field} rejection must name the schema-side expectation"
+    assert field in message, "the location -- the failing field -- is still named"
+
+
+def test_a_schema_rejection_marks_a_truncated_fragment_with_its_full_length() -> None:
+    """`_bounded`'s truncation marker, driven (MEDIUM: a mutation to the
+    ``(N characters in all)`` text survived the shipped suite).
+
+    A `oneOf` rejection's expectation -- the list of subschemas an operation must
+    match one of -- is longer than `MAX_ECHOED_EXPECTATION`, so it is truncated;
+    the marker naming its full length is what tells a reader the fragment was cut
+    rather than being that short.
+    """
+    document = _document_with(unexpectedOperationField=1)  # fails `#/$defs/operation`'s oneOf
+
+    message = _rejection_message(document)
+
+    assert "does not satisfy 'oneOf'" in message, "the fixture must drive the oneOf expectation"
+    assert "characters in all)" in message, "a truncated fragment names its full length"
+
+
+def test_a_schema_rejection_names_a_missing_required_property_and_not_a_present_one() -> None:
+    """The `required` face's positive path, driven (MEDIUM: mutations making
+    `_missing_required_properties` always return ``[]``, and flipping its
+    ``not in`` to ``in``, both survived the shipped suite).
+
+    Deleting one required root property must name *that* property and no other:
+    an always-empty result drops the name entirely, and an ``in``/``not in`` flip
+    reports every required property the instance still carries instead.
+    """
+    document = _document_with()
+    del document["id"]
+
+    message = _rejection_message(document)
+
+    assert "missing the required property 'id'" in message, "the missing name is named"
+    assert "'author'" not in message, (
+        "a property the instance still carries is not reported missing"
+    )
+
+
+def test_a_schema_rejection_pluralises_the_property_noun() -> None:
+    """The singular/plural noun on both schema-side faces (MEDIUM: the noun
+    selection survived mutation on the shipped suite).
+
+    One missing or unexpected property reads "property"; two read "properties".
+    """
+    base = _document_with()
+
+    one_missing = {k: v for k, v in base.items() if k != "id"}
+    assert "the required property 'id'" in _rejection_message(one_missing)
+    two_missing = {k: v for k, v in base.items() if k not in ("id", "author")}
+    assert "the required properties " in _rejection_message(two_missing)
+
+    assert "the unexpected property 'zzz'" in _rejection_message({**base, "zzz": 1})
+    assert "the unexpected properties " in _rejection_message({**base, "zzz": 1, "www": 2})
+
+
+def test_the_bundled_schema_never_descends_into_an_author_written_key() -> None:
+    """The premise `_location` and `_unexpected_properties` rest on.
+
+    `_location` bounds and escapes its segments, and `_unexpected_properties`
+    reads the offending keys as "instance keys not in ``properties``". Both are
+    correct only while the schema never descends the validator into a key an
+    author invented -- which it does through ``additionalProperties: {schema}``,
+    ``patternProperties``, ``dependentSchemas`` or ``unevaluatedProperties``.
+    None may appear: ``additionalProperties`` must be ``false`` everywhere it is
+    set, and the other three must be absent.
+    """
+    schema = json.loads((real_schema_root() / "migrations" / "migration.schema.json").read_text())
+    forbidden = {"patternProperties", "dependentSchemas", "unevaluatedProperties"}
+
+    def walk(node: object, where: str) -> None:
+        if isinstance(node, dict):
+            for keyword in forbidden:
+                assert keyword not in node, f"{keyword} at {where} descends into an author key"
+            if "additionalProperties" in node:
+                assert node["additionalProperties"] is False, (
+                    f"additionalProperties at {where} is a schema, not false, "
+                    f"and would descend into an author-written key"
+                )
+            for key, value in node.items():
+                walk(value, f"{where}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{where}/{index}")
+
+    walk(schema, "<root>")
+
+
+def test_a_rejected_migration_file_names_the_unexpected_key_and_the_file(project: Path) -> None:
+    """The loader seam's own wording (issue #289): the file name plus the
+    schema-side fact. A repository author reaches this seam -- the file is checked
+    out and loaded -- so the refusal must say which file and which key, not echo
+    the whole document with the key truncated off.
+    """
+    migrations_dir = project / ".theurian" / "migrations"
+    name = "01K1KKKKKK01234567890ABCDE-typo.yaml"
+    (migrations_dir / name).write_text(_VALID_MIGRATION + "dependsOnn: [something]\n")
+
+    with pytest.raises(MigrationError) as excinfo:
+        load_migrations(project, migrations_dir, real_schema_root())
+
+    message = str(excinfo.value)
+    assert name in message, "which file to open"
+    assert "has the unexpected property 'dependsOnn'" in message, "which key is wrong"

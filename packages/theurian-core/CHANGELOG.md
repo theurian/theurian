@@ -119,6 +119,91 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   replacement that would break a pin *already landed* in the approved set, the one
   fault it can judge from the landed set alone. No behaviour changed here;
   hardening `accept` itself against a self-contained breakage is deferred to #307.
+- **A migration-schema rejection echoed `jsonschema`'s raw `{instance!r}` and
+  had dropped the schema-side fact that names the defect**
+  ([#289](https://github.com/theurian/theurian/issues/289)). When a migration
+  failed validation, the message interpolated the whole failing instance
+  verbatim — unbounded, and with control characters unescaped — while no longer
+  saying *what the schema expected*: the `const` a value must equal, the
+  `pattern` it must match, or the unexpected keys an `additionalProperties:
+  false` rejected. The rejection is now built at Theurian's own seam
+  (`migration_loader.py`'s `_schema_rejection`), keeping that schema-side fact
+  and bounding every author-written fragment it echoes to `MAX_ECHOED_VALUE`
+  (1,000 characters) through a `reprlib`-based renderer that escapes control
+  characters. This restores the diagnostic parity the pre-change wording had
+  while removing the unbounded echo — a 100 KB value no longer renders a
+  100,198-character refusal into a terminal.
+
+- **An oversized scalar nested in a rejected operation reported its
+  post-truncation length, not its true length**
+  ([#289](https://github.com/theurian/theurian/issues/289)). When a rejected
+  operation carried an oversized string, the echo truncated the container's
+  render first, so the "N characters in all" count reported the *container
+  repr's* length (~1,100), not the offending value's. The renderer now records
+  the longest scalar's pre-truncation length and the rejection names that true
+  length — the one number that is the diagnosis for a value refused for being
+  large.
+
+- **A hostile migration document could exhaust CPU or memory at validate time,
+  and a giant-integer scalar escaped `--json` as a raw traceback**
+  ([#291](https://github.com/theurian/theurian/issues/291)). Several shapes of a
+  parsed migration document defeated `jsonschema`'s own message building at
+  validate time. The loader now applies three bounds ahead of `validate` in its
+  own un-memoised walk — nesting depth, node count, and total rendered magnitude
+  — and translates a single giant integer by type after `validate` raises:
+  - **Nesting** is refused ahead of `validate` at `MAX_DOCUMENT_NESTING` (64).
+    Past the interpreter's C recursion budget `jsonschema` cannot build its own
+    refusal message, and the `RecursionError` that follows is indistinguishable
+    from a corrupt schema — so a deep *document* was answered "reinstall
+    theurian". A schema-valid migration nests at most 7 levels.
+  - **Branching alias expansion** is refused ahead of `validate` at
+    `MAX_DOCUMENT_NODES` (100,000). A YAML anchor aliased into a doubling chain
+    is a ~500-byte file whose expansion is 2^N nodes; `jsonschema`'s
+    `{instance!r}` re-expands it the same way, building a 46 MB message from a
+    500-byte file at alias level 22 (measured 2026-08-21, `jsonschema` 4.26.0).
+    The walk deliberately does not collapse shared references — a collapsed
+    count would wave the bomb through. Same un-memoised-walk shape as the OpenAPI
+    `$ref` ref-walk in
+    [#245](https://github.com/theurian/theurian/issues/245), in another seam.
+  - **Total rendered magnitude** is refused ahead of `validate` at
+    `MAX_DOCUMENT_RENDERED_CHARS` (1,000,000) — a new bound in the same walk that
+    the node count could not stand in for. One large scalar aliased into many
+    slots is only a handful of nodes, well under `MAX_DOCUMENT_NODES`, but
+    `{instance!r}` re-expands it to N times its rendered width. The walk charges
+    every leaf's width via a new O(1) `_rendered_width` per un-memoised reference
+    — `len` for a `str`/`bytes`, a `bit_length`-derived decimal-digit estimate
+    for an `int` (never `str(int)`, which is quadratic and raises past CPython's
+    int→str limit), and the `repr` length of a bounded `bool`/`float`/`None`.
+    This closes two aliased-scalar faces. The first is a large *string* aliased
+    into N slots: a hundreds-of-gigabytes transient that raises `MemoryError`,
+    which is neither a `ValueError` nor an `ArithmeticError` and so escaped the
+    scalar catch below as a raw traceback. The second was found by the round-two
+    review and missed by the round-one bound, which charged only `str`/`bytes`: a
+    *medium integer* — a few thousand digits, so its own `repr` does not raise —
+    aliased into N slots is O(N) nodes under `MAX_DOCUMENT_NODES` and not a
+    `ValueError`, so it defeated every round-one control while `{instance!r}`
+    re-emitted its digits once per slot, a `digits × slots`-character message.
+    Charging every leaf per reference refuses both faces before `validate`. The
+    refusal message still says "characters of string content", but the bound now
+    covers every leaf type, integers and bytes included.
+  - **A single giant integer** — one whose own `{instance!r}` render raises,
+    past CPython's int→str limit (4300 digits by default) — is one node whose
+    lone width passes the aggregate budget above, so it reaches `validate` and is
+    *translated by type* rather than refused ahead. `jsonschema` renders it past
+    that limit and raises `ValueError` (reachable today), or a float `multipleOf`
+    coerces it and raises `OverflowError` (latent — the bundled schema carries
+    only `minimum`/`maximum`). `_validate_document` catches the whole
+    `(ValueError, ArithmeticError)` class as a `MigrationError` so a future
+    numeric keyword cannot reopen the escape. This catch and the rendered budget
+    are complementary, not redundant: the budget refuses the *aliased* integer
+    whose aggregate render is large, and this catch handles the *single* integer
+    whose lone render raises. The file-load path closes the same single-value
+    face: a YAML integer literal past CPython's limit is now translated to the
+    same bounded "reduce it" wording instead of forwarding CPython's message,
+    which named `sys.set_int_max_str_digits()` — an interpreter tuning knob no
+    migration author should reach for. As defence in depth, the rejection
+    builder's `_echo` refuses an integer wider than `_MAX_ECHOED_INT_BITS`
+    (2,000 bits) as a placeholder.
 
 ## [0.1.0.dev8] - 2026-08-20
 
