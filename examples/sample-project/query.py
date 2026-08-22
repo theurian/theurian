@@ -56,28 +56,33 @@ async def _search(args: argparse.Namespace) -> dict[str, Any]:
     token = args.token_file.expanduser().read_text(encoding="utf-8").strip()
     headers = {"Authorization": f"Bearer {token}"}
 
-    async with create_mcp_http_client(headers=headers) as http_client:
-        async with streamable_http_client(args.url, http_client=http_client) as (
+    # One `async with` rather than three nested ones: each context manager may
+    # use the name bound by the one before it, so the transport, the streams,
+    # and the session still open in order and close in reverse.
+    async with (
+        create_mcp_http_client(headers=headers) as http_client,
+        streamable_http_client(args.url, http_client=http_client) as (
             read_stream,
             write_stream,
-        ):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(
-                    "knowledge.search",
-                    {
-                        "projectId": args.project_id,
-                        "query": args.query,
-                        "limit": args.limit,
-                    },
-                )
-                if result.is_error:
-                    message = result.content[0].text if result.content else "tool call failed"
-                    raise RuntimeError(message)
-                structured = result.structured_content
-                if structured is None:
-                    raise RuntimeError("knowledge.search returned no structured content")
-                return dict(structured)
+        ),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool(
+            "knowledge.search",
+            {
+                "projectId": args.project_id,
+                "query": args.query,
+                "limit": args.limit,
+            },
+        )
+        if result.is_error:
+            message = result.content[0].text if result.content else "tool call failed"
+            raise RuntimeError(message)
+        structured = result.structured_content
+        if structured is None:
+            raise RuntimeError("knowledge.search returned no structured content")
+        return dict(structured)
 
 
 def _print_summary(payload: dict[str, Any]) -> None:
