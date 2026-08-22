@@ -23,7 +23,7 @@ command here either shells out to the `theurian` binary or produces a file only
 the CLI can check and apply, so it goes on the machine first:
 
 ```sh
-uv tool install 'theurian[daemon]'    # or: pipx install 'theurian[daemon]'
+uv tool install --python 3.13 'theurian[daemon]'    # or: pipx install --python 3.13 'theurian[daemon]'
 ```
 
 The `[daemon]` extra is what `/theurian:setup` goes on to configure. Without

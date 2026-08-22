@@ -425,8 +425,8 @@ def test_missing_core_is_reported_as_install_then_setup() -> None:
     """
     verdict = resolve_compatibility(DECLARATION, None, None)
     assert verdict.outcome is CompatibilityOutcome.CORE_MISSING
-    assert "uv tool install 'theurian[daemon]'" in verdict.remedy
-    assert "pipx install 'theurian[daemon]'" in verdict.remedy
+    assert "uv tool install --python 3.13 'theurian[daemon]'" in verdict.remedy
+    assert "pipx install --python 3.13 'theurian[daemon]'" in verdict.remedy
     assert "/theurian:setup" in verdict.remedy
 
 

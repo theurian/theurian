@@ -43,30 +43,31 @@ DAEMON_EXTRA: Final = "daemon"
 #: back.
 DAEMON_MODULES: Final = ("mcp", "starlette", "uvicorn")
 
-#: What a user with no Theurian at all runs. Both work on a machine that has
-#: neither; see :data:`DAEMON_EXTRA_REMEDY` for why repairing an install that
-#: already exists is not the same command.
+#: What a user with no Theurian at all runs. Both choose a Python Core supports
+#: and work on a machine that has neither; see :data:`DAEMON_EXTRA_REMEDY` for
+#: why repairing an install that already exists is not the same command.
 DAEMON_INSTALLERS: Final = (
-    "uv tool install 'theurian[daemon]'",
-    "pipx install 'theurian[daemon]'",
+    "uv tool install --python 3.13 'theurian[daemon]'",
+    "pipx install --python 3.13 'theurian[daemon]'",
 )
 
 #: What to say to someone who already has a bare Theurian.
 #:
 #: **The pipx form is not the same as the one in :data:`DAEMON_INSTALLERS`, and
 #: that difference is measured rather than defensive.** Against pipx 1.16.6 and
-#: `theurian` 0.1.0.dev0, ``pipx install 'theurian[daemon]'`` over an existing
-#: bare install prints "'theurian' (0.1.0.dev0) already seems to be installed.
-#: Not modifying existing installation" and exits 0 -- the extra is not added,
-#: and the user's next ``theurian daemon start`` fails exactly as before.
-#: ``--force`` installs into the existing venv and does add it. ``uv tool
+#: `theurian` 0.1.0.dev0, ``pipx install --python 3.13 'theurian[daemon]'`` over
+#: an existing bare install prints "'theurian' (0.1.0.dev0) already seems to be
+#: installed. Not modifying existing installation" and exits 0 -- the extra is
+#: not added, and the user's next ``theurian daemon start`` fails exactly as
+#: before. ``--force`` installs into the existing venv and does add it. ``uv tool
 #: install`` needs no such flag: it re-resolves and adds the extra in place.
 #: A remedy a user can follow to completion and still be broken is worse than no
 #: remedy, because it moves the blame onto them.
 DAEMON_EXTRA_REMEDY: Final = (
     f"Install it with `{DAEMON_INSTALLERS[0]}`. With pipx, run "
-    f"`pipx install --force 'theurian[{DAEMON_EXTRA}]'` -- a plain `pipx install` "
-    f"leaves an existing installation untouched and would report success."
+    f"`pipx install --force --python 3.13 'theurian[{DAEMON_EXTRA}]'` -- a plain "
+    f"`pipx install` leaves an existing installation untouched and would report "
+    f"success."
 )
 
 

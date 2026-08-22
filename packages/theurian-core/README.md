@@ -14,10 +14,10 @@ relative one resolves against the repository and renders as a dead link there.
 ## Install
 
 ```sh
-uv tool install --python 3.13 'theurian[all]'
+uv tool install --python 3.13 'theurian[daemon]'
 ```
 
-`[all]` carries the MCP daemon; without it you get the CLI and the migration
+`[daemon]` carries the MCP daemon; without it you get the CLI and the migration
 engine only. Every published version so far is a pre-release.
 
 **Nothing verifies the artifact you just downloaded, including Theurian.** Each

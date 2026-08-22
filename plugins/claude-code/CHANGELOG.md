@@ -30,9 +30,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the machine. Its `description` — visible in Claude Code's command list — said
   "Install and configure Theurian"; the document opened by calling itself the
   only command that installs software; and it now begins by checking
-  `command -v theurian` and naming `uv tool install theurian` or
-  `pipx install theurian`. Setup runs *from* an installed Core and cannot be
-  what creates it.
+  `command -v theurian` and naming
+  `uv tool install --python 3.13 'theurian[daemon]'` or
+  `pipx install --python 3.13 'theurian[daemon]'`. Setup runs *from* an
+  installed Core and cannot be what creates it.
 - The `SessionStart` hook told a user with no Core to run `/theurian:setup`,
   which shells out to the `theurian` binary whose absence produced the warning.
   It now names the installer first.

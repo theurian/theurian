@@ -1,20 +1,20 @@
 """What the README's quick start tells you to install, against what the extras hold.
 
-The quick start recommends ``uv tool install --python 3.13 'theurian[all]'`` and
+The quick start recommends ``uv tool install --python 3.13 'theurian[daemon]'`` and
 says, as its reason, that a plain install leaves ``theurian daemon start`` failing
 on ``ModuleNotFoundError: No module named 'uvicorn'``. That sentence was written
 from a measurement -- a real PyPI install of the base distribution -- and a
 measurement is not a guard. Nothing stopped someone moving ``uvicorn`` into the
-base dependencies, or dropping ``daemon`` from ``all``, and leaving the README
+base dependencies, or dropping it from ``daemon``, and leaving the README
 asserting a failure that no longer happens.
 
 **Only the settleable half is pinned here.** The quick start also carries two
 claims this repository cannot decide: which versions exist on PyPI, and how uv
 selects an interpreter. Those are properties of PyPI and of uv, they are written
 as observations rather than as mechanisms, and no test here can hold them. What
-*is* decidable from this tree is the packaging: which extra carries the daemon,
-whether ``all`` reaches it, and whether the daemon entry point imports it. That
-is what these tests hold, and it is the link that makes the README's reason true.
+*is* decidable from this tree is the packaging: whether ``daemon`` carries the
+module the daemon entry point imports. That is what these tests hold, and it is
+the link that makes the README's reason true.
 
 The direction that matters is the one nobody expects: these go RED when the
 packaging becomes *friendlier*. Adding ``uvicorn`` to the base dependencies is a
@@ -37,7 +37,7 @@ DAEMON_RUNNER: Final = (
 
 #: The distribution the README's quick start installs. Held as a literal because
 #: the README names it as one, and a rename that misses the README is the defect.
-QUICK_START_SPEC: Final = "theurian[all]"
+QUICK_START_SPEC: Final = "theurian[daemon]"
 
 #: The module whose absence the README quotes as the failure. ``daemon/runner.py``
 #: imports it at module scope, so the import error is what a user sees.
@@ -69,7 +69,7 @@ def _requirement_names(specs: list[str]) -> set[str]:
 
 
 def test_the_daemon_module_is_an_extra_and_not_a_base_dependency() -> None:
-    """The README's stated reason for `[all]` rests on this being true.
+    """The README's stated reason for `[daemon]` rests on this being true.
 
     If ``uvicorn`` moves into ``dependencies``, a plain ``uv tool install
     theurian`` starts working for the daemon and the quick start's paragraph
@@ -82,25 +82,17 @@ def test_the_daemon_module_is_an_extra_and_not_a_base_dependency() -> None:
     )
     daemon_extra = _requirement_names(_extras()["daemon"])
     assert DAEMON_MODULE in daemon_extra, (
-        f"`{DAEMON_MODULE}` left the `daemon` extra. README.md names `[all]` as "
+        f"`{DAEMON_MODULE}` left the `daemon` extra. README.md names `[daemon]` as "
         f"what carries the daemon."
     )
 
 
-def test_the_all_extra_reaches_the_daemon_extra() -> None:
-    """`[all]` is the spelling the README publishes, so it has to include `daemon`.
+def test_the_quick_start_extra_carries_the_daemon_module() -> None:
+    """`[daemon]` is the spelling the README publishes, so it has to carry `uvicorn`."""
 
-    ``all`` is self-referential -- ``theurian[daemon,vector,telemetry]`` -- so the
-    check is on the extras it names, not on a flattened requirement list.
-    """
-    extras = _extras()
-    referenced: set[str] = set()
-    for spec in extras["all"]:
-        head = spec.split(";")[0].strip()
-        if "[" in head:
-            referenced |= {name.strip() for name in head.split("[", 1)[1].rstrip("]").split(",")}
-    assert "daemon" in referenced, (
-        f"`all` no longer reaches the `daemon` extra, so `{QUICK_START_SPEC}` does "
+    daemon_extra = _requirement_names(_extras()["daemon"])
+    assert DAEMON_MODULE in daemon_extra, (
+        f"`{DAEMON_MODULE}` left the `daemon` extra, so `{QUICK_START_SPEC}` does "
         f"not install a daemon. README.md's quick start says it does."
     )
 
@@ -130,5 +122,5 @@ def test_the_readme_quick_start_names_the_spec_and_the_failure() -> None:
     assert QUICK_START_SPEC in readme, f"README.md no longer names `{QUICK_START_SPEC}`"
     assert DAEMON_MODULE in readme, (
         f"README.md no longer names `{DAEMON_MODULE}`, which is the failure the "
-        f"quick start uses to justify `[all]`"
+        f"quick start uses to justify `[daemon]`"
     )
