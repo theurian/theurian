@@ -1319,6 +1319,58 @@ def test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads(
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 2
 
 
+def test_accept_refuses_a_content_file_hardlinked_to_a_landed_body(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The hardlink face of the identity guard (#234): one inode, two names.
+
+    ``_operation_reads`` keys on ``(st_dev, st_ino)`` -- the identity the loader
+    took from the same ``stat`` that read the body -- so it reaches a landed body
+    by *every* name that resolves to its inode, where the old path-string compare
+    saw a distinct file. A second proposal for a different item, at its own
+    distinct path, whose body destination is a **hardlink** to a landed body has a
+    different path *string* but the same inode; accepting it would leave two
+    revisions naming one physical file (``refuse_duplicate_content_files``, exit
+    4). The guard refuses it -- the inode match reaches the landed operation, and
+    the differing item id then makes it a break -- where a path compare would have
+    let it land. This is the CHANGELOG's ``hardlink`` face, previously untested
+    (the case-variant face is covered by the loader's identity tests; a Unicode
+    NFC/NFD variant reaches the same inode but stays honestly noted as untested).
+    Reproduced by the orchestrator (``probe_hardlink``: same inode -> REFUSED).
+    """
+    first = service.draft(_request())
+    service.accept(first.proposal_id)
+    landed_body = first.body_destination.resolve()
+
+    # A second item at its own distinct path; its body destination is a hardlink
+    # to the landed body, so the two paths share one inode.
+    second = service.draft(_request(item_id=ItemId("architecture.other"), body=BODY))
+    dest = second.body_destination
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(landed_body, dest)
+    except OSError as exc:  # pragma: no cover - only on a filesystem without hardlinks
+        pytest.skip(f"the filesystem does not support hardlinks here: {exc}")
+
+    # Preconditions, so a pass cannot come from the two being the same file: a
+    # different path string, but the same (st_dev, st_ino) a string compare misses.
+    assert dest.resolve() != landed_body, "the hardlink must live at a different path"
+    assert dest.stat().st_ino == landed_body.stat().st_ino, "the hardlink must share the inode"
+
+    # Identical bytes in the proposal directory so the move is a replacement the
+    # guard examines, not a create.
+    tail = dest.resolve().relative_to(paths.knowledge.resolve())
+    hand_authored = second.directory / tail
+    hand_authored.parent.mkdir(parents=True, exist_ok=True)
+    hand_authored.write_bytes(BODY.encode("utf-8"))
+
+    with pytest.raises(ProposalError, match="backing a landed revision"):
+        service.accept(second.proposal_id)
+
+    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
+    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
+
+
 def test_accept_leaves_the_evidence_where_a_reviewer_will_read_it(
     service: ProposalService,
 ) -> None:
