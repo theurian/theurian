@@ -135,6 +135,19 @@ matched exactly, so one re-seed under ``git@github.com:theurian/theurian.git``,
 or under the same URL without the ``.git`` suffix, retires that item from the
 check permanently.
 
+**Every revision is compared, not only each item's current one -- so a re-seed
+does not clear the finding it answers.** The population is every
+``upsertRevision`` in every tracked migration, and migrations are append-only: a
+re-seed adds a migration, it does not retract the one it supersedes. The
+superseded revision's anchor therefore goes on being compared against a document
+that has moved, and goes on reporting DRIFT for good (reproduced 2026-08-22 with
+an old-migration + re-seed pair: 2 anchors compared, 1 drifted, the drift being
+the superseded revision). :data:`REMEDY` says so rather than promising an
+outcome it cannot deliver. Restricting the comparison to the terminal revision
+of each item's ``expectedRevision`` chain is #317, and it has to land before or
+with the ADR-0005 and ADR-0013 re-seed (#315), which would otherwise convert two
+temporary warnings into two permanent ones.
+
 Not verified here at all: whether the corpus body still matches its own pin, and
 whether it matches the blob at its anchor commit. Those are
 `test_dogfood_corpus_governance.py`'s, they are hard failures there, and nothing
@@ -215,6 +228,18 @@ _SHA256: Final = re.compile(r"\A[0-9a-f]{64}\Z")
 #: a suffix-less URL retires that item from this check for good. Interpolated
 #: rather than typed so the string a maintainer is told to pass cannot drift from
 #: the string it will be compared against.
+#:
+#: **It stops short of promising the warning goes away, because it does not.**
+#: :func:`scan` compares the anchors of every ``upsertRevision`` in every tracked
+#: migration, not the terminal revision of each item's ``expectedRevision``
+#: chain, and migrations are append-only -- so the superseded migration stays
+#: tracked, keeps pinning the old digest, and keeps reporting DRIFT after a
+#: correct re-seed (reproduced 2026-08-22 with an old-migration + re-seed pair:
+#: 2 anchors compared, 1 drifted, the drift being the superseded revision).
+#: Re-seeding is still the right first step -- it is what puts the current
+#: document back under governance -- so the commands stay; what changed is that
+#: the text no longer tells a maintainer they have cleared the finding when they
+#: have not. The mechanism fix is #317.
 REMEDY: Final = f"""\
 Fix: propose an update revision for the drifted item -- do not edit the
 committed body, which is pinned verbatim.
@@ -224,6 +249,13 @@ committed body, which is pinned verbatim.
         --source-uri "{THIS_REPOSITORY}" \\
         --source-commit "$(git rev-parse HEAD)" ...
     theurian propose accept <proposal-id>
+
+Expect this warning to survive the re-seed. Every upsertRevision in every
+tracked migration is compared, and migrations are append-only, so the
+superseded revision's anchor keeps pinning the old digest against the document
+you just updated. Restricting the comparison to each item's current revision is
+issue #317; until it lands, this finding persists by design and is not evidence
+the re-seed failed.
 
 Who owns the re-seed, and why an in-place edit is not an option, is recorded in
 docs/work-logs/2026-08-19-milestone-7-dogfooding-dev7-corpus.md."""
