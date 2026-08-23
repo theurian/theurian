@@ -358,6 +358,12 @@ def _tenant_boundary_refusal(grant: AuthorizationGrant) -> ToolError:
 
     Both values come from this deployment's own configuration, never from the
     caller's request, so naming them discloses nothing a caller did not supply.
+
+    **Its reach is ``_resolve``, which is the project-scoped tools and only
+    those.** ``project.list`` and ``system.capabilities`` resolve no project and
+    so never pass this seam; ``project.list`` in particular enumerates every
+    registered project. That is correct while one process serves one tenant, and
+    it is a question the hosted deployment has to answer rather than inherit.
     """
     return ToolError(
         f"This daemon serves tenant {DEPLOYMENT_TENANT.value!r}, and the authorization "
