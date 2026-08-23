@@ -476,9 +476,54 @@ files.
 
 #### T-6 — A zip or YAML bomb at ingestion, or a search query that burns seconds of CPU (DoS, Medium)
 
-**Controls at ingestion:** max file size, max nesting depth, max archive
-expansion ratio, wall clock timeout, `yaml.safe_load` only. Size is re-checked
-after read, because a file can grow between `stat` and `read`.
+**Controls at ingestion**, each named by the symbol in `src/` that implements it
+([#199](https://github.com/theurian/theurian/issues/199)):
+
+| Bound | Symbol |
+| :-- | :-- |
+| max source file size, re-checked after the read because a file can grow between `stat` and `read` | `security/paths.py::MAX_SOURCE_FILE_BYTES` (8 MiB) |
+| max YAML document size | `security/yaml_loading.py::MAX_YAML_BYTES` (4 MiB) |
+| a source file whose size bounds nothing — a FIFO, a socket, a device — is refused unread | `security/paths.py::read_source_file`, through `_unbounded_shape` ([#215](https://github.com/theurian/theurian/issues/215)) |
+| max projection nesting depth | `normalization/projection.py::MAX_DEPTH` (24) |
+| max projected characters and max nodes visited, both charged *during* the walk so they bound what it spends | `normalization/projection.py::MAX_PROJECTION_CHARS` (2 MiB) and `MAX_PROJECTION_NODES` (1,000,000), threaded through `_walk` ([#232](https://github.com/theurian/theurian/issues/232)) |
+| the `$ref` walk enters each parsed node once, however many aliases reach it | `infrastructure/filesystem/parsers/openapi.py::_external_refs`, `descended` ([#245](https://github.com/theurian/theurian/issues/245)) |
+| max `$ref` walk depth, max references recorded | `parsers/openapi.py::MAX_REF_DEPTH` (64), `MAX_REFS` (5,000) |
+| safe YAML loading only — no arbitrary object construction, and no implicit timestamp coercion | `security/yaml_loading.py::load_yaml`, `_StrictLoader` |
+
+The three marked with issue numbers are new, and the first two were reachable
+through `git clone` alone: a `contentFile` naming a FIFO made `migrate validate
+--json` hang with no output and no exit (#215), and 405 bytes of nested YAML
+aliases cost the projection 19.76 s and 2.8 GB while returning a 2 MiB string
+(#232). The third cost the `$ref` walk 10.36 s for 677 bytes (#245). Each is
+measured on the fix's own branch and pinned by tests that fail when the guard is
+removed.
+
+**Two controls this entry used to list here do not exist, and are dropped rather
+than filed.** Both were written in the indicative beside the shipped bounds
+above, which is exactly the shape #199's audit exists to catch: a control named
+in this table is read as a control that runs.
+
+- *Max archive expansion ratio* — **moot, and deliberately not filed.** Nothing
+  in `packages/theurian-core/src` handles an archive at all: no `zipfile`,
+  `tarfile`, `gzip`, `zlib` or `shutil.unpack_archive` import appears anywhere
+  in it (searched 2026-08-23). The "zip bomb" this entry's own title names has
+  no entry point in shipped code, so the honest record is that the bound is not
+  *needed*, not that it is owed. It belongs with whatever change first unpacks
+  an archive, and there is no such change planned.
+- *Wall clock timeout* — **not implemented, here or anywhere.** Nothing in
+  `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`, `interrupt`,
+  or `asyncio.wait_for` (same search). The two near misses are named further
+  down for the query side and hold identically here: `busy_timeout` is a lock
+  wait, and `GIT_TIMEOUT_SECONDS` bounds a subprocess — neither bounds a parse.
+  What has changed for the ingestion side is that the bounds above are *counted*
+  rather than timed: they price the work a walk spends rather than the seconds
+  it takes, which is the quantity a wall clock was standing in for.
+
+*Future controls, not shipped:* a per-query wall-clock bound is a daemon-level
+control on the transport layer and is filed as
+[#26](https://github.com/theurian/theurian/issues/26), which owns it for the
+query members enumerated below. No ingestion-side timeout is filed, for the
+reason just given.
 
 **A migration document is validated on its own path, and it carries its own
 ingestion bounds ([#291](https://github.com/theurian/theurian/issues/291),

@@ -96,13 +96,24 @@ Every parser enforces:
 | :-- | :-- | :-- |
 | File size | 8 MB | T-6 memory exhaustion |
 | Path depth | 32 | pathological trees |
-| Archive expansion ratio | bounded | zip bomb |
-| Parse wall clock | bounded | quadratic parser behaviour |
+| File *kind* | only a regular file is read | T-6: a FIFO reports size 0 and then blocks the read forever ([#215](https://github.com/theurian/theurian/issues/215)) |
+| Projected characters | 2 MiB, charged as the walk spends them | T-6 alias-expansion bomb ([#232](https://github.com/theurian/theurian/issues/232)) |
+| Projected nodes | 1,000,000 | T-6: a container emits no characters, so characters alone do not price a traversal |
+| `$ref` walk | every parsed node entered once | T-6 shared-node re-traversal ([#245](https://github.com/theurian/theurian/issues/245)) |
 | Loader | `yaml.safe_load` only | arbitrary object construction |
 | External `$ref` | recorded, never fetched | T-7 SSRF |
 
 Size is re-checked after reading, because a file can grow between `stat` and
 `read`.
+
+Two limits this table used to claim are **not** enforced, and are named here
+rather than quietly dropped. There is no *archive expansion ratio*, because
+nothing in `src/` unpacks an archive — no `zipfile`, `tarfile`, `gzip` or `zlib`
+import exists anywhere in it — and there is no *parse wall clock*, because
+nothing in `src/` bounds any parse by time. The bounds above are counted instead
+of timed: they price the work a parse spends rather than the seconds it takes.
+`docs/security/threat-model.md` (T-6) records both decisions, and who owns the
+query-side timeout that is still owed.
 
 ## Per-format handling
 
