@@ -21,8 +21,11 @@
   close
 
 **Every number in this ADR was measured on 2026-08-23 against `main` @
-`68e8a0b`.** Where a measurement came from running the CLI rather than from
-reading the tree, the flow that produced it is named beside it.
+`68e8a0b`, except where a later dated measurement is named inline.** Where a
+measurement came from running the CLI rather than from reading the tree, the
+flow that produced it is named beside it. The cost model's large-corpus figures
+and the `$TMPDIR` residue below were measured on 2026-08-24 by the round-one
+security review, and say so where they appear.
 
 ## Context
 
@@ -198,6 +201,27 @@ removing it would leak a face past the pre-check. What stage 4 alone covers is
 the invariants the engine can only check while it is applying — a revision's
 source anchor, a reused revision id, the revision conflict measured below.
 
+**The rehearsal starts from an empty database, and that bounds what it can
+cover.** `rehearse_migration_set` (`cli/migration_pipeline.py`) creates a fresh
+store and applies the union into it, so `verify_no_applied_migration_changed` —
+the applied-checksum invariant (FR-K5, ADR-0005 rule 2: same id, different
+checksum is a fatal error, never an auto-repair) — is *structurally* unreachable
+inside the replay. That check compares each migration against the checksums a
+**previously active** database recorded, and the rehearsal's store has recorded
+none: `MigrationEngine.plan` still calls it, but over an empty `recorded` map, so
+it is a no-op there by construction rather than by luck. The invariant is held
+one layer up, by the composition root — the CLI's own gate runs
+`verify_no_applied_migration_changed` against the real active database before it
+calls apply (`cli/commands.py`, the `MigrationChecksumMismatchError` path). So
+the rehearsal covers the apply-time invariants reachable from an empty store — a
+revision's source anchor, a reused revision id, the revision conflict,
+unenforceable scope, duplicate content files — while the applied-migration tamper
+check is not the shared pipeline's to keep. **A second write root — Milestone 7's
+MCP write path — inherits this boundary: wiring the rehearsal buys it every
+invariant in that list and *not* the checksum gate, which it must run itself
+against the real store.** This does not weaken `accept`'s closure; it makes the
+closure honest about where its boundary is.
+
 **The dry replay is not new machinery; it is a property the format already
 promises.** ADR-0005 rule 8 — *"Applying all migrations to an empty store
 reproduces the full canonical state"* — is what makes replaying the set against
@@ -277,14 +301,28 @@ forward. After this change the proposal survives its own rejection, because
 nothing was consumed. That is the outcome #307 asked for, stated as a property
 rather than as a fix.
 
-**Cost, measured rather than estimated.** A full `migrate apply` over the live
-dogfood corpus — 82 migrations, 164 operations — took **0.55 s wall** (measured
-2026-08-23 on a development machine, against a scratch copy of the corpus).
-`migrate validate`'s load-and-guards pass over the same corpus took 0.56 s, so
-the replay is indistinguishable from the work stage 3 already does: the cost is
-process startup, not the replay. `accept` is a local, human-gated,
-interactive command, so this is not an entry point through which a caller can
-make the system spend unbounded work.
+**Cost, measured rather than estimated — and its shape is O(corpus bytes), not
+a constant.** The replay stages landed ∪ incoming into a throwaway tree before it
+applies, which means it copies the corpus — every landed migration, every
+referenced body, and a freshly built state database — into `$TMPDIR`. The cost is
+therefore **dominated by that tree copy, and grows with the corpus's bytes**, not
+process startup. On the live dogfood corpus — 82 migrations, 164 operations — a
+full `migrate apply` took **0.55 s wall** and `migrate validate`'s load-and-guards
+pass took **0.56 s** (measured 2026-08-23 on a development machine, against a
+scratch copy). That near-equality is a property of *this* corpus, whose bodies are
+small: when the bytes are few the copy is cheap, and the two figures coincide. It
+does not generalise. Measured 2026-08-24 by the round-one security review, against
+a synthetic 240 MiB corpus: `migrate validate` took **0.53 s**, while `propose
+accept` took **3.76 s** on the success path — one rehearsal — and **5.66 s** on a
+refusal, because `_landed_set_alone_fails` (`application/proposal_service.py`)
+runs the rehearsal a second time to separate the proposal's fault from a
+pre-existing one in the landed set. The gap between 0.53 s and those figures is
+the tree copy, and it scales with the corpus. **This is bounded work, not
+unbounded:** `accept` is a local, human-gated, interactive command, and the
+corpus it copies is the operator's own, so no *caller* can make the system spend
+work not bounded by the operator's own corpus size. The correction is to the cost
+*model* — it is O(corpus bytes), not a constant "process startup" — and not to
+the conclusion, which stands.
 
 **Three residues, named rather than closed:**
 
@@ -401,9 +439,11 @@ commit updates it rather than silencing it.
   such fault must reach the caller as a `ProposalError` with a remedy naming
   what to fix, under the `{error, remedy}` contract
   [#227](https://github.com/theurian/theurian/issues/227) established. The
-  *time* cost is measured and small (0.55 s over 82 migrations); the widened
-  examine-to-move window is the part that matters, and it is recorded as
-  decision 2's third residue.
+  *time* cost is O(corpus bytes) — small on a small corpus (0.55 s over the
+  82-migration dogfood set) but 3.76 s over a synthetic 240 MiB one (measured
+  2026-08-24; see decision 2's cost note) — because the rehearsal copies the
+  corpus before it replays; the widened examine-to-move window is the part that
+  matters, and it is recorded as decision 2's third residue.
 - The secret scanner will produce false positives, and `block` is the default.
   A high-entropy string in a legitimate document blocks an acceptance until the
   author sets `warn` or `off`, and there is no per-finding suppression.
@@ -459,6 +499,22 @@ commit updates it rather than silencing it.
   unscanned. It is re-graded when
   [#329](https://github.com/theurian/theurian/issues/329) closes the ingest and
   index-time gap; T-15's entry carries the reasoning.
+- **Every `accept` copies the project's bodies through `$TMPDIR`, and this is an
+  accepted residual.** The rehearsal (`cli/migration_pipeline.py`) stages every
+  landed migration and every referenced body — including `confidential` and
+  `restricted` bodies — into a `tempfile.TemporaryDirectory` (prefix
+  `theurian-rehearsal-`) and rebuilds a fresh state database there, so the
+  cleartext of governed content transits `$TMPDIR` for the life of the call.
+  Measured safe on 2026-08-24 by the round-one security review: the directory is
+  created `0o700` and owned by the process, and Python's `TemporaryDirectory`
+  context removes it on every exit path — success, refusal, and config-error —
+  leaving no `theurian-rehearsal-*` residue behind. It is accepted rather than
+  redesigned on those two properties (mode `0700` plus guaranteed cleanup), with
+  one environmental caveat recorded rather than fixed: `$TMPDIR` may sit on a
+  different volume than the project — an encrypted checkout with a plaintext
+  `/tmp` writes those bodies to the plaintext volume for the duration — the same
+  shape of accepted environmental residual as [ADR-0028](0028-a-local-proposal-is-a-different-directory.md)'s
+  `git clean -xdf` note, stated so an operator on that setup can weigh it.
 
 ## What this does not close
 

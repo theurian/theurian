@@ -477,6 +477,18 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   **status** axis only — sensitivity, tenant and ACL group are refused at write
   time and their enforcement as read controls is deferred to
   [#119](https://github.com/theurian/theurian/issues/119).
+- **Cleartext of governed bodies transiting `$TMPDIR` during `propose accept`.**
+  Every acceptance rehearses the whole migration set before it moves anything, and
+  that rehearsal copies every referenced body — including `confidential` and
+  `restricted` ones — into a temporary directory and rebuilds a fresh state
+  database there. The directory is created `0o700`, owned by your process, and
+  removed on every path (success, refusal, or a config error), so nothing is left
+  behind; but if `$TMPDIR` is on a different volume than your project — an
+  encrypted checkout with a plaintext `/tmp`, say — those bodies are written in
+  cleartext to that volume for the duration of the command. Point `TMPDIR` at a
+  volume with the protection your content needs. This is
+  [ADR-0027](docs/adr/0027-accept-validates-before-it-moves.md)'s recorded
+  residual.
 
 ## Personal data in review knowledge
 
