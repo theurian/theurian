@@ -1758,3 +1758,116 @@ def test_a_list_valued_draft_option_handed_to_accept_is_refused(
     payload = json.loads(result.stderr)
     assert option in payload["error"], payload
     assert payload["remedy"]
+
+
+# -- the SEC-11 secret scan's output surface (#198, ADR-0027 decision 3) ----
+
+
+#: A body carrying a credential-shaped string, derived rather than drawn.
+#:
+#: The seed is hashed at run time so no credential-shaped literal exists in this
+#: file: gitleaks runs its default ruleset over this repository's whole history,
+#: and an allowlist keyed on such a literal is a place a real credential can
+#: hide. ``test_content_secrets.py`` records the same reasoning for its own
+#: fixture, and the 0.065% digit-free draw rate that rules out a fresh
+#: ``token_urlsafe``.
+def _leaky_body() -> str:
+    import base64
+    import hashlib
+
+    token = (
+        base64.urlsafe_b64encode(hashlib.sha256(b"theurian propose-cli secret fixture").digest())
+        .decode()
+        .rstrip("=")
+    )
+    return f"# Retry policy\n\nThree attempts.\n\n    THEURIAN_MCP_TOKEN={token}\n"
+
+
+def _warned_accept(project: Path) -> tuple[Any, dict[str, Any]]:
+    """Draft a leaky proposal under ``warn`` and accept it, returning both streams."""
+    (project / ".theurian" / "config.yaml").write_text(
+        "security:\n  secretScan: warn\n", encoding="utf-8"
+    )
+    (project / "body.md").write_text(_leaky_body(), encoding="utf-8")
+    _, drafted = _draft(project)
+
+    rendered = runner.invoke(
+        app, ["propose", "accept", drafted["proposalId"]], catch_exceptions=False
+    )
+    assert rendered.exit_code == 0, rendered.stdout + rendered.stderr
+    return rendered, drafted
+
+
+def test_a_warned_acceptance_renders_a_finding_a_person_can_act_on(project: Path) -> None:
+    """``warn``'s whole contract is that somebody reads it, so it has to be readable.
+
+    Measured against the real CLI before this test existed: publishing the
+    finding as a *mapping* -- the shape ``ingest --json`` uses for its
+    ``warnings`` -- reached a terminal as
+    ``{'body': 'architecture/...', 'family': 'high-entropy-token', ...}``,
+    because ``_render`` prints a list entry through ``escape_terminal_controls``,
+    which stringifies a mapping with ``repr``. Tolerable for a report nobody has
+    to act on; not tolerable for the one output whose purpose is that a person
+    looks at the body before opening a pull request.
+
+    So the line is pinned in the shape every compiler and linter emits, and the
+    absence of a ``repr`` is pinned with it -- a mapping would satisfy "contains
+    the family" and fail here.
+    """
+    rendered, drafted = _warned_accept(project)
+
+    line = next(
+        stripped
+        for raw in rendered.stdout.splitlines()
+        if (stripped := raw.strip()).startswith("- architecture/")
+    )
+    assert re.fullmatch(
+        rf"- architecture/retry-policy\.{drafted['revisionId']}\.md:5:24: "
+        rf"high-entropy-token \(\S{{4}}\.\.\.\)",
+        line,
+    ), f"the finding does not render as `<body>:<line>:<column>: <family> (<prefix>)`: {line!r}"
+    assert "{'body'" not in rendered.stdout, (
+        f"a finding reaches the terminal as a Python mapping repr:\n{rendered.stdout}"
+    )
+
+
+def test_a_warned_acceptance_publishes_the_policy_beside_the_findings(project: Path) -> None:
+    """An empty finding list means two different things, and the policy is what tells them apart.
+
+    Under ``warn`` an empty list says the bodies were scanned and are clean;
+    under ``off`` it says nothing was scanned at all. A caller that saw only the
+    list would read the second as the first -- which is the more dangerous
+    direction, since ``off`` is what a project sets after a false positive and
+    then forgets.
+
+    Both keys are part of the shape rather than fields that appear on trouble: a
+    key a caller only ever sees when something is wrong is a key callers learn
+    not to read.
+    """
+    (project / ".theurian" / "config.yaml").write_text(
+        "security:\n  secretScan: warn\n", encoding="utf-8"
+    )
+    (project / "body.md").write_text(_leaky_body(), encoding="utf-8")
+    _, drafted = _draft(project)
+
+    code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 0, payload
+    assert payload["secretScanPolicy"] == "warn"
+    assert len(payload["secretFindings"]) == 1, payload
+    assert "high-entropy-token" in payload["secretFindings"][0]
+    # The report is a locator, never a second copy of what it reports.
+    assert _leaky_body().split("=")[-1].strip() not in json.dumps(payload), (
+        "the accept payload reproduces the token it is warning about"
+    )
+
+
+def test_a_clean_acceptance_still_publishes_an_empty_finding_list(project: Path) -> None:
+    """The ordinary run, which is where a "only on trouble" key would go unnoticed."""
+    _, drafted = _draft(project)
+
+    code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    assert code == 0, payload
+    assert payload["secretScanPolicy"] == "block", "no config file must select block"
+    assert payload["secretFindings"] == []

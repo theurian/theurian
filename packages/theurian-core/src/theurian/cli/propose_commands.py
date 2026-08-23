@@ -28,7 +28,6 @@ import typer
 
 from theurian.application.proposal_service import (
     ApprovedSetUnusableError,
-    BodySecretFinding,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalError,
@@ -484,7 +483,7 @@ def propose_accept(
         # list is empty under `off` too, where nothing was scanned -- which is
         # exactly what the policy beside it distinguishes (SEC-11).
         "secretScanPolicy": accepted.secret_scan.policy.value,
-        "secretFindings": [_finding_payload(f) for f in accepted.secret_scan.findings],
+        "secretFindings": [f.describe() for f in accepted.secret_scan.findings],
         "nextSteps": list(_ACCEPT_STEPS),
     }
     # Set only when the move landed but the proposal's own source files could not
@@ -495,27 +494,23 @@ def propose_accept(
     _emit(payload, as_json=as_json)
 
 
-def _finding_payload(finding: BodySecretFinding) -> dict[str, object]:
-    """One secret-scan finding, as the fields a caller can act on.
-
-    A mapping rather than a rendered sentence, the shape ``ingest --json``
-    already uses for its ``failures`` and ``warnings``: a caller filtering by
-    family should not have to parse prose. Every value here is bounded and
-    carries no more of the match than the detector's redaction limit allows, so
-    what lands in a log is a locator and not a copy of the credential.
-
-    The body path is a contributor's -- it comes from the migration's
-    ``contentFile`` -- so it reaches the human sink through
-    ``_render``/``escape_terminal_controls`` like every other string this command
-    publishes, and reaches the JSON sink escaped by ``json.dumps``.
-    """
-    return {
-        "body": finding.body,
-        "family": finding.finding.family,
-        "line": finding.finding.line,
-        "column": finding.finding.column,
-        "redacted": finding.finding.redacted,
-    }
+# `secretFindings` is a list of *rendered lines*, and not the list of mappings
+# `ingest --json` publishes for its `failures` and `warnings`. Measured against
+# the real CLI: `_render` prints a list entry through
+# `escape_terminal_controls`, which stringifies a mapping with `repr`, so a
+# mapping here reaches a terminal as
+# `{'body': 'architecture/...', 'family': 'high-entropy-token', ...}`. That is
+# tolerable for an ingest report nobody has to act on, and it is not tolerable
+# for the one output whose entire purpose is that a person reads it before
+# opening a pull request -- `warn`'s whole contract is "accepted, now go and
+# look". The line is `<body>:<line>:<column>: <family> (<prefix>)`, the shape
+# every compiler and linter emits, so a `--json` consumer can still split it and
+# a human can paste it into an editor.
+#
+# The body path is a contributor's -- it comes from the migration's
+# `contentFile` -- so it reaches the human sink through
+# `_render`/`escape_terminal_controls` like every other string this command
+# publishes, and reaches the JSON sink escaped by `json.dumps`.
 
 
 #: What a caller does next, and the one thing about it that surprises people:
