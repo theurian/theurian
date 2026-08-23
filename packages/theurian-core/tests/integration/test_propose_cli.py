@@ -677,8 +677,11 @@ def _accept_catching(proposal_id: str) -> tuple[int, object, str]:
 def _poison_content_file(root: Path, drafted: dict[str, Any], quoted_value: str) -> None:
     """Repoint the drafted migration's ``contentFile`` at a hand-authored value.
 
-    ``accept`` does not schema-validate the proposal's migration, so a value the
-    schema rejects reaches ``_destination_of``'s ``resolve()`` unfiltered.
+    ``accept`` computes its body moves before its pre-check runs, so a value the
+    schema rejects reaches ``_destination_of``'s ``resolve()`` unfiltered -- ahead
+    of stage 1, which would refuse the document (ADR-0027 decision 2). The order
+    is what makes these faults reachable at all, not an absence of validation:
+    the moves feed the pre-check, so they are computed first.
     ``quoted_value`` is a YAML double-quoted scalar so its escapes decode to the
     real code points.
     """

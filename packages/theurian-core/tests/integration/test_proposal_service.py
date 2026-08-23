@@ -25,6 +25,7 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
+    ApprovedSetUnusableError,
     CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
@@ -42,6 +43,7 @@ from theurian.domain.errors import (
     IrregularSourceFileError,
     MigrationError,
     PathEscapeError,
+    SchemaUnreadableError,
 )
 from theurian.domain.identifiers import (
     AgentId,
@@ -1470,11 +1472,14 @@ def test_a_migration_file_that_cannot_be_opened_is_answered_rather_than_crashing
 def _poison_content_file(drafted: DraftedProposal, quoted_value: str) -> None:
     """Repoint the drafted migration's ``contentFile`` at a hand-authored value.
 
-    ``accept`` does not schema-validate the proposal's migration, so a value the
+    ``accept`` computes its body moves before its pre-check runs, so a value the
     JSON Schema would reject -- one holding a NUL byte or an unpaired surrogate --
-    reaches ``_destination_of``'s ``resolve()`` unfiltered. ``quoted_value`` is a
-    YAML double-quoted scalar so its ``\\0`` / ``\\uXXXX`` escapes decode to the
-    real code points.
+    reaches ``_destination_of``'s ``resolve()`` unfiltered, ahead of stage 1's
+    schema check (ADR-0027 decision 2). The order is what makes these faults
+    reachable, not an absence of validation: the moves are an *input* to the
+    pre-check, so :meth:`_body_moves` necessarily runs first.
+    ``quoted_value`` is a YAML double-quoted scalar so its ``\\0`` / ``\\uXXXX``
+    escapes decode to the real code points.
     """
     text = drafted.migration_file.read_text(encoding="utf-8")
     replaced = text.replace(f"contentFile: {drafted.content_file}", f"contentFile: {quoted_value}")
@@ -1528,9 +1533,11 @@ def test_the_unreadable_remedy_does_not_prescribe_chmod_for_a_non_permission_fau
     """Round-one HIGH (CLASS-B): ``_unreadable`` prescribed ``chmod`` for any errno.
 
     A ``contentFile`` naming a directory reaches ``read_source_file`` as
-    ``../knowledge`` -- accept does not schema-validate (ADR-0013 §4) -- and the
-    open raises ``IsADirectoryError`` (``EISDIR``), which the examination clause
-    translates. The old remedy said *"Make ... readable -- chmod u+rX on it"*
+    ``../knowledge`` -- the body moves are computed before the pre-check, so this
+    is read before stage 1's schema check ever sees the document (ADR-0027
+    decision 2) -- and the open raises ``IsADirectoryError`` (``EISDIR``), which
+    the examination clause translates. The old remedy said *"Make ... readable
+    -- chmod u+rX on it"*
     regardless, but no ``chmod`` cures ``EISDIR``: the fault is the authored
     ``contentFile``, which is what the remedy must name. This is the class
     ``c7cf455`` (#233) closed for :class:`PathEscapeError`, reopened at this site.
@@ -3001,3 +3008,104 @@ def test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in(
     assert all(path.is_relative_to(system_temp) for path in staged), staged
     assert not [path for path in staged if path.exists()], "a replay target was left behind"
     assert list(system_temp.iterdir()) == [], "the replay left residue in the temporary root"
+
+
+# -- stage 1's second half, and the faults it must not claim -----------------
+#
+# Both guards below are ones no real input reaches, which on this project is the
+# shape that survives its own deletion. Each is driven synthetically instead.
+
+
+def test_a_build_that_disagrees_with_the_schema_about_apiversion_refuses_the_proposal(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stage 1's second half: the ``apiVersion`` this *build* understands.
+
+    Not the schema's ``const`` written twice. The schema is a file located at
+    runtime and :data:`MIGRATION_API_VERSION` is compiled into the build, so a
+    document declaring an ``apiVersion`` the schema rejects never gets here -- the
+    ``const`` refuses it first, and the branch is reachable only when the two
+    disagree. That is why it is driven by moving the constant rather than by
+    editing the document: the proposal is drafted against today's pair, and the
+    build's answer is then changed underneath it, which is exactly the
+    installed-schema-versus-installed-code skew the check exists for.
+
+    The direction matters as much as the refusal. This is a plain
+    :class:`ProposalError` and not an :class:`ApprovedSetUnusableError`, so
+    ``propose accept`` reports it on the code that means *this proposal could not
+    be used as it stands* rather than the one that means *read the knowledge
+    state* -- and the proposal survives, so correcting it is possible at all.
+    """
+    from theurian.application import proposal_service as module
+
+    drafted = service.draft(_request())
+    before = _contents(drafted.directory)
+    monkeypatch.setattr(module, "MIGRATION_API_VERSION", "theurian.dev/v2")
+
+    with pytest.raises(ProposalError, match="apiVersion") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ApprovedSetUnusableError), (
+        "the proposal's own apiVersion is the proposal's fault, not the landed set's"
+    )
+    assert not isinstance(caught.value, ChangeAlreadyInPlaceError)
+    assert drafted.migration_file.name in str(caught.value)
+    assert "theurian.dev/v2" in str(caught.value), "the reader is told what this build reads"
+    assert "Nothing has moved" in caught.value.remedy
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+
+
+@pytest.mark.parametrize("broken_stage", ["the schema check", "the replay"])
+def test_an_unreadable_installed_schema_is_not_reported_as_the_proposals_fault(
+    service: ProposalService,
+    paths: ProjectPaths,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    broken_stage: str,
+) -> None:
+    """A broken installation is not something the author of a proposal can fix.
+
+    The pre-check reads the published JSON Schemas at two points -- stage 1
+    against the proposal's own document, and again inside the replay when the
+    loader reads the staged copy -- and each is wrapped in a clause that
+    translates a :class:`TheurianError` into a :class:`ProposalError` naming the
+    proposal. :class:`SchemaUnreadableError` is a ``TheurianError``, so without an
+    explicit re-raise ahead of those clauses it would arrive as *"correct the
+    migration in the proposal directory"* for a file that is perfectly correct;
+    what it needs to say is *reinstall theurian* (#205, #227). ``propose accept``
+    routes on exactly that distinction: :class:`ProposalError` takes exit 1 with a
+    remedy about the proposal, and everything else keeps its own remedy.
+
+    Driven by a real unreadable schema rather than a raised stand-in: the
+    published schemas are copied and ``migration.schema.json`` emptied, so
+    ``json.loads`` fails inside the loader's own validator construction and the
+    error is the one the product raises. Both points are exercised, because a
+    re-raise deleted at one of them is invisible from the other.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    drafted = service.draft(_request())
+    broken = tmp_path / "broken-schemas"
+    shutil.copytree(SCHEMAS, broken)
+    (broken / "migrations" / "migration.schema.json").write_text("", encoding="utf-8")
+    if broken_stage == "the schema check":
+        # The injected schema check, pointed at the broken installation -- the
+        # same dependency `cli/propose_commands.py::_service` builds from
+        # `schema_root()`, wired to a root whose schema cannot be read.
+        monkeypatch.setattr(
+            service, "_validate", lambda document: validate_migration_document(document, broken)
+        )
+    else:
+        monkeypatch.setattr(pipeline, "schema_root", lambda: broken)
+    before = _contents(drafted.directory)
+
+    with pytest.raises(SchemaUnreadableError) as caught:
+        service.accept(drafted.proposal_id)
+
+    # Not a `ProposalError`, which is what keeps it off exit 1's "correct your
+    # proposal" branch, and its own remedy is what the caller then publishes.
+    assert not isinstance(caught.value, ProposalError)
+    assert "Reinstall theurian" in caught.value.remedy, caught.value.remedy
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
