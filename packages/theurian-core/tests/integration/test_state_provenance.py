@@ -38,6 +38,7 @@ from typing import Any
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import BuildProvenance, ProjectRegistry
@@ -75,6 +76,7 @@ operations:
     itemId: {APPROVED_ID}
     revisionId: 01K1AAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: {body_pin(APPROVED_BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -95,6 +97,7 @@ operations:
     itemId: {REJECTED_ID}
     revisionId: 01K1CCCREV01234567890ABCDE
     contentFile: ../knowledge/architecture/rejected.md
+    contentSha256: {body_pin(REJECTED_BODY)}
     metadata:
       title: Rejected approach
       contentType: text/markdown
@@ -510,6 +513,7 @@ operations:
     itemId: {SIBLING_A_ID}
     revisionId: {SIBLING_A_REV}
     contentFile: ../knowledge/architecture/sibling-a.md
+    contentSha256: {body_pin(SIBLING_A_BODY)}
     metadata:
       title: Deploy runbook
       contentType: text/markdown
@@ -530,6 +534,7 @@ operations:
     itemId: {SIBLING_B_ID}
     revisionId: {SIBLING_B_REV}
     contentFile: ../knowledge/architecture/sibling-b.md
+    contentSha256: {body_pin(SIBLING_B_BODY)}
     metadata:
       title: Deploy checklist
       contentType: text/markdown
@@ -662,6 +667,7 @@ operations:
     itemId: {LAUNDER_KEEP_ID}
     revisionId: 01K1DAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/launder-keep.md
+    contentSha256: {body_pin(LAUNDER_KEEP_BODY)}
     metadata:
       title: Gateway auth
       contentType: text/markdown
@@ -682,6 +688,7 @@ operations:
     itemId: {LAUNDER_DROP_ID}
     revisionId: 01K1DBBREV01234567890ABCDE
     contentFile: ../knowledge/architecture/launder-drop.md
+    contentSha256: {body_pin(LAUNDER_DROP_BODY)}
     metadata:
       title: Caching
       contentType: text/markdown

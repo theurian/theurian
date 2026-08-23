@@ -150,20 +150,6 @@ class UpsertRevision(Operation):
     #: such an operation cannot participate in the identity comparison, and the
     #: loader -- the only path a gate ever sees -- always sets it.
     content_identity: tuple[int, int] | None = None
-    #: Whether the migration *declared* ``contentSha256``, as distinct from
-    #: whether ``content_sha256`` holds one. The loader fills that field either
-    #: way -- with the declared pin, or with the body's hash as it reads it now
-    #: -- so by the time an operation exists the two cases are indistinguishable
-    #: without this flag. Only the declared case freezes the body: an
-    #: out-of-band edit is a mismatch there and is silently adopted here (issue
-    #: #210).
-    content_pinned: bool = False
-
-    def __post_init__(self) -> None:
-        if self.content_pinned and self.content_sha256 is None:
-            raise MigrationError(
-                f"{self.revision_id} claims to pin its body but carries no content hash"
-            )
 
     @override
     @property

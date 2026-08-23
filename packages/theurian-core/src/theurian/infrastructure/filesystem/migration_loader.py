@@ -1804,8 +1804,11 @@ def _parse_upsert(
     content_identity = (body_stat.st_dev, body_stat.st_ino)
 
     actual = ContentHash.of_bytes(body_bytes)
-    declared = payload.get("contentSha256")
-    if declared is not None and declared != actual.value:
+    # Schema-required since ADR-0027, so there is no "declared nothing" branch to
+    # tolerate here: an absent pin never reaches this function -- it is a schema
+    # error at `validate_migration_document`, before the body is read at all.
+    declared = payload["contentSha256"]
+    if declared != actual.value:
         raise MigrationError(
             f"{path.name}: {content_file} hashes to {actual.short} but the migration "
             f"pins {declared[:12]}. The body file changed after the migration was written."
@@ -1829,11 +1832,6 @@ def _parse_upsert(
         # application layer compares (issue #210).
         resolved_content_path=relative_posix.as_posix(),
         content_identity=content_identity,
-        # `content_sha256` above is the hash this loader just computed, whether
-        # or not the migration declared one, so it cannot answer "is this body
-        # frozen?". Only a declared pin is checked against the file, and only a
-        # declared pin therefore makes an out-of-band edit detectable (#210).
-        content_pinned=declared is not None,
         metadata=RevisionMetadataSpec(
             title=metadata["title"],
             content_type=MediaType(metadata["contentType"]),

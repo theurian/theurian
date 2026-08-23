@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
@@ -69,7 +70,7 @@ BODY = """# 認証ポリシー
 決済に関わる操作はすべて監査対象とし、四半期ごとに棚卸しする。
 """
 
-MIGRATION = """apiVersion: theurian.dev/v1
+MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1AAAAAA01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
 author: engineer@example.com
@@ -83,6 +84,7 @@ operations:
     itemId: architecture.ninsho
     revisionId: 01K1AAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/ninsho.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: 認証ポリシー
       contentType: text/markdown

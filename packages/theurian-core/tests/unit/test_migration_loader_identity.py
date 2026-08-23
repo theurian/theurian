@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from migration_fixtures import body_pin
 
 from theurian.cli.context import schema_root as real_schema_root
 from theurian.domain.migration import UpsertRevision
@@ -32,11 +33,14 @@ from theurian.infrastructure.filesystem.migration_loader import load_migrations
 
 pytestmark = pytest.mark.unit
 
+_FIRST_BODY = "# First\n\nThe first body.\n"
+_SECOND_BODY = "# Second\n\nThe second body.\n"
+
 #: Two items, each revised from its own body file, so "every produced
 #: ``UpsertRevision``" is more than one operation. ``contentFile`` resolves
 #: relative to the migration file, so ``../knowledge/<name>.md`` lands under the
 #: project root the loader is given as its containment boundary.
-_TWO_UPSERTS = """apiVersion: theurian.dev/v1
+_TWO_UPSERTS = f"""apiVersion: theurian.dev/v1
 id: 01K1DDDDDD01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
 author: engineer@example.com
@@ -50,6 +54,7 @@ operations:
     itemId: architecture.first
     revisionId: 01K1DDDRV101234567890ABCDE
     contentFile: ../knowledge/first.md
+    contentSha256: {body_pin(_FIRST_BODY)}
     metadata:
       title: First
       contentType: text/markdown
@@ -70,6 +75,7 @@ operations:
     itemId: architecture.second
     revisionId: 01K1DDDRV201234567890ABCDE
     contentFile: ../knowledge/second.md
+    contentSha256: {body_pin(_SECOND_BODY)}
     metadata:
       title: Second
       contentType: text/markdown
@@ -88,8 +94,8 @@ def _project_with_two_bodies(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     (root / ".theurian" / "migrations").mkdir(parents=True)
     (root / ".theurian" / "knowledge").mkdir(parents=True)
-    (root / ".theurian" / "knowledge" / "first.md").write_text("# First\n\nThe first body.\n")
-    (root / ".theurian" / "knowledge" / "second.md").write_text("# Second\n\nThe second body.\n")
+    (root / ".theurian" / "knowledge" / "first.md").write_text(_FIRST_BODY)
+    (root / ".theurian" / "knowledge" / "second.md").write_text(_SECOND_BODY)
     (root / ".theurian" / "migrations" / "01K1DDDDDD01234567890ABCDE-two.yaml").write_text(
         _TWO_UPSERTS
     )

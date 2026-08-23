@@ -15,7 +15,6 @@ from fakes import FrozenClock, InMemoryWriter
 from theurian.application.migration_body_guards import (
     duplicate_content_file_violations,
     refuse_duplicate_content_files,
-    unpinned_revisions,
 )
 from theurian.application.migration_engine import (
     ApplyReport,
@@ -1147,7 +1146,6 @@ def _upsert(  # noqa: PLR0913 -- a test builder; every field models one axis of 
     identity: tuple[int, int] | None = None,
     resolved: str | None = None,
     expected_revision: RevisionId | None = None,
-    content_pinned: bool = False,
 ) -> UpsertRevision:
     return UpsertRevision(
         item_id=ITEM,
@@ -1158,7 +1156,6 @@ def _upsert(  # noqa: PLR0913 -- a test builder; every field models one axis of 
         metadata=_metadata(),
         expected_revision=expected_revision,
         content_sha256=ContentHash.of_text(body),
-        content_pinned=content_pinned,
     )
 
 
@@ -1266,26 +1263,22 @@ def test_two_files_whose_paths_differ_only_by_case_are_not_refused() -> None:
     refuse_duplicate_content_files(migrations)
 
 
-def test_a_pinned_pair_sharing_one_file_is_still_refused() -> None:
-    """The refusal is unconditional of pinning (issue #210's pinned-pair face).
+def test_a_pair_pinning_one_digest_and_sharing_one_file_is_still_refused() -> None:
+    """Agreeing on the digest does not make one file two revisions (issue #210).
 
     A pin freezes a body against out-of-band edits; it does not make one file
-    able to be two revisions. Two revisions pinning the *same* digest and
-    sharing one file still cannot each be independently frozen or attributed --
-    the hazard is the sharing, not the missing pin -- so the set is refused, and
-    the reason names why it holds even here.
+    able to be two revisions. Two revisions recording the *same* digest and
+    sharing one file still cannot each be independently attributed -- the hazard
+    is the sharing -- so the set is refused, and the reason names why it holds
+    even here. Since ADR-0027 every revision pins, so this is the only shape the
+    refusal ever meets; it stays a separate case from the differing-digest pair
+    above because an identity-keyed guard that compared digests would pass it.
     """
     migrations = MigrationSet.ordered(
         (
             _migration(
                 MIG_1,
-                _upsert(
-                    REV_1,
-                    BODY_V1,
-                    "../knowledge/a.md",
-                    identity=IDENTITY_A,
-                    content_pinned=True,
-                ),
+                _upsert(REV_1, BODY_V1, "../knowledge/a.md", identity=IDENTITY_A),
             ),
             _migration(
                 MIG_2,
@@ -1294,7 +1287,6 @@ def test_a_pinned_pair_sharing_one_file_is_still_refused() -> None:
                     BODY_V1,
                     "../knowledge/a.md",
                     identity=IDENTITY_A,
-                    content_pinned=True,
                     expected_revision=REV_1,
                 ),
             ),
@@ -1527,107 +1519,6 @@ def test_status_reports_no_body_sharing_for_a_set_of_distinct_files() -> None:
 def test_duplicate_content_file_error_is_a_migration_error() -> None:
     """CLI error handling catches the broader family, so this must join it."""
     assert issubclass(DuplicateContentFileError, MigrationError)
-
-
-# -- Issue #210: an upsertRevision that declares no contentSha256 ----------
-
-
-def test_a_revision_declaring_no_pin_is_reported() -> None:
-    """The warning's whole content: which migration, which revision, which body.
-
-    A reader with only the revision id still has to find the file to edit, and
-    a reader with only the migration id still has to find which body's digest
-    to take -- so all three are carried.
-    """
-    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
-
-    reported = unpinned_revisions(migrations)
-
-    assert len(reported) == 1
-    assert reported[0].migration_id == MigrationId(MIG_1)
-    assert reported[0].revision_id == REV_1
-    assert reported[0].content_file == "../knowledge/a.md"
-
-
-def test_an_unpinned_revision_carries_its_resolved_path_for_shasum() -> None:
-    """The warning shasums a body from the repository root, so the reporter must
-    carry the loader's resolved, project-relative path -- the authored
-    ``content_file`` is relative to the migration file and shasums to nothing
-    there. Kept beside the authored path, not in place of it, so a reader still
-    sees the string they typed."""
-    migration = _migration(
-        MIG_1, _upsert(REV_1, BODY_V1, "../knowledge/a.md", resolved="knowledge/a.md")
-    )
-
-    reported = unpinned_revisions(MigrationSet.ordered((migration,)))
-
-    assert reported[0].resolved_content_path == "knowledge/a.md"
-    assert reported[0].content_file == "../knowledge/a.md"
-
-
-def test_a_revision_that_pins_its_body_is_not_reported() -> None:
-    """The negative control, and the distinction the whole field rests on.
-
-    ``content_sha256`` is set on both operations -- the loader fills it either
-    way, with the declared pin or with the hash it just read -- so a check
-    written against that field alone reports neither of them and this test goes
-    green against a build that warns about nothing at all.
-    """
-    pinned = _migration(
-        MIG_1,
-        UpsertRevision(
-            item_id=ITEM,
-            revision_id=REV_1,
-            content_file_path="../knowledge/a.md",
-            metadata=_metadata(),
-            content_sha256=ContentHash.of_text(BODY_V1),
-            content_pinned=True,
-        ),
-    )
-
-    assert unpinned_revisions(MigrationSet.ordered((pinned,))) == ()
-
-
-def test_every_unpinned_revision_is_reported_in_application_order() -> None:
-    """Per operation, not per migration: two revisions of one migration are two
-    body files, and one id would drop the half of the answer naming the file."""
-    two_upserts = _migration(
-        MIG_2,
-        _upsert(REV_2, BODY_V2, "../knowledge/b.md"),
-        UpsertRevision(
-            item_id=ItemId("architecture.caching-policy"),
-            revision_id=RevisionId("01K1REV00301234567890ABCDE"),
-            content_file_path="../knowledge/c.md",
-            metadata=_metadata(),
-            content_sha256=ContentHash.of_text(BODY_V1),
-        ),
-    )
-    migrations = MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1), two_upserts))
-
-    reported = unpinned_revisions(migrations)
-
-    assert [u.content_file for u in reported] == [
-        "../knowledge/a.md",
-        "../knowledge/b.md",
-        "../knowledge/c.md",
-    ]
-
-
-def test_a_revision_cannot_claim_a_pin_it_has_no_hash_for() -> None:
-    """The flag and the hash describe one fact, so they cannot disagree.
-
-    Refused at construction rather than left for whatever reads them later:
-    `unpinned_revisions` would call such an operation pinned while the engine
-    has nothing to check the body against.
-    """
-    with pytest.raises(MigrationError, match="no content hash"):
-        UpsertRevision(
-            item_id=ITEM,
-            revision_id=REV_1,
-            content_file_path="../knowledge/a.md",
-            metadata=_metadata(),
-            content_pinned=True,
-        )
 
 
 # -- Issue #210 hardening: the guards' two easily-mutated edges -------------

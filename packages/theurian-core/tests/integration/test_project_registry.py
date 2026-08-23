@@ -28,6 +28,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectError, ProjectRegistry
@@ -44,7 +45,7 @@ ALPHA_MARKER = "alpha-only-rotation-clause"
 BETA_MARKER = "beta-only-quota-clause"
 
 
-def _migration(item: str, letter: str, title: str, filename: str) -> str:
+def _migration(item: str, letter: str, title: str, filename: str, body: str) -> str:
     return f"""apiVersion: theurian.dev/v1
 id: 01K1{letter}AAAAA01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
@@ -59,6 +60,7 @@ operations:
     itemId: {item}
     revisionId: 01K1{letter}AAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/{filename}
+    contentSha256: {body_pin(body)}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -99,11 +101,10 @@ def _repo(machine: Path, team: str, name: str = "api") -> Path:
 
 def _knowledge(root: Path, *, item: str, letter: str, title: str, marker: str) -> None:
     filename = f"{item.split('.', 1)[1]}.md"
-    (root / f".theurian/knowledge/architecture/{filename}").write_text(
-        f"# {title}\n\nThis repository's own policy: {marker}.\n"
-    )
+    body = f"# {title}\n\nThis repository's own policy: {marker}.\n"
+    (root / f".theurian/knowledge/architecture/{filename}").write_text(body)
     (root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{item}.yaml").write_text(
-        _migration(item, letter, title, filename)
+        _migration(item, letter, title, filename, body)
     )
 
 

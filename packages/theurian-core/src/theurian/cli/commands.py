@@ -28,7 +28,6 @@ from theurian.application.migration_alias_guards import (
 from theurian.application.migration_body_guards import (
     duplicate_content_file_violations,
     refuse_duplicate_content_files,
-    unpinned_revisions,
 )
 from theurian.application.migration_engine import (
     MigrationEngine,
@@ -307,52 +306,6 @@ def _unenforceable_scope_remedy(
     if exc.migration_id in _applied_migration_ids(paths, project_id):
         return UNENFORCEABLE_SCOPE_REMEDY_APPLIED
     return UNENFORCEABLE_SCOPE_REMEDY_UNAPPLIED
-
-
-def _unpinned_warnings(migration_set: MigrationSet) -> list[str]:
-    """`migrate validate`'s ``unpinnedRevisions`` field (issue #210).
-
-    One line per revision whose body nothing freezes: the migration, the
-    revision, the body's project-relative path -- the one a reader can ``shasum``
-    from the repository root, *not* the authored ``contentFile``, which is
-    relative to the migration file and so shasums to nothing from the root -- and
-    the two-step remedy. Strings rather than objects because ``_render`` prints a
-    list of objects as Python reprs, and this field has to be readable in the
-    default output as well as parseable in ``--json`` -- the two channels render
-    one payload.
-
-    The remedy carries the applied-case escape, the same shape
-    :data:`DUPLICATE_CONTENT_FILE_REMEDY` and the scope remedies carry: pinning
-    an *already-applied* migration by editing it in place trips FR-K5's checksum
-    guard, whose own remedy says to restore the file -- so the warning must not
-    stop at "add the pin", which loops a reader between two errors the way issue
-    #63's HIGH-1 did. `validate` holds no store here, so the line states both
-    cases rather than choosing between them.
-
-    A warning, so it is emitted alongside ``valid: true`` and never changes the
-    exit code. Always present, empty list included: a field that only sometimes
-    exists is one every caller eventually forgets to check for.
-    """
-    warnings: list[str] = []
-    for unpinned in unpinned_revisions(migration_set):
-        # `is None` rather than `or`: an empty resolved path, were one ever
-        # recorded, is a resolution -- not the "no resolution" an authored path
-        # falls back for. Behaviour is unchanged today (the loader never records
-        # an empty resolved path), and this keeps the display fall-back reading
-        # the way the identity fields it names are guarded (issue #210).
-        body = (
-            unpinned.content_file
-            if unpinned.resolved_content_path is None
-            else unpinned.resolved_content_path
-        )
-        warnings.append(
-            f"{unpinned.migration_id}: {unpinned.revision_id} declares no contentSha256 for "
-            f"{body}, so an edit to that body is adopted, not refused. Pin it with the digest "
-            f"from `shasum -a 256 {body}`; if this migration is already applied, editing it "
-            f"trips the applied-migration checksum guard, so delete `.theurian/state/` and run "
-            f"`theurian migrate apply` to rebuild from the corrected migrations (FR-K4)."
-        )
-    return warnings
 
 
 def _refuse_a_body_file_backing_two_revisions(
@@ -1156,10 +1109,11 @@ def migrate_validate(as_json: JsonOption = False) -> None:
     invariant; custom migrations without anchors can still validate and then be
     rejected by `migrate apply` (issue #36).
 
-    Publishes one thing `apply` does not: ``unpinnedRevisions``, a warning that
-    leaves the exit code alone (issue #210). It belongs here rather than on
-    `apply` because it is advice about how the migration is *written*, and the
-    command whose contract is "read this before you commit it" is this one.
+    Published ``unpinnedRevisions`` until ADR-0027, warning about a revision
+    that declared no ``contentSha256``. The pin is schema-required now, so the
+    list was empty for every input that got this far -- and a permanently empty
+    published field claims its condition is still reachable. The absence is a
+    schema error at load instead, which is a refusal rather than a warning.
     """
     context, _ = _require_project(as_json)
 
@@ -1184,7 +1138,6 @@ def migrate_validate(as_json: JsonOption = False) -> None:
             "contentFileCount": len(context.loaded.content_checksums),
             "stateHash": str(context.state_hash),
             "applicationOrder": [str(m.migration_id) for m in context.loaded.migration_set],
-            "unpinnedRevisions": _unpinned_warnings(context.loaded.migration_set),
         },
         as_json=as_json,
     )

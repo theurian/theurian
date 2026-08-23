@@ -953,59 +953,6 @@ def test_accept_refuses_a_case_variant_of_a_landed_body(
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 
-def test_accept_refuses_replacing_an_unpinned_landed_body(
-    service: ProposalService, paths: ProjectPaths
-) -> None:
-    """HIGH-C(i): an *unpinned* landed body still backs a revision the set validates.
-
-    ``contentSha256`` is optional -- the loader adopts the body's current hash
-    where it is absent (#210) -- so a landed migration may reference a body it
-    does not freeze. The old guard filtered on ``content_pinned`` and so waved
-    such a replacement through, yet the *set* then holds two distinct revisions
-    on one physical file, which ``refuse_duplicate_content_files`` refuses for the
-    whole project (exit 4). The identity key carries no pinning filter, so the
-    already-claimed inode is refused whether or not the claim was frozen.
-    Reproduced by the orchestrator (``probes/e8``: accept exit 0 -> validate exit 4).
-    """
-    first = service.draft(_request())
-    service.accept(first.proposal_id)
-    # Strip the declared pin from the landed migration: the body is now
-    # referenced but not frozen -- the case the `content_pinned` filter missed.
-    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
-    landed.write_text(
-        "\n".join(
-            line
-            for line in landed.read_text(encoding="utf-8").splitlines()
-            if "contentSha256" not in line
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    assert "contentSha256" not in landed.read_text(encoding="utf-8")
-    # An unpinned reference is legal: the set still loads and would validate.
-    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
-
-    second = service.draft(
-        _request(item_id=ItemId("architecture.other"), body="# Retry policy\n\nFive attempts.\n")
-    )
-    second.migration_file.write_text(
-        second.migration_file.read_text(encoding="utf-8").replace(
-            second.content_file, first.content_file
-        ),
-        encoding="utf-8",
-    )
-    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
-    hand_authored = second.directory / tail
-    hand_authored.parent.mkdir(parents=True, exist_ok=True)
-    hand_authored.write_bytes(second.body_file.read_bytes())
-
-    with pytest.raises(ProposalError, match="backing a landed revision"):
-        service.accept(second.proposal_id)
-
-    assert first.body_destination.read_text() == BODY, "the landed body is untouched"
-    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
-
-
 def test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body(
     service: ProposalService, paths: ProjectPaths
 ) -> None:
@@ -1119,68 +1066,6 @@ def test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision(
         service.accept(second.proposal_id)
 
     assert first.body_destination.read_text() == BODY, "the pinned body is untouched"
-    assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
-
-
-def test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision(
-    service: ProposalService, paths: ProjectPaths
-) -> None:
-    """The unpinned face of the byte conjunct: no pin to break, content still immutable.
-
-    ``contentSha256`` is optional (the loader adopts the body's current hash where
-    it is absent, #210), so a landed revision may reference a body it does not
-    freeze. There is no pin to break here, but re-declaring that revision -- same
-    item, same revision id -- with *different* bytes still silently mutates
-    immutable content and leaves the set at exit 4 (``refuse_duplicate_content_files``).
-    The byte-identity conjunct refuses both faces at once: the guard reads the
-    loaded operation's ``content_sha256`` -- populated pinned or not -- and
-    compares it with the incoming bytes, so the missing pin does not open the gap.
-    As in the pinned face, the item id and revision id are re-pointed to match the
-    landed revision so that byte-identity is the sole deciding conjunct; the prior
-    cross-item shape let the item conjunct short-circuit the check.
-    """
-    first = service.draft(_request())
-    service.accept(first.proposal_id)
-    # Strip the declared pin from the landed migration: the body is now referenced
-    # but not frozen -- the loader still records its hash, so the guard still sees
-    # the bytes the re-declare would overwrite.
-    landed = next(paths.migrations.glob(f"{first.migration_id.value}-*.yaml"))
-    landed.write_text(
-        "\n".join(
-            line
-            for line in landed.read_text(encoding="utf-8").splitlines()
-            if "contentSha256" not in line
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    assert "contentSha256" not in landed.read_text(encoding="utf-8")
-
-    second = service.draft(
-        _request(
-            item_id=ItemId("architecture.other"),
-            body="# Retry policy\n\nFIVE HUNDRED attempts.\n",
-        )
-    )
-    text = second.migration_file.read_text(encoding="utf-8")
-    text = text.replace(second.content_file, first.content_file)
-    text = text.replace(
-        f"revisionId: '{second.revision_id.value}'",
-        f"revisionId: '{first.revision_id.value}'",
-    )
-    text = text.replace("architecture.other", "architecture.retry-policy")
-    second.migration_file.write_text(text, encoding="utf-8")
-    assert f"revisionId: '{first.revision_id.value}'" in text, "the revision id re-declare failed"
-    assert "architecture.other" not in text, "the item id re-declare failed"
-    tail = first.body_destination.resolve().relative_to(paths.knowledge.resolve())
-    hand_authored = second.directory / tail
-    hand_authored.parent.mkdir(parents=True, exist_ok=True)
-    hand_authored.write_bytes(second.body_file.read_bytes())
-
-    with pytest.raises(ProposalError, match="backing a landed revision"):
-        service.accept(second.proposal_id)
-
-    assert first.body_destination.read_text() == BODY, "the immutable body is untouched"
     assert len(load_migrations(paths.root, paths.migrations, SCHEMAS).migration_set) == 1
 
 

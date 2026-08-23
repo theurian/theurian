@@ -18,6 +18,7 @@ from typing import Any, final
 
 import pytest
 from fakes import truncating, whole
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
@@ -129,7 +130,7 @@ PLAYBOOK_BODY = (
 )
 
 
-def _migration(index: int, item: str, filename: str, title: str) -> str:
+def _migration(index: int, item: str, filename: str, title: str, body: str) -> str:
     letter = chr(ord("A") + index)
     return f"""apiVersion: theurian.dev/v1
 id: 01K1{letter}AAAAA01234567890ABCDE
@@ -145,6 +146,7 @@ operations:
     itemId: {item}
     revisionId: 01K1{letter}REVAA01234567890ABCDE
     contentFile: ../knowledge/architecture/{filename}
+    contentSha256: {body_pin(body)}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -178,10 +180,10 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (knowledge / "auth.md").write_text(AUTH_BODY)
     (knowledge / "cache.md").write_text(CACHE_BODY)
     (root / ".theurian/migrations/01K1AAAAAA01234567890ABCDE-auth.yaml").write_text(
-        _migration(0, "architecture.auth", "auth.md", "Authentication policy")
+        _migration(0, "architecture.auth", "auth.md", "Authentication policy", AUTH_BODY)
     )
     (root / ".theurian/migrations/01K1BAAAAA01234567890ABCDE-cache.yaml").write_text(
-        _migration(1, "architecture.cache", "cache.md", "Caching policy")
+        _migration(1, "architecture.cache", "cache.md", "Caching policy", CACHE_BODY)
     )
     assert runner.invoke(app, ["project", "register", "--json"]).exit_code == 0
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
@@ -198,7 +200,7 @@ def with_a_long_document(project: Path) -> Path:
     """
     (project / ".theurian/knowledge/architecture/playbook.md").write_text(PLAYBOOK_BODY)
     (project / ".theurian/migrations/01K1CAAAAA01234567890ABCDE-playbook.yaml").write_text(
-        _migration(2, "architecture.playbook", "playbook.md", "Operations playbook")
+        _migration(2, "architecture.playbook", "playbook.md", "Operations playbook", PLAYBOOK_BODY)
     )
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
     return project
@@ -666,9 +668,7 @@ def test_changing_knowledge_makes_the_index_stale(project: Path) -> None:
     changed."""
     _invoke("index", "build")
 
-    (project / ".theurian/knowledge/architecture/auth.md").write_text(
-        AUTH_BODY + "\n## Rate limiting\n\nOne hundred requests per minute.\n"
-    )
+    _revise_auth(project)
     _, payload = _invoke("index", "status")
 
     assert payload["stale"] is True
@@ -678,12 +678,52 @@ def test_the_remedy_names_the_commands_in_the_order_they_must_run(project: Path)
     """Indexing before applying would build from a database that is itself
     behind, producing a fresh-looking index of stale knowledge."""
     _invoke("index", "build")
-    (project / ".theurian/knowledge/architecture/auth.md").write_text(AUTH_BODY + "\nmore\n")
+    _revise_auth(project)
 
     _, payload = _invoke("index", "status")
 
     assert payload["knowledgeNotApplied"] is True
     assert payload["remedy"].index("migrate apply") < payload["remedy"].index("index build")
+
+
+#: The rate-limiting paragraph the two staleness tests below add to the auth
+#: policy, in its own file. Since ADR-0027 every revision pins its body, so
+#: rewriting `auth.md` under the migration that already names it is refused at
+#: load rather than read as a change -- the way knowledge moves is a second
+#: revision, which is what makes the index stale here.
+REVISED_AUTH_BODY = AUTH_BODY + "\n## Rate limiting\n\nOne hundred requests per minute.\n"
+
+REVISE_AUTH_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: 01K1DAAAAA01234567890ABCDE
+createdAt: 2026-08-03T10:03:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth
+    revisionId: 01K1DREVAA01234567890ABCDE
+    expectedRevision: 01K1AREVAA01234567890ABCDE
+    contentFile: ../knowledge/architecture/auth-v2.md
+    contentSha256: {body_pin(REVISED_AUTH_BODY)}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-v2.md
+"""
+
+
+def _revise_auth(project: Path) -> None:
+    """Move the project's knowledge on, without applying the move."""
+    (project / ".theurian/knowledge/architecture/auth-v2.md").write_text(REVISED_AUTH_BODY)
+    (project / ".theurian/migrations/01K1DAAAAA01234567890ABCDE-auth-v2.yaml").write_text(
+        REVISE_AUTH_MIGRATION
+    )
 
 
 def test_all_three_hashes_are_reported(project: Path) -> None:
@@ -1741,6 +1781,7 @@ operations:
     itemId: architecture.{slug}
     revisionId: {rid}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -1790,6 +1831,7 @@ def _probe_document(project: Path, tag: str, slug: str, title: str, body: str) -
             rid=f"01K1{tag}REVA01234567890ABCDE",
             slug=slug,
             title=title,
+            pin=body_pin(body),
         )
     )
 

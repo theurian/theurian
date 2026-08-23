@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, read_active_index_pointer
@@ -116,6 +117,7 @@ operations:
     itemId: {doc.item_id}
     revisionId: {_ulid(f"R{ordinal:02d}")}
     contentFile: ../knowledge/{doc.kind}/{doc.slug}.md
+    contentSha256: {body_pin(_body(doc))}
     metadata:
       title: {doc.heading}
       contentType: text/markdown

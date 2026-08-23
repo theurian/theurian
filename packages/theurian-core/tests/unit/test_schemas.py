@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from migration_fixtures import UNREACHED_BODY_PIN
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 SCHEMAS = REPO_ROOT / "schemas"
@@ -94,6 +95,9 @@ def _valid_migration() -> dict[str, Any]:
                 "itemId": "architecture.auth-policy",
                 "revisionId": "01K1DEFREV1234567890ABCDEF",
                 "contentFile": "../knowledge/architecture/auth-policy.md",
+                # Required since ADR-0027. No body exists here -- this directory
+                # is I/O-free -- so the value only has to satisfy the pattern.
+                "contentSha256": UNREACHED_BODY_PIN,
                 "metadata": {
                     "title": "Authentication and authorization policy",
                     "contentType": "text/markdown",

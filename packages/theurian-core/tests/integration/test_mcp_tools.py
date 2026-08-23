@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian import __protocol_version__, __version__
@@ -141,7 +142,15 @@ DRAFT_REVISION_ID = "01K1BBBREV01234567890ABCDE"
 BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
 DRAFT_BODY = "# Caching draft\n\nA proposal nobody has reviewed.\n"
 
-MIGRATION = f"""apiVersion: theurian.dev/v1
+
+def auth_migration(body: str) -> str:
+    """The auth-policy migration, pinned to whatever bytes the caller writes.
+
+    A function rather than a constant because ``_project_with_body`` reuses this
+    migration over a body of its own choosing, and the pin has to follow the
+    bytes that actually land on disk.
+    """
+    return f"""apiVersion: theurian.dev/v1
 id: {MIGRATION_ID}
 createdAt: 2026-08-02T10:00:00+09:00
 author: engineer@example.com
@@ -155,6 +164,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: {REVISION_ID}
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: {body_pin(body)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -167,6 +177,9 @@ operations:
         - provider: git
           sourceUri: git://demo/auth-policy.md
 """
+
+
+MIGRATION = auth_migration(BODY)
 
 DRAFT_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: {DRAFT_ID}
@@ -182,6 +195,7 @@ operations:
     itemId: architecture.caching-draft
     revisionId: {DRAFT_REVISION_ID}
     contentFile: ../knowledge/architecture/caching-draft.md
+    contentSha256: {body_pin(DRAFT_BODY)}
     metadata:
       title: Caching draft
       contentType: text/markdown
@@ -195,7 +209,9 @@ operations:
           sourceUri: git://demo/caching-draft.md
 """
 
-#: A second and third approved item, so a budget has something to drop.
+#: A second and third approved item, so a budget has something to drop. Every
+#: caller writes its own body, so the pin comes in from the call site (``pin``)
+#: rather than being fixed here.
 EXTRA_MIGRATION = """apiVersion: theurian.dev/v1
 id: 01K1{letter}AAAAA01234567890ABCDE
 createdAt: 2026-08-02T12:00:00+09:00
@@ -210,6 +226,7 @@ operations:
     itemId: architecture.{slug}
     revisionId: 01K1{letter}AAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -581,6 +598,7 @@ operations:
     itemId: architecture.retired-gateway
     revisionId: 01K1DDDGWA01234567890ABCDE
     contentFile: ../knowledge/architecture/retired-gateway.md
+    contentSha256: {body_pin(RETIRED_BODY)}
     metadata:
       title: Retired gateway
       contentType: text/markdown
@@ -604,6 +622,7 @@ operations:
     itemId: architecture.superseded-sessions
     revisionId: 01K1DDDSSN01234567890ABCDE
     contentFile: ../knowledge/architecture/superseded-sessions.md
+    contentSha256: {body_pin(RETIRED_BODY)}
     metadata:
       title: Superseded sessions
       contentType: text/markdown
@@ -624,6 +643,7 @@ operations:
     itemId: architecture.rejected-store
     revisionId: 01K1DDDRST01234567890ABCDE
     contentFile: ../knowledge/architecture/rejected-store.md
+    contentSha256: {body_pin(RETIRED_BODY)}
     metadata:
       title: Rejected store
       contentType: text/markdown
@@ -957,7 +977,7 @@ READ_COST_WITHHELD = 25
 READ_COST_MIGRATION_ID = "01K1RCST0001234567890ABCDE"
 
 
-def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str) -> str:
+def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pin: str) -> str:
     return f"""  - op: createItem
     itemId: architecture.{slug}
     kind: architecture
@@ -967,6 +987,7 @@ def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str) ->
     itemId: architecture.{slug}
     revisionId: {revision_id}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -1003,15 +1024,17 @@ def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> N
     operations = ""
     for i in range(3):
         slug = f"read-approved-{i}"
-        (knowledge / f"{slug}.md").write_text(f"# Approved {i}\n\nApproved body {i}.\n")
+        body = f"# Approved {i}\n\nApproved body {i}.\n"
+        (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug, f"01K1RCAP{i:02d}01234567890ABCDE", f"Approved {i}", "approved"
+            slug, f"01K1RCAP{i:02d}01234567890ABCDE", f"Approved {i}", "approved", body_pin(body)
         )
     for i in range(withheld):
         slug = f"read-withheld-{i:03d}"
-        (knowledge / f"{slug}.md").write_text(f"# Withheld {i}\n\nWithheld body {i}.\n")
+        body = f"# Withheld {i}\n\nWithheld body {i}.\n"
+        (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug, f"01K1RCWH{i:02d}01234567890ABCDE", f"Withheld {i}", "rejected"
+            slug, f"01K1RCWH{i:02d}01234567890ABCDE", f"Withheld {i}", "rejected", body_pin(body)
         )
     header = (
         "apiVersion: theurian.dev/v1\n"
@@ -1854,7 +1877,7 @@ def _project_with_body(
     monkeypatch.chdir(root)
     _run("init")
     (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(body)
-    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+    (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(auth_migration(body))
     _run("project", "register")
     _run("migrate", "apply")
     return ProjectRegistry.default(data_dir)
@@ -1967,10 +1990,9 @@ def two_projects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectRegi
 
         monkeypatch.chdir(root)
         _run("init")
-        (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(
-            f"# {name} policy\n\n{secret}\n"
-        )
-        (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
+        body = f"# {name} policy\n\n{secret}\n"
+        (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(body)
+        (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(auth_migration(body))
         _run("project", "register")
         _run("migrate", "apply")
 
@@ -2400,13 +2422,16 @@ def indexed_corpus(registry: ProjectRegistry) -> ProjectRegistry:
             ("C", "retry-policy", "Retry policy"),
             ("D", "quota-policy", "Quota policy"),
         ):
-            (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+            body = (
                 f"# {title}\n\nEvery call carries a signed token. This policy explains how "
                 f"the token budget is spent, and what the gateway does when it runs out.\n"
             )
+            (root / f".theurian/knowledge/architecture/{slug}.md").write_text(body)
             (
                 root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml"
-            ).write_text(EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title))
+            ).write_text(
+                EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title, pin=body_pin(body))
+            )
         _run("migrate", "apply")
         _run("index", "build")
     finally:
@@ -2596,7 +2621,12 @@ def indexed_long_document(registry: ProjectRegistry) -> ProjectRegistry:
     try:
         (root / ".theurian/knowledge/architecture/gateway-runbook.md").write_text(LONG_BODY)
         (root / ".theurian/migrations/01K1EAAAAA01234567890ABCDE-gateway.yaml").write_text(
-            EXTRA_MIGRATION.format(letter="E", slug="gateway-runbook", title="Gateway runbook")
+            EXTRA_MIGRATION.format(
+                letter="E",
+                slug="gateway-runbook",
+                title="Gateway runbook",
+                pin=body_pin(LONG_BODY),
+            )
         )
         _run("migrate", "apply")
         _run("index", "build")
@@ -2832,11 +2862,38 @@ async def test_a_stale_index_says_so_in_the_response(indexed: ProjectRegistry) -
 
     Applying a migration is what makes the index stale: editing a knowledge file
     alone leaves the *database* equally out of date, so the index still matches
-    what the database holds.
+    what the database holds. Since ADR-0027 that edit is not even reachable --
+    every revision pins its body, so an out-of-band rewrite is refused at load
+    rather than adopted -- and the honest way to move the state on is the one a
+    reader would take: a second revision, its own body file, its own pin.
     """
     root = Path(indexed.load()["demo"]["rootPath"])
-    (root / ".theurian/knowledge/architecture/caching-draft.md").write_text(
-        DRAFT_BODY + "\n\nAn additional paragraph that changes the state hash.\n"
+    revised = DRAFT_BODY + "\n\nAn additional paragraph that changes the state hash.\n"
+    (root / ".theurian/knowledge/architecture/caching-draft-v2.md").write_text(revised)
+    (root / ".theurian/migrations/01K1CAAAAA01234567890ABCDE-revise-draft.yaml").write_text(
+        f"""apiVersion: theurian.dev/v1
+id: 01K1CAAAAA01234567890ABCDE
+createdAt: 2026-08-03T09:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: upsertRevision
+    itemId: architecture.caching-draft
+    revisionId: 01K1CAAREV01234567890ABCDE
+    expectedRevision: {DRAFT_REVISION_ID}
+    contentFile: ../knowledge/architecture/caching-draft-v2.md
+    contentSha256: {body_pin(revised)}
+    metadata:
+      title: Caching draft
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: draft
+      owner: platform-team
+      trustLevel: inferred
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/caching-draft.md
+"""
     )
     monkey = pytest.MonkeyPatch()
     monkey.chdir(root)
@@ -3024,11 +3081,10 @@ async def test_a_superseded_revision_is_not_served_from_a_stale_index(
     A stale index therefore returns fewer results rather than wrong ones.
     """
     root = Path(indexed.load()["demo"]["rootPath"])
-    (root / ".theurian/knowledge/architecture/auth-v2.md").write_text(
-        "# Authentication policy\n\nThe key now lives in the secret store.\n"
-    )
+    replacement = "# Authentication policy\n\nThe key now lives in the secret store.\n"
+    (root / ".theurian/knowledge/architecture/auth-v2.md").write_text(replacement)
     (root / ".theurian/migrations/01K1EAAAAA01234567890ABCDE-replace.yaml").write_text(
-        """apiVersion: theurian.dev/v1
+        f"""apiVersion: theurian.dev/v1
 id: 01K1EAAAAA01234567890ABCDE
 createdAt: 2026-08-03T14:00:00+09:00
 author: engineer@example.com
@@ -3038,6 +3094,7 @@ operations:
     revisionId: 01K1EREVAA01234567890ABCDE
     expectedRevision: 01K1AAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/auth-v2.md
+    contentSha256: {body_pin(replacement)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -3155,7 +3212,7 @@ RUNBOOK_BODY = (
 RUNBOOK_TITLE = "Tenant quarantine playbook"
 
 #: The one document both withholding stories retire, so both write the same
-#: migration. ``title`` is the only hole in it, and it is a hole because the
+#: migration. ``title`` is one of its two holes, and it is a hole because the
 #: title is prepended to the body before chunking: an English title on the
 #: Japanese depth corpus would hand the word index tokens no other document in
 #: that corpus has, and the word index having nothing to say is the point of
@@ -3174,6 +3231,7 @@ operations:
     itemId: architecture.runbook
     revisionId: 01K1FAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/runbook.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -3191,7 +3249,11 @@ operations:
 #: window this opens is the ordinary state between `migrate apply` and `index
 #: build` -- performing the fix is what makes the old text readable from the
 #: index, which is why the oracle mattered.
-REDACTION_MIGRATION = """apiVersion: theurian.dev/v1
+REDACTED_RUNBOOK_BODY = (
+    "# Tenant quarantine playbook\n\nThe gateway credential now lives in the secret store.\n"
+)
+
+REDACTION_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1GAAAAA01234567890ABCDE
 createdAt: 2026-08-03T15:00:00+09:00
 author: engineer@example.com
@@ -3201,6 +3263,7 @@ operations:
     revisionId: 01K1GREVAA01234567890ABCDE
     expectedRevision: 01K1FAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/runbook-v2.md
+    contentSha256: {body_pin(REDACTED_RUNBOOK_BODY)}
     metadata:
       title: Tenant quarantine playbook
       contentType: text/markdown
@@ -3230,9 +3293,7 @@ operations:
 
 
 def _supersede(root: Path) -> None:
-    (root / ".theurian/knowledge/architecture/runbook-v2.md").write_text(
-        "# Tenant quarantine playbook\n\nThe gateway credential now lives in the secret store.\n"
-    )
+    (root / ".theurian/knowledge/architecture/runbook-v2.md").write_text(REDACTED_RUNBOOK_BODY)
     (root / ".theurian/migrations/01K1GAAAAA01234567890ABCDE-redact.yaml").write_text(
         REDACTION_MIGRATION
     )
@@ -3266,7 +3327,7 @@ def withheld(registry: ProjectRegistry, request: pytest.FixtureRequest) -> Proje
     try:
         (root / ".theurian/knowledge/architecture/runbook.md").write_text(RUNBOOK_BODY)
         (root / ".theurian/migrations/01K1FAAAAA01234567890ABCDE-runbook.yaml").write_text(
-            RUNBOOK_MIGRATION.format(title=RUNBOOK_TITLE)
+            RUNBOOK_MIGRATION.format(title=RUNBOOK_TITLE, pin=body_pin(RUNBOOK_BODY))
         )
         _run("migrate", "apply")
         _run("index", "build")
@@ -3448,18 +3509,24 @@ def crowded(registry: ProjectRegistry, request: pytest.FixtureRequest) -> Projec
     try:
         (root / ".theurian/knowledge/architecture/runbook.md").write_text(RUNBOOK_BODY)
         (root / ".theurian/migrations/01K1FAAAAA01234567890ABCDE-runbook.yaml").write_text(
-            RUNBOOK_MIGRATION.format(title=RUNBOOK_TITLE)
+            RUNBOOK_MIGRATION.format(title=RUNBOOK_TITLE, pin=body_pin(RUNBOOK_BODY))
         )
         for index, letter in enumerate("HJKM"[:CROWD]):
             slug = f"gateway-note-{index}"
-            (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
+            body = (
                 f"# Gateway note {index}\n\nThe shared gateway meters every request for "
                 f"tenant {index}, and the gateway rejects an unsigned one.\n"
             )
+            (root / f".theurian/knowledge/architecture/{slug}.md").write_text(body)
             (
                 root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml"
             ).write_text(
-                EXTRA_MIGRATION.format(letter=letter, slug=slug, title=f"Gateway note {index}")
+                EXTRA_MIGRATION.format(
+                    letter=letter,
+                    slug=slug,
+                    title=f"Gateway note {index}",
+                    pin=body_pin(body),
+                )
             )
         _run("migrate", "apply")
         _run("index", "build")
@@ -3688,6 +3755,7 @@ operations:
     itemId: architecture.plaintext-token-store
     revisionId: {REJECTED_REVISION_ID}
     contentFile: ../knowledge/architecture/plaintext-token-store.md
+    contentSha256: {body_pin(REJECTED_BODY)}
     metadata:
       title: Plaintext token store
       contentType: text/markdown
@@ -3708,6 +3776,7 @@ operations:
     itemId: architecture.token-rotation
     revisionId: {ROTATION_REVISION_ID}
     contentFile: ../knowledge/architecture/token-rotation.md
+    contentSha256: {body_pin(ROTATION_BODY)}
     metadata:
       title: Token rotation
       contentType: text/markdown
@@ -3961,6 +4030,11 @@ class _GateItem:
     def title(self) -> str:
         return self.slug.replace("-", " ").capitalize()
 
+    @property
+    def body(self) -> str:
+        """The bytes written for this item, and therefore the bytes it pins."""
+        return f"# {self.title}\n\nBody for {self.item_id}.\n"
+
 
 #: Present in both projects.
 GATE_SHARED_ITEMS = (
@@ -4027,6 +4101,7 @@ GATE_ITEM_OPERATIONS = """  - op: createItem
     itemId: {item_id}
     revisionId: {revision_id}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -4054,6 +4129,7 @@ def _gate_migration(
             slug=item.slug,
             title=item.title,
             status=item.status,
+            pin=body_pin(item.body),
         )
         for item in items
     ) + "".join(
@@ -4094,7 +4170,7 @@ def _build_gate_project(root: Path, *, holds_the_withheld_source: bool) -> None:
     migrations = root / ".theurian/migrations"
 
     for item in GATE_SHARED_ITEMS:
-        (knowledge / f"{item.slug}.md").write_text(f"# {item.title}\n\nBody for {item.item_id}.\n")
+        (knowledge / f"{item.slug}.md").write_text(item.body)
     (migrations / f"{GATE_BASE_MIGRATION_ID}-shared.yaml").write_text(
         _gate_migration(
             GATE_BASE_MIGRATION_ID,
@@ -4106,7 +4182,7 @@ def _build_gate_project(root: Path, *, holds_the_withheld_source: bool) -> None:
 
     if holds_the_withheld_source:
         item = GATE_WITHHELD_ITEM
-        (knowledge / f"{item.slug}.md").write_text(f"# {item.title}\n\nBody for {item.item_id}.\n")
+        (knowledge / f"{item.slug}.md").write_text(item.body)
         (migrations / f"{GATE_WITHHELD_MIGRATION_ID}-withheld.yaml").write_text(
             _gate_migration(
                 GATE_WITHHELD_MIGRATION_ID,
@@ -4599,6 +4675,7 @@ operations:
     itemId: architecture.{slug}
     revisionId: {rid}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -4767,19 +4844,22 @@ def _build_depth_project(
 
     for number in range(DEPTH_CROWD):
         slug = f"gateway-note-{number:02d}"
-        (knowledge / f"{slug}.md").write_text(corpus.body(number))
+        note = corpus.body(number)
+        (knowledge / f"{slug}.md").write_text(note)
         (migrations / f"{_depth_ulid('N', number)}-{slug}.yaml").write_text(
             DEPTH_NOTE_MIGRATION.format(
                 mid=_depth_ulid("N", number),
                 rid=_depth_ulid("R", number),
                 slug=slug,
                 title=corpus.title(number),
+                pin=body_pin(note),
             )
         )
     if holds_the_document:
-        (knowledge / "runbook.md").write_text(corpus.runbook_body(secret=secret))
+        runbook = corpus.runbook_body(secret=secret)
+        (knowledge / "runbook.md").write_text(runbook)
         (migrations / f"{DEPTH_RUNBOOK_ID}-runbook.yaml").write_text(
-            RUNBOOK_MIGRATION.format(title=corpus.runbook_title)
+            RUNBOOK_MIGRATION.format(title=corpus.runbook_title, pin=body_pin(runbook))
         )
 
     _run("migrate", "apply")
@@ -4800,6 +4880,7 @@ def _build_depth_project(
                 rid=_depth_ulid("P", 0),
                 slug="ledger-retention",
                 title=corpus.unrelated_title,
+                pin=body_pin(corpus.unrelated_body),
             )
         )
         _run("migrate", "apply")
@@ -5351,6 +5432,7 @@ operations:
     itemId: architecture.governance-always
     revisionId: {AS_OF_ALWAYS_REVISION_ID}
     contentFile: ../knowledge/architecture/governance-always.md
+    contentSha256: {body_pin(AS_OF_ALWAYS_BODY)}
     metadata:
       title: Governance always current
       contentType: text/markdown
@@ -5379,6 +5461,7 @@ operations:
     itemId: architecture.governance-later
     revisionId: {AS_OF_LATER_REVISION_ID}
     contentFile: ../knowledge/architecture/governance-later.md
+    contentSha256: {body_pin(AS_OF_LATER_BODY)}
     metadata:
       title: Governance starting later
       contentType: text/markdown
@@ -5407,6 +5490,7 @@ operations:
     itemId: architecture.governance-expired
     revisionId: {AS_OF_EXPIRED_REVISION_ID}
     contentFile: ../knowledge/architecture/governance-expired.md
+    contentSha256: {body_pin(AS_OF_EXPIRED_BODY)}
     metadata:
       title: Governance already expired
       contentType: text/markdown
@@ -5658,7 +5742,11 @@ PROMOTION_PROMOTED_ID = "architecture.ccc-always-valid"
 #: Before every item's `validFrom` below except the one it must exclude.
 PROMOTION_AS_OF = "2026-01-01T00:00:00+09:00"
 
-PROMOTION_EXCLUDED_MIGRATION = """apiVersion: theurian.dev/v1
+#: One body for all three items, each in its own file: the fixture separates
+#: them by item id and validity window, never by content.
+PROMOTION_BODY = "A promotion ordering decision distinguished only by its item id.\n"
+
+PROMOTION_EXCLUDED_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1WAAAAA01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
 author: engineer@example.com
@@ -5672,6 +5760,7 @@ operations:
     itemId: architecture.aaa-not-yet-valid
     revisionId: 01K1WAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/aaa-not-yet-valid.md
+    contentSha256: {body_pin(PROMOTION_BODY)}
     metadata:
       title: Not yet valid, alphabetically first
       contentType: text/markdown
@@ -5686,7 +5775,7 @@ operations:
           sourceUri: git://promotion-demo/aaa-not-yet-valid.md
 """
 
-PROMOTION_KEPT_MIGRATION = """apiVersion: theurian.dev/v1
+PROMOTION_KEPT_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1XAAAAA01234567890ABCDE
 createdAt: 2026-08-02T10:05:00+09:00
 author: engineer@example.com
@@ -5700,6 +5789,7 @@ operations:
     itemId: architecture.bbb-always-valid
     revisionId: 01K1XAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/bbb-always-valid.md
+    contentSha256: {body_pin(PROMOTION_BODY)}
     metadata:
       title: Always valid, alphabetically second
       contentType: text/markdown
@@ -5714,7 +5804,7 @@ operations:
           sourceUri: git://promotion-demo/bbb-always-valid.md
 """
 
-PROMOTION_PROMOTED_MIGRATION = """apiVersion: theurian.dev/v1
+PROMOTION_PROMOTED_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1YAAAAA01234567890ABCDE
 createdAt: 2026-08-02T10:10:00+09:00
 author: engineer@example.com
@@ -5728,6 +5818,7 @@ operations:
     itemId: architecture.ccc-always-valid
     revisionId: 01K1YAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/ccc-always-valid.md
+    contentSha256: {body_pin(PROMOTION_BODY)}
     metadata:
       title: Always valid, alphabetically third
       contentType: text/markdown
@@ -5741,8 +5832,6 @@ operations:
         - provider: git
           sourceUri: git://promotion-demo/ccc-always-valid.md
 """
-
-PROMOTION_BODY = "A promotion ordering decision distinguished only by its item id.\n"
 
 
 @pytest.fixture
@@ -5906,6 +5995,7 @@ operations:
     itemId: {MIXED_OFFSET_INSIDE_ID}
     revisionId: {MIXED_OFFSET_INSIDE_REVISION_ID}
     contentFile: ../knowledge/architecture/boundary-inside-window.md
+    contentSha256: {body_pin(MIXED_OFFSET_INSIDE_BODY)}
     metadata:
       title: Timezone boundary, inside the window
       contentType: text/markdown
@@ -5939,6 +6029,7 @@ operations:
     itemId: {MIXED_OFFSET_EXPIRED_ID}
     revisionId: {MIXED_OFFSET_EXPIRED_REVISION_ID}
     contentFile: ../knowledge/architecture/boundary-already-expired.md
+    contentSha256: {body_pin(MIXED_OFFSET_EXPIRED_BODY)}
     metadata:
       title: Timezone boundary, already expired
       contentType: text/markdown
@@ -7094,11 +7185,10 @@ async def test_a_re_apply_and_a_third_migration_leave_every_tool_silent(
         after_reapply = _live_and_expected(registry)
 
         slug, title, letter = "retry-policy", "Retry policy", "C"
-        (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
-            f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
-        )
+        body = f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
+        (root / f".theurian/knowledge/architecture/{slug}.md").write_text(body)
         (root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml").write_text(
-            EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title)
+            EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title, pin=body_pin(body))
         )
         _run("migrate", "apply")
         after_third = _live_and_expected(registry)
@@ -7448,11 +7538,10 @@ async def test_an_apply_that_changes_the_store_records_the_new_count(
     assert _expected_surfaceable_count(before) == 2, "the fixture must start with its two recorded"
 
     slug, title, letter = "retry-policy", "Retry policy", "C"
-    (root / f".theurian/knowledge/architecture/{slug}.md").write_text(
-        f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
-    )
+    body = f"# {title}\n\nEvery call carries a signed token, and retries reuse it.\n"
+    (root / f".theurian/knowledge/architecture/{slug}.md").write_text(body)
     (root / f".theurian/migrations/01K1{letter}AAAAA01234567890ABCDE-{slug}.yaml").write_text(
-        EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title)
+        EXTRA_MIGRATION.format(letter=letter, slug=slug, title=title, pin=body_pin(body))
     )
     report = _apply_returning_its_report(root)
     assert report["changed"] is True, f"the apply must have had something to do: {report}"

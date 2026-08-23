@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
@@ -117,6 +118,7 @@ def _upsert(  # noqa: PLR0913 -- one metadata block, keyword-only so a call cann
     item_id: str,
     revision_id: str,
     content_file: str,
+    body: str,
     status: str,
     sensitivity: str,
     trust_level: str,
@@ -127,6 +129,7 @@ def _upsert(  # noqa: PLR0913 -- one metadata block, keyword-only so a call cann
         f"    itemId: {item_id}\n"
         f"    revisionId: {revision_id}\n"
         f"    contentFile: ../knowledge/{content_file}\n"
+        f"    contentSha256: {body_pin(body)}\n"
         f"    metadata:\n"
         f"      title: {title}\n"
         f"      contentType: text/markdown\n"
@@ -175,6 +178,7 @@ def _withheld_upsert() -> str:
         item_id=WITHHELD_ITEM,
         revision_id=REV_A,
         content_file="architecture/withheld-credentials.md",
+        body=WITHHELD_BODY,
         status="rejected",
         sensitivity="restricted",
         trust_level="inferred",
@@ -187,6 +191,7 @@ def _published_upsert(revision_id: str = REV_B) -> str:
         item_id=PUBLISHED_ITEM,
         revision_id=revision_id,
         content_file="architecture/public-note.md",
+        body=PUBLISHED_BODY,
         status="approved",
         sensitivity="public",
         trust_level="reviewed",
@@ -424,6 +429,7 @@ async def test_a_legitimate_rename_alias_still_resolves(
                 item_id=OLD_ITEM,
                 revision_id=REV_C,
                 content_file="architecture/old-name.md",
+                body=OLD_BODY,
                 status="approved",
                 sensitivity="internal",
                 trust_level="reviewed",
@@ -434,6 +440,7 @@ async def test_a_legitimate_rename_alias_still_resolves(
                 item_id=NEW_ITEM,
                 revision_id=REV_D,
                 content_file="architecture/new-name.md",
+                body=NEW_BODY,
                 status="approved",
                 sensitivity="public",
                 trust_level="reviewed",

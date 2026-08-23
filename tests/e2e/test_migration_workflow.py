@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 
 THEURIAN = shutil.which("theurian")
 
@@ -48,6 +49,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: {REVISION_ID}
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -233,16 +235,50 @@ def test_editing_an_applied_migration_is_fatal(project: Path) -> None:
     assert _json(_run(project, "migrate", "status", "--json"))["pending"] == 0
 
 
-def test_editing_a_content_file_forks_a_new_state(project: Path) -> None:
-    """Not an error: a changed body should produce a new state (ADR-0016)."""
+def test_a_new_revision_forks_a_new_state(project: Path) -> None:
+    """A changed body produces a new state, and it is not an error (ADR-0016).
+
+    Written as a second revision rather than an edit of the landed body: since
+    ADR-0027 every revision pins its body, so rewriting `auth-policy.md` under
+    the migration that already names it is refused at load rather than adopted.
+    The property ADR-0016 records is unchanged -- the state hash covers the body
+    bytes the working tree holds, so moving them forks the state and nothing
+    errors.
+    """
     _run(project, "init", "--json")
     _write_migration(project)
     _run(project, "migrate", "apply", "--json")
 
     before = _json(_run(project, "project", "status", "--json"))["stateHash"]
 
-    body = project / ".theurian/knowledge/architecture/auth-policy.md"
-    body.write_text(BODY + "\nTokens expire after 15 minutes.\n")
+    revised = BODY + "\nTokens expire after 15 minutes.\n"
+    (project / ".theurian/knowledge/architecture/auth-policy-v2.md").write_text(revised)
+    (project / ".theurian/migrations/01K1CAAAAA01234567890ABCDE-revise.yaml").write_text(
+        f"""apiVersion: theurian.dev/v1
+id: 01K1CAAAAA01234567890ABCDE
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+description: Give tokens an expiry.
+operations:
+  - op: upsertRevision
+    itemId: architecture.auth-policy
+    revisionId: 01K1CAAREV01234567890ABCDE
+    expectedRevision: {REVISION_ID}
+    contentFile: ../knowledge/architecture/auth-policy-v2.md
+    contentSha256: {body_pin(revised)}
+    metadata:
+      title: Authentication policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/auth-policy.md
+"""
+    )
 
     after = _json(_run(project, "project", "status", "--json"))
     assert after["stateHash"] != before
@@ -284,7 +320,7 @@ def test_a_migration_cannot_read_outside_the_project(project: Path) -> None:
     """SEC-7, T-4, through the real CLI."""
     _run(project, "init", "--json")
     (project / ".theurian/migrations/01K1EVAAAA01234567890ABCDE-escape.yaml").write_text(
-        """apiVersion: theurian.dev/v1
+        f"""apiVersion: theurian.dev/v1
 id: 01K1EVAAAA01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
 author: attacker@example.com
@@ -293,6 +329,7 @@ operations:
     itemId: evil.leak
     revisionId: 01K1EVAREV01234567890ABCDE
     contentFile: ../../../../../../etc/passwd
+    contentSha256: {UNREACHED_BODY_PIN}
     metadata:
       title: Leak
       contentType: text/markdown
@@ -313,7 +350,7 @@ def test_a_symlink_cannot_escape_the_project(project: Path) -> None:
     _run(project, "init", "--json")
     (project / ".theurian/knowledge/leak.md").symlink_to("/etc/passwd")
     (project / ".theurian/migrations/01K1EVBBBB01234567890ABCDE-symlink.yaml").write_text(
-        """apiVersion: theurian.dev/v1
+        f"""apiVersion: theurian.dev/v1
 id: 01K1EVBBBB01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
 author: attacker@example.com
@@ -322,6 +359,7 @@ operations:
     itemId: evil.leak
     revisionId: 01K1EVBREV01234567890ABCDE
     contentFile: ../knowledge/leak.md
+    contentSha256: {UNREACHED_BODY_PIN}
     metadata:
       title: Leak
       contentType: text/markdown

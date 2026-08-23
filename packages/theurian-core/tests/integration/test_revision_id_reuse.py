@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
@@ -73,6 +74,7 @@ operations:
     itemId: {WITHHELD_ITEM}
     revisionId: {SHARED_REVISION}
     contentFile: ../knowledge/architecture/withheld-credentials.md
+    contentSha256: {body_pin(WITHHELD_BODY)}
     metadata:
       title: Withheld credentials
       contentType: text/markdown
@@ -102,6 +104,7 @@ operations:
     itemId: {PUBLISHED_ITEM}
     revisionId: {SHARED_REVISION}
     contentFile: ../knowledge/architecture/withheld-credentials.md
+    contentSha256: {body_pin(WITHHELD_BODY)}
     metadata:
       title: Public note
       contentType: text/markdown

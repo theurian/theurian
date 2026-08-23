@@ -8,7 +8,6 @@ able to assert on the exact JSON a caller receives.
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import os
 import shutil
@@ -22,6 +21,7 @@ from typing import Any
 
 import pytest
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
+from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectError, ProjectRegistry
@@ -60,6 +60,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: {REVISION_ID}
     contentFile: ../knowledge/architecture/auth-policy.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -131,6 +132,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: {UNRESOLVABLE_REVISION_ID}
     contentFile: {UNRESOLVABLE_CONTENT_FILE}
+    contentSha256: {UNREACHED_BODY_PIN}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -935,9 +937,8 @@ def test_a_revision_conflict_is_reported_not_merged(project: Path) -> None:
     # No I, L, O, or U: those are excluded from Crockford base32.
     stale = "01K1STAAAA01234567890ABCDE"
     second = "01K1BBBBBB01234567890ABCDE"
-    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(
-        "# Authentication policy\n\nEvery call carries a signed token, checked twice.\n"
-    )
+    revised = "# Authentication policy\n\nEvery call carries a signed token, checked twice.\n"
+    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(revised)
     (project / f".theurian/migrations/{second}-conflict.yaml").write_text(
         f"""apiVersion: theurian.dev/v1
 id: {second}
@@ -949,6 +950,7 @@ operations:
     revisionId: 01K1BBBREV01234567890ABCDE
     expectedRevision: {stale}
     contentFile: ../knowledge/architecture/auth-policy.revised.md
+    contentSha256: {body_pin(revised)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -1843,6 +1845,8 @@ def test_a_never_applied_tenant_gets_the_unapplied_remedy(project: Path) -> None
 
 _SECOND_MIGRATION_ID = "01K1BBBBBB01234567890ABCDE"
 _SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
+_SECOND_POLICY_BODY = "# Second\n"
+_THIRD_POLICY_BODY = "# Third\n"
 _SECOND_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: {_SECOND_MIGRATION_ID}
 createdAt: 2026-08-02T11:00:00+09:00
@@ -1857,6 +1861,7 @@ operations:
     itemId: architecture.second-policy
     revisionId: {_SECOND_REVISION_ID}
     contentFile: ../knowledge/architecture/second-policy.md
+    contentSha256: {body_pin(_SECOND_POLICY_BODY)}
     metadata:
       title: Second policy
       contentType: text/markdown
@@ -1907,7 +1912,7 @@ def test_an_already_applied_foreign_tenant_survives_a_state_hash_shift(
     # A clean, pending migration -- this shifts the state hash (ADR-0016), so
     # `database_for(context.state_hash)` no longer names the database the
     # seeding apply above just built.
-    (project / ".theurian/knowledge/architecture/second-policy.md").write_text("# Second\n")
+    (project / ".theurian/knowledge/architecture/second-policy.md").write_text(_SECOND_POLICY_BODY)
     (project / f".theurian/migrations/{_SECOND_MIGRATION_ID}-second.yaml").write_text(
         _SECOND_MIGRATION
     )
@@ -1962,6 +1967,7 @@ operations:
     itemId: architecture.third-policy
     revisionId: {_THIRD_REVISION_ID}
     contentFile: ../knowledge/architecture/third-policy.md
+    contentSha256: {body_pin(_THIRD_POLICY_BODY)}
     metadata:
       title: Third policy
       contentType: text/markdown
@@ -1999,7 +2005,7 @@ def test_a_foreign_tenant_recorded_in_a_non_first_sorted_database_is_still_found
     _invoke("init")
 
     # Database #1: a clean migration, applied alone.
-    (project / ".theurian/knowledge/architecture/second-policy.md").write_text("# Second\n")
+    (project / ".theurian/knowledge/architecture/second-policy.md").write_text(_SECOND_POLICY_BODY)
     (project / f".theurian/migrations/{_SECOND_MIGRATION_ID}-second.yaml").write_text(
         _SECOND_MIGRATION
     )
@@ -2037,7 +2043,7 @@ def test_a_foreign_tenant_recorded_in_a_non_first_sorted_database_is_still_found
 
     # A further clean, pending migration -- shifts the state hash again, so
     # neither renamed database matches `context.state_hash` either.
-    (project / ".theurian/knowledge/architecture/third-policy.md").write_text("# Third\n")
+    (project / ".theurian/knowledge/architecture/third-policy.md").write_text(_THIRD_POLICY_BODY)
     (project / f".theurian/migrations/{_THIRD_MIGRATION_ID}-third.yaml").write_text(
         _THIRD_MIGRATION
     )
@@ -2064,14 +2070,16 @@ _SECOND_REVISION_ID = "01K1BBBREV01234567890ABCDE"
 _SHARED_CONTENT_FILE = "../knowledge/architecture/auth-policy.md"
 
 
-def _second_migration(content_file: str = _SHARED_CONTENT_FILE) -> str:
+def _second_migration(content_file: str = _SHARED_CONTENT_FILE, body: str = BODY) -> str:
     """A well-formed update to the item the first migration created.
 
     Everything about it is correct except that its ``contentFile`` is the body
     the first migration already references: the ``expectedRevision`` chain is
-    right, the ids are unique, and no ``contentSha256`` is declared -- the
-    unpinned, hand-authored shape issue #210 measured applying cleanly and
-    recording the *second* body under the *first* revision's title and author.
+    right, the ids are unique, and the pin agrees with the bytes on disk. Issue
+    #210 measured this shape applying cleanly and recording the *second* body
+    under the *first* revision's title and author, which is what the
+    body-sharing refusal below stops -- and it stops it whether or not the two
+    operations pin, because the hazard is one file standing for two revisions.
     """
     return f"""apiVersion: theurian.dev/v1
 id: {_SECOND_MIGRATION_ID}
@@ -2083,6 +2091,7 @@ operations:
     revisionId: {_SECOND_REVISION_ID}
     expectedRevision: {REVISION_ID}
     contentFile: {content_file}
+    contentSha256: {body_pin(body)}
     metadata:
       title: Authentication policy, revised
       contentType: text/markdown
@@ -2097,9 +2106,11 @@ operations:
 """
 
 
-def _write_second_migration(root: Path, content_file: str = _SHARED_CONTENT_FILE) -> None:
+def _write_second_migration(
+    root: Path, content_file: str = _SHARED_CONTENT_FILE, body: str = BODY
+) -> None:
     (root / f".theurian/migrations/{_SECOND_MIGRATION_ID}-revise.yaml").write_text(
-        _second_migration(content_file)
+        _second_migration(content_file, body)
     )
 
 
@@ -2158,11 +2169,10 @@ def test_two_migrations_naming_two_body_files_are_not_refused(project: Path) -> 
     two tests above while breaking the ordinary case they exist to protect."""
     _invoke("init")
     _write_migration(project)
-    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(
-        "# Authentication policy, revised\n\nEvery call carries a signed token.\n"
-    )
+    revised = "# Authentication policy, revised\n\nEvery call carries a signed token.\n"
+    (project / ".theurian/knowledge/architecture/auth-policy.revised.md").write_text(revised)
     _write_second_migration(
-        project, content_file="../knowledge/architecture/auth-policy.revised.md"
+        project, content_file="../knowledge/architecture/auth-policy.revised.md", body=revised
     )
 
     validate_code, validated = _invoke("migrate", "validate")
@@ -2209,6 +2219,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: {REVISION_ID}
     contentFile: {_SHARED_CONTENT_FILE}
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown
@@ -2397,6 +2408,7 @@ operations:
     itemId: architecture.public-policy
     revisionId: {_DISCLOSURE_APPROVED_REVISION_ID}
     contentFile: ../knowledge/architecture/shared.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Public policy
       contentType: text/markdown
@@ -2425,6 +2437,7 @@ operations:
     itemId: architecture.secret-policy
     revisionId: {_DISCLOSURE_REJECTED_REVISION_ID}
     contentFile: ../knowledge/architecture/SHARED.MD
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Secret policy
       contentType: text/markdown
@@ -2475,98 +2488,6 @@ def test_a_rejected_restricted_body_cannot_reach_an_approved_index_via_a_case_va
     assert list((project / ".theurian/state").glob("*.sqlite")) == [], (
         "a refused apply must cost no state file -- the crossing is stopped before any build"
     )
-
-
-# -- issue #210: an upsertRevision carrying no contentSha256 ---------------
-
-
-def _pinned_migration() -> str:
-    """The same migration, with the pin the schema calls optional."""
-    digest = hashlib.sha256(BODY.encode("utf-8")).hexdigest()
-    return MIGRATION.replace(
-        f"    contentFile: {_SHARED_CONTENT_FILE}\n",
-        f"    contentFile: {_SHARED_CONTENT_FILE}\n    contentSha256: {digest}\n",
-    )
-
-
-def test_validate_warns_about_a_revision_that_pins_no_body_digest(project: Path) -> None:
-    """``contentSha256`` is optional and nothing recommended it (issue #210).
-
-    A warning rather than a refusal: both shipped example migrations are
-    unpinned and 21 of the 22 test files naming ``upsertRevision`` never mention
-    the field, so requiring it is a schema decision with a measured cost, taken
-    in Milestone 7. What `validate` can do now is stop being silent -- an
-    unpinned body is the one whose out-of-band edit nothing detects.
-
-    Exit 0 is asserted first: a warning that refuses is a refusal.
-    """
-    _invoke("init")
-    _write_migration(project)
-
-    code, validated = _invoke("migrate", "validate")
-
-    assert code == 0
-    assert validated["valid"] is True
-    warned = validated["unpinnedRevisions"]
-    assert len(warned) == 1
-    assert REVISION_ID in warned[0], "the revision whose body nothing pins"
-    assert MIGRATION_ID in warned[0], "the file the author has to edit"
-    assert "auth-policy.md" in warned[0], "and the body whose digest to take"
-
-
-def test_validate_says_nothing_about_a_revision_that_pins_its_body(project: Path) -> None:
-    """The negative control: a field that is always non-empty is not a warning."""
-    _invoke("init")
-    _write_migration(project, migration=_pinned_migration())
-
-    code, validated = _invoke("migrate", "validate")
-
-    assert code == 0
-    assert validated["unpinnedRevisions"] == []
-
-
-def test_the_unpinned_warning_reaches_the_human_output_too(project: Path) -> None:
-    """`--json` is the plugin's channel; a person reading the default output
-    must see the same warning, or the two disagree about the same project."""
-    _invoke("init")
-    _write_migration(project)
-
-    result = runner.invoke(app, ["migrate", "validate"], catch_exceptions=False)
-
-    assert result.exit_code == 0
-    assert "unpinnedRevisions" in result.stdout
-    assert REVISION_ID in result.stdout
-
-
-def test_the_unpinned_warning_names_a_shasummable_path_and_a_non_fatal_remedy(
-    project: Path,
-) -> None:
-    """Issue #210's remedy loop. The warning fires on already-applied migrations
-    too, and the naive cure -- add `contentSha256` to the migration -- is fatal
-    there: editing an applied migration trips FR-K5's checksum guard, whose own
-    remedy says to restore the file, looping the reader (issue #63's HIGH-1
-    shape). And the body path must be one the reader can actually `shasum` from
-    the repository root -- the authored `../knowledge/...` is relative to the
-    migration file and shasums to nothing there.
-    """
-    _invoke("init")
-    _write_migration(project)
-    apply_code, _ = _invoke("migrate", "apply")
-    assert apply_code == 0, "the migration is applied, so its warning must give the applied remedy"
-
-    code, validated = _invoke("migrate", "validate")
-
-    assert code == 0, "an unpinned body is a warning, not a refusal, even once applied"
-    warning = validated["unpinnedRevisions"][0]
-    # The body path the reader shasums, resolved from the repository root -- not
-    # the authored path, which is relative to the migration file.
-    assert ".theurian/knowledge/architecture/auth-policy.md" in warning
-    assert "../knowledge/architecture/auth-policy.md" not in warning, (
-        "authored path is un-shasummable"
-    )
-    # A non-empty remedy that does not stop at the fatal "edit the applied migration".
-    assert "shasum" in warning, "the digest command the reader runs"
-    assert ".theurian/state/" in warning, "the applied-case escape, not just 'add the pin'"
 
 
 # ==========================================================================

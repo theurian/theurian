@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from migration_fixtures import body_pin
 
 THEURIAN = shutil.which("theurian")
 
@@ -50,6 +51,7 @@ operations:
     itemId: architecture.auth-policy
     revisionId: 01K1AAAREV01234567890ABCDE
     contentFile: ../knowledge/architecture/auth.md
+    contentSha256: {body_pin(BODY)}
     metadata:
       title: Authentication policy
       contentType: text/markdown

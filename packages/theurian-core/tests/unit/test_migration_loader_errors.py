@@ -37,6 +37,7 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from migration_fixtures import UNREACHED_BODY_PIN
 
 from theurian.cli.context import schema_root as real_schema_root
 from theurian.domain.errors import (
@@ -116,8 +117,10 @@ operations:
 
 #: ``{content_file}`` is substituted per test, so both an ENOENT (a plain
 #: missing filename) and a NUL byte (a YAML double-quoted scalar's ``\0``
-#: escape -- see the NUL test below) can drive the same template.
-_UPSERT_MIGRATION = """apiVersion: theurian.dev/v1
+#: escape -- see the NUL test below) can drive the same template. Every use
+#: names a body the loader never gets to hash, hence ``UNREACHED_BODY_PIN``:
+#: the pin is here to satisfy the schema, not to be checked.
+_UPSERT_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: 01K1MMMMMM01234567890ABCDE
 createdAt: 2026-08-02T10:00:00+09:00
 author: engineer@example.com
@@ -130,7 +133,8 @@ operations:
   - op: upsertRevision
     itemId: architecture.auth-policy
     revisionId: 01K1MMMREV01234567890ABCDE
-    contentFile: {content_file}
+    contentFile: {{content_file}}
+    contentSha256: {UNREACHED_BODY_PIN}
     metadata:
       title: Authentication policy
       contentType: text/markdown

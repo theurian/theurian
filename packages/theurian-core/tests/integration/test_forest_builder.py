@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, read_active_index_pointer
@@ -116,6 +117,13 @@ class Doc:
     #: still produce different chunks -- and therefore different summaries --
     #: while their titles differ. Duplicate content means duplicate indexed text.
     title: str = ""
+    #: Overrides the body derived from the slug. The same test sets it, and has
+    #: to: the derived body carries a marker keyed on the slug, so two documents
+    #: can never be byte-identical without it. Since ADR-0027 the migration pins
+    #: the body, so overwriting the file after `_write_corpus` is refused at
+    #: load -- the override reaches the pin because `_migration` and
+    #: `_write_corpus` both read the body through `_body`.
+    body: str = ""
 
     @property
     def item_id(self) -> str:
@@ -150,6 +158,8 @@ _SECTIONS: Final = (
 
 
 def _body(doc: Doc) -> str:
+    if doc.body:
+        return doc.body
     sections = "\n\n".join(
         f"## {heading}\n\n" + f"{doc.marker} {sentence} " * 4 for heading, sentence in _SECTIONS
     )
@@ -171,6 +181,7 @@ operations:
     itemId: {doc.item_id}
     revisionId: {_ulid(f"R{ordinal:02d}")}
     contentFile: ../knowledge/{doc.kind}/{doc.slug}.md
+    contentSha256: {body_pin(_body(doc))}
     metadata:
       title: {doc.heading}
       contentType: text/markdown
@@ -733,11 +744,12 @@ def test_two_items_with_identical_content_get_different_document_node_ids(
     different titles are not identical content once indexed -- measured, their
     summaries differed by the one word, and the guard below said so.
     """
-    docs = [Doc("auth-policy"), Doc("auth-policy-copy", title=Doc("auth-policy").heading)]
+    original = Doc("auth-policy")
+    docs = [
+        original,
+        Doc("auth-policy-copy", title=original.heading, body=_body(original)),
+    ]
     _write_corpus(project, docs)
-    (project / f".theurian/knowledge/architecture/{docs[1].slug}.md").write_text(
-        _body(docs[0]), encoding="utf-8"
-    )
     _must(project, "migrate", "apply")
     _must(project, "index", "build", "--raptor")
 
