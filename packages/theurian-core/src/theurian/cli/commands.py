@@ -61,6 +61,7 @@ from theurian.cli.context import (
     repository_url,
     resolve_context,
 )
+from theurian.cli.migration_pipeline import apply_migration_set
 from theurian.cli.output import escape_terminal_controls
 from theurian.domain.errors import (
     AliasItemCollisionError,
@@ -1207,40 +1208,18 @@ def migrate_apply(as_json: JsonOption = False) -> None:
     )
 
     try:
-        with write_transaction(database, context.paths.write_lock) as connection:
-            writer = SqliteWriter(connection)
-            writer.register_project(project)
-            engine = MigrationEngine(context.clock, context.loaded.content_by_hash)
-            report = engine.apply(writer, context.project_id, context.loaded.migration_set)
-            if created or report.changed:
-                # What a reader should be able to see after this apply, recorded
-                # by the writer that produced it and inside its transaction (#30
-                # PR2). Three MCP tools compare their own live count against it
-                # and disclose a difference as damage.
-                #
-                # **Not on every apply, and the condition is the honest half.**
-                # This command is step one of the remedy those tools publish. An
-                # apply with nothing pending writes nothing, so re-recording
-                # there would take the count *from the damaged state* and clear
-                # the signal while the damage stands -- the remedy would
-                # manufacture the all-clear it was run to earn. Recording only
-                # when this apply created the database or applied a migration
-                # leaves the signal up until the remedy's second step (delete
-                # `.theurian/state/`, apply again) rebuilds the database, which
-                # is the step that actually cures it.
-                #
-                # `created` is what keeps the other direction sound: a project
-                # with no migrations at all still gets a record, so "no row" can
-                # mean damage rather than "nothing has been applied yet".
-                #
-                # The residual, recorded rather than closed: an apply that *does*
-                # have a migration to apply re-records over whatever the state
-                # holds at that moment, so damage already present becomes the new
-                # expectation and the signal clears. It is the same shape as the
-                # pointer's -- a count is not a checksum, and the writer can only
-                # record what it can read. Curing it needs an expectation that
-                # does not live in the file it describes.
-                writer.record_expected_surfaceable_count(context.project_id)
+        # The one definition of what applying a migration set is (ADR-0027
+        # decision 2). `propose accept`'s pre-check replays through this same
+        # function against a throwaway database, so an acceptance and this
+        # command cannot disagree about whether a set is usable.
+        report = apply_migration_set(
+            database=database,
+            write_lock=context.paths.write_lock,
+            project=project,
+            loaded=context.loaded,
+            clock=context.clock,
+            database_created=created,
+        )
     except MigrationChecksumMismatchError as exc:
         _fail(
             str(exc),

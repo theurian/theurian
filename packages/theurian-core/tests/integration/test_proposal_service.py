@@ -32,6 +32,7 @@ from theurian.application.proposal_service import (
     ProposalService,
     _evidence_failure_reason,
 )
+from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.errors import (
     InputTooLargeError,
@@ -40,12 +41,20 @@ from theurian.domain.errors import (
     MigrationError,
     PathEscapeError,
 )
-from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProposalId, RevisionId, TaskId
+from theurian.domain.identifiers import (
+    AgentId,
+    ItemId,
+    MigrationId,
+    ProjectId,
+    ProposalId,
+    RevisionId,
+    TaskId,
+)
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
-from theurian.domain.values import JSON, MARKDOWN, YAML
+from theurian.domain.values import JSON, MARKDOWN, YAML, ContentHash
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
@@ -138,12 +147,17 @@ def service(paths: ProjectPaths) -> ProposalService:
 
     return ProposalService(
         paths=paths,
+        project_id=ProjectId("demo"),
         clock=FrozenClock(),
         ids=SeededIdGenerator(),
         validate=_validator,
         current_revision=current_revision,
         landed_migration=landed_migration,
         landed_migrations=landed_migrations,
+        # The real rehearsal, not a double: the pre-check's whole point is that
+        # it reaches the pipeline `migrate apply` reaches (ADR-0027 decision 2),
+        # and a stub here would assert the opposite of what it claims.
+        rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),
     )
 
 
@@ -167,20 +181,62 @@ def _tree(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
 
-def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str) -> str:
+def _hand_authored_two_body_migration(
+    migration_id: str, revisions: tuple[tuple[str, str, str], ...]
+) -> str:
     """A migration naming two bodies whose leaf names collide (both `notes.md`).
 
     The two ``contentFile`` paths differ only in namespace -- ``alpha/notes.md``
     and ``beta/notes.md`` -- so they share the leaf ``notes.md``. That is the
     exact shape a leaf-name lookup conflated: it found one file for both. The
-    revisions still differ (``rev_a`` / ``rev_b``), so the two are genuinely two
-    changes, not one written twice.
+    revisions still differ, so the two are genuinely two changes, not one
+    written twice.
 
-    Only what ``accept`` reads -- the ``contentFile`` of each operation and the
-    ``id`` -- has to be present; ``accept`` does not validate, so the metadata a
-    real migration carries is left out on purpose. The ``id`` is quoted because
-    the seeded generator's ULIDs are all digits, which YAML would otherwise
-    coerce to an int (a real ULID contains letters and needs no quoting).
+    Each entry is ``(namespace, revision id, body text)``, and the body's digest
+    is computed here rather than passed in: since ADR-0027 ``accept`` puts the
+    document through the published schema and then replays it, so a migration
+    that pins nothing -- which is what this helper used to write, because
+    ``accept`` validated nothing -- is refused before the layout question this
+    fixture exists to ask is reached.
+
+    The ``id`` is quoted because the seeded generator's ULIDs are all digits,
+    which YAML would otherwise coerce to an int (a real ULID contains letters
+    and needs no quoting).
+    """
+    operations = "".join(
+        "- op: upsertRevision\n"
+        f"  itemId: {namespace}.notes\n"
+        f"  revisionId: {revision_id}\n"
+        f"  contentFile: ../knowledge/{namespace}/notes.md\n"
+        f"  contentSha256: {ContentHash.of_bytes(body.encode()).value}\n"
+        "  metadata:\n"
+        f"    title: {namespace} notes\n"
+        "    contentType: text/markdown\n"
+        "    kind: architecture\n"
+        f"    namespace: {namespace}\n"
+        "    status: approved\n"
+        "    owner: platform-team\n"
+        # INV-8: a revision states where it came from or declares that it came
+        # from nowhere. The replay enforces it, which is the point -- this used
+        # to be checked only by `migrate apply`, after the pull request merged.
+        f"    labels: ['{AUTHORED_IN_THEURIAN}']\n"
+        for namespace, revision_id, body in revisions
+    )
+    return (
+        "apiVersion: theurian.dev/v1\n"
+        f"id: '{migration_id}'\n"
+        "createdAt: '2026-08-02T12:00:00+00:00'\n"
+        "author: a@example.com\n"
+        "operations:\n"
+    ) + operations
+
+
+def _createitem_migration(migration_id: str, item_id: str) -> str:
+    """The smallest schema-valid, applyable migration: one ``createItem``.
+
+    Body-free, so a test that needs a *landed* migration to exist -- rather than
+    one that says anything in particular -- can plant one without also planting
+    a body for the accept-path replay to read.
     """
     return (
         "apiVersion: theurian.dev/v1\n"
@@ -188,14 +244,11 @@ def _hand_authored_two_body_migration(migration_id: str, rev_a: str, rev_b: str)
         "createdAt: '2026-08-02T12:00:00+00:00'\n"
         "author: a@example.com\n"
         "operations:\n"
-        "- op: upsertRevision\n"
-        "  itemId: alpha.notes\n"
-        f"  revisionId: {rev_a}\n"
-        "  contentFile: ../knowledge/alpha/notes.md\n"
-        "- op: upsertRevision\n"
-        "  itemId: beta.notes\n"
-        f"  revisionId: {rev_b}\n"
-        "  contentFile: ../knowledge/beta/notes.md\n"
+        "- op: createItem\n"
+        f"  itemId: {item_id}\n"
+        "  kind: architecture\n"
+        f"  namespace: {item_id.rpartition('.')[0]}\n"
+        "  owner: platform-team\n"
     )
 
 
@@ -685,17 +738,24 @@ def test_accept_moves_the_body_out_of_the_proposal_directory(
 def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
     service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """m05: the O_EXCL create, not the pre-check, is the real race guard.
+    """m05: the O_EXCL create, not the name check, is the real race guard.
 
     ``test_accept_refuses_to_land_a_migration_on_an_existing_name`` is caught by
-    the pre-check that runs before any write. That leaves the O_EXCL create --
-    the guard for a name that appears in the window *after* the pre-check --
-    unexercised, so a mutation to ``O_TRUNC`` survives it. Here the pre-check is
+    the name check that runs before any write. That leaves the O_EXCL create --
+    the guard for a name that appears in the window *after* that check --
+    unexercised, so a mutation to ``O_TRUNC`` survives it. Here the name check is
     neutered so the create is what has to refuse, and the bytes already at the
     name must survive.
+
+    The file planted at the name is a *valid* migration rather than the
+    ``EXISTING\\n`` this used to write. Since ADR-0027 ``accept`` loads and
+    replays the approved set before it moves anything, and a project whose
+    ``.theurian/migrations/`` holds a file that is not a migration is refused by
+    that pre-check long before the write this test is aiming at.
     """
     drafted = service.draft(_request())
     landed = paths.migrations / drafted.migration_file.name
+    planted = _createitem_migration("00000000000000000000000099", "planted.item")
 
     def _no_precheck(
         _self: ProposalService, _destination: Path, _document: Mapping[str, object]
@@ -703,12 +763,12 @@ def test_accept_uses_o_excl_when_the_name_appears_after_the_precheck(
         return None
 
     monkeypatch.setattr(ProposalService, "_refuse_if_migration_present", _no_precheck)
-    landed.write_text("EXISTING\n", encoding="utf-8")
+    landed.write_text(planted, encoding="utf-8")
 
     with pytest.raises(ProposalError, match="appeared"):
         service.accept(drafted.proposal_id)
 
-    assert landed.read_text() == "EXISTING\n", "O_EXCL must not overwrite the existing migration"
+    assert landed.read_text() == planted, "O_EXCL must not overwrite the existing migration"
     assert not drafted.body_destination.exists(), "the body write is rolled back"
 
 
@@ -2662,14 +2722,16 @@ def test_two_content_files_sharing_a_leaf_name_do_not_collide(
     finds each by its full relative path.
     """
     drafted = service.draft(_request())
-    rev_a = "01K9AAAAAA0000000000000001"
-    rev_b = "01K9AAAAAA0000000000000002"
-    migration = _hand_authored_two_body_migration(drafted.migration_id.value, rev_a, rev_b)
+    revisions = (
+        ("alpha", "01K9AAAAAA0000000000000001", "A\n"),
+        ("beta", "01K9AAAAAA0000000000000002", "B\n"),
+    )
+    migration = _hand_authored_two_body_migration(drafted.migration_id.value, revisions)
     drafted.migration_file.write_text(migration, encoding="utf-8")
     drafted.body_file.unlink()
     # Both bodies are named `notes.md` -- the collision -- and told apart only by
     # their subdirectory, which is what a leaf lookup threw away.
-    for namespace, text in (("alpha", "A\n"), ("beta", "B\n")):
+    for namespace, _revision_id, text in revisions:
         body = drafted.directory / namespace / "notes.md"
         body.parent.mkdir(parents=True, exist_ok=True)
         body.write_text(text, encoding="utf-8")

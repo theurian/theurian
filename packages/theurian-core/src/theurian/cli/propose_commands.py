@@ -34,6 +34,7 @@ from theurian.application.proposal_service import (
     ProposalService,
 )
 from theurian.cli.context import CommandContext, schema_root
+from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind, Sensitivity, TrustLevel
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, ItemId, ProposalId, RevisionId, TaskId
@@ -665,6 +666,7 @@ def _service(context: CommandContext) -> ProposalService:
     migrations = context.loaded.migration_set
     return ProposalService(
         paths=context.paths,
+        project_id=context.project_id,
         clock=context.clock,
         ids=context.ids,
         validate=lambda document: validate_migration_document(document, schemas),
@@ -680,6 +682,11 @@ def _service(context: CommandContext) -> ProposalService:
         # loader follows, so a pin held by a relocated migration was invisible to
         # it and `accept` overwrote the body the set validates against (#234).
         landed_migrations=lambda: migrations,
+        # The accept pre-check's dry replay. `rehearse_migration_set` reaches the
+        # engine through the same `apply_migration_set` `migrate apply` calls,
+        # which is ADR-0027 decision 2's hard condition: the two cannot disagree
+        # about whether a set is usable, because there is one pipeline, not two.
+        rehearse=lambda candidate: rehearse_migration_set(candidate, clock=context.clock),
     )
 
 

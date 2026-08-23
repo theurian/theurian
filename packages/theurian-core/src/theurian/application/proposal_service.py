@@ -52,9 +52,11 @@ from theurian.domain.errors import (
     InputTooLargeError,
     IrregularSourceFileError,
     PathEscapeError,
+    RevisionConflictError,
+    SchemaUnreadableError,
     TheurianError,
 )
-from theurian.domain.identifiers import ItemId, MigrationId, ProposalId, RevisionId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, ProposalId, RevisionId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import (
     MIGRATION_API_VERSION,
@@ -138,6 +140,54 @@ LandedMigrationLookup = Callable[[MigrationId], Migration | None]
 #: ever type-checking. Both roots return the loaded ``MigrationSet``, which is
 #: re-iterable, so the constraint costs nothing.
 LandedMigrations = Callable[[], Collection[Migration]]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateMigrationSet:
+    """A migration set to prove applyable, described as files rather than as objects.
+
+    What :data:`MigrationSetRehearsal` is handed. It is files and not a
+    ``MigrationSet`` because the pipeline it will be put through *reads a project
+    tree*: the loader re-reads each ``upsertRevision``'s body from the path its
+    ``contentFile`` resolves to, and an incoming proposal's bodies are not at
+    those paths yet. Handing over an already-parsed set would mean the pre-check
+    parsed it -- a second loader, which is the shape ADR-0027 decision 2 forbids.
+
+    Every path is project-relative, so a copy laid out the same way resolves
+    every ``../knowledge/...`` the same way the original does.
+    """
+
+    #: The project every path below is relative to, and the only tree a rehearsal
+    #: reads. It writes nothing here.
+    root: Path
+    #: The knowledge directory's own name -- ``.theurian`` unless this project was
+    #: registered with another. The copy is laid out under the same name.
+    knowledge_directory: PurePosixPath
+    #: The id the replay's throwaway store records its rows under. The real
+    #: project's, so the replay exercises the key the real apply would.
+    project_id: ProjectId
+    #: Project-relative files to copy across: each landed migration's own file and
+    #: each body a landed ``upsertRevision`` reads. Sorted and deduplicated, so
+    #: the copy is the same on every run and every filesystem.
+    landed: tuple[str, ...]
+    #: Project-relative destination and bytes for each file the *incoming*
+    #: proposal contributes -- its migration under ``migrations/``, its bodies
+    #: under ``knowledge/``. Written after ``landed``, so a body this proposal
+    #: replaces is replaced in the copy too: the copy is the union, not the two
+    #: sets side by side. The bytes are the ones ``accept`` already read through
+    #: the security layer, never a second read of the same file.
+    incoming: tuple[tuple[str, bytes], ...]
+
+
+#: Proves a :class:`CandidateMigrationSet` survives the pipeline ``migrate
+#: apply`` runs, raising if it does not, and writing nothing outside a throwaway
+#: target. Injected, and deliberately **not** a second implementation of that
+#: pipeline: the composition root wires the very function ``migrate apply``
+#: calls (``cli/migration_pipeline.py``), which is what makes "``accept`` and
+#: ``migrate apply`` cannot disagree about whether a set is usable" structural
+#: rather than a property two pieces of code happen to share today (ADR-0027
+#: decision 2's hard condition).
+MigrationSetRehearsal = Callable[[CandidateMigrationSet], None]
 
 
 class ProposalError(TheurianError):
@@ -317,20 +367,24 @@ class ProposalService:
         self,
         *,
         paths: ProjectPaths,
+        project_id: ProjectId,
         clock: Clock,
         ids: IdGenerator,
         validate: MigrationDocumentValidator,
         current_revision: CurrentRevisionLookup,
         landed_migration: LandedMigrationLookup,
         landed_migrations: LandedMigrations,
+        rehearse: MigrationSetRehearsal,
     ) -> None:
         self._paths = paths
+        self._project_id = project_id
         self._clock = clock
         self._ids = ids
         self._validate = validate
         self._current_revision = current_revision
         self._landed_migration = landed_migration
         self._landed_migrations = landed_migrations
+        self._rehearse = rehearse
 
     # -- generation --------------------------------------------------------
 
@@ -463,7 +517,25 @@ class ProposalService:
     # -- acceptance --------------------------------------------------------
 
     def accept(self, proposal_id: ProposalId) -> AcceptedProposal:
-        """Move a proposal's migration and body into place. Nothing else.
+        """Prove the project still applies with this proposal in it, then move it.
+
+        **Before anything moves, the union of the landed migration set and this
+        proposal is put through the pipeline ``migrate apply`` runs. If it does
+        not survive, ``accept`` refuses and consumes nothing** (ADR-0027 decision
+        2). The proposal directory is untouched on every refusal path, which is
+        the property #307 asked for: a proposal survives its own rejection, so
+        the author still has the sources to correct.
+
+        That is a change of contract, not a new guard rail. ``accept`` used to
+        move files and leave every question about the migration to ``migrate
+        validate`` and ``migrate apply`` (ADR-0013 §4), which was defensible
+        while ``accept`` was a ``mv`` -- and stopped being defensible once it
+        also *deleted* its sources, because a check that runs after the input is
+        destroyed cannot be acted on.
+
+        The pre-check runs after the structural checks below, so what an already
+        accepted proposal answers is unchanged, and it is described where it
+        lives: :meth:`_refuse_unless_the_union_applies`.
 
         Every file this reads is proved to be a regular file inside the project
         with no symlink anywhere in its chain, and every file it writes lands
@@ -488,20 +560,26 @@ class ProposalService:
 
         **CP-2 invariant: no accept-path filesystem or path fault escapes
         ``accept`` untranslated.** A fault that must abort ``accept`` is turned
-        into a ``ProposalError`` at one of three *translation* sites: the
-        examination phase's ``except OSError`` in this method, :meth:`_commit`'s
-        own clause, and :meth:`_destination_of`, which catches its ``resolve()``
+        into a ``ProposalError`` at one of four *translation* sites: the
+        examination phase's ``except OSError`` in this method,
+        :meth:`_refuse_unless_the_union_applies`, :meth:`_commit`'s own clause,
+        and :meth:`_destination_of`, which catches its ``resolve()``
         ``ValueError`` -- not an ``OSError``, so the examination clause never sees
         it -- in place. The examination and commit clauses are deliberately
         separate, because a failed *write* must roll the destinations back before
         it reports, and one clause spanning both would describe a half-written
-        tree as an unreadable proposal. Two further sites catch ``OSError`` on the
-        accept path but deliberately do *not* translate: :meth:`_remove_proposal_sources`
+        tree as an unreadable proposal. The pre-check is the fourth for the same
+        reason in the other direction: it reads the whole project and stages a
+        copy of it, so a fault in a *landed* file reaching the examination
+        clause would be reported as an unreadable proposal with a ``chmod``
+        remedy for the wrong file -- and it therefore sits outside that clause,
+        after it. Two further sites catch ``OSError`` on the accept path but
+        deliberately do *not* translate: :meth:`_remove_proposal_sources`
         degrades a post-landing cleanup failure to a remedy and still returns
         success, and :func:`_roll_back` stays silent so a raise cannot mask the
         error already propagating. An editor adding a filesystem call that must
-        abort ``accept`` has to land it under one of the three translation sites,
-        or add a fourth -- a raw escape publishes no ``{error, remedy}`` under
+        abort ``accept`` has to land it under one of the four translation sites,
+        or add a fifth -- a raw escape publishes no ``{error, remedy}`` under
         ``--json`` (#227).
 
         Raises:
@@ -515,10 +593,10 @@ class ProposalService:
                 that collided.
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
                 could not be fully examined -- including a directory or a file
-                in it the filesystem refuses to list, stat or read -- or names a
-                file the security layer refuses. Both types above are
-                subclasses, so a caller that catches only this still catches
-                everything.
+                in it the filesystem refuses to list, stat or read -- names a
+                file the security layer refuses, or would leave the project's
+                migration set unable to apply. Both types above are subclasses,
+                so a caller that catches only this still catches everything.
             PathEscapeError: If a ``contentFile`` resolves outside
                 ``.theurian/knowledge/``.
             InputTooLargeError: If a file the accept path reads exceeds SEC-8's
@@ -558,7 +636,289 @@ class ProposalService:
             # proposal.
             raise self._unreadable(proposal_id, exc) from exc
 
+        # Outside the clause above, deliberately: the pre-check reads every
+        # landed migration and body, so its faults are not this proposal's and
+        # must not be reported as "the proposal could not be examined". It
+        # translates its own (CP-2, the fourth site).
+        self._refuse_unless_the_union_applies(
+            proposal_id, migration_file, migration_bytes, document, moves
+        )
+
         return self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
+
+    # -- the pre-check (ADR-0027 decision 2) -------------------------------
+
+    def _refuse_unless_the_union_applies(
+        self,
+        proposal_id: ProposalId,
+        migration_file: Path,
+        migration_bytes: bytes,
+        document: Mapping[str, object],
+        moves: tuple[_BodyMove, ...],
+    ) -> None:
+        """Refuse unless the landed set *with this proposal in it* still applies.
+
+        The four stages ADR-0027 decision 2 names, in its order:
+
+        1. **Schema and document limits**, against the proposal's own document --
+           the same :data:`MigrationDocumentValidator` ``draft`` calls, so a
+           proposal this build generated cannot fail it and a hand-authored one
+           is refused naming its own file. It runs here rather than only inside
+           the replay because the replay's loader would name the copy's path.
+        2. **Self-consistency of the incoming proposal** -- the digest
+           verification the loader performs when it re-reads a referenced body,
+           and the body-sharing guard over the incoming operations together with
+           the landed set.
+        3. **The whole-set guards** ``migrate validate`` runs.
+        4. **A dry replay** of the landed set and the proposal together, against
+           a throwaway target.
+
+        Stages 2 to 4 are the injected :data:`MigrationSetRehearsal`, and they
+        are not run here in three steps because they are not three passes: the
+        rehearsal loads the copy once, which *is* the digest verification, and
+        hands the one loaded set to the guards and then to the engine. Splitting
+        them apart here would mean parsing the set a second time -- the second
+        implementation the ADR's hard condition forbids.
+
+        **Why stage 4 is not optional**, measured on #316: two proposals drafted
+        before either acceptance both claim their item's first revision, and the
+        pair is schema-valid, passes every statically decidable guard, exits 0 on
+        ``migrate validate`` -- and can never be applied. Stages 1 to 3 pass it.
+        The replay is what refuses it, and it refuses the invariants nobody has
+        written a guard for yet by construction rather than one at a time.
+
+        Nothing is consumed on any path through this method: it reads the
+        project and writes only inside the rehearsal's own throwaway target.
+
+        Raises:
+            ProposalError: If any stage refuses. The remedy separates the two
+                fault directions -- this proposal's own migration, or a landed
+                one that was already broken before it -- because they need
+                different actions from the reader and only one of them is the
+                author's to fix.
+        """
+        self._refuse_a_document_the_schema_rejects(migration_file, document)
+
+        try:
+            landed = self._landed_files()
+        except (ProposalError, SchemaUnreadableError):
+            raise
+        except (TheurianError, OSError) as exc:
+            # The approved set cannot even be enumerated, which is a fault in
+            # `.theurian/migrations/` and never in a proposal that has not moved.
+            # It does not reach here from the CLI -- resolving the project loads
+            # the same set and fails first -- but a composition root that
+            # enumerates lazily can, and "unreadable landed migration" must not
+            # arrive as "your proposal is broken" (#227).
+            raise self._landed_set_refusal(exc) from exc
+
+        candidate = self._candidate(landed, migration_file, migration_bytes, moves)
+        try:
+            self._rehearse(candidate)
+        except SchemaUnreadableError:
+            # The installation's schema, not this project's content: it says
+            # "reinstall theurian", and re-labelling it as a fault in the
+            # proposal would send the author to edit a file that is correct.
+            raise
+        except (TheurianError, OSError) as exc:
+            raise self._union_refusal(proposal_id, migration_file, landed, exc) from exc
+
+    def _refuse_a_document_the_schema_rejects(
+        self, migration_file: Path, document: Mapping[str, object]
+    ) -> None:
+        """Stage 1: the published schema, then the version this build understands.
+
+        The ``apiVersion`` check is not the schema's ``const`` written twice. The
+        schema is a *file*, located at runtime (``cli/context.py::schema_root``,
+        which prefers the packaged copy but falls back to a source checkout's),
+        while :data:`MIGRATION_API_VERSION` is compiled into this build. They can
+        disagree, and when they do it is the build's answer that decides what the
+        loader will accept -- which is why the loader checks both too, and why
+        the same pair is checked here rather than assuming the file agrees.
+        """
+        try:
+            self._validate(document)
+        except SchemaUnreadableError:
+            raise
+        except TheurianError as exc:
+            raise ProposalError(
+                f"{_names([migration_file.name])} is not a valid migration: {exc}",
+                remedy=(
+                    "Correct the migration in the proposal directory, then accept it again. "
+                    "Nothing has moved."
+                ),
+            ) from exc
+        if document.get("apiVersion") != MIGRATION_API_VERSION:
+            raise ProposalError(
+                f"{_names([migration_file.name])} declares an apiVersion this build does not "
+                f"understand; it reads {MIGRATION_API_VERSION!r}.",
+                remedy=(
+                    "Correct apiVersion in the migration, or install the Theurian build that "
+                    "wrote it. Nothing has moved."
+                ),
+            )
+
+    def _landed_files(self) -> tuple[str, ...]:
+        """Every project-relative file the approved migration set was read from.
+
+        Each landed migration's own file, and the body each ``upsertRevision``
+        resolved to -- the paths the *loader* recorded, so the copy the replay
+        reads holds exactly the files the loader would read here, not whatever a
+        second enumeration of ``.theurian/migrations/`` would find (the
+        disagreement #234 measured on the sibling guard).
+
+        Sorted and deduplicated: two operations legitimately naming one body
+        contribute one file, and a total order keeps the copy identical run to
+        run.
+        """
+        files: set[str] = set()
+        for migration in self._landed_migrations():
+            files.add(self._staged_path(migration.source_path))
+            for operation in migration.operations:
+                if isinstance(operation, UpsertRevision):
+                    files.add(self._staged_path(operation.resolved_content_path))
+        return tuple(sorted(files))
+
+    def _staged_path(self, recorded: str | None) -> str:
+        """One loader-recorded project-relative path, refusing an absent one.
+
+        ``None`` is the in-memory case the loader never produces (it records
+        ``source_path`` for every migration it reads and ``resolved_content_path``
+        for every body it resolves). Refused rather than skipped: a skip would
+        leave that migration or body out of the copy, and the replay would then
+        answer "it applies" about a set that is not the one on disk.
+        """
+        if recorded is None:  # pragma: no cover - the loader records both
+            raise ProposalError(
+                "The approved migration set holds a migration with no recorded source file, "
+                "so whether this proposal can be accepted cannot be decided.",
+                remedy="Run theurian migrate validate --json and fix what it reports.",
+            )
+        return recorded
+
+    def _candidate(
+        self,
+        landed: tuple[str, ...],
+        migration_file: Path,
+        migration_bytes: bytes,
+        moves: tuple[_BodyMove, ...],
+    ) -> CandidateMigrationSet:
+        """The union to rehearse: the landed files, plus this proposal's own.
+
+        The proposal's files are described by the destinations they *would*
+        occupy, not by where they sit now, because that is the tree the pre-check
+        is asking about. Their bytes are the ones :meth:`accept` already read
+        through the security layer -- re-reading them here would ask a second
+        question about a file that has already answered.
+        """
+        destination = self._paths.migrations / migration_file.name
+        incoming = [(self._within_project(destination), migration_bytes)]
+        incoming.extend((self._within_project(move.destination), move.data) for move in moves)
+        return CandidateMigrationSet(
+            root=self._paths.root,
+            knowledge_directory=PurePosixPath(self._paths.knowledge_dir.name),
+            project_id=self._project_id,
+            landed=landed,
+            incoming=tuple(incoming),
+        )
+
+    def _within_project(self, path: Path) -> str:
+        """``path`` as a project-relative POSIX string, for the copy's layout."""
+        try:
+            return path.relative_to(self._paths.root).as_posix()
+        except ValueError as exc:  # pragma: no cover - every path here was contained above
+            raise PathEscapeError(str(path), str(self._paths.root)) from exc
+
+    def _union_refusal(
+        self,
+        proposal_id: ProposalId,
+        migration_file: Path,
+        landed: tuple[str, ...],
+        error: BaseException,
+    ) -> ProposalError:
+        """Turn a refused rehearsal into a refusal a reader can act on.
+
+        Two directions, and which one it is decides the whole remedy. If the
+        landed set fails the same replay *without* this proposal in it, the
+        project was already broken and the author has nothing to correct; if it
+        passes, this proposal is what breaks it. The discriminator is a second
+        rehearsal of the landed set alone, and it costs nothing on the path that
+        matters: it runs only when the acceptance is already being refused.
+        """
+        landed_error = self._landed_set_alone_fails(landed)
+        if landed_error is not None:
+            return self._landed_set_refusal(landed_error)
+        message = (
+            f"Accepting this proposal would leave .theurian/migrations/ unable to apply: {error}"
+        )
+        if isinstance(error, RevisionConflictError):
+            # The racing face (#307): this proposal claimed a revision that was
+            # free when it was drafted and is not free now. Re-drafting is the
+            # honest cure *here* and nowhere else on this path -- nothing of this
+            # proposal was consumed, so a second draft duplicates nothing (#89).
+            return ProposalError(
+                message,
+                remedy=(
+                    "Another change to this item landed first. Nothing has moved, so either "
+                    "give the proposal's own migration the expectedRevision the message "
+                    "reports, or draft the change again with --expected-revision and delete "
+                    f".theurian/proposals/{proposal_id.value}/."
+                ),
+            )
+        return ProposalError(
+            message,
+            remedy=(
+                f"Correct {_names([migration_file.name])} in .theurian/proposals/"
+                f"{proposal_id.value}/, then accept it again. Nothing has moved and the "
+                "proposal's own files are intact."
+            ),
+        )
+
+    def _landed_set_refusal(self, error: BaseException) -> ProposalError:
+        """The refusal for a fault that predates this proposal.
+
+        Direction (b): the project's own ``.theurian/migrations/`` is what
+        cannot be applied, and the author of this proposal has nothing to
+        correct in it. The remedy therefore names neither the proposal's file
+        nor a re-draft -- both would send the reader to change something that is
+        not wrong -- and points at the migration the message itself names.
+        """
+        return ProposalError(
+            f"The project's migration set cannot be applied as it stands, with or without "
+            f"this proposal: {error}",
+            remedy=(
+                "This proposal is not the cause: nothing has moved and its directory is "
+                "intact. Fix the migration the message names -- the same fault stops "
+                "theurian migrate apply -- then accept this proposal again."
+            ),
+        )
+
+    def _landed_set_alone_fails(self, landed: tuple[str, ...]) -> BaseException | None:
+        """The fault the landed set carries on its own, or ``None`` if it carries none.
+
+        The same rehearsal, over the same files, with the incoming proposal left
+        out -- so the two answers cannot differ for any reason except the
+        proposal itself. An empty set is not rehearsed: there is nothing for it
+        to fail at, and creating a store to prove it would be work spent on a
+        foregone answer.
+        """
+        if not landed:
+            return None
+        try:
+            self._rehearse(
+                CandidateMigrationSet(
+                    root=self._paths.root,
+                    knowledge_directory=PurePosixPath(self._paths.knowledge_dir.name),
+                    project_id=self._project_id,
+                    landed=landed,
+                    incoming=(),
+                )
+            )
+        except SchemaUnreadableError:
+            raise
+        except (TheurianError, OSError) as exc:
+            return exc
+        return None
 
     def _require_directory(self, proposal_id: ProposalId) -> Path:
         # Built from a validated ULID, so no caller-supplied text reaches the
