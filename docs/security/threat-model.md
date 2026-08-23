@@ -515,6 +515,23 @@ reached: ~0.53 MiB 0.21 s, ~1.07 MiB 0.98 s, ~2.16 MiB 4.21 s, ~4.39 MiB
 `MAX_SOURCE_FILE_BYTES` (8 MiB). It is clone-reachable — an OpenAPI file is
 ordinary committed content — and it is graded as availability, not disclosure.
 
+**A second residual, in another parser: the Markdown fence scan
+([#331](https://github.com/theurian/theurian/issues/331)).**
+`parsers/markdown.py::_FENCE` is not line iteration — the pattern spans the whole
+document, `(.*?)` under `re.DOTALL` — so every fence opener that finds no closer
+scans to the end of the file, and a body of openers that can never close costs
+Θ(n²). Measured 2026-08-24 on this branch over a body of `` ```a `` lines, which
+open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB 0.39 s, 39.1 KiB
+1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the cost per doubling.
+`MAX_FENCES` does not bound it: the cap is applied to the matches the scan
+*yields*, and this input yields none at any size. The only bound is
+`MAX_SOURCE_FILE_BYTES` (8 MiB) again. Clone-reachable — a Markdown file is the
+ordinary case of committed knowledge — and graded as availability, not
+disclosure. The rest of that parse is priced: `_FRONT_MATTER` is `\A`-anchored
+and matched 4 MiB in 0.048 s, and the heading pass is linear in the document and
+bounded by `MAX_HEADINGS` rather than by the input (2,000 headings at the tail of
+an 8 MiB file, 6.68 s, doubling with the file).
+
 **Two controls this entry used to list here do not exist, and are dropped rather
 than filed.** Both were written in the indicative beside the shipped bounds
 above, which is exactly the shape #199's audit exists to catch: a control named
@@ -535,8 +552,13 @@ in this table is read as a control that runs.
   What has changed for the ingestion side is that the bounds above are *counted*
   rather than timed: they price the work a walk spends rather than the seconds
   it takes, which is the quantity a wall clock was standing in for. A counter
-  bounds only what it counts, which is why the unpriced quantity above (#328) is
-  recorded as a residual and not covered by this paragraph.
+  bounds only what it counts, and there are **two** quantities above that no
+  counter here counts, each recorded as its own residual and neither covered by
+  this paragraph: the `$ref` walk's per-edge path strings
+  (`parsers/openapi.py::_external_refs`, ~4.39 MiB in 16.93 s,
+  [#328](https://github.com/theurian/theurian/issues/328)) and the Markdown fence
+  scan (`parsers/markdown.py::_FENCE`, 156.2 KiB in 25.12 s,
+  [#331](https://github.com/theurian/theurian/issues/331)).
 
 *Future controls, not shipped:* a per-query wall-clock bound is a daemon-level
 control on the transport layer and is filed as
