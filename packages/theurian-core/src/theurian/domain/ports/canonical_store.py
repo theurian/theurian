@@ -152,31 +152,35 @@ class CanonicalStore(Protocol):
         ``statuses`` is never fetched at all. ``sensitivities`` has no index
         column, so it is applied to the rows that seek returns -- an above-ceiling
         row is fetched from the table and dropped before it crosses into Python.
-        What that buys and what it does not, measured on SQLite 3.51.2 over a
-        project with 50 visible rows and 0/50/300/1,000 above-ceiling ones:
 
-        ==================== ============ ==================
-        Above-ceiling rows   VM steps     Rows into Python
-        ==================== ============ ==================
-        0                    1,472        50
-        50                   1,772        50
-        300                  3,272        50
-        1,000                7,472        50
-        ==================== ============ ==================
+        What that buys and what it does not. Measured on SQLite 3.47.1 against
+        this schema, over an ``approved`` project holding 50 rows an ``internal``
+        ceiling admits and 0/50/300/1,000 above it, VM steps counted with a
+        progress handler:
+
+        ================== ============= ============= ==================
+        Above-ceiling rows With the axis Without it    Rows into Python
+        ================== ============= ============= ==================
+        0                  2,110         1,955         50
+        50                 2,410         3,655         50
+        300                3,910         12,155        50
+        1,000              8,110         35,955        50
+        ================== ============= ============= ==================
 
         So the *Python* cost -- item construction, and in ``search._scan`` the
-        per-item revision read and body scan that dominate it -- is flat, and the
-        SQL cost carries about six VM steps (0.7 us) per above-ceiling row.
-        Twenty times smaller than the ``O(withheld document)`` canonical read the
-        ranked path already accepts and records
+        per-item revision read and body scan that dominate it -- is flat, while
+        the predicate itself carries exactly 6.0 VM steps per above-ceiling row
+        against the 34 the same rows cost when they are returned instead. Smaller
+        than the ``O(withheld document)`` canonical read the ranked path already
+        accepts and records
         (:meth:`~theurian.application.visibility.CanonicalVisibility.cleared`, 15
         us per distinct document), and not zero. Adding ``sensitivity`` as a third
-        column of ``idx_items_status`` flattens it exactly -- 1,394 steps at 0 and
-        at 1,000 above-ceiling rows, measured -- at the price of a
-        ``SCHEMA_VERSION`` bump, which invalidates every existing state database
-        and moves the ``schemaVersion`` ``knowledge.status`` publishes. That is
-        not a change #119 phase 2 may make, because its contract is that an
-        allow-all deployment behaves exactly as it did.
+        column of ``idx_items_status`` flattens it exactly -- 2,032 steps at 0 and
+        at 1,000, measured the same way -- at the price of a ``SCHEMA_VERSION``
+        bump, which invalidates every existing state database and moves the
+        ``schemaVersion`` ``knowledge.status`` publishes. That is not a change
+        #119 phase 2 may make, because its contract is that an allow-all
+        deployment behaves exactly as it did.
 
         An empty ``statuses`` or an empty ``sensitivities`` returns ``()`` without
         a query: neither can match, so a query would only return zero rows. Both

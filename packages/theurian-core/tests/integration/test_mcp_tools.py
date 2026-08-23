@@ -1644,8 +1644,8 @@ async def test_the_substring_scan_materializes_the_same_rows_however_many_are_ab
     `KnowledgeItem`, then a revision read, then a scan of the body. It does not
     pin SQLite's own work, and that is a measured difference rather than an
     oversight -- ``idx_items_status`` has no ``sensitivity`` column, so the seek
-    fetches an above-ceiling row from the table before dropping it, at about six
-    VM steps (0.7 us) each. `list_items_by_status`'s docstring carries the
+    fetches an above-ceiling row from the table before dropping it, at 6.0 VM
+    steps each on SQLite 3.47.1. `list_items_by_status`'s docstring carries the
     measurement and what flattening it would cost. Asserting flatness *here*
     where flatness holds, and recording the residual where it does not, is the
     honest split; a row-count assertion that claimed to cover both would be

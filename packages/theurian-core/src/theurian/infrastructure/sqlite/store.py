@@ -464,15 +464,16 @@ class SqliteCanonicalStore:
         # The `sensitivity` predicate rides along and is *not* flat in the same way,
         # because no index carries that column: the seek locates the in-status rows
         # and this drops the above-ceiling ones after they have been fetched from the
-        # table. Measured on SQLite 3.51.2 with 50 visible rows and 0/50/300/1,000
-        # above-ceiling ones, VM steps 1,472 -> 1,772 -> 3,272 -> 7,472 while the
-        # rows crossing into Python stayed at 50 -- so about six steps (0.7 us) per
-        # above-ceiling row, against the 26 per row a Python-side filter would pay
-        # and the 15 us per withheld document the ranked path already accepts and
-        # records (`CanonicalVisibility.cleared`). Flattening it exactly means adding
-        # `sensitivity` as a third column here (measured: 1,394 steps at both 0 and
-        # 1,000), which bumps SCHEMA_VERSION -- a change #119 phase 2 must not make,
-        # since its contract is that an allow-all deployment behaves as it did.
+        # table. Measured on SQLite 3.47.1 against this schema, 50 admitted rows and
+        # 0/50/300/1,000 above the ceiling: VM steps 2,110 -> 2,410 -> 3,910 ->
+        # 8,110 while the rows crossing into Python stayed at 50 -- 6.0 steps per
+        # above-ceiling row, against the 34 the same rows cost when they are
+        # returned instead, and against the 15 us per withheld document the ranked
+        # path already accepts and records (`CanonicalVisibility.cleared`).
+        # Flattening it exactly means adding `sensitivity` as a third column here
+        # (measured: 2,032 steps at both 0 and 1,000), which bumps SCHEMA_VERSION --
+        # a change #119 phase 2 must not make, since its contract is that an
+        # allow-all deployment behaves as it did.
         sql = (
             "SELECT * FROM knowledge_items INDEXED BY idx_items_status "  # noqa: S608 - placeholders only
             f"WHERE project_id = ? AND status IN ({placeholders}) "
