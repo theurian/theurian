@@ -102,6 +102,19 @@ from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWri
 #: Exit code for a knowledge-state problem the user must resolve: a checksum
 #: mismatch, a revision conflict, a dependency cycle. Distinct from 1 so a script
 #: can tell "your knowledge needs attention" from "the command broke".
+#:
+#: **SEC-8's input-cap refusals report 1 rather than this, and the load path is
+#: therefore not uniformly graded.** `InputTooLargeError` and
+#: `IrregularSourceFileError` (#215) are `SecurityError`s that no branch of
+#: :func:`_require_project` names, so they take its generic `except
+#: TheurianError` branch at 1, while `PathEscapeError` and every `MigrationError`
+#: subtype -- `MigrationContentUnreadableError` among them -- are named there and
+#: take this code, on refusals that can come from the same `read_source_file`
+#: call. That is the shipped contract: 0.1.0.dev9 grades an oversized
+#: `contentFile` as 1, and the branch structure that decides it is unchanged
+#: since that cut. It is left alone deliberately -- which code a refusal reports
+#: is a published contract, and moving one is a compatibility change with its own
+#: note, not a detail of adding a refusal.
 EXIT_STATE_ERROR = 4
 
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]

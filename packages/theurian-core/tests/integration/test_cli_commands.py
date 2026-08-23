@@ -478,8 +478,9 @@ def test_an_oversized_content_file_is_diagnosed_by_its_own_remedy(
 
     ``InputTooLargeError`` is a ``SecurityError``, not a ``MigrationError`` or a
     ``PathEscapeError``, so it skips both of ``_require_project``'s type-keyed
-    branches (commands.py:1890, :1909) and lands in the generic
-    ``except TheurianError`` clause (commands.py:1912) instead. This exercises
+    branches -- named by symbol rather than by line, which the next edit rots --
+    and lands in the generic ``except TheurianError`` clause instead. This
+    exercises
     that through the real CLI on the real load path every ``_require_project``
     caller shares -- reading a migration's ``contentFile`` via
     ``read_source_file`` -- rather than calling ``_context_remedy`` directly:
@@ -493,7 +494,10 @@ def test_an_oversized_content_file_is_diagnosed_by_its_own_remedy(
 
     code, payload = _invoke("migrate", "validate")
 
-    assert code == 1
+    assert code == 1, (
+        "a SEC-8 input cap exits 1, not EXIT_STATE_ERROR, on the same load path that "
+        "grades a containment refusal 4 -- the split EXIT_STATE_ERROR's own note records"
+    )
     assert payload["remedy"] != "Run this inside an initialised Theurian project.", (
         "the diagnosis must name the actual problem -- an oversized input -- "
         "not the generic project-resolution fallback"
@@ -1026,11 +1030,15 @@ def test_validate_refuses_a_fifo_content_file_instead_of_hanging(project: Path) 
     The timer is what turns a regression back into a failing test rather than a
     stalled suite (``hang_guard``); the assertion is that it never fires.
 
-    Exit 1 rather than ``EXIT_STATE_ERROR``: this is a ``SecurityError``, so it
-    reaches ``_require_project``'s generic ``except TheurianError`` branch, the
-    same route its sibling on this seam takes when a ``contentFile`` exceeds the
-    size cap. What the fix changes is not the grading but the payload -- CP-2's
-    ``{error, remedy}`` on stderr, with a clean stdout.
+    Exit 1 rather than ``EXIT_STATE_ERROR``, and this seam is *not* uniformly
+    graded: no branch of ``_require_project`` names this type or
+    ``InputTooLargeError``, so both take its generic ``except TheurianError``
+    branch at 1, while a ``PathEscapeError`` or a
+    ``MigrationContentUnreadableError`` from the same ``read_source_file`` call
+    is named there and exits 4. Pinned rather than argued, because it is a
+    published contract: ``EXIT_STATE_ERROR``'s own note records why it is left
+    where 0.1.0.dev9 shipped it. What the fix changes is not the grading but the
+    payload -- CP-2's ``{error, remedy}`` on stderr, with a clean stdout.
     """
     _invoke("init")
     _write_fifo_content_migration(project)
@@ -1388,7 +1396,10 @@ def test_validate_names_the_symlink_when_the_migrations_directory_escapes_the_pr
 
     result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
 
-    assert result.exit_code == EXIT_STATE_ERROR, "graded like every sibling on this load path"
+    assert result.exit_code == EXIT_STATE_ERROR, (
+        "a containment refusal is knowledge state; the load path's SEC-8 input caps are "
+        "not, and exit 1 (see EXIT_STATE_ERROR's own note)"
+    )
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     payload = json.loads(result.stderr)
     relative = str(migrations_dir.relative_to(project))
@@ -1421,7 +1432,10 @@ def test_validate_names_the_symlink_when_one_migration_file_escapes_the_project(
 
     result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
 
-    assert result.exit_code == EXIT_STATE_ERROR, "graded like every sibling on this load path"
+    assert result.exit_code == EXIT_STATE_ERROR, (
+        "a containment refusal is knowledge state; the load path's SEC-8 input caps are "
+        "not, and exit 1 (see EXIT_STATE_ERROR's own note)"
+    )
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     payload = json.loads(result.stderr)
     relative = str(escape_entry.relative_to(project))
