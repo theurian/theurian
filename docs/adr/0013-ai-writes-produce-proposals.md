@@ -181,6 +181,19 @@ it" is precisely the knowledge that gets lost otherwise. Recording it uses the
 > proposal survives its own rejection.
 > [ADR-0027](0027-accept-validates-before-it-moves.md) carries the mechanism,
 > the closure argument, and the three residues the change does not cover.
+>
+> **Point 7 was re-examined in the same CL and stands
+> ([ADR-0028](0028-a-local-proposal-is-a-different-directory.md)).** Proposal
+> directories may be committed, and the accept-path hardening two paragraphs
+> above is built on that premise. What point 7 does not say — and what the
+> dogfooding corpus needed it to — is where a proposal goes whose *content*
+> must never be committed. From Milestone 7 that is a second location rather
+> than a second rule: `theurian propose --local` writes under
+> `.theurian/proposals-local/`, which `theurian init` adds to the managed
+> `.gitignore` block, so every clone inherits the boundary instead of relying
+> on a machine-local `.git/info/exclude` fence
+> ([#265](https://github.com/theurian/theurian/issues/265)). `accept` reads
+> from either location through the same guards.
 
 ## Consequences
 
