@@ -86,7 +86,7 @@ from theurian.application.retrieval_service import (
 )
 from theurian.application.visibility import Visibility
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus, may_surface
+from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_surface
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ranking import RetrievalMode, estimate_tokens, mode_of
@@ -915,7 +915,16 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     )
 
     with SqliteCanonicalStore(database) as store:
-        for item in store.list_items_by_status(context, statuses=surfaceable):
+        for item in store.list_items_by_status(
+            context,
+            statuses=surfaceable,
+            # Every level, until the deployment's grant is threaded to this
+            # function (#119 phase 2). The port requires the set rather than
+            # defaulting it, so this is the one place the "no sensitivity
+            # narrowing" answer is spelled -- and it is spelled where the next
+            # commit replaces it, not hidden behind a default.
+            sensitivities=frozenset(Sensitivity),
+        ):
             if as_of is not None and not item.validity.contains(as_of):
                 continue
             if item.current_revision_id is None:

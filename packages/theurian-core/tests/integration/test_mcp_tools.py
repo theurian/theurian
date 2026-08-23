@@ -29,6 +29,7 @@ from theurian.application.authorization import (
     DEPLOYMENT_ACL_GROUPS,
     DEPLOYMENT_TENANT,
     AuthorizationGrant,
+    StaticAuthorizationProvider,
 )
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
@@ -1414,23 +1415,30 @@ async def test_the_substring_scan_reads_items_through_idx_items_status(
         f"`IN ({', '.join('?' * expected_status_count)})` the tool runs; it resolved "
         f"{len(surfaceable)}. A drift here would pin the plan of a query the tool never issues."
     )
+    # The sensitivity axis the shipped default grant resolves (#119). Read off the
+    # grant rather than spelled as `frozenset(Sensitivity)`, so the statement
+    # planned below stays the one the shipped daemon runs when a later phase
+    # narrows `DEFAULT_CEILING`.
+    visible = StaticAuthorizationProvider().deployment_grant().sensitivities
 
     # Act: run the real read and capture the statement it built, then plan it. The
     # store is entered first so its connection opens before the capture is
     # installed -- that open does not go through `_read_all`, so the one call the
     # capture sees is `list_items_by_status`'s own statement.
     with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
-        store.list_items_by_status(context, statuses=surfaceable)
+        store.list_items_by_status(context, statuses=surfaceable, sensitivities=visible)
 
     assert captured, (
         "list_items_by_status ran no statement through the store reader, so the plan below "
         "would describe a query the tool never runs -- the capture watches the wrong method"
     )
-    assert captured["sql"].count("?") == 1 + expected_status_count, (
+    expected_placeholders = 1 + expected_status_count + len(visible)
+    assert captured["sql"].count("?") == expected_placeholders, (
         "the captured statement binds one `project_id` plus one placeholder per surfaceable "
-        f"status, so a {expected_status_count}-status gate must show {1 + expected_status_count} "
-        f"placeholders; it showed {captured['sql'].count('?')}. The capture watched the wrong "
-        "statement, so the plan below would not describe this gate width."
+        f"status and one per visible sensitivity, so a {expected_status_count}-status gate at "
+        f"{len(visible)} visible level(s) must show {expected_placeholders} placeholders; it "
+        f"showed {captured['sql'].count('?')}. The capture watched the wrong statement, so the "
+        "plan below would not describe this gate width."
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 

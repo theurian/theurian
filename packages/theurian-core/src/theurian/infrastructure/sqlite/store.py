@@ -415,27 +415,35 @@ class SqliteCanonicalStore:
         return self._read_all(sql, params, _item_from_row)
 
     def list_items_by_status(
-        self, context: RequestContext, *, statuses: frozenset[KnowledgeStatus]
+        self,
+        context: RequestContext,
+        *,
+        statuses: frozenset[KnowledgeStatus],
+        sensitivities: frozenset[Sensitivity],
     ) -> tuple[KnowledgeItem, ...]:
-        # A status-filtered read with no visibility semantics. The caller passes the
-        # status set it has already resolved, so the `may_surface` gate stays in the
-        # tool layer (`search._scan`) where the security enumeration expects it and
-        # this adapter never consults it. `knowledge.search`'s substring fallback is
+        # A two-axis filtered read with no visibility semantics. The caller passes
+        # the sets it has already resolved, so the `may_surface` gate and the
+        # deployment's sensitivity grant both stay in the tool layer
+        # (`search._scan`) where the security enumeration expects them and this
+        # adapter never consults either. `knowledge.search`'s substring fallback is
         # the caller; filtering in SQL is what keeps its response time proportional
-        # to the rows it may return rather than to the retired rows it withholds --
-        # the `search._scan` sibling of the channel #19 closed for `knowledge.status`
-        # (T-17, SEC-13, #158).
+        # to the rows it may return rather than to the rows it withholds -- the
+        # `search._scan` sibling of the channel #19 closed for `knowledge.status`
+        # (T-17, SEC-13, #158, #119).
         #
-        # An empty set short-circuits to `()`: no status can match, so a query would
-        # only return zero rows. The guard is defensive -- `search._scan` always
-        # resolves at least APPROVED into the set
-        # (`may_surface(APPROVED, include_unapproved=False)` is always true), so it
-        # never passes an empty one. `sorted()` only fixes the bind order: the
-        # statement text is `?, ?, ?` regardless of the values.
-        if not statuses:
+        # An empty set on either axis short-circuits to `()`: nothing can match, so a
+        # query would only return zero rows. Both guards are defensive --
+        # `search._scan` always resolves at least APPROVED into the first
+        # (`may_surface(APPROVED, include_unapproved=False)` is always true), and
+        # `AuthorizationGrant` refuses at construction to hold an empty second. Each
+        # `sorted()` only fixes the bind order: the statement text is `?, ?, ?`
+        # regardless of the values.
+        if not statuses or not sensitivities:
             return ()
         values = tuple(sorted(s.value for s in statuses))
         placeholders = ", ".join("?" for _ in values)
+        levels = tuple(sorted(s.value for s in sensitivities))
+        level_placeholders = ", ".join("?" for _ in levels)
         # `INDEXED BY idx_items_status`, not left to the planner, and that hint is
         # the whole of what makes this timing-independent. `idx_items_status` is
         # `(project_id, status)`; the primary key gives a second index
@@ -452,12 +460,26 @@ class SqliteCanonicalStore:
         # force is also structural, not advisory -- drop or rename the index and the
         # query fails loudly rather than silently falling back to the scan that
         # reopens the channel.
+        #
+        # The `sensitivity` predicate rides along and is *not* flat in the same way,
+        # because no index carries that column: the seek locates the in-status rows
+        # and this drops the above-ceiling ones after they have been fetched from the
+        # table. Measured on SQLite 3.51.2 with 50 visible rows and 0/50/300/1,000
+        # above-ceiling ones, VM steps 1,472 -> 1,772 -> 3,272 -> 7,472 while the
+        # rows crossing into Python stayed at 50 -- so about six steps (0.7 us) per
+        # above-ceiling row, against the 26 per row a Python-side filter would pay
+        # and the 15 us per withheld document the ranked path already accepts and
+        # records (`CanonicalVisibility.cleared`). Flattening it exactly means adding
+        # `sensitivity` as a third column here (measured: 1,394 steps at both 0 and
+        # 1,000), which bumps SCHEMA_VERSION -- a change #119 phase 2 must not make,
+        # since its contract is that an allow-all deployment behaves as it did.
         sql = (
             "SELECT * FROM knowledge_items INDEXED BY idx_items_status "  # noqa: S608 - placeholders only
             f"WHERE project_id = ? AND status IN ({placeholders}) "
+            f"AND sensitivity IN ({level_placeholders}) "
             "ORDER BY item_id"
         )
-        params = (context.project_id.value, *values)
+        params = (context.project_id.value, *values, *levels)
         return self._read_all(sql, params, _item_from_row)
 
     def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:

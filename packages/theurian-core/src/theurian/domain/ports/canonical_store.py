@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
@@ -117,31 +117,73 @@ class CanonicalStore(Protocol):
         ...
 
     def list_items_by_status(
-        self, context: RequestContext, *, statuses: frozenset[KnowledgeStatus]
+        self,
+        context: RequestContext,
+        *,
+        statuses: frozenset[KnowledgeStatus],
+        sensitivities: frozenset[Sensitivity],
     ) -> tuple[KnowledgeItem, ...]:
-        """Every item in scope whose status is in ``statuses``, filtered in SQL.
+        """Every item in scope on both axes, filtered in SQL.
 
-        A dumb status-filtered read. It holds no visibility semantics and never
-        decides what a caller may see: the caller passes the status set it has
-        already resolved. ``knowledge.search``'s substring fallback builds that set
-        from :func:`~theurian.domain.enums.may_surface`, so the status gate stays in
-        the tool layer where it is enumerated (SEC-13, T-15) and this port stays
-        gate-agnostic -- an adapter must not consult the visibility rule.
+        A dumb two-axis filtered read. It holds no visibility semantics and never
+        decides what a caller may see: the caller passes the sets it has already
+        resolved. ``knowledge.search``'s substring fallback is the caller, and it
+        builds ``statuses`` from :func:`~theurian.domain.enums.may_surface`, so
+        both gates stay in the tool layer where they are enumerated (SEC-13,
+        T-15, #119) and this port stays gate-agnostic -- an adapter must not
+        consult a visibility rule.
+
+        Neither set is defaulted. A default for either would mean "everything",
+        which is the answer a forgotten argument must not silently produce on a
+        read path.
 
         Its value over :meth:`list_items` is *where* the filtering happens.
         ``list_items`` reads every row and filters in Python, so a caller keeping
-        only some statuses still pays to materialise the rest -- and its response
+        only some rows still pays to materialise the rest -- and its response
         time then scales with the count of the rows it discards, recoverable by
         measuring it (T-17; the ``search._scan`` sibling of the channel #19 closed
-        for ``knowledge.status``, #158). Here the set is pushed into the ``IN``
-        predicate the index ``idx_items_status(project_id, status)`` serves: the
-        seek locates only the in-set rows and ``SELECT *`` then fetches each by
-        rowid (``USING INDEX``, not ``USING COVERING INDEX``), so a row whose status
-        is not in ``statuses`` is never fetched.
+        for ``knowledge.status``, #158).
 
-        An empty ``statuses`` returns ``()`` without a query: no status can match,
-        so a query would only return zero rows. It is defensive -- ``search._scan``
-        always resolves at least APPROVED into the set, so never passes an empty one.
+        **The two axes are pushed down equally and are not equally flat, because
+        only one of them is indexed.** ``statuses`` goes into the ``IN`` predicate
+        ``idx_items_status(project_id, status)`` serves: the seek locates only the
+        in-set rows and ``SELECT *`` then fetches each by rowid (``USING INDEX``,
+        not ``USING COVERING INDEX``), so a row whose status is not in
+        ``statuses`` is never fetched at all. ``sensitivities`` has no index
+        column, so it is applied to the rows that seek returns -- an above-ceiling
+        row is fetched from the table and dropped before it crosses into Python.
+        What that buys and what it does not, measured on SQLite 3.51.2 over a
+        project with 50 visible rows and 0/50/300/1,000 above-ceiling ones:
+
+        ==================== ============ ==================
+        Above-ceiling rows   VM steps     Rows into Python
+        ==================== ============ ==================
+        0                    1,472        50
+        50                   1,772        50
+        300                  3,272        50
+        1,000                7,472        50
+        ==================== ============ ==================
+
+        So the *Python* cost -- item construction, and in ``search._scan`` the
+        per-item revision read and body scan that dominate it -- is flat, and the
+        SQL cost carries about six VM steps (0.7 us) per above-ceiling row.
+        Twenty times smaller than the ``O(withheld document)`` canonical read the
+        ranked path already accepts and records
+        (:meth:`~theurian.application.visibility.CanonicalVisibility.cleared`, 15
+        us per distinct document), and not zero. Adding ``sensitivity`` as a third
+        column of ``idx_items_status`` flattens it exactly -- 1,394 steps at 0 and
+        at 1,000 above-ceiling rows, measured -- at the price of a
+        ``SCHEMA_VERSION`` bump, which invalidates every existing state database
+        and moves the ``schemaVersion`` ``knowledge.status`` publishes. That is
+        not a change #119 phase 2 may make, because its contract is that an
+        allow-all deployment behaves exactly as it did.
+
+        An empty ``statuses`` or an empty ``sensitivities`` returns ``()`` without
+        a query: neither can match, so a query would only return zero rows. Both
+        guards are defensive -- ``search._scan`` always resolves at least APPROVED
+        into the first, and
+        :class:`~theurian.application.authorization.AuthorizationGrant` refuses to
+        exist with an empty second.
         """
         ...
 
