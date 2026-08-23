@@ -386,9 +386,11 @@ class BodySecretFinding:
     ``body`` is the path *relative to* ``.theurian/knowledge/``, which is the one
     spelling that is correct both before and after the move: a proposal mirrors
     the sub-path its body will occupy, so the same string names the file in
-    ``.theurian/proposals/<id>/`` and in ``.theurian/knowledge/``. A refusal
-    happens before the move and a warning after it, and neither has to say which
-    it means.
+    either proposal directory and in ``.theurian/knowledge/``. A refusal happens
+    before the move and a warning after it, and neither has to say which it
+    means -- nor which of the two locations the proposal came from, which is why
+    this spelling survived ADR-0028 unchanged while the refusal's own remedy did
+    not.
     """
 
     body: str
@@ -1233,10 +1235,14 @@ class ProposalService:
         if len(present) > 1:
             raise self._ambiguous_locations(proposal_id, present)
         if not present:
-            listed = " or ".join(f"{self._within_project(parent)}/" for parent, _ in parents)
+            # "or" states where it was not found; "and" is what the reader has to
+            # do about it. A remedy saying "list A or B" is an instruction that
+            # can be followed correctly and still miss the proposal, because
+            # which of the two holds it is exactly what is not known here.
+            searched = [f"{self._within_project(parent)}/" for parent, _ in parents]
             raise ProposalError(
-                f"No proposal {proposal_id.value} under {listed}.",
-                remedy=f"List {listed} to see which proposals are waiting.",
+                f"No proposal {proposal_id.value} under {' or '.join(searched)}.",
+                remedy=f"List {' and '.join(searched)} to see which proposals are waiting.",
             )
         location = present[0]
         if location.directory.is_symlink():
@@ -2294,7 +2300,7 @@ def _project_relative(filename: object, root: Path) -> str:
 
     :func:`_within`'s sibling, for the accept path, where the refused call can be
     anywhere the command reached rather than only inside one proposal directory:
-    a probe under ``.theurian/proposals/``, a body under ``.theurian/knowledge/``,
+    a probe under either proposal directory, a body under ``.theurian/knowledge/``,
     the migration destination. The absolute path is never returned, for the reason
     :func:`_within` records -- it is the machine's home directory, not the
     proposal's.
