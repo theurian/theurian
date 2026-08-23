@@ -455,6 +455,12 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "`theurian propose accept` scans the bodies a proposal would land",
             "That is one gate and a best-effort detector, not coverage",
+            # The metadata channel (#336): the scan reads bodies only, so a secret
+            # in the revision's own title/description/labels is unscanned and, for
+            # the title, published. A surface that describes SEC-11's reach without
+            # this sentence over-claims by omission -- the same B1-B4 failure the
+            # rest of this row guards, applied to *which channels* the scan covers.
+            "The scan reads bodies, not the revision's own metadata",
             "Theurian does not scan ingested content for secrets",
             "Theurian is not one and is not a replacement for one",
         ),
@@ -465,6 +471,8 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "**Controls: `theurian propose accept` scans every body before it moves it**",
             "It is best effort and the product says so",
+            # The metadata channel (#336); see the SECURITY.md row above.
+            "The scan reads bodies, not the revision's own metadata",
             "`theurian ingest` runs no scan",
         ),
     ),
