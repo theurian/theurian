@@ -1,31 +1,35 @@
-"""The published config keys that are reserved rather than in force (#198, #129).
+"""Which published config keys have readers, and which are still reserved (#198, #129).
 
-``schemas/config/project-config.schema.json`` publishes two keys whose
-descriptions say, in the present tense, that nothing reads them:
+``schemas/config/project-config.schema.json`` publishes two keys this module
+holds to their own descriptions, and since ADR-0027 decision 3 they are in
+opposite states:
 
-- ``security.secretScan`` — SEC-11's policy selector. No content secret scanner
-  exists anywhere in ``src/``, so the key selects no behaviour and the schema
-  deliberately publishes **no default**: a default would state a policy nothing
-  applies (#198).
-- ``providers.review.repositories`` — SEC-10's repository allowlist, owed with
-  review ingestion in Milestone 7 (#129).
+- ``security.secretScan`` — SEC-11's policy selector. **In force.**
+  ``security/project_config.py`` reads it and ``application/proposal_service.py``
+  applies it at ``theurian propose accept``, so the schema now publishes
+  ``default: "block"`` — the policy an absent key and an absent config file both
+  select (#198).
+- ``providers.review.repositories`` — SEC-10's repository allowlist. **Still
+  reserved**, owed with review ingestion (#129). Nothing reads it, its
+  description says so, and this module is what holds the source tree to that.
 
-Those are not descriptions of a design. They are load-bearing security claims:
-``SECURITY.md``, ``docs/security/threat-model.md`` (T-7 and T-15),
+Those are not descriptions of a design. They are load-bearing security claims,
+and both directions of the claim can go wrong. ``SECURITY.md``,
+``docs/security/threat-model.md`` (T-7 and T-15),
 ``docs/architecture/requirements-analysis.md``,
 ``docs/architecture/review-knowledge.md``,
 ``plugins/claude-code/commands/ingest.md`` and the sample project's
-``config.yaml`` each tell a reader not to rely on a control **because the key is
-inert**. The moment a reader is added, every one of those sentences becomes
-false, and nothing in the suite said so — that is the gap round one of #198
-reported (code review M-2, security review LOW-3).
+``config.yaml`` each tell a reader how far a control reaches. When ``secretScan``
+was inert they said so *because it was*; a reader arriving without those edits
+would have shipped a security document that was wrong, which is the gap round one
+of #198 reported (code review M-2, security review LOW-3).
 
-**The intended failure mode is a Milestone 7 diff.** Whoever writes the loader
-that reads ``.theurian/config.yaml`` will make this file red, and the assertion
-messages say what has to happen in that same change: correct the schema
-descriptions and the six prose surfaces, decide whether a default may now be
-published, and only then record the new site here. A key that starts working
-without those edits ships a security document that is wrong.
+**That failure mode fired as designed.** The Milestone 7 diff that added the
+first reader of ``.theurian/config.yaml`` made this file red, and the same change
+corrected the surfaces, published the default, and recorded the sites. What is
+left is the standing obligation, now pointing both ways: a reader added for
+``repositories`` must redden this file, and so must a reader for ``secretScan``
+being *removed* while the prose still describes a shipped control.
 
 **The population key**, so a reader can attack the key rather than the number:
 the scan walks every ``*.py`` under the *imported* ``theurian`` package —
@@ -96,13 +100,30 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #: Every place in the shipped package that names one of the keys above, as
 #: ``(module path under theurian/, the spelling it names)``.
 #:
-#: **Empty, and that emptiness is the claim.** ``rg 'secretScan|secret_scan'
-#: packages/theurian-core/src/`` returns nothing, and the six ``repositories``
-#: hits are all prose. Adding an entry here is not a bookkeeping edit: it says a
-#: key the published schema calls inert is now read, which makes the schema
-#: descriptions and the prose surfaces listed in this module's docstring false
+#: **Three entries, and exactly one of them reads the file.** The scan matches
+#: whole names and not semantics -- deliberately, see the population key above --
+#: so it cannot tell a reader from a field named after one, and this list is
+#: therefore the honest output of the scan rather than a curated set of readers:
+#:
+#: * ``security/project_config.py :: secretScan`` **is** the reader. It is the
+#:   only place in ``src/`` that names the published JSON key, and the only place
+#:   that opens ``.theurian/config.yaml``.
+#: * ``application/proposal_service.py :: secret_scan`` and
+#:   ``cli/propose_commands.py :: secret_scan`` are the ``AcceptedProposal``
+#:   field carrying what the scan did, and the local the accept path binds it to.
+#:   They name the *outcome*, never the file.
+#:
+#: Adding a fourth entry is not a bookkeeping edit. For ``repositories`` it says
+#: a key the published schema still calls inert is now read, which makes the
+#: schema description and the prose surfaces in this module's docstring false
 #: until they are corrected in the same change.
-CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset()
+CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("application/proposal_service.py", "secret_scan"),
+        ("cli/propose_commands.py", "secret_scan"),
+        ("security/project_config.py", "secretScan"),
+    }
+)
 
 
 #: Node types carrying exactly one name, and the attribute it lives on.
@@ -253,27 +274,29 @@ def test_the_config_key_scan_sees_each_naming_form_and_no_other(
     )
 
 
-def test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force() -> None:
-    """SEC-11 and SEC-10: the schema says these keys are inert, and six documents rest on it.
+def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones() -> None:
+    """SEC-11 and SEC-10: the schema says how far each key reaches, and six documents rest on it.
 
-    ``security.secretScan`` publishes no default *because* no code applies one
-    (#198), and ``providers.review.repositories`` is published as an allowlist
-    that is "not in force" (#129). Six surfaces tell a reader not to rely on a
-    control on exactly that basis: ``SECURITY.md``'s "Theurian does not scan
-    ingested content for secrets", ``docs/security/threat-model.md`` at T-15 and
-    T-7, the T-15 row in ``docs/architecture/requirements-analysis.md``,
+    ``security.secretScan`` publishes ``default: "block"`` *because* code applies
+    it (#198, ADR-0027 decision 3), and ``providers.review.repositories`` is
+    published as an allowlist that is "not in force" (#129). Six surfaces tell a
+    reader how far to trust each: ``SECURITY.md``'s bullet on secrets already in
+    a repository, ``docs/security/threat-model.md`` at T-15 and T-7, the T-15 row
+    in ``docs/architecture/requirements-analysis.md``,
     ``docs/architecture/review-knowledge.md``,
     ``plugins/claude-code/commands/ingest.md``, and the annotated keys in
     ``examples/sample-project/.theurian/config.yaml``.
 
-    Every one of those sentences is a claim about the *source tree*, and until
-    now the source tree was under no obligation to keep it true. This is that
-    obligation.
+    Every one of those sentences is a claim about the *source tree*, and the
+    source tree is under no obligation to keep it true unless something makes it
+    one. This is that obligation.
 
     The assertion is an equality against the whole enumeration rather than a
     count or a subset, so it fails in both directions — a reader added, and a
-    recorded exception removed — and its message names the module and the
-    spelling it found.
+    recorded one removed — and its message names the module and the spelling it
+    found. The removing direction is the one that matters now that ``secretScan``
+    works: a diff that deletes the reader while the schema still publishes a
+    default and six documents still describe a shipped control reddens here.
     """
     sites = sorted(
         {
@@ -286,9 +309,8 @@ def test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_for
     )
 
     assert sites == sorted(CONFIG_KEY_READER_SITES), (
-        f"{len(sites)} place(s) in the shipped package name a config key the "
-        f"published schema calls inert, and the pinned set has "
-        f"{len(CONFIG_KEY_READER_SITES)}:\n"
+        f"{len(sites)} place(s) in the shipped package name a watched config key, "
+        f"and the pinned set has {len(CONFIG_KEY_READER_SITES)}:\n"
         + "\n".join(f"  {module} :: {spelling}" for module, spelling in sites)
         + "\n\nExpected exactly:\n"
         + (
@@ -297,42 +319,49 @@ def test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_for
             )
             or "  (nothing)"
         )
-        + "\n\nIf you added the Milestone 7 loader, this test is doing its job "
-        "and the fix is not to list the site. `security.secretScan` (SEC-11, "
-        "#198) and `providers.review.repositories` (SEC-10, #129) are published "
-        "as reserved, and six documents tell a reader not to rely on either "
-        "control *because* nothing reads them: SECURITY.md, "
-        "docs/security/threat-model.md (T-15 and T-7), "
+        + "\n\nThe fix is not to edit the list until you know which direction "
+        "moved, because six documents describe how far each control reaches: "
+        "SECURITY.md, docs/security/threat-model.md (T-15 and T-7), "
         "docs/architecture/requirements-analysis.md, "
         "docs/architecture/review-knowledge.md, "
         "plugins/claude-code/commands/ingest.md, and "
         "examples/sample-project/.theurian/config.yaml.\n\n"
-        "In the same change: correct those six and the two schema descriptions; "
-        "decide explicitly whether `secretScan` may now publish a default, since "
-        "it was dropped on the reasoning that a default states a policy nothing "
-        "applies; and add a test that goes red when the key stops taking effect. "
-        "Then record the site here."
+        "A NEW site for `repositories`: `providers.review.repositories` (SEC-10, "
+        "#129) is published as reserved and those documents say so *because* "
+        "nothing reads it. In the same change, correct its schema description and "
+        "the surfaces that rest on it, then record the site here.\n\n"
+        "A MISSING site for `secretScan`: SEC-11's scanner (#198, ADR-0027 "
+        "decision 3) is in force at `theurian propose accept`, the schema "
+        'publishes `default: "block"` on that basis, and those same documents '
+        "describe a shipped control. If the reader is gone, all of that is now "
+        "false and has to be corrected in the same change -- do not simply drop "
+        "the entry."
     )
 
 
-#: The exact sentences each reserved key's published description has to keep, and
+#: The exact sentences each watched key's published description has to keep, and
 #: the issue that owns it.
 #:
 #: The scan above holds one direction — code must not overtake the claim — and
-#: leaves the other open: a description rewritten to say the key works would make
+#: leaves the other open: a description rewritten to say a key works would make
 #: the schema false while the scan stayed green, because no reader was added.
 #: Pinning the wording closes it, and pins the wording *deliberately*: these are
-#: not stylistic sentences. "No shipped code reads this key" and "no default is
-#: published" are the two statements #198 corrected, and a reword should visit
-#: this table rather than slip past it.
-RESERVED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+#: not stylistic sentences.
+#:
+#: ``secretScan``'s row is the one that turned over with ADR-0027 decision 3. It
+#: used to require "No shipped code reads this key" and "no default is
+#: published"; it now requires the opposite claim and the reach that bounds it,
+#: because the sentence a reader has to be able to trust is no longer "this does
+#: nothing" but "this does exactly this much".
+WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
         "security.secretScan",
         ("properties", "security", "properties", "secretScan"),
         (
-            "Not in force",
-            "No shipped code reads this key",
-            "no default is published",
+            "In force",
+            "theurian propose accept",
+            "best effort",
+            "`theurian ingest` and index building run no scan",
             "https://github.com/theurian/theurian/issues/198",
         ),
     ),
@@ -350,21 +379,23 @@ RESERVED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], .
 
 @pytest.mark.parametrize(
     ("key", "pointer", "required"),
-    RESERVED_KEY_DESCRIPTIONS,
-    ids=[case[0] for case in RESERVED_KEY_DESCRIPTIONS],
+    WATCHED_KEY_DESCRIPTIONS,
+    ids=[case[0] for case in WATCHED_KEY_DESCRIPTIONS],
 )
-def test_each_reserved_key_still_publishes_the_absence_the_scan_enforces(
+def test_each_watched_key_still_publishes_the_reach_the_scan_enforces(
     key: str, pointer: tuple[str, ...], required: tuple[str, ...]
 ) -> None:
     """The other direction of the same claim, which the scan above cannot reach.
 
-    The scan goes red when code overtakes the published description. It stays
-    green if the *description* moves instead — a key quietly re-described as
-    working, with no reader anywhere, leaves the schema asserting a control that
-    still does not exist and every document resting on it unchanged. That is the
-    #198 defect exactly, arriving from the other side.
+    The scan goes red when the source tree stops matching the published
+    description. It stays green if the *description* moves instead — a key
+    quietly re-described as working, with no reader anywhere, leaves the schema
+    asserting a control that does not exist and every document resting on it
+    unchanged. That is the #198 defect exactly, arriving from the other side, and
+    it has a mirror now that one of the two keys works: a description that stops
+    bounding ``secretScan``'s reach lets a reader believe ingest is covered.
 
-    So the two halves are pinned in one file: the description states the absence,
+    So the two halves are pinned in one file: the description states the reach,
     and the source tree is held to it.
     """
     node: object = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
@@ -384,91 +415,114 @@ def test_each_reserved_key_still_publishes_the_absence_the_scan_enforces(
             f"docs/architecture/requirements-analysis.md, "
             f"docs/architecture/review-knowledge.md, "
             f"plugins/claude-code/commands/ingest.md and the sample project's "
-            f"config.yaml all tell a reader not to rely on the control because "
-            f"the key is inert (#198, #129). If the key now takes effect, "
-            f"`test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force` "
-            f"is where the reader gets recorded and those documents are where "
-            f"the claim gets corrected; if it does not, restore the sentence."
+            f"config.yaml all tell a reader how far to trust the control (#198, "
+            f"#129). If what the key does has changed, "
+            f"`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
+            f"is where the readers get recorded and those documents are where "
+            f"the claim gets corrected; if it has not, restore the sentence."
         )
 
 
-#: The prose surfaces #198 corrected from "the secret scanner is active" to "no
-#: content scanner ships", as ``(label, repo-relative path, the load-bearing
-#: sentence the correction turns on)``.
+#: The prose surfaces that state how far SEC-11's control reaches, as
+#: ``(label, repo-relative path, the load-bearing sentence)``.
 #:
-#: The schema-description pins above and the reader-absence scan hold the claim
-#: *inside the contract and the source tree*. These four are the documents a
-#: human reads, and every one shipped stating that secret scanning happens:
-#: ``SECURITY.md`` told users "ingestion warns or blocks per policy", the threat
-#: model listed a configurable ``block``/``warn``/``off`` scanner as T-15's
-#: control, the requirements table cited SEC-11 with no qualification, and the
-#: slash command said ingestion "stores **evidence**". Reverting any one to that
-#: wording leaves both pins above green -- they read code and schema, not prose --
-#: so without these four the correction can rot back to a false security claim
-#: with the suite none the wiser. Each sentence below is absent from the false
-#: version and present only in the correction, so a revert goes red here.
+#: The schema-description pins above and the reader scan hold the claim *inside
+#: the contract and the source tree*. These are the documents a human reads, and
+#: this table has now been wrong in both directions, which is why each row keeps
+#: two sentences rather than one:
+#:
+#: * **Over-claiming.** Every one of these once said secret scanning happened
+#:   when nothing did: ``SECURITY.md`` told users "ingestion warns or blocks per
+#:   policy", the threat model listed a configurable ``block``/``warn``/``off``
+#:   scanner as T-15's control, the requirements table cited SEC-11 with no
+#:   qualification. #198 corrected all of it, and round-two mutations B1-B4
+#:   showed a revert stayed green against the code and schema pins alone.
+#: * **Under-claiming, and then over-claiming again by omission.** ADR-0027
+#:   decision 3 shipped the control, so "no content scanner ships" became the
+#:   false sentence -- and a document that says only "a scanner runs" invites the
+#:   reading that content is now screened, which is the risk the ADR names
+#:   directly. Each row therefore pins a sentence asserting the control **and** a
+#:   sentence bounding it.
 #:
 #: Matched after collapsing runs of whitespace to a single space, because these
-#: are line-wrapped Markdown: ``SECURITY.md`` breaks "Theurian does not scan" and
-#: "ingested content for secrets" across two source lines, and a raw substring
-#: match would miss the corrected wording and pass vacuously.
-SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, str], ...] = (
+#: are line-wrapped Markdown: a sentence routinely breaks across two source
+#: lines, and a raw substring match would miss the real wording and pass
+#: vacuously.
+SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "SECURITY.md",
         "SECURITY.md",
-        "Theurian does not scan ingested content for secrets",
+        (
+            "`theurian propose accept` scans the bodies a proposal would land",
+            "That is one gate and a best-effort detector, not coverage",
+            "Theurian does not scan ingested content for secrets",
+            "Theurian is not one and is not a replacement for one",
+        ),
     ),
     (
         "docs/security/threat-model.md (T-15 Controls)",
         "docs/security/threat-model.md",
-        "no automated control against secrets in content exists",
+        (
+            "**Controls: `theurian propose accept` scans every body before it moves it**",
+            "It is best effort and the product says so",
+            "`theurian ingest` runs no scan",
+        ),
     ),
     (
         "docs/architecture/requirements-analysis.md (T-15 row)",
         "docs/architecture/requirements-analysis.md",
-        "no content scanner ships",
+        (
+            "scans every body it would land",
+            "best-effort in-house detector",
+            "Ingest-time and index-time scanning are separate controls and do not ship",
+        ),
     ),
     (
         "plugins/claude-code/commands/ingest.md",
         "plugins/claude-code/commands/ingest.md",
-        "stores no content",
+        # Unchanged by ADR-0027 decision 3, and that is the claim: `ingest`
+        # stores no content and runs no scan, so the sentence that was true when
+        # nothing scanned anywhere is still exactly true.
+        ("stores no content",),
     ),
 )
 
 
 @pytest.mark.parametrize(
-    ("label", "relative_path", "sentence"),
+    ("label", "relative_path", "sentences"),
     SECRET_SCAN_PROSE_SURFACES,
     ids=[case[0] for case in SECRET_SCAN_PROSE_SURFACES],
 )
-def test_each_secret_scan_prose_surface_still_states_no_scanner_ships(
-    label: str, relative_path: str, sentence: str
+def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
+    label: str, relative_path: str, sentences: tuple[str, ...]
 ) -> None:
-    """SEC-11, #198: the human-facing documents must not re-assert a scanner that does not exist.
+    """SEC-11, #198: the human-facing documents must describe the control as it is.
 
-    ``security.secretScan`` publishes no default and no code reads it, and four
-    documents tell a reader not to rely on secret scanning *because of that*. The
-    schema-description and reader-absence pins in this module hold the machine
-    side; nothing held the prose, so reverting ``SECURITY.md`` to "ingestion
-    warns or blocks per policy" -- a claim that a control runs that does not --
-    stayed green (round-two mutations B1-B4 all survived).
+    The schema-description and reader pins in this module hold the machine side;
+    nothing held the prose, so reverting ``SECURITY.md`` to "ingestion warns or
+    blocks per policy" -- a claim that a control runs that did not -- stayed green
+    (round-two mutations B1-B4 all survived).
 
-    The failure this prevents is a security document that promises a control the
-    product does not have: an operator who reads "ingestion warns or blocks"
-    ships a secret into the canonical store believing Theurian caught it. When
-    the scanner lands (Milestone 7, #198), these sentences get corrected in the
-    same change that adds the reader recorded by
-    ``test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force``.
+    Two failures, and each row guards both. A document that **under**-claims
+    tells an operator to do work the product already does. A document that
+    **over**-claims is worse: an operator who reads "Theurian blocks secrets"
+    ships one into the canonical store believing it was caught, and ADR-0027
+    names that specifically -- "a best-effort detector shipping as the SEC-11
+    control invites the reading that content is now screened", which is why the
+    disclaimer has to survive into every surface that describes it.
     """
     normalized = " ".join((REPO_ROOT / relative_path).read_text(encoding="utf-8").split())
 
-    assert sentence in normalized, (
-        f"{label} no longer states {sentence!r}.\n\n"
-        "That sentence is what tells a reader Theurian does not scan ingested "
-        "content for secrets: SEC-11's scanner is not implemented (#198), no "
-        "code reads `security.secretScan` (#129), and this document must not "
-        "re-assert the control. If the scanner has since shipped, this correction "
-        "and the reader recorded in "
-        "`test_no_shipped_module_reads_a_config_key_the_schema_publishes_as_not_in_force` "
-        "belong in the same change; otherwise restore the sentence."
-    )
+    for sentence in sentences:
+        assert sentence in normalized, (
+            f"{label} no longer states {sentence!r}.\n\n"
+            "These sentences are what tell a reader how far SEC-11's control "
+            "reaches: `theurian propose accept` scans the bodies it would move, "
+            "`block` by default (#198, ADR-0027 decision 3), with a best-effort "
+            "detector that covers no other entry point. Dropping the first half "
+            "under-claims a shipped control; dropping the second half promises "
+            "screening the product does not do. If the control itself has "
+            "changed, this document and the readers recorded in "
+            "`test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_ones` "
+            "belong in the same change; otherwise restore the sentence."
+        )

@@ -28,6 +28,7 @@ import typer
 
 from theurian.application.proposal_service import (
     ApprovedSetUnusableError,
+    BodySecretFinding,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalError,
@@ -347,14 +348,25 @@ def propose_accept(
     and nothing is approved -- approval is the pull request, and this command
     runs before it.
 
-    **What is checked before anything moves**: that the project's migration set,
-    with this proposal in it, still survives the pipeline ``theurian migrate
-    apply`` runs -- the published schema, the whole-set guards, and a dry replay
-    against a throwaway store that catches the invariants only applying can
-    check, a revision's source anchor and a reused revision id among them. If it
-    does not, the acceptance is refused and **nothing is consumed**: the
-    proposal directory is left exactly as it was, so the change can be corrected
-    and accepted rather than re-drafted from nothing (ADR-0027, #307).
+    **What is checked before anything moves**: that no body would land a secret,
+    and that the project's migration set, with this proposal in it, still
+    survives the pipeline ``theurian migrate apply`` runs -- the published
+    schema, the whole-set guards, and a dry replay against a throwaway store
+    that catches the invariants only applying can check, a revision's source
+    anchor and a reused revision id among them. If either refuses, the
+    acceptance is refused and **nothing is consumed**: the proposal directory is
+    left exactly as it was, so the change can be corrected and accepted rather
+    than re-drafted from nothing (ADR-0027, #307).
+
+    **Secret scanning** (SEC-11) runs over every body first, under the policy
+    ``security.secretScan`` selects in ``.theurian/config.yaml``: ``block``,
+    which is also what an absent key or an absent file selects, refuses the
+    acceptance; ``warn`` proceeds and reports what it found on the result;
+    ``off`` skips it. The detector is best effort: it matches known credential
+    shapes and flags strings that look randomly generated. It is not a
+    repository secret scanner and not a substitute for one. It will produce
+    false positives, and the escape hatch for one is the policy key, which the
+    refusal's own remedy names.
 
     The two moves are not symmetric. The migration file may never land on an
     existing name: the name carries the migration's id, so a collision means
@@ -368,8 +380,10 @@ def propose_accept(
     stands -- no such proposal, a draft interrupted before its migration was
     written, a proposal directory or a file in it the filesystem refuses to list,
     examine or read, a contentFile the filesystem cannot resolve or the security
-    layer refuses, or a migration that does not satisfy the schema or would not
-    apply; 2 the id is not a ULID; 4 the
+    layer refuses, a body that appears to carry a secret while the policy is
+    ``block``, a ``.theurian/config.yaml`` that cannot be read or names a
+    ``security.secretScan`` value this build does not recognise, or a migration
+    that does not satisfy the schema or would not apply; 2 the id is not a ULID; 4 the
     project's knowledge state refuses the move -- this proposal was accepted
     before, that migration id is already in ``.theurian/migrations/``, or the
     approved migration set does not resolve or does not apply (it is unreadable,
@@ -435,9 +449,14 @@ def propose_accept(
         # input from whoever can commit, and SEC-7 refuses the path rather than
         # writing it. It is not the only case that arrives, and it was published
         # for all of them -- a proposal *body* that is a FIFO is refused here
-        # too, and now that the pre-check reads the published schema a
+        # too; now that the pre-check reads the published schema a
         # `SchemaUnreadableError` ("reinstall theurian") reaches here as well;
-        # in neither is the `contentFile` what is wrong. So the error's own
+        # and a `ProjectConfigError` does too, when `.theurian/config.yaml` is
+        # unreadable or names a `security.secretScan` value this build does not
+        # recognise (SEC-11) -- it arrives here rather than as a `ProposalError`
+        # deliberately, because the proposal is fine and its author has nothing
+        # to correct, and its own remedy names the file and the three values. In
+        # none of these is the `contentFile` what is wrong. So the error's own
         # remedy wins where it has one, and this text is the fallback for a
         # refusal that carries none: the preference `TheurianError.remedy` and
         # `cli/commands.py::_context_remedy` already document, applied at the one
@@ -459,6 +478,13 @@ def propose_accept(
         "replacedBodies": [
             _relative(move.destination, root) for move in accepted.bodies if move.replaced
         ],
+        # Part of the shape rather than a field that appears on trouble: an
+        # empty list says the scan ran and found nothing, and a caller that only
+        # ever sees a key when something is wrong learns not to read it. The
+        # list is empty under `off` too, where nothing was scanned -- which is
+        # exactly what the policy beside it distinguishes (SEC-11).
+        "secretScanPolicy": accepted.secret_scan.policy.value,
+        "secretFindings": [_finding_payload(f) for f in accepted.secret_scan.findings],
         "nextSteps": list(_ACCEPT_STEPS),
     }
     # Set only when the move landed but the proposal's own source files could not
@@ -467,6 +493,29 @@ def propose_accept(
     if accepted.cleanup_remedy is not None:
         payload["remedy"] = accepted.cleanup_remedy
     _emit(payload, as_json=as_json)
+
+
+def _finding_payload(finding: BodySecretFinding) -> dict[str, object]:
+    """One secret-scan finding, as the fields a caller can act on.
+
+    A mapping rather than a rendered sentence, the shape ``ingest --json``
+    already uses for its ``failures`` and ``warnings``: a caller filtering by
+    family should not have to parse prose. Every value here is bounded and
+    carries no more of the match than the detector's redaction limit allows, so
+    what lands in a log is a locator and not a copy of the credential.
+
+    The body path is a contributor's -- it comes from the migration's
+    ``contentFile`` -- so it reaches the human sink through
+    ``_render``/``escape_terminal_controls`` like every other string this command
+    publishes, and reaches the JSON sink escaped by ``json.dumps``.
+    """
+    return {
+        "body": finding.body,
+        "family": finding.finding.family,
+        "line": finding.finding.line,
+        "column": finding.finding.column,
+        "redacted": finding.finding.redacted,
+    }
 
 
 #: What a caller does next, and the one thing about it that surprises people:

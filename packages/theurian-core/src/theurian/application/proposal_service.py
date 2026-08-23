@@ -11,13 +11,19 @@ make. **It automates the file moves and not the judgement**: it does not apply
 the change, and above all does not approve it. Approval is a human merging a
 pull request, and there is no code path here that stands in for one.
 
-What it *does* check is one thing, and ADR-0027 decision 2 is where the reasoning
-lives: **that the landed migration set with this proposal in it still survives
-the pipeline ``migrate apply`` runs.** If it does not, the acceptance is refused
-and nothing is consumed, so the proposal is still there to correct. That is a
-change from ADR-0013 §4's division, which left every question about the migration
-to ``migrate validate``; it held while ``accept`` was a ``mv``, and stopped
-holding when the same command began deleting its sources (#307).
+What it *does* check is two things, both before it moves anything, and ADR-0027
+is where the reasoning lives:
+
+* **That the landed migration set with this proposal in it still survives the
+  pipeline ``migrate apply`` runs** (decision 2). If it does not, the acceptance
+  is refused and nothing is consumed, so the proposal is still there to correct.
+  That is a change from ADR-0013 §4's division, which left every question about
+  the migration to ``migrate validate``; it held while ``accept`` was a ``mv``,
+  and stopped holding when the same command began deleting its sources (#307).
+* **That no body it would land appears to carry a secret** (decision 3, SEC-11,
+  T-15), under the policy ``security.secretScan`` selects -- ``block`` unless the
+  project says otherwise. Best effort, and the product's published stance that it
+  is not a replacement for a repository secret scanner is unchanged by it.
 
 Both are driven by a composition root -- the CLI today, Milestone 7's
 write-intent MCP tools next -- which is why the schema check arrives as an
@@ -48,7 +54,7 @@ import errno
 import json
 import os
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
@@ -83,11 +89,13 @@ from theurian.domain.proposal import (
     require_evidence,
 )
 from theurian.domain.values import ContentHash, MediaType
+from theurian.security.content_secrets import SecretFinding, scan_text
 from theurian.security.paths import (
     assert_no_symlink_escape,
     read_source_file,
     resolve_within_root,
 )
+from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
 from theurian.security.yaml_loading import load_yaml_mapping
 
 #: The evidence file's name. Fixed, unlike the migration's: nothing moves it, so
@@ -369,12 +377,51 @@ class MovedFile:
 
 
 @dataclass(frozen=True, slots=True)
+class BodySecretFinding:
+    """One secret-shaped string the accept-path scan found, and which body it is in.
+
+    ``body`` is the path *relative to* ``.theurian/knowledge/``, which is the one
+    spelling that is correct both before and after the move: a proposal mirrors
+    the sub-path its body will occupy, so the same string names the file in
+    ``.theurian/proposals/<id>/`` and in ``.theurian/knowledge/``. A refusal
+    happens before the move and a warning after it, and neither has to say which
+    it means.
+    """
+
+    body: str
+    finding: SecretFinding
+
+    def describe(self) -> str:
+        """One line naming the body, the position, the family, and nothing else."""
+        return self.finding.describe(at=self.body)
+
+
+@dataclass(frozen=True, slots=True)
+class SecretScanResult:
+    """What the accept-path secret scan did, and what it found (SEC-11).
+
+    The policy rides along with the findings because an empty list means two
+    different things and a caller has to be able to tell them apart: under
+    ``warn`` it says the bodies were scanned and are clean, and under ``off`` it
+    says nothing was scanned at all. Under ``block`` it is always empty -- a
+    finding refuses the acceptance, so a result exists only when there was none.
+    """
+
+    policy: SecretScanPolicy
+    findings: tuple[BodySecretFinding, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptedProposal:
     """What one call to :meth:`ProposalService.accept` moved."""
 
     proposal_id: ProposalId
     migration: MovedFile
     bodies: tuple[MovedFile, ...] = ()
+    #: What the SEC-11 scan did. Defaulted to the policy an unconfigured project
+    #: gets, so a hand-built result -- a fake in a test, a future caller -- states
+    #: the strictest reading rather than an unscanned one it did not check.
+    secret_scan: SecretScanResult = SecretScanResult(policy=SecretScanPolicy.BLOCK)
     #: A remedy set only when the move landed but the proposal's own source files
     #: could not then be removed (a read-only proposal directory). The acceptance
     #: succeeded, so this rides on the success result rather than turning it into
@@ -564,6 +611,13 @@ class ProposalService:
         accepted proposal answers is unchanged, and it is described where it
         lives: :meth:`_refuse_unless_the_union_applies`.
 
+        **Every incoming body is scanned for secrets first** (SEC-11, ADR-0027
+        decision 3), under the policy ``security.secretScan`` selects and
+        ``block`` by default. It sits between the structural checks and the
+        pre-check on purpose: the pre-check stages the bodies into a throwaway
+        tree, and a body that is going to be refused should not be written
+        anywhere at all. :meth:`_scan_bodies_for_secrets` has the reasoning.
+
         Every file this reads is proved to be a regular file inside the project
         with no symlink anywhere in its chain, and every file it writes lands
         inside ``.theurian/knowledge/`` (a body) or ``.theurian/migrations/``
@@ -587,26 +641,29 @@ class ProposalService:
 
         **CP-2 invariant: no accept-path filesystem or path fault escapes
         ``accept`` untranslated.** A fault that must abort ``accept`` is turned
-        into a ``ProposalError`` at one of four *translation* sites: the
-        examination phase's ``except OSError`` in this method,
+        into an error carrying a ``remedy`` at one of five *translation* sites:
+        the examination phase's ``except OSError`` in this method,
         :meth:`_refuse_unless_the_union_applies`, :meth:`_commit`'s own clause,
-        and :meth:`_destination_of`, which catches its ``resolve()``
+        :meth:`_destination_of`, which catches its ``resolve()``
         ``ValueError`` -- not an ``OSError``, so the examination clause never sees
-        it -- in place. The examination and commit clauses are deliberately
-        separate, because a failed *write* must roll the destinations back before
-        it reports, and one clause spanning both would describe a half-written
-        tree as an unreadable proposal. The pre-check is the fourth for the same
-        reason in the other direction: it reads the whole project and stages a
-        copy of it, so a fault in a *landed* file reaching the examination
-        clause would be reported as an unreadable proposal with a ``chmod``
-        remedy for the wrong file -- and it therefore sits outside that clause,
-        after it. Two further sites catch ``OSError`` on the accept path but
+        it -- in place, and
+        :func:`~theurian.security.project_config.read_secret_scan_policy`, which
+        translates every way ``.theurian/config.yaml`` can fail before it
+        returns. The examination and commit clauses are deliberately separate,
+        because a failed *write* must roll the destinations back before it
+        reports, and one clause spanning both would describe a half-written tree
+        as an unreadable proposal. The pre-check and the secret scan sit outside
+        the examination clause for the same reason in the other direction: they
+        read the whole project and its configuration, so a fault in a *landed*
+        file or in ``config.yaml`` reaching the examination clause would be
+        reported as an unreadable proposal with a ``chmod`` remedy for the wrong
+        file. Two further sites catch ``OSError`` on the accept path but
         deliberately do *not* translate: :meth:`_remove_proposal_sources`
         degrades a post-landing cleanup failure to a remedy and still returns
         success, and :func:`_roll_back` stays silent so a raise cannot mask the
         error already propagating. An editor adding a filesystem call that must
-        abort ``accept`` has to land it under one of the four translation sites,
-        or add a fifth -- a raw escape publishes no ``{error, remedy}`` under
+        abort ``accept`` has to land it under one of the five translation sites,
+        or add a sixth -- a raw escape publishes no ``{error, remedy}`` under
         ``--json`` (#227).
 
         Raises:
@@ -621,9 +678,15 @@ class ProposalService:
             ProposalError: If the proposal is unknown, ambiguous, incomplete,
                 could not be fully examined -- including a directory or a file
                 in it the filesystem refuses to list, stat or read -- names a
-                file the security layer refuses, or would leave the project's
-                migration set unable to apply. Both types above are subclasses,
-                so a caller that catches only this still catches everything.
+                file the security layer refuses, carries a body that appears to
+                contain a secret while ``security.secretScan`` is ``block``, or
+                would leave the project's migration set unable to apply. Both
+                types above are subclasses, so a caller that catches only this
+                still catches everything.
+            ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
+                read or states a ``security.secretScan`` value the build does not
+                recognise. Not a :class:`ProposalError`, because the proposal has
+                nothing wrong with it and its author has nothing to correct.
             PathEscapeError: If a ``contentFile`` resolves outside
                 ``.theurian/knowledge/``.
             InputTooLargeError: If a file the accept path reads exceeds SEC-8's
@@ -663,6 +726,21 @@ class ProposalService:
             # proposal.
             raise self._unreadable(proposal_id, exc) from exc
 
+        # Outside the clause above for the same reason the pre-check is: this
+        # reads `.theurian/config.yaml`, whose faults are the project's and not
+        # this proposal's, and it raises its own translated errors (CP-2, the
+        # fifth site).
+        #
+        # Before the pre-check, not after, and that ordering is load-bearing:
+        # the rehearsal stages the incoming bodies into a throwaway tree, so a
+        # body carrying a secret would be written somewhere -- briefly, but
+        # written -- before anything had decided to refuse it. Scanning first
+        # means a blocked body's bytes reach no filesystem at all. It is also
+        # the cheaper order: the scan is a regex pass over bytes already in
+        # hand, and the rehearsal copies and replays the project's whole
+        # migration set.
+        secret_scan = self._scan_bodies_for_secrets(proposal_id, moves)
+
         # Outside the clause above, deliberately: the pre-check reads every
         # landed migration and body, so its faults are not this proposal's and
         # must not be reported as "the proposal could not be examined". It
@@ -671,7 +749,114 @@ class ProposalService:
             proposal_id, migration_file, migration_bytes, document, moves
         )
 
-        return self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
+        accepted = self._commit(proposal_id, moves, migration_file, migration_bytes, destination)
+        return replace(accepted, secret_scan=secret_scan)
+
+    # -- the secret scan (SEC-11, ADR-0027 decision 3) ---------------------
+
+    def _scan_bodies_for_secrets(
+        self, proposal_id: ProposalId, moves: tuple[_BodyMove, ...]
+    ) -> SecretScanResult:
+        """Scan every incoming body, and refuse the acceptance if the policy says to.
+
+        The control T-15 names, at the point SEC-11 names it: ``accept`` is the
+        last place a body can be stopped before a human merges it and ``migrate
+        apply`` makes it canonical. The detector is best effort by recorded
+        design (:mod:`theurian.security.content_secrets`), and the product's
+        published stance -- *Theurian is not a repository secret scanner and is
+        not a replacement for one* -- is unchanged by its existence.
+
+        **The policy is read here rather than injected**, unlike every adapter
+        this service takes. ADR-0003's reason for injection is that locating
+        schemas and opening databases is an adapter's job; ``security/`` is a
+        shared primitive that this layer already calls directly for path
+        containment and YAML loading. The deciding argument is what the two
+        shapes fail like: an injected policy is one a composition root can
+        forget to wire, and Milestone 7's write-intent MCP tools are a second
+        root arriving. A security control that a caller can omit by omission is
+        not a control.
+
+        The configuration is read on every acceptance, including one whose
+        migration carries no body at all. The policy governs the accept path
+        rather than this particular proposal, so a configuration file that
+        states something the build cannot act on is a refusal whatever is being
+        accepted -- which surfaces the typo on the first acceptance instead of
+        on the first one that happens to carry a body.
+
+        Returns:
+            The policy that was in force and the findings to report on the
+            success result. Findings are non-empty only under ``warn``: ``off``
+            scans nothing and ``block`` raises rather than returning.
+
+        Raises:
+            ProposalError: If the policy is ``block`` and a body appears to carry
+                a secret. Raised before anything has been written, so the
+                proposal directory is intact and the change can be corrected
+                rather than re-drafted.
+            ProjectConfigError: If ``.theurian/config.yaml`` exists and cannot be
+                read, or states a ``security.secretScan`` value that is not one
+                of the three. Deliberately not translated into a
+                :class:`ProposalError`: the fault is in the project's
+                configuration and the author has nothing to correct in the
+                proposal, so re-labelling it would send them to edit a migration
+                that is right -- the same reasoning that keeps
+                :class:`~theurian.domain.errors.SchemaUnreadableError` distinct
+                on this path.
+        """
+        policy = read_secret_scan_policy(self._paths.root, self._paths.config)
+        if policy is SecretScanPolicy.OFF:
+            return SecretScanResult(policy=policy)
+
+        knowledge = self._paths.knowledge.resolve()
+        findings = tuple(
+            BodySecretFinding(
+                body=move.destination.relative_to(knowledge).as_posix(), finding=finding
+            )
+            for move in moves
+            # `errors="replace"` rather than a refusal on undecodable bytes. A
+            # body that is not UTF-8 is a fault the rehearsal's loader reports
+            # with a better message than this scan could, and refusing here
+            # would make the secret scan the thing that reports it. Replacement
+            # leaves every ASCII run intact, which is what a credential is; the
+            # residual is a secret deliberately split by an undecodable byte,
+            # which a best-effort detector does not claim to catch.
+            for finding in scan_text(move.data.decode("utf-8", errors="replace"))
+        )
+        if policy is SecretScanPolicy.BLOCK and findings:
+            raise self._secret_refusal(proposal_id, findings)
+        return SecretScanResult(policy=policy, findings=findings)
+
+    def _secret_refusal(
+        self, proposal_id: ProposalId, findings: tuple[BodySecretFinding, ...]
+    ) -> ProposalError:
+        """The refusal for a body that appears to carry a secret.
+
+        The listing is bounded by :data:`_MAX_NAMES_LISTED` for the reason that
+        constant already records: the count is the contributor's, not ours. The
+        detector bounds it again at its own :data:`~theurian.security
+        .content_secrets.MAX_FINDINGS`, so this is the second of two ceilings
+        rather than the only one.
+
+        **The remedy says to rotate before it says how to proceed.** A secret
+        that reached a proposal directory is in a Git working tree and, if the
+        proposal was committed, in history -- so telling the author to delete
+        the line and carry on would be advice that leaves the credential live.
+        The escape hatch for a false positive is named second and names the key,
+        because ``block`` is the default and a false positive is otherwise a
+        dead end.
+        """
+        listed = [finding.describe() for finding in findings[:_MAX_NAMES_LISTED]]
+        return ProposalError(
+            f"A body this proposal would land appears to contain a secret: {_names(listed)}. "
+            "Nothing has moved.",
+            remedy=(
+                "Treat the value as exposed and rotate it -- it is already in a working tree, "
+                "and in Git history if the proposal has been committed. Then remove it from the "
+                f"body in .theurian/proposals/{proposal_id.value}/ and accept the proposal "
+                "again. If it is not a secret, set security.secretScan to warn or off in "
+                ".theurian/config.yaml (block, warn, off; block is what an absent key selects)."
+            ),
+        )
 
     # -- the pre-check (ADR-0027 decision 2) -------------------------------
 

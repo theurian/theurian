@@ -1274,7 +1274,7 @@ flowchart TB
 | T-12 | An agent silently rewrites an approved decision | Tampering | High | SEC-17, ADR-0013 |
 | T-13 | Two daemons corrupt the same SQLite file | Tampering | High | NFR-1, R-1 |
 | T-14 | Setup overwrites a user's configuration — the MCP entry, and `~/.theurian/env` since #128 | Tampering | Medium | SEC-18, R-9 |
-| T-15 | A secret in a document becomes an approved, indexed revision | Information disclosure | High | SEC-11 — no content scanner ships; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger are what stand, and the scanner is owed with the write path in M7 ([#198](https://github.com/theurian/theurian/issues/198)) |
+| T-15 | A secret in a document becomes an approved, indexed revision | Information disclosure | High | SEC-11 — `theurian propose accept` scans every body it would land, `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
 | T-16 | A compromised release artifact is installed | Tampering | Critical | OSS-7, OSS-11, setup step 3 |
 
 ---

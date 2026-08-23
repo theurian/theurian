@@ -64,14 +64,23 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
     assert config["raptor"]["enabled"] is False
 
 
-# -- Keys the example sets that take no effect ------------------------------
+# -- Keys whose reach the example has to state ------------------------------
 #
-# Two keys in the sample config select a control that does not exist:
-# `security.secretScan` (SEC-11's policy, #198) and
-# `providers.review.repositories` (SEC-10's allowlist, #129). Both are kept as
-# data on purpose -- the example teaches the shape a reader will need once the
-# controls ship -- and both are therefore a trap: a reader who copies this file
-# copies `secretScan: block` and reasonably concludes that secrets are blocked.
+# Two keys in the sample config are a trap for a reader who copies the file, for
+# opposite reasons.
+#
+# `providers.review.repositories` (SEC-10's allowlist, #129) selects a control
+# that does not exist. It is kept as data on purpose -- the example teaches the
+# shape a reader will need once the control ships -- and a reader who copies it
+# reasonably concludes that repositories are allowlisted. They are not.
+#
+# `security.secretScan` (SEC-11's policy, #198) is the mirror image since
+# ADR-0027 decision 3: it now selects real behaviour, and the trap is
+# *over*-reading it. `secretScan: block` covers `theurian propose accept` and
+# nothing else -- `theurian ingest` and index building run no scan -- with a
+# best-effort detector that is not a repository secret scanner. A reader who
+# copies `block` and concludes that secrets cannot reach their knowledge base is
+# as wrong as the reader who used to conclude it blocked anything at all.
 #
 # What makes the example honest is the comment above each key, and a comment is
 # exactly the kind of thing a later edit drops without noticing, because nothing
@@ -122,40 +131,50 @@ def _in_config(config: dict[str, Any], key: str) -> Any:
 #: ``(key, the value the example teaches, the sentences its annotation must keep)``.
 #:
 #: The value is asserted as well as the annotation because the two together are
-#: the claim: the example keeps a realistic policy *and* says it is not applied.
+#: the claim: the example keeps a realistic policy *and* bounds what it does.
 #: Dropping the key would also be dishonest -- it would hide a published part of
 #: the contract rather than annotate it -- so both halves fail here.
-NOT_IN_FORCE_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
-    ("secretScan", "block", ("Nothing in `src/` reads", "#198")),
+#:
+#: The two rows require different sentences because the two keys are wrong in
+#: opposite directions. ``repositories`` still reads nowhere, so its annotation
+#: has to say so. ``secretScan`` now reads somewhere, so its annotation has to
+#: say *how far* -- the approval gate, and not ``theurian ingest``.
+ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
+    ("secretScan", "block", ("propose accept", "best effort", "#198")),
     ("repositories", ["acme/order-service"], ("Nothing in `src/` reads", "#129")),
 )
 
 
 @pytest.mark.parametrize(
-    ("key", "value", "required"), NOT_IN_FORCE_KEYS, ids=[case[0] for case in NOT_IN_FORCE_KEYS]
+    ("key", "value", "required"), ANNOTATED_KEYS, ids=[case[0] for case in ANNOTATED_KEYS]
 )
-def test_a_key_the_example_sets_but_nothing_reads_stays_marked_not_in_force(
+def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     key: str, value: Any, required: tuple[str, ...]
 ) -> None:
-    """The example is what a reader copies, so an inert key must say it is inert.
+    """The example is what a reader copies, so each key must state its own reach.
 
-    `secretScan: block` reads as a shipped control. It is not one: SEC-11's
-    scanner does not exist (#198), and nothing in `src/` reads
-    `.theurian/config.yaml` at all (#129), so the value blocks nothing.
-    `providers.review.repositories` is the same shape for SEC-10's allowlist.
-    Six documents were corrected to stop claiming either control was in force,
-    and this file was one of them -- but the correction landed as a *comment*,
-    which no schema validates and no other test reads.
+    `providers.review.repositories` selects nothing: SEC-10's allowlist is still
+    owed (#129), so a reader who copies it and believes repositories are
+    allowlisted is wrong, and the annotation is what tells them.
+
+    `secretScan: block` is the other error. Until ADR-0027 decision 3 it selected
+    nothing either, and this test required the annotation to say so. It now
+    selects real behaviour at `theurian propose accept` (#198) -- and a reader who
+    concludes from `block` that secrets cannot reach their knowledge base is as
+    wrong as the reader who used to conclude the opposite. The detector is best
+    effort and covers one gate; `theurian ingest` and index building run no scan.
+    So the required sentences flipped from "nothing reads this" to what it
+    reaches, rather than being dropped.
 
     Same reckoning as `test_the_example_does_not_switch_the_raptor_forest_on`
     above: `test_config_matches_its_schema` cannot catch this, because the
     document is schema-valid whether or not the annotation is there.
 
-    Deliberately prose-sensitive. "Nothing in `src/` reads" is the sentence that
-    makes the example honest, not a stylistic choice, so rewording it should
-    bring someone here to re-read what the example is promising rather than pass
-    unremarked. The issue reference is required beside it so the annotation
-    stays a claim someone owns.
+    Deliberately prose-sensitive. These sentences are what make the example
+    honest, not a stylistic choice, so rewording one should bring someone here to
+    re-read what the example is promising rather than pass unremarked. The issue
+    reference is required beside them so the annotation stays a claim someone
+    owns.
     """
     text = CONFIG.read_text(encoding="utf-8")
     config = load_yaml_mapping(text)
@@ -175,21 +194,22 @@ def test_a_key_the_example_sets_but_nothing_reads_stays_marked_not_in_force(
 
     assert _in_config(config, key) == value, (
         f"the example no longer sets `{key}` to {value!r}. It is kept as data on "
-        f"purpose -- it teaches the shape the control will need -- so removing it "
-        f"hides a published key rather than annotating it. If the control now "
-        f"ships, this test and the annotation are what change with it."
+        f"purpose -- it teaches the shape the control needs -- so removing it "
+        f"hides a published key rather than annotating it. If what the control "
+        f"does has changed, this test and the annotation are what change with it."
     )
     annotation = _annotation_above(text, key)
     for sentence in required:
         assert sentence in annotation, (
             f"the annotation above `{key}` in {CONFIG.relative_to(REPO_ROOT)} no "
             f"longer says {sentence!r}. It reads:\n  {annotation!r}\n\n"
-            f"A reader copies this file. Without that sentence `{key}` reads as a "
-            f"control that is in force, and it is not: SEC-11's secret scanner "
-            f"does not exist (#198) and nothing in `src/` reads "
-            f"`.theurian/config.yaml` at all (#129). If a reader has since "
-            f"shipped, `tests/unit/test_config_key_call_sites.py` is the pin that "
-            f"records it and the schema descriptions are what change with it."
+            f"A reader copies this file, and without that sentence `{key}` reads "
+            f"as something it is not. `secretScan` is in force at `theurian "
+            f"propose accept` and nowhere else, with a best-effort detector "
+            f"(#198); `providers.review.repositories` is read by nothing at all "
+            f"(#129). `tests/unit/test_config_key_call_sites.py` is the pin that "
+            f"records which keys have readers, and the schema descriptions are "
+            f"what change with them."
         )
 
 

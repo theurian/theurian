@@ -30,6 +30,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from migration_fixtures import UNREACHED_BODY_PIN
 
+from theurian.security.project_config import SecretScanPolicy
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 SCHEMAS = REPO_ROOT / "schemas"
 
@@ -905,36 +907,38 @@ def test_the_raptor_forest_is_declared_off_by_default() -> None:
     assert raptor["properties"]["enabled"]["default"] is False
 
 
-def test_the_secret_scan_policy_publishes_no_default() -> None:
-    """SEC-11, #198. A default states a policy, and no code applies this one.
+def test_the_secret_scan_policy_publishes_the_default_the_loader_applies() -> None:
+    """SEC-11, #198. A default states a policy, and this one is now applied.
 
     The schema declared `default: "block"` from the day the block was written,
     and every reader of the published contract took it as the shipped behaviour:
     the threat model listed secret scanning as T-15's only primary content-side
     control, "configurable `block` (default) / `warn` / `off`", and `SECURITY.md`
-    told users "ingestion warns or blocks per policy". None of it was true. No
-    content secret scanner exists anywhere in `src/`, and nothing reads
-    `.theurian/config.yaml` at all (#129), so the key selected no behaviour and
-    the default applied nothing.
+    told users "ingestion warns or blocks per policy". None of it was true, so
+    #198 dropped the default — a JSON Schema `default` is what a form generator
+    fills in, what a client library substitutes for an absent key, and what a
+    person reading the contract believes the product does when they say nothing,
+    and publishing one for a control nothing applied was the same defect as that
+    prose, in the surface a third party validates against.
 
-    Dropping the default is the correction, not a cosmetic one: a JSON Schema
-    `default` is what a form generator fills in, what a client library
-    substitutes for an absent key, and what a person reading the contract
-    believes the product does when they say nothing. Publishing one for an
-    unimplemented control is the same defect as the prose that was fixed
-    alongside it, in the surface a third party validates against — which is why
-    it is pinned here for the reason
-    `test_the_raptor_forest_is_declared_off_by_default` gives: a default is a
-    published claim the moment it is in a schema a third party validates against.
+    ADR-0027 decision 3 is what earns it back. `security/project_config.py` reads
+    the key, `application/proposal_service.py` applies it at `theurian propose
+    accept`, and an absent key and an absent config file both select `block` — so
+    the published default now states what the product does, which is the only
+    condition under which it may be there at all.
 
-    The enum assertion is a fixture guard rather than decoration. `"default" not
-    in {}` passes just as happily against a key that was renamed, moved under
-    another block, or deleted outright, and then this test would report the
-    absence of a default for a property that no longer exists. Asserting the
-    reserved key is still published, with its three policies intact, is what
-    makes the second assertion evidence about `secretScan`.
+    Pinned to the exact value rather than to "a default exists", because the
+    claim is that the schema and the code agree about *which* policy an absent
+    key selects. `SecretScanPolicy.BLOCK` is read from Core rather than written
+    down here: a `"block"` literal on both sides would keep agreeing with itself
+    after somebody changed the fallback in the reader.
 
-    The absence of a *reader* is the other half and cannot be seen from here;
+    The enum assertion is a fixture guard rather than decoration. A key that was
+    renamed, moved under another block or deleted outright raises on the lookup
+    below — but one that kept its name and lost its policies would not, and this
+    test would then be pinning a default to a value the key no longer offers.
+
+    The *reader* is the other half and cannot be seen from here;
     `tests/unit/test_config_key_call_sites.py` holds it, and holds the schema
     description that states it.
     """
@@ -943,18 +947,19 @@ def test_the_secret_scan_policy_publishes_no_default() -> None:
     ]["secretScan"]
 
     assert secret_scan["enum"] == ["block", "warn", "off"], (
-        "the reserved `security.secretScan` key is not published as it was; the "
-        "no-default assertion below would pass vacuously against a renamed or "
-        "deleted property"
+        "`security.secretScan` no longer publishes the three policies the reader "
+        "accepts; the default assertion below would be pinning a fallback to a "
+        "value the key does not offer"
     )
-    assert "default" not in secret_scan, (
-        f"`security.secretScan` publishes `default: {secret_scan.get('default')!r}`. "
-        "SEC-11's scanner is not implemented (#198) and nothing reads "
-        "`.theurian/config.yaml` (#129), so a default here states a policy that "
-        "nothing applies -- which is the claim six surfaces were corrected to "
-        "stop making. If a scanner has since shipped, publish the default in the "
-        "same change that corrects the schema description, SECURITY.md, "
-        "docs/security/threat-model.md (T-15) and the sample project's config."
+    assert secret_scan.get("default") == SecretScanPolicy.BLOCK.value, (
+        f"`security.secretScan` publishes `default: {secret_scan.get('default')!r}`, but "
+        f"`read_secret_scan_policy` returns {SecretScanPolicy.BLOCK.value!r} for an absent "
+        "key and an absent config file (SEC-11, ADR-0027 decision 3). A published default "
+        "that disagrees with the applied one is worse than none: it is what a client "
+        "library substitutes when the caller says nothing. If the scanner has been "
+        "withdrawn rather than re-tuned, drop the default again and correct the schema "
+        "description, SECURITY.md, docs/security/threat-model.md (T-15) and the sample "
+        "project's config in the same change."
     )
 
 

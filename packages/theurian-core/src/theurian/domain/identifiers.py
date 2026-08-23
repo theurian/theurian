@@ -20,8 +20,16 @@ from theurian.domain.errors import InvalidIdentifierError
 # ECMA-262, RE2 -- means end-of-input by ``$``, so the laxity was Python's alone
 # and forced published schemas to carry a matching ``\n?``.
 
-# Crockford base32, excluding I, L, O, and U.
-_ULID_PATTERN: Final = re.compile(r"\A[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
+#: Crockford base32, excluding I, L, O, and U. Unanchored, because one consumer
+#: needs to find a ULID *inside* a longer string: the secret scanner
+#: (``security/content_secrets.py``) subtracts Theurian's own identifiers from a
+#: candidate before judging whether it looks like a credential, and without that
+#: every ``<ulid>-<slug>.yaml`` migration filename reads as a high-entropy token.
+#: Published rather than re-spelled there, because a second definition of "what a
+#: ULID looks like" is a second thing that has to stay in step with this one.
+ULID_CHARACTERS: Final = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
+
+_ULID_PATTERN: Final = re.compile(rf"\A{ULID_CHARACTERS}\Z")
 
 # Dotted, lowercase, kebab-friendly segments: ``architecture.auth-policy``.
 _DOTTED_PATTERN: Final = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)*\Z")

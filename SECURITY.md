@@ -429,11 +429,17 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   the calling agent's responsibility.** Theurian cannot stop an agent that treats
   document text as instructions, and no MCP server can. This is a shared
   responsibility, and it is the most important line in this document.
-- **Secrets already committed to your repository.** Theurian does not scan
-  ingested content for secrets. SEC-11's scanner is not implemented
-  ([#198](https://github.com/theurian/theurian/issues/198)), so ingestion neither
-  warns nor blocks, and the `security.secretScan` key in the published config
-  schema selects nothing. A secret in a document becomes readable through
+- **Secrets already committed to your repository.** `theurian propose accept`
+  scans the bodies a proposal would land and, by default, refuses to move them
+  ([#198](https://github.com/theurian/theurian/issues/198));
+  `security.secretScan` in `.theurian/config.yaml` selects `block` — which is
+  also what an absent key and an absent file select — or `warn`, or `off`.
+  **That is one gate and a best-effort detector, not coverage.** It reads known
+  credential shapes and flags strings that look randomly generated, so a secret
+  resembling neither is invisible to it. Theurian does not scan ingested content
+  for secrets — `theurian ingest` and `index build` run no scan at all — and a
+  migration written straight into `.theurian/migrations/` by hand never passes
+  through `accept`. A secret that gets past all of that becomes readable through
   `knowledge.search` and `knowledge.get` the moment `theurian migrate apply`
   writes it into the canonical store — before any `index build`, since search
   degrades to a canonical substring scan — unless a human notices it in the
