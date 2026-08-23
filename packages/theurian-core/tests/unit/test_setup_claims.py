@@ -632,7 +632,7 @@ def test_no_surface_that_says_how_core_arrives_claims_setup_installs_it() -> Non
     What moved this along was naming the root cause -- a surface that offers
     setup as the way Core gets onto the machine -- and applying the same rule to
     every member instead of reading each document on its own terms. What it does
-    *not* do is decide the population: this is a regression test over the four
+    *not* do is decide the population: this is a regression test over the
     files listed there, and the class is larger than the list.
     """
     for name in CORE_ARRIVAL_SURFACES:
