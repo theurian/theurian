@@ -48,7 +48,12 @@ import yaml
 
 from theurian.application.project_service import ProjectPaths
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
-from theurian.domain.errors import InputTooLargeError, PathEscapeError, TheurianError
+from theurian.domain.errors import (
+    InputTooLargeError,
+    IrregularSourceFileError,
+    PathEscapeError,
+    TheurianError,
+)
 from theurian.domain.identifiers import ItemId, MigrationId, ProposalId, RevisionId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import (
@@ -767,8 +772,13 @@ class ProposalService:
         ``evidence.json``, an unreadable one), a decode or JSON error, a
         ``RecursionError`` from a deeply nested document, and the ``TheurianError``
         family the security layer raises -- a symlinked ``evidence.json`` (T-5),
-        one over SEC-8's size cap, one whose path escapes the root. None may fall
-        through to an answer.
+        one over SEC-8's size cap, one whose path escapes the root, and one that
+        is not a regular file at all: a FIFO, a socket or a device, whose
+        ``st_size`` bounds nothing (#215). Catching them is only half of it --
+        each also needs its own row in :data:`_EVIDENCE_FAILURE_REASONS`, whose
+        security-layer rows track ``read_source_file``'s ``Raises`` one for one,
+        because that table's fallthrough asserts the document parsed. None may
+        fall through to an answer.
         """
         evidence = directory / EVIDENCE_FILE
         if not evidence.exists() and not evidence.is_symlink():
@@ -1722,8 +1732,20 @@ def _migration_item_ids(migration: Migration) -> frozenset[str]:
 #: ``InputTooLargeError``/``PathEscapeError`` precede ``ProposalError`` because
 #: ``TheurianError`` is their common base but only the symlink refusal is a plain
 #: ``ProposalError``.
+#:
+#: **The table is closed, and its fallthrough is a verdict rather than an
+#: "unknown".** A type with no entry here is reported as "it is not a JSON
+#: object", which claims the document parsed and held the wrong shape -- so the
+#: security-layer rows must track :func:`~theurian.security.paths.read_source_file`'s
+#: own ``Raises``, one row each. ``IrregularSourceFileError`` (#215) arrived a
+#: ``TheurianError``, was therefore already caught and already answered
+#: indeterminate, and still reported a FIFO as a parsed non-object until it got
+#: this row. ``test_every_read_failure_the_evidence_read_can_raise_has_its_own_reason``
+#: drives the correspondence directly, because no filesystem produces all of
+#: these on demand.
 _EVIDENCE_FAILURE_REASONS: Final = (
     (InputTooLargeError, "it is larger than the size cap"),
+    (IrregularSourceFileError, "it is not a regular file"),
     (PathEscapeError, "its path escapes the project"),
     (ProposalError, "it is, or is reached through, a symlink"),
     (RecursionError, "it is nested too deeply to parse"),
