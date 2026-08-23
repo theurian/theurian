@@ -7,13 +7,17 @@ anyone. These are the tests that decide whether a crafted `contentFile` can read
 
 from __future__ import annotations
 
+import ast
 import errno
 import os
+import pathlib
 import socket
 import stat
 import sys
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Final, NamedTuple
 
 import pytest
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
@@ -25,6 +29,7 @@ from theurian.domain.errors import (
     PathEscapeError,
     SecurityError,
 )
+from theurian.security import paths as paths_module
 from theurian.security.paths import (
     MAX_PATH_DEPTH,
     MAX_SOURCE_FILE_BYTES,
@@ -186,6 +191,12 @@ def _read_a_file_past_the_size_cap(project_root: Path) -> object:
 #: no single-threaded driver can arrange -- and it raises the same
 #: ``InputTooLargeError``, from the same two constants, as the pre-read cap
 #: below it.
+#:
+#: **Both paragraphs above are claims about the shipped module, and they are
+#: checked rather than maintained**: :data:`_RAISE_SITES` restates them as data,
+#: and the two tests below it hold the enumeration against ``paths.py``'s own
+#: ``raise`` statements and against this list's ids. Editing either without the
+#: other goes red.
 _ECHO_ATTACKS = [
     pytest.param(
         lambda root: read_source_file(root, f"../outside/{_ECHO_MARKER}"),
@@ -245,6 +256,200 @@ def test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path(
 
     assert _ECHO_MARKER not in str(exc.value)
     assert _ECHO_MARKER not in exc.value.remedy
+
+
+# -- The echo population, read off the module rather than remembered ----------
+#
+# `_ECHO_ATTACKS`'s own comment says the population is "every raise site in the
+# module", and that sentence was enforced by nothing: it is a claim about the
+# shipped source, kept in a list a reader has to re-derive by hand. The FIFO
+# refusal (#215) entered this module echoing its caller's path while the list
+# still read as complete, which is what a count in prose always eventually does.
+#
+# So the list is checked against the module. The scan reads names, exactly as
+# `tests/unit/test_gate_call_sites.py` does: a refusal raised through a helper,
+# or a `raise` built by a factory, would not be seen. It is a floor on the
+# review a new raise site gets, not a proof that one cannot slip past.
+
+#: The shipped module the sweep above is a claim about, resolved through the
+#: imported package so the file scanned is the file the suite ran.
+_PATHS_SOURCE: Final = pathlib.Path(paths_module.__file__)
+
+
+class _RaiseSite(NamedTuple):
+    """One ``raise`` statement in ``security/paths.py``, and what reaches it.
+
+    ``role`` distinguishes the two pairs that share a ``(function, error)`` key
+    -- ``resolve_within_root`` raises :class:`PathEscapeError` twice and
+    ``read_source_file`` raises :class:`InputTooLargeError` twice -- so the table
+    stays readable without keying on a line number, which the next edit rots.
+    """
+
+    function: str
+    error: str
+    role: str
+    driven_by: tuple[str, ...]
+    unreachable_because: str
+
+
+#: Every ``raise`` in ``security/paths.py``, each tied to the ``_ECHO_ATTACKS``
+#: ids that drive it or given the reason no driver can.
+#:
+#: Two ids point at one site on purpose: a ``..`` that climbs out and a symlink
+#: whose target leaves the root are different attacks that meet the same
+#: ``is_relative_to`` refusal, because ``resolve()`` has already followed the
+#: link by then.
+_RAISE_SITES: Final = (
+    _RaiseSite(
+        function="resolve_within_root",
+        error="PathEscapeError",
+        role="the candidate is absolute",
+        driven_by=("absolute-path",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="resolve_within_root",
+        error="PathDepthExceededError",
+        role="the candidate nests past MAX_PATH_DEPTH",
+        driven_by=("past-the-depth-limit",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="resolve_within_root",
+        error="PathEscapeError",
+        role="the resolved candidate is not under the root",
+        driven_by=("dotdot-climbs-above-the-root", "symlink-target-leaves-the-root"),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="assert_no_symlink_escape",
+        error="PathEscapeError",
+        role="the target does not resolve under the root at all",
+        driven_by=("assert-no-symlink-escape-target-outside",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="assert_no_symlink_escape",
+        error="PathEscapeError",
+        role="a component of the walked chain is a link that leaves the root",
+        driven_by=(),
+        unreachable_because=(
+            "the loop walks target.resolve().relative_to(root), whose components are "
+            "already symlink-free by construction, so no component it visits can be a "
+            "link absent a concurrent replacement mid-loop; whether the guard should "
+            "exist at all is issue #288's question"
+        ),
+    ),
+    _RaiseSite(
+        function="read_source_file",
+        error="IrregularSourceFileError",
+        role="the file's size bounds nothing",
+        driven_by=("a-file-whose-size-bounds-nothing",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="read_source_file",
+        error="InputTooLargeError",
+        role="st_size is already past the cap",
+        driven_by=("past-the-size-cap",),
+        unreachable_because="",
+    ),
+    _RaiseSite(
+        function="read_source_file",
+        error="InputTooLargeError",
+        role="the file grew between the stat and the read",
+        driven_by=(),
+        unreachable_because=(
+            "it needs the file to grow between the stat and the read, which no "
+            "single-threaded driver can arrange -- and it raises the same error, from "
+            "the same two constants, as the pre-read cap above it"
+        ),
+    ),
+)
+
+
+def _scoped(node: ast.AST, scope: tuple[str, ...]) -> Iterator[tuple[ast.AST, tuple[str, ...]]]:
+    """Yield ``(node, enclosing defs)`` for every node under ``node``."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            yield from _scoped(child, (*scope, child.name))
+        else:
+            yield child, scope
+            yield from _scoped(child, scope)
+
+
+def _raised_name(node: ast.Raise) -> str:
+    """The name of the type a ``raise`` constructs, or a label for what it is not.
+
+    A bare ``raise`` re-raises whatever is in flight and constructs nothing, so
+    it is not a refusal this module publishes; it gets its own label rather than
+    being silently skipped, which would let one enter unremarked.
+    """
+    raised = node.exc
+    if raised is None:
+        return "<bare re-raise>"
+    if isinstance(raised, ast.Call):
+        raised = raised.func
+    if isinstance(raised, ast.Name):
+        return raised.id
+    if isinstance(raised, ast.Attribute):
+        return raised.attr
+    return "<not a name>"
+
+
+def _raise_sites_in(source: pathlib.Path) -> Counter[tuple[str, str]]:
+    """Count the ``raise`` statements in ``source`` by ``(function, type name)``."""
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    return Counter(
+        (".".join(scope) or "<module>", _raised_name(node))
+        for node, scope in _scoped(tree, ())
+        if isinstance(node, ast.Raise)
+    )
+
+
+def test_every_raise_in_the_path_module_is_one_this_file_accounts_for() -> None:
+    """A new refusal must join :data:`_RAISE_SITES`, and so be triaged.
+
+    Equality against the whole enumeration rather than a length, so it fails in
+    both directions -- a raise added, and one deleted or retyped -- and names
+    what it found. Landing a refusal here means deciding, in the table above,
+    whether the sweep drives it or why nothing can; that decision is the review
+    the FIFO refusal did not get.
+    """
+    found = _raise_sites_in(_PATHS_SOURCE)
+    expected = Counter((site.function, site.error) for site in _RAISE_SITES)
+
+    assert found == expected, (
+        f"the raise statements in {_PATHS_SOURCE.name} no longer match the table in "
+        f"this file.\n  found:    {sorted(found.items())}\n  expected: "
+        f"{sorted(expected.items())}\n\n"
+        f"A new one needs a `_RaiseSite` row, and that row needs either an "
+        f"`_ECHO_ATTACKS` id that drives it -- proving it publishes no "
+        f"attacker-supplied path -- or a stated reason no driver can reach it."
+    )
+
+
+def test_the_echo_sweep_drives_exactly_the_raise_sites_the_table_says_it_does() -> None:
+    """The other direction: the table's ids must be the sweep's, both ways.
+
+    Without this the table could name a driver that no longer exists, or the
+    sweep could grow a case the table never claimed, and either leaves the
+    enumeration asserting a coverage it does not have. Each excluded row also
+    has to give a reason, because "not driven" with no argument is the state
+    this whole check exists to end.
+    """
+    claimed = {name for site in _RAISE_SITES for name in site.driven_by}
+    # `isinstance` rather than a `is not None` guard: `ParameterSet.id` is typed
+    # as `str | _HiddenParam`, and the sentinel is not `None`.
+    swept = {param.id for param in _ECHO_ATTACKS if isinstance(param.id, str)}
+
+    assert claimed == swept, (
+        f"the table claims {sorted(claimed)} and the sweep runs {sorted(swept)}"
+    )
+    for site in _RAISE_SITES:
+        assert bool(site.driven_by) != bool(site.unreachable_because), (
+            f"{site.function} ({site.role}) must either be driven or say why it cannot be"
+        )
 
 
 #: What each reachable raise site publishes. Split per branch because the depth
