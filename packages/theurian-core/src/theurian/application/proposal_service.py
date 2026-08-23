@@ -1074,9 +1074,29 @@ class ProposalService:
         authored. The chain is therefore walked and every symlink component is
         refused, so 'no symlink anywhere in its chain' is literally true, the
         same stance :meth:`_require_directory` takes on the proposal directory.
+
+        The irregular-file refusal is re-raised with a ``referrer`` for the same
+        reason ``migration_loader.py::_parse_upsert`` attaches one:
+        :func:`read_source_file` names nothing, because its argument is the
+        author's own ``contentFile`` string, so without this the user is told
+        that *a* file is a FIFO and never which one. Reproduced through the real
+        CLI as a ``propose accept --json`` payload naming no path at all.
+
+        What is attached is ``path`` made project-relative -- and ``path`` is
+        Theurian's own construction, never an authored string: a ULID proposal
+        directory joined with either a name ``iterdir()`` returned, the constant
+        ``evidence.json``, or the normalized ``knowledge/`` tail
+        :meth:`_body_moves` obtained from :meth:`_destination_of`, which resolved
+        it and proved containment first. It is the identical string
+        :meth:`_reject_symlink_in_chain` already prints for this same file, so it
+        opens no echo the accept path did not already have.
         """
         self._reject_symlink_in_chain(path)
-        return read_source_file(self._paths.root, PurePosixPath(path.relative_to(self._paths.root)))
+        relative = PurePosixPath(path.relative_to(self._paths.root))
+        try:
+            return read_source_file(self._paths.root, relative)
+        except IrregularSourceFileError as exc:
+            raise IrregularSourceFileError(exc.shape, referrer=relative.as_posix()) from exc
 
     def _reject_symlink_in_chain(self, path: Path) -> None:
         """Refuse ``path`` if any component below the project root is a symlink.

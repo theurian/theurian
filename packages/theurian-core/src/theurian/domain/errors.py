@@ -865,9 +865,30 @@ class IrregularSourceFileError(SecurityError):
     ``referrer`` is how the user still learns where to look: a caller that holds
     a name it has decided is safe to print re-raises with it attached, the same
     division of labour :class:`MigrationContentUnreadableError` and
-    :class:`PathEscapeError` already use on this load path
-    (``migration_loader.py::_parse_upsert``, where the name is the migration
-    file ``iterdir()`` returned and not the value its ``contentFile`` holds).
+    :class:`PathEscapeError` already use on this load path.
+
+    **Every caller that can reach this refusal either attaches one or names the
+    file some other way**, and the four are enumerated rather than summarised,
+    because "a caller attaches it" was written while only one did and the accept
+    path published a refusal naming no path at all::
+
+        grep -rn "read_source_file" packages/theurian-core/src/theurian/
+
+    * ``migration_loader.py::_parse_upsert`` -- attaches the migration file
+      ``iterdir()`` returned, never the value its ``contentFile`` holds.
+    * ``application/proposal_service.py::_read_within_project`` -- attaches the
+      project-relative path it built itself, for all three files the accept path
+      reads (the migration, ``evidence.json``, and each body).
+    * ``migration_loader.py::_load_one`` -- cannot reach this refusal at all:
+      ``load_migrations`` filters entries through ``_entry_is_migration_file``'s
+      ``S_ISREG`` check first, pinned by ``test_load_migrations_skips_a_fifo_and
+      _a_directory_both_named_dot_yaml``.
+    * ``application/ingestion_service.py::_ingest_one`` -- attaches nothing and
+      needs nothing: it records the refusal as a ``ParseFailure`` against the
+      ``relative`` path it already holds. In practice the read is not reached
+      either, because ``_discover``'s ``is_file()`` drops a non-regular file
+      before it -- silently, which is issue #327's own subject and not this
+      class's.
     """
 
     def __init__(self, shape: str, *, referrer: str | None = None) -> None:
