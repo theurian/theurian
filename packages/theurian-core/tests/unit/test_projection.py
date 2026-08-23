@@ -259,25 +259,72 @@ def test_project_truncates_the_same_document_project_checked_refuses() -> None:
     assert len(truncated) <= (_SEVENTEEN - 1) + len(SIZE_MARKER) + 1
 
 
-@pytest.mark.parametrize("max_chars", [1, 16, 17, 18, 200, 1438])
-def test_a_truncated_projection_never_exceeds_its_budget_plus_the_marker(max_chars: int) -> None:
+#: The two markers ``project`` appends *after* the walk, and so the two that sit
+#: outside the character budget rather than being charged through ``emit``. The
+#: bound below has to allow for the longer of them: it was written against
+#: :data:`SIZE_MARKER` alone, and :data:`EXPANSION_MARKER` is five characters
+#: longer, so the node path exceeded a bound the character path satisfied
+#: (measured 2026-08-24 at ``max_chars=1, max_nodes=1``: 28 characters returned
+#: against a stated bound of 25).
+_LONGEST_TRUNCATION_MARKER: Final = max(len(SIZE_MARKER), len(EXPANSION_MARKER))
+
+#: The sweep's two axes, named so the coverage check below runs the same grid the
+#: bound is asserted over rather than a hand-copied twin of it.
+_SWEEP_CHARS: Final = (1, 16, 17, 18, 115, 200, 1438)
+_SWEEP_NODES: Final = (1, 2, 3, 201, 10**9)
+
+#: Two hundred lines of roughly 57 characters each. Wide rather than deep, so a
+#: small ``max_nodes`` stops it with text already emitted instead of at the root.
+_SWEEP_DOCUMENT: Final = {f"key{i}": "value" * 10 for i in range(200)}
+
+
+@pytest.mark.parametrize("max_nodes", _SWEEP_NODES)
+@pytest.mark.parametrize("max_chars", _SWEEP_CHARS)
+def test_a_truncated_projection_never_exceeds_its_budget_plus_the_marker(
+    max_chars: int, max_nodes: int
+) -> None:
     """The invariant that holds at every budget, not only at the interesting one.
 
     ``project`` is the ingest path's entry point and it cannot raise, so this
     bound is the only thing between a caller and an unbounded string. Swept
-    across the boundary the tests above pin (16/17/18) and out to a budget deep
-    inside this document, because the tight case is not the large one: at
-    ``max_chars=1`` there is no line boundary to cut on, so the return is
+    across the character boundary the tests above pin (16/17/18) and out to a
+    budget deep inside this document, because the tight case is not the large
+    one: at ``max_chars=1`` there is no line boundary to cut on, so the return is
     ``max_chars`` plus the marker plus its separator exactly, and every larger
     budget has slack.
+
+    **``max_nodes`` is swept too, and that is what makes the bound honest.** With
+    the node ceiling left at its default the second truncation path never ran
+    here, and the bound was stated in :data:`SIZE_MARKER` -- which
+    :data:`EXPANSION_MARKER` exceeds by five characters. Both markers are
+    appended after the walk rather than charged through ``emit``, so both sit
+    outside the budget and the bound must allow for the longer.
     """
-    document = {f"key{i}": "value" * 10 for i in range(200)}
+    projected = project(_SWEEP_DOCUMENT, max_chars=max_chars, max_nodes=max_nodes)
 
-    projected = project(document, max_chars=max_chars)
-
-    assert len(projected) <= max_chars + len(SIZE_MARKER) + 1, (
-        f"a {max_chars}-character budget returned {len(projected)} characters"
+    assert len(projected) <= max_chars + _LONGEST_TRUNCATION_MARKER + 1, (
+        f"a {max_chars}-character, {max_nodes}-node budget returned {len(projected)} characters"
     )
+
+
+def test_the_budget_sweep_reaches_both_truncation_paths() -> None:
+    """The sweep above is worth its cases only if both markers occur in it.
+
+    A grid that never exhausts the nodes asserts the character path twice over
+    and calls it coverage -- which is exactly the state this file was in, and why
+    the marker in the bound went unnoticed. Asserted over the same two axis
+    constants the sweep is parametrized on, so widening one cannot leave this
+    checking a grid nobody runs.
+    """
+    markers = {
+        marker
+        for max_chars in _SWEEP_CHARS
+        for max_nodes in _SWEEP_NODES
+        for marker in (SIZE_MARKER, EXPANSION_MARKER)
+        if project(_SWEEP_DOCUMENT, max_chars=max_chars, max_nodes=max_nodes).endswith(marker)
+    }
+
+    assert markers == {SIZE_MARKER, EXPANSION_MARKER}
 
 
 # -- Budgets bound the walk, not only its result (issue #232) --------------
@@ -303,6 +350,12 @@ def _shared_by_sequences(levels: int, shared: CountsVisits) -> list[object]:
     ...]`` -- while every budget fixture above builds mappings, so the sequence
     branch of the walk had no budget-shaped test at all. Removing the budget
     propagation from ``_walk_sequence`` survived the whole suite for that reason.
+
+    Both budgets need a case here, and they are not one case twice: the character
+    side shows in how often the shared node is materialised, while the node side
+    leaves that count -- and ``project``'s whole output -- unchanged and moves
+    only ``InputTooLargeError.observed``. Each has its own test below, with the
+    measurement that says which field carries it.
     """
     node: list[object] = [shared, shared]
     for _ in range(levels - 1):
@@ -391,6 +444,47 @@ def test_the_node_ceiling_stops_a_walk_whose_text_stays_small() -> None:
     assert projected.endswith(EXPANSION_MARKER)
     assert SIZE_MARKER not in projected, "the text fits; only the traversal did not"
     assert shared.visits <= 100, shared.visits
+
+
+def test_the_node_ceiling_stops_a_sequence_walk_too() -> None:
+    """The node ceiling's own sequence-side quantity, which nothing else sees.
+
+    ``_walk_sequence`` propagates a spent budget by returning ``False`` from the
+    middle of its loop, and both budgets ride that one ``return``. The
+    character-budget twin above holds it *through the character budget only*: it
+    asserts how often the shared sub-object is materialised, which is a count the
+    node ceiling does not move.
+
+    Measured 2026-08-24 against ``proj-sequence-no-propagate`` -- the loop
+    finished rather than propagated -- on the two documents these two tests use.
+    The twin goes red at 4,096 materialisations against its bound of 8. This one
+    goes red on a different number entirely: at the node ceiling the shared node
+    is entered 64 times either way and ``project`` returns the same 1,884
+    characters either way, because the walk stops *descending* the moment the
+    ceiling is passed and the mutant only keeps *charging* the siblings already
+    on the unwound stack. Each of those is one more visit and no descent, so the
+    spend at the stop is the only thing that moves: 201 shipped, 209 mutated.
+    ``project_checked`` is the only entry point that can see it and ``observed``
+    the only field -- "unobservable on this side" was recorded here and is false.
+
+    ``201`` exactly, not ``> 200``: the ceiling is charged on entry and stops the
+    whole walk, so the first over-visit is the last one -- the same ``limit + 1``
+    the shipped defaults publish as
+    ``InputTooLargeError('projected node count', 1000000, 1000001)``. A ``>``
+    here would pass with the propagation removed.
+    """
+    shared = CountsVisits({"a": "x"})
+    document = _shared_by_sequences(12, shared)
+
+    with pytest.raises(InputTooLargeError) as exc:
+        project_checked(document, max_chars=10**9, max_nodes=200)
+
+    assert exc.value.limit_name == "projected node count"
+    assert exc.value.limit == 200
+    assert exc.value.observed == 201, (
+        "a sequence that keeps charging its siblings after the ceiling has "
+        "fired reports 209 here; only this field moves"
+    )
 
 
 def test_project_checked_raises_from_the_budget_it_ran_out_of() -> None:
