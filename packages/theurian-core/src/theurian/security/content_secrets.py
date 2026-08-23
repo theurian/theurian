@@ -32,10 +32,17 @@ follow from that and are deliberate:
   ends with, and -- the reason that matters here -- a greedy class followed by
   ``\\b`` backtracks one character at a time over a run this input controls.
   Every pattern below terminates in a negative lookahead over its own class, so
-  the maximal match satisfies it immediately and no alternative is ever tried.
-* Every open-ended repetition is bounded. A body reaches this function through
+  the maximal match satisfies it immediately and, at the *end of a run*, no
+  alternative is tried.
+* The scan is linear in the body's length. A body reaches this function through
   ``read_source_file``, so it is at most ``MAX_SOURCE_FILE_BYTES``; an unbounded
-  quantifier over 8 MiB of attacker-chosen text is a cost nothing records.
+  *backtracking* quantifier over 8 MiB of attacker-chosen text is the cost this
+  avoids. The generic family's repetition is genuinely open-ended (``{32,}``) and
+  safe anyway: its negative lookahead succeeds at the run's end, so the greedy
+  match never backtracks into it. The specific families cap their repetition at
+  :data:`_MAX_TOKEN_CHARS`, which bounds the backtracking a run *longer* than that
+  cap costs -- at most that many steps to reject at each start, never the
+  input-length backtracking a trailing ``\\b`` would incur.
 
 **A finding never carries the secret.** It names the family, where the match
 starts, and at most :data:`REDACTED_PREFIX_CHARS` leading characters. A refusal
@@ -111,7 +118,12 @@ _MIN_CANDIDATE_CHARS: Final = 32
 #:
 #: Each pattern is anchored at the front on ``\\b`` or a literal, and terminated
 #: by a negative lookahead over its own trailing class rather than by ``\\b``, so
-#: the greedy match is the only one the engine ever tries. There are no nested
+#: the maximal match satisfies the lookahead at a run's end and the engine
+#: backtracks only *inside* a bounded family's own ``{n,m}`` window: a run longer
+#: than :data:`_MAX_TOKEN_CHARS` costs at most that many steps to reject at each
+#: start position, never the input-length backtracking a trailing ``\\b`` would.
+#: The generic ``{32,}`` family has no upper bound and needs none -- its lookahead
+#: succeeds at the run's end without backtracking. There are no nested
 #: quantifiers: ``-----BEGIN [A-Z ]{0,20}PRIVATE KEY-----`` is a bounded class
 #: and not ``(?:[A-Z]+ )*``, which is the same header written as a ReDoS.
 _PATTERN_FAMILIES: Final[tuple[tuple[str, str], ...]] = (
@@ -166,6 +178,15 @@ class SecretFinding:
     ``line`` and ``column`` are 1-based and count characters, which is what an
     editor reports. Both are needed: a JSON or YAML body is routinely one long
     line, and "line 1" locates nothing in it.
+
+    **Lines are delimited by ``\\n`` only** (:func:`scan_text` counts and rfinds
+    it, nothing else). A body using a bare ``\\r`` (classic-Mac endings) or a
+    Unicode line separator (U+2028, U+0085) has those counted as ordinary
+    characters, so a finding in one is positioned within the single
+    ``\\n``-delimited line rather than at an editor's line number. This is a
+    stated bound, not a handled case: the bodies this scans are UTF-8 prose, JSON
+    and YAML written for review, where ``\\n`` is the separator, and a locator a
+    few characters off is a diagnostic-precision residual, not a leak or a miss.
     """
 
     #: Which shape matched, from :data:`FAMILIES`.
@@ -276,11 +297,19 @@ def _looks_like_a_secret(token: str) -> bool:
     quotes a migration filename is an ordinary thing to write; blocking its
     acceptance by default is how a control gets switched off.
 
-    The subtraction costs nothing that was ever detectable. A ULID is upper case
-    and digits only, so a base64url token would have to contain 26 consecutive
-    characters drawn from that 32-symbol subset -- about 1.5e-8 per position --
-    and a *secret* that is entirely ULID-shaped carries no lower-case letter and
-    is refused by the class gate above whether it is subtracted or not.
+    The subtraction is best effort, and its cost is a residual an adversary can
+    pay rather than nothing. A ULID is upper case and digits only, so an
+    *accidental* collision -- a credential that happens to contain 26 consecutive
+    characters drawn from that 32-symbol subset -- is about 1.5e-8 per position,
+    and a secret that is *entirely* ULID-shaped carries no lower-case letter and
+    is refused by the class gate above whether it is subtracted or not. What the
+    subtraction cannot catch is a token *crafted* to embed a 26-character
+    ULID-shaped run: removing that run can drop the remainder below the candidate
+    floor, so a value the detector would flag whole slips through (measured: a
+    26-character ULID followed by ``abcDEF12`` leaves ``abcDEF12``, eight
+    characters, and is not reported). That is the residual SEC-11 accepts -- the
+    product disclaims being a complete secret scanner -- bounded to a value shaped
+    on purpose to carry a credential past it.
 
     What remains after the subtraction is judged as a candidate in its own right,
     the length floor included: ``retry-policy-<ulid>`` leaves ``retry-policy-``,

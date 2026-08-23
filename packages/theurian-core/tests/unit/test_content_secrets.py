@@ -28,6 +28,7 @@ from typing import Final
 import pytest
 
 from theurian.security.content_secrets import (
+    _MIN_CANDIDATE_CHARS,
     FAMILIES,
     HIGH_ENTROPY,
     MAX_FINDINGS,
@@ -341,6 +342,41 @@ def test_the_entropy_floor_is_where_the_detector_says_it_is() -> None:
     )
 
 
+#: A 24-character token that clears every gate *but* the length floor: it carries
+#: upper, lower and a digit and 4.335 bits of entropy (verified below), so only
+#: its being shorter than :data:`_MIN_CANDIDATE_CHARS` keeps it unreported. Split
+#: from its seed; 24 is a fixed length between the floor and the 20 a floor
+#: mutation drops to, so this does not scale with the constant it checks.
+_BELOW_FLOOR_TOKEN: Final = (
+    base64.urlsafe_b64encode(hashlib.sha256(b"min-candidate pin fixture 0").digest()[:18])
+    .decode()
+    .rstrip("=")
+)
+
+
+def test_a_high_entropy_run_under_the_candidate_floor_is_not_reported() -> None:
+    """The candidate floor is load-bearing, and lowering it is a decision.
+
+    ``_MIN_CANDIDATE_CHARS`` is one definition in two places -- the regex
+    ``{32,}`` and the remainder check in ``_looks_like_a_secret`` -- so a run of 24
+    high-entropy, mixed-class characters clears every other gate and is refused
+    only for its length. Dropping the floor to 20 (the mutation that survived the
+    suite) makes the regex match it and every gate pass; this is where that lands.
+    """
+    assert len(_BELOW_FLOOR_TOKEN) == 24, "the fixture length moved off its 24-char design"
+    assert len(_BELOW_FLOOR_TOKEN) < _MIN_CANDIDATE_CHARS
+    assert _entropy(_BELOW_FLOOR_TOKEN) >= 4.0, "the fixture would not clear the floor if longer"
+    assert all(
+        any(check(char) for char in _BELOW_FLOOR_TOKEN)
+        for check in (str.isupper, str.islower, str.isdigit)
+    ), "the fixture no longer carries all three classes, so length is not the only thing left"
+
+    assert scan_text(f"token = {_BELOW_FLOOR_TOKEN}") == (), (
+        f"{_BELOW_FLOOR_TOKEN!r} is 24 characters, under the {_MIN_CANDIDATE_CHARS}-character "
+        "floor, and was reported -- the floor was lowered"
+    )
+
+
 @pytest.mark.parametrize(
     ("missing", "candidate"),
     [
@@ -382,6 +418,29 @@ def test_a_theurian_token_beside_an_identifier_is_still_reported() -> None:
     assert [f.family for f in findings] == [HIGH_ENTROPY], (
         "a token concatenated with a ULID went unreported, so the subtraction is "
         "silencing the candidate rather than shortening it"
+    )
+
+
+def test_a_token_crafted_to_embed_a_ulid_evades_the_subtraction() -> None:
+    """The honest bound of the ULID subtraction, pinned as the residual it is.
+
+    The subtraction that keeps Theurian's own filenames from reading as secrets is
+    best effort: a token *crafted* to embed a 26-character ULID-shaped run loses
+    those characters and its remainder can fall below the candidate floor, so a
+    value the detector would flag whole slips through. This backs the measured
+    claim in ``_looks_like_a_secret``'s docstring -- the ULID plus ``abcDEF12``
+    leaves eight characters and is not reported -- so that residual cannot go
+    silently unmeasured. SEC-11 accepts it; the product disclaims being a complete
+    scanner. The ULID and the suffix are joined at runtime so no crafted literal
+    sits in the file for the repository's own scan to judge.
+    """
+    ulid = "01M0D5GSKA479Y85296S745521"  # 26 chars, ULID-shaped, already a NEGATIVES fixture
+    crafted = ulid + "abcDEF12"  # a 34-char token, high-entropy and mixed-class whole
+    assert _entropy(crafted) >= 4.0, "the whole crafted token would clear the entropy floor"
+
+    assert scan_text(f"token = {crafted}") == (), (
+        "the crafted ULID-prefixed token was reported; the subtraction residual the docstring "
+        "records has changed, which is a decision, not a regression to absorb silently"
     )
 
 
