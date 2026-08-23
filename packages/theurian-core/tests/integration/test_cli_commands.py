@@ -874,6 +874,87 @@ def test_validate_reports_the_application_order(project: Path) -> None:
     assert validated["applicationOrder"] == [MIGRATION_ID]
 
 
+#: Every key ``migrate validate`` publishes on the success path, and the whole
+#: of it -- read out of ``migrate_validate``'s own ``_emit`` call
+#: (``cli/commands.py``) and measured against a real invocation below.
+#:
+#: Frozen deliberately, the way ``test_schemas.py``'s
+#: :data:`PUBLISHED_RETRIEVAL_KEYS` is. This payload is a published contract a
+#: plugin parses, so a key appearing or disappearing is a decision somebody
+#: takes here rather than a diff somebody misses.
+#:
+#: ``unpinnedRevisions`` is the key that left (ADR-0027). It warned about a
+#: revision declaring no ``contentSha256``; the pin is schema-required now, so
+#: for every input that reaches this payload the list was empty -- and a
+#: permanently empty published field is a claim that its condition is still
+#: reachable. Four tests read that field and were deleted with it, which is what
+#: leaves this set as the thing holding the removal.
+_PUBLISHED_VALIDATE_KEYS = frozenset(
+    {
+        "applicationOrder",
+        "contentFileCount",
+        "migrationCount",
+        "stateHash",
+        "valid",
+    }
+)
+
+
+def test_validate_publishes_exactly_the_recorded_key_set(project: Path) -> None:
+    """ADR-0027 decision 1's second break: ``unpinnedRevisions`` is gone.
+
+    Asserted as an equality over the whole payload rather than as the one
+    absence, because both directions are the same defect. A re-added
+    ``unpinnedRevisions`` republishes a warning that can no longer fire; a *new*
+    key arriving unannounced is the shape that reached the wire before -- and a
+    key silently *lost* is a caller's ``KeyError`` in the field.
+    """
+    _invoke("init")
+    _write_migration(project)
+
+    code, validated = _invoke("migrate", "validate")
+
+    assert code == 0, f"the fixture project must validate for this to be about keys: {validated}"
+    assert "unpinnedRevisions" not in validated, (
+        "`migrate validate --json` publishes `unpinnedRevisions` again. The pin is "
+        "required by the schema (ADR-0027 decision 1), so an unpinned revision is "
+        "refused at load and never reaches this payload: the list is empty for "
+        "every input that gets here, and publishing it claims otherwise."
+    )
+    assert set(validated) == _PUBLISHED_VALIDATE_KEYS, (
+        f"`migrate validate --json` publishes {sorted(validated)}, and this file "
+        f"records {sorted(_PUBLISHED_VALIDATE_KEYS)}. Adding or removing a key is a "
+        f"break in a contract the Claude Code plugin parses; make it here, in the "
+        f"same change that updates the CHANGELOG."
+    )
+
+
+def test_the_human_output_carries_no_pin_warning_either(project: Path) -> None:
+    """The other channel the deleted ``unpinnedRevisions`` tests covered.
+
+    ``_emit`` renders one payload two ways, so a warning present in ``--json``
+    and absent from the default output -- or the reverse -- would be the two
+    channels disagreeing about the same project. That is why the removal is
+    checked here as well as in the JSON key set, rather than argued from the
+    shared payload.
+
+    The positive assertion is not decoration: without it this passes against a
+    command that printed nothing at all, which is the failure mode an
+    absence-only test cannot see.
+    """
+    _invoke("init")
+    _write_migration(project)
+
+    result = runner.invoke(app, ["migrate", "validate"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "applicationOrder" in result.stdout, "the payload really was rendered here"
+    assert "unpinnedRevisions" not in result.stdout, (
+        "the default output warns about a revision that pins no body, which the "
+        "schema no longer permits to exist (ADR-0027 decision 1)"
+    )
+
+
 def test_apply_then_status(project: Path) -> None:
     _invoke("init")
     _write_migration(project)

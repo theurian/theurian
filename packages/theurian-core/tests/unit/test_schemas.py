@@ -186,6 +186,74 @@ def test_change_sensitivity_requires_a_reason(
         migration_validator.validate(migration)
 
 
+#: ``$defs.opUpsertRevision``'s ``required``, in the schema's own order.
+#:
+#: ADR-0027 decision 1 states this list literally, and it is what the decision
+#: bought: a revision that names a body without pinning it is refused before it
+#: is applied, rather than warned about after. FR-K5 checksums the migration
+#: YAML and that checksum does not cover the file the YAML points at, so the pin
+#: is the only thing that freezes a body -- and it was optional, which made
+#: tamper evidence depend on the author having remembered.
+#:
+#: Written as the whole list rather than a membership check, so that *losing* a
+#: neighbouring requirement is caught here too. ``expectedRevision``'s absence is
+#: an assertion in its own right: requiring it was proposed with this change and
+#: deliberately re-scoped to #324, because the field is ``oneOf`` a ULID or
+#: ``null`` and an explicit ``expectedRevision: null`` parses identically to an
+#: absent key -- required-and-nullable is satisfied by a document that guards
+#: nothing.
+_UPSERT_REVISION_REQUIRED = [
+    "op",
+    "itemId",
+    "revisionId",
+    "contentFile",
+    "contentSha256",
+    "metadata",
+]
+
+
+def test_every_upsert_revision_must_pin_the_body_it_names() -> None:
+    """ADR-0027 decision 1, FR-K5, #210. The published half of the requirement.
+
+    A third party validating a hand-authored migration against this file gets
+    the same verdict Theurian's own loader gives, and this is the line that says
+    so. The behavioural half -- that the constraint actually bites on a real
+    document, through the ``oneOf`` an operation is validated by -- is the test
+    below and
+    ``tests/unit/test_migration_loader_required_pin.py``; a name in a ``required``
+    array is inert until something composes it.
+    """
+    upsert = _load("migrations/migration.schema.json")["$defs"]["opUpsertRevision"]
+
+    assert upsert["required"] == _UPSERT_REVISION_REQUIRED, (
+        f"`$defs.opUpsertRevision` requires {upsert['required']}, and ADR-0027 "
+        f"decision 1 records {_UPSERT_REVISION_REQUIRED}. Dropping `contentSha256` "
+        f"reopens #210: the loader adopts whatever bytes the body holds at load "
+        f"time, so an out-of-band edit to an unpinned body is invisible. Adding a "
+        f"requirement here is a breaking change to a published contract and takes "
+        f"the CHANGELOG entry ADR-0027 gave this one."
+    )
+
+
+def test_a_revision_that_declares_no_pin_is_refused_by_the_published_schema(
+    migration_validator: Draft202012Validator,
+) -> None:
+    """The `required` entry above, put to a document rather than read.
+
+    An operation is validated through ``$defs.operation``'s ``oneOf`` over the
+    fourteen operation types, so what refuses an unpinned ``upsertRevision`` is
+    the composition, not the ``required`` array on its own: a sibling branch that
+    happened to admit the same object would leave the entry decorative and this
+    schema accepting exactly what ADR-0027 says it refuses. That is the claim a
+    list-equality assertion cannot make, and it is why both tests exist.
+    """
+    migration = _valid_migration()
+    del migration["operations"][0]["contentSha256"]
+
+    with pytest.raises(ValidationError):
+        migration_validator.validate(migration)
+
+
 def test_migration_schema_covers_every_required_operation() -> None:
     """§15 of the brief names fourteen operations. All must be expressible."""
     defs = _load("migrations/migration.schema.json")["$defs"]
