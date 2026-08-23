@@ -165,13 +165,19 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
         # Residual, recorded rather than closed: the file could be replaced by a
         # FIFO between this `stat` and the read below -- the same window the
         # post-read size re-check covers for a file that grows. Closing it means
-        # opening with `O_NONBLOCK` and reading through the descriptor. Winning
-        # that race takes local write access to the working tree, and an actor
-        # who holds that already holds equivalent authority: they can leave a
-        # FIFO in place with no race at all, and a `git clone` cannot carry one
-        # -- Git stores no FIFO mode (100644, 100755, 120000, 160000, 040000).
-        # What the race buys is the same outcome the guard refuses, availability
-        # rather than disclosure, so it is graded as a residual and not a hole.
+        # opening with `O_NONBLOCK` and reading through the descriptor.
+        #
+        # It is graded on the *actor*, not on an equivalence to the parked case.
+        # A FIFO left in place is exactly what this branch refuses, so "they
+        # could leave one there instead" -- which an earlier version of this note
+        # said -- is the opposite of true. What holds is narrower: winning the
+        # race takes local write access to the working tree at the instant of the
+        # read, and an actor with that reaches the same availability outcome by
+        # means this guard was never between them and (truncate the file, delete
+        # it, make the directory unreadable). A `git clone` carries no FIFO
+        # either -- Git stores no such mode (100644, 100755, 120000, 160000,
+        # 040000) -- so the race is reachable from the machine and not from the
+        # repository. The outcome is availability, never disclosure.
         #
         # `relative` is deliberately not passed: it is the caller's own string,
         # unnormalized and attacker-influenceable, and this branch runs after
