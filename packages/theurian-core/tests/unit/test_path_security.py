@@ -22,6 +22,7 @@ from theurian.domain.errors import (
     IrregularSourceFileError,
     PathDepthExceededError,
     PathEscapeError,
+    SecurityError,
 )
 from theurian.security.paths import (
     MAX_PATH_DEPTH,
@@ -120,20 +121,69 @@ def _link_that_leaves_the_root(project_root: Path) -> None:
         link.symlink_to(project_root.parent / "outside" / _ECHO_MARKER)
 
 
+def _read_a_fifo_named_like_the_secret(project_root: Path) -> object:
+    """The one refusal that fires *after* containment has been proved.
+
+    Its caller string is written unnormalized on purpose: every branch above
+    refuses before the path is resolved, so what a raise site holds is the
+    caller's own text -- `.theurian/knowledge/../knowledge/...`, not the
+    resolved form -- and echoing it hands back both the marker and the traversal
+    the caller wrote.
+
+    The filename is *not* `_link_that_leaves_the_root`'s: that entry is a
+    symlink pointing outside, so reusing the name would refuse this call as an
+    escape and pass this test without ever reaching the branch it exists to
+    drive (measured, on the first attempt at this fixture).
+    """
+    relative = f".theurian/knowledge/../knowledge/pipe-{_ECHO_MARKER}.md"
+    fifo = project_root / ".theurian" / "knowledge" / f"pipe-{_ECHO_MARKER}.md"
+    if not fifo.exists():
+        os.mkfifo(fifo)
+    with fails_rather_than_hanging(5, waiting_for="read_source_file on a FIFO"):
+        return read_source_file(project_root, relative)
+
+
+def _read_a_file_past_the_size_cap(project_root: Path) -> object:
+    """The size branch, driven without writing 8 MiB.
+
+    ``truncate`` sets ``st_size`` without allocating content, and ``st_size`` is
+    exactly what the cap reads -- so this refusal fires, as it does in
+    production, before a byte is read. Its filename avoids
+    `_link_that_leaves_the_root`'s for the reason recorded above, and here the
+    collision would have been worse than a false pass: opening that name for
+    writing follows the link and truncates the out-of-tree secret itself.
+    """
+    big = project_root / ".theurian" / "knowledge" / f"big-{_ECHO_MARKER}.md"
+    with big.open("wb") as handle:
+        handle.truncate(MAX_SOURCE_FILE_BYTES + 1)
+    return read_source_file(project_root, f".theurian/knowledge/big-{_ECHO_MARKER}.md")
+
+
 #: One entry per *reachable* raise site in ``security/paths.py``, each driven
 #: with a path carrying `_ECHO_MARKER`. Three live in ``resolve_within_root``
 #: (absolute, depth, resolves-outside); the fourth is
 #: ``assert_no_symlink_escape``'s ``except ValueError``, which no
 #: ``read_source_file`` call can reach -- ``resolve_within_root`` runs first and
-#: has already proved containment -- so it is driven directly.
+#: has already proved containment -- so it is driven directly. The last two are
+#: ``read_source_file``'s own: the irregular-shape refusal and the size cap,
+#: which are the two that fire *after* containment holds and so are the two
+#: whose caller string is still unnormalized when they raise.
 #:
-#: The fifth raise site, ``assert_no_symlink_escape``'s in-loop check, is
-#: deliberately absent and this list is not a claim to cover it. That loop walks
+#: The population is every raise site in the module, not the escape family:
+#: keying it on which *error type* carries a path would have let a branch join
+#: the module by carrying one, which is exactly how the FIFO refusal (#215)
+#: entered echoing its caller's path while this list still read as complete.
+#:
+#: Two raise sites are deliberately absent, and this list is not a claim to
+#: cover them. ``assert_no_symlink_escape``'s in-loop check walks
 #: ``target.resolve().relative_to(root)``, whose components are by construction
 #: already symlink-free, so no component it visits can be a link absent a
-#: concurrent replacement mid-loop. Whether the guard should exist at all is
-#: issue #288's question, not this test's -- hence the "reachable" in the test
-#: names below.
+#: concurrent replacement mid-loop; whether that guard should exist at all is
+#: issue #288's question, not this test's. ``read_source_file``'s post-read size
+#: re-check needs the file to grow between the ``stat`` and the ``read``, which
+#: no single-threaded driver can arrange -- and it raises the same
+#: ``InputTooLargeError``, from the same two constants, as the pre-read cap
+#: below it.
 _ECHO_ATTACKS = [
     pytest.param(
         lambda root: read_source_file(root, f"../outside/{_ECHO_MARKER}"),
@@ -156,6 +206,14 @@ _ECHO_ATTACKS = [
         lambda root: assert_no_symlink_escape(root, root.parent / "outside" / _ECHO_MARKER),
         id="assert-no-symlink-escape-target-outside",
     ),
+    pytest.param(
+        _read_a_fifo_named_like_the_secret,
+        id="a-file-whose-size-bounds-nothing",
+        marks=pytest.mark.skipif(
+            not _CAN_MAKE_A_BLOCKING_FILE, reason="needs os.mkfifo and an interruptible timer"
+        ),
+    ),
+    pytest.param(_read_a_file_past_the_size_cap, id="past-the-size-cap"),
 ]
 
 
@@ -171,10 +229,16 @@ def test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path(
     the message (issue #233) -- it is the second half of the same user-facing
     payload, `_fail` prints both, so a remedy naming the path would defeat this
     guard while the message still passed it.
+
+    Caught as `SecurityError` rather than `PathEscapeError`: the invariant is
+    about the module's refusals, not about one family of them, and the branch
+    that broke it (#215's irregular-shape refusal) was the first one here that
+    is not an escape at all. What each branch publishes is pinned separately,
+    below and in the per-shape tests further down.
     """
     _link_that_leaves_the_root(project_root)
 
-    with pytest.raises(PathEscapeError) as exc:
+    with pytest.raises(SecurityError) as exc:
         attack(project_root)
 
     assert _ECHO_MARKER not in str(exc.value)
@@ -427,11 +491,33 @@ def test_a_fifo_is_refused_before_it_is_opened(project_root: Path) -> None:
         read_source_file(project_root, ".theurian/knowledge/pipe.md")
 
     assert exc.value.shape == "a named pipe (FIFO)"
-    assert str(exc.value) == (
-        "'.theurian/knowledge/pipe.md' is a named pipe (FIFO), not a regular file"
+    assert str(exc.value) == "The referenced file is a named pipe (FIFO), not a regular file"
+    assert exc.value.remedy == (
+        "Replace it with a regular file, then retry. The size Theurian checks before it "
+        "opens a file bounds nothing about what a read of a named pipe (FIFO) returns, so "
+        "it is refused unread."
     )
-    assert "Replace" in exc.value.remedy, "a refusal names the command that fixes it"
-    assert exc.value.remedy.endswith("refused unread."), exc.value.remedy
+
+
+def test_a_caller_that_holds_a_safe_name_attaches_it(project_root: Path) -> None:
+    """The other half of the no-echo split: anonymous here, named by the caller.
+
+    ``read_source_file`` refuses without a name because its argument is the
+    author's, but a caller holding a name it has decided is safe to print -- the
+    migration file ``iterdir()`` returned, in ``_parse_upsert`` -- re-raises with
+    it attached, so the CLI payload still says which file to open. Pinned here
+    rather than only at the CLI so the two halves cannot drift apart.
+    """
+    named = IrregularSourceFileError("a socket", referrer="01K1-add-auth-policy.yaml")
+
+    assert str(named) == (
+        "'01K1-add-auth-policy.yaml' names a file that is a socket, not a regular file"
+    )
+    assert named.remedy == (
+        "Replace the file '01K1-add-auth-policy.yaml' names with a regular file, then "
+        "retry. The size Theurian checks before it opens a file bounds nothing about what "
+        "a read of a socket returns, so it is refused unread."
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX sockets are POSIX here")

@@ -244,22 +244,40 @@ def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
 #: which is what made this reachable through a plain `git clone`.
 _FIFO_CONTENT_FILE = ".theurian/knowledge/architecture/auth-policy.md"
 
+#: What the refusal is allowed to name: the migration file, which `iterdir()`
+#: produced. Never `MIGRATION`'s own `contentFile` value, which the author wrote.
+_FIFO_MIGRATION_FILE = f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
+
 
 def _write_fifo_content_migration(root: Path) -> None:
     body = root / _FIFO_CONTENT_FILE
     body.parent.mkdir(parents=True, exist_ok=True)
     os.mkfifo(body)
-    (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(MIGRATION)
+    (root / _FIFO_MIGRATION_FILE).write_text(MIGRATION)
 
 
 def _assert_fifo_refusal_payload(payload: dict[str, Any]) -> None:
-    """Full equality, the same anti-mutation shape as its siblings above."""
-    assert payload["error"] == f"{_FIFO_CONTENT_FILE!r} is a named pipe (FIFO), not a regular file"
+    """Full equality, the same anti-mutation shape as its siblings above.
+
+    The name in both halves is the *migration file*, attached by
+    `_parse_upsert`. `read_source_file` publishes no path at all: its argument is
+    the author's own string, and echoing it is what
+    `tests/unit/test_path_security.py::
+    test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path` forbids.
+    """
+    assert payload["error"] == (
+        f"{_FIFO_MIGRATION_FILE!r} names a file that is a named pipe (FIFO), not a regular file"
+    )
     assert payload["remedy"] == (
-        f"Replace {_FIFO_CONTENT_FILE!r} with a regular file, then retry. Reading a named "
-        f"pipe (FIFO) is not bounded by the size Theurian checks before it opens a file -- "
-        f"such a read can block forever, or return bytes without end -- so it is refused "
-        f"unread."
+        f"Replace the file {_FIFO_MIGRATION_FILE!r} names with a regular file, then retry. "
+        f"The size Theurian checks before it opens a file bounds nothing about what a read "
+        f"of a named pipe (FIFO) returns, so it is refused unread."
+    )
+    assert _FIFO_CONTENT_FILE not in payload["error"], (
+        "the path handed to read_source_file stays unechoed"
+    )
+    assert _FIFO_CONTENT_FILE not in payload["remedy"], (
+        "the path handed to read_source_file stays unechoed"
     )
 
 

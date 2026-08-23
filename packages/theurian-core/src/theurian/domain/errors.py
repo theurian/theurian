@@ -849,17 +849,42 @@ class IrregularSourceFileError(SecurityError):
     ``shape`` is the noun phrase for the file type, derived by the caller from
     ``st_mode``. It arrives as a string rather than a mode because ``st_mode``
     is a filesystem detail and this layer holds none.
+
+    **Neither the message nor the remedy names the path that was read**, and the
+    constructor is not given one. ``read_source_file``'s ``relative`` argument is
+    attacker-influenceable -- a ``contentFile`` an author wrote -- and it is
+    still in the caller's own spelling when this refusal fires, because this is
+    one of the two branches that runs *after* containment rather than before it:
+    the first version of this class published
+    ``'.theurian/knowledge/../knowledge/id_ed25519.md' is a named pipe (FIFO)``
+    in both halves of the CP-2 payload, which is exactly what
+    ``tests/unit/test_path_security.py::
+    test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path`` exists
+    to forbid.
+
+    ``referrer`` is how the user still learns where to look: a caller that holds
+    a name it has decided is safe to print re-raises with it attached, the same
+    division of labour :class:`MigrationContentUnreadableError` and
+    :class:`PathEscapeError` already use on this load path
+    (``migration_loader.py::_parse_upsert``, where the name is the migration
+    file ``iterdir()`` returned and not the value its ``contentFile`` holds).
     """
 
-    def __init__(self, path: str, shape: str) -> None:
-        self.path = path
+    def __init__(self, shape: str, *, referrer: str | None = None) -> None:
         self.shape = shape
+        self.referrer = referrer
+        subject = f"{referrer!r} names a file that is" if referrer else "The referenced file is"
+        target = f"the file {referrer!r} names" if referrer else "it"
+        # Not "such a read can block forever, or return bytes without end": that
+        # is true of a FIFO and false of a socket, where `open()` fails at once
+        # (measured as `ENOTSUP`). What every member of this class shares is the
+        # property that made the size check worthless, so that is what is said.
         self.remedy = (
-            f"Replace {path!r} with a regular file, then retry. Reading {shape} is not "
-            f"bounded by the size Theurian checks before it opens a file -- such a read "
-            f"can block forever, or return bytes without end -- so it is refused unread."
+            f"Replace {target} with a regular file, then retry. The size Theurian checks "
+            f"before it opens a file bounds nothing about what a read of {shape} returns, "
+            f"so it is refused unread."
         )
-        super().__init__(f"{path!r} is {shape}, not a regular file")
+        super().__init__(f"{subject} {shape}, not a regular file")
 
 
 class AuthorizationError(SecurityError):

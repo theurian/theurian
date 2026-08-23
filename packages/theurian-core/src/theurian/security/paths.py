@@ -165,10 +165,19 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
         # Residual, recorded rather than closed: the file could be replaced by a
         # FIFO between this `stat` and the read below -- the same window the
         # post-read size re-check covers for a file that grows. Closing it means
-        # opening with `O_NONBLOCK` and reading through the descriptor, and the
-        # attacker this layer defends against is whoever authored the repository
-        # (SEC-7, T-5), not a local process racing two adjacent syscalls.
-        raise IrregularSourceFileError(str(relative), shape)
+        # opening with `O_NONBLOCK` and reading through the descriptor. Winning
+        # that race takes local write access to the working tree, and an actor
+        # who holds that already holds equivalent authority: they can leave a
+        # FIFO in place with no race at all, and a `git clone` cannot carry one
+        # -- Git stores no FIFO mode (100644, 100755, 120000, 160000, 040000).
+        # What the race buys is the same outcome the guard refuses, availability
+        # rather than disclosure, so it is graded as a residual and not a hole.
+        #
+        # `relative` is deliberately not passed: it is the caller's own string,
+        # unnormalized and attacker-influenceable, and this branch runs after
+        # containment rather than before it (see `IrregularSourceFileError`, and
+        # the no-echo test that pins every raise site in this module).
+        raise IrregularSourceFileError(shape)
     if info.st_size > MAX_SOURCE_FILE_BYTES:
         raise InputTooLargeError("source file size", MAX_SOURCE_FILE_BYTES, info.st_size)
 
