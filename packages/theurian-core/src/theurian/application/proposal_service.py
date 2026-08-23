@@ -919,15 +919,26 @@ class ProposalService:
         cannot be applied, and the author of this proposal has nothing to
         correct in it. The remedy therefore names neither the proposal's file
         nor a re-draft -- both would send the reader to change something that is
-        not wrong -- and points at the migration the message itself names.
+        not wrong -- and points at the directory the fault is in.
+
+        It points at the *directory* and not at a file, which is weaker than it
+        looks like it should be and is the strongest thing that is true: what
+        the underlying message identifies depends on which stage refused. The
+        loader names a migration file; a revision conflict names an *item* and
+        two revision ids, because the engine does not know which of the two
+        migrations claiming that item is the wrong one. "Read what the message
+        names, in ``.theurian/migrations/``" holds for both; "fix the migration
+        the message names" was false for the second, and a remedy that is false
+        for a case is worse than one that is general.
         """
         return ApprovedSetUnusableError(
             f"The project's migration set cannot be applied as it stands, with or without "
             f"this proposal: {error}",
             remedy=(
                 "This proposal is not the cause: nothing has moved and its directory is "
-                "intact. Fix the migration the message names -- the same fault stops "
-                "theurian migrate apply -- then accept this proposal again."
+                "intact. The fault is in .theurian/migrations/ -- read what the message "
+                "names there and correct it, then accept this proposal again. "
+                "theurian migrate apply runs the same pipeline over the same set."
             ),
         )
 
