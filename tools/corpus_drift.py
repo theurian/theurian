@@ -55,12 +55,11 @@ walks rather than leaving a reader to find out.
 subject.** Every tracked `*.yaml` directly under that directory is read.
 
 **One further file is read, conditionally: a pinned body.** For a revision that
-declares no `contentSha256` -- a shape the published schema allows -- the body
-its own `contentFile` names is hashed instead, so that deleting the pin line
-does not quietly turn that revision's check off (:func:`_expected_digest`).
-`contentFile` is joined onto the migration's own directory and the result is
-required to start with `.theurian/`, so this reads exactly one file per such
-revision.
+declares no `contentSha256`, the body its own `contentFile` names is hashed
+instead, so that deleting the pin line does not quietly turn that revision's
+check off (:func:`_expected_digest`). `contentFile` is joined onto the
+migration's own directory and the result is required to start with `.theurian/`,
+so this reads exactly one file per such revision.
 
 **That constraint binds the unresolved path; the read that follows it does
 not.** :func:`_inside` is path arithmetic and deliberately makes no filesystem
@@ -73,10 +72,14 @@ to this repository and what surfaces is 12 hex characters, so the hardening --
 resolve-and-compare, as `security/paths.py` already does in the product -- is
 filed as #318 rather than taken here.
 
-Every anchor in the corpus today is pinned, so the conditional read is
-currently exercised only by the suite -- and it is still declared here, because
-a declaration that describes the corpus rather than the code stops being true
-the moment somebody commits an unpinned revision.
+**Since ADR-0027 the pin is schema-required, so the code and not the corpus is
+what makes every anchor pinned**, and the conditional read is exercised only by
+the suite. It is still declared, and still implemented, because *this tool does
+not validate*: it reads the tracked YAML directly, so a hand-edited migration
+with its pin line deleted still reaches :func:`_expected_digest` here, ahead of
+the `theurian migrate validate` run that refuses it. Falling back to the body's
+own bytes keeps such a revision compared rather than silently unchecked, which
+is what the fall-back was always for.
 
 **Beyond those migrations and the conditional pinned body, nothing under
 `.theurian/` is read here -- `evidence.json` included.** Those belong to the
@@ -523,11 +526,13 @@ def _revisions(document: Any) -> tuple[Mapping[str, Any], ...]:
 def _expected_digest(repo_root: Path, migration: str, operation: Mapping[str, Any]) -> str | None:
     """The digest the corpus records for this revision's body, or ``None``.
 
-    The declared ``contentSha256`` when there is one. When there is not -- the
-    published schema makes the pin optional -- the body file itself is hashed
-    with the same call, so deleting the pin line does not quietly turn this
-    revision's drift check off. ``None`` only when neither is available, and
-    that is reported as uncheckable rather than passed.
+    The declared ``contentSha256`` when there is one. ADR-0027 made it
+    schema-required, but this tool reads the tracked YAML directly and runs no
+    schema check, so a hand-edited migration missing the line still arrives
+    here; the body file itself is then hashed with the same call, and deleting
+    the pin does not quietly turn this revision's drift check off. ``None`` only
+    when neither is available, and that is reported as uncheckable rather than
+    passed.
     """
     declared = operation.get("contentSha256")
     if isinstance(declared, str) and _SHA256.match(declared):
