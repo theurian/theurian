@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectError, ProjectRegistry
@@ -36,6 +37,10 @@ EXIT_STATE_ERROR = 4
 #: the same guard `test_auth_rotate.py` and `test_setup_journal.py` use before
 #: a permission-refusal test.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
+#: Issue #215's reproduction needs a FIFO to build one and a timer to keep a
+#: regression from stalling the suite instead of failing it (``hang_guard``).
+_CAN_MAKE_A_BLOCKING_FILE = hasattr(os, "mkfifo") and CAN_INTERRUPT_A_HANG
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID = "01K1AAAREV01234567890ABCDE"
@@ -229,6 +234,32 @@ def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
     assert payload["remedy"] == (
         f"Confirm this user has read permission on {migration_path!r} and its "
         f"parent directory, then retry."
+    )
+
+
+# -- issue #215: a contentFile that is a FIFO ------------------------------
+
+#: The body path `MIGRATION` already names, made a FIFO instead of a file. Reusing
+#: that migration verbatim is the point: nothing about the *document* is unusual,
+#: which is what made this reachable through a plain `git clone`.
+_FIFO_CONTENT_FILE = ".theurian/knowledge/architecture/auth-policy.md"
+
+
+def _write_fifo_content_migration(root: Path) -> None:
+    body = root / _FIFO_CONTENT_FILE
+    body.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(body)
+    (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(MIGRATION)
+
+
+def _assert_fifo_refusal_payload(payload: dict[str, Any]) -> None:
+    """Full equality, the same anti-mutation shape as its siblings above."""
+    assert payload["error"] == f"{_FIFO_CONTENT_FILE!r} is a named pipe (FIFO), not a regular file"
+    assert payload["remedy"] == (
+        f"Replace {_FIFO_CONTENT_FILE!r} with a regular file, then retry. Reading a named "
+        f"pipe (FIFO) is not bounded by the size Theurian checks before it opens a file -- "
+        f"such a read can block forever, or return bytes without end -- so it is refused "
+        f"unread."
     )
 
 
@@ -952,6 +983,39 @@ def test_validate_reports_an_unreadable_migration_file_instead_of_crashing(proje
     assert result.exit_code == EXIT_STATE_ERROR
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     _assert_file_unreadable_payload(json.loads(result.stderr))
+
+
+@pytest.mark.skipif(
+    not _CAN_MAKE_A_BLOCKING_FILE, reason="needs os.mkfifo and an interruptible timer"
+)
+def test_validate_refuses_a_fifo_content_file_instead_of_hanging(project: Path) -> None:
+    """Issue #215's own reproduction, at the CLI.
+
+    ``read_source_file`` enforced SEC-8 from ``st_size``, and a FIFO reports 0 --
+    so the cap passed and ``open()`` blocked for a writer that never came.
+    Measured against the real CLI before the fix, in a sandboxed HOME and
+    THEURIAN_DATA_DIR: ``migrate validate --json`` produced no output and no exit
+    within 15 seconds. That is worse than the Rich traceback issue #205 closed on
+    this same seam -- a hang cannot even be graded, because nothing arrives.
+
+    The timer is what turns a regression back into a failing test rather than a
+    stalled suite (``hang_guard``); the assertion is that it never fires.
+
+    Exit 1 rather than ``EXIT_STATE_ERROR``: this is a ``SecurityError``, so it
+    reaches ``_require_project``'s generic ``except TheurianError`` branch, the
+    same route its sibling on this seam takes when a ``contentFile`` exceeds the
+    size cap. What the fix changes is not the grading but the payload -- CP-2's
+    ``{error, remedy}`` on stderr, with a clean stdout.
+    """
+    _invoke("init")
+    _write_fifo_content_migration(project)
+
+    with fails_rather_than_hanging(15, waiting_for="migrate validate over a FIFO contentFile"):
+        result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_fifo_refusal_payload(json.loads(result.stderr))
 
 
 def test_validate_reports_a_malformed_migration_yaml_instead_of_crashing(project: Path) -> None:

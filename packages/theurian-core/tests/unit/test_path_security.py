@@ -7,15 +7,19 @@ anyone. These are the tests that decide whether a crafted `contentFile` can read
 
 from __future__ import annotations
 
+import errno
 import os
+import socket
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 
 from theurian.domain.errors import (
     InputTooLargeError,
+    IrregularSourceFileError,
     PathDepthExceededError,
     PathEscapeError,
 )
@@ -28,6 +32,11 @@ from theurian.security.paths import (
     read_source_file,
     resolve_within_root,
 )
+
+#: A FIFO is the shape that blocks, and interrupting the block is what lets a
+#: missing guard fail rather than stall the suite (``hang_guard``). Both halves
+#: are POSIX, so they are one skip condition rather than two.
+_CAN_MAKE_A_BLOCKING_FILE = hasattr(os, "mkfifo") and CAN_INTERRUPT_A_HANG
 
 
 @pytest.fixture
@@ -386,6 +395,90 @@ def test_default_size_limit_is_generous_but_bounded() -> None:
 def test_missing_file_raises_file_not_found(project_root: Path) -> None:
     with pytest.raises(FileNotFoundError):
         read_source_file(project_root, ".theurian/knowledge/absent.md")
+
+
+# -- SEC-8: a file whose size bounds nothing (issue #215) -------------------
+
+
+@pytest.mark.skipif(
+    not _CAN_MAKE_A_BLOCKING_FILE, reason="needs os.mkfifo and an interruptible timer"
+)
+def test_a_fifo_is_refused_before_it_is_opened(project_root: Path) -> None:
+    """Issue #215: the size cap read ``st_size`` 0 and let the read through.
+
+    A FIFO with no writer blocks in ``open()`` for as long as nobody writes to
+    it, so the caller never returns at all -- reproduced against the real CLI as
+    ``migrate validate --json`` hanging past an 8-second alarm with an empty
+    stdout, and again in this suite by deleting the guard, where this test times
+    out instead of passing.
+
+    The timer is what makes this test able to fail rather than hang; the
+    assertion is that it is never needed. ``stat`` answers from the directory
+    entry without opening anything, which is why a refusal is reachable here at
+    all.
+    """
+    fifo = project_root / ".theurian" / "knowledge" / "pipe.md"
+    os.mkfifo(fifo)
+
+    with (
+        fails_rather_than_hanging(5, waiting_for="read_source_file on a FIFO"),
+        pytest.raises(IrregularSourceFileError) as exc,
+    ):
+        read_source_file(project_root, ".theurian/knowledge/pipe.md")
+
+    assert exc.value.shape == "a named pipe (FIFO)"
+    assert str(exc.value) == (
+        "'.theurian/knowledge/pipe.md' is a named pipe (FIFO), not a regular file"
+    )
+    assert "Replace" in exc.value.remedy, "a refusal names the command that fixes it"
+    assert exc.value.remedy.endswith("refused unread."), exc.value.remedy
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX sockets are POSIX here")
+def test_a_socket_is_refused_with_its_own_shape(
+    project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second member: a socket also reports ``st_size`` 0.
+
+    It does not hang -- ``open()`` on a socket fails at once, measured here as
+    ``ENOTSUP`` ("Operation not supported on socket") and documented as
+    ``ENXIO`` elsewhere -- so what the guard changes is *which* refusal
+    arrives: a named shape and a remedy, rather than a bare ``OSError`` whose
+    ``strerror`` describes an operation the reader never asked to perform.
+
+    Bound from inside its own directory because ``sockaddr_un.sun_path`` holds
+    barely a hundred bytes, and pytest's ``tmp_path`` alone spends most of them.
+    """
+    knowledge = project_root / ".theurian" / "knowledge"
+    monkeypatch.chdir(knowledge)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind("sock.md")
+
+        with pytest.raises(IrregularSourceFileError) as exc:
+            read_source_file(project_root, ".theurian/knowledge/sock.md")
+
+    assert exc.value.shape == "a socket"
+
+
+def test_a_directory_keeps_the_refusal_that_names_it_a_directory(project_root: Path) -> None:
+    """The guard's deliberate non-member, pinned so a widening cannot pass unseen.
+
+    A directory cannot block and cannot stream: ``open()`` refuses it outright
+    with ``EISDIR``, and ``domain/errors.py::_read_failure_remedy`` answers that
+    errno with a remedy naming the fault exactly ("names a directory, not a
+    file"). Folding directories into :class:`IrregularSourceFileError` would
+    take that refusal away from the branch that says it best -- and silently,
+    because both refusals are refusals.
+    """
+    with pytest.raises(IsADirectoryError) as exc:
+        read_source_file(project_root, ".theurian/knowledge")
+
+    assert exc.value.errno == errno.EISDIR
+
+
+def test_a_regular_file_is_not_refused(project_root: Path) -> None:
+    """The false-refusal side: the shape check must let ordinary content through."""
+    assert read_source_file(project_root, ".theurian/knowledge/auth.md") == b"# Auth policy\n"
 
 
 # -- SEC-4: credential file permissions ------------------------------------

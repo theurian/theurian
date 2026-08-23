@@ -825,6 +825,43 @@ class InputTooLargeError(SecurityError):
         super().__init__(f"{limit_name} exceeded: limit {limit}, observed {observed}")
 
 
+class IrregularSourceFileError(SecurityError):
+    """A source file is not a regular file, so its size bounds nothing (SEC-8, issue #215).
+
+    :func:`~theurian.security.paths.read_source_file` enforces SEC-8's byte cap
+    from ``st_size``, and ``st_size`` is a bound on what a read returns only for
+    a regular file. A FIFO reports ``st_size`` 0 -- passing the cap -- and then
+    blocks in ``open()`` until someone writes to it. Measured against the real
+    CLI: a migration whose ``contentFile`` named a FIFO made ``theurian migrate
+    validate --json`` hang with no output and no exit, which is the CP-2 escape
+    a Rich traceback is, minus the traceback. A character or block device is the
+    same fault pointed the other way -- ``st_size`` 0, and a read that returns
+    bytes without end.
+
+    A **directory** is deliberately not a member of this class. ``open()``
+    refuses one outright with ``EISDIR`` before a byte is read, so it can neither
+    block nor stream, and that errno already selects a remedy that names the
+    fault exactly (:func:`_read_failure_remedy`'s ``EISDIR`` branch, which is
+    driven by ``test_load_migrations_names_the_directory_remedy_for_a_content_
+    file_that_is_a_directory``). What this class refuses is the narrower set:
+    the types whose read is not bounded by the size that was just checked.
+
+    ``shape`` is the noun phrase for the file type, derived by the caller from
+    ``st_mode``. It arrives as a string rather than a mode because ``st_mode``
+    is a filesystem detail and this layer holds none.
+    """
+
+    def __init__(self, path: str, shape: str) -> None:
+        self.path = path
+        self.shape = shape
+        self.remedy = (
+            f"Replace {path!r} with a regular file, then retry. Reading {shape} is not "
+            f"bounded by the size Theurian checks before it opens a file -- such a read "
+            f"can block forever, or return bytes without end -- so it is refused unread."
+        )
+        super().__init__(f"{path!r} is {shape}, not a regular file")
+
+
 class AuthorizationError(SecurityError):
     """The principal is not authorized for the requested project or action."""
 
