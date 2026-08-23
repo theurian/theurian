@@ -7976,3 +7976,45 @@ async def test_the_deployments_own_tenant_is_not_refused(registry: ProjectRegist
     result = await _call_on(server, "knowledge.search", projectId="demo", query="token")
 
     assert result["results"]
+
+
+@pytest.mark.asyncio
+async def test_a_narrow_ceiling_withholds_nothing_yet(indexed: ProjectRegistry) -> None:
+    """What phase 1 of #119 does *not* do, recorded rather than assumed.
+
+    The grant is threaded to every tool and read by no retrieval predicate, so a
+    deployment declaring the narrowest possible ceiling still serves an
+    above-ceiling document in full. Measured the same way through the real daemon
+    on 2026-08-23: a profile of `internal` served a `confidential` item's excerpt
+    and its 64-character body over the wire, on port 7420, exactly as an absent
+    profile did.
+
+    **The enforcement phase must turn this test RED**, and that is the reason it
+    exists. A seam that is wired but inert is indistinguishable from a seam that
+    works until something asserts the difference -- and while it is inert, the
+    profile file must stay out of the README, `doctor` and every other user-facing
+    surface, because an operator who declares a ceiling that does nothing has been
+    given a false answer to a security question (ADR-0025: `system.capabilities`
+    must not advertise sensitivity enforcement in any form until all four parts
+    land).
+    """
+    above_the_ceiling = Sensitivity.INTERNAL
+    narrow = AuthorizationGrant(
+        tenant=DEPLOYMENT_TENANT,
+        sensitivities=frozenset({Sensitivity.PUBLIC}),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+    assert above_the_ceiling not in narrow.sensitivities, "the fixture must be above the ceiling"
+
+    searched = await _call_on(
+        build_server(indexed, narrow), "knowledge.search", projectId="demo", query="token"
+    )
+    fetched = await _call_on(
+        build_server(indexed, narrow),
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
+    )
+
+    assert searched["results"][0]["sensitivity"] == above_the_ceiling.value
+    assert fetched["body"] == BODY
