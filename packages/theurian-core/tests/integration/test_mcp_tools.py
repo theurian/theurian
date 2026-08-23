@@ -19,11 +19,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian import __protocol_version__, __version__
+from theurian.application.authorization import (
+    DEPLOYMENT_ACL_GROUPS,
+    DEPLOYMENT_TENANT,
+    AuthorizationGrant,
+)
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     ProjectPaths,
@@ -35,10 +41,11 @@ from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_D
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus, may_surface
+from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus, Sensitivity, may_surface
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ranking import Ranked
+from theurian.domain.values import TenantId
 from theurian.infrastructure.sqlite import store as store_module
 from theurian.infrastructure.sqlite.connection import (
     create_database,
@@ -308,7 +315,16 @@ async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[
     here is the *text*, so a message that leaked a path or a stack trace would
     fail a test rather than reach a client.
     """
-    result = await build_server(registry).call_tool(tool, arguments)
+    return await _call_on(build_server(registry), tool, **arguments)
+
+
+async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, Any]:
+    """:func:`_call` against a server somebody else built.
+
+    Split out for the authorization tests (#119), which compare two servers built
+    from two different grants and so cannot let the helper build one.
+    """
+    result = await server.call_tool(tool, arguments)
     content: Any = result.content  # type: ignore[union-attr]
     structured = getattr(result, "structuredContent", None)
     if structured is not None:
@@ -7848,3 +7864,115 @@ async def test_a_within_surfaceable_status_move_moves_no_count_and_is_silent(
     assert "integrity" not in search, "a within-set status move moved no count and must be silent"
     assert "integrity" not in status, "a within-set status move moved no count and must be silent"
     assert "integrity" not in got, "a within-set status move moved no count and must be silent"
+
+
+# -- Authorization (#119, ADR-0025) ----------------------------------------
+
+
+def _allow_all() -> AuthorizationGrant:
+    return AuthorizationGrant(
+        tenant=DEPLOYMENT_TENANT,
+        sensitivities=frozenset(Sensitivity),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_default_grant_publishes_the_same_response_as_an_explicit_allow_all(
+    indexed: ProjectRegistry,
+) -> None:
+    """The behaviour-neutrality pin for #119 phase 1.
+
+    An `AuthorizationGrant` is now threaded through `register` and read in
+    `_resolve`. This asserts that the *default* construction site --
+    `build_server(registry)` with no grant, which is what every other test in this
+    suite and the daemon's own first start use -- publishes byte-for-byte what a
+    grant naming every sensitivity publishes. Together with
+    `test_the_shipped_default_serves_every_level` in the unit suite, which pins
+    the default profile to every level and to the absent-file case, that is the
+    whole of "this phase withholds nothing".
+
+    It is *not* the two-corpora equality suite ADR-0025 part 4 owes: that one
+    compares an index holding withheld rows against an index that never held
+    them, and it belongs to the phase that first withholds something. This one
+    only holds the seam neutral while it is being cut.
+
+    Both tools are exercised because they reach content by different routes --
+    ranked retrieval and a primary-key fetch -- and #119's dogfood measurement
+    found the leak on both.
+    """
+    default = build_server(indexed)
+    explicit = build_server(indexed, _allow_all())
+
+    calls: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("knowledge.search", {"projectId": "demo", "query": "token"}),
+        ("knowledge.get", {"projectId": "demo", "itemId": "architecture.auth-policy"}),
+        ("knowledge.status", {"projectId": "demo"}),
+    )
+    for tool, arguments in calls:
+        from_default = await _call_on(default, tool, **arguments)
+        from_explicit = await _call_on(explicit, tool, **arguments)
+        assert from_default == from_explicit, tool
+
+    # Guards against a green that means "both answered nothing": a comparison of
+    # two empty responses holds no property at all.
+    searched = await _call_on(default, "knowledge.search", projectId="demo", query="token")
+    fetched = await _call_on(
+        default, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+    assert searched["results"], "the corpus must answer, or the equality above is vacuous"
+    assert fetched["body"], "the fetch must return a body, or the equality above is vacuous"
+
+
+@pytest.mark.asyncio
+async def test_a_grant_from_another_tenant_is_refused_before_the_registry_is_read(
+    registry: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#119 decision 4: the request boundary, at the seam every knowledge tool passes.
+
+    Unreachable through the shipped composition -- `StaticAuthorizationProvider`
+    stamps `DEPLOYMENT_TENANT` on every grant it builds -- and reachable here,
+    which is the point: a guard no input reaches survives its own deletion. The
+    grant is assembled by hand so the refusal has something to refuse.
+
+    The registry is made unreadable *after* the server is built, so a refusal that
+    still names both tenants proves the check ran before `_resolve` read the file.
+    That ordering is deliberate: `_unresolvable` names every registered project,
+    and a caller from another tenant must not be able to enumerate them by asking
+    for one that does not exist.
+    """
+    foreign = AuthorizationGrant(
+        tenant=TenantId("other-tenant"),
+        sensitivities=frozenset(Sensitivity),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+    server = build_server(registry, foreign)
+
+    def _must_not_be_read(self: ProjectRegistry) -> dict[str, dict[str, str]]:
+        raise AssertionError("the registry was read before the tenant boundary was checked")
+
+    # Patched on the class, not the instance: `ProjectRegistry` is a frozen
+    # dataclass, so `setattr` on one of them raises before the test can run.
+    monkeypatch.setattr(ProjectRegistry, "load", _must_not_be_read)
+
+    with pytest.raises(SdkToolError) as raised:
+        await _call_on(server, "knowledge.search", projectId="demo", query="token")
+
+    message = str(raised.value)
+    assert "'other-tenant'" in message, message
+    assert f"{DEPLOYMENT_TENANT.value!r}" in message, message
+    assert "demo" not in message, "the refusal must not name what this daemon serves"
+
+
+@pytest.mark.asyncio
+async def test_the_deployments_own_tenant_is_not_refused(registry: ProjectRegistry) -> None:
+    """The counterpart, so the refusal above is not vacuously green.
+
+    Without it, a boundary check that refused every grant would pass the test
+    above and fail nothing -- and would take every tool on the daemon with it.
+    """
+    server = build_server(registry, _allow_all())
+
+    result = await _call_on(server, "knowledge.search", projectId="demo", query="token")
+
+    assert result["results"]
