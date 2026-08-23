@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
     _PERMISSION_ERRNOS,
+    CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
     ProposalAlreadyAcceptedError,
@@ -2775,3 +2777,227 @@ def test_a_failing_body_write_rolls_the_migration_set_back(
         service.accept(drafted.proposal_id)
 
     assert _tree(paths.root) == before, "a failed accept leaves the tree exactly as it was"
+
+
+# -- accept validates before it moves (ADR-0027 decision 2) -----------------
+#
+# The three faces #307 demonstrated, and the recovery property the decision buys:
+# a proposal survives its own rejection, because nothing was consumed. Each test
+# asserts both halves, because an assertion on the refusal alone passes against a
+# version that refuses *after* deleting the sources -- which is the shape #307
+# reported, and which was run here as a mutation: with the pre-check moved below
+# the move, all three keep raising and all three go RED on the second half.
+#
+# The racing face lives in `test_propose_cli.py`, where `migrate apply` can say
+# whether the set left behind really applies.
+
+
+def _contents(root: Path) -> dict[str, bytes]:
+    """Every regular file under ``root``, keyed by its project-relative path.
+
+    Bytes, not the path set :func:`_tree` returns: a version that rewrote a file
+    in place -- or deleted one and wrote another under the same name -- leaves the
+    path set unchanged. No digest is taken either, so nothing here can agree with
+    a broken :class:`ContentHash`; the comparison is byte equality.
+    """
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+def test_two_operations_naming_one_body_are_refused_with_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#307 face 1: a breakage contained entirely inside one proposal.
+
+    A pair of ``upsertRevision`` operations naming one ``contentFile`` involves
+    no landed migration at all, so
+    :meth:`_refuse_if_a_replacement_breaks_an_existing_pin` -- which judges the
+    *landed* set, and which the sibling tests above cover -- has nothing to say
+    about it. Before ADR-0027 decision 2 the pair landed, ``migrate validate``
+    then refused the whole project at exit 4, and the proposal that produced it
+    had already been deleted.
+
+    ``refuse_duplicate_content_files`` now refuses it before anything moves, and
+    the replay reaches that guard *twice*: once as one of the whole-set guards in
+    stage 3, and again inside ``MigrationEngine.apply`` in stage 4. Measured --
+    deleting the stage-3 call alone leaves this green, because the engine's own
+    copy still refuses; deleting both is what turns it RED. So this pins the
+    pipeline's answer rather than one call site's, which is what ADR-0027's
+    closure argument is about.
+
+    The second assertion is the one an exit-code check cannot make and the one
+    #307 asked for: **the proposal directory is byte-identical afterwards**, so
+    the author still has the sources to correct rather than re-draft.
+    """
+    drafted = service.draft(_request())
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    upsert = next(op for op in operations if op["op"] == "upsertRevision")
+    # A second, genuinely different revision on a second, genuinely created item
+    # -- so the shared `contentFile` is the only thing wrong with the document.
+    operations.append(
+        {
+            "op": "createItem",
+            "itemId": "architecture.twin-policy",
+            "kind": "architecture",
+            "namespace": "architecture",
+            "owner": "platform-team",
+        }
+    )
+    operations.append(
+        {
+            **upsert,
+            "itemId": "architecture.twin-policy",
+            "revisionId": "01K9AAAAAA0000000000000009",
+        }
+    )
+    drafted.migration_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    with pytest.raises(ProposalError, match="same body file on disk"):
+        service.accept(drafted.proposal_id)
+
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+    assert not drafted.body_destination.exists()
+
+
+def test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#307 face 2: the migration pins a digest its own body no longer has.
+
+    The authoring slip is editing the body after the migration was written. The
+    loader verifies a declared pin every time it re-reads a referenced body, and
+    the pre-check's replay is what puts the incoming proposal through that loader
+    (stage 2) -- before ADR-0027 decision 2 nothing on the accept path re-read the
+    body at all, so the pair landed and ``migrate validate`` refused the project
+    afterwards with the proposal gone.
+    """
+    drafted = service.draft(_request())
+    drafted.body_file.write_text(BODY + "\nAppended after the migration was written.\n")
+    before = _contents(drafted.directory)
+
+    with pytest.raises(ProposalError, match="but the migration pins") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+    # The refusal comes from inside the replay, whose loader read a copy under a
+    # temporary directory. What reaches the author must name their own file and
+    # not that copy, or the remedy points at a path that no longer exists.
+    assert drafted.migration_file.name in str(caught.value)
+    assert "theurian-rehearsal" not in f"{caught.value} {caught.value.remedy}"
+
+
+def test_an_empty_content_file_is_refused_with_the_proposal_intact(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """#307 face 3: ``contentFile: ""`` under a schema ``minLength`` of 1.
+
+    The empty value never reaches the body moves -- ``_upsert_bodies`` skips an
+    operation whose ``contentFile`` is empty, so ``accept`` had nothing to move
+    and moved the migration alone. What refuses it is stage 1, the published
+    schema, run against the proposal's *own* document rather than the replay's
+    copy so that the message names the file the author has to correct.
+    """
+    drafted = service.draft(_request())
+    text = drafted.migration_file.read_text(encoding="utf-8")
+    poisoned = text.replace(f"contentFile: {drafted.content_file}", 'contentFile: ""')
+    assert poisoned != text, "the contentFile anchor did not match"
+    drafted.migration_file.write_text(poisoned, encoding="utf-8")
+    before = _contents(drafted.directory)
+
+    with pytest.raises(ProposalError, match="is not a valid migration") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert _contents(drafted.directory) == before, "the refused proposal must survive intact"
+    assert not list(paths.migrations.glob("*.yaml")), "no migration may land from a refusal"
+    assert drafted.migration_file.name in str(caught.value)
+    assert "Nothing has moved" in caught.value.remedy
+
+
+def test_a_refused_acceptance_modifies_no_file_anywhere_in_the_project(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """ADR-0027 decision 2's last owed compliance item, over the whole tree.
+
+    The replay stages the union of the landed set and the incoming proposal on
+    disk and applies it into a database, and it must do all of that outside the
+    project. Scoped to every file under the root and to their *bytes* -- the
+    shape ``test_generation_modifies_no_file_outside_the_proposal_directory``
+    uses for ``draft`` -- because a replay that wrote into ``.theurian/state/``
+    or over a landed body would leave the path set unchanged.
+
+    Driven by the racing refusal deliberately: it is the one that runs every
+    stage, so the replay had loaded the set, created its database and begun
+    applying before it refused. A refusal at stage 1 would prove far less.
+
+    The landed migration is placed **by hand rather than accepted**, and that is
+    load-bearing rather than convenience: an earlier ``accept`` would have run a
+    replay of its own, so anything that replay wrote into the project would
+    already be in the baseline, and a leak that writes the same path on every run
+    would be absorbed instead of caught. Measured -- against a version whose
+    replay wrote one fixed file into the project root, the accepted-first shape
+    stayed green.
+    """
+    first = service.draft(_request())
+    second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+    before = _contents(paths.root)
+
+    with pytest.raises(ProposalError, match="Revision conflict"):
+        service.accept(second.proposal_id)
+
+    assert _contents(paths.root) == before, "a refused acceptance wrote somewhere in the project"
+
+
+def test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in(
+    service: ProposalService, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The replay's target is throwaway, and a leak of it is a leak of knowledge.
+
+    What is staged there is a copy of every landed body plus the incoming one, so
+    a target left behind is the project's knowledge sitting in a temporary root
+    -- not a stray empty directory. ``tempfile.tempdir`` is redirected so this can
+    name the directory the rehearsal chose rather than trust the stdlib's
+    default, and ``_materialize`` is wrapped so the emptiness assertion cannot
+    pass against a run that never staged anything at all.
+    """
+    from theurian.cli import migration_pipeline as pipeline
+
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
+    staged: list[Path] = []
+    real_materialize = pipeline._materialize
+
+    def spy(candidate: CandidateMigrationSet, target: Path) -> Path:
+        staged.append(target)
+        return real_materialize(candidate, target)
+
+    monkeypatch.setattr(pipeline, "_materialize", spy)
+    first = service.draft(_request())
+    second = service.draft(_request(body="# Retry policy\n\nFive attempts.\n"))
+    # Landed by hand, as in the test above, so every target `staged` records
+    # belongs to the refused acceptance under test and to nothing before it.
+    shutil.copy(first.migration_file, paths.migrations / first.migration_file.name)
+    first.body_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(first.body_file, first.body_destination)
+    shutil.rmtree(first.directory)
+
+    with pytest.raises(ProposalError, match="Revision conflict"):
+        service.accept(second.proposal_id)
+
+    assert staged, "the replay staged nothing: the assertions below would prove nothing"
+    assert all(path.is_relative_to(system_temp) for path in staged), staged
+    assert not [path for path in staged if path.exists()], "a replay target was left behind"
+    assert list(system_temp.iterdir()) == [], "the replay left residue in the temporary root"

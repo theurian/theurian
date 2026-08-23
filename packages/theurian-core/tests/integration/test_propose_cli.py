@@ -19,6 +19,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
+from types import FunctionType
 from typing import Any
 
 import pytest
@@ -27,8 +28,10 @@ import yaml
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
+from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
 from theurian.cli.propose_commands import _DRAFT_STEPS
+from theurian.infrastructure.filesystem import migration_loader
 
 pytestmark = pytest.mark.integration
 
@@ -887,6 +890,272 @@ def test_accept_writes_its_json_failure_document_to_stderr_leaving_stdout_clean(
     payload = json.loads(result.stderr)
     assert payload["error"].strip()
     assert payload["remedy"].strip()
+
+
+# -- accept validates before it moves (ADR-0027 decision 2) -----------------
+#
+# The service tests own the three faces #307 demonstrated. These own the two
+# things only a process-level run can say: which exit code a refusal carries,
+# and that the set left behind is one `theurian migrate apply` really applies.
+
+
+def _contents(root: Path) -> dict[str, bytes]:
+    """Every regular file under ``root``, keyed by its relative path.
+
+    Bytes rather than names: a refusal that rewrote a proposal's migration in
+    place would leave the name set unchanged. No digest is taken, so nothing here
+    can agree with a broken hash -- the comparison is byte equality.
+    """
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink()
+    }
+
+
+def test_a_proposal_racing_another_onto_one_item_is_refused_and_the_rest_applies(
+    project: Path,
+) -> None:
+    """ADR-0027 decision 2's stage 4: the face stages 1 to 3 cannot see.
+
+    Both proposals are drafted *before either acceptance*, so both claim their
+    item's first revision and neither could have carried an
+    ``--expected-revision``: the item did not exist when they were written. The
+    pair is schema-valid, passes every statically decidable set guard and exits 0
+    on ``migrate validate`` -- and can never be applied. Measured on #316 before
+    the pre-check shipped: both acceptances exited 0, both proposals were
+    consumed, and the project was left validate-green and apply-red forever, with
+    the only recovery being to delete a landed migration --
+    ``plugins/claude-code/commands/propose.md`` forbids exactly that to the
+    documented actor.
+
+    So this is the test that goes RED if the dry replay is removed while stages
+    1 to 3 stay, and the three face tests in ``test_proposal_service.py`` do not.
+
+    Exit 1 and not 4: the fault is this proposal's own claim on the item, and
+    nothing landed, so re-drafting against the revision now in place is the
+    recovery -- which the remedy names.
+    """
+    _, first = _draft(project)
+    (project / "body.md").write_text("# Retry policy\n\nFive attempts.\n", encoding="utf-8")
+    _, second = _draft(project)
+    code, accepted = _invoke("propose", "accept", first["proposalId"])
+    assert code == 0, accepted
+    directory = project / ".theurian/proposals" / second["proposalId"]
+    before = _contents(directory)
+
+    code, payload = _invoke("propose", "accept", second["proposalId"])
+
+    assert code == 1, payload
+    assert "Revision conflict" in payload["error"]
+    assert "--expected-revision" in payload["remedy"]
+    assert _contents(directory) == before, "the refused proposal must survive intact"
+    # And what is left is a set that really applies -- the half a refusal alone
+    # does not prove, since refusing everything would satisfy the assertions above.
+    code, validated = _invoke("migrate", "validate")
+    assert code == 0, validated
+    assert validated["migrationCount"] == 1
+    code, applied = _invoke("migrate", "apply")
+    assert code == 0, applied
+    assert applied["applied"] == [first["migrationId"]]
+
+
+def test_a_fault_in_the_landed_set_is_not_reported_as_this_proposals_fault(
+    project: Path,
+) -> None:
+    """#227's ``{error, remedy}`` for the fault direction the proposal did not cause.
+
+    ``accept``'s failure surface widened with the pre-check: it now loads and
+    replays the project's whole migration set, so a fault that predates the
+    proposal can refuse an acceptance. Reporting that under exit 1 would be
+    false in the half that matters -- exit 1's contract is "nothing landed and
+    drafting again is the recovery", and a second draft here mints a duplicate
+    for a fault this proposal does not have (#89). It takes exit 4, the code
+    already reserved for "read the knowledge state before doing anything".
+
+    The landed fault is a racing pair placed by hand, which is the channel
+    ADR-0027's fourth residue names: only ``accept`` gained the replay, so a
+    migration copied into ``.theurian/migrations/`` never passes through it. The
+    set loads and validates green, and ``migrate apply`` refuses it -- asserted
+    here, because it is what makes the accept-side refusal agree with apply
+    rather than merely coincide with it.
+    """
+    _, first = _draft(project)
+    (project / "body.md").write_text("# Retry policy\n\nFive attempts.\n", encoding="utf-8")
+    _, second = _draft(project)
+    _invoke("propose", "accept", first["proposalId"])
+    _hand_place(project, second)
+    assert _invoke("migrate", "validate")[0] == 0, "the landed pair must be validate-green"
+    assert _invoke("migrate", "apply")[0] == EXIT_STATE_ERROR, "and apply-red"
+    (project / "body.md").write_text("# Other\n\nText.\n", encoding="utf-8")
+    _, waiting = _draft(project, "--item-id", "architecture.other-policy")
+    directory = project / ".theurian/proposals" / waiting["proposalId"]
+    before = _contents(directory)
+
+    code, payload = _invoke("propose", "accept", waiting["proposalId"])
+
+    assert code == EXIT_STATE_ERROR, payload
+    assert "with or without this proposal" in payload["error"]
+    assert ".theurian/migrations/" in payload["remedy"]
+    # Never a re-draft: this proposal is not the cause, and drafting it again
+    # would mint a second migration for a fault it does not have (#89).
+    assert "draft" not in payload["remedy"].lower(), payload["remedy"]
+    assert _contents(directory) == before, "the refused proposal must survive intact"
+
+
+def _hand_place(root: Path, drafted: dict[str, Any]) -> None:
+    """Move a drafted proposal's files into place without going through ``accept``.
+
+    The one channel that still reaches a validate-green, apply-red set (ADR-0027
+    residue 4). The proposal directory is removed afterwards, so what is left is
+    indistinguishable from a migration a contributor committed by hand.
+    """
+    directory = root / ".theurian/proposals" / drafted["proposalId"]
+    shutil.copy(directory / drafted["migrationFile"], root / ".theurian/migrations")
+    destination = root / drafted["bodyDestination"]
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    body = directory / Path(drafted["bodyFile"]).relative_to(drafted["proposalDirectory"])
+    shutil.copy(body, destination)
+    shutil.rmtree(directory)
+
+
+# -- one pipeline, not two (ADR-0027 decision 2's hard condition) -----------
+#
+# The closure argument is that `accept` and `migrate apply` *cannot* disagree
+# about whether a set is usable, because there is one pipeline rather than two.
+# A test comparing the two answers on a fixture holds for exactly as long as the
+# two happen to agree, which is the failure the hard condition exists to prevent
+# -- so these walk the bytecode instead, in the shape
+# `test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write` uses
+# for the MCP write boundary.
+
+
+def _referenced_names(function: Any) -> set[str]:
+    """Every attribute and global name reachable from a function's own code.
+
+    Recursing into nested code objects is load-bearing here and not a
+    generalisation: ``propose_commands._service`` hands the service its
+    dependencies as lambdas, so ``rehearse_migration_set`` and
+    ``validate_migration_document`` live in the lambdas' code objects and are
+    absent from ``_service.__code__.co_names``.
+    """
+    seen: set[str] = set()
+    pending = [function.__code__]
+    while pending:
+        code = pending.pop()
+        seen.update(code.co_names)
+        pending.extend(c for c in code.co_consts if hasattr(c, "co_names"))
+    return seen
+
+
+def _names_through_local_helpers(function: Any) -> set[str]:
+    """Names reachable from ``function``, following helpers defined beside it.
+
+    ``migrate validate`` reaches two of its three whole-set guards through
+    wrappers in its own module (``_refuse_a_body_file_backing_two_revisions``),
+    so a walk that stopped at the command callback would see the wrapper's name
+    and miss the guard's -- and the population comparison below would be between
+    a set of two wrappers and a set of three guards. Only functions defined in
+    the same module are followed, which keeps the closure bounded.
+    """
+    seen: set[str] = set()
+    visited = {function}
+    pending = [function]
+    while pending:
+        current = pending.pop()
+        names = _referenced_names(current)
+        seen |= names
+        for name in names:
+            target = current.__globals__.get(name)
+            if (
+                isinstance(target, FunctionType)
+                and target.__module__ == function.__module__
+                and target not in visited
+            ):
+                visited.add(target)
+                pending.append(target)
+    return seen
+
+
+def _callback(app: typer.Typer, name: str) -> Any:
+    """The function a registered command dispatches to.
+
+    Looked up through the registration rather than imported by name, so these
+    walk what the CLI actually runs: a module-level function nothing registers
+    would otherwise satisfy every assertion below.
+    """
+    command = next(c for c in app.registered_commands if c.name == name)
+    assert command.callback is not None, f"the {name} command has no callback to walk"
+    return command.callback
+
+
+def test_the_accept_replay_and_migrate_apply_reach_one_apply_function() -> None:
+    """ADR-0027 decision 2's hard condition, which no behavioural test can hold.
+
+    Two halves, and a re-implementation fails one or the other. The name has to
+    be reached from both -- a replay-shaped subset that never calls it fails
+    here -- and the name has to resolve, through each module's *own* globals, to
+    one object, so a second definition under the same name fails too.
+    """
+    apply_command = _callback(commands.migrate_app, "apply")
+    reached = _referenced_names(apply_command)
+
+    assert "apply_migration_set" in reached, "migrate apply no longer runs the shared pipeline"
+    assert "apply_migration_set" in _referenced_names(migration_pipeline.rehearse_migration_set)
+    assert (
+        apply_command.__globals__["apply_migration_set"]
+        is migration_pipeline.rehearse_migration_set.__globals__["apply_migration_set"]
+    ), "the replay and migrate apply now hold two definitions of one pipeline"
+    # The control that proves this walk can answer "no": a real apply must not
+    # route through the rehearsal, and a walk that reported every name in the
+    # interpreter would claim it does.
+    assert "rehearse_migration_set" not in reached
+
+
+def test_the_accept_pre_check_reaches_the_loaders_own_entry_points_and_every_guard() -> None:
+    """The pre-check's stages are the loader's and ``validate``'s, not copies.
+
+    Stage 1 is the schema entry ``draft`` already calls, stage 2 is the loader's
+    own read (which is where a declared pin is verified), and stage 3 is the
+    whole-set guards. The guards are compared as a *population* rather than as
+    the three ADR-0027 names: a fourth guard added to ``migrate validate`` and
+    not to the replay is the drift this test exists to catch, and a hard-coded
+    triple would stay green through it.
+    """
+    wiring = _referenced_names(propose_commands._service)
+    replay = migration_pipeline.rehearse_migration_set
+    validate_command = _callback(commands.migrate_app, "validate")
+
+    assert "_service" in _referenced_names(_callback(propose_commands.propose_app, "accept"))
+    assert {"rehearse_migration_set", "validate_migration_document"} <= wiring, wiring
+    assert (
+        propose_commands._service.__globals__["validate_migration_document"]
+        is migration_loader.validate_migration_document
+    ), "stage 1 is a second schema check, not the loader's own"
+    assert propose_commands._service.__globals__["rehearse_migration_set"] is replay, (
+        "the accept wiring replays through something other than the shared pipeline"
+    )
+    assert replay.__globals__["load_migrations"] is migration_loader.load_migrations, (
+        "stage 2 is a second loader, so a declared pin is verified twice and by two rules"
+    )
+
+    validate_guards = {
+        name
+        for name in _names_through_local_helpers(validate_command)
+        if name.startswith("refuse_")
+    }
+    replay_guards = {name for name in _referenced_names(replay) if name.startswith("refuse_")}
+
+    assert {
+        "refuse_unenforceable_scope",
+        "refuse_duplicate_content_files",
+        "refuse_alias_item_id_collision",
+    } <= validate_guards, validate_guards
+    assert validate_guards == replay_guards, "the replay runs a different set of guards"
+    for name in validate_guards:
+        assert validate_command.__globals__[name] is replay.__globals__[name], (
+            f"{name} is defined twice: validate's copy and the replay's"
+        )
 
 
 # -- governed metadata (#249) ----------------------------------------------
