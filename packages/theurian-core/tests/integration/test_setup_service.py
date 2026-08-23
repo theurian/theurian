@@ -23,6 +23,7 @@ from theurian.application.setup_context import SetupContext
 from theurian.application.setup_service import SetupRequest, SetupService
 from theurian.application.setup_steps import STEPS, Step, probe_project_registered
 from theurian.cli.commands import _emit
+from theurian.domain.project import GITIGNORE_ENTRIES
 from theurian.domain.setup import (
     SetupReport,
     SetupState,
@@ -764,7 +765,10 @@ def _converged_repository(base: Path) -> SetupContext:
         ),
         encoding="utf-8",
     )
-    (root / ".gitignore").write_text(".theurian/state/\n", encoding="utf-8")
+    # Every managed entry, not just `.theurian/state/`: `probe_gitignore` reports
+    # `satisfied` only when the whole current block is present, so a stale block
+    # (one missing `.theurian/proposals-local/`) no longer reads as converged.
+    (root / ".gitignore").write_text("\n".join(GITIGNORE_ENTRIES) + "\n", encoding="utf-8")
     mcp_config = FakeMcpConfig()
     mcp_config.serena = True
     context = _with(base, project_root=root, mcp_config=mcp_config)

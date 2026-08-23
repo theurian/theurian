@@ -31,6 +31,7 @@ from typer.testing import CliRunner
 from theurian.cli import commands, migration_pipeline, propose_commands
 from theurian.cli.main import app
 from theurian.cli.propose_commands import _ACCEPT_STEPS, _DRAFT_STEPS
+from theurian.domain.project import GITIGNORE_BLOCK_START, GITIGNORE_SECTIONS
 from theurian.infrastructure.filesystem import migration_loader
 
 pytestmark = pytest.mark.integration
@@ -400,6 +401,82 @@ def test_the_rule_that_hides_a_local_proposal_is_one_a_clone_would_inherit(
     source, _, rest = checked.stdout.partition(":")
     assert source == ".gitignore", checked.stdout
     assert rest.split(":")[1].startswith(".theurian/proposals-local/"), checked.stdout
+
+
+def _roll_the_block_back_to_pre_adr_0028(root: Path) -> None:
+    """Make the managed ``.gitignore`` block the one every 0.1.0.dev9 project has.
+
+    ADR-0028 added the ``.theurian/proposals-local/`` section; a project
+    initialised before it has the block without that section. Removing exactly
+    that section reproduces the shipped stale block -- the reviewers'
+    ``repro_local_ignore.sh`` shape, derived from the sections rather than pasted
+    so it tracks the real block.
+    """
+    authored = GITIGNORE_SECTIONS[1]
+    removal = authored.comment + "\n" + "".join(f"{entry}\n" for entry in authored.entries)
+    gitignore = root / ".gitignore"
+    gitignore.write_text(gitignore.read_text(encoding="utf-8").replace(removal, ""), "utf-8")
+
+
+def test_a_local_draft_brings_a_stale_ignore_block_current_before_it_writes(
+    project: Path,
+) -> None:
+    """HIGH-2: `--local` confidentiality cannot rest on an ignore rule that is absent.
+
+    Every project initialised by the shipped 0.1.0.dev9 has a managed block that
+    predates ADR-0028, so it does *not* ignore `.theurian/proposals-local/`. A
+    `--local` draft there wrote a private body to a directory Git tracks while its
+    own nextSteps asserted it would not appear in `git status`.
+
+    The draft now brings the block current before writing, so the body really is
+    ignored and the assertion the command prints is verified reality. Asked of
+    Git, not of the tuple, for the reason the sibling tests give -- and the stale
+    block is rolled back to the *shipped* shape, which the ADR-0028 compliance
+    tests structurally cannot reach because they re-init with the current block.
+    """
+    _roll_the_block_back_to_pre_adr_0028(project)
+    assert ".theurian/proposals-local/" not in (project / ".gitignore").read_text("utf-8"), (
+        "the fixture must actually be stale, or this asserts nothing"
+    )
+
+    code, local = _draft(project, "--local")
+
+    assert code == 0, local
+    inside = f"{local['proposalDirectory']}/{local['migrationFile']}"
+    checked = _git(project, "check-ignore", "-v", inside)
+    assert checked.returncode == 0, f"a --local body is not git-ignored after the draft: {inside}"
+    assert ".theurian/proposals-local/" in (project / ".gitignore").read_text("utf-8"), (
+        "the draft did not bring the managed block current"
+    )
+    assert any("proposals-local" in step and "git status" in step for step in local["nextSteps"]), (
+        f"the --local step is missing from nextSteps: {local['nextSteps']}"
+    )
+
+
+def test_a_local_draft_is_refused_when_the_ignore_rule_cannot_be_written(
+    project: Path,
+) -> None:
+    """The other arm of HIGH-2: refuse rather than write a private body unignored.
+
+    When the managed block cannot be brought current -- here a `.gitignore` with a
+    second start marker, which `ensure_gitignore` refuses to rewrite rather than
+    guess which rules are Theurian's -- `--local` refuses with a remedy and writes
+    no proposal directory, instead of landing a private body Git would track.
+    """
+    gitignore = project / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text("utf-8") + f"\n{GITIGNORE_BLOCK_START}\nsomething\n", "utf-8"
+    )
+
+    code, refusal = _draft(project, "--local")
+
+    assert code == EXIT_INVALID_INPUT, refusal
+    assert refusal.get("remedy"), refusal
+    # `init` creates an empty `proposals-local/`; the refusal must not have written
+    # a proposal *into* it while the ignore rule was unestablished.
+    assert not list((project / ".theurian" / "proposals-local").iterdir()), (
+        "a proposal was written despite the ignore rule being unestablished"
+    )
 
 
 def test_accepting_a_local_proposal_says_what_stays_behind_and_what_does_not(

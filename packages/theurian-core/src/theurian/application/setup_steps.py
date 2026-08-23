@@ -54,6 +54,7 @@ from theurian.domain.extras import (
     DAEMON_MODULES,
 )
 from theurian.domain.ports.daemon_manager import ServiceState
+from theurian.domain.project import GITIGNORE_ENTRIES
 from theurian.domain.setup import SetupStep, StepId, StepStatus
 from theurian.security.env_file import (
     ENV_BLOCK_START,
@@ -872,7 +873,13 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
     gitignore = root / ".gitignore"
     exists = gitignore.is_file()
     contents = gitignore.read_text(encoding="utf-8") if exists else ""
-    if ".theurian/state" in contents:
+    # Every entry the current managed block writes, not just `.theurian/state`. A
+    # substring check on one entry read `satisfied` off a *stale* block -- every
+    # project initialised before ADR-0028 added `.theurian/proposals-local/`, so
+    # `theurian propose --local` there wrote a private body to a directory Git did
+    # not ignore while `doctor` reported the ignore step converged (HIGH-2).
+    missing = [entry for entry in GITIGNORE_ENTRIES if entry not in contents]
+    if not missing:
         return SetupStep(
             step_id=StepId.GITIGNORE,
             status=StepStatus.SATISFIED,
@@ -882,19 +889,24 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
     # file may not be there at all -- which is how a `.gitignore` that was never
     # created came to be reported as one setup had modified.
     #
-    # Two summaries for one status, because the file's absence and its silence
-    # are different things to be told and the reader acts on them differently.
-    # Naming the path is what removing `paths` has to compensate for; saying "it
-    # does not ignore" of a file that is not there was how the first attempt at
-    # that got it wrong.
+    # Three summaries for one status, because a file that is absent, one that is
+    # silent, and one whose block is out of date are different things to be told
+    # and the reader acts on them differently. Naming the path is what removing
+    # `paths` has to compensate for; the stale case names the missing entries so
+    # the reader can see what a re-run brings current.
+    stale = exists and len(missing) < len(GITIGNORE_ENTRIES)
+    if stale:
+        summary = (
+            f"{gitignore}'s Theurian block is out of date: it does not ignore {', '.join(missing)}."
+        )
+    elif exists:
+        summary = f"{gitignore} has no Theurian block."
+    else:
+        summary = f"{gitignore} does not exist, so nothing ignores the derived artifacts."
     return SetupStep(
         step_id=StepId.GITIGNORE,
         status=StepStatus.MISSING,
-        summary=(
-            f"{gitignore} has no Theurian block."
-            if exists
-            else f"{gitignore} does not exist, so nothing ignores the derived artifacts."
-        ),
+        summary=summary,
         action="Add the Theurian block to .gitignore. Run `theurian init`.",
         critical=False,
     )

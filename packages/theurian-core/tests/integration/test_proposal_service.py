@@ -301,10 +301,13 @@ def test_generation_writes_only_under_the_proposal_directory(
     and a version that wrote the body straight into ``.theurian/knowledge/``
     would satisfy any assertion phrased over the proposal directory alone.
 
-    Parametrized over both locations for ADR-0028's first owed item. ``--local``
-    is documented as picking the parent *and nothing else*, so the containment
-    claim is exactly the same claim in both -- and the directory is asserted
-    whole (``<parent>/<proposal-id>``) rather than by prefix, because
+    Parametrized over both locations for ADR-0028's first owed item. A tracked
+    draft writes only under its proposal directory. A ``--local`` draft writes
+    *one* file outside it -- the managed ``.gitignore``, brought current because
+    that ignore rule is what makes the local directory confidential (ADR-0028,
+    HIGH-2). That single named exception is allowed here and nothing else is: a
+    body written into ``.theurian/knowledge/`` is still caught. The directory is
+    asserted whole (``<parent>/<proposal-id>``) rather than by prefix, because
     ``.theurian/proposals-local/`` and ``.theurian/proposals/`` are each other's
     near-misses: a draft that ignored the flag would still be "under a proposal
     directory" by any looser phrasing.
@@ -315,9 +318,12 @@ def test_generation_writes_only_under_the_proposal_directory(
 
     written = _tree(paths.root) - before
     directory = drafted.directory.relative_to(paths.root).as_posix()
+    allowed_outside = {".gitignore"} if local else set[str]()
 
     assert written, "the draft wrote nothing at all"
-    assert all(path.startswith(f"{directory}/") for path in written), written
+    assert all(path.startswith(f"{directory}/") or path in allowed_outside for path in written), (
+        written
+    )
     assert directory == f"{parent}{drafted.proposal_id.value}"
 
 

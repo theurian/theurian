@@ -63,7 +63,7 @@ from typing import Final, NoReturn
 
 import yaml
 
-from theurian.application.project_service import ProjectPaths
+from theurian.application.project_service import ProjectError, ProjectPaths, ensure_gitignore
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
 from theurian.domain.errors import (
     InputTooLargeError,
@@ -470,15 +470,20 @@ class ProposalService:
     # -- generation --------------------------------------------------------
 
     def draft(self, request: ProposalRequest, *, local: bool = False) -> DraftedProposal:
-        """Write one proposal directory, and nothing outside it.
+        """Write one proposal directory, and -- for ``--local`` -- the ignore rule it needs.
 
-        ``local`` picks the parent and nothing else (ADR-0028): the layout
-        inside the directory is identical, and the migration's ``contentFile``
-        is unaffected because it is relative to ``.theurian/migrations/``, which
-        is where the migration lands from either location. It is a parameter of
-        the *act* rather than a field of :class:`ProposalRequest`, which is what
-        becomes the migration document -- where the draft is written is not
-        something the reviewed text says.
+        ``local`` picks the parent (ADR-0028): the layout inside the directory is
+        identical, and the migration's ``contentFile`` is unaffected because it is
+        relative to ``.theurian/migrations/``, which is where the migration lands
+        from either location. It is a parameter of the *act* rather than a field
+        of :class:`ProposalRequest`, which is what becomes the migration document
+        -- where the draft is written is not something the reviewed text says.
+
+        A ``local=True`` draft also brings the managed ``.gitignore`` block current
+        before it writes, because ``--local``'s confidentiality *is* that ignore
+        rule (:meth:`_ensure_local_is_ignored`); it is refused rather than written
+        if the rule cannot be established. An ordinary draft writes only its own
+        proposal directory and touches nothing outside it.
 
         It defaults to the committable location, and that direction is
         deliberate: a caller who forgets it gets a proposal that shows up in
@@ -506,9 +511,10 @@ class ProposalService:
 
         Raises:
             ProposalError: If the request cannot be packaged, if an update omits
-                or misplaces its ``expectedRevision``, or if the built migration
-                does not satisfy the published schema. Nothing is written in any
-                case.
+                or misplaces its ``expectedRevision``, if the built migration does
+                not satisfy the published schema, or if a ``--local`` draft cannot
+                make ``.theurian/proposals-local/`` git-ignored. No proposal
+                directory is written in any case.
         """
         self._check_expected_revision(request)
         proposal_id = ProposalId(self._ids.new_ulid().value)
@@ -532,6 +538,13 @@ class ProposalService:
             digest=digest,
         )
         self._validate(document)
+
+        if local:
+            # Before a single byte is written: `--local`'s confidentiality rests
+            # entirely on `.theurian/proposals-local/` being git-ignored, and that
+            # is only true if the managed block carries the ADR-0028 entry (see
+            # `_ensure_local_is_ignored`). Refused here, nothing is written.
+            self._ensure_local_is_ignored()
 
         parent = self._paths.proposals_local if local else self._paths.proposals
         directory = parent / proposal_id.value
@@ -573,6 +586,48 @@ class ProposalService:
             content_sha256=digest,
             body_destination=self._paths.knowledge / relative_body,
         )
+
+    def _ensure_local_is_ignored(self) -> None:
+        """Bring the managed ``.gitignore`` block current before a ``--local`` draft writes.
+
+        ``--local``'s whole promise is confidentiality: the body does not appear
+        in ``git status`` and does not travel to a clone or a pull request. That
+        rests entirely on ``.theurian/proposals-local/`` being git-ignored, which
+        is true only when the managed block carries the ADR-0028 entry. A project
+        initialised before ADR-0028 -- every shipped ``0.1.0.dev9`` project -- has
+        a block that does not, so a ``--local`` draft there would write a private
+        body to a directory Git tracks while the command claimed it was ignored
+        (HIGH-2, reproduced with a stale block).
+
+        :func:`~theurian.application.project_service.ensure_gitignore` is
+        idempotent and is the same re-run path ``theurian init`` uses, so a stale
+        block is brought current and a current one is left untouched. If the block
+        cannot be made current -- a ``.gitignore`` the filesystem refuses to write
+        or read, or markers only the operator can repair -- the draft is *refused*
+        rather than written and then falsely reported as ignored. The refusal
+        never interpolates the absolute project path, which would carry the
+        developer's home directory into an ``accept --json`` document (the
+        discipline :meth:`_unreadable` records).
+        """
+        try:
+            ensure_gitignore(self._paths.root)
+        except ProjectError as exc:
+            raise ProposalError(
+                "A --local draft needs .theurian/proposals-local/ to be git-ignored, but the "
+                "project's .gitignore has a Theurian block that cannot be rewritten safely. "
+                "Nothing was written.",
+                remedy=exc.remedy
+                or "Repair the Theurian block in .gitignore by hand, then run `theurian init`.",
+            ) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else "it is unusable"
+            raise ProposalError(
+                f"A --local draft needs .theurian/proposals-local/ to be git-ignored, but the "
+                f"project's .gitignore could not be updated ({reason}). Nothing was written.",
+                remedy="Make .gitignore readable and writable, or run `theurian init`, then "
+                "draft again. To draft without the ignore guarantee, drop --local -- but the "
+                "proposal will then show up in git status.",
+            ) from exc
 
     def _check_expected_revision(self, request: ProposalRequest) -> None:
         """Refuse an update with no guard, and a first revision with a stale one.

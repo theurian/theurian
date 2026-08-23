@@ -633,8 +633,8 @@ _DRAFT_STEPS: Final = (
 #: surprising to someone reading a path that is not where proposals normally go
 #: (ADR-0028: the availability residual is accepted, not fixed).
 _LOCAL_DRAFT_STEP: Final = (
-    "This proposal is under .theurian/proposals-local/, which the ignore block "
-    "`theurian init` writes covers: it will not appear in `git status`, and it does not "
+    "This proposal is under .theurian/proposals-local/, which this draft made sure the "
+    "Theurian ignore block covers: it will not appear in `git status`, and it does not "
     "travel to a clone or into a pull request. `git clean -xdf` deletes it, so this is a "
     "copy and not the only home for anything you need to keep."
 )
