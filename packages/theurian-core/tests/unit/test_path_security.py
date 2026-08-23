@@ -597,13 +597,17 @@ def test_a_regular_file_is_not_refused(project_root: Path) -> None:
 
 #: Every file type ``_unbounded_shape`` distinguishes, keyed by ``st_mode``.
 #:
-#: Written as literal mode bits rather than ``stat`` constants for the two
-#: residual rows: ``stat.S_IFDOOR`` is ``0`` on macOS and ``0o150000`` on
-#: Solaris, so a table built from it would silently test a different thing on
-#: each platform -- and ``0``, which it collapses to here, is a mode no real
-#: ``stat`` returns and therefore a fixture that proves nothing about doors.
-#: The named types keep their constants, because those are the same everywhere
-#: POSIX and naming them is what makes the row readable.
+#: The two exotic rows are written as literal mode bits rather than as ``stat``
+#: constants. CPython's ``_stat`` takes those names from the platform's own
+#: headers and defines them as ``0`` where the platform has none, so
+#: ``stat.S_IFDOOR`` is ``0`` on this machine (measured 2026-08-24, macOS) --
+#: a table built from it would collapse the door row into the mode-0 row and
+#: quietly test one thing where it reads as testing three. The literals are the
+#: values those types carry where they exist, and here they are simply modes
+#: this build has no name for, which is the property under test either way.
+#:
+#: The named types keep their constants: those are the same everywhere POSIX,
+#: and naming them is what makes the row readable.
 _MODE_SHAPES: list[tuple[int, str | None, str]] = [
     (stat.S_IFREG, None, "regular-file"),
     (stat.S_IFDIR, None, "directory"),
@@ -626,9 +630,12 @@ def test_the_shape_check_names_every_file_type_it_meets(mode: int, expected: str
     """``_unbounded_shape`` is a pure function of ``st_mode``, tested as one.
 
     Issue #215's guard is reachable through a real file for only two of these
-    rows: a FIFO and a socket are makeable in a test, a character or block device
-    needs root, and a Solaris door needs Solaris. So the branches that name the
-    rest were carried by nothing at all -- deleting the character-device branch,
+    rows. A FIFO and a socket are makeable in a test, and both have one above.
+    A character or block device is not: ``mknod`` needs root, and the ones that
+    already exist -- ``/dev/zero``, ``/dev/null`` -- are outside every project
+    root, so containment refuses them before the shape check is reached, by name
+    or through a symlink alike. A door needs Solaris. So the branches naming the
+    rest were carried by nothing at all: deleting the character-device branch,
     deleting the block-device branch, and turning the residual ``return "a
     special file"`` into ``return None`` each passed the whole suite.
 
