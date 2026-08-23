@@ -30,11 +30,14 @@ is what proves the recording stayed home.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Final, cast
 
 import pytest
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
+from visit_counting import CountsVisits
 
 from theurian.application.ingestion_service import _to_document
 from theurian.domain.knowledge import SourceAnchor
@@ -45,6 +48,7 @@ from theurian.infrastructure.filesystem.parsers.openapi import (
     MAX_REFS,
     NETWORK_PATH_SCHEMES,
     OpenApiParser,
+    _external_refs,
 )
 from theurian.infrastructure.filesystem.parsers.registry import OPENAPI
 
@@ -676,3 +680,179 @@ def test_a_malformed_ipv6_ref_does_not_discard_the_document() -> None:
         "http://[::1",
         "https://evil.test/x.json",
     }
+
+
+# ==========================================================================
+# The walk itself is bounded, by node identity (#245)
+# ==========================================================================
+#
+# `_index` above serialises through `json.dumps`, which is exactly what these
+# tests must not do: it copies every shared sub-object into a tree and deletes
+# the property under test. So they go through YAML, where an alias *is* the
+# sharing, or call the walk directly with a graph built by hand.
+
+
+def _index_of_yaml(text: str) -> dict[str, Any]:
+    """Parse ``text`` as the real parser does, keeping YAML's shared nodes shared."""
+    parsed = OpenApiParser().parse(text.encode(), media_type=OPENAPI, anchor=ANCHOR)
+    structured = cast("dict[str, Any]", parsed.structured)
+    return cast("dict[str, Any]", structured["_index"])
+
+
+def _alias_chain(levels: int) -> str:
+    """A document with ``2 ** levels`` paths to one ``$ref``, and one ``$ref`` in it.
+
+    Each level names the level below it twice, so the *graph* grows by one node
+    per level while the number of paths through it doubles. This is issue #245's
+    own input shape: 22 levels is 677 bytes.
+    """
+    lines = ["openapi: '3.1.0'", "a0: &a0", '  "$ref": "https://evil.test/x.json"']
+    for level in range(1, levels + 1):
+        lines.append(f"a{level}: &a{level}")
+        lines.append(f"  p: *a{level - 1}")
+        lines.append(f"  q: *a{level - 1}")
+    lines.append(f"top: *a{levels}")
+    return "\n".join(lines) + "\n"
+
+
+def test_a_shared_node_is_entered_once_however_many_paths_reach_it() -> None:
+    """The mechanism, counted rather than timed.
+
+    ``walk`` reads a mapping's children through ``items()`` exactly once per
+    descent, so the count is the number of descents. Before the memo it was the
+    number of *paths*: 4096 here, and 2 ** 22 for the document below.
+    """
+    shared = CountsVisits({"$ref": "https://evil.test/x.json"})
+    node: dict[str, Any] = {"leaf": shared}
+    for _ in range(12):
+        node = {"p": node, "q": node}
+
+    walk = _external_refs({"openapi": "3.1.0", "top": node})
+
+    assert shared.visits == 1, f"the shared node was entered {shared.visits} times"
+    assert [ref["ref"] for ref in walk.found] == ["https://evil.test/x.json"]
+
+
+def test_an_alias_bomb_is_walked_in_milliseconds() -> None:
+    """Issue #245's own reproduction, through the real parser.
+
+    Measured on this branch: 677 bytes at 22 alias levels cost 10.36 s before
+    the memo and 0.04 ms after, recording the same single reference and reaching
+    neither cap -- which is why neither cap could have stopped it. The bound is
+    wall clock because the defect's whole expression is time, and it sits four
+    orders of magnitude above the measured cost and three below the unmemoised
+    one.
+    """
+    text = _alias_chain(22)
+    assert len(text) < 1024, f"the input is {len(text)} bytes"
+
+    started = time.monotonic()
+    index = _index_of_yaml(text)
+    elapsed = time.monotonic() - started
+
+    assert [ref["ref"] for ref in index["externalRefs"]] == ["https://evil.test/x.json"]
+    assert elapsed < 5, f"the alias bomb took {elapsed:.2f}s"
+
+
+def test_every_reference_in_a_shared_graph_is_still_recorded() -> None:
+    """The false-negative side: sharing must not cost the record anything.
+
+    A node reached by many paths is walked once, and once is enough -- what it
+    contains does not depend on which path arrived. Both references below sit
+    under shared nodes, and both are recorded, each at the first path that
+    reached it.
+    """
+    text = (
+        "openapi: '3.1.0'\n"
+        "shared: &shared\n"
+        '  first: {"$ref": "https://evil.test/a.json"}\n'
+        '  second: {"$ref": "./b.yaml"}\n'
+        "components:\n"
+        "  schemas:\n"
+        "    A: *shared\n"
+        "    B: *shared\n"
+        "top: *shared\n"
+    )
+
+    index = _index_of_yaml(text)
+
+    assert [ref["ref"] for ref in index["externalRefs"]] == [
+        "https://evil.test/a.json",
+        "./b.yaml",
+    ]
+    assert index["refWalkTruncations"] == [], "nothing was cut, so nothing may claim it was"
+    assert [ref["at"] for ref in index["externalRefs"]] == ["shared.first", "shared.second"]
+
+
+@pytest.mark.skipif(not CAN_INTERRUPT_A_HANG, reason="needs an interruptible timer")
+def test_a_node_already_walked_is_not_reported_as_an_uninspected_subtree() -> None:
+    """Where the memo sits relative to the caps, from the honest-marker side.
+
+    Two hundred alias levels put the chain far past ``MAX_REF_DEPTH`` when it is
+    followed from ``top``. Every one of those nodes is also a top-level key, so
+    the walk has already been inside all of them by the time it gets there, and
+    a depth marker would be the claim that a subtree went unlooked-at when it
+    did not.
+
+    The timer is not decoration: 2 ** 200 paths do not terminate, so without the
+    memo this assertion would never be *reached*, and a test that hangs on a
+    regression grades it no better than a test that was never written
+    (``hang_guard``). It costs 0.4 ms when the memo is there.
+    """
+    with fails_rather_than_hanging(20, waiting_for="the $ref walk over 200 alias levels"):
+        index = _index_of_yaml(_alias_chain(200))
+
+    assert [ref["ref"] for ref in index["externalRefs"]] == ["https://evil.test/x.json"]
+    assert index["refWalkTruncations"] == [], (
+        "every node on that chain was walked from its own top-level key first"
+    )
+
+
+def test_a_cap_does_not_mark_a_subtree_the_walk_has_already_been_inside() -> None:
+    """Where the memo sits: *before* the caps, not after them.
+
+    The shared node is walked at the shallow path and then reached again past
+    ``MAX_REF_DEPTH``. Checking the caps first would record a depth cut there --
+    "this subtree went unlooked-at" -- about the very subtree the walk had just
+    finished reading, and ``unresolvedRefCount`` would read 2 for a document
+    holding one reference and hiding nothing.
+    """
+    shared: dict[str, Any] = {"$ref": "https://evil.test/x.json"}
+    document = {
+        "openapi": "3.1.0",
+        "a_shallow": shared,
+        "z_deep": _buried(MAX_REF_DEPTH, shared),
+    }
+
+    walk = _external_refs(document)
+
+    assert [ref["ref"] for ref in walk.found] == ["https://evil.test/x.json"]
+    assert walk.truncations == (), (
+        "the deep path reached a node this walk had already been inside, so "
+        "nothing was left uninspected for a marker to warn about"
+    )
+
+
+def test_a_node_a_cap_turned_away_is_still_walked_when_reached_shallower() -> None:
+    """The other half of the placement: a node enters the memo only on descent.
+
+    ``deep`` reaches the shared node past ``MAX_REF_DEPTH``, so the walk records
+    a cut and declines to enter it. Marking it there would have been the claim
+    that it had been inspected, and the second, shallow path to the same node --
+    the one that *can* be walked -- would then have been skipped, losing the
+    reference entirely.
+    """
+    shared: dict[str, Any] = {"$ref": "https://evil.test/x.json"}
+    document = {
+        "openapi": "3.1.0",
+        "a_deep": _buried(MAX_REF_DEPTH, shared),
+        "z_shallow": shared,
+    }
+
+    walk = _external_refs(document)
+
+    assert [ref["ref"] for ref in walk.found] == ["https://evil.test/x.json"]
+    assert [cut["reason"] for cut in walk.truncations] == ["depth"], (
+        "the deep path was genuinely cut, and still says so"
+    )
+    assert walk.found[0]["at"] == "z_shallow", "recorded at the path that could be walked"

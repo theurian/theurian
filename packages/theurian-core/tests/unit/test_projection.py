@@ -10,9 +10,9 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, override
 
 import pytest
+from visit_counting import CountsVisits
 
 from theurian.domain.errors import InputTooLargeError
 from theurian.normalization.projection import (
@@ -26,11 +26,6 @@ from theurian.normalization.projection import (
     summarize_structure,
 )
 from theurian.security.yaml_loading import load_yaml
-
-if TYPE_CHECKING:
-    # What `dict.items()` returns, and so what an override of it must return.
-    # A type-checking name only: it is not bound at runtime.
-    from _collections_abc import dict_items
 
 # -- Determinism -----------------------------------------------------------
 
@@ -181,26 +176,7 @@ def test_project_checked_passes_within_the_limit() -> None:
 # -- Budgets bound the walk, not only its result (issue #232) --------------
 
 
-class _CountsVisits(dict[str, object]):
-    """A mapping that records how often the walk descends into it.
-
-    ``_walk`` calls ``items()`` exactly once per descent, so the count is the
-    number of times this sub-object was materialised. Counting is what makes
-    these tests deterministic: the alternative is a stopwatch, and a stopwatch
-    on a loaded machine measures the machine.
-    """
-
-    def __init__(self, mapping: dict[str, object]) -> None:
-        super().__init__(mapping)
-        self.visits = 0
-
-    @override
-    def items(self) -> dict_items[str, object]:
-        self.visits += 1
-        return super().items()
-
-
-def _shared_by(levels: int, shared: _CountsVisits) -> dict[str, object]:
+def _shared_by(levels: int, shared: CountsVisits) -> dict[str, object]:
     """A tree of ``2 ** levels`` paths that all end at the same sub-object.
 
     What PyYAML builds from nested aliases, by hand: an alias is resolved by
@@ -225,7 +201,7 @@ def test_the_character_budget_stops_the_walk_rather_than_the_join() -> None:
     through the walk it is a handful, and with the budget back at the join it is
     every path in the tree.
     """
-    shared = _CountsVisits({"a": "x" * 40, "b": "y" * 40})
+    shared = CountsVisits({"a": "x" * 40, "b": "y" * 40})
     document = _shared_by(12, shared)
 
     projected = project(document, max_chars=200)
@@ -246,7 +222,7 @@ def test_the_node_ceiling_stops_a_walk_whose_text_stays_small() -> None:
     size marker would be a false statement about a projection well under the
     size limit.
     """
-    shared = _CountsVisits({"a": "x"})
+    shared = CountsVisits({"a": "x"})
     document = _shared_by(12, shared)
 
     projected = project(document, max_chars=10**9, max_nodes=200)
@@ -264,12 +240,12 @@ def test_project_checked_raises_from_the_budget_it_ran_out_of() -> None:
     was never the problem.
     """
     with pytest.raises(InputTooLargeError) as by_chars:
-        project_checked(_shared_by(12, _CountsVisits({"a": "x" * 40})), max_chars=200)
+        project_checked(_shared_by(12, CountsVisits({"a": "x" * 40})), max_chars=200)
     assert by_chars.value.limit_name == "projected text size"
     assert by_chars.value.limit == 200
 
     with pytest.raises(InputTooLargeError) as by_nodes:
-        project_checked(_shared_by(12, _CountsVisits({"a": "x"})), max_chars=10**9, max_nodes=200)
+        project_checked(_shared_by(12, CountsVisits({"a": "x"})), max_chars=10**9, max_nodes=200)
     assert by_nodes.value.limit_name == "projected node count"
     assert by_nodes.value.limit == 200
 
@@ -281,7 +257,7 @@ def test_a_benign_shared_document_is_projected_in_full() -> None:
     and the budget must not read it as an attack. Every one of the eight paths
     to the shared node is expanded, exactly as before the budget existed.
     """
-    shared = _CountsVisits({"a": "x", "b": "y"})
+    shared = CountsVisits({"a": "x", "b": "y"})
     projected = project(_shared_by(3, shared))
 
     assert SIZE_MARKER not in projected
