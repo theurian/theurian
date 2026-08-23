@@ -1394,7 +1394,11 @@ unnoticed.** There is no code that hashes an artifact and compares it against
 `SHA256SUMS`; and there is no point in the flow where such code would run.
 `theurian setup` does not download or install Core. Its `core-present` step
 checks that a `theurian` executable is already there and, when it is not, tells
-the user to run `uv tool install theurian` or `pipx install theurian`. The
+the user to run `uv tool install --python 3.13 'theurian[daemon]'` or
+`pipx install --python 3.13 'theurian[daemon]'`. `probe_core` in
+`application/setup_steps.py` interpolates `DAEMON_INSTALLERS[0]` and `[1]` rather
+than spelling either command, so the two above are quoted from that constant and
+not written again here. The
 download belongs to the installer, so a probe added to setup would run after the
 artifact had already been installed and executed — it would report on code that
 had run. Closing this is a change to how Theurian is obtained, not a step added
@@ -1554,7 +1558,7 @@ them a user meets, is what produced that.
 | Surface | What it says | Owner |
 | :-- | :-- | :-- |
 | `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
-| `docs/architecture/requirements-analysis.md:643` | the compatibility flowchart: "CLI absent → Advise /theurian:setup. Do not install anything." | — |
+| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | — |
 
 Both *specify* corrected surfaces rather than being them, which is why a search
 over user-facing text does not reach them. Recorded here rather than left to
@@ -1570,8 +1574,8 @@ argument; it is not repeated here.
 
 > **This sentence quoted a command that has never existed in this repository.**
 > It said the quick start "now opens with
-> `uv tool install './packages/theurian-core[all]'`". `README.md:167` is
-> `uv tool install --python 3.13 'theurian[daemon]'`, and
+> `uv tool install './packages/theurian-core[all]'`". The README's quick start
+> is `uv tool install --python 3.13 'theurian[daemon]'`, and
 > `rg -Un --hidden -g '!.git' -g '!uv.lock' 'packages/theurian-core\[all\]'`
 > matched the false sentence and nothing else — not the README, not a test, not a
 > workflow. So one paragraph held two copies of the same file's quick start, and
@@ -1583,19 +1587,48 @@ argument; it is not repeated here.
 "`/theurian:setup` is the only command that installs
 anything" now denies installing Theurian and states the order it depends on: Core
 has to be on the machine before `/theurian:setup`, which checks for the binary
-and stops if it is absent. **Nothing holds either sentence.** `README.md` is deliberately
-outside `CORE_ARRIVAL_SURFACES`, because
+and stops if it is absent. **The file is in the population as of 2026-08-23, and
+one of the two sentences is held by a test.** `README.md` is the fifth member of
+`CORE_ARRIVAL_SURFACES`, so three rules read it off disk:
 `test_every_surface_that_says_how_core_arrives_names_the_installer` requires both
-`INSTALLERS` literals *contiguously*, and the README's command is
-`uv tool install --python 3.13 'theurian[daemon]'` — the flag sits between the
-tool and the package spec. The flag is load-bearing: without it uv resolves
-against whatever `python3` comes first, which on macOS is 3.9. Adding the file to
-the tuple was tried in
-[#82](https://github.com/theurian/theurian/pull/82) and reverted; loosening the
-match to skip flags was rejected there, because a rule that accepts arbitrary
-text between `uv tool install` and the package would also accept
-`uv tool install --from somewhere-else 'theurian[daemon]'` — the substitution
-this very entry exists over.
+`INSTALLERS` literals verbatim,
+`test_no_surface_offers_setup_before_the_installer` holds the order, and
+`test_no_surface_that_says_how_core_arrives_claims_setup_installs_it` goes RED if
+"`/theurian:setup` is the only command that installs anything" returns.
+
+**The other sentence is held by nobody, and what stops it is the rule's grammar
+rather than the population.** Fed "`theurian setup` installs the whole thing
+idempotently", `_install_claims_naming_no_installer` in
+`tests/unit/test_setup_claims.py` returns `[]` — measured 2026-08-23 by calling
+it directly. The regex behind it, `_INSTALLS_THEURIAN`, matches an `install` verb
+whose object names Theurian itself — the alternation is `theurian`, `core`, the
+two of them as one phrase, `software`, `anything` and `it` — and "the whole
+thing" is none of them. That is not a new gap:
+it is the class of rephrasing that comment already records as measured survivors,
+and pinning grammar until none survive is the defect one level up. It is stated
+here because "`README.md` joined the tuple" reads like both sentences got a
+guard, and only the second one did.
+
+> **The exclusion this paragraph recorded was real; it expired rather than being
+> waived.** It read: "Nothing holds either sentence. `README.md` is deliberately
+> outside `CORE_ARRIVAL_SURFACES`" — because
+> `test_every_surface_that_says_how_core_arrives_names_the_installer` requires
+> both `INSTALLERS` literals *contiguously*, `INSTALLERS` was the unqualified
+> `uv tool install 'theurian[daemon]'`, and the README's command is
+> `uv tool install --python 3.13 'theurian[daemon]'` — the flag sits between the
+> tool and the package spec, so the pinned string was not there to find. The flag
+> is load-bearing: without it uv resolves against whatever `python3` comes first,
+> which on macOS is 3.9. Adding the file to the tuple was tried in
+> [#82](https://github.com/theurian/theurian/pull/82) and reverted; loosening the
+> match to skip flags was rejected there, because a rule that accepts arbitrary
+> text between `uv tool install` and the package would also accept
+> `uv tool install --from somewhere-else 'theurian[daemon]'` — the substitution
+> this very entry exists over. Every clause of that was true when it was written.
+> What ended it is not a new rule but a moved constant:
+> [#323](https://github.com/theurian/theurian/pull/323) qualified every install
+> remedy with `--python 3.13`, so `INSTALLERS` now spells the interpreter the
+> README always spelled, the verbatim match holds unchanged, and the file joined
+> the tuple in the same change.
 
 **The name is claimed, by this project, and the risk it carried moved rather than
 closed.** Measured 2026-08-08:
@@ -1724,15 +1757,25 @@ together" is not checkable without them:
 
 The 15 partition into three groups, and the partition is stated because the
 number alone no longer says anything — a file can hold the bare literal for
-opposite reasons:
+opposite reasons. The second column is the same `git grep -l` re-run on
+2026-08-23 against `core/python-qualified-daemon-install-remedies`, where the key
+returns 14 files:
 
-| Group | Count | Files |
-| :-- | --: | :-- |
-| **Still instructs it.** Release tooling, not user-facing install advice | 2 | `.github/workflows/release-core.yml`, `docs/contributing/release.md` |
-| **Records it as history or as test data**, which is correct | 3 | both CHANGELOGs, `test_plugin_boundary.py` (regex fixture) |
-| **Names it as the defect** — prose describing what went wrong | 10 | this file, `docs/adr/0014-…`, `domain/extras.py`, `domain/compatibility.py`, `application/setup_steps.py`, `cli/commands.py`, `test_bare_install.py`, `test_compatibility.py`, `test_daemon_extra.py`, `test_setup_claims.py` |
+| Group | At #82's merge | 2026-08-23 | Files |
+| :-- | --: | --: | :-- |
+| **Instructs it.** Release tooling, not user-facing install advice | 2 | **0** | `.github/workflows/release-core.yml`, `docs/contributing/release.md` — both qualified in [#323](https://github.com/theurian/theurian/pull/323) |
+| **Records it as history or as test data**, which is correct | 3 | 3 | both CHANGELOGs, `test_plugin_boundary.py` (regex fixture) |
+| **Names it as the defect** — prose describing what went wrong | 10 | 11 | this file, `docs/adr/0014-…` and its dogfood-corpus copy under `.theurian/knowledge/`, `domain/extras.py`, `domain/compatibility.py`, `application/setup_steps.py`, `cli/commands.py`, `test_bare_install.py`, `test_compatibility.py`, `test_daemon_extra.py`, `test_setup_claims.py` |
 
-Only the first group is a defect, and only two files are in it.
+Only the first group was ever a defect, two files were in it, and it is now
+empty:
+
+```console
+$ git grep -n "uv tool install theurian\|pipx install theurian" \
+    -- .github/workflows/release-core.yml docs/contributing/release.md
+$ echo $?
+1
+```
 
 > **The count was 16, then 17, and is now 15 against a key that no longer
 > describes the product.** The 17 was measured at `eb17a2e` after
@@ -1748,21 +1791,28 @@ the answer a compatibility check gives and the answer a setup report gives canno
 disagree. `INSTALLERS` in `test_setup_claims.py` is deliberately **not** that
 constant: an extracted pin is green for whatever the constant says.
 
-**Still open — the two files in the first group.** `release-core.yml` writes
+**Discharged — the two files in the first group.** `release-core.yml` wrote
 `uv tool install theurian==${VERSION}` into every GitHub release body, and
-`docs/contributing/release.md` names the bare command in its verification step.
+`docs/contributing/release.md` named the bare command in its verification step.
 Both were left alone in #82 because they belonged to a pull request that was open
 at the time ([#71](https://github.com/theurian/theurian/pull/71)) and resolving
-across one blind is how a population stops being checkable. **#71 merged as
-`021d077` on 2026-08-07, so the reason for the deferral is discharged and the
-deferral is not**: both files still carry the bare literal, measured at
-`release-core.yml:480` and `release.md:329`. A reason outlives the claim it
-justifies, because the behaviour it excused did not change when the reason
-stopped holding, and nobody re-reads a justification. A reader who follows either now
-gets a Core whose daemon does not start — but gets told so, by name and with the
-command, instead of a traceback. That is a smaller harm than the one this entry
-opened with and it is not zero. Tracked with the rest of the release gate in
-[#39](https://github.com/theurian/theurian/issues/39).
+across one blind is how a population stops being checkable. #71 merged as
+`021d077` on 2026-08-07, which discharged the reason — and the deferral outlived
+it by sixteen days, because a reason outlives the claim it justifies: the
+behaviour it excused does not change when the reason stops holding, and nobody
+re-reads a justification.
+
+[#323](https://github.com/theurian/theurian/pull/323) closed both. The release
+body now writes
+`uv tool install --python 3.13 'theurian[daemon]==${VERSION}'`, and
+`docs/contributing/release.md` names the qualified pair in its verification step;
+neither file matches the bare key, measured 2026-08-23 by the `git grep` above.
+What a reader who follows either now gets is the `daemon` extra, so
+`theurian daemon start` does not fail on `uvicorn`, and an interpreter chosen by
+the flag rather than by whichever `python3` comes first — which on macOS is 3.9.
+The rest of the release gate stays open in
+[#39](https://github.com/theurian/theurian/issues/39): nothing yet hashes a
+downloaded artifact against `SHA256SUMS`.
 
 One surface is adjacent and is deliberately **not** counted among the nine:
 `docs/integrations/serena.md:172` diagnoses "Theurian tools missing" as "Setup

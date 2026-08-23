@@ -49,10 +49,11 @@ launchctl bootout gui/$(id -u)/dev.theurian.daemon
 
 A binary distributed outside the App Store must be signed and notarized, or
 Gatekeeper blocks it with an error most users read as "this software is
-malware". The alternative is `uv tool install 'theurian[daemon]'` / `pipx`,
-which sidesteps Gatekeeper entirely and is the recommended path for
-developers. The extra is named because a bare install has no `uvicorn`, and
-this page is about getting a *daemon* onto a Mac.
+malware". The alternatives are `uv tool install --python 3.13 'theurian[daemon]'`
+and `pipx install --python 3.13 'theurian[daemon]'`, which sidestep Gatekeeper
+entirely and are the recommended path for developers. The extra is named because
+a bare install has no `uvicorn`, and this page is about getting a *daemon* onto a
+Mac.
 
 ## Architectures
 

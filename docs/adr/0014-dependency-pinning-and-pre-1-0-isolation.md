@@ -79,7 +79,11 @@ Several dependencies are also young:
   install. Mitigated by Dependabot, and by the fact that this is a local daemon
   with no untrusted network exposure.
 - Pinning can conflict with another package in a shared environment. Mitigated by
-  recommending `uv tool install 'theurian[daemon]'` or `pipx`, which isolate it.
+  recommending `uv tool install --python 3.13 'theurian[daemon]'` or
+  `pipx install --python 3.13 'theurian[daemon]'`, which isolate it. Spelled here
+  the way `domain/extras.py` spells them, flag included: `3.13` is the
+  `requires-python` floor, and the flag is what stops the installer resolving
+  against whichever interpreter it would otherwise pick.
 - **Decision 10's split makes the bare install a Theurian whose daemon cannot
   start**, and that cost went unrecorded here until it reached users.
   `uv tool install theurian` resolves, installs, and then fails at the next step

@@ -128,7 +128,7 @@ and is still below `0.1.0`.
 ```mermaid
 flowchart TD
     A["Read compatibility.yaml"] --> B["theurian compat check"]
-    B -->|"CLI not on PATH"| Z1["core-missing<br/>→ 'uv tool install &#39;theurian[daemon]&#39;,<br/>then /theurian:setup.'"]
+    B -->|"CLI not on PATH"| Z1["core-missing<br/>→ 'uv tool install --python 3.13 &#39;theurian[daemon]&#39;,<br/>then /theurian:setup.'"]
     B --> C{"core >= minimum?"}
     C -->|no| Z2["core-too-old<br/>→ 'Upgrade Core.'"]
     C -->|yes| D{"core < maximumExclusive?"}
@@ -149,7 +149,7 @@ flowchart TD
 | Outcome | Meaning | Remedy |
 | :-- | :-- | :-- |
 | `compatible` | Proceed | — |
-| `core-missing` | The CLI is not on `PATH` | Install Core with `uv tool install 'theurian[daemon]'` or `pipx install 'theurian[daemon]'`, then run `/theurian:setup`. **Not an error to repair automatically** — this is the normal "plugin installed, Core not yet installed" state (FR-L3). |
+| `core-missing` | The CLI is not on `PATH` | Install Core with `uv tool install --python 3.13 'theurian[daemon]'` or `pipx install --python 3.13 'theurian[daemon]'`, then run `/theurian:setup`. **Not an error to repair automatically** — this is the normal "plugin installed, Core not yet installed" state (FR-L3). |
 | `core-too-old` | Core predates `minimum` | Upgrade Core |
 | `core-too-new` | Core is at or past `maximumExclusive` | Update the **plugin**. Downgrading Core would break every other client on the machine. |
 | `protocol-mismatch` | Wire protocols differ | Update both to a matching pair |

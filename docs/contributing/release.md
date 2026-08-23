@@ -326,7 +326,8 @@ Two things are missing, not one. There is no code that hashes an artifact and
 compares it to `SHA256SUMS`, and there is no point in setup where such code would
 run: setup does not download or install Core. It checks that a `theurian`
 executable is already present and, when it is not, tells the user to run
-`uv tool install theurian` or `pipx install theurian`. So a user's integrity
+`uv tool install --python 3.13 'theurian[daemon]'` or
+`pipx install --python 3.13 'theurian[daemon]'`. So a user's integrity
 guarantee today is whatever their installer and PyPI give them — Theurian
 publishes PEP 740 attestations, but nothing in Theurian checks anything, and
 whether a given installer checks them is that installer's behaviour.

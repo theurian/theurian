@@ -480,7 +480,7 @@ jobs:
             echo
             echo "---"
             echo
-            echo "Install: \`uv tool install theurian==${VERSION}\`"
+            echo "Install: \`uv tool install --python 3.13 'theurian[daemon]==${VERSION}'\`"
             echo
             echo "Every artifact below is covered by \`SHA256SUMS\`, and"
             echo "\`theurian-${VERSION}.cdx.json\` is its CycloneDX 1.6 SBOM."
