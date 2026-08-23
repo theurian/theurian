@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import os
 import socket
+import stat
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -27,6 +28,7 @@ from theurian.domain.errors import (
 from theurian.security.paths import (
     MAX_PATH_DEPTH,
     MAX_SOURCE_FILE_BYTES,
+    _unbounded_shape,
     assert_no_symlink_escape,
     ensure_private_mode,
     is_world_accessible,
@@ -421,27 +423,53 @@ def test_oversized_file_is_refused(project_root: Path, monkeypatch: pytest.Monke
 
 @pytest.mark.parametrize(
     "limit_name",
-    ["source file size", "YAML document size", "projected text size", "JSON document size"],
-    ids=["source-file", "yaml-document", "projected-text", "json-document"],
+    [
+        "source file size",
+        "YAML document size",
+        "projected text size",
+        "projected node count",
+        "JSON document size",
+    ],
+    ids=[
+        "source-file",
+        "yaml-document",
+        "projected-text",
+        "projected-nodes",
+        "json-document",
+    ],
 )
 def test_input_too_large_error_carries_its_own_actionable_remedy(limit_name: str) -> None:
     """Issue #287: ``InputTooLargeError.__init__`` never set ``self.remedy``, so
     every one of its raise sites -- five statements across four modules:
     ``security/paths.py`` (bytes, which raises it twice), ``security/yaml_loading.py``,
-    ``normalization/projection.py`` (characters), and ``parsers/structured.py`` --
-    left ``TheurianError.remedy``'s empty-string default in place.
-    ``cli/commands.py::_context_remedy`` prefers a non-empty ``exc.remedy`` over a
-    type-keyed default (checked first, not per type), so an empty one here sent an
-    oversized input to a generic fallback that says nothing about the size problem
-    at all.
+    ``normalization/projection.py`` (characters *and* nodes, from one statement),
+    and ``parsers/structured.py`` -- left ``TheurianError.remedy``'s empty-string
+    default in place. ``cli/commands.py::_context_remedy`` prefers a non-empty
+    ``exc.remedy`` over a type-keyed default (checked first, not per type), so an
+    empty one here sent an oversized input to a generic fallback that says nothing
+    about the size problem at all.
 
-    ``limit_name`` is parametrized over the four distinct strings the raise sites
-    pass (the two in ``security/paths.py`` share ``"source file size"``), and its
-    *unit* varies between them (bytes for a source file, characters for projected
-    text) -- so this pins only the wording the remedy must share regardless of
-    unit: that the input is too large, and that shrinking or splitting it is the
-    fix. It does not pin a whole sentence, which would force one raise site's unit
-    onto every other one.
+    ``limit_name`` is parametrized over the **five** distinct strings the raise
+    sites pass. Statements and strings are different populations and neither is
+    inferable from the other, so both are counted rather than reasoned about::
+
+        grep -rn "InputTooLargeError(" packages/theurian-core/src/theurian/
+
+    Five statements (2026-08-24): two in ``security/paths.py`` sharing
+    ``"source file size"``, one each in ``security/yaml_loading.py`` and
+    ``parsers/structured.py``, and one in ``normalization/projection.py`` that
+    re-raises ``_Exhausted.limit_name`` -- so *that* statement carries two
+    strings, built at the two ``_Exhausted(...)`` sites in the same file
+    (``"projected text size"`` in ``_Spend.emit``, ``"projected node count"`` in
+    ``_Spend.visit``, issue #232). The node ceiling was added after this list was
+    written and was the string it did not have; the grep above is what settles it
+    next time.
+
+    The *unit* varies between them -- bytes for a source file, characters for
+    projected text, and now a bare count for projected nodes -- so this pins only
+    the wording the remedy must share regardless of unit: that the input is too
+    large, and that shrinking or splitting it is the fix. It does not pin a whole
+    sentence, which would force one raise site's unit onto every other one.
     """
     error = InputTooLargeError(limit_name, 100, 200)
 
@@ -565,6 +593,68 @@ def test_a_directory_keeps_the_refusal_that_names_it_a_directory(project_root: P
 def test_a_regular_file_is_not_refused(project_root: Path) -> None:
     """The false-refusal side: the shape check must let ordinary content through."""
     assert read_source_file(project_root, ".theurian/knowledge/auth.md") == b"# Auth policy\n"
+
+
+#: Every file type ``_unbounded_shape`` distinguishes, keyed by ``st_mode``.
+#:
+#: Written as literal mode bits rather than ``stat`` constants for the two
+#: residual rows: ``stat.S_IFDOOR`` is ``0`` on macOS and ``0o150000`` on
+#: Solaris, so a table built from it would silently test a different thing on
+#: each platform -- and ``0``, which it collapses to here, is a mode no real
+#: ``stat`` returns and therefore a fixture that proves nothing about doors.
+#: The named types keep their constants, because those are the same everywhere
+#: POSIX and naming them is what makes the row readable.
+_MODE_SHAPES: list[tuple[int, str | None, str]] = [
+    (stat.S_IFREG, None, "regular-file"),
+    (stat.S_IFDIR, None, "directory"),
+    (stat.S_IFIFO, "a named pipe (FIFO)", "fifo"),
+    (stat.S_IFSOCK, "a socket", "socket"),
+    (stat.S_IFCHR, "a character device", "character-device"),
+    (stat.S_IFBLK, "a block device", "block-device"),
+    (0o150000, "a special file", "solaris-door"),
+    (0o160000, "a special file", "whiteout-entry"),
+    (0, "a special file", "a-type-with-no-constant-here"),
+]
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [(mode, expected) for mode, expected, _ in _MODE_SHAPES],
+    ids=[label for _, _, label in _MODE_SHAPES],
+)
+def test_the_shape_check_names_every_file_type_it_meets(mode: int, expected: str | None) -> None:
+    """``_unbounded_shape`` is a pure function of ``st_mode``, tested as one.
+
+    Issue #215's guard is reachable through a real file for only two of these
+    rows: a FIFO and a socket are makeable in a test, a character or block device
+    needs root, and a Solaris door needs Solaris. So the branches that name the
+    rest were carried by nothing at all -- deleting the character-device branch,
+    deleting the block-device branch, and turning the residual ``return "a
+    special file"`` into ``return None`` each passed the whole suite.
+
+    The residual row is the load-bearing one. ``read_source_file`` refuses on
+    ``shape is not None``, so a residual that returns ``None`` does not merely
+    lose a name: it lets a type this build has never met through to a read whose
+    ``st_size`` bounded nothing, which is the entire fault #215 is about. The
+    branch that keeps the check total must not survive its own deletion.
+
+    ``S_IFLNK`` is deliberately not a row: ``read_source_file`` stats the
+    *resolved* path, so a symlink's own mode never reaches this function --
+    ``resolve_within_root`` and ``assert_no_symlink_escape`` answer that case
+    first, and a row here would read as a claim that they do not.
+    """
+    assert _unbounded_shape(mode) == expected
+
+
+def test_permission_bits_do_not_change_the_shape() -> None:
+    """The type bits are the whole question; the mode's low bits are not part of it.
+
+    A guard written against the whole ``st_mode`` rather than ``S_IFMT`` of it
+    would answer differently for the same file type at different permissions,
+    which is a refusal that depends on something SEC-8 does not care about.
+    """
+    assert _unbounded_shape(stat.S_IFIFO | 0o600) == "a named pipe (FIFO)"
+    assert _unbounded_shape(stat.S_IFREG | 0o777) is None
 
 
 # -- SEC-4: credential file permissions ------------------------------------
