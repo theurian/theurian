@@ -203,6 +203,13 @@ def _materialize(candidate: CandidateMigrationSet, target: Path) -> Path:
       file on a case-insensitive project could reach two here, or the reverse.
       On every platform this ships to, the system temporary directory and a
       user's checkout are on the same volume with the same semantics.
+
+    And the copy is taken *after* the caller loaded the set it describes, so a
+    landed file edited in between is replayed as it is now rather than as it was
+    read. That is the examine-to-move window ADR-0027 decision 2 records as its
+    third residue, not a new one: the window exists because the accept path's
+    moves are not under the write lock, and this lengthens it rather than
+    opening it.
     """
     for relative in candidate.landed:
         _write(target, relative, read_source_file(candidate.root, PurePosixPath(relative)))
@@ -212,6 +219,15 @@ def _materialize(candidate: CandidateMigrationSet, target: Path) -> Path:
 
 
 def _write(target: Path, relative: str, data: bytes) -> None:
+    """Write one file into the copy, at a path proved to stay inside it.
+
+    ``resolve_within_root`` returns the path with every symlink already
+    followed, and the write goes to *that*, so a link planted inside the copy
+    cannot redirect the write out of it -- it is refused if it points outside
+    and irrelevant if it points inside. Planting one at all means write access to
+    a ``tempfile`` directory created ``0o700`` and owned by this process, which
+    is the same boundary the whole accept path already sits behind.
+    """
     destination = resolve_within_root(target, PurePosixPath(relative))
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)

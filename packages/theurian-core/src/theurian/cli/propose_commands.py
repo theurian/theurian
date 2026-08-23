@@ -435,11 +435,13 @@ def propose_accept(
         # input from whoever can commit, and SEC-7 refuses the path rather than
         # writing it. It is not the only case that arrives, and it was published
         # for all of them -- a proposal *body* that is a FIFO is refused here
-        # too, and its `contentFile` is not what is wrong with it. So the error's
-        # own remedy wins where it has one, and this text is the fallback for a
+        # too, and now that the pre-check reads the published schema a
+        # `SchemaUnreadableError` ("reinstall theurian") reaches here as well;
+        # in neither is the `contentFile` what is wrong. So the error's own
+        # remedy wins where it has one, and this text is the fallback for a
         # refusal that carries none: the preference `TheurianError.remedy` and
         # `cli/commands.py::_context_remedy` already document, applied at the one
-        # composition root that was overwriting it.
+        # composition root that was overwriting it (#227, #205).
         _fail(
             str(exc),
             remedy=exc.remedy

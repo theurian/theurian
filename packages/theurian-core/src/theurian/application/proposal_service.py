@@ -843,11 +843,22 @@ class ProposalService:
         incoming.extend((self._within_project(move.destination), move.data) for move in moves)
         return CandidateMigrationSet(
             root=self._paths.root,
-            knowledge_directory=PurePosixPath(self._paths.knowledge_dir.name),
+            knowledge_directory=self._knowledge_directory(),
             project_id=self._project_id,
             landed=landed,
             incoming=tuple(incoming),
         )
+
+    def _knowledge_directory(self) -> PurePosixPath:
+        """Where ``.theurian/`` sits, relative to the project root.
+
+        The whole relative path and not ``knowledge_dir.name``: a project
+        registered with a *nested* knowledge directory would lay its files out
+        under both segments, and a copy that kept only the leaf would put the
+        migrations somewhere the loader then reports as an empty set -- a replay
+        that passes because it read nothing.
+        """
+        return PurePosixPath(self._within_project(self._paths.knowledge_dir))
 
     def _within_project(self, path: Path) -> str:
         """``path`` as a project-relative POSIX string, for the copy's layout."""
@@ -935,7 +946,7 @@ class ProposalService:
             self._rehearse(
                 CandidateMigrationSet(
                     root=self._paths.root,
-                    knowledge_directory=PurePosixPath(self._paths.knowledge_dir.name),
+                    knowledge_directory=self._knowledge_directory(),
                     project_id=self._project_id,
                     landed=landed,
                     incoming=(),
