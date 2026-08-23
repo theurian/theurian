@@ -20,6 +20,63 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Theurian project" diagnosis `resolve_context` gives every error with no
   remedy of its own ([#287](https://github.com/theurian/theurian/issues/287)).
 
+### Changed
+
+- **Every install command Theurian prints now names the interpreter as well as
+  the extra**: `uv tool install --python 3.13 'theurian[daemon]'` and
+  `pipx install --python 3.13 'theurian[daemon]'`
+  ([#323](https://github.com/theurian/theurian/pull/323)). These are the remedies
+  a user actually copies, and they previously left the interpreter to whatever
+  the installer picked by default, while `requires-python` has been `>=3.13`
+  throughout and the README's quick start had said so since it was written. Not
+  breaking: the old commands are not rejected, they are unqualified, and the
+  qualified ones are what the product now recommends.
+
+  Three surfaces read `theurian.domain.extras.DAEMON_INSTALLERS` rather than
+  spelling a command of their own, so their answers cannot drift apart:
+
+  - `core-present`'s detail, when `theurian setup` finds no Core.
+  - the daemon-extra remedy the CLI prints when a bare install reaches
+    `ModuleNotFoundError: No module named 'uvicorn'`. Its pipx form is
+    `pipx install --force --python 3.13 'theurian[daemon]'` — `--force` because
+    a plain `pipx install` over an existing installation reports success and
+    changes nothing, which is measured and recorded in `domain/extras.py`. The
+    `--python 3.13` in that one command is **not** covered by that measurement;
+    it is there so the repair command cannot choose a different interpreter from
+    the install commands beside it.
+  - `domain/compatibility.py`'s `core-missing` remedy, published as the string
+    third-party plugins implement against in
+    [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
+    whose outcome table and flowchart carry the same pair. No production caller
+    reaches that branch — its one call site always passes a parsed version — so
+    the copy a user actually meets is the plugin's `SessionStart` hook, which
+    carries the same advice and moved with it.
+
+  The fourth, `theurian setup --help`, spells the two commands in its docstring
+  instead of reading the constant, and is held to `core-present`'s own words by
+  `test_setup_claims.py::test_the_installers_pinned_here_are_the_ones_the_step_reports`.
+
+  `3.13` is now held to `requires-python` by
+  `test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires`,
+  which reads the floor out of `pyproject.toml`. Raising the floor without
+  touching `domain/extras.py` would otherwise ship, as the remedy for an install
+  that did not work, a command pinning an interpreter the only wheel it may
+  install rejects.
+
+  The written surfaces follow: this package's README — whose install line also
+  moves from `theurian[all]` to `theurian[daemon]`, matching what the root README
+  recommends and what the extra is actually for — the plugin's README,
+  `SessionStart` hook, `setup` and `upgrade` commands, ADR-0014, the macOS
+  packaging note, `docs/contributing/release.md`, and the `Install:` line
+  `release-core.yml` writes into every GitHub release body — which now reads
+  `uv tool install --python 3.13 'theurian[daemon]==<version>'`. That release
+  line and the release document were the last two surfaces still naming the bare
+  command; T-16 in
+  [the threat model](../../docs/security/threat-model.md) recorded them as a
+  deferral discharged by
+  [#71](https://github.com/theurian/theurian/pull/71) and records them as closed
+  here.
+
 ## [0.1.0.dev9] - 2026-08-22
 
 ### Fixed
@@ -3382,7 +3439,6 @@ error is the one reading the release notes to decide whether to upgrade.
   that has anything to be transitive over — designing the purge after summary
   nodes ship means designing it twice, the second time under pressure from a
   feature already in use.
-
 
 - **`IndexStore`'s three search methods return `RetrieverPage`, not
   `tuple[Ranked, ...]`** ([#16](https://github.com/theurian/theurian/issues/16)).

@@ -1558,7 +1558,7 @@ them a user meets, is what produced that.
 | Surface | What it says | Owner |
 | :-- | :-- | :-- |
 | `docs/integrations/claude-code.md:101` | the `SessionStart` flowchart: `theurian on PATH? --no--> warn: run /theurian:setup`, which now also disagrees with the shipped script | — |
-| `docs/architecture/requirements-analysis.md:643` | the compatibility flowchart: "CLI absent → Advise /theurian:setup. Do not install anything." | — |
+| `docs/architecture/requirements-analysis.md`, the compatibility flowchart | its `CLI absent` branch: "Advise /theurian:setup. Do not install anything." | — |
 
 Both *specify* corrected surfaces rather than being them, which is why a search
 over user-facing text does not reach them. Recorded here rather than left to
@@ -1574,8 +1574,8 @@ argument; it is not repeated here.
 
 > **This sentence quoted a command that has never existed in this repository.**
 > It said the quick start "now opens with
-> `uv tool install './packages/theurian-core[all]'`". `README.md:167` is
-> `uv tool install --python 3.13 'theurian[daemon]'`, and
+> `uv tool install './packages/theurian-core[all]'`". The README's quick start
+> is `uv tool install --python 3.13 'theurian[daemon]'`, and
 > `rg -Un --hidden -g '!.git' -g '!uv.lock' 'packages/theurian-core\[all\]'`
 > matched the false sentence and nothing else — not the README, not a test, not a
 > workflow. So one paragraph held two copies of the same file's quick start, and
