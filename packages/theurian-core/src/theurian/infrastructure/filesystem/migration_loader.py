@@ -36,6 +36,7 @@ from theurian.domain.enums import (
 from theurian.domain.errors import (
     EscapeRole,
     EscapeSite,
+    IrregularSourceFileError,
     MigrationContentUnreadableError,
     MigrationError,
     MigrationFileUnreadableError,
@@ -1757,6 +1758,18 @@ def _parse_upsert(
         ) from exc
     except PathEscapeError as exc:
         raise PathEscapeError(exc.requested, exc.root, entry=_referrer(path, project_root)) from exc
+    except IrregularSourceFileError as exc:
+        # The fourth branch that can refuse this `contentFile`, and re-raised for
+        # the identical reason as the three above: `read_source_file` names
+        # nothing, so without this the user is told a file somewhere is a FIFO
+        # and not which migration named it. The referrer is the same string its
+        # siblings use -- a `.theurian/migrations/` name `iterdir()` returned,
+        # which `MigrationContentUnreadableError` also prints for this same file
+        # -- and never `content_file`, whose echo is what this refusal was just
+        # fixed to stop.
+        raise IrregularSourceFileError(
+            exc.shape, referrer=str(path.relative_to(project_root))
+        ) from exc
     except OSError as exc:
         # `read_source_file`'s own docstring names `FileNotFoundError` as one of
         # the things it raises, and a bare `OSError` is none of the types every

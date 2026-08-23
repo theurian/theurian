@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectError, ProjectRegistry
@@ -36,6 +37,10 @@ EXIT_STATE_ERROR = 4
 #: the same guard `test_auth_rotate.py` and `test_setup_journal.py` use before
 #: a permission-refusal test.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
+#: Issue #215's reproduction needs a FIFO to build one and a timer to keep a
+#: regression from stalling the suite instead of failing it (``hang_guard``).
+_CAN_MAKE_A_BLOCKING_FILE = hasattr(os, "mkfifo") and CAN_INTERRUPT_A_HANG
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID = "01K1AAAREV01234567890ABCDE"
@@ -232,6 +237,57 @@ def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
     )
 
 
+# -- issue #215: a contentFile that is a FIFO ------------------------------
+
+#: The body path `MIGRATION` already names, made a FIFO instead of a file. Reusing
+#: that migration verbatim is the point: nothing about the *document* is unusual,
+#: so the only thing a reviewer could catch is the shape of a file on disk.
+#:
+#: Not reachable through a plain `git clone`, though, and an earlier version of
+#: this comment said it was: Git versions no FIFO -- its tree modes are 100644,
+#: 100755, 120000, 160000 and 040000 -- so placing one takes local write access
+#: to the working tree, which is T-1's actor and what #215's own issue body
+#: records. What the guard buys against that actor is the refusal below in place
+#: of a hang, and a hang cannot even be graded.
+_FIFO_CONTENT_FILE = ".theurian/knowledge/architecture/auth-policy.md"
+
+#: What the refusal is allowed to name: the migration file, which `iterdir()`
+#: produced. Never `MIGRATION`'s own `contentFile` value, which the author wrote.
+_FIFO_MIGRATION_FILE = f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml"
+
+
+def _write_fifo_content_migration(root: Path) -> None:
+    body = root / _FIFO_CONTENT_FILE
+    body.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(body)
+    (root / _FIFO_MIGRATION_FILE).write_text(MIGRATION)
+
+
+def _assert_fifo_refusal_payload(payload: dict[str, Any]) -> None:
+    """Full equality, the same anti-mutation shape as its siblings above.
+
+    The name in both halves is the *migration file*, attached by
+    `_parse_upsert`. `read_source_file` publishes no path at all: its argument is
+    the author's own string, and echoing it is what
+    `tests/unit/test_path_security.py::
+    test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path` forbids.
+    """
+    assert payload["error"] == (
+        f"{_FIFO_MIGRATION_FILE!r} names a file that is a named pipe (FIFO), not a regular file"
+    )
+    assert payload["remedy"] == (
+        f"Replace the file {_FIFO_MIGRATION_FILE!r} names with a regular file, then retry. "
+        f"The size Theurian checks before it opens a file bounds nothing about what a read "
+        f"of a named pipe (FIFO) returns, so it is refused unread."
+    )
+    assert _FIFO_CONTENT_FILE not in payload["error"], (
+        "the path handed to read_source_file stays unechoed"
+    )
+    assert _FIFO_CONTENT_FILE not in payload["remedy"], (
+        "the path handed to read_source_file stays unechoed"
+    )
+
+
 # -- issue #217: a YAML syntax error used to propagate uncaught -------------
 
 MALFORMED_YAML_MIGRATION_FILENAME = "01K1GGGGGG01234567890ABCDE-malformed.yaml"
@@ -422,8 +478,9 @@ def test_an_oversized_content_file_is_diagnosed_by_its_own_remedy(
 
     ``InputTooLargeError`` is a ``SecurityError``, not a ``MigrationError`` or a
     ``PathEscapeError``, so it skips both of ``_require_project``'s type-keyed
-    branches (commands.py:1890, :1909) and lands in the generic
-    ``except TheurianError`` clause (commands.py:1912) instead. This exercises
+    branches -- named by symbol rather than by line, which the next edit rots --
+    and lands in the generic ``except TheurianError`` clause instead. This
+    exercises
     that through the real CLI on the real load path every ``_require_project``
     caller shares -- reading a migration's ``contentFile`` via
     ``read_source_file`` -- rather than calling ``_context_remedy`` directly:
@@ -437,7 +494,10 @@ def test_an_oversized_content_file_is_diagnosed_by_its_own_remedy(
 
     code, payload = _invoke("migrate", "validate")
 
-    assert code == 1
+    assert code == 1, (
+        "a SEC-8 input cap exits 1, not EXIT_STATE_ERROR, on the same load path that "
+        "grades a containment refusal 4 -- the split EXIT_STATE_ERROR's own note records"
+    )
     assert payload["remedy"] != "Run this inside an initialised Theurian project.", (
         "the diagnosis must name the actual problem -- an oversized input -- "
         "not the generic project-resolution fallback"
@@ -954,6 +1014,43 @@ def test_validate_reports_an_unreadable_migration_file_instead_of_crashing(proje
     _assert_file_unreadable_payload(json.loads(result.stderr))
 
 
+@pytest.mark.skipif(
+    not _CAN_MAKE_A_BLOCKING_FILE, reason="needs os.mkfifo and an interruptible timer"
+)
+def test_validate_refuses_a_fifo_content_file_instead_of_hanging(project: Path) -> None:
+    """Issue #215's own reproduction, at the CLI.
+
+    ``read_source_file`` enforced SEC-8 from ``st_size``, and a FIFO reports 0 --
+    so the cap passed and ``open()`` blocked for a writer that never came.
+    Measured against the real CLI before the fix, in a sandboxed HOME and
+    THEURIAN_DATA_DIR: ``migrate validate --json`` produced no output and no exit
+    within 15 seconds. That is worse than the Rich traceback issue #205 closed on
+    this same seam -- a hang cannot even be graded, because nothing arrives.
+
+    The timer is what turns a regression back into a failing test rather than a
+    stalled suite (``hang_guard``); the assertion is that it never fires.
+
+    Exit 1 rather than ``EXIT_STATE_ERROR``, and this seam is *not* uniformly
+    graded: no branch of ``_require_project`` names this type or
+    ``InputTooLargeError``, so both take its generic ``except TheurianError``
+    branch at 1, while a ``PathEscapeError`` or a
+    ``MigrationContentUnreadableError`` from the same ``read_source_file`` call
+    is named there and exits 4. Pinned rather than argued, because it is a
+    published contract: ``EXIT_STATE_ERROR``'s own note records why it is left
+    where 0.1.0.dev9 shipped it. What the fix changes is not the grading but the
+    payload -- CP-2's ``{error, remedy}`` on stderr, with a clean stdout.
+    """
+    _invoke("init")
+    _write_fifo_content_migration(project)
+
+    with fails_rather_than_hanging(15, waiting_for="migrate validate over a FIFO contentFile"):
+        result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    assert result.stdout == "", "stdout stays a clean machine channel on failure"
+    _assert_fifo_refusal_payload(json.loads(result.stderr))
+
+
 def test_validate_reports_a_malformed_migration_yaml_instead_of_crashing(project: Path) -> None:
     """Before issue #217's fix, `yaml.YAMLError` was neither
     `UnicodeDecodeError` nor `ValueError` -- the two types `_load_one`'s
@@ -1299,7 +1396,10 @@ def test_validate_names_the_symlink_when_the_migrations_directory_escapes_the_pr
 
     result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
 
-    assert result.exit_code == EXIT_STATE_ERROR, "graded like every sibling on this load path"
+    assert result.exit_code == EXIT_STATE_ERROR, (
+        "a containment refusal is knowledge state; the load path's SEC-8 input caps are "
+        "not, and exit 1 (see EXIT_STATE_ERROR's own note)"
+    )
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     payload = json.loads(result.stderr)
     relative = str(migrations_dir.relative_to(project))
@@ -1332,7 +1432,10 @@ def test_validate_names_the_symlink_when_one_migration_file_escapes_the_project(
 
     result = runner.invoke(app, ["migrate", "validate", "--json"], catch_exceptions=False)
 
-    assert result.exit_code == EXIT_STATE_ERROR, "graded like every sibling on this load path"
+    assert result.exit_code == EXIT_STATE_ERROR, (
+        "a containment refusal is knowledge state; the load path's SEC-8 input caps are "
+        "not, and exit 1 (see EXIT_STATE_ERROR's own note)"
+    )
     assert result.stdout == "", "stdout stays a clean machine channel on failure"
     payload = json.loads(result.stderr)
     relative = str(escape_entry.relative_to(project))

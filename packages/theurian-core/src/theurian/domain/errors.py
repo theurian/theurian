@@ -825,6 +825,89 @@ class InputTooLargeError(SecurityError):
         super().__init__(f"{limit_name} exceeded: limit {limit}, observed {observed}")
 
 
+class IrregularSourceFileError(SecurityError):
+    """A source file is not a regular file, so its size bounds nothing (SEC-8, issue #215).
+
+    :func:`~theurian.security.paths.read_source_file` enforces SEC-8's byte cap
+    from ``st_size``, and ``st_size`` is a bound on what a read returns only for
+    a regular file. A FIFO reports ``st_size`` 0 -- passing the cap -- and then
+    blocks in ``open()`` until someone writes to it. Measured against the real
+    CLI: a migration whose ``contentFile`` named a FIFO made ``theurian migrate
+    validate --json`` hang with no output and no exit, which is the CP-2 escape
+    a Rich traceback is, minus the traceback. A character or block device is the
+    same fault pointed the other way -- ``st_size`` 0, and a read that returns
+    bytes without end.
+
+    A **directory** is deliberately not a member of this class. ``open()``
+    refuses one outright with ``EISDIR`` before a byte is read, so it can neither
+    block nor stream, and that errno already selects a remedy that names the
+    fault exactly (:func:`_read_failure_remedy`'s ``EISDIR`` branch, which is
+    driven by ``test_load_migrations_names_the_directory_remedy_for_a_content_
+    file_that_is_a_directory``). What this class refuses is the narrower set:
+    the types whose read is not bounded by the size that was just checked.
+
+    ``shape`` is the noun phrase for the file type, derived by the caller from
+    ``st_mode``. It arrives as a string rather than a mode because ``st_mode``
+    is a filesystem detail and this layer holds none.
+
+    **Neither the message nor the remedy names the path that was read**, and the
+    constructor is not given one. ``read_source_file``'s ``relative`` argument is
+    attacker-influenceable -- a ``contentFile`` an author wrote -- and it is
+    still in the caller's own spelling when this refusal fires, because this is
+    one of the two branches that runs *after* containment rather than before it:
+    the first version of this class published
+    ``'.theurian/knowledge/../knowledge/id_ed25519.md' is a named pipe (FIFO)``
+    in both halves of the CP-2 payload, which is exactly what
+    ``tests/unit/test_path_security.py::
+    test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path`` exists
+    to forbid.
+
+    ``referrer`` is how the user still learns where to look: a caller that holds
+    a name it has decided is safe to print re-raises with it attached, the same
+    division of labour :class:`MigrationContentUnreadableError` and
+    :class:`PathEscapeError` already use on this load path.
+
+    **Every caller that can reach this refusal either attaches one or names the
+    file some other way**, and the four are enumerated rather than summarised,
+    because "a caller attaches it" was written while only one did and the accept
+    path published a refusal naming no path at all::
+
+        grep -rn "read_source_file" packages/theurian-core/src/theurian/
+
+    * ``migration_loader.py::_parse_upsert`` -- attaches the migration file
+      ``iterdir()`` returned, never the value its ``contentFile`` holds.
+    * ``application/proposal_service.py::_read_within_project`` -- attaches the
+      project-relative path it built itself, for all three files the accept path
+      reads (the migration, ``evidence.json``, and each body).
+    * ``migration_loader.py::_load_one`` -- cannot reach this refusal at all:
+      ``load_migrations`` filters entries through ``_entry_is_migration_file``'s
+      ``S_ISREG`` check first, pinned by ``test_load_migrations_skips_a_fifo_and
+      _a_directory_both_named_dot_yaml``.
+    * ``application/ingestion_service.py::_ingest_one`` -- attaches nothing and
+      needs nothing: it records the refusal as a ``ParseFailure`` against the
+      ``relative`` path it already holds. In practice the read is not reached
+      either, because ``_discover``'s ``is_file()`` drops a non-regular file
+      before it -- silently, which is issue #327's own subject and not this
+      class's.
+    """
+
+    def __init__(self, shape: str, *, referrer: str | None = None) -> None:
+        self.shape = shape
+        self.referrer = referrer
+        subject = f"{referrer!r} names a file that is" if referrer else "The referenced file is"
+        target = f"the file {referrer!r} names" if referrer else "it"
+        # Not "such a read can block forever, or return bytes without end": that
+        # is true of a FIFO and false of a socket, where `open()` fails at once
+        # (measured as `ENOTSUP`). What every member of this class shares is the
+        # property that made the size check worthless, so that is what is said.
+        self.remedy = (
+            f"Replace {target} with a regular file, then retry. The size Theurian checks "
+            f"before it opens a file bounds nothing about what a read of {shape} returns, "
+            f"so it is refused unread."
+        )
+        super().__init__(f"{subject} {shape}, not a regular file")
+
+
 class AuthorizationError(SecurityError):
     """The principal is not authorized for the requested project or action."""
 

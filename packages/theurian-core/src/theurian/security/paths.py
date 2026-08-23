@@ -13,9 +13,15 @@ symlink; ``os.path.normpath`` alone is defeated by one too.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path, PurePosixPath
 
-from theurian.domain.errors import InputTooLargeError, PathDepthExceededError, PathEscapeError
+from theurian.domain.errors import (
+    InputTooLargeError,
+    IrregularSourceFileError,
+    PathDepthExceededError,
+    PathEscapeError,
+)
 
 #: Maximum bytes a single source file may occupy (SEC-8). Knowledge is prose and
 #: structured documents; anything larger is a mistake or an attack.
@@ -96,6 +102,39 @@ def assert_no_symlink_escape(root: Path, target: Path) -> None:
                 raise PathEscapeError(str(target), str(resolved_root))
 
 
+def _unbounded_shape(mode: int) -> str | None:
+    """Name the file type whose read ``st_size`` does not bound, or ``None``.
+
+    The size cap below is computed from ``st_size``, which says what a read will
+    return only for a regular file. Every type named here reports ``st_size`` 0
+    and then either blocks (a FIFO with no writer, a device waiting on hardware)
+    or returns bytes without end (``/dev/zero``), so the cap it passed was never
+    a bound on anything (issue #215).
+
+    A directory is not named, and so is not refused here: ``open()`` rejects one
+    with ``EISDIR`` before a byte is read, which can neither block nor stream,
+    and ``_read_failure_remedy``'s ``EISDIR`` branch already answers it with a
+    remedy naming that exact fault. Widening this function to cover directories
+    would take that refusal away from the branch that says it best.
+
+    The residual branch is what keeps the check total: a type this build has
+    never met -- a Solaris door, a whiteout entry -- is refused rather than
+    read, because "not a regular file" is the property that matters and the
+    enumeration above is only about *saying* which one it was.
+    """
+    if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
+        return None
+    if stat.S_ISFIFO(mode):
+        return "a named pipe (FIFO)"
+    if stat.S_ISSOCK(mode):
+        return "a socket"
+    if stat.S_ISCHR(mode):
+        return "a character device"
+    if stat.S_ISBLK(mode):
+        return "a block device"
+    return "a special file"
+
+
 def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
     """Read a project file with containment and size limits enforced.
 
@@ -104,15 +143,49 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
 
     Raises:
         PathEscapeError: If the path escapes ``root``.
+        IrregularSourceFileError: If the file is one whose read ``st_size`` does
+            not bound -- a FIFO, a socket, a device (issue #215).
         InputTooLargeError: If the file exceeds :data:`MAX_SOURCE_FILE_BYTES`.
         FileNotFoundError: If the file does not exist.
     """
     resolved = resolve_within_root(root, relative)
     assert_no_symlink_escape(root, resolved)
 
-    stat = resolved.stat()
-    if stat.st_size > MAX_SOURCE_FILE_BYTES:
-        raise InputTooLargeError("source file size", MAX_SOURCE_FILE_BYTES, stat.st_size)
+    info = resolved.stat()
+    shape = _unbounded_shape(info.st_mode)
+    if shape is not None:
+        # Refused before the size cap, because for these types the size is the
+        # lie: a FIFO reports 0, passes the cap, and then blocks in `open()`
+        # until a writer appears -- measured against the real CLI as `migrate
+        # validate --json` never returning, with an empty stdout where `--json`
+        # promises a document. `stat` is what makes the refusal reachable at
+        # all: it answers from the directory entry and never opens anything, so
+        # unlike every check that follows it cannot be the thing that hangs.
+        #
+        # Residual, recorded rather than closed: the file could be replaced by a
+        # FIFO between this `stat` and the read below -- the same window the
+        # post-read size re-check covers for a file that grows. Closing it means
+        # opening with `O_NONBLOCK` and reading through the descriptor.
+        #
+        # It is graded on the *actor*, not on an equivalence to the parked case.
+        # A FIFO left in place is exactly what this branch refuses, so "they
+        # could leave one there instead" -- which an earlier version of this note
+        # said -- is the opposite of true. What holds is narrower: winning the
+        # race takes local write access to the working tree at the instant of the
+        # read, and an actor with that reaches the same availability outcome by
+        # means this guard was never between them and (truncate the file, delete
+        # it, make the directory unreadable). A `git clone` carries no FIFO
+        # either -- Git stores no such mode (100644, 100755, 120000, 160000,
+        # 040000) -- so the race is reachable from the machine and not from the
+        # repository. The outcome is availability, never disclosure.
+        #
+        # `relative` is deliberately not passed: it is the caller's own string,
+        # unnormalized and attacker-influenceable, and this branch runs after
+        # containment rather than before it (see `IrregularSourceFileError`, and
+        # the no-echo test that pins every raise site in this module).
+        raise IrregularSourceFileError(shape)
+    if info.st_size > MAX_SOURCE_FILE_BYTES:
+        raise InputTooLargeError("source file size", MAX_SOURCE_FILE_BYTES, info.st_size)
 
     data = resolved.read_bytes()
 

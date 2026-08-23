@@ -88,21 +88,66 @@ out — different platforms, different Git `autocrlf` settings — and the state
 would stop identifying a state. A test asserts `"a\r\nb"` and `"a\nb"` hash
 differently.
 
-## Parsers never trust input
+## Nothing on the ingest path trusts its input
 
-Every parser enforces:
+**Not every bound below is a parser's**, and the third column says whose each one
+is. Three run in `security/paths.py` before any parser sees the bytes; one is the
+YAML loader's, in `security/yaml_loading.py`, and so covers every format that
+reaches it through YAML; two are the projection's, and belong to every structured
+format; three are the OpenAPI parser's alone; and one is the Markdown parser's,
+where it bounds what is *recorded* rather than what the scan spends. "Every
+parser enforces" was the earlier heading here, and it made the file-kind refusal
+and the `$ref` walk read as universal.
 
-| Limit | Default | Threat |
-| :-- | :-- | :-- |
-| File size | 8 MB | T-6 memory exhaustion |
-| Path depth | 32 | pathological trees |
-| Archive expansion ratio | bounded | zip bomb |
-| Parse wall clock | bounded | quadratic parser behaviour |
-| Loader | `yaml.safe_load` only | arbitrary object construction |
-| External `$ref` | recorded, never fetched | T-7 SSRF |
+| Limit | Default | Enforced by | Threat |
+| :-- | :-- | :-- | :-- |
+| File size | 8 MiB | `security/paths.py::read_source_file` (`MAX_SOURCE_FILE_BYTES`) | T-6 memory exhaustion |
+| Path depth | 32 | `security/paths.py::resolve_within_root` (`MAX_PATH_DEPTH`) | pathological trees |
+| File *kind* | only a regular file is read | `security/paths.py::read_source_file`, through `_unbounded_shape` | T-6: a FIFO reports size 0 and then blocks the read forever ([#215](https://github.com/theurian/theurian/issues/215)) |
+| Projected characters | 2 MiB, charged as the walk spends them | `normalization/projection.py::_Spend.emit` | T-6 alias-expansion bomb ([#232](https://github.com/theurian/theurian/issues/232)) |
+| Projected nodes | 1,000,000 | `normalization/projection.py::_Spend.visit` | T-6: a container emits no characters, so characters alone do not price a traversal |
+| `$ref` walk | every parsed node entered once, at most 64 deep, at most 5,000 recorded | `parsers/openapi.py::_external_refs` — **OpenAPI only** | T-6 shared-node re-traversal ([#245](https://github.com/theurian/theurian/issues/245)) |
+| Operations recorded | 5,000 | `parsers/openapi.py::MAX_OPERATIONS` — **OpenAPI only** | T-6 index growth |
+| Loader | `yaml.safe_load` only, under a 4 MiB document cap | `security/yaml_loading.py::load_yaml`, `MAX_YAML_BYTES` | arbitrary object construction |
+| External `$ref` | recorded, never fetched | `parsers/openapi.py::_external_refs` — **OpenAPI only** | T-7 SSRF |
+| Structure recorded from Markdown | 2,000 headings, 1,000 code fences | `parsers/markdown.py::MAX_HEADINGS`, `MAX_FENCES` — **Markdown only** | an unbounded structure tree — and *only* that: neither bounds what the scan spends ([#331](https://github.com/theurian/theurian/issues/331)) |
 
 Size is re-checked after reading, because a file can grow between `stat` and
 `read`.
+
+**Two residuals are measured and open, each owned by its own issue, and both
+bounded only by the file-size row above.**
+
+- The `$ref` walk builds a path string per edge and nothing charges it, which is
+  quadratic in document size
+  ([#328](https://github.com/theurian/theurian/issues/328), measured in
+  `docs/security/threat-model.md` under T-6).
+- `parsers/markdown.py::_FENCE` is quadratic on fence openers that never close.
+  It is not line iteration: the pattern spans the whole document with `(.*?)`
+  under `re.DOTALL`, so every opener that finds no closer scans to the end.
+  Measured 2026-08-24 on `_FENCE.finditer` over a body of `` ```a `` lines,
+  which open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB 0.39 s,
+  39.1 KiB 1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the cost per
+  doubling, and no reference recorded either way. `MAX_FENCES` does not bound
+  it, because the cap is applied to the matches the scan *yields* and this input
+  yields none.
+
+The rest of the Markdown parse is priced differently and is not a residual.
+`_FRONT_MATTER` is `\A`-anchored, so it matches at one position: 0.048 s over
+4 MiB with no front matter present. The heading pass is linear in the document
+and priced by `MAX_HEADINGS` rather than by the input, because each recorded
+heading re-counts the newlines before it — 2,000 headings at the tail of an
+8 MiB file cost 6.68 s, and doubling the file doubles that (both measured
+2026-08-24).
+
+Two limits this table used to claim are **not** enforced, and are named here
+rather than quietly dropped. There is no *archive expansion ratio*, because
+nothing in `src/` unpacks an archive — no `zipfile`, `tarfile`, `gzip` or `zlib`
+import exists anywhere in it — and there is no *parse wall clock*, because
+nothing in `src/` bounds any parse by time. The bounds above are counted instead
+of timed: they price the work a parse spends rather than the seconds it takes.
+`docs/security/threat-model.md` (T-6) records both decisions, and who owns the
+query-side timeout that is still owed.
 
 ## Per-format handling
 

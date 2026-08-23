@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 import typer
 import yaml
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
 from theurian.cli.main import app
@@ -37,6 +38,11 @@ runner = CliRunner()
 #: that needs the mode to actually refuse cannot run there (the offline CI job
 #: runs as root). Same guard the service-level permission tests carry.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
+#: A FIFO is the shape whose ``st_size`` bounds nothing, and interrupting the
+#: block a missing guard would cause is what makes a regression fail rather than
+#: stall the suite (``hang_guard``). Both halves are POSIX, so they are one skip.
+_CAN_MAKE_A_BLOCKING_FILE = hasattr(os, "mkfifo") and CAN_INTERRUPT_A_HANG
 
 EXIT_INVALID_INPUT = 2
 EXIT_STATE_ERROR = 4
@@ -779,6 +785,62 @@ def test_accept_publishes_a_json_document_for_a_surrogate_in_the_content_file(
     payload = json.loads(stream)
     assert payload["error"].strip()
     assert payload["remedy"].strip()
+
+
+@pytest.mark.skipif(
+    not _CAN_MAKE_A_BLOCKING_FILE, reason="needs os.mkfifo and an interruptible timer"
+)
+def test_accept_names_the_proposal_body_whose_size_bounds_nothing(project: Path) -> None:
+    """The refusal must name the file it refused, and cure the right object.
+
+    ``read_source_file`` deliberately names nothing -- its argument is the
+    author's own string -- so every caller that holds a name it has decided is
+    safe to print re-attaches it. ``_read_within_project`` did not, and the
+    resulting payload named **no path at all**: reproduced through the installed
+    CLI in a sandboxed HOME, ``propose accept --json`` over a FIFO body published
+    ``error: The referenced file is a named pipe (FIFO), not a regular file`` and
+    a remedy pointing at the ``contentFile``. 0.1.0.dev9 printed the path here,
+    from a message that interpolated it, so this was a diagnosability regression
+    and not a gap.
+
+    Both halves are wrong together, which is why both are asserted. The
+    ``contentFile`` this migration names is *fine*; what is not a regular file is
+    the body sitting in the proposal directory, and a remedy naming the other one
+    sends a reader to edit a path that was never the problem.
+
+    The name attached is the one the caller built -- the proposal's ULID plus the
+    normalized ``knowledge/`` tail ``_body_moves`` resolved -- never the author's
+    ``contentFile`` string, whose echo is what
+    ``tests/unit/test_path_security.py::
+    test_no_reachable_refusal_branch_echoes_the_attacker_supplied_path`` forbids.
+    It is the same string the sibling symlink refusal at this call site already
+    prints.
+
+    The timer makes a removed shape guard fail rather than stall the suite: the
+    read would otherwise block in ``open()`` for a writer that never comes.
+    """
+    _, drafted = _draft(project)
+    tail = Path(drafted["bodyDestination"]).relative_to(".theurian/knowledge")
+    body = project / drafted["proposalDirectory"] / tail
+    body.unlink()
+    os.mkfifo(body)
+
+    with fails_rather_than_hanging(15, waiting_for="propose accept over a FIFO body"):
+        code, payload = _invoke("propose", "accept", drafted["proposalId"])
+
+    named = (Path(drafted["proposalDirectory"]) / tail).as_posix()
+    assert code == 1
+    assert payload["error"] == (
+        f"{named!r} names a file that is a named pipe (FIFO), not a regular file"
+    )
+    assert payload["remedy"] == (
+        f"Replace the file {named!r} names with a regular file, then retry. The size "
+        f"Theurian checks before it opens a file bounds nothing about what a read of a "
+        f"named pipe (FIFO) returns, so it is refused unread."
+    )
+    assert drafted["contentFile"] not in payload["remedy"], (
+        "the contentFile is not what is wrong here, so the cure must not name it"
+    )
 
 
 def test_accept_writes_its_json_failure_document_to_stderr_leaving_stdout_clean(

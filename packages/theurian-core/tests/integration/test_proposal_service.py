@@ -19,6 +19,7 @@ import pytest
 import yaml
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
@@ -29,9 +30,16 @@ from theurian.application.proposal_service import (
     ProposalError,
     ProposalRequest,
     ProposalService,
+    _evidence_failure_reason,
 )
 from theurian.domain.enums import KnowledgeKind
-from theurian.domain.errors import InvariantViolationError, MigrationError, PathEscapeError
+from theurian.domain.errors import (
+    InputTooLargeError,
+    InvariantViolationError,
+    IrregularSourceFileError,
+    MigrationError,
+    PathEscapeError,
+)
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProposalId, RevisionId, TaskId
 from theurian.domain.knowledge import AUTHORED_IN_THEURIAN, SourceAnchor
 from theurian.domain.migration import Migration, current_revision_in
@@ -48,6 +56,11 @@ from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 #: that needs the mode to actually refuse cannot run there (the offline CI job
 #: runs as root). Same guard the sibling permission tests carry.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
+#: A FIFO is the shape whose ``st_size`` bounds nothing, and interrupting the
+#: block it causes is what lets a missing guard fail rather than stall the suite
+#: (``hang_guard``). Both halves are POSIX, so they are one skip condition.
+_CAN_MAKE_A_BLOCKING_FILE = hasattr(os, "mkfifo") and CAN_INTERRUPT_A_HANG
 
 #: Spellings that tell a reader the cure for a refused read is a permission
 #: change (#227). The contract is that the remedy *names* the permission, not
@@ -2151,6 +2164,71 @@ def test_a_non_utf8_evidence_file_is_indeterminate_as_bad_utf8(service: Proposal
 
     assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
     assert "not valid UTF-8" in str(caught.value)
+
+
+@pytest.mark.skipif(
+    not _CAN_MAKE_A_BLOCKING_FILE, reason="needs os.mkfifo and an interruptible timer"
+)
+def test_an_evidence_file_that_is_a_fifo_says_it_is_not_a_regular_file(
+    service: ProposalService,
+) -> None:
+    """The reason table is closed, so a new refusal type must be added to it.
+
+    ``read_source_file`` grew ``IrregularSourceFileError`` for a file whose size
+    bounds nothing (#215). It is a ``TheurianError``, so
+    ``_read_evidence_record`` already caught it and the verdict was already
+    indeterminate -- but no entry matched it, and the table's fallthrough is
+    "it is not a JSON object", which is the one thing this file demonstrably is
+    not: nothing parsed it at all. Reproduced before the entry existed.
+
+    The timer is what makes a regression fail rather than stall the suite: were
+    the shape guard removed, this read would block in ``open()`` for a writer
+    that never comes.
+    """
+    drafted = service.draft(_request())
+    drafted.migration_file.unlink()
+    drafted.evidence_file.unlink()
+    os.mkfifo(drafted.evidence_file)
+
+    with (
+        fails_rather_than_hanging(5, waiting_for="accept over a FIFO evidence.json"),
+        pytest.raises(ProposalError, match="could not be examined") as caught,
+    ):
+        service.accept(drafted.proposal_id)
+
+    assert not isinstance(caught.value, ProposalAlreadyAcceptedError)
+    assert "not a regular file" in str(caught.value)
+    assert "not a JSON object" not in str(caught.value), (
+        "the fallthrough claimed the record parsed and held the wrong shape"
+    )
+
+
+def test_every_read_failure_the_evidence_read_can_raise_has_its_own_reason() -> None:
+    """The correspondence the closed table rests on, checked rather than assumed.
+
+    ``_evidence_failure_reason``'s fallthrough is a *verdict* -- "it is not a
+    JSON object" -- not an "unknown" label, so a refusal type with no entry is
+    reported as a fact about a document nobody managed to parse. Each type
+    ``read_source_file`` documents itself as raising is therefore driven here,
+    directly rather than through a fixture: a filesystem cannot produce every
+    one of them on demand, and the mapping is what is under test.
+
+    Dies if any entry is removed from ``_EVIDENCE_FAILURE_REASONS``: each
+    assertion below is the entry's own text, and every one of these types falls
+    through to the same wrong sentence without it.
+    """
+    assert _evidence_failure_reason(IrregularSourceFileError("a socket")) == (
+        "it is not a regular file"
+    )
+    assert _evidence_failure_reason(InputTooLargeError("source file size", 1, 2)) == (
+        "it is larger than the size cap"
+    )
+    assert _evidence_failure_reason(PathEscapeError("x", "/root")) == (
+        "its path escapes the project"
+    )
+    assert _evidence_failure_reason(FileNotFoundError(errno.ENOENT, "No such file")) == (
+        "no such file"
+    ), "an OSError still answers with its own strerror, and is not in the table"
 
 
 def test_a_dangling_symlink_evidence_file_is_indeterminate_not_absent(

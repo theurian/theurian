@@ -19,6 +19,143 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   instead of falling through to the generic "run this inside an initialised
   Theurian project" diagnosis `resolve_context` gives every error with no
   remedy of its own ([#287](https://github.com/theurian/theurian/issues/287)).
+- **A source file whose size bounds nothing is refused unread**
+  ([#215](https://github.com/theurian/theurian/issues/215)). `read_source_file`
+  enforced SEC-8's byte cap from `st_size`, and `st_size` bounds what a read
+  returns only for a regular file: a FIFO reports 0, passes the cap, and then
+  blocks in `open()` until a writer appears. Measured against the real CLI in a
+  sandboxed `HOME` and `THEURIAN_DATA_DIR`, a migration whose `contentFile`
+  named a FIFO made `theurian migrate validate --json` produce no output and no
+  exit within 15 seconds — worse than the raw traceback
+  [#205](https://github.com/theurian/theurian/issues/205) closed on this same
+  seam, because a hang cannot even be graded. A FIFO, a socket and a device now
+  raise `IrregularSourceFileError`, which names the shape and carries its own
+  remedy, so every caller already guarding `TheurianError` inherits the CP-2
+  `{error, remedy}` payload without its own patch. The refusal is taken from
+  `stat`, which answers from the directory entry and opens nothing, so it is
+  reachable at the last point that is still free. A directory is deliberately
+  not a member and a test pins the non-membership: `open()` refuses one outright
+  with `EISDIR`, which can neither block nor stream, and that errno already
+  selects a remedy naming the fault exactly.
+
+  **The refusal names the referrer, never the `contentFile` value an author
+  wrote** ([#233](https://github.com/theurian/theurian/issues/233)'s
+  discipline). `read_source_file` publishes no path at all — its argument is
+  attacker-influenceable and still in the caller's own spelling when this branch
+  fires, because this is one of the two refusals that run *after* containment
+  rather than before it — so a caller holding a name it has decided is safe to
+  print re-raises with that attached: the `.theurian/migrations/` entry
+  `iterdir()` returned, or, on the `theurian propose accept` path, the
+  project-relative body path Theurian itself built from the proposal's ULID and
+  the resolved `knowledge/` tail. **The same guard covers the accept path**: a
+  proposal body that is a FIFO is refused there too, and `accept` now surfaces
+  the refusing error's own remedy instead of overwriting every refusal that
+  reaches it with one fixed sentence about the `contentFile` — which for this
+  fault names the only object that is *not* wrong. A path escape and an
+  oversized input on the same path gain their own cure by the same change.
+- **The projection budget bounds what the walk spends, not only what it keeps**
+  ([#232](https://github.com/theurian/theurian/issues/232)).
+  `MAX_PROJECTION_CHARS` was checked after `_walk` had built and joined every
+  line, so it capped the return value and nothing else. PyYAML resolves an alias
+  by sharing the parsed object rather than copying it, so a document whose
+  aliases nest parses cheaply and expands only when the walk materialises it
+  into text. Measured against the truncating `project` the ingest path calls,
+  with the returned string capped at 2 MiB throughout: 297 B of YAML cost 0.23 s
+  and 71 MB of RSS, 351 B cost 2.05 s and 334 MB, and 405 B cost 19.76 s and
+  2.8 GB. After the fix the same three cost 0.09 s and 43 MB. The budget is now
+  threaded through the walk, which stops the moment it is passed, and characters
+  are charged exactly as `"\n".join` will spend them — so stopping early and
+  truncating afterwards produce the text the unbounded walk produced, verified
+  byte-for-byte against the pre-change module over twelve shapes.
+
+  **Behaviour change: a visited-node ceiling joins it**
+  (`MAX_PROJECTION_NODES`, 1,000,000), because characters price only the walk's
+  emitting end — a non-empty container emits nothing, so at `MAX_DEPTH` a
+  document can spend two dozen visits per line. It carries a marker of its own,
+  since a projection well under the size limit must not be labelled as one that
+  did not fit. A document that exhausts the visits while its whole projection
+  would have fitted is now refused by `project_checked` where it was accepted
+  before: measured, a 422,040-byte YAML document raises at 1,000,001 visits in
+  0.48 s while its full projection is 2,084,035 characters. Which of the two
+  budgets binds first is a property of the prefix the walk has covered when one
+  of them crosses, not of the document's overall ratio — measured, one
+  document's key order alone decides which answers. `project_checked` raises on
+  the same documents the character budget always did; what changes there is
+  `observed`, now the spend at the stop rather than the size of a projection
+  this no longer builds.
+- **The `$ref` walk enters each parsed node once, however many aliases reach
+  it** ([#245](https://github.com/theurian/theurian/issues/245)).
+  `_external_refs` treated the parsed document as a tree, but a YAML alias is
+  resolved by sharing the parsed object, so one sub-object can be reachable by
+  exponentially many paths and every path was walked. Measured: 694 bytes of
+  YAML at 22 alias levels cost 11.51 s while recording a single reference and
+  reaching neither the depth nor the count cap — which is why neither cap could
+  have stopped it, and `seen` deduplicates reference *strings* rather than
+  bounding the traversal. A `descended` set of node ids makes the cost linear in
+  the parsed graph instead of in the paths through it: 1.5 ms for that same
+  document. Both existing caps are untouched, and where the memo sits is
+  load-bearing in both directions, each with a test that fails when it moves —
+  before the caps, so re-reaching a node the walk has already been inside
+  records no truncation ("we did not look" would be false, and
+  `unresolvedRefCount` would read 2 for a document holding one reference); and
+  added only on an actual descent, never when a cap turned the node away, so a
+  node cut past `MAX_REF_DEPTH` is still walked when a shallower path reaches
+  it.
+
+  **All three together, through the real CLI.** A sandboxed project holding a
+  405-byte alias bomb under `.theurian/specifications/`, a 754-byte `$ref` bomb
+  at 24 alias levels beside it, an ordinary Markdown note, and a FIFO under
+  `.theurian/knowledge/`: `theurian ingest --json` took **114.60 s** against
+  `main` (68e8a0b) and **0.37 s** on this branch, ingesting the same three
+  documents with no failures either way (paired runs on one machine,
+  2026-08-24). The FIFO costs neither run, because `IngestionService._discover`
+  drops a non-regular file before anything opens it — silently, which is its own
+  open issue ([#327](https://github.com/theurian/theurian/issues/327)) and not
+  closed here.
+
+### Documentation
+
+- **T-6's ingestion controls reconciled with what `src/` enforces**
+  ([#199](https://github.com/theurian/theurian/issues/199)). Every remaining
+  line of the threat model's Controls table names the symbol that implements it
+  — `security/paths.py::MAX_SOURCE_FILE_BYTES` and `MAX_PATH_DEPTH`,
+  `security/yaml_loading.py::MAX_YAML_BYTES` and `_StrictLoader`,
+  `normalization/projection.py::MAX_DEPTH`, `MAX_PROJECTION_CHARS` and
+  `MAX_PROJECTION_NODES`, `parsers/openapi.py::MAX_REF_DEPTH`, `MAX_REFS` and
+  `MAX_OPERATIONS` — and **two controls it listed do not exist**, each dropped
+  with the search that settled it rather than filed: there is no *archive
+  expansion ratio*, because nothing in `packages/theurian-core/src` unpacks an
+  archive (no `zipfile`, `tarfile`, `gzip`, `zlib` or `shutil.unpack_archive`
+  import appears anywhere in it), and no *parse wall clock*, because nothing
+  there bounds any parse by time. Both were written in the indicative beside
+  bounds that do run, which is exactly the shape a reader takes for a control
+  that runs. `docs/architecture/source-normalization.md`'s bounds table is
+  reconciled the same way — a third column saying whose each bound is, since
+  three are enforced before any parser sees the bytes and three are the OpenAPI
+  parser's alone — and both tables' figures are now pinned by tests, so prose
+  cannot outlive the constant it quotes.
+- **Two residuals are recorded rather than closed, each measured under T-6 in
+  `docs/security/threat-model.md` and out of scope for this change.** The `$ref`
+  walk builds one path string per edge and nothing charges it, which is
+  quadratic in the document's own size — ~4.39 MiB in 16.93 s, bounded only by
+  the 8 MiB file-size cap
+  ([#328](https://github.com/theurian/theurian/issues/328)).
+  `parsers/markdown.py::_FENCE` spans the whole document under `re.DOTALL`, so
+  every fence opener that never closes scans to the end — 156.2 KiB in 25.12 s,
+  four times the cost per doubling, with `MAX_FENCES` never engaging because
+  such input yields no match to cap
+  ([#331](https://github.com/theurian/theurian/issues/331)).
+- **`unresolvedRefCount`'s published contract corrected.** It was documented as
+  "a total when `refWalkTruncated` is false, and a lower bound for `$ref` when
+  it is true"; the second half is false, because the number adds one record per
+  truncation reason to the distinct references recorded and can therefore
+  *over*count them — measured, a document holding no `$ref` at all, nested 66
+  levels deep, publishes `externalRefs` empty and `unresolvedRefCount` 1. What
+  it never undercounts is the *uninspected surface*, which is the property
+  [#203](https://github.com/theurian/theurian/issues/203) needed: a subtree the
+  walk declined to enter always leaves a record. The arithmetic is unchanged and
+  deliberate — counting truncations is what stops a capped document answering
+  "no external references" at all.
 
 ### Changed
 

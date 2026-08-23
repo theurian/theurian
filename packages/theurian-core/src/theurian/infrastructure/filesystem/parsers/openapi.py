@@ -37,12 +37,19 @@ _HTTP_METHODS: Final = frozenset(
 #: references this module will *record* from one document, which a generated
 #: OpenAPI document can otherwise make enormous.
 #:
-#: They do not cap what the extraction costs, and neither is a
-#: resource-exhaustion control. ``_external_refs`` revisits shared sub-objects
-#: instead of memoising them, so a document can make the traversal exponential
-#: while recording almost nothing and reaching neither cap
-#: (https://github.com/theurian/theurian/issues/245). SEC-8 is not discharged
-#: here, and an earlier version of this comment implied it was.
+#: They bound the record, not the traversal, and they never did. What bounds the
+#: *node entries* of the traversal is the node-identity memo in
+#: :func:`_external_refs`, added for
+#: https://github.com/theurian/theurian/issues/245: before it, a document whose
+#: aliases share one sub-object was walked once per *path* to that object rather
+#: than once per object, so 694 bytes of YAML at 22 alias levels cost 11.51 s
+#: (measured 2026-08-24) while recording a single reference and reaching neither
+#: cap. Both bounds are needed and neither implies the other -- these caps do not
+#: fire on the shape that made the walk expensive, and the memo says nothing
+#: about how large a record a legitimate document may produce. Nothing here
+#: bounds the third quantity, the per-child path strings the walk builds
+#: (https://github.com/theurian/theurian/issues/328, measured in
+#: :func:`_external_refs`).
 MAX_OPERATIONS: Final = 5000
 MAX_REFS: Final = 5000
 
@@ -157,8 +164,21 @@ class OpenApiParser:
                 # looked at; without it a document whose refs all sit past a walk
                 # cap answered "no external references" (#203).
                 #
-                # So: a total when `refWalkTruncated` is false, and a lower bound
-                # for `$ref` when it is true.
+                # So the published number is two populations added together, and
+                # what it bounds depends on which of them is empty. With
+                # `refWalkTruncated` false there are no truncation records and it
+                # is exactly the distinct `$ref` strings. With it true the sum is
+                # no longer a count of references *in either direction*, and in
+                # particular it is not a floor under them: it can **over**count.
+                # Measured 2026-08-24 -- a document holding no `$ref` at all,
+                # nested 66 levels deep, publishes `externalRefs` empty and
+                # `unresolvedRefCount` 1, the depth cut standing alone.
+                #
+                # What it never undercounts is the *uninspected surface*: a
+                # subtree the walk declined to enter always leaves a record, so 0
+                # means both "no reference found" and "nothing left unlooked-at".
+                # That is the property #203 needed and the one a consumer may
+                # lean on; "a lower bound for `$ref`" is the one it may not.
                 #
                 # Both keys stop at this object. `IngestionService._to_document`
                 # carries `structured` into `IngestedDocument` and has no
@@ -326,18 +346,61 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
     stopped. A cut that leaves no trace is worse than a low cap, because the
     document then reports *no* external references at all (#203).
 
-    **What is bounded here is the marker list, not the traversal.** One record
-    per reason and two reasons, so ``truncations`` holds at most two entries
-    however many nodes sit at a cap -- a document can hold thousands, and one
-    marker each would be a list the caller never asked for. That is the whole of
-    the claim: this walk revisits shared sub-objects rather than memoising them,
-    so its cost is *not* bounded by these caps, and neither cap fires on the
-    shape that makes it expensive (#245). Nothing in this function is a
-    resource-exhaustion control.
+    **The marker list is bounded separately from the traversal.** One record per
+    reason and two reasons, so ``truncations`` holds at most two entries however
+    many nodes sit at a cap -- a document can hold thousands, and one marker each
+    would be a list the caller never asked for.
+
+    **The traversal is bounded by node identity, not by the caps** (#245). A YAML
+    alias is resolved by sharing the parsed object, so one sub-object can be
+    reachable by exponentially many paths; walking it per path rather than per
+    object made 694 bytes at 22 alias levels cost 11.51 s while recording a
+    single reference and reaching neither cap. ``descended`` holds the id of
+    every node this walk has already gone *into*, so each is entered once: the
+    same document now costs 1.5 ms and 1,234 bytes at 40 levels 2.6 ms, where the
+    unmemoised walk would not have finished. All measured 2026-08-24, and through
+    ``OpenApiParser.parse``, so each figure is a whole parse rather than the walk
+    alone.
+
+    **What the memo bounds is node *entries*, not what the walk spends.** Every
+    edge still builds its own path string -- ``f"{path}.{key}"`` below -- and
+    nothing charges it, so a document with one long mapping key and a wide
+    fan-out under it costs Theta(edges x path length), which is quadratic in the
+    document's own size: measured 2026-08-24, ~0.53 MiB costs 0.21 s, ~1.07 MiB
+    0.98 s, ~2.16 MiB 4.21 s and ~4.39 MiB 16.93 s -- four times the cost per
+    doubling, with no reference recorded and neither cap reached. The only bound
+    on it is ``MAX_SOURCE_FILE_BYTES`` (8 MiB). That is a measured residual, not
+    a closed one, and it is owned by
+    https://github.com/theurian/theurian/issues/328.
+
+    Three properties of *where* the check sits, each load-bearing:
+
+    * It precedes both caps, so re-reaching a node that was already walked
+      records no truncation. That subtree was inspected; "we did not look" would
+      be false.
+    * A node is added only when it is actually descended into, never when a cap
+      turned it away. A node cut at depth 65 and later reached at depth 3 is
+      therefore still walked, exactly as before.
+    * What it can elide is bounded: a node already descended, whose ``$ref`` is
+      already in ``seen`` and whose children were already walked. The single
+      exception is a node first descended deep enough for a cap to fire *inside*
+      it and later re-reached shallower, where the deeper look is skipped -- and
+      that is precisely the case where a cut was recorded, so the caller is
+      already told the walk stopped looking. The truncation is what stands in for
+      the elided reference; the *count* it feeds is not a floor under the
+      references and was never safe to read as one (see ``parse``'s own note on
+      ``unresolvedRefCount``).
     """
     found: list[dict[str, str]] = []
     truncations: dict[str, dict[str, str]] = {}
     seen: set[str] = set()
+    descended: set[int] = set()
+    # `id()` is unique only among *live* objects, so a collected node's id could
+    # be reused by a later one and skip a subtree that was never walked. Every
+    # node here is reachable from `document`, which outlives the walk -- this
+    # list makes that argument local to this function rather than a property of
+    # whoever called it.
+    alive: list[object] = []
 
     def cut(reason: str, at: str, limit: int) -> None:
         truncations.setdefault(reason, {"reason": reason, "at": at, "limit": str(limit)})
@@ -368,12 +431,16 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
             # exactly the descent the cap refused, so "we did not look" remains
             # the honest answer there.
             return
+        if id(node) in descended:
+            return
         if len(found) >= MAX_REFS:
             cut("refCount", path, MAX_REFS)
             return
         if depth > MAX_REF_DEPTH:
             cut("depth", path, MAX_REF_DEPTH)
             return
+        descended.add(id(node))
+        alive.append(node)
         if isinstance(node, dict):
             record(node.get("$ref"), path)
             for key, child in node.items():

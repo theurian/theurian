@@ -406,12 +406,20 @@ def propose_accept(
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=1)
         return
     except TheurianError as exc:
-        # A `contentFile` that leaves the project is the case that reaches here:
-        # the proposal directory is committed, so its migration is input from
-        # whoever can commit, and SEC-7 refuses the path rather than writing it.
+        # A `contentFile` that leaves the project is the case this text was
+        # written for: the proposal directory is committed, so its migration is
+        # input from whoever can commit, and SEC-7 refuses the path rather than
+        # writing it. It is not the only case that arrives, and it was published
+        # for all of them -- a proposal *body* that is a FIFO is refused here
+        # too, and its `contentFile` is not what is wrong with it. So the error's
+        # own remedy wins where it has one, and this text is the fallback for a
+        # refusal that carries none: the preference `TheurianError.remedy` and
+        # `cli/commands.py::_context_remedy` already document, applied at the one
+        # composition root that was overwriting it.
         _fail(
             str(exc),
-            remedy="Correct the contentFile the migration names, then accept it again.",
+            remedy=exc.remedy
+            or "Correct the contentFile the migration names, then accept it again.",
             as_json=as_json,
             code=1,
         )

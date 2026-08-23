@@ -476,9 +476,95 @@ files.
 
 #### T-6 — A zip or YAML bomb at ingestion, or a search query that burns seconds of CPU (DoS, Medium)
 
-**Controls at ingestion:** max file size, max nesting depth, max archive
-expansion ratio, wall clock timeout, `yaml.safe_load` only. Size is re-checked
-after read, because a file can grow between `stat` and `read`.
+**Controls at ingestion**, each named by the symbol in `src/` that implements it
+([#199](https://github.com/theurian/theurian/issues/199)):
+
+| Bound | Symbol |
+| :-- | :-- |
+| max source file size, re-checked after the read because a file can grow between `stat` and `read` | `security/paths.py::MAX_SOURCE_FILE_BYTES` (8 MiB) |
+| max path depth below the project root — a path nesting past it is refused rather than resolved, so a pathological tree is never read through | `security/paths.py::MAX_PATH_DEPTH` (32) |
+| max YAML document size | `security/yaml_loading.py::MAX_YAML_BYTES` (4 MiB) |
+| a source file whose size bounds nothing — a FIFO, a socket, a device — is refused unread | `security/paths.py::read_source_file`, through `_unbounded_shape` ([#215](https://github.com/theurian/theurian/issues/215)) |
+| max projection nesting depth | `normalization/projection.py::MAX_DEPTH` (24) |
+| max projected characters and max nodes visited, both charged *during* the walk so they bound what it spends | `normalization/projection.py::MAX_PROJECTION_CHARS` (2 MiB) and `MAX_PROJECTION_NODES` (1,000,000), threaded through `_walk` ([#232](https://github.com/theurian/theurian/issues/232)) |
+| the `$ref` walk enters each parsed node once, however many aliases reach it | `infrastructure/filesystem/parsers/openapi.py::_external_refs`, `descended` ([#245](https://github.com/theurian/theurian/issues/245)) |
+| max `$ref` walk depth, max references recorded | `parsers/openapi.py::MAX_REF_DEPTH` (64), `MAX_REFS` (5,000) |
+| max operations recorded from one specification | `parsers/openapi.py::MAX_OPERATIONS` (5,000) |
+| safe YAML loading only — no arbitrary object construction, and no implicit timestamp coercion | `security/yaml_loading.py::load_yaml`, `_StrictLoader` |
+
+The three marked with issue numbers are new. Two of them are reachable through
+`git clone` alone: 405 bytes of nested YAML aliases cost the projection 19.76 s
+and 2.8 GB while returning a 2 MiB string (#232), and 694 bytes at 22 alias
+levels cost the `$ref` walk 11.51 s (#245, re-measured 2026-08-24). The FIFO is
+**not**: Git versions no such entry — its tree modes are `100644`, `100755`,
+`120000`, `160000` and `040000` — so placing one takes local write access to the
+working tree, which is T-1's actor and not T-5's. What it still bought that
+actor is the CP-2 escape this table's own row names: a `contentFile` naming a
+FIFO made `migrate validate --json` hang with no output and no exit (#215), and
+a hang cannot even be graded. Each is measured on the fix's own branch and
+pinned by tests that fail when the guard is removed.
+
+**Residual, measured and owned rather than closed: the `$ref` walk's path
+strings ([#328](https://github.com/theurian/theurian/issues/328)).** #245's memo
+bounds how many nodes the walk *enters*; nothing charges the `f"{path}.{key}"`
+built per edge, so one long mapping key with a wide fan-out under it costs
+Θ(edges × path length) — quadratic in the document's own size. Measured
+2026-08-24 on this branch, with no reference recorded and neither `$ref` cap
+reached: ~0.53 MiB 0.21 s, ~1.07 MiB 0.98 s, ~2.16 MiB 4.21 s, ~4.39 MiB
+16.93 s, four times the cost per doubling. The only bound is
+`MAX_SOURCE_FILE_BYTES` (8 MiB). It is clone-reachable — an OpenAPI file is
+ordinary committed content — and it is graded as availability, not disclosure.
+
+**A second residual, in another parser: the Markdown fence scan
+([#331](https://github.com/theurian/theurian/issues/331)).**
+`parsers/markdown.py::_FENCE` is not line iteration — the pattern spans the whole
+document, `(.*?)` under `re.DOTALL` — so every fence opener that finds no closer
+scans to the end of the file, and a body of openers that can never close costs
+Θ(n²). Measured 2026-08-24 on this branch over a body of `` ```a `` lines, which
+open a fence and can never close one: 9.8 KiB 0.10 s, 19.5 KiB 0.39 s, 39.1 KiB
+1.56 s, 78.1 KiB 6.24 s, 156.2 KiB 25.12 s — four times the cost per doubling.
+`MAX_FENCES` does not bound it: the cap is applied to the matches the scan
+*yields*, and this input yields none at any size. The only bound is
+`MAX_SOURCE_FILE_BYTES` (8 MiB) again. Clone-reachable — a Markdown file is the
+ordinary case of committed knowledge — and graded as availability, not
+disclosure. The rest of that parse is priced: `_FRONT_MATTER` is `\A`-anchored
+and matched 4 MiB in 0.048 s, and the heading pass is linear in the document and
+bounded by `MAX_HEADINGS` rather than by the input (2,000 headings at the tail of
+an 8 MiB file, 6.68 s, doubling with the file).
+
+**Two controls this entry used to list here do not exist, and are dropped rather
+than filed.** Both were written in the indicative beside the shipped bounds
+above, which is exactly the shape #199's audit exists to catch: a control named
+in this table is read as a control that runs.
+
+- *Max archive expansion ratio* — **moot, and deliberately not filed.** Nothing
+  in `packages/theurian-core/src` handles an archive at all: no `zipfile`,
+  `tarfile`, `gzip`, `zlib` or `shutil.unpack_archive` import appears anywhere
+  in it (searched 2026-08-23). The "zip bomb" this entry's own title names has
+  no entry point in shipped code, so the honest record is that the bound is not
+  *needed*, not that it is owed. It belongs with whatever change first unpacks
+  an archive, and there is no such change planned.
+- *Wall clock timeout* — **not implemented, here or anywhere.** Nothing in
+  `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`, `interrupt`,
+  or `asyncio.wait_for` (same search). The two near misses are named further
+  down for the query side and hold identically here: `busy_timeout` is a lock
+  wait, and `GIT_TIMEOUT_SECONDS` bounds a subprocess — neither bounds a parse.
+  What has changed for the ingestion side is that the bounds above are *counted*
+  rather than timed: they price the work a walk spends rather than the seconds
+  it takes, which is the quantity a wall clock was standing in for. A counter
+  bounds only what it counts, and there are **two** quantities above that no
+  counter here counts, each recorded as its own residual and neither covered by
+  this paragraph: the `$ref` walk's per-edge path strings
+  (`parsers/openapi.py::_external_refs`, ~4.39 MiB in 16.93 s,
+  [#328](https://github.com/theurian/theurian/issues/328)) and the Markdown fence
+  scan (`parsers/markdown.py::_FENCE`, 156.2 KiB in 25.12 s,
+  [#331](https://github.com/theurian/theurian/issues/331)).
+
+*Future controls, not shipped:* a per-query wall-clock bound is a daemon-level
+control on the transport layer and is filed as
+[#26](https://github.com/theurian/theurian/issues/26), which owns it for the
+query members enumerated below. No ingestion-side timeout is filed, for the
+reason just given.
 
 **A migration document is validated on its own path, and it carries its own
 ingestion bounds ([#291](https://github.com/theurian/theurian/issues/291),
@@ -509,9 +595,11 @@ large value:
   but `jsonschema` interpolates the failing instance with `{instance!r}` and that
   repr re-expands every shared reference, building a 46 MB message from a 500-byte
   file at alias level 22. The walk is un-memoised on purpose: a collapsed count
-  would wave the bomb through to `validate`. Same un-memoised-walk shape as the
-  OpenAPI `$ref` ref-walk cap in
-  [#245](https://github.com/theurian/theurian/issues/245), in another seam.
+  would wave the bomb through to `validate`. The opposite decision from the
+  OpenAPI `$ref` walk, which [#245](https://github.com/theurian/theurian/issues/245)
+  *memoised* for the same input shape — and deliberately so: this walk exists to
+  price an expansion `{instance!r}` will re-materialise, while that one exists to
+  find references, and a reference found once is found.
 - **`MAX_DOCUMENT_RENDERED_CHARS` (1,000,000)** — *refused ahead of `validate`*,
   in the same walk. Bounds the total *rendered magnitude* of scalar content,
   charging `_rendered_width(child)` — an O(1) width for every leaf type — per
@@ -869,18 +957,33 @@ no external references gives. One record per reason and two reasons, so the
 marker list holds at most two entries however many nodes sit at a cap.
 
 **That bound is on the marker list, not on the walk, and neither cap is a
-resource-exhaustion control.** The traversal revisits shared sub-objects instead
-of memoising them, so a document can make it exponential without reaching either
-cap ([#245](https://github.com/theurian/theurian/issues/245)). SEC-8 is not
-discharged here.
+resource-exhaustion control.** What bounds the traversal is a separate control:
+`descended` enters each parsed node once however many aliases reach it, so the
+exponential shape this paragraph used to record as open —
+694 bytes at 22 alias levels, 11.51 s, one reference recorded and neither cap
+reached — now costs 1.5 ms
+([#245](https://github.com/theurian/theurian/issues/245), measured 2026-08-24
+and pinned by `test_a_shared_node_is_entered_once_however_many_paths_reach_it`).
+
+That closes the node-entry count and nothing else. The walk still builds one
+path string per edge, unpriced and quadratic in the document's size
+([#328](https://github.com/theurian/theurian/issues/328), measured under T-6
+above), so SEC-8 is discharged here for the alias shape and owed for that one.
 
 **`unresolvedRefCount` counts distinct `$ref` strings, and nothing else.** Not
 occurrences, not distinct targets — two spellings of one URL count twice — and
 not the other resolution keywords a specification can carry: `$dynamicRef`,
 `operationRef` and the rest are outside this walk entirely
 ([#246](https://github.com/theurian/theurian/issues/246)), so a document can hold
-a remote reference this count does not see. It is a total when
-`refWalkTruncated` is false and a lower bound *for `$ref`* when it is true.
+a remote reference this count does not see. With `refWalkTruncated` false it is
+exactly that total. With it true the published number adds one record per
+truncation reason, and is then not a count of references in either direction —
+it can **over**count them, measured 2026-08-24: a document holding no `$ref` at
+all, nested 66 levels deep, publishes `externalRefs` empty and
+`unresolvedRefCount` 1. What it never undercounts is the *uninspected surface*,
+which is the property [#203](https://github.com/theurian/theurian/issues/203)
+needed: every subtree the walk declined to enter leaves a record, so 0 means both
+"no reference found" and "nothing left unlooked-at".
 
 **Neither cap marks a node that could not have held a reference.** A scalar has
 no children and an empty container has none either, and emptiness is answerable
