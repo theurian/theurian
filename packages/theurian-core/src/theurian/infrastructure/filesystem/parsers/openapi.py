@@ -38,14 +38,18 @@ _HTTP_METHODS: Final = frozenset(
 #: OpenAPI document can otherwise make enormous.
 #:
 #: They bound the record, not the traversal, and they never did. What bounds the
-#: traversal is the node-identity memo in :func:`_external_refs`, added for
+#: *node entries* of the traversal is the node-identity memo in
+#: :func:`_external_refs`, added for
 #: https://github.com/theurian/theurian/issues/245: before it, a document whose
 #: aliases share one sub-object was walked once per *path* to that object rather
-#: than once per object, so 677 bytes of YAML at 22 alias levels cost 10.36 s
-#: (measured) while recording a single reference and reaching neither cap. Both
-#: bounds are needed and neither implies the other -- these caps do not fire on
-#: the shape that made the walk expensive, and the memo says nothing about how
-#: large a record a legitimate document may produce.
+#: than once per object, so 694 bytes of YAML at 22 alias levels cost 11.51 s
+#: (measured 2026-08-24) while recording a single reference and reaching neither
+#: cap. Both bounds are needed and neither implies the other -- these caps do not
+#: fire on the shape that made the walk expensive, and the memo says nothing
+#: about how large a record a legitimate document may produce. Nothing here
+#: bounds the third quantity, the per-child path strings the walk builds
+#: (https://github.com/theurian/theurian/issues/328, measured in
+#: :func:`_external_refs`).
 MAX_OPERATIONS: Final = 5000
 MAX_REFS: Final = 5000
 
@@ -337,12 +341,24 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
     **The traversal is bounded by node identity, not by the caps** (#245). A YAML
     alias is resolved by sharing the parsed object, so one sub-object can be
     reachable by exponentially many paths; walking it per path rather than per
-    object made 677 bytes at 22 alias levels cost 10.36 s while recording a
+    object made 694 bytes at 22 alias levels cost 11.51 s while recording a
     single reference and reaching neither cap. ``descended`` holds the id of
-    every node this walk has already gone *into*, so each is entered once and the
-    cost is linear in the parsed graph rather than in the paths through it: 0.01 s
-    for that same document, and 0.03 s at 40 levels, where the unmemoised walk
-    would not have finished.
+    every node this walk has already gone *into*, so each is entered once: the
+    same document now costs 1.5 ms and 1,234 bytes at 40 levels 2.6 ms, where the
+    unmemoised walk would not have finished. All measured 2026-08-24, and through
+    ``OpenApiParser.parse``, so each figure is a whole parse rather than the walk
+    alone.
+
+    **What the memo bounds is node *entries*, not what the walk spends.** Every
+    edge still builds its own path string -- ``f"{path}.{key}"`` below -- and
+    nothing charges it, so a document with one long mapping key and a wide
+    fan-out under it costs Theta(edges x path length), which is quadratic in the
+    document's own size: measured 2026-08-24, ~0.53 MiB costs 0.21 s, ~1.07 MiB
+    0.98 s, ~2.16 MiB 4.21 s and ~4.39 MiB 16.93 s -- four times the cost per
+    doubling, with no reference recorded and neither cap reached. The only bound
+    on it is ``MAX_SOURCE_FILE_BYTES`` (8 MiB). That is a measured residual, not
+    a closed one, and it is owned by
+    https://github.com/theurian/theurian/issues/328.
 
     Three properties of *where* the check sits, each load-bearing:
 

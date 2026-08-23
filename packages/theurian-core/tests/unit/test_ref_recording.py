@@ -704,7 +704,9 @@ def _alias_chain(levels: int) -> str:
 
     Each level names the level below it twice, so the *graph* grows by one node
     per level while the number of paths through it doubles. This is issue #245's
-    own input shape: 22 levels is 677 bytes.
+    own input shape: 22 levels is 694 bytes, 40 levels is 1,234 bytes (measured
+    2026-08-24; "677 bytes" was recorded here and in two other files, and is the
+    size of a document this function does not produce).
     """
     lines = ["openapi: '3.1.0'", "a0: &a0", '  "$ref": "https://evil.test/x.json"']
     for level in range(1, levels + 1):
@@ -736,12 +738,13 @@ def test_a_shared_node_is_entered_once_however_many_paths_reach_it() -> None:
 def test_an_alias_bomb_is_walked_in_milliseconds() -> None:
     """Issue #245's own reproduction, through the real parser.
 
-    Measured on this branch: 677 bytes at 22 alias levels cost 10.36 s before
-    the memo and 0.04 ms after, recording the same single reference and reaching
-    neither cap -- which is why neither cap could have stopped it. The bound is
-    wall clock because the defect's whole expression is time, and it sits four
-    orders of magnitude above the measured cost and three below the unmemoised
-    one.
+    Measured 2026-08-24, each figure a whole ``parse`` and not the walk alone:
+    694 bytes at 22 alias levels cost 11.51 s with the memo removed and 1.5 ms
+    with it, recording the same single reference and reaching neither cap --
+    which is why neither cap could have stopped it. The bound is wall clock
+    because the defect's whole expression is time: 5 s is three orders of
+    magnitude above the memoised cost and less than half the unmemoised one, so
+    it fails on the defect rather than on a slow machine.
     """
     text = _alias_chain(22)
     assert len(text) < 1024, f"the input is {len(text)} bytes"

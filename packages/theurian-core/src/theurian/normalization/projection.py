@@ -41,13 +41,24 @@ MAX_PROJECTION_CHARS: Final = 2 * 1024 * 1024
 #: Characters bound the walk's *emitting* end: every leaf and every empty
 #: container produces a line. What they do not price is the traversal between
 #: them -- a non-empty container emits nothing at all, so at :data:`MAX_DEPTH`
-#: a document can spend two dozen visits per line of output. At these constants
-#: the two budgets land close together, and a walk of a million nodes usually
-#: emits past 2 MiB and is refused by characters first, so this is a backstop
-#: rather than the binding constraint. It is written down anyway because the
-#: alternative is an *unwritten* bound resting on ``MAX_DEPTH`` and on the
-#: shortest line the renderer can produce, and moving either would silently
-#: unbound the traversal.
+#: a document can spend two dozen visits per line of output.
+#:
+#: **Which budget binds first is the document's choice, not a property of these
+#: constants.** This one fires ahead of the characters on any document whose
+#: projection averages under ``MAX_PROJECTION_CHARS / MAX_PROJECTION_NODES`` --
+#: 2.097 characters per visited node -- and that is reachable under the shipped
+#: defaults, so it is a second and coarser bound rather than a backstop the
+#: character budget always reaches first. Measured 2026-08-24: a 422,040-byte
+#: YAML document (one 23-deep anchor chain, aliased from 41,667 one-codepoint
+#: root keys, so each alias costs 24 visits and emits a 49-character line)
+#: raises ``InputTooLargeError('projected node count', 1000000, 1000001)`` in
+#: 0.48 s, while that same document's whole projection is 2,084,035 characters
+#: -- inside the 2 MiB budget, with no truncation marker at all.
+#:
+#: It is written down as its own constant because the alternative is an
+#: *unwritten* bound resting on ``MAX_DEPTH`` and on the shortest line the
+#: renderer can produce, and moving either would silently unbound the
+#: traversal.
 #:
 #: Measured on this branch with the character budget raised out of the way, so
 #: that this ceiling is what fires: reaching it costs 0.6 s.
@@ -195,12 +206,24 @@ def project_checked(
     projection does not fit is a document Theurian cannot faithfully index, and
     saying so beats indexing a fraction of it.
 
-    The raise fires on the same documents it always did -- the walk stops the
-    moment the budget is passed, and that is exactly when the finished text
-    would have exceeded ``max_chars``. What differs is
+    The *character* budget raises on the same documents it always did -- the
+    walk stops the moment that budget is passed, and that is exactly when the
+    finished text would have exceeded ``max_chars``. What differs there is
     :attr:`~theurian.domain.errors.InputTooLargeError.observed`, which is now
     the spend at the stop rather than the size of a projection this no longer
     builds.
+
+    **The node ceiling is a new refusal class, reachable under the shipped
+    defaults.** A document whose projection averages under
+    ``max_chars / max_nodes`` -- 2.097 characters per visited node at the
+    defaults -- exhausts the nodes first and is refused here although its whole
+    projection would have fitted: measured 2026-08-24, a 422,040-byte YAML
+    document raises ``InputTooLargeError('projected node count', 1000000,
+    1000001)`` in 0.48 s while its full projection is 2,084,035 characters
+    (:data:`MAX_PROJECTION_NODES` records the construction). Such a document was
+    accepted before issue #232 and is refused now, which is the intended trade:
+    the alternative is materialising the expansion that the budget exists to
+    refuse.
     """
     lines, spend = _projected(value, max_chars=max_chars, max_nodes=max_nodes)
     if spend.exhausted is not None:

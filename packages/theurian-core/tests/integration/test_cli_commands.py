@@ -241,7 +241,14 @@ def _assert_file_unreadable_payload(payload: dict[str, Any]) -> None:
 
 #: The body path `MIGRATION` already names, made a FIFO instead of a file. Reusing
 #: that migration verbatim is the point: nothing about the *document* is unusual,
-#: which is what made this reachable through a plain `git clone`.
+#: so the only thing a reviewer could catch is the shape of a file on disk.
+#:
+#: Not reachable through a plain `git clone`, though, and an earlier version of
+#: this comment said it was: Git versions no FIFO -- its tree modes are 100644,
+#: 100755, 120000, 160000 and 040000 -- so placing one takes local write access
+#: to the working tree, which is T-1's actor and what #215's own issue body
+#: records. What the guard buys against that actor is the refusal below in place
+#: of a hang, and a hang cannot even be graded.
 _FIFO_CONTENT_FILE = ".theurian/knowledge/architecture/auth-policy.md"
 
 #: What the refusal is allowed to name: the migration file, which `iterdir()`
