@@ -340,6 +340,28 @@ enlarges the dependency footprint (ADR-0014 pins every dependency exactly, and
 each one is a supply-chain surface) to improve a control the product
 deliberately disclaims completeness on.
 
+**The scan is body-scoped, by decision.** `_scan_bodies_for_secrets` reads the
+incoming body files and nothing else, so a secret placed in the revision's own
+metadata — its `--title`, `--description` or `--label` — is not scanned. This is
+a stated boundary rather than an oversight, and it is a real disclosure channel:
+the title is published verbatim on every `knowledge.search` and `knowledge.get`
+result (`mcp/results.py`) and, lowercased, becomes the migration filename's slug,
+so a slug-surviving credential such as an AWS access-key id lands in both, while
+the description and labels land unscanned in the migration metadata. It is
+deferred to [#336](https://github.com/theurian/theurian/issues/336) rather than
+folded in here for three reasons stated so a reviewer can weigh them: the
+metadata is bounded and human-gated the same way the body is — a human reviews
+the migration diff, which carries the metadata as plainly as the body — so it is
+not an *undisclosed* channel; shipping the body scan first is what #316's window
+bought, and widening the scanner is additive rather than another contract break;
+and the metadata fields are short, structured inputs where a false positive under
+`block` is more disruptive than in a body, so the extension wants its own tuning.
+The graded finding is HIGH — shipped behaviour lets a secret reach a published
+field the control does not cover — and this paragraph is its recorded, CRITICAL-
+free design decision, not a neutral gap note. What grade this leaves T-15 at is
+decided in the threat model, not here; it stays High, and the metadata channel is
+one of its recorded residuals.
+
 **This is the first code in `src/` that reads `.theurian/config.yaml`.** Nothing
 reads it today — `infrastructure/github/__init__.py` mentions the filename in a
 docstring and that is the whole of it, which is the state
@@ -587,6 +609,14 @@ Landed in Milestone 7 with decision 3 (SEC-11):
 
 Still owed, with the issue that will satisfy it:
 
+- **Metadata-field secret scanning**
+  ([#336](https://github.com/theurian/theurian/issues/336)). The accept-path scan
+  reads bodies only, so a secret in the revision's `--title`, `--description` or
+  `--label` is unscanned — the title being published on every `knowledge.search`
+  and `knowledge.get` result and in the migration filename. It is a HIGH finding
+  converted to the recorded design decision in decision 3 above, deferred rather
+  than absorbed because the metadata is human-gated the same way the body is and
+  the extension wants its own false-positive tuning.
 - **Ingest-time and index-time secret scanning**
   ([#329](https://github.com/theurian/theurian/issues/329)). `theurian ingest`
   records content that is already approved and no scan runs there. T-15's

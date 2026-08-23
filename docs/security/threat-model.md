@@ -1085,6 +1085,13 @@ And the one covered point is covered by a detector the product declines to call
 complete — best effort by published stance, not by current tuning — so even there
 the control is not a claim that a secret cannot pass. One gate of three, held by
 a control that disclaims completeness, does not separate High from Medium.
+
+**That three-point count is over the paths a *body* can enter.** The revision's
+own metadata — its `--title`, `--description` and `--label` values — is a
+distinct channel the body scan does not touch at all, published content of the
+approved revision, recorded in the enumeration below and deferred to
+[#336](https://github.com/theurian/theurian/issues/336). It widens the residual
+rather than moving the count, and reinforces High rather than threatening it.
 **The residual falls to be re-graded when #329 ships an ingest-time and
 index-time control**, because that is the change that moves the count rather than
 the confidence.
@@ -1133,6 +1140,20 @@ trigger now closes in the same `migrate apply` (#15).
 *What the shipped control does not reach, each of which is a separate control at
 a separate point:*
 
+- **The scan reads bodies, not the revision's own metadata.**
+  `_scan_bodies_for_secrets` reads the incoming body files and nothing else, so a
+  secret placed in `theurian propose`'s `--title`, `--description` or `--label` is
+  content of the approved revision that never meets the detector — even for a
+  proposal that does pass through `accept`. The title is the sharpest of the
+  three: it is published verbatim on every `knowledge.search` and `knowledge.get`
+  result (`mcp/results.py`) and, lowercased, becomes the migration filename's
+  slug, so a slug-surviving credential such as an AWS access-key id lands in both.
+  The description and labels land unscanned in the migration metadata. Extending
+  the scan to these fields is deferred to
+  [#336](https://github.com/theurian/theurian/issues/336); until it ships, the
+  human review of the migration diff stands over this channel as it does over the
+  body. This is a distinct channel from the three body-entry points the grade
+  counts, not a fourth one — the count is over the paths a body can take.
 - **`theurian ingest` runs no scan**, and neither does index building. Ingest
   records a manifest of content that is already approved, so scanning there is a
   different control at a different point in the lifecycle — a real one, and out
@@ -4612,7 +4633,7 @@ fix.
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
-| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land, `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
+| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land, `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The scan reads bodies only: the revision's own metadata — title, description, labels — is unscanned ([#336](https://github.com/theurian/theurian/issues/336)). Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |

@@ -109,8 +109,12 @@ cannot approve knowledge"** rule below, not the front-matter
       ```
 
       This checks first and moves second. Before anything moves it scans every
-      body for secrets (SEC-11), and proves that the project's migration set with
-      this proposal in it still survives the pipeline `migrate apply` runs — the
+      body for secrets (SEC-11) — the body only, so keep credentials out of the
+      `--title`, `--description` and `--label` too: those are not scanned and the
+      title is published on every search result and in the migration filename
+      ([#336](https://github.com/theurian/theurian/issues/336)) — and proves that
+      the project's migration set with this proposal in it still survives the
+      pipeline `migrate apply` runs — the
       published schema, the whole-set guards, and a dry replay that reaches the
       invariants only applying can check, a revision's source anchor and a reused
       revision id among them. **If any of that refuses, nothing is consumed**: the
