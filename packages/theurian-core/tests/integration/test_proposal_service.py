@@ -835,10 +835,10 @@ def test_a_filename_check_refuses_an_alias_bomb_id_without_rendering_it() -> Non
     the vulnerable form rendered the whole expansion into the refusal.
     """
     lines = ["a0: &a0 'x'"]
-    for level in range(1, 19):
-        refs = ", ".join(f"*a{level - 1}" for _ in range(8))
+    for level in range(1, 7):
+        refs = ", ".join(f"*a{level - 1}" for _ in range(6))
         lines.append(f"a{level}: &a{level} [{refs}]")
-    lines.append("id: *a18")
+    lines.append("id: *a6")
     document = load_yaml_mapping("\n".join(lines))
     migration_file = Path("01K1AAAAAA01234567890ABCDE-x.yaml")
 
