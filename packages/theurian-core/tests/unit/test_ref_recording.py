@@ -44,6 +44,7 @@ from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.values import ContentHash
 from theurian.infrastructure.filesystem.parsers.openapi import (
     LOCAL_PATH_SCHEMES,
+    MAX_OPERATIONS,
     MAX_REF_DEPTH,
     MAX_REFS,
     NETWORK_PATH_SCHEMES,
@@ -213,9 +214,21 @@ def test_the_caps_are_the_numbers_the_documents_quote() -> None:
     module's own comments, in `docs/security/threat-model.md` (T-7) and in the
     CHANGELOG, and "both walk caps stay where they were" is a claim #203 makes
     outright. Halving either kept the whole suite green.
+
+    ``MAX_OPERATIONS`` is here for the same reason and was not: it is published
+    as 5,000 in the same threat-model Controls table and in
+    `docs/architecture/source-normalization.md`'s bounds table, and nothing in
+    the suite read its value. Measured 2026-08-24 -- raising it to 5,000,000
+    passed the whole suite, leaving both documents naming a T-6 bound the code
+    had stopped enforcing at that figure. It is the third cap the parser
+    publishes, so the three are pinned together rather than by family: the two
+    walk caps bound the `$ref` traversal and this one bounds what is *recorded*
+    from one specification, which is why reading it off "the walk caps" missed
+    it.
     """
     assert MAX_REF_DEPTH == 64
     assert MAX_REFS == 5000
+    assert MAX_OPERATIONS == 5000
 
 
 #: ``derandomize`` alone is not determinism: hypothesis derives the corpus from
