@@ -15,6 +15,9 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
+from theurian.application.project_service import ProjectPaths
+from theurian.cli.context import schema_root
+from theurian.infrastructure.filesystem.migration_loader import load_migrations
 from theurian.security import load_yaml_mapping
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -194,6 +197,49 @@ def test_a_key_the_example_sets_but_nothing_reads_stays_marked_not_in_force(
 def test_migration_matches_its_schema(path: pathlib.Path) -> None:
     _validator("migrations/migration.schema.json").validate(
         load_yaml_mapping(path.read_text(encoding="utf-8"))
+    )
+
+
+def test_the_example_loads_through_the_loader_the_product_itself_runs() -> None:
+    """ADR-0027 decision 1, compliance: "the example project still loads".
+
+    Read literally, and through the production call site rather than a
+    hand-rolled equivalent: ``resolve_context`` runs
+    ``load_migrations(paths.root, paths.migrations, schema_root())``
+    (``cli/context.py``), which is what every ``theurian migrate`` invocation
+    against this directory would run. That one pass covers three checks the
+    rules above cover separately, partially, or not at all -- schema
+    conformance, containment of each ``contentFile``, and **the pin against the
+    bytes on disk**.
+
+    The third is the one this test was added for, and it was missing entirely.
+    The root corpus has
+    ``test_dogfood_corpus_governance.py::test_every_pinned_body_hashes_to_the_content_sha256_its_migration_declares``;
+    the example population had no digest-*value* check of any kind.
+    ``test_migration_matches_its_schema`` catches a pin that is absent -- the
+    schema requires it now -- and cannot catch one that is wrong, because a
+    wrong digest is a well-formed 64-hex string. Measured: appending a line to
+    ``.theurian/knowledge/architecture/auth-policy.md`` without re-pinning left
+    all 15 tests in this file green, while ``theurian migrate validate`` against
+    the example exits 4. An example the product itself refuses is the exact
+    failure this module's docstring says is worse than no example.
+
+    ``ProjectPaths.of`` rather than :data:`THEURIAN_DIR` composed by hand, so
+    the layout this reads is the layout the product derives.
+
+    **The count assertion is the fixture guard and is not optional.**
+    ``load_migrations`` answers a directory it cannot find with
+    ``LoadedMigrations.empty()`` rather than raising, so a path that stopped
+    pointing at the example would make this pass while loading nothing at all.
+    """
+    paths = ProjectPaths.of(EXAMPLE)
+
+    loaded = load_migrations(paths.root, paths.migrations, schema_root())
+
+    assert len(loaded.migration_set) == len(MIGRATIONS), (
+        f"the loader read {len(loaded.migration_set)} of the "
+        f"{len(MIGRATIONS)} migrations under {paths.migrations}; every assertion "
+        f"this test makes is about the set it read"
     )
 
 
