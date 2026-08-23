@@ -37,7 +37,7 @@ import pytest
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
-from visit_counting import CountsVisits
+from visit_counting import CountsIterations, CountsVisits
 
 from theurian.application.ingestion_service import _to_document
 from theurian.domain.knowledge import SourceAnchor
@@ -699,6 +699,16 @@ def _index_of_yaml(text: str) -> dict[str, Any]:
     return cast("dict[str, Any]", structured["_index"])
 
 
+def _metadata_of_yaml(text: str) -> dict[str, str]:
+    """``_metadata``'s counterpart for a document whose sharing must survive.
+
+    ``_metadata`` serialises through ``json.dumps`` and would copy every aliased
+    node into a tree of its own, which is the property these tests turn on.
+    """
+    parsed = OpenApiParser().parse(text.encode(), media_type=OPENAPI, anchor=ANCHOR)
+    return dict(parsed.metadata)
+
+
 def _alias_chain(levels: int) -> str:
     """A document with ``2 ** levels`` paths to one ``$ref``, and one ``$ref`` in it.
 
@@ -733,6 +743,32 @@ def test_a_shared_node_is_entered_once_however_many_paths_reach_it() -> None:
 
     assert shared.visits == 1, f"the shared node was entered {shared.visits} times"
     assert [ref["ref"] for ref in walk.found] == ["https://evil.test/x.json"]
+
+
+def test_a_shared_sequence_is_entered_once_however_many_paths_reach_it() -> None:
+    """The memo is keyed on node identity, not on node *kind*.
+
+    Every other fixture in this section shares a mapping, so restricting
+    ``descended`` to ``isinstance(node, dict)`` kept the whole suite green while
+    a document whose aliases are YAML *sequences* re-explodes -- ``a1: &a1 [*a0,
+    *a0]`` is the ordinary spelling of an alias bomb, and the reviewer measured
+    the mapping-only memo back at 53.6 s for 24 list-shaped levels.
+
+    Counted rather than timed: ``walk`` reaches a sequence's children through
+    ``enumerate(node)``, which calls ``iter()`` once per descent, so the count is
+    the number of descents. Before the memo it was the number of *paths*: 4096
+    here.
+    """
+    shared = CountsIterations([{"$ref": "https://evil.test/x.json"}])
+    node: Any = shared
+    for _ in range(12):
+        node = [node, node]
+
+    walk = _external_refs({"openapi": "3.1.0", "top": node})
+
+    assert shared.iterations == 1, f"the shared sequence was entered {shared.iterations} times"
+    assert [ref["ref"] for ref in walk.found] == ["https://evil.test/x.json"]
+    assert walk.truncations == (), "nothing was cut, so nothing may claim it was"
 
 
 def test_an_alias_bomb_is_walked_in_milliseconds() -> None:
@@ -859,3 +895,63 @@ def test_a_node_a_cap_turned_away_is_still_walked_when_reached_shallower() -> No
         "the deep path was genuinely cut, and still says so"
     )
     assert walk.found[0]["at"] == "z_shallow", "recorded at the path that could be walked"
+
+
+def test_the_one_reference_the_memo_can_lose_always_arrives_with_a_truncation() -> None:
+    r"""The memo's declared drop case, pinned as a *coupling* rather than a loss.
+
+    ``_external_refs``'s docstring bounds what the memo can elide to one shape: a
+    node first descended deep enough for a cap to fire *inside* it, then
+    re-reached shallower, where the deeper look is skipped. Here the shared node
+    sits at depth 63 under ``a_deep`` -- entered, and so memoised -- while the
+    ``$ref`` two levels below it lands at 65, one past ``MAX_REF_DEPTH``.
+    ``z_shallow`` reaches the same object at depth 1, where the whole subtree
+    would fit, and is turned away by the memo. The reference is *gone*::
+
+        walk.found == ()
+
+    That is the documented trade, and it is only safe because of what arrives
+    with it. ``unresolvedRefCount`` is declared "a total when ``refWalkTruncated``
+    is false and a lower bound *for* ``$ref`` when it is true" (``parse``'s own
+    note, #246, restated in ``docs/security/threat-model.md``'s T-7 section), and
+    the scheme allowlist T-7 owes (#129) reads ``refWalkTruncations`` to know
+    which it is holding. So the pairing is the contract: whenever the memo drops
+    a reference, a truncation says the walk stopped looking. A change that makes
+    ``found`` empty *without* a truncation turns a declared lower bound into a
+    silent "no external references", which is exactly the #203 defect this file
+    was opened for.
+
+    Asserted in one test rather than two because either half alone is satisfiable
+    by the wrong fix -- a memo that never drops anything, or a walk that marks
+    everything -- and it is their simultaneity the consumer relies on.
+
+    Driven through YAML and the real parser, not ``json.dumps``: 409 bytes, one
+    anchor, and the sharing is what an alias *is*. Serialising this document
+    would copy the shared node into two trees and delete the case under test.
+    """
+    levels = MAX_REF_DEPTH - 2
+    text = (
+        "openapi: '3.1.0'\n"
+        "a_deep: "
+        + "{x: " * levels
+        + '&shared {c: {d: {"$ref": "https://lost.test/x.json"}}}'
+        + "}" * levels
+        + "\n"
+        "z_shallow: *shared\n"
+    )
+
+    index = _index_of_yaml(text)
+    metadata = _metadata_of_yaml(text)
+
+    assert index["externalRefs"] == [], (
+        "the declared drop case: the deep descent entered the shared node and "
+        "the memo then refused the shallow path that could have read it"
+    )
+    assert [cut["reason"] for cut in index["refWalkTruncations"]] == ["depth"], (
+        "a dropped reference must never arrive as silence -- the truncation is "
+        "what makes unresolvedRefCount a declared lower bound rather than a total"
+    )
+    assert metadata["refWalkTruncated"] == "true"
+    assert metadata["unresolvedRefCount"] == "1", (
+        "the truncation record itself is the count, standing for a subtree nobody looked at (#203)"
+    )
