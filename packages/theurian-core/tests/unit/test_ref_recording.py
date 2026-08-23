@@ -911,15 +911,19 @@ def test_the_one_reference_the_memo_can_lose_always_arrives_with_a_truncation() 
         walk.found == ()
 
     That is the documented trade, and it is only safe because of what arrives
-    with it. ``unresolvedRefCount`` is declared "a total when ``refWalkTruncated``
-    is false and a lower bound *for* ``$ref`` when it is true" (``parse``'s own
-    note, #246, restated in ``docs/security/threat-model.md``'s T-7 section), and
-    the scheme allowlist T-7 owes (#129) reads ``refWalkTruncations`` to know
-    which it is holding. So the pairing is the contract: whenever the memo drops
-    a reference, a truncation says the walk stopped looking. A change that makes
-    ``found`` empty *without* a truncation turns a declared lower bound into a
-    silent "no external references", which is exactly the #203 defect this file
-    was opened for.
+    with it. ``unresolvedRefCount`` is declared to count "the distinct ``$ref``
+    strings recorded, plus one record per truncation reason" -- exactly the
+    distinct references when ``refWalkTruncated`` is false, and *not a count of
+    references in either direction* when it is true (``parse``'s own note, #246,
+    restated in ``docs/security/threat-model.md``'s T-7 section). It is not a
+    floor under them either: this very test measures the count at 1 with
+    ``externalRefs`` empty. What it never undercounts is the **uninspected
+    surface**, and that is the property this coupling holds up: whenever the memo
+    drops a reference, a truncation says the walk stopped looking. A change that
+    makes ``found`` empty *without* a truncation turns that into a silent "no
+    external references", which is exactly the #203 defect this file was opened
+    for -- and the scheme allowlist T-7 owes (#129) reads ``refWalkTruncations``
+    rather than the count for the same reason.
 
     Asserted in one test rather than two because either half alone is satisfiable
     by the wrong fix -- a memo that never drops anything, or a walk that marks
@@ -957,9 +961,11 @@ def test_the_one_reference_the_memo_can_lose_always_arrives_with_a_truncation() 
     )
     assert [cut["reason"] for cut in index["refWalkTruncations"]] == ["depth"], (
         "a dropped reference must never arrive as silence -- the truncation is "
-        "what makes unresolvedRefCount a declared lower bound rather than a total"
+        "what keeps unresolvedRefCount from reading as 'no external references'"
     )
     assert metadata["refWalkTruncated"] == "true"
     assert metadata["unresolvedRefCount"] == "1", (
-        "the truncation record itself is the count, standing for a subtree nobody looked at (#203)"
+        "the truncation record itself is the count, standing for a subtree nobody "
+        "looked at (#203) -- and the count is 1 while no reference was recorded at "
+        "all, which is why it is not a floor under the document's references"
     )

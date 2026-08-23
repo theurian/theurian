@@ -164,8 +164,21 @@ class OpenApiParser:
                 # looked at; without it a document whose refs all sit past a walk
                 # cap answered "no external references" (#203).
                 #
-                # So: a total when `refWalkTruncated` is false, and a lower bound
-                # for `$ref` when it is true.
+                # So the published number is two populations added together, and
+                # what it bounds depends on which of them is empty. With
+                # `refWalkTruncated` false there are no truncation records and it
+                # is exactly the distinct `$ref` strings. With it true the sum is
+                # no longer a count of references *in either direction*, and in
+                # particular it is not a floor under them: it can **over**count.
+                # Measured 2026-08-24 -- a document holding no `$ref` at all,
+                # nested 66 levels deep, publishes `externalRefs` empty and
+                # `unresolvedRefCount` 1, the depth cut standing alone.
+                #
+                # What it never undercounts is the *uninspected surface*: a
+                # subtree the walk declined to enter always leaves a record, so 0
+                # means both "no reference found" and "nothing left unlooked-at".
+                # That is the property #203 needed and the one a consumer may
+                # lean on; "a lower bound for `$ref`" is the one it may not.
                 #
                 # Both keys stop at this object. `IngestionService._to_document`
                 # carries `structured` into `IngestedDocument` and has no
@@ -372,8 +385,10 @@ def _external_refs(document: dict[str, Any]) -> _RefWalk:
       already in ``seen`` and whose children were already walked. The single
       exception is a node first descended deep enough for a cap to fire *inside*
       it and later re-reached shallower, where the deeper look is skipped -- and
-      that is precisely the case where a cut was recorded, so the count the
-      caller reads is already declared a lower bound (see ``parse``'s own note on
+      that is precisely the case where a cut was recorded, so the caller is
+      already told the walk stopped looking. The truncation is what stands in for
+      the elided reference; the *count* it feeds is not a floor under the
+      references and was never safe to read as one (see ``parse``'s own note on
       ``unresolvedRefCount``).
     """
     found: list[dict[str, str]] = []

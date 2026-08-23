@@ -975,8 +975,15 @@ occurrences, not distinct targets — two spellings of one URL count twice — a
 not the other resolution keywords a specification can carry: `$dynamicRef`,
 `operationRef` and the rest are outside this walk entirely
 ([#246](https://github.com/theurian/theurian/issues/246)), so a document can hold
-a remote reference this count does not see. It is a total when
-`refWalkTruncated` is false and a lower bound *for `$ref`* when it is true.
+a remote reference this count does not see. With `refWalkTruncated` false it is
+exactly that total. With it true the published number adds one record per
+truncation reason, and is then not a count of references in either direction —
+it can **over**count them, measured 2026-08-24: a document holding no `$ref` at
+all, nested 66 levels deep, publishes `externalRefs` empty and
+`unresolvedRefCount` 1. What it never undercounts is the *uninspected surface*,
+which is the property [#203](https://github.com/theurian/theurian/issues/203)
+needed: every subtree the walk declined to enter leaves a record, so 0 means both
+"no reference found" and "nothing left unlooked-at".
 
 **Neither cap marks a node that could not have held a reference.** A scalar has
 no children and an empty container has none either, and emptiness is answerable
