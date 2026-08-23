@@ -45,6 +45,39 @@ uv run pytest --cov
 CI runs the same commands plus packaging, security scanning, and plugin
 validation. Nothing here should surprise you on the runner.
 
+## What `main` requires
+
+These checks must pass before a pull request can merge. `enforce_admins` is on,
+so they bind maintainers too.
+
+| Required check | What it refuses |
+| :-- | :-- |
+| `Conventional Commits and DCO` | A subject that is not a Conventional Commit, or a commit with no `Signed-off-by` trailer |
+| `Secret scan` | A credential anywhere in the branch's history (gitleaks over the full clone) |
+| `Dependencies are pinned exactly` | A dependency, or a tool a workflow installs, that is not pinned with `==` (ADR-0014) |
+| `Dependency licences` | A dependency under GPL, AGPL or SSPL, which Apache-2.0 cannot ship (O-4) |
+| `Dependency review` | A dependency added by this pull request that carries a known advisory at moderate or above |
+| `SBOM` | An SBOM that generates but lists no components |
+| `Detect what changed` | A broken path filter — without it, the conditional jobs would skip and the pull request would read green |
+
+Every one of those reports on **every** pull request, whatever it touches, and
+that is what makes it requirable. `Core` and `Plugin` are filtered by path, so
+on a docs-only pull request they do not report at all — and a required check
+that never reports blocks the merge forever instead of passing it.
+
+Which means the jobs carrying the most weight are **not** gates yet: `Format,
+lint, types`, `Tests`, `Full suite with no network`, `Build and verify the
+package`, and the ≥80% coverage floor inside `Tests`. They run, and a red one is
+a maintainer's judgement rather than a block. Making them requirable is a change
+to the workflows, not to a setting — it is the remaining half of
+[#67](https://github.com/theurian/theurian/issues/67).
+
+Two rules gate a merge while reporting no check at all: every commit needs a
+verified signature, and the branch requires linear history. Neither appears in
+the checks list, which is exactly how a correctly signed-off but unsigned commit
+shows all green and still cannot merge — see
+[Signing your commits](#signing-your-commits).
+
 ## Signing your commits
 
 `main` requires every commit to carry a verified cryptographic signature — the
@@ -84,7 +117,8 @@ sign-off — the signature does not replace it.
 
 ## Commit messages
 
-[Conventional Commits](https://www.conventionalcommits.org/), enforced in CI:
+[Conventional Commits](https://www.conventionalcommits.org/), enforced by a
+required check ([What `main` requires](#what-main-requires)):
 
 ```text
 <type>(<scope>): <subject>
