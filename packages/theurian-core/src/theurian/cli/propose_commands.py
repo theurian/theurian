@@ -27,6 +27,7 @@ from typing import Annotated, Final, NoReturn
 import typer
 
 from theurian.application.proposal_service import (
+    AcceptedProposal,
     ApprovedSetUnusableError,
     ChangeAlreadyInPlaceError,
     DraftedProposal,
@@ -129,6 +130,7 @@ class _Inputs:
     task_id: str
     model: str
     reasoning: str
+    local: bool
 
 
 @propose_app.callback(invoke_without_command=True)
@@ -236,6 +238,15 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
         str | None,
         typer.Option("--reasoning", help="Why the evidence supports the claim (required)."),
     ] = None,
+    local: Annotated[
+        bool,
+        typer.Option(
+            "--local",
+            help="Draft under .theurian/proposals-local/ instead. `theurian init` git-ignores "
+            "that directory, so the proposal stays on this machine: nothing to commit by "
+            "accident, and nothing travels to a clone. `git clean -xdf` deletes it.",
+        ),
+    ] = False,
     as_json: JsonOption = False,
 ) -> None:
     """Draft a knowledge change as a proposal a human can review.
@@ -245,6 +256,14 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
     format; and ``evidence.json``. Approved knowledge is not touched. There is
     no CLI or MCP surface that approves anything, because approval is a human
     merging a pull request (ADR-0013).
+
+    ``--local`` writes the same three files under
+    ``.theurian/proposals-local/<proposal-id>/`` instead. That directory is in
+    the ignore block ``theurian init`` writes, which every clone inherits, so a
+    draft whose content must not leave this machine cannot be committed by an
+    absent-minded ``git add -A`` (ADR-0028). Only the parent differs:
+    ``theurian propose accept`` reads both locations, through the same code, and
+    refuses an id that is in both rather than choosing.
 
     The generated migration pins its body's digest -- schema-required since
     ADR-0027 decision 1 -- and states which revision it replaces when
@@ -285,11 +304,16 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
         "--task-id": task_id,
         "--model": model,
         "--reasoning": reasoning,
-        # These two have non-``None`` defaults, so "was it passed" is "does it
+        # These three have non-``None`` defaults, so "was it passed" is "does it
         # differ from the default": a bare ``git`` or ``False`` is indistinguishable
         # from omission and is not treated as a stray option handed to a verb.
         "--source-provider": source_provider if source_provider != "git" else None,
         "--authored-here": authored_here or None,
+        # `--local` belongs to the draft, so `propose --local accept <id>` is a
+        # stray option and not a request to accept from the local directory:
+        # `accept` reads both locations by itself, and honouring it there would
+        # be a precedence rule ADR-0028 refuses to have.
+        "--local": local or None,
     }
     if ctx.invoked_subcommand is not None:
         _refuse_stray_options(provided, subcommand=ctx.invoked_subcommand, as_json=as_json)
@@ -330,6 +354,7 @@ def propose_draft(  # noqa: PLR0913 -- one option per migration field, all keywo
             task_id=_present(task_id),
             model=_present(model),
             reasoning=_present(reasoning),
+            local=local,
         ),
         as_json=as_json,
     )
@@ -346,6 +371,15 @@ def propose_accept(
     has, and the body to the path its ``contentFile`` names. Nothing is applied
     and nothing is approved -- approval is the pull request, and this command
     runs before it.
+
+    **The proposal is looked up in both locations** -- ``.theurian/proposals/``
+    and the git-ignored ``.theurian/proposals-local/`` that ``theurian propose
+    --local`` writes -- through one implementation, with the same symlink
+    refusal, containment check and size cap (ADR-0028, SEC-7). There is no flag
+    that picks one: an id present in *both* is refused naming both paths, and
+    never resolved by precedence, because the two directories can hold different
+    bytes and choosing silently would accept one while the author was reading
+    the other.
 
     **What is checked before anything moves**: that no body would land a secret,
     and that the project's migration set, with this proposal in it, still
@@ -376,7 +410,8 @@ def propose_accept(
     the proposal's own source files could not then be removed (a read-only
     proposal directory), a ``remedy`` naming the leftover; the move still
     succeeded, so this is not a failure; 1 this proposal could not be used as it
-    stands -- no such proposal, a draft interrupted before its migration was
+    stands -- no such proposal, one directory of that id in each of the two
+    proposal locations, a draft interrupted before its migration was
     written, a proposal directory or a file in it the filesystem refuses to list,
     examine or read, a contentFile the filesystem cannot resolve or the security
     layer refuses, a body that appears to carry a secret while the policy is
@@ -428,7 +463,7 @@ def propose_accept(
         _refuse(
             str(exc),
             remedy="A proposal id is the 26-character ULID naming its directory under "
-            ".theurian/proposals/.",
+            ".theurian/proposals/ or .theurian/proposals-local/.",
             as_json=as_json,
         )
 
@@ -497,7 +532,7 @@ def propose_accept(
         # exactly what the policy beside it distinguishes (SEC-11).
         "secretScanPolicy": accepted.secret_scan.policy.value,
         "secretFindings": [f.describe() for f in accepted.secret_scan.findings],
-        "nextSteps": list(_ACCEPT_STEPS),
+        "nextSteps": _accept_steps(accepted),
     }
     # Set only when the move landed but the proposal's own source files could not
     # then be removed: the acceptance succeeded, and this names the leftover so it
@@ -544,18 +579,64 @@ _ACCEPT_STEPS: Final = (
     "`theurian index build --json`, or the knowledge just approved is not searchable.",
 )
 
+#: What replaces the first accept step for a proposal drafted with `--local`.
+#: The step it replaces tells the author to put the proposal directory in the
+#: pull request, and for a local one that instruction cannot be followed without
+#: `git add -f` -- which is the publication `--local` was chosen to prevent
+#: (ADR-0028). The migration and the body have left the ignored directory by
+#: now, so the pull request is complete without it; what stays behind is
+#: `evidence.json`, and saying so is what stops a reviewer looking for a file
+#: that was never going to arrive.
+_LOCAL_ACCEPT_FIRST_STEP: Final = (
+    "Review the diff, then open a pull request with the migration and the body in it. "
+    "The merge is the approval. This proposal was drafted under "
+    ".theurian/proposals-local/, which is git-ignored, so what is left there -- "
+    "evidence.json -- stays on this machine and is not part of the pull request."
+)
+
+
+def _accept_steps(accepted: AcceptedProposal) -> list[str]:
+    """The accept steps, with the first one corrected for a local proposal.
+
+    Only the first step differs, because only the first step names the proposal
+    directory. Built from :data:`_ACCEPT_STEPS`' own tail rather than restated,
+    so the two lists cannot drift where they agree.
+    """
+    if not accepted.local:
+        return list(_ACCEPT_STEPS)
+    return [_LOCAL_ACCEPT_FIRST_STEP, *_ACCEPT_STEPS[1:]]
+
+
 #: The steps that follow a draft. The judgement and the moves are the human's;
 #: `propose accept` automates the moves and the check that they are safe to make,
 #: never the approval (ADR-0013 point 4, ADR-0027 decision 2).
+#:
+#: The third step names no proposal directory, deliberately. It used to say
+#: "while a proposal is still under .theurian/proposals/", which is the wrong
+#: half of the sentence and became false outright for a `--local` draft: what
+#: `migrate validate` reads is the *landed* set, so the fact that decides its
+#: answer is where the migration is, not where the proposal is. The draft's own
+#: `proposalDirectory` field reports the location (ADR-0028).
 _DRAFT_STEPS: Final = (
     "Read the proposal. Nothing has been approved and nothing has moved.",
     "If you agree: `theurian propose accept <proposal-id>` moves the migration and the "
     "body into place. That is the file moves, not the approval.",
     "`theurian migrate validate --json` reads .theurian/migrations/ only, so it reports "
-    "nothing at all while a proposal is still under .theurian/proposals/.",
+    "nothing at all until this proposal's migration has been moved there.",
     "The invariants `theurian migrate apply` enforces -- a revision's source anchor, a "
     "reused revision id -- are checked by `theurian propose accept`, before it moves "
     "anything. A proposal that would not apply is refused with nothing consumed.",
+)
+
+#: The step a `--local` draft gets and an ordinary one does not. It states the
+#: two properties the flag bought and the one it cost, because all three are
+#: surprising to someone reading a path that is not where proposals normally go
+#: (ADR-0028: the availability residual is accepted, not fixed).
+_LOCAL_DRAFT_STEP: Final = (
+    "This proposal is under .theurian/proposals-local/, which the ignore block "
+    "`theurian init` writes covers: it will not appear in `git status`, and it does not "
+    "travel to a clone or into a pull request. `git clean -xdf` deletes it, so this is a "
+    "copy and not the only home for anything you need to keep."
 )
 
 
@@ -609,7 +690,9 @@ def _draft(inputs: _Inputs, *, as_json: bool) -> None:
     context, _ = _require_project(as_json)
 
     try:
-        drafted = _service(context).draft(_request(inputs, body=body, content_type=content_type))
+        drafted = _service(context).draft(
+            _request(inputs, body=body, content_type=content_type), local=inputs.local
+        )
     except ProposalError as exc:
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_INVALID_INPUT)
         return
@@ -811,9 +894,19 @@ def _draft_steps(inputs: _Inputs) -> list[str]:
     naming the default the revision will publish, and how to set it, is what
     keeps a reviewed, public ADR from acquiring ``unverified``/``internal`` with
     nothing telling the caller.
+
+    The ``--local`` step follows the same warning-first ordering and for the same
+    reason: it says what a reader would otherwise have to infer from a path.
     """
-    note = _governed_defaults_note(inputs.trust_level, inputs.sensitivity)
-    return [note, *_DRAFT_STEPS] if note is not None else list(_DRAFT_STEPS)
+    leading = [
+        step
+        for step in (
+            _governed_defaults_note(inputs.trust_level, inputs.sensitivity),
+            _LOCAL_DRAFT_STEP if inputs.local else None,
+        )
+        if step is not None
+    ]
+    return [*leading, *_DRAFT_STEPS]
 
 
 def _governed_defaults_note(

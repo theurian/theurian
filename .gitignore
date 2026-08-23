@@ -57,4 +57,6 @@ htmlcov/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+# Authored, kept out of Git on purpose. Nothing rebuilds it (ADR-0028).
+.theurian/proposals-local/
 # <<< theurian <<<

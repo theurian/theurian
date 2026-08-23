@@ -1384,14 +1384,24 @@ def test_the_managed_gitignore_block_appears_exactly_once() -> None:
     )
 
 
-def test_the_managed_gitignore_block_lists_exactly_the_derived_patterns() -> None:
+def test_the_managed_gitignore_block_lists_exactly_the_patterns_init_writes() -> None:
     """The block this repository committed is the block ``init`` writes (ADR-0004).
+
+    **Not "the derived patterns", which is what this rule was called until
+    ADR-0028.** The block carries two categories now: derived artifacts, which
+    ADR-0004 governs, and ``.theurian/proposals-local/``, which is authored
+    content kept out of Git on purpose and which nothing rebuilds. The claim
+    that survives both is the one made here -- the committed file and
+    ``GITIGNORE_ENTRIES`` are the same list, in the same order -- and it is the
+    claim that was doing the work all along.
 
     Order included, so the comparison is exact and deterministic rather than a
     set membership that a reordering could satisfy differently on a rerun. A
     missing pattern is how a derived artifact -- an index database, a state
     file -- becomes committable without anyone deciding it should be; removing
-    one was a mutation that survived.
+    one was a mutation that survived. For the new entry the failure runs the
+    other way: a missing pattern is how a proposal whose bytes must not leave
+    the machine reaches ``git add -A``.
 
     The other rule here that reads no corpus population.
     """
