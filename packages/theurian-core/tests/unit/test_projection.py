@@ -9,18 +9,28 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
+from typing import TYPE_CHECKING, override
 
 import pytest
 
 from theurian.domain.errors import InputTooLargeError
 from theurian.normalization.projection import (
     DEPTH_MARKER,
+    EXPANSION_MARKER,
     MAX_DEPTH,
+    MAX_PROJECTION_CHARS,
     SIZE_MARKER,
     project,
     project_checked,
     summarize_structure,
 )
+from theurian.security.yaml_loading import load_yaml
+
+if TYPE_CHECKING:
+    # What `dict.items()` returns, and so what an override of it must return.
+    # A type-checking name only: it is not bound at runtime.
+    from _collections_abc import dict_items
 
 # -- Determinism -----------------------------------------------------------
 
@@ -166,6 +176,146 @@ def test_project_checked_raises_instead_of_truncating() -> None:
 
 def test_project_checked_passes_within_the_limit() -> None:
     assert project_checked({"k": "v"}, max_chars=1000) == "k: v"
+
+
+# -- Budgets bound the walk, not only its result (issue #232) --------------
+
+
+class _CountsVisits(dict[str, object]):
+    """A mapping that records how often the walk descends into it.
+
+    ``_walk`` calls ``items()`` exactly once per descent, so the count is the
+    number of times this sub-object was materialised. Counting is what makes
+    these tests deterministic: the alternative is a stopwatch, and a stopwatch
+    on a loaded machine measures the machine.
+    """
+
+    def __init__(self, mapping: dict[str, object]) -> None:
+        super().__init__(mapping)
+        self.visits = 0
+
+    @override
+    def items(self) -> dict_items[str, object]:
+        self.visits += 1
+        return super().items()
+
+
+def _shared_by(levels: int, shared: _CountsVisits) -> dict[str, object]:
+    """A tree of ``2 ** levels`` paths that all end at the same sub-object.
+
+    What PyYAML builds from nested aliases, by hand: an alias is resolved by
+    sharing the object, not by copying it, so the parse is cheap and only the
+    walk pays for the expansion.
+    """
+    node: dict[str, object] = shared
+    for _ in range(levels):
+        node = {"l": node, "r": node}
+    return node
+
+
+def test_the_character_budget_stops_the_walk_rather_than_the_join() -> None:
+    """Issue #232: the cap bounded what was kept, not what was spent.
+
+    ``MAX_PROJECTION_CHARS`` was checked after ``_walk`` had built and joined
+    every line, so a shared sub-object was materialised once per path to it --
+    4096 times here, and 2 ** 23 times for the 405 B document the issue
+    measured at 19.76 s and 2.8 GB while returning a 2 MiB string.
+
+    The count, not a stopwatch, is the assertion: with the budget threaded
+    through the walk it is a handful, and with the budget back at the join it is
+    every path in the tree.
+    """
+    shared = _CountsVisits({"a": "x" * 40, "b": "y" * 40})
+    document = _shared_by(12, shared)
+
+    projected = project(document, max_chars=200)
+
+    assert SIZE_MARKER in projected
+    assert shared.visits <= 8, (
+        f"the walk materialised the shared sub-object {shared.visits} times "
+        f"for a 200-character budget"
+    )
+
+
+def test_the_node_ceiling_stops_a_walk_whose_text_stays_small() -> None:
+    """The second budget, on the shape the first one cannot price.
+
+    A non-empty container emits nothing of its own, so a document can spend
+    visits without spending characters. Here the character budget is far out of
+    reach and the node ceiling is what fires, with a marker of its own -- the
+    size marker would be a false statement about a projection well under the
+    size limit.
+    """
+    shared = _CountsVisits({"a": "x"})
+    document = _shared_by(12, shared)
+
+    projected = project(document, max_chars=10**9, max_nodes=200)
+
+    assert projected.endswith(EXPANSION_MARKER)
+    assert SIZE_MARKER not in projected, "the text fits; only the traversal did not"
+    assert shared.visits <= 100, shared.visits
+
+
+def test_project_checked_raises_from_the_budget_it_ran_out_of() -> None:
+    """Both budgets raise, and each names the quantity it measured.
+
+    ``limit_name`` is what ``InputTooLargeError``'s remedy speaks in, so a node
+    ceiling reported as a text size would tell an author to shorten prose that
+    was never the problem.
+    """
+    with pytest.raises(InputTooLargeError) as by_chars:
+        project_checked(_shared_by(12, _CountsVisits({"a": "x" * 40})), max_chars=200)
+    assert by_chars.value.limit_name == "projected text size"
+    assert by_chars.value.limit == 200
+
+    with pytest.raises(InputTooLargeError) as by_nodes:
+        project_checked(_shared_by(12, _CountsVisits({"a": "x"})), max_chars=10**9, max_nodes=200)
+    assert by_nodes.value.limit_name == "projected node count"
+    assert by_nodes.value.limit == 200
+
+
+def test_a_benign_shared_document_is_projected_in_full() -> None:
+    """The false-refusal side: sharing is normal, and small is small.
+
+    A YAML document that reuses one anchor a few times is ordinary authoring,
+    and the budget must not read it as an attack. Every one of the eight paths
+    to the shared node is expanded, exactly as before the budget existed.
+    """
+    shared = _CountsVisits({"a": "x", "b": "y"})
+    projected = project(_shared_by(3, shared))
+
+    assert SIZE_MARKER not in projected
+    assert EXPANSION_MARKER not in projected
+    assert len(projected.splitlines()) == 16, "eight copies of the shared node, two lines each"
+    assert shared.visits == 8
+
+
+def test_a_real_alias_bomb_is_projected_within_seconds() -> None:
+    """The same guard, driven by PyYAML rather than by a hand-built graph.
+
+    Issue #232's own input: 405 bytes, seven alias levels, nine references per
+    level. Measured on this branch, both with the truncating ``project`` the
+    ingest path calls: 19.76 seconds and 2.8 GB of RSS before the budget was
+    threaded through the walk, 0.09 seconds and 43 MB after -- for byte-identical
+    output, since the budget changes the work and not the projection.
+
+    The bound is wall clock because the guard's failure mode is *time*, and it
+    is set two orders of magnitude above the measured cost and four times below
+    the unguarded one, so it separates the two without measuring the machine.
+    """
+    lines = ["a0: &a0 [x, y, z]"]
+    for level in range(1, 8):
+        lines.append(f"a{level}: &a{level} [{', '.join([f'*a{level - 1}'] * 9)}]")
+    lines.append("top: *a7")
+    document = load_yaml("\n".join(lines) + "\n")
+
+    started = time.monotonic()
+    projected = project(document)
+    elapsed = time.monotonic() - started
+
+    assert SIZE_MARKER in projected
+    assert len(projected) <= MAX_PROJECTION_CHARS + len(SIZE_MARKER) + 1
+    assert elapsed < 5, f"the alias bomb took {elapsed:.2f}s"
 
 
 # -- Structural summary ----------------------------------------------------
