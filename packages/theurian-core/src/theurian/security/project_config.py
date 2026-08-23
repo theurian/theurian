@@ -40,7 +40,7 @@ import yaml
 
 from theurian.domain.errors import ProjectConfigError, TheurianError
 from theurian.security.paths import read_source_file
-from theurian.security.yaml_loading import load_yaml
+from theurian.security.yaml_loading import is_bounded_scalar, load_yaml
 
 #: The configuration file's name inside the knowledge directory. One definition,
 #: because ``ProjectPaths`` composes the path from it and a second spelling would
@@ -134,6 +134,24 @@ def read_secret_scan_policy(root: Path, config_file: Path) -> SecretScanPolicy:
         return SecretScanPolicy.BLOCK
 
     stated = security[SECRET_SCAN_KEY]
+    if not is_bounded_scalar(stated):
+        # Refused *before* `SecretScanPolicy(stated)`, and the order is the whole
+        # point: CPython's `Enum.__new__` builds its own `ValueError("%r is not a
+        # valid ...")` -- rendering `stated` with `%r` -- before the `except`
+        # below is ever reached, so guarding the message at :`{stated!r}` would be
+        # too late. A `secretScan` pointing at a YAML alias graph re-expands under
+        # that repr to gigabytes from a few hundred bytes of anchors (T-6); a
+        # policy selector is a short scalar or it is a mistake, so `stated` is
+        # never rendered here -- the key and the valid values are the diagnosis.
+        raise ProjectConfigError(
+            f"`{_SECURITY_BLOCK}.{SECRET_SCAN_KEY}` in {PROJECT_CONFIG_FILE} is not a simple "
+            f"value a policy could be spelled as.",
+            remedy=(
+                f"Set it to one short value -- {_VALID_VALUES} Until it names one of them the "
+                f"acceptance is refused rather than guessed at, because guessing would hide a "
+                f"typo about a security control."
+            ),
+        )
     try:
         return SecretScanPolicy(stated)
     except ValueError as exc:

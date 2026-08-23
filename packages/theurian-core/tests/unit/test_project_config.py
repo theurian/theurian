@@ -175,6 +175,47 @@ def test_an_unrecognised_policy_refuses_rather_than_falling_back(
         )
 
 
+def _alias_bomb_config(levels: int, fan: int) -> str:
+    """A ``config.yaml`` whose ``secretScan`` aliases a ``fan**levels``-leaf DAG.
+
+    The reviewers' ``repro_config_bomb.sh`` shape: parsing stays O(levels) because
+    PyYAML collapses the aliases, but rendering the resulting container with
+    ``repr`` re-expands it as a tree (T-6). ``secretScan: *aN`` is where the
+    expanded value would reach ``SecretScanPolicy(...)``'s own ``%r``.
+    """
+    lines = ["a0: &a0 'x'"]
+    for level in range(1, levels + 1):
+        refs = ", ".join(f"*a{level - 1}" for _ in range(fan))
+        lines.append(f"a{level}: &a{level} [{refs}]")
+    lines.append(f"security:\n  secretScan: *a{levels}")
+    return "\n".join(lines)
+
+
+def test_an_alias_bomb_policy_is_refused_without_rendering_it(tmp_path: Path) -> None:
+    """A ``secretScan`` pointing at a YAML alias graph is a T-6 denial of service.
+
+    ``SecretScanPolicy(stated)`` builds ``ValueError("%r is not a valid ...")``
+    *inside* CPython's ``Enum.__new__`` -- rendering ``stated`` with ``%r`` --
+    before the reader's own ``{stated!r}`` is ever reached, so a container there
+    re-expands the collapsed DAG to gigabytes from a few hundred bytes. The guard
+    runs before the enum call and refuses without rendering the value at all.
+
+    The message length is the pin, not just its type: the vulnerable form renders
+    the whole expansion into the refusal (megabytes), so a short, key-only message
+    is what says the value was refused before any render. ``fan=6, levels=6`` is
+    ~1.5 MB expanded -- catastrophic enough to distinguish the two, bounded enough
+    that even the vulnerable path cannot exhaust a mutation run's memory.
+    """
+    root, config = _project(tmp_path, _alias_bomb_config(levels=6, fan=6))
+
+    with pytest.raises(ProjectConfigError) as caught:
+        read_secret_scan_policy(root, config)
+
+    assert len(str(caught.value)) < 1000, "the refusal rendered the expanded alias graph"
+    assert "secretScan" in str(caught.value)
+    assert caught.value.remedy
+
+
 def test_a_config_that_does_not_parse_refuses(tmp_path: Path) -> None:
     """A malformed file is a fault with a remedy, never a silent default.
 

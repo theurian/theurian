@@ -34,6 +34,7 @@ from theurian.application.proposal_service import (
     ProposalRequest,
     ProposalService,
     _evidence_failure_reason,
+    _require_filename_matches_id,
 )
 from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
@@ -64,6 +65,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     validate_migration_document,
 )
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+from theurian.security.yaml_loading import load_yaml_mapping
 
 #: A ``chmod 0o000`` denies nothing to root and nothing on Windows, so a test
 #: that needs the mode to actually refuse cannot run there (the offline CI job
@@ -820,6 +822,45 @@ def test_accept_refuses_a_filename_that_does_not_match_the_inner_id(
 
     with pytest.raises(ProposalError, match="filename ULID must equal"):
         service.accept(drafted.proposal_id)
+
+
+def test_a_filename_check_refuses_an_alias_bomb_id_without_rendering_it() -> None:
+    """HIGH-1 Face B (adversarial e19): ``id: *anchor`` is a T-6 denial of service.
+
+    ``_require_filename_matches_id`` runs *before* stage-1 schema validation, so
+    ``document["id"]`` is still raw YAML. When it aliases a DAG, the value is a
+    container whose ``{inner!r}`` re-expands the graph PyYAML collapsed -- 551
+    bytes rendered to 3.4 GB in the reproduction. The guard refuses a non-scalar
+    id before rendering it; the short, key-only message is what pins that, because
+    the vulnerable form rendered the whole expansion into the refusal.
+    """
+    lines = ["a0: &a0 'x'"]
+    for level in range(1, 19):
+        refs = ", ".join(f"*a{level - 1}" for _ in range(8))
+        lines.append(f"a{level}: &a{level} [{refs}]")
+    lines.append("id: *a18")
+    document = load_yaml_mapping("\n".join(lines))
+    migration_file = Path("01K1AAAAAA01234567890ABCDE-x.yaml")
+
+    with pytest.raises(ProposalError) as caught:
+        _require_filename_matches_id(migration_file, document)
+
+    assert len(str(caught.value)) < 1000, "the refusal rendered the expanded alias graph"
+    assert "filename ULID must equal" in str(caught.value)
+
+
+def test_a_filename_check_still_names_a_short_wrong_id(tmp_path: Path) -> None:
+    """A short, wrong id is still echoed -- the guard only refuses to render a bomb.
+
+    The helpful diagnosis (``its id is '...'``) is preserved for the ordinary
+    mismatch: a scalar id that is simply not the filename's ULID.
+    """
+    migration_file = Path("01K1AAAAAA01234567890ABCDE-x.yaml")
+
+    with pytest.raises(ProposalError) as caught:
+        _require_filename_matches_id(migration_file, {"id": "01K1BBBBBB01234567890ABCDE"})
+
+    assert "01K1BBBBBB01234567890ABCDE" in str(caught.value)
 
 
 def test_accept_replaces_an_unpinned_file_at_the_destination(

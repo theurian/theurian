@@ -96,7 +96,7 @@ from theurian.security.paths import (
     resolve_within_root,
 )
 from theurian.security.project_config import SecretScanPolicy, read_secret_scan_policy
-from theurian.security.yaml_loading import load_yaml_mapping
+from theurian.security.yaml_loading import is_bounded_scalar, load_yaml_mapping
 
 #: The evidence file's name. Fixed, unlike the migration's: nothing moves it, so
 #: it cannot collide with anything, and a reviewer looking for the reasoning
@@ -2259,12 +2259,24 @@ def _require_filename_matches_id(migration_file: Path, document: Mapping[str, ob
     """
     inner = document.get("id")
     prefix = migration_file.name.split("-", 1)[0]
-    if not isinstance(inner, str) or inner != prefix:
+    if isinstance(inner, str) and inner == prefix:
+        return
+    if not is_bounded_scalar(inner):
+        # This runs *before* stage-1 schema validation, so `inner` is still raw
+        # YAML: `id: *anchor` pointing at an alias graph is a container whose
+        # `{inner!r}` re-expands to gigabytes from a few hundred bytes (T-6). A
+        # migration id is a ULID, so anything but a short scalar is a mistake and
+        # is refused without being rendered -- the filename ULID is the diagnosis.
         raise ProposalError(
-            f"The migration file is named for {prefix} but its id is {inner!r}; the "
+            f"The migration file is named for {prefix} but its id is not a simple value; the "
             "filename ULID must equal the migration id.",
             remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
         )
+    raise ProposalError(
+        f"The migration file is named for {prefix} but its id is {inner!r}; the "
+        "filename ULID must equal the migration id.",
+        remedy="Rename the file to <id>-<slug>.yaml, or correct the id inside it.",
+    )
 
 
 def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
