@@ -30,6 +30,7 @@ from typing import Any, Final
 from mcp.server import MCPServer
 
 from theurian import __protocol_version__, __version__
+from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
 from theurian.application.project_service import (
     BuildProvenance,
     ProjectError,
@@ -343,10 +344,41 @@ def _relation_is_visible(
     return True
 
 
+def _tenant_boundary_refusal(grant: AuthorizationGrant) -> ToolError:
+    """The refusal when a grant names a tenant this deployment does not serve.
+
+    Unreachable through the shipped composition and written out anyway. OSS Core
+    runs one process per user with one tenant (ADR-0002), and
+    ``StaticAuthorizationProvider`` sets :data:`DEPLOYMENT_TENANT` on every grant
+    it builds -- so the check below can only fire for a grant assembled by hand,
+    which today means a test. Writing the message now is what makes the boundary a
+    *refusal* rather than a comment: the hosted deployment #119 anticipates adds
+    tenants to the grant, and a seam that has never had a message is a seam that
+    acquires one under time pressure.
+
+    Both values come from this deployment's own configuration, never from the
+    caller's request, so naming them discloses nothing a caller did not supply.
+    """
+    return ToolError(
+        f"This daemon serves tenant {DEPLOYMENT_TENANT.value!r}, and the authorization "
+        f"grant it was started with names tenant {grant.tenant.value!r}. Refusing rather "
+        f"than answering across a tenant boundary. Route the request to the daemon that "
+        f"serves tenant {grant.tenant.value!r}, or restart this one with a grant for "
+        f"tenant {DEPLOYMENT_TENANT.value!r}."
+    )
+
+
 def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the set
-    server: MCPServer, registry: ProjectRegistry
+    server: MCPServer, registry: ProjectRegistry, grant: AuthorizationGrant
 ) -> MCPServer:
-    """Register Milestone 3's read-only tools."""
+    """Register Milestone 3's read-only tools.
+
+    ``grant`` is what this deployment's one principal may see, resolved once by
+    the composition root (``daemon/runner.build_server``) rather than re-asked per
+    call. Required rather than defaulted: a tool surface that can be registered
+    without an authorization decision is a surface where forgetting one is
+    invisible.
+    """
 
     # Derived from the registry rather than re-read from the environment, so the
     # provenance the serve path checks is the file beside the very registry this
@@ -488,12 +520,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         could come back empty, so the field had to admit `null` for a case that
         cannot arise once the value is carried rather than re-fetched.
 
+        It is also where the request boundary is checked, for the same reason the
+        provenance check below lives here: every knowledge tool resolves through
+        this one function, so a gate placed here is a gate none of them can be
+        registered without (#119 decision 4).
+
         Raises:
-            ToolError: If the project is unknown, if its registry entry cannot
-                be read, or if it has no built state. All three are actionable,
-                all three are different from "no results", and each names the
-                command that fixes *it* -- see :func:`_unresolvable`.
+            ToolError: If the grant names a tenant this deployment does not
+                serve, if the project is unknown, if its registry entry cannot
+                be read, or if it has no built state. All four are actionable,
+                all four are different from "no results", and each names the
+                command that fixes *it* -- see :func:`_unresolvable` and
+                :func:`_tenant_boundary_refusal`.
         """
+        # First, before the registry is even read: a grant from another tenant
+        # must not be able to learn which projects this daemon serves, and
+        # `_unresolvable` names every one of them.
+        if grant.tenant != DEPLOYMENT_TENANT:
+            raise _tenant_boundary_refusal(grant)
+
         try:
             entries = registry.load()
         except ProjectError as exc:

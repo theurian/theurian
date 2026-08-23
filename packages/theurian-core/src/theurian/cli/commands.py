@@ -1455,6 +1455,13 @@ def daemon_start(
 
     try:
         check = serve(port=port)
+    except TheurianError as exc:
+        # A start that Theurian itself refused -- today, a deployment serving
+        # profile that cannot be honoured (#119). Its own `remedy` names the file
+        # and the four words that belong in it; `theurian doctor` would send the
+        # reader looking somewhere else entirely.
+        _fail(str(exc), remedy=exc.remedy or "Run `theurian doctor`.", as_json=as_json, code=1)
+        return
     except RuntimeError as exc:
         _fail(str(exc), remedy="Run `theurian doctor`.", as_json=as_json, code=1)
         return
