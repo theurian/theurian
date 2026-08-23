@@ -482,6 +482,10 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "scans every body it would land",
             "best-effort in-house detector",
+            # The metadata channel (#336); see the SECURITY.md row above. This
+            # T-15 row is the one that enumerates what the control does not reach,
+            # so an omission here reads as "the scan covers everything".
+            "the revision's own metadata — title, description, labels — is unscanned",
             "Ingest-time and index-time scanning are separate controls and do not ship",
         ),
     ),
