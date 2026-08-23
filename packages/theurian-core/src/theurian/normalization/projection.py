@@ -33,6 +33,14 @@ MAX_DEPTH: Final = 24
 #: before the fix, against the truncating :func:`project` the ingest path calls,
 #: with the return value capped at 2 MiB throughout: 297 B of YAML cost 0.23 s
 #: and 71 MB of RSS, 351 B cost 2.05 s and 334 MB, 405 B cost 19.76 s and 2.8 GB.
+#:
+#: What that costs a document that is *not* an attack is a constant, and it is
+#: paid on every ingest: charging each visit and each emitted line makes an
+#: in-budget projection 20-26% slower than the unbudgeted walk it replaced
+#: (measured 2026-08-24 against 68e8a0b, best of seven, three shapes -- a 20,000
+#: key flat mapping at 13.2 ms, a 20-deep nesting at 0.1 ms, and an
+#: OpenAPI-shaped document of 4,500 operations at 22.4 ms). The overhead is the
+#: bookkeeping itself, so it tracks the number of nodes and not what they hold.
 MAX_PROJECTION_CHARS: Final = 2 * 1024 * 1024
 
 #: Ceiling on nodes the walk visits (SEC-8, issue #232), stated as its own bound

@@ -88,23 +88,33 @@ out — different platforms, different Git `autocrlf` settings — and the state
 would stop identifying a state. A test asserts `"a\r\nb"` and `"a\nb"` hash
 differently.
 
-## Parsers never trust input
+## Nothing on the ingest path trusts its input
 
-Every parser enforces:
+**Not every bound below is a parser's**, and the third column says whose each one
+is. Three run in `security/paths.py` before any parser sees the bytes; two are
+the projection's, and belong to every structured format; three are the OpenAPI
+parser's alone. "Every parser enforces" was the earlier heading here, and it made
+the file-kind refusal and the `$ref` walk read as universal.
 
-| Limit | Default | Threat |
-| :-- | :-- | :-- |
-| File size | 8 MB | T-6 memory exhaustion |
-| Path depth | 32 | pathological trees |
-| File *kind* | only a regular file is read | T-6: a FIFO reports size 0 and then blocks the read forever ([#215](https://github.com/theurian/theurian/issues/215)) |
-| Projected characters | 2 MiB, charged as the walk spends them | T-6 alias-expansion bomb ([#232](https://github.com/theurian/theurian/issues/232)) |
-| Projected nodes | 1,000,000 | T-6: a container emits no characters, so characters alone do not price a traversal |
-| `$ref` walk | every parsed node entered once | T-6 shared-node re-traversal ([#245](https://github.com/theurian/theurian/issues/245)) |
-| Loader | `yaml.safe_load` only | arbitrary object construction |
-| External `$ref` | recorded, never fetched | T-7 SSRF |
+| Limit | Default | Enforced by | Threat |
+| :-- | :-- | :-- | :-- |
+| File size | 8 MiB | `security/paths.py::read_source_file` (`MAX_SOURCE_FILE_BYTES`) | T-6 memory exhaustion |
+| Path depth | 32 | `security/paths.py::resolve_within_root` (`MAX_PATH_DEPTH`) | pathological trees |
+| File *kind* | only a regular file is read | `security/paths.py::read_source_file`, through `_unbounded_shape` | T-6: a FIFO reports size 0 and then blocks the read forever ([#215](https://github.com/theurian/theurian/issues/215)) |
+| Projected characters | 2 MiB, charged as the walk spends them | `normalization/projection.py::_Spend.emit` | T-6 alias-expansion bomb ([#232](https://github.com/theurian/theurian/issues/232)) |
+| Projected nodes | 1,000,000 | `normalization/projection.py::_Spend.visit` | T-6: a container emits no characters, so characters alone do not price a traversal |
+| `$ref` walk | every parsed node entered once, at most 64 deep, at most 5,000 recorded | `parsers/openapi.py::_external_refs` — **OpenAPI only** | T-6 shared-node re-traversal ([#245](https://github.com/theurian/theurian/issues/245)) |
+| Operations recorded | 5,000 | `parsers/openapi.py::MAX_OPERATIONS` — **OpenAPI only** | T-6 index growth |
+| Loader | `yaml.safe_load` only, under a 4 MiB document cap | `security/yaml_loading.py::load_yaml`, `MAX_YAML_BYTES` | arbitrary object construction |
+| External `$ref` | recorded, never fetched | `parsers/openapi.py::_external_refs` — **OpenAPI only** | T-7 SSRF |
 
 Size is re-checked after reading, because a file can grow between `stat` and
 `read`.
+
+One residual is measured and open: the `$ref` walk builds a path string per edge
+and nothing charges it, which is quadratic in document size and bounded only by
+the file-size row above ([#328](https://github.com/theurian/theurian/issues/328),
+measured in `docs/security/threat-model.md` under T-6).
 
 Two limits this table used to claim are **not** enforced, and are named here
 rather than quietly dropped. There is no *archive expansion ratio*, because

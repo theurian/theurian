@@ -482,12 +482,14 @@ files.
 | Bound | Symbol |
 | :-- | :-- |
 | max source file size, re-checked after the read because a file can grow between `stat` and `read` | `security/paths.py::MAX_SOURCE_FILE_BYTES` (8 MiB) |
+| max path depth below the project root — a path nesting past it is refused rather than resolved, so a pathological tree is never read through | `security/paths.py::MAX_PATH_DEPTH` (32) |
 | max YAML document size | `security/yaml_loading.py::MAX_YAML_BYTES` (4 MiB) |
 | a source file whose size bounds nothing — a FIFO, a socket, a device — is refused unread | `security/paths.py::read_source_file`, through `_unbounded_shape` ([#215](https://github.com/theurian/theurian/issues/215)) |
 | max projection nesting depth | `normalization/projection.py::MAX_DEPTH` (24) |
 | max projected characters and max nodes visited, both charged *during* the walk so they bound what it spends | `normalization/projection.py::MAX_PROJECTION_CHARS` (2 MiB) and `MAX_PROJECTION_NODES` (1,000,000), threaded through `_walk` ([#232](https://github.com/theurian/theurian/issues/232)) |
 | the `$ref` walk enters each parsed node once, however many aliases reach it | `infrastructure/filesystem/parsers/openapi.py::_external_refs`, `descended` ([#245](https://github.com/theurian/theurian/issues/245)) |
 | max `$ref` walk depth, max references recorded | `parsers/openapi.py::MAX_REF_DEPTH` (64), `MAX_REFS` (5,000) |
+| max operations recorded from one specification | `parsers/openapi.py::MAX_OPERATIONS` (5,000) |
 | safe YAML loading only — no arbitrary object construction, and no implicit timestamp coercion | `security/yaml_loading.py::load_yaml`, `_StrictLoader` |
 
 The three marked with issue numbers are new. Two of them are reachable through
