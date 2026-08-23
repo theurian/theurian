@@ -925,24 +925,32 @@ def test_the_one_reference_the_memo_can_lose_always_arrives_with_a_truncation() 
     by the wrong fix -- a memo that never drops anything, or a walk that marks
     everything -- and it is their simultaneity the consumer relies on.
 
-    Driven through YAML and the real parser, not ``json.dumps``: 409 bytes, one
-    anchor, and the sharing is what an alias *is*. Serialising this document
-    would copy the shared node into two trees and delete the case under test.
+    Driven through YAML and the real parser, not ``json.dumps``: one anchor, and
+    the sharing is what an alias *is*. Serialising this document would copy the
+    shared node into two trees and delete the case under test.
+
+    ``shallow_only`` is the control, and it is not decoration: an empty
+    ``found`` is the *expected* result here, which is exactly the assertion a
+    broken fixture satisfies for free. It shows the same shared node recording
+    its reference when nothing has memoised it, so the emptiness below is
+    attributable to the memo rather than to a reference the walk would never
+    have recorded anyway.
     """
+    shared = '{c: {d: {"$ref": "https://lost.test/x.json"}}}'
     levels = MAX_REF_DEPTH - 2
     text = (
         "openapi: '3.1.0'\n"
-        "a_deep: "
-        + "{x: " * levels
-        + '&shared {c: {d: {"$ref": "https://lost.test/x.json"}}}'
-        + "}" * levels
-        + "\n"
+        "a_deep: " + "{x: " * levels + "&shared " + shared + "}" * levels + "\n"
         "z_shallow: *shared\n"
     )
+    shallow_only = f"openapi: '3.1.0'\nz_shallow: {shared}\n"
 
     index = _index_of_yaml(text)
     metadata = _metadata_of_yaml(text)
 
+    assert [ref["ref"] for ref in _index_of_yaml(shallow_only)["externalRefs"]] == [
+        "https://lost.test/x.json"
+    ], "control: this reference is recordable at depth 1 when no memo has seen it"
     assert index["externalRefs"] == [], (
         "the declared drop case: the deep descent entered the shared node and "
         "the memo then refused the shallow path that could have read it"
