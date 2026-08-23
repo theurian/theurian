@@ -335,6 +335,33 @@ async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, 
     return loaded
 
 
+# -- Authorization grants (#119) -------------------------------------------
+#
+# Up here rather than in the authorization section at the end of the file,
+# because the read-cost measurements reach for a narrowed ceiling too. A helper
+# a test 6,000 lines above its definition calls is one nobody reads before
+# using.
+
+
+def _ceiling_of(*levels: Sensitivity) -> AuthorizationGrant:
+    """A grant serving exactly ``levels``, and nothing else."""
+    return AuthorizationGrant(
+        tenant=DEPLOYMENT_TENANT,
+        sensitivities=frozenset(levels),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+
+
+#: The `registry`/`indexed` fixtures author their one approved item at
+#: `internal`, so a grant of `public` alone puts it above the ceiling. Named
+#: rather than repeated, because every test below has to agree on which side of
+#: the line the fixture is: the assertions read "the item is absent", and an
+#: item that was *never* above the ceiling is absent in a way that proves
+#: nothing.
+FIXTURE_SENSITIVITY = Sensitivity.INTERNAL
+PUBLIC_ONLY = _ceiling_of(Sensitivity.PUBLIC)
+
+
 async def _call_failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
     """Invoke a tool that must fail, and return the message a client would see."""
     with pytest.raises(SdkToolError) as raised:
@@ -704,6 +731,21 @@ def _stored_statuses(registry: ProjectRegistry, project_id: str = "demo") -> dic
         return {item.item_id.value: item.status.value for item in store.list_items(context)}
 
 
+def _stored_sensitivities(registry: ProjectRegistry, project_id: str = "demo") -> dict[str, str]:
+    """The same read on the #119 axis: every item, mapped to its stored level.
+
+    A second reader rather than a parameter on the one above, because both are
+    used as *guards* on measurements and a guard that takes an argument saying
+    what to look at is one call site away from looking at the wrong thing.
+    """
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    context = RequestContext(project_id=ProjectId(project_id))
+    with SqliteCanonicalStore(paths.state / active.database_filename) as store:
+        return {item.item_id.value: item.sensitivity.value for item in store.list_items(context)}
+
+
 @pytest.mark.asyncio
 async def test_the_retired_items_really_reach_the_canonical_store(
     with_retired_items: ProjectRegistry,
@@ -984,6 +1026,11 @@ async def test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_ex
 READ_COST_BASELINE_ID = "read-cost-baseline"
 READ_COST_HEAVY_ID = "read-cost-heavy"
 
+#: The third corpus: the same three approved items, plus the same number of
+#: extra rows again -- but ``approved`` at ``restricted``, so the status axis
+#: admits every one of them and only the #119 sensitivity axis withholds them.
+READ_COST_RESTRICTED_ID = "read-cost-restricted"
+
 #: How many withheld (`rejected`) items the heavy corpus holds beyond the three
 #: approved items both corpora share. Large enough that a `list_items` path
 #: materialising every row hands back an unmistakably different count; the two
@@ -994,7 +1041,14 @@ READ_COST_WITHHELD = 25
 READ_COST_MIGRATION_ID = "01K1RCST0001234567890ABCDE"
 
 
-def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pin: str) -> str:
+def _read_cost_item_ops(
+    slug: str,
+    revision_id: str,
+    title: str,
+    status: str,
+    pin: str,
+    sensitivity: str = "internal",
+) -> str:
     return f"""  - op: createItem
     itemId: architecture.{slug}
     kind: architecture
@@ -1011,6 +1065,7 @@ def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pi
       kind: architecture
       namespace: backend
       status: {status}
+      sensitivity: {sensitivity}
       owner: platform-team
       trustLevel: reviewed
       sourceAnchors:
@@ -1019,13 +1074,23 @@ def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pi
 """
 
 
-def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> None:
-    """Three approved items, plus ``withheld`` rejected ones, in one migration.
+def _build_read_cost_project(
+    root: Path, project_id: str, *, withheld: int, above_ceiling: int = 0
+) -> None:
+    """Three approved items, plus withheld ones, in one migration.
+
+    Two ways to be withheld, and a corpus uses one of them: ``withheld`` adds
+    ``rejected`` rows, which the status axis stops; ``above_ceiling`` adds
+    ``approved`` rows at ``restricted``, which only the #119 sensitivity axis
+    stops. They are separate parameters rather than one count because the two
+    predicates are pushed into SQL differently -- ``status`` seeks through
+    ``idx_items_status`` and ``sensitivity`` is applied to what that seek returns
+    -- so a corpus mixing them could not attribute a cost difference to either.
 
     `init` and `project register` resolve the project from the working
     directory and take no argument that says where, so the caller has chdir'd
     into ``root`` already; the file writes below are given it as well so they do
-    not depend on that. One migration in both corpora, so `appliedMigrations`
+    not depend on that. One migration in every corpus, so `appliedMigrations`
     -- and the single migration-history row it reads -- is identical between
     them and the only difference the measurement sees is the withheld items.
     """
@@ -1053,6 +1118,22 @@ def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> N
         operations += _read_cost_item_ops(
             slug, f"01K1RCWH{i:02d}01234567890ABCDE", f"Withheld {i}", "rejected", body_pin(body)
         )
+    for i in range(above_ceiling):
+        slug = f"read-restricted-{i:03d}"
+        # The same body the approved items carry, so this corpus's extra rows are
+        # ones the query *matches*: a row the needle misses would be dropped by
+        # the scan's own comparison and the measurement would be about the query
+        # rather than about the gate.
+        body = f"# Restricted {i}\n\nApproved body {i}.\n"
+        (knowledge / f"{slug}.md").write_text(body)
+        operations += _read_cost_item_ops(
+            slug,
+            f"01K1RCRS{i:02d}01234567890ABCDE",
+            f"Restricted {i}",
+            "approved",
+            body_pin(body),
+            sensitivity="restricted",
+        )
     header = (
         "apiVersion: theurian.dev/v1\n"
         f"id: {READ_COST_MIGRATION_ID}\n"
@@ -1069,44 +1150,54 @@ def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> N
 
 @dataclass(frozen=True, slots=True)
 class _ReadCostCorpora:
-    """Two projects sharing three approved items; one also holds withheld ones.
+    """Three projects sharing three approved items; two also hold withheld ones.
 
     ``stored`` is the heavy store read directly, so the measurement's guard can
     assert the withheld rows a `list_items` path would fetch really landed --
     an equal read count between two three-item stores would be equal for the
-    wrong reason.
+    wrong reason. ``sensitivities`` is the same read of the above-ceiling corpus,
+    for the same reason on the #119 axis.
     """
 
     registry: ProjectRegistry
     stored: dict[str, str]
+    sensitivities: dict[str, str]
 
 
 @pytest.fixture(scope="module")
 def read_cost_corpora(tmp_path_factory: pytest.TempPathFactory) -> _ReadCostCorpora:
-    """One baseline project and one withheld-heavy project, built by the real CLI.
+    """One baseline project and two withheld-heavy ones, built by the real CLI.
 
-    Both register into one `THEURIAN_DATA_DIR` under distinct ids, so one
-    registry answers for both and the comparison is between two calls to the
+    All three register into one `THEURIAN_DATA_DIR` under distinct ids, so one
+    registry answers for them and each comparison is between two calls to the
     same daemon.
+
+    The two heavy corpora withhold along different axes -- ``rejected`` rows for
+    the status axis, ``approved``-at-``restricted`` rows for the #119 sensitivity
+    axis -- against the *same* baseline. Sharing the baseline is what makes the
+    two measurements comparable: the difference between them is which predicate
+    dropped the rows, and nothing else about the project.
     """
     base = tmp_path_factory.mktemp("read-cost")
     data_dir = base / "datadir"
     monkey = pytest.MonkeyPatch()
     monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
     try:
-        for project_id, withheld in (
-            (READ_COST_BASELINE_ID, 0),
-            (READ_COST_HEAVY_ID, READ_COST_WITHHELD),
+        for project_id, withheld, above in (
+            (READ_COST_BASELINE_ID, 0, 0),
+            (READ_COST_HEAVY_ID, READ_COST_WITHHELD, 0),
+            (READ_COST_RESTRICTED_ID, 0, READ_COST_WITHHELD),
         ):
             root = base / project_id
             root.mkdir()
             monkey.chdir(root)
-            _build_read_cost_project(root, project_id, withheld=withheld)
+            _build_read_cost_project(root, project_id, withheld=withheld, above_ceiling=above)
         registry = ProjectRegistry.default(data_dir)
         stored = _stored_statuses(registry, READ_COST_HEAVY_ID)
+        sensitivities = _stored_sensitivities(registry, READ_COST_RESTRICTED_ID)
     finally:
         monkey.undo()
-    return _ReadCostCorpora(registry=registry, stored=stored)
+    return _ReadCostCorpora(registry=registry, stored=stored, sensitivities=sensitivities)
 
 
 class _RowMeter:
@@ -1531,6 +1622,101 @@ async def test_the_substring_scan_materializes_the_same_rows_however_many_are_wi
         f"{READ_COST_WITHHELD} withheld items and {baseline_rows} against one holding none. The "
         f"read cost is carrying the withheld count: the store is fetching rows it then discards, "
         f"so latency reports by subtraction what the scan refuses to (SEC-13, T-17, #158)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_substring_scan_materializes_the_same_rows_however_many_are_above_the_ceiling(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """SEC-13, T-17, #119. The sibling measurement on the sensitivity axis.
+
+    The status-axis pin above compares a corpus with twenty-five ``rejected``
+    rows against one with none. This compares a corpus with twenty-five
+    ``approved``-at-``restricted`` rows against the same baseline, served through
+    a grant that stops at ``internal``. Every one of those rows passes the status
+    predicate, matches the query, and would be an ordinary result on an allow-all
+    deployment -- so if `_scan` were filtering them in Python, this corpus would
+    materialise twenty-five more rows than the baseline.
+
+    **What this pins and what it deliberately does not.** It pins the rows the
+    store hands to Python, which carry the whole per-row cost of this path: a
+    `KnowledgeItem`, then a revision read, then a scan of the body. It does not
+    pin SQLite's own work, and that is a measured difference rather than an
+    oversight -- ``idx_items_status`` has no ``sensitivity`` column, so the seek
+    fetches an above-ceiling row from the table before dropping it, at about six
+    VM steps (0.7 us) each. `list_items_by_status`'s docstring carries the
+    measurement and what flattening it would cost. Asserting flatness *here*
+    where flatness holds, and recording the residual where it does not, is the
+    honest split; a row-count assertion that claimed to cover both would be
+    green and false.
+
+    Measured at the row rather than timed, so it goes RED deterministically:
+    moving the sensitivity filter out of the SQL predicate and into the Python
+    loop makes the restricted corpus's count jump by twenty-five while the
+    baseline's stays put, and both responses stay byte-identical on the three
+    approved items -- which is why every other test here survives that change and
+    only this one falls.
+    """
+    corpora = read_cost_corpora
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+
+    # Guard: the corpus really holds the above-ceiling rows, at a level this
+    # grant excludes. Without it an equal count below could be two three-item
+    # stores agreeing for a reason that has nothing to do with the gate.
+    above = {
+        item: level
+        for item, level in corpora.sensitivities.items()
+        if Sensitivity(level) not in up_to_internal.sensitivities
+    }
+    assert len(above) == READ_COST_WITHHELD, (
+        f"the restricted corpus must hold {READ_COST_WITHHELD} items above this ceiling for the "
+        f"measurement to mean anything; its store holds {len(above)}"
+    )
+    assert len(corpora.sensitivities) == 3 + READ_COST_WITHHELD, (
+        "the restricted store must be larger than the surfaceable count, or a Python-side "
+        "filter would materialise nothing extra and this would measure two equal-sized stores"
+    )
+
+    with _rows_materialized_by_the_canonical_store() as meter:
+        meter.rows = 0
+        baseline = await _call_on(
+            build_server(corpora.registry, up_to_internal),
+            "knowledge.search",
+            projectId=READ_COST_BASELINE_ID,
+            query="approved",
+        )
+        baseline_rows = meter.rows
+        meter.rows = 0
+        restricted = await _call_on(
+            build_server(corpora.registry, up_to_internal),
+            "knowledge.search",
+            projectId=READ_COST_RESTRICTED_ID,
+            query="approved",
+        )
+        restricted_rows = meter.rows
+
+    for response in (baseline, restricted):
+        assert response["retrieval"]["mode"] == "substring", (
+            "the corpus must answer through the unranked scan, or this does not exercise "
+            "`_scan`'s `list_items_by_status` read"
+        )
+    assert baseline["count"] == restricted["count"] == 3, (
+        f"both corpora hold the same three items this ceiling admits; a different count means "
+        f"an above-ceiling row surfaced or an admitted one was dropped "
+        f"({[hit['itemId'] for hit in restricted['results']]})"
+    )
+
+    assert baseline_rows > 0, (
+        "the meter counted no rows, so it is watching a connection the tool does not open -- "
+        "the measurement is inert and would pass whatever the read cost did"
+    )
+    assert restricted_rows == baseline_rows, (
+        f"the substring scan materialised {restricted_rows} rows against a store holding "
+        f"{READ_COST_WITHHELD} above-ceiling items and {baseline_rows} against one holding none. "
+        f"The rows are crossing into Python before anything withholds them, so the scan pays a "
+        f"revision read and a body scan for content the caller may not see, and latency reports "
+        f"by subtraction what `count` refuses to (SEC-13, T-17, #119)."
     )
 
 
@@ -7987,42 +8173,299 @@ async def test_the_deployments_own_tenant_is_not_refused(registry: ProjectRegist
 
 
 @pytest.mark.asyncio
-async def test_a_narrow_ceiling_withholds_nothing_yet(indexed: ProjectRegistry) -> None:
-    """What phase 1 of #119 does *not* do, recorded rather than assumed.
+async def test_a_narrow_ceiling_withholds_the_item_from_search_and_from_get(
+    indexed: ProjectRegistry,
+) -> None:
+    """#119 phase 2. What phase 1 recorded as unenforced, now enforced.
 
-    The grant is threaded to every tool and read by no retrieval predicate, so a
-    deployment declaring the narrowest possible ceiling still serves an
-    above-ceiling document in full. Measured the same way through the real daemon
-    on 2026-08-23: a profile of `internal` served a `confidential` item's excerpt
-    and its 64-character body over the wire, on port 7420, exactly as an absent
-    profile did.
+    This test used to assert the opposite, under the name
+    `test_a_narrow_ceiling_withholds_nothing_yet`: the grant reached every tool
+    and no retrieval predicate read it, so a deployment declaring the narrowest
+    possible ceiling still served the item's excerpt through `knowledge.search`
+    and its full body through `knowledge.get`. Rewritten rather than deleted,
+    because the *pair* is the property -- closing search alone achieves nothing
+    while `knowledge.get` will hand over the same body to a caller who already
+    holds the id, which is the shape the status gate was measured failing at.
 
-    **The enforcement phase must turn this test RED**, and that is the reason it
-    exists. A seam that is wired but inert is indistinguishable from a seam that
-    works until something asserts the difference -- and while it is inert, the
-    profile file must stay out of the README, `doctor` and every other user-facing
-    surface, because an operator who declares a ceiling that does nothing has been
-    given a false answer to a security question (ADR-0025: `system.capabilities`
-    must not advertise sensitivity enforcement in any form until all four parts
-    land).
+    Both tools, one grant, one corpus, and the item is above the ceiling on both
+    sides of the assertion.
     """
-    above_the_ceiling = Sensitivity.INTERNAL
-    narrow = AuthorizationGrant(
-        tenant=DEPLOYMENT_TENANT,
-        sensitivities=frozenset({Sensitivity.PUBLIC}),
-        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    assert FIXTURE_SENSITIVITY not in PUBLIC_ONLY.sensitivities, (
+        "the fixture item must be above this ceiling, or neither assertion below means anything"
     )
-    assert above_the_ceiling not in narrow.sensitivities, "the fixture must be above the ceiling"
+    server = build_server(indexed, PUBLIC_ONLY)
 
-    searched = await _call_on(
-        build_server(indexed, narrow), "knowledge.search", projectId="demo", query="token"
+    searched = await _call_on(server, "knowledge.search", projectId="demo", query="token")
+    with pytest.raises(SdkToolError) as refused:
+        await _call_on(server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy")
+
+    assert searched["count"] == 0, (
+        f"an above-ceiling item reached the ranked results: {searched['results']}. The "
+        f"canonical re-check in `CanonicalVisibility._may_surface` is not reading the grant."
     )
+    assert searched["results"] == []
+    assert "is not present" in str(refused.value), (
+        f"`knowledge.get` refused an above-ceiling item with {str(refused.value)!r}. It must "
+        f"refuse with the words that refuse an absent item -- a distinct message confirms the "
+        f"item exists and names its disclosure class (SEC-13)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_allow_all_grant_still_serves_the_item_both_ways(
+    indexed: ProjectRegistry,
+) -> None:
+    """The counterpart, so the withholding above is not vacuously green.
+
+    A gate that refused everything would satisfy every assertion in the test
+    above and take the whole daemon with it. This is the same corpus and the same
+    two calls under the shipped default grant, and it is what makes "the ceiling
+    decides" a claim about the ceiling rather than about the gate existing.
+    """
+    server = build_server(indexed, _allow_all())
+
+    searched = await _call_on(server, "knowledge.search", projectId="demo", query="token")
     fetched = await _call_on(
-        build_server(indexed, narrow),
+        server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert searched["results"][0]["sensitivity"] == FIXTURE_SENSITIVITY.value
+    assert fetched["body"] == BODY
+
+
+@pytest.mark.asyncio
+async def test_knowledge_status_counts_are_not_yet_narrowed_by_the_ceiling(
+    registry: ProjectRegistry,
+) -> None:
+    """What #119 phase 2 does *not* do, recorded rather than assumed.
+
+    `knowledge.status` publishes `itemCount` and `itemsByStatus` over
+    :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` and no sensitivity
+    predicate, so under a ceiling that withholds an item from `knowledge.search`
+    and `knowledge.get`, that same item is still *counted* here. That is a
+    statistic over a row the caller may not read -- the family SEC-13 and T-17
+    enumerate -- and it is left standing in this phase deliberately.
+
+    **Why it is not simply narrowed.** The same population is the live half of
+    the #30 integrity comparison, whose expected half
+    (`project_integrity.expected_surfaceable_count`) is written by `migrate
+    apply` from the rows it wrote, with no sensitivity predicate and no knowledge
+    of any deployment's ceiling. Narrowing the live count alone makes every
+    restricted deployment report `damageDetected` on every call to three tools --
+    a false security claim, which is worse than the count it would have fixed.
+    Closing it properly means deciding what the recorded expectation *means* on a
+    deployment that serves less than it holds, and that is a decision with its
+    own review rather than a line in this phase.
+
+    The absence of `integrity` is asserted here, not assumed: it is what says the
+    two halves still agree, and it is the assertion that turns RED first if
+    somebody narrows one of them.
+
+    **The phase that closes this must turn this test RED.** A seam recorded as
+    unenforced is the shape phase 1 used for exactly this reason, and it is
+    also why the profile file stays out of the README and `doctor` until every
+    part of #119 has landed (ADR-0025).
+    """
+    server = build_server(registry, PUBLIC_ONLY)
+
+    with pytest.raises(SdkToolError):
+        await _call_on(server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy")
+    status = await _call_on(server, "knowledge.status", projectId="demo")
+
+    assert status["itemsByStatus"] == {"approved": 1, "draft": 1}, (
+        f"the above-ceiling items are no longer counted ({status['itemsByStatus']}). If that is "
+        f"deliberate, the #30 expected count has to move with them -- see this test's docstring "
+        f"-- and this test is the record that says so"
+    )
+    assert status["itemCount"] == 2
+    assert "integrity" not in status, (
+        f"the live surfaceable count and the count `migrate apply` recorded have stopped "
+        f"agreeing ({status.get('integrity')}). A ceiling applied to one half and not the other "
+        f"reports damage on a healthy project, which is the failure this test guards against."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build(
+    indexed: ProjectRegistry,
+) -> None:
+    """#119 phase 2, the window this gate exists to close before the purge does.
+
+    The asymmetry is the whole test: the index is built *while the item is
+    `internal`*, so its chunk rows hold the document's text stamped `internal`
+    and every retriever still matches it. The item is then reclassified to
+    `restricted` by an ordinary migration, with **no rebuild** -- the state
+    `test_a_reclassification_shows_in_the_response_before_any_rebuild` pins as
+    normal. A deployment serving up to `internal` must not return it.
+
+    Nothing index-side can produce that answer: the index row says `internal`,
+    which the ceiling admits. Only the canonical re-check on the *item's current*
+    level can, which is why this gate goes in `CanonicalVisibility` and not
+    beside the retrievers. The build-side exclusion and the index-side predicate
+    that make the withholding cheap rather than merely correct are later phases;
+    until they land this is the only thing standing between a reclassification
+    and the text it reclassified.
+
+    The index is asserted to still hold the old label, so a rebuild slipping into
+    the fixture would fail here rather than turn this into a test of the build.
+    """
+    root = Path(indexed.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / f".theurian/migrations/{RECLASSIFY_ID}-reclassify.yaml").write_text(
+            RECLASSIFY_MIGRATION
+        )
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    assert _published_index_chunk_sensitivity(root) == {"internal"}, (
+        "the published index must still carry the pre-reclassification label, or this is a "
+        "test of `index build` rather than of the canonical re-check"
+    )
+
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+    served = await _call_on(
+        build_server(indexed, up_to_internal),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
+    unrestricted = await _call_on(
+        build_server(indexed, _allow_all()),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
+
+    assert [hit["itemId"] for hit in unrestricted["results"]] == ["architecture.auth-policy"], (
+        "precondition: the reclassified document must still be reachable through the index, "
+        "or its absence below says nothing about the gate"
+    )
+    assert unrestricted["results"][0]["sensitivity"] == "restricted"
+    assert served["count"] == 0, (
+        f"a document reclassified to `restricted` after the build was served to a deployment "
+        f"whose ceiling is `internal`: {served['results']}. The index row still says `internal` "
+        f"and always will until a rebuild, so only the item's current level can withhold it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_unranked_scan_withholds_an_above_ceiling_item(
+    registry: ProjectRegistry,
+) -> None:
+    """The second answer path, which no index gates (#119).
+
+    `registry` has no index, so `knowledge.search` answers through
+    `substring_answer` -> `_scan`. Both paths take the same grant deliberately:
+    an unbuilt, deleted or unreadable index is a condition any local process can
+    create, and a fallback that served what the ranked path withheld would make
+    `rm` the way past the ceiling.
+
+    The allow-all half is asserted in the same test rather than in a sibling,
+    because on this path the two answers differ only in `count` -- a fallback
+    that returned nothing for an unrelated reason would satisfy the withholding
+    assertion on its own.
+    """
+    withheld = await _call_on(
+        build_server(registry, PUBLIC_ONLY), "knowledge.search", projectId="demo", query="token"
+    )
+    served = await _call_on(
+        build_server(registry, _allow_all()), "knowledge.search", projectId="demo", query="token"
+    )
+
+    for answer in (served, withheld):
+        assert answer["retrieval"]["mode"] == "substring", (
+            "both corpora must answer through the unranked scan, or this does not exercise "
+            "`_scan`. On this path `mode` is the literal the fallback reports whatever it "
+            "found, so it says which machinery ran and nothing about the results."
+        )
+    assert served["count"] == 1, "precondition: the item must be found when nothing withholds it"
+    assert withheld["count"] == 0, (
+        f"the unranked scan surfaced an above-ceiling item: {withheld['results']}. `_scan` "
+        f"hands the grant to `list_items_by_status` as a SQL predicate; the row must never "
+        f"have been read."
+    )
+
+
+RESTRICT_TARGET_ID = "01K1RSTRCT01234567890ABCDE"
+RESTRICT_TARGET_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RESTRICT_TARGET_ID}
+createdAt: 2026-08-02T16:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: changeSensitivity
+    itemId: architecture.token-rotation
+    sensitivity: restricted
+    reason: Reclassified after review
+"""
+
+
+@pytest.fixture
+def with_an_above_ceiling_relation(with_a_rejected_relation: ProjectRegistry) -> ProjectRegistry:
+    """`with_a_rejected_relation`, with the *approved* far item reclassified.
+
+    Two edges leave `architecture.auth-policy`: one to a `rejected` item, which
+    `may_surface` already withholds, and one to an approved `architecture.token-
+    rotation`, which is published today. Raising only the second to `restricted`
+    leaves a corpus in which a deployment serving up to `internal` may read the
+    source item and neither of its edges -- and one of the two is withheld by an
+    axis nothing but #119 supplies.
+    """
+    root = Path(with_a_rejected_relation.load()["demo"]["rootPath"])
+    (root / f".theurian/migrations/{RESTRICT_TARGET_ID}-restrict.yaml").write_text(
+        RESTRICT_TARGET_MIGRATION
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return with_a_rejected_relation
+
+
+@pytest.mark.asyncio
+async def test_a_relation_to_an_above_ceiling_item_is_not_published(
+    with_an_above_ceiling_relation: ProjectRegistry,
+) -> None:
+    """#119, SEC-13. `knowledge.get`'s refusal by id is not the whole of the gate.
+
+    A relation names the far item's id and carries a `note` written by whichever
+    side authored the edge. Publishing that edge from a *visible* item hands over
+    both -- which is exactly the pair `_relation_is_visible` was measured leaking
+    for a `rejected` endpoint, and nothing about it becomes safe because the
+    endpoint is above the ceiling instead of retired.
+
+    The fetched item is itself `internal` and the ceiling is `internal`, so this
+    is not the fetch being refused: the response is served, and what changes is
+    the edge on it. The allow-all half is asserted first, because an edge missing
+    for any other reason would satisfy the withholding assertion alone.
+    """
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+    served = await _call_on(
+        build_server(with_an_above_ceiling_relation, _allow_all()),
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
+    )
+    assert [r["targetItemId"] for r in served["relations"]] == ["architecture.token-rotation"], (
+        f"precondition: the visible item must publish exactly the edge this test puts above "
+        f"the ceiling; it published {served['relations']}"
+    )
+
+    withheld = await _call_on(
+        build_server(with_an_above_ceiling_relation, up_to_internal),
         "knowledge.get",
         projectId="demo",
         itemId="architecture.auth-policy",
     )
 
-    assert searched["results"][0]["sensitivity"] == above_the_ceiling.value
-    assert fetched["body"] == BODY
+    assert withheld["body"] == BODY, (
+        "the fetched item is at the ceiling, not above it -- if this refuses, the test is "
+        "measuring the item gate again rather than the per-edge one"
+    )
+    assert withheld["relations"] == [], (
+        f"an edge to an above-ceiling item was published: {withheld['relations']}. The id and "
+        f"the note are the disclosure, not the body -- see `_relation_is_visible`."
+    )

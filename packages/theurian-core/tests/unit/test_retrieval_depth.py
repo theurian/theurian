@@ -71,6 +71,12 @@ from theurian.domain.values import ValidityPeriod
 
 pytestmark = pytest.mark.unit
 
+#: The sensitivity grant every construction in this file runs under: all four
+#: levels, so the #119 axis withholds nothing and what is measured here stays the
+#: status and pass-count behaviour these tests were written for. Spelled out
+#: rather than read from the shipped default, which a later phase narrows.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 LEXICAL_READS = "search_lexical"
 SUBSTRING_READS = "search_substring"
 
@@ -465,6 +471,7 @@ def _search_pinned_excluding(excluded_at_moment: int) -> tuple[_CountingIndex, S
         _ControlledValiditySession(valid_at_moment),
         DEMO_CONTEXT,
         include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
         moment=MOMENT,
     )
 

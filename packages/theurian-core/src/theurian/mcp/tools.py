@@ -41,7 +41,7 @@ from theurian.application.project_service import (
 )
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import Sensitivity, may_disclose, may_surface
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH, ItemId, ProjectId
 from theurian.domain.knowledge import KnowledgeRelation
@@ -289,6 +289,7 @@ def _relation_is_visible(
     relation: KnowledgeRelation,
     *,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
 ) -> bool:
     """Whether **both** ends of ``relation`` are items this caller may see.
 
@@ -330,6 +331,13 @@ def _relation_is_visible(
     referenced id -- must read the literally-named row.** The cost is one extra
     primary-key lookup per edge for the near end, which is the fetched item and
     has already cleared this predicate.
+
+    **Both axes, per endpoint** (#119). ``knowledge.get`` refusing an
+    above-ceiling item by id achieves nothing on its own while an edge to that
+    item is published from a visible one: the id and the ``note`` explaining the
+    edge are exactly the pair the ``rejected`` case above was measured leaking,
+    and neither becomes safe because the endpoint is confidential rather than
+    rejected.
     """
     for endpoint_id in (relation.source_item_id, relation.target_item_id):
         # `get_item_exact`, not `get_item`: a visibility decision on a referenced
@@ -337,9 +345,11 @@ def _relation_is_visible(
         # rejected endpoint that is also an alias key clear the gate as the
         # approved item the alias points at (SEC-13, T-21).
         endpoint = store.get_item_exact(context, endpoint_id)
-        if endpoint is None or not may_surface(
-            endpoint.status, include_unapproved=include_unapproved
-        ):
+        if endpoint is None:
+            return False
+        if not may_surface(endpoint.status, include_unapproved=include_unapproved):
+            return False
+        if not may_disclose(endpoint.sensitivity, visible=visible_sensitivities):
             return False
     return True
 
@@ -701,6 +711,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # never reaches `ValidityPeriod.contains` -- see `_parse_as_of`.
         as_of = None if asOf is None else _parse_as_of(asOf)
 
+        # Both answer paths take the same grant, because a caller must not be able
+        # to pick the one that withholds less: an unbuilt or unreadable index is a
+        # condition any local process can create, and a fallback that served an
+        # above-ceiling document would make deleting a file the way past the
+        # ceiling (#119).
         answer = hybrid_answer(
             paths,
             database,
@@ -709,6 +724,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             query=searched,
             limit=capped_limit,
             include_unapproved=includeUnapproved,
+            visible_sensitivities=grant.sensitivities,
             budget_tokens=capped_budget,
             use_dense=useDense,
             as_of=as_of,
@@ -722,6 +738,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 query=searched,
                 limit=capped_limit,
                 include_unapproved=includeUnapproved,
+                visible_sensitivities=grant.sensitivities,
                 budget_tokens=capped_budget,
                 fallback=answer,
                 as_of=as_of,
@@ -810,8 +827,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         with SqliteCanonicalStore(database) as store:
             item = store.get_item(context, wanted)
-            withheld = item is not None and not may_surface(
-                item.status, include_unapproved=includeUnapproved
+            # Both axes, and the same refusal for either (#119). An item above this
+            # deployment's ceiling is withheld exactly as a retired one is: the
+            # caller already holds the id, so a message that distinguished "above
+            # your ceiling" from "not present" would confirm the item exists and
+            # what class it is in -- the inference SEC-13 refuses, arriving through
+            # an error rather than through a field.
+            withheld = item is not None and (
+                not may_surface(item.status, include_unapproved=includeUnapproved)
+                or not may_disclose(item.sensitivity, visible=grant.sensitivities)
             )
             if item is None or item.current_revision_id is None or withheld:
                 # "Not present" and "damaged" are different answers with the same
@@ -864,15 +888,22 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             relations = tuple(
                 relation
                 for relation in store.list_relations(context, item.item_id)
-                # A relation touching a retired item is itself a pointer to
+                # A relation touching a withheld item is itself a pointer to
                 # withheld content -- it is how the rejected id was found in the
                 # first place, and its `note` is written by whichever side
                 # authored the edge, not by whichever side is being fetched.
                 # Withholding the body while publishing either would be
-                # withholding nothing that matters. See `_relation_is_visible`
-                # for why the gate asks about both ends.
+                # withholding nothing that matters. Both axes, because a
+                # confidential item's id and the note explaining the edge to it
+                # are the same disclosure whether the item is retired or above
+                # this deployment's ceiling. See `_relation_is_visible` for why
+                # the gate asks about both ends.
                 if _relation_is_visible(
-                    store, context, relation, include_unapproved=includeUnapproved
+                    store,
+                    context,
+                    relation,
+                    include_unapproved=includeUnapproved,
+                    visible_sensitivities=grant.sensitivities,
                 )
             )
             # On the success path the item was read; the signal still applies,

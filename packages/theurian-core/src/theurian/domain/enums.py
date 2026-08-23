@@ -1,11 +1,13 @@
-"""Closed vocabularies, and the one rule that reads one of them.
+"""Closed vocabularies, and the two rules that read one of them.
 
 These are ``StrEnum`` so they serialise to their own names in JSON and YAML, which
 keeps migration files and MCP payloads readable without a mapping table.
 
-:func:`may_surface` is here rather than beside a caller because it has six
-callers, across the application and MCP layers -- see its docstring, and the
-set spelled out and pinned in ``tests/unit/test_gate_call_sites.py``.
+:func:`may_surface` and :func:`may_disclose` are here rather than beside a caller
+because each has several, across the application and MCP layers -- see their
+docstrings, and the sets spelled out and pinned in
+``tests/unit/test_gate_call_sites.py``. They are the *two* axes a read path gates
+on: what state the item is in, and what disclosure class this deployment serves.
 """
 
 from __future__ import annotations
@@ -242,3 +244,40 @@ def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
     if status not in SURFACEABLE_STATUSES:
         return False
     return include_unapproved or status is KnowledgeStatus.APPROVED
+
+
+def may_disclose(sensitivity: Sensitivity, *, visible: frozenset[Sensitivity]) -> bool:
+    """Whether this deployment serves an item of this disclosure class (#119, SEC-13).
+
+    ``visible`` is the expanded set of levels the deployment's authorization grant
+    permits -- never a ceiling, and this signature is what forecloses the mistake.
+    :data:`~theurian.application.authorization.DISCLOSURE_ORDER` expands the
+    operator's declared ceiling into the set exactly once, at startup, because
+    :class:`Sensitivity` is a ``StrEnum`` whose members compare *as strings*:
+    ``Sensitivity.CONFIDENTIAL < Sensitivity.INTERNAL`` is ``True``, so an
+    implementation reaching for ``<`` would not raise -- it would serve
+    confidential content under an ``internal`` ceiling. A membership test cannot
+    express that error.
+
+    A second axis rather than a widening of :func:`may_surface`, because the two
+    answer different questions and move independently: ``may_surface`` asks what
+    the *item's lifecycle* permits and is refined by the caller's
+    ``include_unapproved``; this asks what the *deployment* serves and no request
+    parameter reaches it. An item must clear both.
+
+    There is deliberately no default for ``visible``. "Everything is visible" is
+    the bug this whole gate exists to close, and a default parameter is how it
+    would come back -- the reason
+    :class:`~theurian.application.visibility.Visibility` refuses one too.
+
+    Consulted from three call sites, each spelled out and pinned in
+    ``tests/unit/test_gate_call_sites.py``: the ranked path's canonical re-check
+    (``CanonicalVisibility._may_surface``), ``knowledge.get``'s gate on the item it
+    hands over by id, and the per-edge gate on each endpoint of a relation before
+    it is published. ``knowledge.search``'s unranked fallback does *not* appear
+    there and is not a fourth: it hands ``visible`` to the canonical store as a SQL
+    predicate, so no above-ceiling row is materialised for a Python check to run on
+    (``mcp.search._scan``, and the cost note on
+    :meth:`~theurian.domain.ports.canonical_store.CanonicalStore.list_items_by_status`).
+    """
+    return sensitivity in visible

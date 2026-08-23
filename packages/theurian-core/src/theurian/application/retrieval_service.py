@@ -905,6 +905,18 @@ class ResultRequest:
     database: Path
     project_id: str
     include_unapproved: bool
+    #: What this deployment serves (#119): the expanded set of sensitivity levels
+    #: the operator's declared ceiling permits, resolved once at startup by the
+    #: composition root and threaded down. Not defaulted, and not derived here --
+    #: a second derivation of one idea is how a gate ends up admitting a level its
+    #: own profile excluded.
+    #:
+    #: Unlike ``moment`` below, it is applied *inside* the depth loop, beside
+    #: status, because it is a property of the deployment rather than of the
+    #: request: no caller can vary it, so it hands no one a dial with which to
+    #: tune what the loop excludes. See
+    #: :meth:`~theurian.application.visibility.CanonicalVisibility._may_surface`.
+    visible_sensitivities: frozenset[Sensitivity]
     #: How many results the caller asked for. Applied to what survives the gate.
     limit: int
     budget_tokens: int
@@ -979,6 +991,7 @@ class ResultGate:
                 store,
                 context,
                 include_unapproved=request.include_unapproved,
+                visible_sensitivities=request.visible_sensitivities,
                 moment=request.moment,
             )
             outcome = source(visible)

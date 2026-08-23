@@ -422,6 +422,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     query: str,
     limit: int,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
     budget_tokens: int,
     use_dense: bool,
     as_of: datetime | None,
@@ -444,6 +445,14 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     :func:`_shaper`, where it is the moment every returned hit's ``freshness``
     is computed against -- ``datetime.now(UTC)`` when the caller pinned
     nothing, exactly as before this parameter existed.
+
+    ``visible_sensitivities`` is the deployment's grant (#119), carried through
+    to the canonical gate rather than applied to the index. That asymmetry is
+    the point of this phase: the index still holds an above-ceiling document's
+    text, and the *item's current* level is what decides, so a document
+    reclassified upward after the build is withheld here even though its index
+    row survives. The index-side exclusion that makes this cheap rather than
+    merely correct is a later phase's change.
     """
     published = _published_index(
         paths,
@@ -549,6 +558,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                     database=database,
                     project_id=project_id,
                     include_unapproved=include_unapproved,
+                    visible_sensitivities=visible_sensitivities,
                     limit=limit,
                     budget_tokens=budget_tokens,
                     reserved_tokens=_envelope_tokens(project_id, query, provisional),
@@ -763,6 +773,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     query: str,
     limit: int,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
     budget_tokens: int,
     fallback: Fallback,
     as_of: datetime | None,
@@ -805,10 +816,11 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
         snapshot_id=str(state.state_hash),
         fallback_reason=fallback.reason,
     )
-    # `_scan` gates on status before it counts towards `limit`, so its output is
-    # already what this caller may see and the budget may be applied straight to
-    # it. The envelope is reserved here for the same reason as on the ranked
-    # path: `note` alone is a paragraph, and the caller pays for it.
+    # `_scan` gates on status and on the deployment's sensitivity grant before it
+    # counts towards `limit`, so its output is already what this caller may see and
+    # the budget may be applied straight to it. The envelope is reserved here for
+    # the same reason as on the ranked path: `note` alone is a paragraph, and the
+    # caller pays for it.
     resolved = within_budget(
         _scan(
             database,
@@ -816,6 +828,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
             needle=query.strip().lower(),
             limit=limit,
             include_unapproved=include_unapproved,
+            visible_sensitivities=visible_sensitivities,
             as_of=as_of,
         ),
         budget_tokens=budget_tokens,
@@ -841,6 +854,7 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     needle: str,
     limit: int,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
     as_of: datetime | None,
 ) -> list[dict[str, Any]]:
     """Every current revision whose title or body contains ``needle``.
@@ -910,6 +924,12 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     # `_item_from_row` parses the cell: a corrupt status on a row the query ranks
     # refuses the whole search, and a refusal carries no field. Ranked refuses, this
     # fallback discloses, and `knowledge.status` is the sibling pinned as disclosing.
+    #
+    # The sensitivity axis (#119) arrives already resolved -- it is the deployment's
+    # grant, not a rule this function applies -- so there is nothing to build here
+    # and it is passed straight through below. The two axes are independent: a level
+    # this deployment does not serve is withheld whatever `include_unapproved` says,
+    # for the reason retired statuses are.
     surfaceable = frozenset(
         s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
     )
@@ -918,12 +938,15 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
         for item in store.list_items_by_status(
             context,
             statuses=surfaceable,
-            # Every level, until the deployment's grant is threaded to this
-            # function (#119 phase 2). The port requires the set rather than
-            # defaulting it, so this is the one place the "no sensitivity
-            # narrowing" answer is spelled -- and it is spelled where the next
-            # commit replaces it, not hidden behind a default.
-            sensitivities=frozenset(Sensitivity),
+            # The deployment's grant, handed to the store as the second SQL
+            # predicate rather than checked on the way past (#119). Same
+            # discipline as `statuses` and for the same reason: an above-ceiling
+            # row never crosses into Python, so it costs no `KnowledgeItem`, no
+            # revision read and no body scan -- the dominant per-row work on this
+            # path. `may_disclose` is therefore not called here and `_scan` is not
+            # one of its enumerated sites; what the store cannot make flat is
+            # recorded on `list_items_by_status` and measured there.
+            sensitivities=visible_sensitivities,
         ):
             if as_of is not None and not item.validity.contains(as_of):
                 continue

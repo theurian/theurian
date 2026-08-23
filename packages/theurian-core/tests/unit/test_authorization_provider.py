@@ -39,7 +39,7 @@ from theurian.application.authorization import (
     load_serving_profile,
     serving_profile_path,
 )
-from theurian.domain.enums import Sensitivity
+from theurian.domain.enums import Sensitivity, may_disclose
 from theurian.domain.errors import DomainError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.authorization import AuthorizationProvider
@@ -179,6 +179,49 @@ def test_string_comparison_is_not_the_disclosure_order() -> None:
     """
     assert Sensitivity.CONFIDENTIAL < Sensitivity.INTERNAL, "alphabetical, not disclosure order"
     assert sorted(Sensitivity) != list(DISCLOSURE_ORDER)
+
+
+@pytest.mark.parametrize("ceiling", list(Sensitivity))
+@pytest.mark.parametrize("level", list(Sensitivity))
+def test_the_gate_admits_exactly_what_the_ceiling_expanded_to(
+    ceiling: Sensitivity, level: Sensitivity
+) -> None:
+    """All sixteen pairs, because the gate and the expansion must not drift apart.
+
+    :func:`~theurian.domain.enums.may_disclose` is the predicate every read path
+    consults; ``ServingProfile.visible_sensitivities`` is the set the operator's
+    declared ceiling expanded to. Two derivations of one idea is how a gate ends
+    up admitting a level its own profile excluded, so this asserts they are the
+    same answer for every ``(ceiling, level)`` pair rather than for the handful a
+    fixture happens to use.
+
+    The expected side is read off the profile deliberately.
+    ``test_a_ceiling_expands_to_every_level_at_or_below_it`` above is what pins
+    *that* set against a written-out expectation; this one has a different job --
+    it pins the gate to whatever that set turns out to be.
+    """
+    visible = ServingProfile(ceiling=ceiling).visible_sensitivities
+
+    assert may_disclose(level, visible=visible) is (level in visible)
+
+
+def test_the_gate_is_membership_and_not_a_string_comparison() -> None:
+    """The one pair that separates a correct gate from the plausible wrong one.
+
+    ``Sensitivity`` is a ``StrEnum``, so ``confidential <= internal`` is ``True``
+    (see ``test_string_comparison_is_not_the_disclosure_order``). A gate written
+    as a comparison against the ceiling would therefore serve a ``confidential``
+    item to an ``internal`` deployment, silently and without raising. This asserts
+    the outcome that discriminates the two implementations, so the reason
+    :func:`~theurian.domain.enums.may_disclose` takes an expanded *set* rather
+    than a ceiling cannot be refactored away by someone who checks that ``<=``
+    "works".
+    """
+    internal_deployment = ServingProfile(ceiling=Sensitivity.INTERNAL).visible_sensitivities
+
+    assert Sensitivity.CONFIDENTIAL <= Sensitivity.INTERNAL, "the trap this test exists for"
+    assert not may_disclose(Sensitivity.CONFIDENTIAL, visible=internal_deployment)
+    assert may_disclose(Sensitivity.INTERNAL, visible=internal_deployment)
 
 
 def test_a_ceiling_given_as_a_bare_string_is_normalised() -> None:

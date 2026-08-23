@@ -67,6 +67,12 @@ pytestmark = pytest.mark.unit
 PROJECT = ProjectId("demo")
 CONTEXT = RequestContext(project_id=PROJECT)
 
+#: The sensitivity grant every construction in this file runs under: all four
+#: levels, so the #119 axis withholds nothing and what is measured here stays the
+#: status and pass-count behaviour these tests were written for. Spelled out
+#: rather than read from the shipped default, which a later phase narrows.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 #: Frozen. Nothing here reads a clock, and a fixture that did would make the
 #: read counts below depend on when the suite ran.
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -185,6 +191,7 @@ def _admit(log: list[str], source: CandidateSource) -> None:
             database=Path("/nonexistent/state.sqlite"),
             project_id="demo",
             include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
             limit=10,
             budget_tokens=2000,
         ),
@@ -317,7 +324,12 @@ def _measure(withheld: int, placement: str) -> _Measured:
 
     log: list[str] = []
     session = _RecordingSession(log, known=visible)
-    admitted = CanonicalVisibility(session, CONTEXT, include_unapproved=False).cleared(ranking)
+    admitted = CanonicalVisibility(
+        session,
+        CONTEXT,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    ).cleared(ranking)
 
     return _Measured(cleared=len(admitted), reads=log.count("get_item"))
 
@@ -455,7 +467,10 @@ def test_a_row_naming_an_id_the_domain_refuses_is_withheld_rather_than_raised(
     row = Ranked(chunk_id=f"{_ulid(1)}#0", item_id=item_id, revision_id=_ulid(1))
 
     cleared = CanonicalVisibility(
-        _RecordingSession(log), CONTEXT, include_unapproved=False
+        _RecordingSession(log),
+        CONTEXT,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).cleared((row,))
 
     assert cleared == (), "a row the domain will not name cannot be shown"

@@ -38,6 +38,7 @@ from theurian.application.visibility import CanonicalVisibility, Visibility
 from theurian.cli.main import app
 from theurian.domain.chunking import IndexableChunk
 from theurian.domain.context import RequestContext
+from theurian.domain.enums import Sensitivity
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.embedding import EmbeddingProvider
 from theurian.domain.ports.index_store import ForestRecompute
@@ -53,6 +54,17 @@ pytestmark = pytest.mark.integration
 #: A cell holding nothing this codebase says elsewhere, so a fragment of it in a
 #: published message came out of the state database file and nowhere else.
 SENTINEL = "ROTATE-ME sk-live-9f2a7c41d8e3 payroll band L7 = 240000"
+
+#: The sensitivity grant every test in this file runs under: all four levels, so
+#: the #119 axis withholds nothing and these tests keep measuring what they were
+#: written to measure.
+#:
+#: Spelled out rather than read from ``StaticAuthorizationProvider``'s shipped
+#: default, deliberately. A later phase narrows ``DEFAULT_CEILING`` to
+#: ``internal``, and a file that inherited it would start withholding its
+#: above-ceiling fixtures silently -- turning tests about ranking, budgets and
+#: pass counts into tests about something else, with no line changed here.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
 
 
 def _mode(outcome: SearchOutcome) -> RetrievalMode:
@@ -363,7 +375,9 @@ def test_a_pinned_moment_excludes_a_dense_hit_too(project: Path) -> None:
     context = RequestContext(project_id=ProjectId("demo"))
 
     with SqliteCanonicalStore(_database(project)) as store:
-        unpinned = CanonicalVisibility(store, context, include_unapproved=False)
+        unpinned = CanonicalVisibility(
+            store, context, include_unapproved=False, visible_sensitivities=EVERY_SENSITIVITY
+        )
         outcome_unpinned = service.search(request, unpinned)
 
     unpinned_ids = {candidate.item_id for candidate in outcome_unpinned.candidates}
@@ -378,7 +392,11 @@ def test_a_pinned_moment_excludes_a_dense_hit_too(project: Path) -> None:
 
     with SqliteCanonicalStore(_database(project)) as store:
         pinned = CanonicalVisibility(
-            store, context, include_unapproved=False, moment=datetime(2020, 1, 1, tzinfo=UTC)
+            store,
+            context,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
+            moment=datetime(2020, 1, 1, tzinfo=UTC),
         )
         outcome_pinned = service.search(request, pinned)
 
@@ -1283,6 +1301,7 @@ def test_the_limit_is_applied_to_results_and_not_to_candidates(project: Path) ->
             database=_database(project),
             project_id="demo",
             include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
             limit=1,
             budget_tokens=32_000,
         ),
@@ -1316,6 +1335,7 @@ def test_the_scores_the_gate_publishes_are_computed_over_the_survivors(
                     database=_database(project),
                     project_id="demo",
                     include_unapproved=False,
+                    visible_sensitivities=EVERY_SENSITIVITY,
                     limit=10,
                     budget_tokens=32_000,
                 ),
@@ -1346,6 +1366,7 @@ def test_a_limit_below_one_is_refused_with_a_remedy() -> None:
             database=Path("unused"),
             project_id="demo",
             include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
             limit=0,
             budget_tokens=100,
         )
@@ -1955,6 +1976,7 @@ def _published_order(probe: _BM25Probe, index_path: Path) -> list[str]:
             database=_database(probe.project),
             project_id="demo",
             include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
             limit=10,
             budget_tokens=32_000,
         ),

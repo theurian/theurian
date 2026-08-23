@@ -41,7 +41,7 @@ import pytest
 
 import theurian
 from theurian.application.retrieval_service import ResultGate
-from theurian.domain.enums import may_surface
+from theurian.domain.enums import may_disclose, may_surface
 
 pytestmark = pytest.mark.unit
 
@@ -179,6 +179,13 @@ def test_exactly_one_place_in_the_product_hands_candidates_to_the_gate() -> None
 #: before this scan quietly finds zero sites for a name nothing has.
 STATUS_GATE = may_surface.__name__
 
+#: The domain function that decides whether this *deployment* may disclose an
+#: item's sensitivity class (SEC-13, #119), read off the symbol for the same
+#: reason. The second axis, enumerated the same way as the first, because it fails
+#: the same way: a read path that forgets it publishes above-ceiling content, and
+#: nothing in the type system says a path was meant to consult it.
+DISCLOSURE_GATE = may_disclose.__name__
+
 #: Every place the product consults the status gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
@@ -215,6 +222,38 @@ STATUS_GATE_CALL_SITES = {
     ("mcp/tools.py", "register.knowledge_get"),
 }
 
+#: Every place the product consults the disclosure gate, as
+#: ``(module path under theurian/, enclosing function)``.
+#:
+#: Three, and they are the three canonical-side read paths a caller can reach
+#: content through (#119 phase 2), each with the test that holds it to gating:
+#:   - the ranked path's canonical re-check on the item's *current* level
+#:     (``test_the_ranked_path_withholds_a_document_reclassified_after_the_build``);
+#:   - ``knowledge.get``'s gate on the item it hands over by id, refused in the
+#:     words that refuse an absent one
+#:     (``test_a_narrow_ceiling_withholds_the_item_from_search_and_from_get`` and
+#:     ``test_absence_proof.py``'s generated refusal equality);
+#:   - the per-edge gate on each endpoint of a relation, because an edge's target
+#:     id and ``note`` are the disclosure whether or not the body is
+#:     (``test_a_relation_to_an_above_ceiling_item_is_not_published``).
+#:
+#: **``mcp/search.py :: _scan`` is deliberately absent and is not a fourth site.**
+#: The unranked fallback hands the grant to the canonical store as a SQL
+#: predicate, so an above-ceiling row is never materialised for a Python check to
+#: run on (``test_the_unranked_scan_withholds_an_above_ceiling_item``, and the
+#: cost note on ``list_items_by_status``). It is the one gate on this axis that is
+#: enforced by a query rather than by a call, so adding it here would mean
+#: deleting the predicate that makes it cheap.
+#:
+#: The build side is absent for a different reason: nothing excludes an
+#: above-ceiling document from the *index* yet (#119 phase 3). Until it does, the
+#: index holds the text and these three are the whole of the enforcement.
+DISCLOSURE_GATE_CALL_SITES = {
+    ("application/visibility.py", "CanonicalVisibility._may_surface"),
+    ("mcp/tools.py", "_relation_is_visible"),
+    ("mcp/tools.py", "register.knowledge_get"),
+}
+
 
 #: The module ``may_surface`` lives in, matched against imports to follow the
 #: symbol rather than a spelling.
@@ -235,8 +274,8 @@ def _dotted(node: ast.AST) -> str | None:
     return None
 
 
-def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
-    """Per module: the local names bound to ``may_surface``, and to the enums module.
+def _enums_bindings(tree: ast.AST, symbol: str) -> tuple[set[str], set[str]]:
+    """Per module: the local names bound to ``symbol``, and to the enums module.
 
     So the scan follows the import, not a spelling. ``import may_surface as gate``
     binds ``gate`` to the function (a *direct* name); ``import theurian.domain.enums
@@ -244,13 +283,18 @@ def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
     through which the function is reached as ``e.may_surface``. Both are how a
     sixth call site could hide from a scan that only knew the bare name — the
     adversarial review demonstrated both survive a bare-``Name`` scan.
+
+    ``symbol`` is a parameter because there are two gates on this path and they
+    fail identically. A second copy of this resolver for ``may_disclose`` would be
+    the same rule written twice, which is what the enumeration exists to stop
+    happening to the rules themselves.
     """
     direct: set[str] = set()
     module_aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and not node.level:
             if node.module == ENUMS_MODULE:
-                direct |= {a.asname or a.name for a in node.names if a.name == STATUS_GATE}
+                direct |= {a.asname or a.name for a in node.names if a.name == symbol}
             elif node.module == "theurian.domain":
                 module_aliases |= {a.asname or a.name for a in node.names if a.name == "enums"}
         elif isinstance(node, ast.Import):
@@ -258,8 +302,8 @@ def _enums_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
     return direct, module_aliases
 
 
-def _status_gate_uses(path: pathlib.Path) -> list[tuple[str, str]]:
-    """Every place ``path`` reaches ``may_surface``, as ``(module path, enclosing function)``.
+def _gate_uses(path: pathlib.Path, symbol: str) -> list[tuple[str, str]]:
+    """Every place ``path`` reaches ``symbol``, as ``(module path, enclosing function)``.
 
     Resolves imports rather than matching a spelling, so all reaching forms count:
     the bare name it is imported under (``may_surface`` or an ``as`` alias) and an
@@ -269,18 +313,23 @@ def _status_gate_uses(path: pathlib.Path) -> list[tuple[str, str]]:
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     module = path.relative_to(SRC).as_posix()
-    direct, module_aliases = _enums_bindings(tree)
+    direct, module_aliases = _enums_bindings(tree, symbol)
     found: list[tuple[str, str]] = []
     for node, scope in _iter_nodes_with_scope(tree):
         by_bare_name = isinstance(node, ast.Name) and node.id in direct
         by_module_attr = (
             isinstance(node, ast.Attribute)
-            and node.attr == STATUS_GATE
+            and node.attr == symbol
             and _dotted(node.value) in module_aliases
         )
         if by_bare_name or by_module_attr:
             found.append(_here(module, scope))
     return found
+
+
+def _sites_reaching(symbol: str) -> list[tuple[str, str]]:
+    """The whole shipped tree's call sites for ``symbol``, sorted and deduplicated."""
+    return sorted({site for path in sorted(SRC.rglob("*.py")) for site in _gate_uses(path, symbol)})
 
 
 def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> None:
@@ -311,7 +360,7 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
     name — so it is a floor on the review a new call site gets, not a proof that
     an ungated path cannot exist.
     """
-    sites = sorted({site for path in sorted(SRC.rglob("*.py")) for site in _status_gate_uses(path)})
+    sites = _sites_reaching(STATUS_GATE)
 
     assert sites == sorted(STATUS_GATE_CALL_SITES), (
         f"`{STATUS_GATE}` is consulted from {len(sites)} place(s) in the shipped "
@@ -329,6 +378,46 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
         f"`{STATUS_GATE}` before returning content, add a test that goes red when "
         f"it stops, and only then add it here with that test named beside it. If "
         f"you removed or moved one, amend this set and both docstrings together."
+    )
+
+
+def test_every_place_the_product_consults_the_disclosure_gate_is_enumerated() -> None:
+    """A new ``may_disclose`` call site is a new place a deployment ceiling can be forgotten.
+
+    The sibling of the status assertion above, and it exists for the reason that
+    one turned out to be needed: a second gate on the same paths, consulted from
+    several places, whose omission from any one of them is invisible until
+    somebody reaches content through it. ``knowledge.get`` having no copy of the
+    *status* gate is how a caller who could not search for a withheld item could
+    still fetch it; the same shape on this axis would be a caller who could not
+    search for an above-ceiling item fetching it by id, or reading its id and its
+    ``note`` off a relation.
+
+    Equality against the whole spelled-out set, so it fails in both directions.
+    A site added is a new disclosure path to argue for; a site removed or moved is
+    a gate that has quietly stopped being consulted, and either way the failure
+    names what it found.
+
+    The scan is the same resolver the status assertion uses, so all three reaching
+    forms count here too -- bare name, ``as`` alias, and module attribute.
+    """
+    sites = _sites_reaching(DISCLOSURE_GATE)
+
+    assert sites == sorted(DISCLOSURE_GATE_CALL_SITES), (
+        f"`{DISCLOSURE_GATE}` is consulted from {len(sites)} place(s) in the shipped "
+        f"source, and the pinned set has {len(DISCLOSURE_GATE_CALL_SITES)}:\n"
+        + "\n".join(f"  {module} :: {function}" for module, function in sites)
+        + "\n\nExpected exactly:\n"
+        + "\n".join(
+            f"  {module} :: {function}" for module, function in sorted(DISCLOSURE_GATE_CALL_SITES)
+        )
+        + f"\n\n`{DISCLOSURE_GATE}` is the one rule for whether this deployment may "
+        f"disclose an item's sensitivity class (SEC-13, #119). If you added a call "
+        f"site, it is a new path above-ceiling content can leave by -- establish that "
+        f"it gates before returning content, add a test that goes red when it stops, "
+        f"and only then add it here with that test named beside it. If you removed "
+        f"one, say which query or which build-side exclusion now enforces that path "
+        f"instead, the way `mcp/search.py :: _scan` is accounted for above."
     )
 
 
