@@ -13,8 +13,15 @@ claims this repository cannot decide: which versions exist on PyPI, and how uv
 selects an interpreter. Those are properties of PyPI and of uv, they are written
 as observations rather than as mechanisms, and no test here can hold them. What
 *is* decidable from this tree is the packaging: whether ``daemon`` carries the
-module the daemon entry point imports. That is what these tests hold, and it is
-the link that makes the README's reason true.
+module the daemon entry point imports, and whether ``all`` still reaches
+``daemon`` for the surfaces that go on recommending the superset. That is what
+these tests hold, and it is the link that makes the README's reason true.
+
+**``[all]`` outlived the quick start that named it.** When the quick start moved
+to ``[daemon]``, the test binding ``all`` to ``daemon`` went with it -- and the
+three surfaces that call ``[all]`` the developer install did not. Dropping
+``daemon`` from ``all`` then left the whole suite green while a contributor's
+``uv sync`` stopped carrying ``uvicorn``.
 
 The direction that matters is the one nobody expects: these go RED when the
 packaging becomes *friendlier*. Adding ``uvicorn`` to the base dependencies is a
@@ -87,13 +94,30 @@ def test_the_daemon_module_is_an_extra_and_not_a_base_dependency() -> None:
     )
 
 
-def test_the_quick_start_extra_carries_the_daemon_module() -> None:
-    """`[daemon]` is the spelling the README publishes, so it has to carry `uvicorn`."""
+def test_the_all_extra_reaches_the_daemon_extra() -> None:
+    """`[all]` is a second published spelling, and three surfaces still rest on it.
 
-    daemon_extra = _requirement_names(_extras()["daemon"])
-    assert DAEMON_MODULE in daemon_extra, (
-        f"`{DAEMON_MODULE}` left the `daemon` extra, so `{QUICK_START_SPEC}` does "
-        f"not install a daemon. README.md's quick start says it does."
+    The quick start moved to `[daemon]`, which is why this test reads as orphaned
+    -- and it is not. ``README.md`` goes on saying ``[all]`` "also works and is
+    what a contributor checkout installs", ADR-0014 §10 calls ``theurian[all]``
+    "the developer install", and the repository's own ``pyproject.toml`` lists it
+    under ``dependency-groups`` so that one ``uv sync`` gives contributors the
+    daemon the suite exercises. Dropping ``daemon`` from ``all`` falsifies all
+    three at once and takes ``uvicorn`` out of every contributor's environment.
+
+    ``all`` is self-referential -- ``theurian[daemon,vector,telemetry]`` -- so the
+    check is on the extras it names, not on a flattened requirement list.
+    """
+    extras = _extras()
+    referenced: set[str] = set()
+    for spec in extras["all"]:
+        head = spec.split(";")[0].strip()
+        if "[" in head:
+            referenced |= {name.strip() for name in head.split("[", 1)[1].rstrip("]").split(",")}
+    assert "daemon" in referenced, (
+        "`all` no longer reaches the `daemon` extra. README.md calls `[all]` a "
+        "superset that also works, ADR-0014 calls it the developer install, and "
+        "the root pyproject.toml installs it to get the daemon into `uv sync`."
     )
 
 

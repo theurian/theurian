@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import sys
-from typing import Final
+import tomllib
+from typing import Final, cast
 
 import pytest
 
@@ -34,7 +36,18 @@ from theurian.domain.extras import (
     provided_by_daemon_extra,
 )
 
-SRC: Final = pathlib.Path(__file__).resolve().parents[2] / "src" / "theurian"
+PACKAGE_ROOT: Final = pathlib.Path(__file__).resolve().parents[2]
+SRC: Final = PACKAGE_ROOT / "src" / "theurian"
+PYPROJECT: Final = PACKAGE_ROOT / "pyproject.toml"
+
+#: ``requires-python``, in the only shape this repository writes it. Matched
+#: whole rather than searched, because a spec that grew a second clause is a
+#: question about which bound the install commands should name -- and answering
+#: it by taking the first number found is how the wrong one gets shipped.
+_REQUIRES_PYTHON: Final = re.compile(r">=\s*(?P<floor>\d+\.\d+)")
+
+#: The interpreter an install command pins, whatever flags surround it.
+_PINNED_PYTHON: Final = re.compile(r"--python (?P<version>\S+)")
 
 #: The packages that only run once the ``daemon`` extra is installed. Not a
 #: guess: these are the three modules that import ``uvicorn``, ``mcp`` or
@@ -61,6 +74,26 @@ def _top_level_imports(path: pathlib.Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
             names.add(node.module.split(".", 1)[0])
     return names
+
+
+def _requires_python_floor() -> str:
+    """The lowest Python ``pyproject.toml`` says the distribution accepts.
+
+    Read rather than remembered, which is the whole point of the assertion it
+    feeds: nothing in the build derives ``domain/extras.py``'s ``3.13`` from this
+    declaration, and every production caller interpolates those constants instead
+    of repeating the number, so this is where the family is held or nowhere.
+    """
+    metadata = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    spec = cast(str, cast(dict[str, object], metadata["project"])["requires-python"])
+
+    match = _REQUIRES_PYTHON.fullmatch(spec.strip())
+    assert match is not None, (
+        f"`requires-python` is now `{spec}`, which is not a bare `>=X.Y`. Decide "
+        f"which bound the install commands should name and teach this test the "
+        f"new shape -- theurian/domain/extras.py holds the literals."
+    )
+    return match.group("floor")
 
 
 def _third_party(names: set[str]) -> set[str]:
@@ -161,13 +194,51 @@ def test_the_guard_disclaims_everything_else(name: str | None) -> None:
 def test_the_remedy_names_a_command_for_each_installer_the_surfaces_offer() -> None:
     """Every surface tells the user to install with uv *or* pipx, so both need one.
 
-    Measured against pipx 1.16.6: ``pipx install --python 3.13
-    'theurian[daemon]'`` over an existing bare install changes nothing and exits
-    0. A remedy that named only the uv form would leave every pipx user without
-    one; a remedy that named the plain pipx form would leave them following it
-    and still broken.
+    Measured against pipx 1.16.6: ``pipx install 'theurian[daemon]'`` over an
+    existing bare install changes nothing and exits 0. A remedy that named only
+    the uv form would leave every pipx user without one; a remedy that named the
+    plain pipx form would leave them following it and still broken.
+
+    **The literal asserted below carries ``--python 3.13``; the measurement did
+    not.** The flag arrived with :data:`DAEMON_INSTALLERS`, and it is pinned here
+    so the remedy cannot drift away from the commands beside it -- not because
+    anyone ran the flagged form against an existing install. What the run
+    settled is ``--force``, and that is present in both spellings.
     """
     assert "uv tool install" in DAEMON_EXTRA_REMEDY
     assert f"pipx install --force --python 3.13 'theurian[{DAEMON_EXTRA}]'" in DAEMON_EXTRA_REMEDY
     for installer in DAEMON_INSTALLERS:
         assert f"theurian[{DAEMON_EXTRA}]" in installer
+
+
+def test_the_install_commands_pin_the_python_core_requires() -> None:
+    """The bare ``3.13`` in ``domain/extras.py``, held to the metadata that decides it.
+
+    Three literals: both :data:`DAEMON_INSTALLERS` entries and the pipx
+    ``--force`` form inside :data:`DAEMON_EXTRA_REMEDY`. ``requires-python`` is
+    where the floor is actually declared; these only repeat it, and nothing in
+    the build derives one from the other. Raising the floor to 3.14 without
+    touching them therefore ships ``uv tool install --python 3.13
+    'theurian[daemon]'`` as the command Theurian prints when the daemon will not
+    start -- a remedy that cannot resolve, because the only wheel it may install
+    excludes the interpreter it just asked for.
+
+    Every ``--python`` in each string is checked rather than the first: the
+    remedy names two commands, and a fix that updated one of them is exactly the
+    half-edit this exists to catch.
+
+    **Nothing else in the suite catches the raise.** Several modules pin the
+    literal ``--python 3.13`` -- ``test_compatibility``, ``test_bare_install``,
+    ``test_cli_help_without_rich``, ``test_setup_claims`` -- so they redden when
+    the *constants* move and stay green when the *floor* does. Measured: with
+    ``requires-python`` at ``>=3.14`` and every literal left at 3.13, this is the
+    only failure in 3205 tests.
+    """
+    floor = _requires_python_floor()
+
+    for command in (*DAEMON_INSTALLERS, DAEMON_EXTRA_REMEDY):
+        pinned = set(_PINNED_PYTHON.findall(command))
+        assert pinned == {floor}, (
+            f"`requires-python` says >={floor}, but this pins {sorted(pinned) or 'nothing'}: "
+            f"{command}"
+        )

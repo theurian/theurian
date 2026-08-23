@@ -46,6 +46,14 @@ DAEMON_MODULES: Final = ("mcp", "starlette", "uvicorn")
 #: What a user with no Theurian at all runs. Both choose a Python Core supports
 #: and work on a machine that has neither; see :data:`DAEMON_EXTRA_REMEDY` for
 #: why repairing an install that already exists is not the same command.
+#:
+#: **``3.13`` is not a literal to edit here alone.** It is the floor of
+#: ``requires-python`` in ``pyproject.toml``, and a raised floor that missed
+#: these strings would ship a command that pins an interpreter the wheel itself
+#: rejects -- an install that cannot resolve, printed as the remedy for one that
+#: did not work. Held by
+#: ``test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires``,
+#: which reads the floor out of ``pyproject.toml`` rather than repeating it.
 DAEMON_INSTALLERS: Final = (
     "uv tool install --python 3.13 'theurian[daemon]'",
     "pipx install --python 3.13 'theurian[daemon]'",
@@ -55,19 +63,27 @@ DAEMON_INSTALLERS: Final = (
 #:
 #: **The pipx form is not the same as the one in :data:`DAEMON_INSTALLERS`, and
 #: that difference is measured rather than defensive.** Against pipx 1.16.6 and
-#: `theurian` 0.1.0.dev0, ``pipx install --python 3.13 'theurian[daemon]'`` over
-#: an existing bare install prints "'theurian' (0.1.0.dev0) already seems to be
-#: installed. Not modifying existing installation" and exits 0 -- the extra is
-#: not added, and the user's next ``theurian daemon start`` fails exactly as
-#: before. ``--force`` installs into the existing venv and does add it. ``uv tool
+#: `theurian` 0.1.0.dev0, ``pipx install 'theurian[daemon]'`` over an existing
+#: bare install prints "'theurian' (0.1.0.dev0) already seems to be installed.
+#: Not modifying existing installation" and exits 0 -- the extra is not added,
+#: and the user's next ``theurian daemon start`` fails exactly as before.
+#: ``--force`` installs into the existing venv and does add it. ``uv tool
 #: install`` needs no such flag: it re-resolves and adds the extra in place.
 #: A remedy a user can follow to completion and still be broken is worse than no
 #: remedy, because it moves the blame onto them.
+#:
+#: **The ``--python 3.13`` below is not part of that measurement.** The command
+#: that was run is the one quoted above, without the flag; the flag is here
+#: because :data:`DAEMON_INSTALLERS` carries it, and a remedy that chose a
+#: different interpreter from the install commands beside it would be its own
+#: defect. Whether it changes what pipx does to an *already installed* Theurian
+#: has not been measured, and the sentence above does not turn on it: what the
+#: run settled is ``--force``, which is present either way.
 DAEMON_EXTRA_REMEDY: Final = (
     f"Install it with `{DAEMON_INSTALLERS[0]}`. With pipx, run "
     f"`pipx install --force --python 3.13 'theurian[{DAEMON_EXTRA}]'` -- a plain "
-    f"`pipx install` leaves an existing installation untouched and would report "
-    f"success."
+    "`pipx install` leaves an existing installation untouched and would report "
+    "success."
 )
 
 

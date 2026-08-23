@@ -11,13 +11,13 @@ closed three faces and left three more open, including the only one a user meets
 without asking for it: the ``SessionStart`` hook, which prints its advice on every
 session.
 
-**Six of the nine are corrected, and this module does not check all six.** Two are
-held where they are produced rather than as text -- ``setup_command.__doc__`` by
-:func:`test_the_cli_docstring_denies_installing_core_and_names_the_installer`
+**Seven of the nine are corrected, and this module does not check all seven.** Two
+are held where they are produced rather than as text -- ``setup_command.__doc__``
+by :func:`test_the_cli_docstring_denies_installing_core_and_names_the_installer`
 below, and ``domain/compatibility.py``'s ``CORE_MISSING`` verdict by
 ``test_compatibility.py::test_missing_core_is_reported_as_install_then_setup``.
-The remaining four are read from disk and listed in
-:data:`CORE_ARRIVAL_SURFACES`. **Three are not corrected at all**, and are
+The remaining five are read from disk and listed in
+:data:`CORE_ARRIVAL_SURFACES`. **Two are not corrected at all**, and are
 recorded with line numbers in T-16 of ``docs/security/threat-model.md``.
 
 These pin fact and prose to each other in both directions. The fact, so that a
@@ -69,7 +69,7 @@ from theurian.infrastructure.secrets.file_store import FileSecretStore
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
-#: The four corrected surfaces this module reads from disk, as repository-relative
+#: The five corrected surfaces this module reads from disk, as repository-relative
 #: paths. **This is not the class and it is not a closure argument.** Two more
 #: corrected surfaces are checked where they are produced -- see the module
 #: docstring -- and two are not corrected at all:
@@ -78,38 +78,33 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: absent" premise beside a ``/theurian:setup`` remedy, enumerated with line
 #: numbers in T-16 of ``docs/security/threat-model.md``.
 #:
-#: ``README.md`` was the third of those and is corrected, but it stays **out** of
-#: this tuple rather than joining it. The reason changed when ``theurian``
-#: ``0.1.0.dev0`` was published: it used to be that the README installed Core from
-#: the checkout, because the distribution did not exist on PyPI and the literal
-#: :data:`INSTALLERS` pin would have failed on the one surface whose instruction
-#: ran. The README now installs from PyPI like every surface here, so that reason
-#: is gone -- and the exclusion outlives it, because
+#: ``README.md`` is the fifth, and it joins after three successive exclusions
+#: that each expired in turn. It used to install Core from the checkout, because
+#: the distribution did not exist on PyPI and the literal :data:`INSTALLERS` pin
+#: would have failed on the one surface whose instruction ran; publishing
+#: ``0.1.0.dev0`` ended that. Then :data:`INSTALLERS` was the bare
+#: ``uv tool install theurian`` -- an installer the README's own next command
+#: does not survive, because it omits the ``daemon`` extra the quick start goes
+#: on to use -- and https://github.com/theurian/theurian/issues/78 ended that.
+#: What was left was the interpreter: the README recommends
+#: ``uv tool install --python 3.13 'theurian[daemon]'``, the flag sits between
+#: the tool and the package spec, and
 #: :func:`test_every_surface_that_says_how_core_arrives_names_the_installer`
-#: requires *both* literals verbatim, and until
-#: https://github.com/theurian/theurian/issues/78 those literals were the bare
-#: ``uv tool install theurian`` and ``pipx install theurian`` -- an installer the
-#: README's own next command does not survive, because it omits the ``daemon``
-#: extra the quick start goes on to use.
+#: requires each literal *contiguously*, so the pinned string was not there to
+#: find.
 #:
-#: **#78 landed and the README still does not join, for a third reason nobody
-#: predicted.** The paragraph that stood here said the exclusion would expire
-#: when the surfaces and :data:`INSTALLERS` moved to a spelling carrying the
-#: extra, and asked to be deleted at that moment; it has been, because that
-#: moment is this commit. Adding ``README.md`` to the tuple was then *tried*, and
-#: it fails: the README recommends
-#: ``uv tool install --python 3.13 'theurian[daemon]'``, and the flag between the
-#: tool and the package spec means the pinned literal does not appear
-#: contiguously. The flag is not decoration -- it is what stops uv resolving
-#: against a macOS ``python3`` that is 3.9 -- so the README is right and the
-#: match is what cannot express it.
-#:
-#: Loosening the match to skip flags was rejected here rather than deferred.
-#: Verbatim is the whole of what this check is: a rule that accepts arbitrary
-#: text between ``uv tool install`` and the package would accept
+#: **That last one is closed by this commit, and the match did not move.**
+#: Loosening it to skip flags was rejected rather than deferred: verbatim is the
+#: whole of what this check is, and a rule that accepts arbitrary text between
+#: ``uv tool install`` and the package would accept
 #: ``uv tool install --from somewhere-else 'theurian[daemon]'``, which is the
-#: supply-chain sentence T-16 exists over. The exclusion is therefore not a
-#: promise any more; it is a property of the one surface that must pass a flag.
+#: supply-chain sentence T-16 exists over. What moved instead is
+#: :data:`INSTALLERS`, which now names the interpreter the README always named --
+#: so the README's command is a verbatim match, the file is in the tuple, and
+#: there is no exclusion left to justify or to expire.
+#:
+#: Appended rather than inserted: :data:`PLUGIN_SETUP_DOC` and
+#: :data:`SESSION_START_HOOK` index into this tuple by position.
 #:
 #: An earlier version of this comment claimed no other file in the tree paired
 #: that premise with a remedy. Three do, and ``domain/compatibility.py``'s own
@@ -122,6 +117,7 @@ CORE_ARRIVAL_SURFACES: Final = (
     "plugins/claude-code/README.md",
     "plugins/claude-code/scripts/session-start.sh",
     "docs/protocol/plugin-core-compatibility.md",
+    "README.md",
 )
 
 PLUGIN_SETUP_DOC: Final = REPO_ROOT / CORE_ARRIVAL_SURFACES[0]
