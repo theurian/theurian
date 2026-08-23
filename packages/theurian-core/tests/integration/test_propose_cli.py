@@ -133,19 +133,28 @@ def test_propose_writes_a_proposal_directory_a_reviewer_can_read(project: Path) 
     assert payload["migrationFile"].startswith(payload["migrationId"])
 
 
-def test_propose_says_that_validation_does_not_prove_applicability(project: Path) -> None:
+def test_propose_says_where_the_apply_time_invariants_are_checked(project: Path) -> None:
     """The asymmetry a caller has to be told about, because nothing shows it.
 
-    ``migrate validate`` is schema-only. The invariants ``migrate apply``
-    enforces are checked after the pull request has already merged (#36), so a
-    next-steps list that stopped at "validate it" would read as a green light.
+    ``migrate validate`` is schema conformance plus the statically decidable set
+    guards, by recorded design (#36), so a next-steps list that stopped at
+    "validate it" would read as a green light for something it never checked.
+
+    What the list has to name is where the apply-time invariants *are* settled,
+    and ADR-0027 decision 2 moved that: ``propose accept`` replays the whole set
+    before it moves anything, so they are checked before the pull request exists
+    rather than after it merges. This inverts the assertion that pinned the old
+    division -- it required the word "merge" in the same sentence -- because the
+    sentence it pinned is now false.
     """
     _, payload = _draft(project)
 
     steps = " ".join(payload["nextSteps"]).lower()
 
     assert "schema" in steps
-    assert "merge" in steps or "merges" in steps
+    assert "propose accept" in steps
+    assert "source anchor" in steps, "the apply-time invariant a caller meets most often"
+    assert "after the pull request has merged" not in steps
 
 
 def test_propose_refuses_a_proposal_with_no_reasoning(project: Path) -> None:

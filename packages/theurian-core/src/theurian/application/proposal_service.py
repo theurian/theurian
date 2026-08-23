@@ -6,10 +6,18 @@ Two operations, and the boundary between them is the product:
 directly applicable migration, the body in its native format, and the evidence a
 reviewer reads. It writes nowhere else.
 
-``accept`` moves those files into place. **It automates the file moves and not
-the judgement**: it does not validate the change, does not apply it, and above
-all does not approve it. Approval is a human merging a pull request, and there
-is no code path here that stands in for one.
+``accept`` moves those files into place, once it has proved the move is safe to
+make. **It automates the file moves and not the judgement**: it does not apply
+the change, and above all does not approve it. Approval is a human merging a
+pull request, and there is no code path here that stands in for one.
+
+What it *does* check is one thing, and ADR-0027 decision 2 is where the reasoning
+lives: **that the landed migration set with this proposal in it still survives
+the pipeline ``migrate apply`` runs.** If it does not, the acceptance is refused
+and nothing is consumed, so the proposal is still there to correct. That is a
+change from ADR-0013 §4's division, which left every question about the migration
+to ``migrate validate``; it held while ``accept`` was a ``mv``, and stopped
+holding when the same command began deleting its sources (#307).
 
 Both are driven by a composition root -- the CLI today, Milestone 7's
 write-intent MCP tools next -- which is why the schema check arrives as an
@@ -242,6 +250,21 @@ class ProposalAlreadyAcceptedError(ChangeAlreadyInPlaceError):
     """
 
 
+class ApprovedSetUnusableError(ProposalError):
+    """``.theurian/migrations/`` cannot be applied, with or without this proposal.
+
+    Its own type, and not the plain :class:`ProposalError` every other
+    pre-check refusal raises, because the two carry opposite instructions and a
+    caller acts on the type before it reads the message. A plain
+    ``ProposalError`` says *this proposal could not be used as it stands*, whose
+    recovery is to correct or re-draft it. That recovery is wrong here: the
+    proposal may be perfect, and drafting a second one mints a duplicate for a
+    fault it does not have (#89's hazard, arriving through the pre-check ADR-0027
+    added). What a caller must do instead is read the project's knowledge state,
+    which is what the exit code reserved for that already means.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ProposalRequest:
     """One proposed change, before any identifier or path has been chosen.
@@ -393,16 +416,18 @@ class ProposalService:
 
         Every identifier is fresh: the proposal, the migration, and the
         revision. A revision id names one item for the life of a project, and
-        reusing an applied one is accepted by ``migrate validate`` and then
-        refused by ``migrate apply`` -- after the pull request has merged.
+        reusing an applied one is accepted by ``migrate validate`` and refused by
+        ``migrate apply`` -- so a generator that reused one would produce a
+        proposal ``accept`` refuses, on the replay, having consumed nothing.
 
         The body path carries the revision id for a reason measured on this
         branch (see :func:`body_relative_path`): one path per item made the
         second accepted proposal invalidate the first migration's pinned digest,
         and the project stopped validating entirely.
 
-        An update states which revision it replaces, or it is refused here rather
-        than at ``migrate apply`` after the pull request has merged (#210). The
+        An update states which revision it replaces, or it is refused here --
+        at the point the author can still act on it, rather than at ``accept``
+        with the work already done (#210). The
         generator does not have to be told the item already exists: it derives
         the item's current revision from the approved migration set (which is the
         canonical state), so ``--expected-revision`` is required exactly when the
@@ -485,8 +510,10 @@ class ProposalService:
         item's first. Both are checkable at generation from the approved set,
         and checking here is what stops #210's unguarded update -- a second
         proposal for an existing item with no ``--expected-revision`` -- from
-        validating and then failing at ``migrate apply`` after the pull request
-        has merged.
+        being written at all. ``accept`` would refuse it on the replay
+        (ADR-0027 decision 2) and consume nothing, so the cost of dropping this
+        check would be a wasted draft rather than a broken set; refusing at
+        generation is still where the author can act on it soonest.
         """
         current = self._current_revision(request.item_id)
         expected = request.expected_revision
@@ -501,8 +528,8 @@ class ProposalService:
         if expected is None:
             raise ProposalError(
                 f"{request.item_id.value} already exists at revision {current.value}; an "
-                "update must state which revision it replaces, or it validates and then "
-                "fails at apply after the pull request has merged.",
+                "update must state which revision it replaces, or accepting it would be "
+                "refused for conflicting with the revision already in place.",
                 remedy=f"Pass --expected-revision {current.value} to update it, or a new "
                 "--item-id to create a different item.",
             )
@@ -874,7 +901,7 @@ class ProposalService:
             ),
         )
 
-    def _landed_set_refusal(self, error: BaseException) -> ProposalError:
+    def _landed_set_refusal(self, error: BaseException) -> ApprovedSetUnusableError:
         """The refusal for a fault that predates this proposal.
 
         Direction (b): the project's own ``.theurian/migrations/`` is what
@@ -883,7 +910,7 @@ class ProposalService:
         nor a re-draft -- both would send the reader to change something that is
         not wrong -- and points at the migration the message itself names.
         """
-        return ProposalError(
+        return ApprovedSetUnusableError(
             f"The project's migration set cannot be applied as it stands, with or without "
             f"this proposal: {error}",
             remedy=(
@@ -1485,15 +1512,17 @@ class ProposalService:
         """Refuse a body replacement that would break an existing landed pin.
 
         This guard holds one narrow invariant, not a global one: a replacement
-        never breaks a pin **already landed** in the approved set. It is *not* the
-        claim that ``accept`` leaves the set able to validate -- ``accept`` does
-        not schema-validate the incoming migration and does not check it against
-        itself, so a self-contained breakage in one proposal (two operations
+        never breaks a pin **already landed** in the approved set. It is *not*
+        the claim that ``accept`` leaves the set able to apply -- that claim is
+        :meth:`_refuse_unless_the_union_applies`'s, which runs after this one and
+        is what refuses a self-contained breakage in one proposal (two operations
         naming one ``contentFile``, a self-inconsistent pin, an empty
-        ``contentFile``) lands here and is caught by ``migrate validate`` in CI,
-        which is the check by design (ADR-0013 §4). What this method refuses is the
-        one fault it can judge from the *landed* set alone -- *the destination is
-        a body a landed revision already reads*:
+        ``contentFile``). Until ADR-0027 decision 2 nothing refused those at all:
+        they landed here and were caught by ``migrate validate`` in CI, after the
+        proposal that produced them had been consumed. What *this* method refuses
+        is the one fault it can judge from the *landed* set alone, and it stays
+        because it judges it more precisely than a replay can -- *the destination
+        is a body a landed revision already reads*:
 
         * If that landed revision **pinned** the body, the loader re-reads it and
           finds bytes the pin no longer matches: *"hashes to abc7cdb70713 but the
@@ -2032,12 +2061,22 @@ def _require_filename_matches_id(migration_file: Path, document: Mapping[str, ob
 
 
 def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
-    """Parse an accepted proposal's migration, for its ``contentFile`` alone.
+    """Parse an accepted proposal's migration into the mapping the accept path reads.
 
-    Deliberately not a validation pass. ``accept`` moves files; whether the
-    migration is well-formed is ``migrate validate``'s question and whether it
-    applies is ``migrate apply``'s, and answering either here would imply this
-    command had checked something it has not.
+    Syntax only, and deliberately: it answers *is this YAML, and is it a
+    mapping*, so the structural checks that follow have something to key on --
+    the migration's id, its filename agreement, the ``contentFile`` of each
+    operation. Whether the document is a valid migration, and whether the set it
+    joins still applies, are settled afterwards by
+    :meth:`ProposalService._refuse_unless_the_union_applies`, which puts it
+    through the published schema and then through ``migrate apply``'s own
+    pipeline (ADR-0027 decision 2).
+
+    That division used to run the other way: ``accept`` moved files and left
+    both questions to ``migrate validate`` and ``migrate apply`` (ADR-0013 §4).
+    It was defensible while ``accept`` was a ``mv``, and stopped being
+    defensible once the command also deleted its sources -- a check that runs
+    after the input is destroyed cannot be acted on (#307).
     """
     try:
         return load_yaml_mapping(data.decode("utf-8"))
