@@ -315,10 +315,13 @@ def serving_profile_path(data_dir: Path) -> Path:
     while ``auth/`` is 0700 by construction (``FileSecretStore.set``). A ceiling
     another local account can rewrite is not a ceiling.
 
-    ``"auth"`` is spelled here the way ``security/env_file`` and
-    ``cli/auth_commands`` already spell it. Naming that directory once across the
-    tree would be an improvement and is a change to five call sites in three
-    layers, none of which this phase touches.
+    ``"auth"`` is spelled here as a literal, the way every other site already
+    spells it. Counted rather than estimated --
+    ``git grep -n '/ "auth"' -- packages/theurian-core/src`` on ``e58a8aa`` --
+    there are six including this one, across ``application`` (twice), ``cli``,
+    ``infrastructure`` and ``security`` (twice). Naming the directory once would
+    be an improvement and is a change to four packages, none of which this phase
+    touches.
     """
     return data_dir / "auth" / SERVING_PROFILE_FILENAME
 
