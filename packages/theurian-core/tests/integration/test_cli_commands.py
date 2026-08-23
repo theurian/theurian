@@ -349,6 +349,34 @@ def test_init_creates_the_layout(project: Path) -> None:
     assert (project / ".theurian/knowledge/architecture").is_dir()
 
 
+def test_init_creates_the_local_proposal_directory_without_marking_it(project: Path) -> None:
+    """ADR-0028's last owed item: the command must not commit what it just hid.
+
+    Git does not carry an empty directory, which is why three of this layout's
+    directories get a ``.gitkeep``. ``.theurian/proposals-local/`` must not be a
+    fourth: the placeholder would be a tracked path inside the one directory a
+    clone is supposed to arrive without, put there by the command that created
+    it. The reason is already written beside the loop for the derived
+    directories, and it lands the same way for an ignored directory that is not
+    derived.
+
+    The tracked proposal directory's own ``.gitkeep`` is asserted beside it, so
+    this cannot pass because the marking loop stopped running altogether -- and
+    ``createdPaths`` is checked as well as the disk, because that list is what
+    ``setup`` shows the operator as the record of what it wrote.
+    """
+    code, payload = _invoke("init")
+
+    assert code == 0, payload
+    assert (project / ".theurian/proposals-local").is_dir(), "init creates the directory"
+    assert not (project / ".theurian/proposals-local/.gitkeep").exists()
+    assert (project / ".theurian/proposals/.gitkeep").is_file(), "the marking loop still runs"
+    assert ".theurian/proposals-local" in payload["createdPaths"]
+    assert not [
+        path for path in payload["createdPaths"] if path.endswith("proposals-local/.gitkeep")
+    ]
+
+
 def test_init_is_idempotent(project: Path) -> None:
     _invoke("init")
     code, payload = _invoke("init")
