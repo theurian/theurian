@@ -221,9 +221,14 @@ def test_one_character_over_is_refused_and_the_separator_is_what_makes_it_over()
     separator ``"\\n".join`` inserts, and nothing else. An ``emit`` that charges
     only ``len(line)`` counts this document at 15 and hands
     ``project_checked`` -- the path ingest uses where truncation would be wrong
-    -- all 17 characters with no refusal at all. Measured against that mutation:
-    it returns 17 characters at a limit of 16, and 161 characters at a limit of
-    1438 on the larger shapes below.
+    -- all 17 characters with no refusal at all (measured 2026-08-24 against that
+    mutation: ``project_checked(..., max_chars=16)`` returned ``'aa: 1\\nbb:
+    2\\ncc: 3'``).
+
+    ``project`` is *not* where this shows, which is why the assertion is on
+    ``project_checked``: it re-measures ``len(text)`` after the walk and
+    truncates, so an under-charging ``emit`` costs it work and never returns
+    more than its budget. Only the raising entry point publishes the mistake.
 
     ``observed`` is asserted because it is what
     :class:`~theurian.domain.errors.InputTooLargeError`'s remedy prints, and a
@@ -258,10 +263,13 @@ def test_project_truncates_the_same_document_project_checked_refuses() -> None:
 def test_a_truncated_projection_never_exceeds_its_budget_plus_the_marker(max_chars: int) -> None:
     """The invariant that holds at every budget, not only at the interesting one.
 
-    ``project`` is the ingest path's entry point and it cannot raise, so the only
-    thing standing between a caller and an unbounded string is this bound. Swept
-    across the boundary (16/17/18) and out to the scale the reviewer measured a
-    mutant returning 161 characters against a 1438-character limit.
+    ``project`` is the ingest path's entry point and it cannot raise, so this
+    bound is the only thing between a caller and an unbounded string. Swept
+    across the boundary the tests above pin (16/17/18) and out to a budget deep
+    inside this document, because the tight case is not the large one: at
+    ``max_chars=1`` there is no line boundary to cut on, so the return is
+    ``max_chars`` plus the marker plus its separator exactly, and every larger
+    budget has slack.
     """
     document = {f"key{i}": "value" * 10 for i in range(200)}
 
