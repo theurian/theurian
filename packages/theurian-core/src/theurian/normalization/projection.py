@@ -52,11 +52,23 @@ MAX_PROJECTION_CHARS: Final = 2 * 1024 * 1024
 #: a document can spend two dozen visits per line of output.
 #:
 #: **Which budget binds first is the document's choice, not a property of these
-#: constants.** This one fires ahead of the characters on any document whose
-#: projection averages under ``MAX_PROJECTION_CHARS / MAX_PROJECTION_NODES`` --
-#: 2.097 characters per visited node -- and that is reachable under the shipped
-#: defaults, so it is a second and coarser bound rather than a backstop the
-#: character budget always reaches first. Measured 2026-08-24: a 422,040-byte
+#: constants -- and it is not settled by the projection's overall average
+#: either.** The walk stops at the first budget it passes, so what decides is the
+#: ratio over the *prefix already walked when one of them crosses*: this ceiling
+#: fires first exactly when the visit count reaches ``max_nodes`` while the
+#: characters emitted so far are still inside ``max_chars``. A whole-document
+#: average under ``MAX_PROJECTION_CHARS / MAX_PROJECTION_NODES`` -- 2.097
+#: characters per visited node at the defaults -- is neither necessary nor
+#: sufficient for that, and the counterexample needs no exotic document, only an
+#: order. Measured 2026-08-24 at scaled budgets (``max_chars=100``,
+#: ``max_nodes=40``, a 2.5 threshold): one document of 5,303 characters over
+#: 2,402 visits -- 2.208, under the threshold -- was refused on the *characters*
+#: with its 200-character scalar first, and on the *nodes* with the identical
+#: content ordered so that scalar came last.
+#:
+#: The ceiling is reachable under the shipped defaults regardless, which is what
+#: makes it a second and coarser bound rather than a backstop the character
+#: budget always reaches first. Measured 2026-08-24: a 422,040-byte
 #: YAML document (one 23-deep anchor chain, aliased from 41,667 one-codepoint
 #: root keys, so each alias costs 24 visits and emits a 49-character line)
 #: raises ``InputTooLargeError('projected node count', 1000000, 1000001)`` in
@@ -222,10 +234,12 @@ def project_checked(
     builds.
 
     **The node ceiling is a new refusal class, reachable under the shipped
-    defaults.** A document whose projection averages under
-    ``max_chars / max_nodes`` -- 2.097 characters per visited node at the
-    defaults -- exhausts the nodes first and is refused here although its whole
-    projection would have fitted: measured 2026-08-24, a 422,040-byte YAML
+    defaults.** A document whose walk reaches ``max_nodes`` while the characters
+    it has emitted are still inside ``max_chars`` is refused here although its
+    whole projection would have fitted. That is a property of the prefix the walk
+    covers, not of the document's overall ratio -- :data:`MAX_PROJECTION_NODES`
+    records the measurement where one document's key order alone decides which of
+    the two budgets answers. Measured 2026-08-24, a 422,040-byte YAML
     document raises ``InputTooLargeError('projected node count', 1000000,
     1000001)`` in 0.48 s while its full projection is 2,084,035 characters
     (:data:`MAX_PROJECTION_NODES` records the construction). Such a document was
