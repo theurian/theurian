@@ -337,9 +337,16 @@ not something each migration author has to implement.
 `upsertRevision`'s `metadata` carries `tenantId` (default `local`) and
 `aclGroup` (default `default`). The schema keeps both fields and their types —
 they describe the shape a hosted, multi-tenant deployment needs (ADR-0003) —
-but no `AuthorizationProvider` is implemented anywhere in Theurian Core yet.
-Accepting a document that names another tenant or ACL group would let the
-field read as an enforced boundary when nothing checks it.
+and **nothing routes on either.** An `AuthorizationProvider` does exist in
+Theurian Core since [#119](https://github.com/theurian/theurian/issues/119)
+(`application/authorization.StaticAuthorizationProvider`), and it answers a
+*deployment* serving profile: one tenant, one ACL group, and a sensitivity
+ceiling. It has no notion of a second tenant, so accepting a document that names
+another one would let the field read as an enforced boundary when nothing checks
+it. The refusal below is what discharges these two axes rather than a predicate
+([ADR-0025](https://github.com/theurian/theurian/blob/main/docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md));
+sensitivity is the axis that got the predicate, because its values are the ones
+a corpus can actually vary.
 
 **`migrate validate` and `migrate apply` both refuse a revision naming a
 `tenantId` other than `local` or an `aclGroup` other than `default`.** The
@@ -433,7 +440,7 @@ flowchart TD
     C --> D{"Applied id with a<br/>different checksum?"}
     D -->|yes| E["FATAL: an applied migration was edited.<br/>Do not repair. Do not delete state --<br/>except the recovery in 'Upgrading a<br/>project that already applied one of<br/>these', above (issue #63)."]
     D -->|no| S{"Any tenantId != local<br/>or aclGroup != default?"}
-    S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No AuthorizationProvider exists yet (issue #63)."]
+    S -->|yes| T["FATAL: UnenforceableScopeError.<br/>No provider routes on either field (issue #63)."]
     S -->|no| U{"One body file named by<br/>two different revisions?"}
     U -->|yes| V["FATAL: DuplicateContentFileError.<br/>A body file holds one version (issue #210)."]
     U -->|no| W{"An alias key equal to a<br/>non-deprecated item id?"}

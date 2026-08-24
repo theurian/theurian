@@ -936,13 +936,19 @@ def test_plan_is_empty_once_everything_is_applied() -> None:
     assert len(plan.already_applied) == 1
 
 
-# -- Issue #63: scope fields nothing can yet enforce are refused -----------
+# -- Issue #63: scope fields nothing routes on are refused ----------------
 #
 # `RevisionMetadataSpec.tenant_id` and `.acl_group` are kept by the schema
-# because they describe the hosted deployment's shape (ADR-0003), but no
-# `AuthorizationProvider` is implemented anywhere in this tree. A revision
-# naming a non-default value would read as a security boundary while nothing
-# checks it, so it is refused at write time instead.
+# because they describe the hosted deployment's shape (ADR-0003), and nothing
+# routes on either. The `AuthorizationProvider` implementation #119 shipped
+# answers a deployment serving profile -- one tenant, one ACL group, a
+# sensitivity ceiling -- so a revision naming a non-default value would read as
+# a security boundary while nothing checks it, and it is refused at write time
+# instead. That refusal is one of the three things carrying #119's degenerate
+# discharge of these two axes (ADR-0025); the others are `_resolve`'s
+# tenant-boundary refusal and, in `test_authorization_provider.py`,
+# `test_tenant_and_acl_group_are_the_values_write_time_already_refuses`, which
+# binds the provider's grant to the very constants these tests depart from.
 
 
 def test_a_revision_naming_a_tenant_other_than_local_is_refused() -> None:

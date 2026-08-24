@@ -199,13 +199,20 @@ _ENFORCED_ACL_GROUP: Final = AclGroup().value
 
 
 def refuse_unenforceable_scope(migration_set: MigrationSet) -> None:
-    """Refuse a revision naming a tenant or ACL group nothing can enforce yet.
+    """Refuse a revision naming a tenant or ACL group nothing routes on.
 
-    No `AuthorizationProvider` (`domain/ports/authorization.py`) is implemented
-    anywhere in this tree, so a revision naming a tenant other than `local` or
-    an ACL group other than `default` would read as a security boundary while
-    nothing checks it. Refused at write time (issue #63) rather than accepted
-    silently.
+    An `AuthorizationProvider` implementation exists since #119 --
+    `application/authorization.StaticAuthorizationProvider` -- and it answers a
+    *deployment* serving profile: one tenant, one ACL group, and a sensitivity
+    ceiling. Nothing routes on either of these two fields, so a revision naming a
+    tenant other than `local` or an ACL group other than `default` would read as a
+    security boundary while nothing checks it. Refused at write time (issue #63)
+    rather than accepted silently -- and that refusal is what discharges the two
+    axes rather than a predicate (ADR-0025), which is why
+    `test_authorization_provider.py` binds the provider's grant to
+    :data:`_ENFORCED_TENANT_ID` and :data:`_ENFORCED_ACL_GROUP` rather than to a
+    literal: the argument holds only while the provider grants exactly what this
+    refuses to depart from.
 
     Called on the *whole* `migration_set`, not merely what is still pending --
     :meth:`MigrationEngine.apply` calls this after planning (a checksum tamper

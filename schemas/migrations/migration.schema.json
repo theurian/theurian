@@ -145,7 +145,7 @@
           "maxLength": 128,
           "default": "local",
           "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
-          "description": "Tenant boundary for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet: `migrate validate` and `migrate apply` both refuse any value other than 'local', and `migrate status` names the affected migrations under `refusedIds` without refusing -- accepting another value silently would let this field read as an enforced boundary when nothing checks it (issue #63)."
+          "description": "Tenant boundary for a hosted deployment (ADR-0003). Nothing routes on it: the AuthorizationProvider #119 shipped answers a *deployment* serving profile -- one tenant, one ACL group, a sensitivity ceiling -- and has no notion of a second tenant. So `migrate validate` and `migrate apply` both refuse any value other than 'local', and `migrate status` names the affected migrations under `refusedIds` without refusing -- accepting another value silently would let this field read as an enforced boundary when nothing checks it (issue #63). That refusal is what discharges this axis rather than a predicate (ADR-0025)."
         },
         "aclGroup": {
           "type": "string",
@@ -153,7 +153,7 @@
           "maxLength": 128,
           "default": "default",
           "pattern": "^[^\\u0000-\\u001f\\u007f]*$",
-          "description": "Access-control group for a hosted deployment (ADR-0003). No AuthorizationProvider is implemented yet: `migrate validate` and `migrate apply` both refuse any value other than 'default', and `migrate status` names the affected migrations under `refusedIds` without refusing, for the same reason as `tenantId` (issue #63)."
+          "description": "Access-control group for a hosted deployment (ADR-0003). Nothing routes on it, for the same reason as `tenantId`: the AuthorizationProvider #119 shipped grants exactly one ACL group. `migrate validate` and `migrate apply` both refuse any value other than 'default', and `migrate status` names the affected migrations under `refusedIds` without refusing (issue #63)."
         },
         "validFrom": { "type": "string", "format": "date-time" },
         "validTo": { "type": ["string", "null"], "format": "date-time" },
