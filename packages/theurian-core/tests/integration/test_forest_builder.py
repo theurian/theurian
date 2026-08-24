@@ -931,7 +931,12 @@ def _declare_a_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
     ceiling, and would say "the build failed" while looking like a withholding.
     """
     auth = data_dir / "auth"
-    auth.mkdir(parents=True, exist_ok=True)
+    # 0700 on the directory as well as 0600 on the file. `load_serving_profile`
+    # refuses both, because a directory's write bit governs *replacing* an entry
+    # in it -- and a bare `mkdir` under the usual umask leaves 0755, which is the
+    # shape `FileSecretStore.set` never creates and this refusal exists for.
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
     profile = auth / SERVING_PROFILE_FILENAME
     profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
     profile.chmod(0o600)

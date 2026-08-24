@@ -55,8 +55,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
@@ -113,6 +115,11 @@ pytestmark = pytest.mark.integration
 #: a later phase narrows -- a file that inherited it would start withholding its
 #: own fixtures silently, turning these tests into tests of something else.
 EVERY_SENSITIVITY = frozenset(Sensitivity)
+
+#: The offline CI job runs as root, where a ``chmod`` denies nothing and a
+#: refusal keyed on one never fires. The same guard the migration loader and the
+#: project registry carry.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 
 runner = CliRunner()
@@ -244,7 +251,12 @@ def _declare_a_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
     ceiling.
     """
     auth = data_dir / "auth"
-    auth.mkdir(parents=True, exist_ok=True)
+    # 0700 on the directory as well as 0600 on the file. `load_serving_profile`
+    # refuses both, because a directory's write bit governs *replacing* an entry
+    # in it -- and a bare `mkdir` under the usual umask leaves 0755, which is the
+    # shape `FileSecretStore.set` never creates and this refusal exists for.
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
     profile = auth / SERVING_PROFILE_FILENAME
     profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
     profile.chmod(0o600)
@@ -1478,6 +1490,62 @@ def test_a_project_entirely_above_the_ceiling_builds_an_empty_index(
     assert code == 0, payload
     assert payload["chunks"] == 0
     assert _pointer(project).is_file(), "a correctly empty build must still publish"
+
+
+def _break_the_profile(data_dir: Path, how: str) -> Path:
+    """Leave a profile file `load_serving_profile` must refuse, one shape per name."""
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    if how == "unknown-word":
+        profile.write_text("secret\n", encoding="utf-8")
+        profile.chmod(0o600)
+    elif how == "group-readable":
+        profile.write_text("public\n", encoding="utf-8")
+        profile.chmod(0o644)
+    elif how == "unreadable":
+        profile.write_text("public\n", encoding="utf-8")
+        profile.chmod(0o000)
+    elif how == "world-accessible-directory":
+        profile.write_text("public\n", encoding="utf-8")
+        profile.chmod(0o600)
+        auth.chmod(0o777)
+    else:  # pragma: no cover - a name with no recipe is a test bug
+        raise AssertionError(how)
+    return profile
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+@pytest.mark.parametrize(
+    "how", ["unknown-word", "group-readable", "unreadable", "world-accessible-directory"]
+)
+def test_a_profile_the_build_cannot_honour_ends_in_a_remedy_and_not_a_traceback(
+    project: Path, tmp_path: Path, how: str
+) -> None:
+    """CP-2 over the whole refusal family, not over the shapes that already worked.
+
+    ``_deployment_grant`` catches ``TheurianError`` and turns it into
+    ``{"error", "remedy"}``. Three of these four shapes always did; ``unreadable``
+    -- a 0600 file the operator has since ``chmod 000``-ed, or one owned by
+    another account -- raised a bare ``PermissionError``, which is not a
+    ``TheurianError``, so it left ``theurian index build --json`` with exit 1, an
+    empty stdout and a Rich traceback. Parametrised rather than written for that
+    one shape, because the property is *the family refuses in this shape* and a
+    test naming only the newest member cannot notice the next one leaving it.
+
+    ``catch_exceptions=False`` in :func:`_in` is what makes this a real check: an
+    escaping exception fails the test where a caught one would have been reported
+    as exit 1 with the traceback in ``stdout``.
+    """
+    _break_the_profile(tmp_path / "datadir", how)
+
+    code, payload = _in(project, "index", "build")
+
+    assert code == 1, payload
+    assert payload["remedy"], f"a refusal with no remedy: {payload}"
+    assert "serving profile" in payload["error"]
+    assert not _pointer(project).exists(), "nothing may be published on a refused build"
 
 
 @pytest.fixture

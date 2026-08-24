@@ -194,6 +194,65 @@ class InsecureServingProfilePermissionsError(ServingProfileError):
         )
 
 
+class InsecureServingProfileDirectoryError(ServingProfileError):
+    """The profile is private, and the directory holding it is not.
+
+    Separate from :class:`InsecureServingProfilePermissionsError` because the
+    offending object and the cure are different: the file is 0600 and blameless,
+    and the ``chmod`` that fixes this names the directory. Reporting the file's
+    own mode here -- which is what one shared class would do -- would print
+    ``mode 0600 and is accessible to other users`` about a file that is not.
+
+    A directory's write bit governs *replacing* an entry in it, so a 0600 profile
+    inside a 0777 ``auth/`` is rewritable by any local account: the mode on the
+    file buys nothing that the directory has already given away. That is the
+    claim :func:`serving_profile_path` makes and this is what enforces it.
+    """
+
+    def __init__(self, path: Path, directory: Path, mode: int) -> None:
+        self.path = path
+        self.directory = directory
+        self.mode = mode
+        self.remedy = f"Run `chmod 700 {directory}`, then re-check who has been able to edit it."
+        super().__init__(
+            f"The deployment serving profile at {path} is in {directory}, which has mode "
+            f"{mode:04o} and is reachable by other users."
+        )
+
+
+class UnreadableServingProfileError(ServingProfileError):
+    """The profile file is there and the operating system refused to open it.
+
+    Its own class rather than a :class:`MalformedServingProfileError` fault,
+    because the remedy is the opposite one: nothing is wrong with the *contents*,
+    so "write one of these four words into it, or delete it" would send an
+    operator to rewrite a file whose only problem is its mode.
+
+    A ``PermissionError`` used to escape here instead. It is not a
+    :class:`~theurian.domain.errors.TheurianError`, so it went straight past the
+    ``except`` in ``index_commands._deployment_grant`` and ``daemon.runner``, and
+    reached the user as a Rich traceback with an empty stdout under ``--json`` --
+    the CP-2 escape every other malformed input on this path was already closed
+    for.
+    """
+
+    def __init__(self, path: Path, error: OSError) -> None:
+        self.path = path
+        self.errno = error.errno
+        self.remedy = (
+            f"Run `chmod 600 {path}` and check that you own it and the directory it is in, "
+            f"or delete the file to fall back to this build's default ceiling."
+        )
+        # `error.strerror` and never `str(error)`: the latter appends the
+        # filename the OS was given, which is this path twice, and the operating
+        # system's own sentence is the only part that says what went wrong. No
+        # byte of the file can reach here -- nothing opened it.
+        super().__init__(
+            f"The deployment serving profile at {path} could not be read: "
+            f"{error.strerror or type(error).__name__}."
+        )
+
+
 def _valid_ceilings() -> str:
     return ", ".join(level.value for level in DISCLOSURE_ORDER)
 
@@ -396,18 +455,39 @@ def load_serving_profile(data_dir: Path) -> ServingProfile:
     phase behaviour-neutral on every existing installation.
 
     A file that is *present* is honoured or refused, never partially believed.
+    **"Present" is decided by ``lstat`` and not by ``Path.exists()``**, because
+    ``exists()`` follows a symlink and answers ``False`` for a dangling one: a
+    profile whose target had been deleted took the absent-file arm above and
+    widened the deployment's grant back to the built-in default, silently. Every
+    other malformed input was already refused; that one defaulted.
 
     Raises:
         MalformedServingProfileError: The file is not one readable word --
             irregular, oversized, not UTF-8, or empty.
         UnknownSensitivityCeilingError: The word is not a sensitivity level.
         InsecureServingProfilePermissionsError: Other local users can reach it.
+        InsecureServingProfileDirectoryError: Other local users can reach the
+            directory holding it, which is enough to replace it.
+        UnreadableServingProfileError: It is there and the operating system
+            refused to open it.
     """
     path = serving_profile_path(data_dir)
-    if not path.exists():
+    try:
+        # `lstat`, so a symlink is seen as a symlink. A link resolving to a
+        # regular file would pass every check below while its *target's*
+        # directory -- which the mode checks here never look at -- decides who
+        # may rewrite the ceiling. Refusing the whole shape is what makes the
+        # directory check one path down worth anything.
+        info = path.lstat()
+    except FileNotFoundError:
         return ServingProfile()
+    except OSError as exc:
+        # Not folded into the branch above. `Path.exists()` swallows every
+        # `OSError` into `False`, which is the same widening the dangling-link
+        # case is: a directory this process cannot traverse would read as "no
+        # ceiling declared" rather than as a refusal.
+        raise UnreadableServingProfileError(path, exc) from exc
 
-    info = path.stat()
     # Checked from the directory entry, before anything opens the path: a FIFO
     # reports size 0, passes every bound below it, and then blocks in `open()`
     # until a writer appears -- which for a file read during startup is a daemon
@@ -417,11 +497,29 @@ def load_serving_profile(data_dir: Path) -> ServingProfile:
         raise MalformedServingProfileError(path, ServingProfileFault.NOT_A_REGULAR_FILE)
     if is_world_accessible(path):
         raise InsecureServingProfilePermissionsError(path, info.st_mode & 0o777)
+    # The directory as well as the file, mirroring `probe_token_storage`'s check
+    # on the same two objects for the token beside it. A 0600 profile inside a
+    # 0777 `auth/` is rewritable by any local account: replacing an entry is
+    # governed by the directory's write bit, so the file's own mode buys nothing
+    # the directory has already given away.
+    directory = path.parent
+    if is_world_accessible(directory):
+        raise InsecureServingProfileDirectoryError(
+            path, directory, directory.stat().st_mode & 0o777
+        )
     if info.st_size > MAX_SERVING_PROFILE_BYTES:
         raise MalformedServingProfileError(path, ServingProfileFault.TOO_LARGE)
 
-    with path.open("rb") as handle:
-        raw = handle.read(MAX_SERVING_PROFILE_BYTES + 1)
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_SERVING_PROFILE_BYTES + 1)
+    except OSError as exc:
+        # The one input on this path that used to escape as a bare
+        # `PermissionError`: not a `TheurianError`, so it went past every
+        # `except` its callers wrote and reached the user as a Rich traceback
+        # with an empty stdout under `--json` (CP-2). Nothing above can stand in
+        # for it -- `lstat` succeeds on a 0000 file, and its mode is 0600-clean.
+        raise UnreadableServingProfileError(path, exc) from exc
     # Bounded at the read and re-checked after it, rather than trusted from the
     # `stat` above: the file can grow between the two, and `read_bytes` would
     # then pull in whatever it grew to before any of this could refuse it.

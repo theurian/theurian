@@ -85,15 +85,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - **A deployment declares one sensitivity ceiling, and it is enforced**
   ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025). One word —
   `public`, `internal`, `confidential` or `restricted` — in
-  `<data_dir>/auth/serving-profile`, beside the bearer token, mode 0600 and
-  refused if another local account can reach it. It is deliberately **not** read
-  from a project's Git-tracked `.theurian/config.yaml`: repository contributors
-  are an untrusted actor class, and a committed ceiling would make *raising* it a
+  `<data_dir>/auth/serving-profile`, beside the bearer token, mode 0600 **inside
+  a 0700 directory** — both are checked, because a directory's write bit governs
+  replacing an entry in it, so the mode on the file buys nothing the directory
+  has already given away. It is deliberately **not** read from a project's
+  Git-tracked `.theurian/config.yaml`: repository contributors are an untrusted
+  actor class, and a committed ceiling would make *raising* it a
   contributor-authored access-control change. An absent file is the ordinary
   state and selects this build's default; a word the file does not recognise
   **refuses at startup** rather than falling back, because an access control that
   widens on a typo is not one, and the refusal names the four valid words without
   echoing more than the one it read.
+
+  **Absence is decided by `lstat`, not by `Path.exists()`.** A profile that is a
+  symlink is refused whether or not it resolves: `exists()` follows the link and
+  answers `False` for a dangling one, so a deployment that had declared `public`
+  silently widened back to the built-in ceiling the moment the target was
+  deleted — the one malformed input on this path that defaulted instead of
+  refusing. A profile that is present and cannot be opened — 0000, or owned by
+  another account — is refused with a `chmod` remedy rather than escaping as a
+  bare `PermissionError`, which is not a `TheurianError` and so left `theurian
+  index build --json` and `theurian daemon start` with an empty stdout and a
+  traceback (CP-2).
 
   Enforcement is three places deep, not a predicate: a build writes no chunk row
   and no summary node for an item above the ceiling, so the withheld text never

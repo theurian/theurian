@@ -30,19 +30,21 @@ from theurian.application.authorization import (
     DISCLOSURE_ORDER,
     MAX_SERVING_PROFILE_BYTES,
     AuthorizationGrant,
+    InsecureServingProfileDirectoryError,
     InsecureServingProfilePermissionsError,
     MalformedServingProfileError,
     ServingProfile,
     ServingProfileFault,
     StaticAuthorizationProvider,
     UnknownSensitivityCeilingError,
+    UnreadableServingProfileError,
     decode_sensitivities,
     encode_sensitivities,
     load_serving_profile,
     serving_profile_path,
 )
 from theurian.domain.enums import Sensitivity, may_disclose
-from theurian.domain.errors import DomainError
+from theurian.domain.errors import DomainError, TheurianError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.authorization import AuthorizationProvider
 from theurian.domain.values import AclGroup, TenantId
@@ -50,6 +52,12 @@ from theurian.domain.values import AclGroup, TenantId
 pytestmark = pytest.mark.unit
 
 PROJECT = ProjectId("demo")
+
+#: The offline CI job runs as root, where a mode denies nothing and every
+#: chmod-driven refusal below would report the mode it was given while the read
+#: succeeded anyway. The same guard the migration loader and the project registry
+#: carry for the same reason.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 
 def _write_profile(data_dir: Path, contents: bytes, *, mode: int = 0o600) -> Path:
@@ -475,6 +483,124 @@ def test_a_fifo_in_the_profiles_place_is_refused_before_anything_opens_it(tmp_pa
         load_serving_profile(tmp_path)
 
     assert raised.value.fault is ServingProfileFault.NOT_A_REGULAR_FILE
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_dangling_symlink_is_refused_rather_than_read_as_no_profile(tmp_path: Path) -> None:
+    """The one malformed input that used to *widen* the deployment's grant.
+
+    ``Path.exists()`` follows the link, so a profile whose target has been
+    deleted answered ``False`` and took the absent-file arm -- the arm that means
+    "this operator declared nothing" and hands back
+    :data:`~theurian.application.authorization.DEFAULT_CEILING`. A deployment
+    that had declared ``public`` therefore started serving ``internal`` as well,
+    silently, on an input :class:`ServingProfileError`'s own docstring says is
+    never defaulted: *an access control that widens on malformed input is not
+    one*.
+
+    ``exists()`` is asserted here rather than merely avoided, because the wrong
+    answer is the whole finding: it is ``False`` for a file that is very much
+    there, and a reader who reaches for it again gets the widening back.
+    """
+    path = serving_profile_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.symlink_to(tmp_path / "a-ceiling-that-was-deleted")
+
+    assert not path.exists(), "exists() follows the link; this is the answer that widened"
+    assert path.is_symlink(), "and this is the fact that says the file was not simply absent"
+    with pytest.raises(MalformedServingProfileError) as raised:
+        load_serving_profile(tmp_path)
+
+    assert raised.value.fault is ServingProfileFault.NOT_A_REGULAR_FILE
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_symlink_is_refused_even_when_it_resolves(tmp_path: Path) -> None:
+    """The rule is ``lstat``, not "the link happens to be broken".
+
+    A link that resolves to a 0600 regular file passes every check the loader
+    makes -- and every one of those checks is about the wrong object. The mode
+    belongs to the target, the directory check one line down belongs to
+    ``auth/``, and who may rewrite the ceiling is decided by the *target's*
+    directory, which nothing here looks at. Refusing the shape is what makes the
+    directory check mean what it says.
+
+    Pinned separately from the dangling case because the two would otherwise be
+    one test of whichever branch the implementation happened to take: a loader
+    that special-cased only ``is_symlink() and not exists()`` passes that one and
+    fails this.
+    """
+    path = serving_profile_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = tmp_path / "elsewhere" / "declared-ceiling"
+    target.parent.mkdir(mode=0o777)
+    target.write_bytes(b"restricted\n")
+    os.chmod(target, 0o600)
+    path.symlink_to(target)
+
+    assert path.is_file(), "the link resolves; nothing about the target is malformed"
+    with pytest.raises(MalformedServingProfileError) as raised:
+        load_serving_profile(tmp_path)
+
+    assert raised.value.fault is ServingProfileFault.NOT_A_REGULAR_FILE
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_profile_in_a_world_accessible_directory_is_refused(tmp_path: Path) -> None:
+    """The claim ``serving_profile_path`` makes, enforced rather than assumed.
+
+    Its docstring says ``auth/`` is 0700 by construction and that *a ceiling
+    another local account can rewrite is not a ceiling* -- but the loader checked
+    only the file. A 0600 profile inside a 0777 directory is rewritable by any
+    local account, because the directory's write bit is what governs replacing an
+    entry in it, so the mode on the file itself buys nothing.
+
+    ``probe_token_storage`` already asks this question of the same directory for
+    the token beside it (``setup_steps.py``); this is the ceiling's half of it.
+    """
+    path = _write_profile(tmp_path, b"public\n")
+    os.chmod(path.parent, 0o777)  # noqa: S103 - the permissive directory is the input under test
+
+    with pytest.raises(InsecureServingProfileDirectoryError) as raised:
+        load_serving_profile(tmp_path)
+
+    assert raised.value.mode == 0o777
+    assert "chmod 700" in raised.value.remedy
+    assert str(path.parent) in raised.value.remedy
+    assert path.stat().st_mode & 0o777 == 0o600, "the file itself was never the problem"
+    assert path.parent.stat().st_mode & 0o777 == 0o777, "refused, never repaired in place"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_profile_the_system_refuses_to_open_is_a_structured_refusal(tmp_path: Path) -> None:
+    """CP-2, on the one malformed input that escaped it.
+
+    Every other shape -- an unknown word, an empty file, 0644, non-UTF-8, 65
+    bytes, a FIFO, a directory -- ends in a ``ServingProfileError`` carrying a
+    remedy. A present-but-unreadable file raised a bare ``PermissionError``
+    instead, which is not a :class:`TheurianError`, so it went straight past
+    ``index_commands._deployment_grant``'s ``except`` and reached the user as a
+    Rich traceback with an empty stdout under ``--json``.
+
+    ``TheurianError`` is asserted as well as the concrete class, because that is
+    the type the two call sites catch: a refusal outside that hierarchy is the
+    defect however well it is worded.
+    """
+    # A sentinel rather than a ceiling word, for the reason
+    # `test_an_oversized_profile_does_not_reach_a_message` uses one: `tmp_path`
+    # carries this test's own name, so a real word would make the no-echo
+    # assertion below a claim about the path as much as about the file.
+    path = _write_profile(tmp_path, b"SENTINEL\n", mode=0o000)
+
+    with pytest.raises(UnreadableServingProfileError) as raised:
+        load_serving_profile(tmp_path)
+
+    assert isinstance(raised.value, TheurianError), "the type both call sites catch"
+    assert str(path) in str(raised.value)
+    assert "chmod 600" in raised.value.remedy
+    assert "SENTINEL" not in f"{raised.value} {raised.value.remedy}", (
+        "the refusal must carry no byte of a file it could not read"
+    )
 
 
 # -- Grant invariants -------------------------------------------------------
