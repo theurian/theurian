@@ -177,21 +177,42 @@ Four further things this file does not reach, so nobody has to rediscover them:
   for a statistical latency test -- ``dudect``-style, or a Welch t-test over
   samples classed by withheld count -- so that a regression in the timing family
   fails a run instead of sitting in prose. It is not built here, and the reason
-  is that the quantity underneath it is already pinned *exactly*. What varies
-  with the withheld count is the number of SQL round-trips, and that is asserted
-  from both sides of its threshold by
+  is that the quantity underneath it is pinned *exactly*. What varies with the
+  withheld count on the *status* axis is the number of SQL round-trips, and that
+  is asserted from both sides of its threshold by
   ``test_the_second_pass_arrives_at_fifty_withheld_rows_and_not_before``, its
   geometric step by ``test_each_pass_reaches_twice_as_far_as_the_one_before``
   (both ``tests/unit/test_retrieval_depth.py``), and the corpus scan count by
-  ``test_one_search_scans_the_corpus_once_however_many_rows_were_withheld``
-  (``tests/integration/test_scan_cache.py``). A t-test over wall clock would be a
-  noisier measurement of the same variable, on a machine that also runs the rest
-  of the suite -- and it would fail intermittently, which is the failure mode
-  this repository can least afford in a security assertion. If the pass count is
-  right, the latency follows; if it is wrong, a deterministic test says so and
-  names the constant. What no test here covers is the *constant factor* -- what
-  one pass costs on a large corpus -- and those numbers live in
-  ``FIRST_PASS_DEPTH``'s docstring, measured by hand and not re-measured.
+  ``test_one_search_reads_the_scan_once_however_many_rows_were_withheld``
+  (``tests/integration/test_scan_exhaustion.py``). A t-test over wall clock would
+  be a noisier measurement of the same variable, on a machine that also runs the
+  rest of the suite -- and it would fail intermittently, which is the failure
+  mode this repository can least afford in a security assertion. If the pass
+  count is right, the latency follows; if it is wrong, a deterministic test says
+  so and names the constant.
+
+  **"If the pass count is right, the latency follows" is now too narrow to be the
+  whole reason, and saying so is what keeps this an exclusion rather than a false
+  closure argument.** It was written when the pass count was the only quantity
+  that moved with what was withheld. On the *ceiling* axis (#119) a second one
+  moves while the pass count is held at one: the canonical statement
+  ``list_items_by_status`` spends about 0.20 us and 6.0 SQLite VM steps per
+  above-ceiling row, measured, linear, and bounded by the corpus rather than by
+  the caller's ask, because that statement carries no ``LIMIT``. It is a recorded
+  and accepted residual, not an open defect -- the measurement, the per-row
+  comparison against T-17's accepted 14.7 us per withheld row, and what it would
+  take to flatten it are on ``SqliteCanonicalStore.list_items_by_status``, and the
+  flattening is owned by https://github.com/theurian/theurian/issues/338.
+
+  **This suite deliberately does not measure it.** Every pair here compares
+  *response content*, and a term of that size is far below what a pair built out
+  of one process's wall clock could separate from noise -- the threat model puts
+  a real client's end-to-end floor at 1.40 ms (TB-1), thousands of above-ceiling
+  rows away. Adding a timing assertion here would therefore assert nothing while
+  reading as though it asserted the family. What no test here covers is that
+  residual and the *constant factor* -- what one pass costs on a large corpus --
+  and those numbers live in ``FIRST_PASS_DEPTH``'s docstring and in the note
+  named above, measured by hand and not re-measured.
 - **``rejected`` items.** :func:`~theurian.domain.enums.may_surface` refuses them
   under every flag, so :class:`~theurian.application.index_builder.IndexBuilder`
   never writes one and there is no withheld row for a pair to differ by.
