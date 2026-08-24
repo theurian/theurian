@@ -36,6 +36,8 @@ from theurian.application.authorization import (
     ServingProfileFault,
     StaticAuthorizationProvider,
     UnknownSensitivityCeilingError,
+    decode_sensitivities,
+    encode_sensitivities,
     load_serving_profile,
     serving_profile_path,
 )
@@ -487,3 +489,90 @@ def test_a_grant_that_permits_nothing_cannot_be_constructed(
         AuthorizationGrant(
             tenant=DEPLOYMENT_TENANT, sensitivities=sensitivities, acl_groups=acl_groups
         )
+
+
+# -- What the index pointer records, and what it refuses to read -------------
+#
+# `encode_sensitivities` / `decode_sensitivities` are how a build's disclosure
+# flavor survives into `active-index.json` and back out at serve time (#119
+# phase 3). The pointer is derived, git-ignored and unsigned, so the pair is
+# read by a path that must treat its input as hostile and its own output as
+# authoritative -- the two halves of one wire field.
+
+
+@pytest.mark.parametrize("ceiling", list(Sensitivity))
+def test_a_recorded_flavor_round_trips_through_the_pointer(ceiling: Sensitivity) -> None:
+    """Every ceiling, because the pair's whole job is that the reader gets the
+    writer's own answer rather than a second expansion of the same ceiling."""
+    levels = ServingProfile(ceiling=ceiling).visible_sensitivities
+
+    assert decode_sensitivities(encode_sensitivities(levels)) == levels
+
+
+def test_the_recorded_order_is_the_disclosure_order_and_not_the_string_order() -> None:
+    """A pointer file a person opens should read least-disclosing first.
+
+    ``sorted()`` would not: ``Sensitivity`` is a ``StrEnum``, so it sorts
+    alphabetically -- ``confidential`` ahead of ``internal`` -- which is the very
+    ordering that is not the disclosure order (see
+    ``test_string_comparison_is_not_the_disclosure_order``). Asserted against the
+    written-out list rather than against ``DISCLOSURE_ORDER``, so that reordering
+    that tuple has to be a deliberate edit here too.
+    """
+    every_level = frozenset(Sensitivity)
+
+    assert encode_sensitivities(every_level) == [
+        "public",
+        "internal",
+        "confidential",
+        "restricted",
+    ]
+    assert encode_sensitivities(frozenset({Sensitivity.INTERNAL, Sensitivity.PUBLIC})) == [
+        "public",
+        "internal",
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param([], id="empty-list"),
+        pytest.param("internal", id="a-bare-string"),
+        pytest.param({"ceiling": "internal"}, id="an-object"),
+        pytest.param(["internal", "nonsense"], id="one-word-that-is-not-a-level"),
+        pytest.param(["INTERNAL"], id="the-wrong-case"),
+        pytest.param(["internal", None], id="a-null-among-the-levels"),
+        pytest.param([["internal"]], id="a-nested-list"),
+        pytest.param([1, 2], id="numbers"),
+    ],
+)
+def test_an_unreadable_flavor_is_unknown_rather_than_a_default(raw: object) -> None:
+    """``None``, never a guess and never a raise.
+
+    The serve path turns ``None`` into a fallback and a rebuild. Any default here
+    would be an assumption about which rows a file holds, made in the one place
+    that cannot check -- and "assume it holds what we serve" is exactly the
+    assumption that puts above-ceiling text into the collection statistics the
+    visible rows are scored against.
+
+    ``INTERNAL`` in the wrong case is refused even though
+    ``load_serving_profile`` accepts ``INTERNAL`` from an operator's own file:
+    that is a human writing a word, this is a machine reading back a value only
+    Theurian writes, and a reader that repairs its input cannot tell a typo from
+    a rewrite.
+    """
+    assert decode_sensitivities(raw) is None
+
+
+def test_a_flavor_recorded_twice_over_is_still_the_set_it_names() -> None:
+    """Duplicates are not corruption: a set is what the value means.
+
+    No build writes this -- ``encode_sensitivities`` emits each level at most
+    once -- so it is here to say that the decision was made rather than left to
+    whichever branch happened to run. Refusing it would turn a harmless
+    restatement into a fallback and a rebuild.
+    """
+    assert decode_sensitivities(["public", "public", "internal"]) == frozenset(
+        {Sensitivity.PUBLIC, Sensitivity.INTERNAL}
+    )
