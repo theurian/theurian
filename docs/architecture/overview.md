@@ -183,11 +183,11 @@ published build in the same `migrate apply` (ADR-0025).
 Tenant and ACL groups exist as domain values (`Scope`, `TenantId`, `AclGroup`,
 pinned by `tests/unit/test_scope_isolation.py`), default to the single-tenant
 case and are refused at write time rather than filtered; the index carries
-`trust_level` and `namespace` as columns no query reads. Steps 3, 4 and 6 are
-likewise Milestone 6 — dense retrieval is built but off by default, and the
-RAPTOR forest is *built* but never *read*: `theurian index build --raptor`
-derives and stores it, and no retriever names the node tables, so steps 4 and 6
-run against nothing.
+`trust_level` and `namespace` as columns no query reads. Dense retrieval (step 3)
+is built but off by default. The RAPTOR forest is now read on the answer path,
+not only built: `theurian index build --raptor` derives and stores it, and
+`SqliteIndexStore.search_summaries` matches summary nodes in the `nodes`,
+`nodes_fts` and `nodes_trigram` tables through `_node_scope` (step 4).
 The remaining pre-filter gap is tenant and ACL, which #119 closes by refusal
 rather than by predicate; #63 phase 0 recorded the per-axis disposition and
 closed.

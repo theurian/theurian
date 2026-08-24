@@ -95,7 +95,7 @@ and (on request) the validity window are what is enforced pre-1.0.
 | status | **Enforced** — a pre-ranking WHERE predicate when the caller has not passed `includeUnapproved`; `may_surface` at the canonical gate otherwise | `chunks.status = ?` in `_scope` (added only when `include_unapproved` is false); `may_surface` in `domain/enums.py` | [#32](https://github.com/theurian/theurian/pull/32) |
 | tenant | **Refused at write time** — a migration naming a `tenantId` other than `local` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
 | ACL group | **Refused at write time** — a migration naming an `aclGroup` other than `default` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
-| sensitivity | **Enforced** — against the deployment's declared ceiling, not the caller's request: the build writes no row above it, every retriever filters on it before ranking, the canonical gate re-checks the item's *current* class, and a `changeSensitivity` past the build's own ceiling purges the item out of the published index in the same `migrate apply` (a reclassification *into* the ceiling waits for the next build — ADR-0025's recorded residual) | `may_disclose` in `domain/enums.py`; `chunks.sensitivity IN (…)` and `nodes.sensitivity IN (…)` in `_scope`/`_node_scope`; exclusion in `IndexBuilder._build`; `revisions_to_purge` in `application/migration_engine.py` | [#119](https://github.com/theurian/theurian/issues/119) phases 3–5; ADR-0025 part 4 (two-corpora suite) still owed |
+| sensitivity | **Enforced** — against the deployment's declared ceiling, not the caller's request: the build writes no row above it, every retriever filters on it before ranking, the canonical gate re-checks the item's *current* class, and a `changeSensitivity` past the build's own ceiling purges the item out of the published index in the same `migrate apply` (a reclassification *into* the ceiling waits for the next build — ADR-0025's recorded residual) | `may_disclose` in `domain/enums.py`; `chunks.sensitivity IN (…)` and `nodes.sensitivity IN (…)` in `_scope`/`_node_scope`; exclusion in `IndexBuilder._build`; `revisions_to_purge` in `application/migration_engine.py` | [#119](https://github.com/theurian/theurian/issues/119) phases 3–6; ADR-0025 part 4 (two-corpora suite) discharged in phase 6 |
 | validity window | **Caller-chosen refinement, not a default filter** — omitting `asOf` filters on nothing; applied after ranking, never inside the retriever depth loop | `knowledge.search`'s optional `asOf` → `ValidityPeriod.contains`, in Python, on both answer paths | [#112](https://github.com/theurian/theurian/pull/112) (phase 2) |
 
 The enforced predicates are exactly what `_scope` emits, and this register is
@@ -132,10 +132,14 @@ single-withheld-row timing oracle `FIRST_PASS_DEPTH` exists to blunt (see
 validity filter was rejected, because it would make `freshness.isWithinValidity`
 constant-`true` on every published result and give the ranked path a
 stale-index statistics residual with no way to turn off, rather than only
-while an index build is behind. Tenant, ACL and sensitivity remain unenforced as
-controls; enforcing them is tracked by
-[#119](https://github.com/theurian/theurian/issues/119), the successor to this
-issue.
+while an index build is behind. Sensitivity is now enforced as a control
+(build-side exclusion, the `_scope`/`_node_scope` predicate, and a
+same-`migrate apply` purge on reclassification); tenant and ACL group are
+discharged degenerately, refused at write time so that no stored row carries a
+non-default value to filter — a deployment that ever stores a second tenant
+needs a real control rather than this argument
+([#119](https://github.com/theurian/theurian/issues/119) closed both halves;
+ADR-0025).
 
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One

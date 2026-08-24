@@ -502,11 +502,11 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   happens earlier: a build writes no row for an item above the deployment's
   declared ceiling, so there is nothing above it in the file to price the rest
   ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025 part 1).
-  What is not closed is a *reclassification after* a build. `changeSensitivity` is
-  not yet a purge trigger (ADR-0025 part 2), so the rows of a document moved above
-  the ceiling stay in the published index and go on contributing to its BM25
-  collection statistics until the next `theurian index build` — while the read
-  predicate and the canonical re-check keep the document itself out of the answer.
+  A `changeSensitivity` past the build's own ceiling now purges the item out of
+  the published index in the same `migrate apply` (ADR-0025 part 2), the way a
+  status withdrawal does, while the read predicate and the canonical re-check on
+  the item's *current* class stand behind that purge. A reclassification *into*
+  the ceiling still waits for the next build — ADR-0025's recorded residual.
   Tenant and ACL group carry no such residual: a migration naming a non-default
   value is refused at write time, so no row with one is ever built.
 - **Cleartext of governed bodies transiting `$TMPDIR` during `propose accept`.**
