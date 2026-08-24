@@ -11,6 +11,7 @@ report itself failed.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
@@ -436,6 +437,54 @@ def test_a_non_sqlite_adapter_failure_also_fails_closed(tmp_path: Path) -> None:
     assert outcome.failed is True
     assert outcome.reason == "purge-failed: RuntimeError"
     assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
+
+
+def test_a_pointer_that_records_no_flavor_makes_the_purge_stand_aside(tmp_path: Path) -> None:
+    """A purge may not invent the disclosure flavor a build ran under (#119, ADR-0025).
+
+    The pointer is derived, git-ignored and unsigned (SEC-7), so a build predating
+    ``indexedSensitivities`` -- or a hand-edited pointer -- can name a real, readable
+    index while recording no flavor. ``revisions_to_purge`` judges a reclassification
+    against the ceiling the build ran under, and a purge *copies* the build and
+    deletes rows from the copy, then records the result: republishing under a
+    **guessed** flavor is exactly how a guess becomes the pointer's authoritative
+    record. So the purge stands aside (``INDEX_UNUSABLE``) rather than guessing, and
+    leaves the flavor-less pointer exactly as it was -- its standing remedy, a
+    rebuild, records the flavor and removes the withdrawn rows in one step.
+
+    The purge-side twin of the read side, which treats the same pointer the same
+    way: ``test_index_fallback.py``'s ``_pointer_predates_the_profile_field`` recipe
+    degrades every ``knowledge.search`` to an unranked scan with reason
+    ``serving-profile-mismatch`` / ``profile-unrecorded``. That read-side arm is
+    killed by ``test_a_fallback_names_the_reason_it_could_not_use_the_index``; this
+    is the write-side arm the same guard protects, and nothing exercised it before.
+
+    Non-vacuous: the withdrawn revisions are ones this build holds and the deprecated
+    candidates name them, so a purge that guessed a flavor would compute a non-empty
+    delete set and republish. ``INDEX_UNUSABLE`` -- rather than ``NO_WITHDRAWAL`` or
+    ``NOTHING_TO_PURGE`` -- is what says the flavor guard fired ahead of that.
+    """
+    paths = _paths(tmp_path)
+    withdrawn = _publish_source(paths, include_withdrawn=True)
+    # Strip the recorded flavor, the shape a pre-#119 build or a hand edit leaves.
+    payload = json.loads(paths.active_index_pointer.read_text())
+    del payload["indexedSensitivities"]
+    paths.active_index_pointer.write_text(json.dumps(payload))
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome == WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
+    reread = read_active_index_pointer(paths).payload
+    assert reread is not None
+    assert "indexedSensitivities" not in reread, (
+        "the flavor-less pointer must be left as it was, never restamped under a guess"
+    )
+    assert reread["indexBuildId"] == BUILD_ID, "and the old build must still be published"
 
 
 def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> None:
