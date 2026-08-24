@@ -873,7 +873,7 @@ class ProposalService:
         document: Mapping[str, object],
         moves: tuple[_BodyMove, ...],
     ) -> SecretScanResult:
-        """Scan everything this acceptance would land, and refuse it if the policy says to.
+        """Scan the bodies and the migration's author-written fields, refusing on the policy.
 
         The control T-15 names, at the point SEC-11 names it: ``accept`` is the
         last place a proposal can be stopped before a human merges it and
@@ -884,12 +884,14 @@ class ProposalService:
         existence.
 
         **Two inputs, not one.** The bodies, and the migration document's own
-        author-written fields (#336). Scanning bodies alone left the wider
-        channel open: a body is reviewed as a file in a pull request, while a
-        title or a source anchor is skimmed -- and both of those are published on
-        every ``knowledge.search`` and ``knowledge.get`` result, so a credential
-        there reaches an agent that never opens the body.
-        :func:`_authored_strings` is the population and why it is that one.
+        author-written field *values* (#336) -- not a YAML comment and not the
+        filename a ``contentFile`` points at, which are the artifact-level face
+        #349 tracks. Scanning bodies alone left the wider channel open: a body is
+        reviewed as a file in a pull request, while a title or a source anchor is
+        skimmed -- and both of those are published on every ``knowledge.search``
+        and ``knowledge.get`` result, so a credential there reaches an agent that
+        never opens the body. :func:`_authored_strings` is the population and why
+        it is that one.
 
         **The policy is read here rather than injected**, unlike every adapter
         this service takes. ADR-0003's reason for injection is that locating
@@ -2664,24 +2666,44 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
 
 #: The migration document's author-written string fields, level by level (#336).
 #:
-#: **An allowlist, and the population is the schema's, not the generator's.**
+#: **An allowlist keyed to the schema's string fields, not the generator's.**
 #: Every level of ``schemas/migrations/migration.schema.json`` declares
-#: ``additionalProperties: false``, so the string fields it names are exactly the
-#: ones a document that can be accepted may carry -- which is what makes an
-#: allowlist complete here rather than a list of the fields somebody thought of.
-#: Written by level and not per operation type: ``op`` is untrusted until stage-1
-#: validation, which runs *after* this scan, so branching on it would let a
-#: mislabelled operation pick which fields get looked at. Reading the union at
-#: every operation costs a handful of absent-key lookups and cannot be steered.
+#: ``additionalProperties: false``, so the string fields it names are the ones a
+#: document that can be accepted may carry, and
+#: ``test_the_allowlist_covers_every_string_field_the_schema_declares`` reddens
+#: if the schema grows a string field this set neither scans nor excludes. What
+#: is covered is the author-written field *values*: a credential in a YAML
+#: comment, or in the filename a ``contentFile`` points at, is the artifact-level
+#: face #349 tracks, not this scan's. Written by level and not per operation
+#: type: ``op`` is untrusted until stage-1 validation, which runs *after* this
+#: scan, so branching on it would let a mislabelled operation pick which fields
+#: get looked at. Reading the union at every operation costs a handful of
+#: absent-key lookups and cannot be steered.
 #:
-#: What is left out is the derived half -- ``id``, ``revisionId``,
-#: ``expectedRevision``, ``dependsOn``, ``createdAt``, ``contentFile``,
-#: ``contentSha256``, ``contentType`` and every enum. Those are Theurian's own
-#: output or a fixed vocabulary: an author cannot put a credential in one, and
-#: the identifiers among them are high-entropy by construction, so scanning them
-#: buys nothing and spends the detector's ULID subtraction on strings that exist
-#: to be identifiers.
-_AUTHORED_MIGRATION_FIELDS: Final = ("author", "description")
+#: A field is left out only where a *mechanism* bars a reported secret from it,
+#: never because "an author cannot write it" -- which is false for a free-form
+#: string like a path or a timestamp. The mechanism is per field:
+#:
+#: * ``id``, ``revisionId``, ``expectedRevision`` and ``dependsOn`` are
+#:   ``$defs/ulid`` (upper-case Crockford base32) and ``contentSha256`` is
+#:   ``^[0-9a-f]{64}$``; the detector's class gate cannot fire on either, the
+#:   generic family needing an upper-case letter and lower-case hex spelling none
+#:   of the prefix families. Scanning them would only spend the detector's ULID
+#:   subtraction on strings that exist to be identifiers.
+#: * ``op``, ``apiVersion`` and every enum (``kind``, ``status``,
+#:   ``sensitivity``, ``trustLevel``, ``relationType``) admit only a fixed
+#:   vocabulary, none of whose members the detector reports.
+#: * ``contentFile`` is left out because it is a body-file *path*: a credential
+#:   in a filename is filename scanning (#349, out of #336's scope), and a
+#:   secret-shaped path that backs no file is refused by ``_body_moves`` before
+#:   the scan is reached.
+#:
+#: ``createdAt`` and the date-time metadata fields (``validFrom``, ``validTo``)
+#: are *scanned*, not excluded: their schema ``format: date-time`` is not
+#: enforced by this pre-validation scan, so an author can write an arbitrary
+#: string into them -- and ``contentType`` likewise, which lands and is published
+#: on every ``knowledge.search``/``knowledge.get`` result (#336).
+_AUTHORED_MIGRATION_FIELDS: Final = ("author", "createdAt", "description")
 
 #: Every operation's author-written strings, unioned across the schema's
 #: operation types: the item, alias and specification names an author chooses,
@@ -2709,15 +2731,27 @@ _AUTHORED_OPERATION_FIELDS: Final = (
 #: ``knowledge.get`` result, so a credential there is disclosed to an agent that
 #: never opens the body. ``labels``, ``scope.paths`` and ``sourceAnchors`` are
 #: handled structurally by :func:`_metadata_strings` because they are lists.
-_AUTHORED_METADATA_FIELDS: Final = ("aclGroup", "namespace", "owner", "tenantId", "title")
+_AUTHORED_METADATA_FIELDS: Final = (
+    "aclGroup",
+    "contentType",
+    "namespace",
+    "owner",
+    "tenantId",
+    "title",
+    "validFrom",
+    "validTo",
+)
 
 #: Every string a source anchor declares -- the whole set, because an anchor has
 #: no Theurian-derived field at all, so there is nothing here to leave out.
-#: ``commitSha`` and ``blobSha`` are included for that uniformity rather than
-#: because they can carry anything: the schema pins both to ``^[0-9a-f]{7,64}$``,
-#: and the detector's class gate requires an upper-case character, so they can
-#: never be reported. Enumerating them costs nothing and means a reader does not
-#: have to work out why two of an anchor's nine fields are missing.
+#: ``commitSha`` and ``blobSha`` are enumerated for that uniformity rather than
+#: because they can carry anything. The scan runs *before* schema validation, so
+#: the schema's ``^[0-9a-f]{7,64}$`` pattern is not what stops a secret in them --
+#: the detector's class gate is: it cannot fire on lower-case hex, the generic
+#: family needing an upper-case letter and every prefix family (``sk-``, ``ghp_``,
+#: ``AKIA``, ``xox``, ``AIza``) needing a character hex cannot spell. Scanning
+#: them therefore costs nothing and means a reader does not have to work out why
+#: two of an anchor's nine fields are missing.
 _AUTHORED_ANCHOR_FIELDS: Final = (
     "blobSha",
     "commitSha",

@@ -22,16 +22,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 import yaml
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
+from jsonschema import Draft202012Validator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
@@ -60,7 +62,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
-from theurian.security.content_secrets import HIGH_ENTROPY, scan_text
+from theurian.security.content_secrets import HIGH_ENTROPY, MAX_FINDINGS, scan_text
 from theurian.security.project_config import SecretScanPolicy
 
 pytestmark = pytest.mark.integration
@@ -201,11 +203,18 @@ MIGRATION_FILENAME: Final = "01K3Z8Q9V4MRB7T2XNFCD5HGJW-retry-policy.yaml"
 #: ``knowledge.search`` and ``knowledge.get`` publish it on every result, so a
 #: credential there is disclosed to an agent that never reads the body.
 #:
-#: What is deliberately absent is the derived half: ``id``, ``revisionId``,
-#: ``contentSha256``, ``createdAt``, ``contentFile``, ``contentType`` and the
-#: enum fields. Those are Theurian's own output, and
+#: What is absent is of two kinds. The derived half a document cannot carry a
+#: credential in -- ``id``, ``revisionId``, ``contentSha256``, ``contentFile``
+#: and the enum fields, Theurian's own output or a fixed vocabulary, which
 #: ``test_a_title_quoting_a_migration_filename_is_still_accepted_under_block``
-#: is what says so from the other side.
+#: and ``test_a_schema_excluded_field_admits_no_reported_secret`` hold from the
+#: other side. And ``createdAt``, ``contentType``, ``validFrom`` and ``validTo``
+#: -- *scanned* since #336, but not reachable by a *request* edit: ``createdAt``
+#: is stamped from the clock, ``contentType`` is ``request.content_type``, and
+#: the date fields are never set by ``propose``. Each reaches the document only
+#: hand-authored, so they are driven by :data:`_HAND_AUTHORED` (the three
+#: metadata strings) and by :func:`_a_proposal_carrying_a_secret_in_created_at`
+#: (the top-level stamp) below instead.
 _METADATA_PLANTS: Final[Mapping[str, Callable[[ProposalRequest], ProposalRequest]]] = {
     "title": lambda request: replace(request, title=f"Retry policy {PLANTED_TOKEN}"),
     "description": lambda request: replace(
@@ -861,9 +870,11 @@ def _evidence_anchor(source_uri: str) -> dict[str, object]:
 
 
 #: One entry per name in ``_AUTHORED_OPERATION_FIELDS``, plus the single
-#: ``anchor`` only ``addEvidence`` carries, each planted in the operation type a
-#: contributor would actually write it in. That every allowlist entry has a
-#: fixture is asserted rather than stated:
+#: ``anchor`` only ``addEvidence`` carries, plus the revision-metadata strings a
+#: second ``upsertRevision`` carries -- ``namespace``, ``owner``,
+#: ``contentType``, ``validFrom`` and ``validTo`` -- each planted in the
+#: operation type a contributor would actually write it in. That every allowlist
+#: entry has a fixture is asserted rather than stated:
 #: ``test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it``.
 #:
 #: Deliberately absent are ``tenantId`` and ``aclGroup``. Neither is an operation
@@ -1058,6 +1069,36 @@ _HAND_AUTHORED: Final[Mapping[str, _HandAuthored]] = {
         at="metadata.owner",
         family=HIGH_ENTROPY,
     ),
+    # `contentType`, `validFrom` and `validTo` (#336). `contentType` lands and is
+    # published on every `knowledge.search`/`knowledge.get` result; the two date
+    # fields are `date-time` by an annotation this pre-validation scan does not
+    # enforce, so an author writes an arbitrary string into any of them. The
+    # media type must still be a *valid* media type to be schema-valid, so its
+    # secret is the `sk-`-prefixed `openai-api-key` shape (the only detectable
+    # value the `^[a-z0-9][a-z0-9!#$&^_.+-]*/...$` pattern admits), exactly as
+    # `registerSpecification.format` above; the date fields carry no pattern, so a
+    # bare token is both admissible and detectable.
+    "upsertRevision.metadata.contentType": _HandAuthored(
+        build=lambda value: _second_upsert(contentType=value),
+        secret=f"text/{_ID_SHAPED_TOKEN}",
+        clean=MARKDOWN.value,
+        at="metadata.contentType",
+        family="openai-api-key",
+    ),
+    "upsertRevision.metadata.validFrom": _HandAuthored(
+        build=lambda value: _second_upsert(validFrom=value),
+        secret=PLANTED_TOKEN,
+        clean="2026-08-24T00:00:00+00:00",
+        at="metadata.validFrom",
+        family=HIGH_ENTROPY,
+    ),
+    "upsertRevision.metadata.validTo": _HandAuthored(
+        build=lambda value: _second_upsert(validTo=value),
+        secret=PLANTED_TOKEN,
+        clean="2026-08-24T00:00:00+00:00",
+        at="metadata.validTo",
+        family=HIGH_ENTROPY,
+    ),
 }
 
 
@@ -1113,10 +1154,14 @@ _UNDRIVABLE: Final[Mapping[str, str]] = {
     ),
     "metadata.aclGroup": "the same, for any value but 'default'",
     "anchor.commitSha": (
-        "the schema pins it to ^[0-9a-f]{7,64}$, and every detector family needs either an "
-        "upper-case character or a prefix that pattern cannot spell"
+        "the detector's class gate cannot fire on any value matching ^[0-9a-f]{7,64}$: the "
+        "generic family needs an upper-case letter and every prefix family (sk-, ghp_, AKIA, "
+        "xox, AIza) needs a character lower-case hex cannot spell. The scan runs before "
+        "validation, so it is the class gate -- not the schema rejecting the document -- that "
+        "makes commitSha unreportable. Pinned by "
+        "test_a_lowercase_hex_anchor_sha_cannot_fire_the_detector"
     ),
-    "anchor.blobSha": "the same pattern, the same reason",
+    "anchor.blobSha": "the same pattern, the same class gate, the same pinning test",
 }
 
 
@@ -1165,6 +1210,30 @@ def _allowlist_entry_of(location: str) -> str:
     raise AssertionError(f"a finding location no rule here recognises: {location!r}")
 
 
+def _a_proposal_carrying_a_secret_in_created_at(
+    service: ProposalService, value: str = PLANTED_TOKEN
+) -> DraftedProposal:
+    """Draft a proposal, then rewrite its migration's top-level ``createdAt`` to ``value``.
+
+    ``createdAt`` is Theurian's own output -- ``_migration_document`` stamps it
+    from the clock -- so no *request* edit can carry a secret there, which is why
+    it is absent from :data:`_METADATA_PLANTS` and undrivable by
+    :data:`_HAND_AUTHORED` (that helper only *appends* operations, never touches
+    the top level). ``accept`` reads a *committed* document, though, and a
+    contributor may hand-edit any field: this rewrites the drafted migration the
+    way a contributor edits their own proposal before opening the pull request,
+    at the one level the operation-append path leaves alone.
+    """
+    drafted = service.draft(_request(CLEAN_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document["createdAt"] = value
+    drafted.migration_file.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    return drafted
+
+
 def _entries_reached_by(drafted: DraftedProposal) -> set[str]:
     """The allowlist entries the document scan actually reports for one proposal."""
     document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
@@ -1207,11 +1276,59 @@ def test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it(
         reached |= _entries_reached_by(service.draft(_with_a_planted_secret(field)))
     for entry in _HAND_AUTHORED.values():
         reached |= _entries_reached_by(_hand_authored_proposal(service, entry, entry.secret))
+    # `createdAt` is neither a request field nor an appended operation, so it has
+    # its own mechanism -- a top-level rewrite -- and would otherwise be the one
+    # newly scanned field (#336) with no fixture reaching it.
+    reached |= _entries_reached_by(_a_proposal_carrying_a_secret_in_created_at(service))
 
     expected = _allowlist_population() - set(_UNDRIVABLE)
     assert reached == expected, (
         f"allowlist entries no fixture reaches: {sorted(expected - reached)}; "
         f"reached but named by no allowlist: {sorted(reached - expected)}"
+    )
+
+
+def test_a_secret_in_the_top_level_created_at_is_refused_without_reproducing_it(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """``createdAt`` is scanned like any author-controlled string, and redacted (#336).
+
+    ``createdAt`` is Theurian's own output, but ``accept`` reads a *committed*
+    document a contributor may hand-edit. Before #336 scanned it, a secret there
+    was caught only by the rehearsal's RFC 3339 parse -- which reported the value
+    *verbatim* in its refusal and in the ``accept --json`` payload something
+    logs. Scanning it pre-empts that: the scan runs before the rehearsal and
+    refuses with a **redacted** finding that names the field and quotes at most
+    four characters, and nothing lands.
+
+    This is the disclosure the round-two review surfaced -- the date-time fields'
+    own refusal echoing the secret -- closed for the top-level field the
+    :data:`_HAND_AUTHORED` metadata plants cannot reach. The redaction assertion
+    is what distinguishes the scan's refusal from the rehearsal's: a test that
+    only checked the exception type would pass under either, and only one of them
+    keeps the credential out of the message.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = _a_proposal_carrying_a_secret_in_created_at(service)
+    before = {p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")}
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    message = str(caught.value)
+    assert HIGH_ENTROPY in message, f"a secret in createdAt was not what refused: {caught.value}"
+    assert "migration.createdAt" in message, f"the refusal does not name the field: {message}"
+    assert PLANTED_TOKEN not in message, (
+        f"the scan refusal reproduced the secret the rehearsal used to echo verbatim: {message}"
+    )
+    assert PLANTED_TOKEN not in caught.value.remedy, (
+        f"the remedy reproduced the secret: {caught.value.remedy!r}"
+    )
+    assert {
+        p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")
+    } == before, "the proposal directory changed on a refused acceptance"
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed despite carrying a secret in createdAt"
     )
 
 
@@ -1365,4 +1482,558 @@ def test_a_refused_hand_authored_operation_consumes_nothing_and_is_not_quoted_ba
     )
     assert entry.secret not in caught.value.remedy, (
         f"the remedy reproduced the secret it refused: {caught.value.remedy!r}"
+    )
+
+
+# -- the allowlist is the schema's population, or it drifts (#336) -----------
+#
+# `_AUTHORED_*` is a hand-maintained allowlist, and the schema is the authority
+# for which string fields a migration may carry. Nothing binds the two: a
+# schema that grows a string field grows the set an author can put a credential
+# in, and the natural edit is the schema alone. The adversarial round proved
+# the gap live -- mutation `n1` (the schema gains an unscanned metadata string)
+# survived the whole suite, and two fields, `validFrom`/`validTo`, were already
+# missing from both the allowlist and the docstring's derived-exclusion list.
+#
+# The pin below reads *both* sides from source -- the allowlist from the
+# constants, the population from the schema JSON -- and demands every schema
+# string field be either scanned or excluded for a reason that is *tested*, not
+# asserted in a comment. A field that is neither reddens it.
+
+_MIGRATION_SCHEMA: Final[Mapping[str, Any]] = json.loads(
+    (SCHEMAS / "migrations" / "migration.schema.json").read_text(encoding="utf-8")
+)
+_SCHEMA_DEFS: Final[Mapping[str, Any]] = _MIGRATION_SCHEMA["$defs"]
+
+
+def _resolve_ref(node: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Follow a ``$ref`` to the ``$def`` it names, chasing chains to the leaf."""
+    while "$ref" in node:
+        node = _SCHEMA_DEFS[node["$ref"].split("/")[-1]]
+    return node
+
+
+def _is_string_leaf(node: Mapping[str, Any]) -> bool:
+    """Whether ``node`` describes a scalar that carries a string an author writes.
+
+    A plain string, a nullable string (``["string", "null"]``), a ``const`` or an
+    ``enum`` of strings, or a ``oneOf`` any branch of which is one of those -- the
+    last is ``expectedRevision``, a ULID-or-null. An object, an array, a number
+    or an integer is not a string leaf.
+    """
+    node = _resolve_ref(node)
+    declared = node.get("type")
+    if declared == "string" or (isinstance(declared, list) and "string" in declared):
+        return True
+    if isinstance(node.get("const"), str):
+        return True
+    if "enum" in node:
+        return True
+    if "oneOf" in node:
+        return any(_is_string_leaf(branch) for branch in node["oneOf"])
+    return False
+
+
+def _is_string_array(node: Mapping[str, Any]) -> bool:
+    """Whether ``node`` is an array whose items are string leaves (``labels``, ``dependsOn``)."""
+    node = _resolve_ref(node)
+    return node.get("type") == "array" and _is_string_leaf(node.get("items", {}))
+
+
+def _string_properties(obj_schema: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """The direct string / string-array properties of an object schema, name -> subschema.
+
+    Nested objects and arrays-of-objects are left out: they are their own level,
+    walked separately, exactly as :func:`~theurian.application.proposal_service
+    ._authored_strings` descends into ``anchor``, ``metadata`` and ``sourceAnchors``.
+    """
+    obj_schema = _resolve_ref(obj_schema)
+    out: dict[str, Mapping[str, Any]] = {}
+    for name, node in obj_schema.get("properties", {}).items():
+        if _is_string_leaf(node) or _is_string_array(node):
+            out[name] = node
+    return out
+
+
+def _schema_string_properties() -> dict[str, Mapping[str, Any]]:
+    """Every string / string-array field the schema declares, keyed ``<level>.<field>``.
+
+    The four levels mirror the walker's own descent so the population lines up
+    with :func:`_allowlist_population` term for term: ``migration`` (the top
+    level), ``operation`` (the union across all fourteen ``op*`` definitions,
+    which is what the walker reads because ``op`` is untrusted until validation),
+    ``metadata`` (a revision's own block, plus the two structural lists) and
+    ``anchor`` (a source anchor, wherever it appears). The value kept is the
+    field's *subschema*, so the exclusion test below can plant a value against
+    the field's own pattern rather than against this file's idea of it.
+    """
+    population: dict[str, Mapping[str, Any]] = {}
+
+    for name, node in _string_properties(_MIGRATION_SCHEMA).items():
+        population[f"migration.{name}"] = node
+
+    for branch in _SCHEMA_DEFS["operation"]["oneOf"]:
+        op_schema = _SCHEMA_DEFS[branch["$ref"].split("/")[-1]]
+        for name, node in _string_properties(op_schema).items():
+            population[f"operation.{name}"] = node
+
+    metadata = _SCHEMA_DEFS["revisionMetadata"]
+    for name, node in _string_properties(metadata).items():
+        population[f"metadata.{name}"] = node
+    scope = _resolve_ref(metadata["properties"]["scope"])
+    if _is_string_array(scope["properties"]["paths"]):
+        population["metadata.scope.paths"] = scope["properties"]["paths"]
+
+    for name, node in _string_properties(_SCHEMA_DEFS["sourceAnchor"]).items():
+        population[f"anchor.{name}"] = node
+
+    return population
+
+
+#: Every schema string field that is deliberately *not* scanned, with the
+#: category of its mechanical reason. Each reason is exercised by
+#: :func:`test_a_schema_excluded_field_admits_no_reported_secret` (the schema
+#: rejects a planted secret, and every value it admits is undetectable) or, for
+#: ``contentFile``, by :func:`test_a_secret_shaped_content_file_is_out_of_336_scope`.
+#:
+#: What is **not** here is the leftover: ``migration.createdAt``,
+#: ``metadata.contentType``, ``metadata.validFrom`` and ``metadata.validTo``.
+#: Those are author-controlled strings the schema admits a credential into and
+#: no mechanism excludes, so the pin reddens on them until they move into the
+#: allowlist -- which is the drift #336 exists to close. ``createdAt`` is folded
+#: in with ``validFrom``/``validTo`` on purpose: measured 2026-08-24, a secret in
+#: any of the three is refused by the accept-path rehearsal's RFC-3339 parse
+#: *and reproduced verbatim in that refusal*, so all three behave identically and
+#: splitting them would be an untested distinction.
+_EXCLUDED: Final[Mapping[str, tuple[str, str]]] = {
+    "migration.apiVersion": (
+        "const",
+        "a const; the only value the schema admits is 'theurian.dev/v1'",
+    ),
+    "migration.id": ("ulid", "$defs/ulid: upper-case Crockford base32, which the class gate bars"),
+    "migration.dependsOn": ("ulid", "an array of $defs/ulid, each barred by the class gate"),
+    "operation.op": ("const", "a per-operation const discriminator; no free value is admitted"),
+    "operation.kind": ("enum", "$defs/kind, a fixed vocabulary of eleven lower-case words"),
+    "operation.sensitivity": ("enum", "$defs/sensitivity, four fixed labels"),
+    "operation.trustLevel": ("enum", "$defs/trustLevel, four fixed labels"),
+    "operation.revisionId": ("ulid", "$defs/ulid, barred by the class gate"),
+    "operation.expectedRevision": ("ulid", "a $defs/ulid or null, barred by the class gate"),
+    "operation.contentSha256": (
+        "hex",
+        "^[0-9a-f]{64}$: lower-case hex, which the generic class gate (needs upper case) bars",
+    ),
+    "operation.relationType": ("enum", "$defs/relationType, fourteen fixed labels"),
+    "operation.status": ("enum", "the specification status enum: draft/active/superseded/retired"),
+    "operation.contentFile": (
+        "scope",
+        "a body-file path; a credential in a filename is filename scanning (#349), out of "
+        "#336's scope, and a secret-shaped path that backs no file is refused before it lands",
+    ),
+    "metadata.kind": ("enum", "$defs/kind"),
+    "metadata.status": ("enum", "$defs/status, six fixed labels"),
+    "metadata.trustLevel": ("enum", "$defs/trustLevel"),
+    "metadata.sensitivity": ("enum", "$defs/sensitivity"),
+}
+
+#: A real ULID -- upper-case Crockford base32, no I/L/O/U -- the fixture guard
+#: accepts. The highest-entropy value ``$defs/ulid`` admits, kept to show the
+#: class gate still does not fire on it.
+_A_REAL_ULID: Final = "01K3Z8Q9V4MRB7T2XNFCD5HGJW"
+
+#: 64 lower-case hex characters: the highest-entropy value ``contentSha256`` and
+#: the anchor SHAs admit, and still undetectable because the class gate wants an
+#: upper-case letter.
+_A_HEX64: Final = hashlib.sha256(b"theurian content-sha fixture (#336)").hexdigest()
+
+
+def _subschema_admits(subschema: Mapping[str, Any], value: object) -> bool:
+    """Whether the field's own subschema, with the shared ``$defs``, accepts ``value``."""
+    root = {"$defs": _SCHEMA_DEFS, **subschema}
+    return Draft202012Validator(root).is_valid(value)
+
+
+def _admissible_literals(subschema: Mapping[str, Any]) -> list[str]:
+    """The string values a const or enum field admits, for the undetectable check."""
+    node = _resolve_ref(subschema)
+    if isinstance(node.get("const"), str):
+        return [node["const"]]
+    return [value for value in node.get("enum", []) if isinstance(value, str)]
+
+
+def test_the_allowlist_covers_every_string_field_the_schema_declares(
+    service: ProposalService,
+) -> None:
+    """The load-bearing pin: the scan's population is the schema's, or it has drifted.
+
+    This is the closure argument for the whole ``n1`` class -- "the schema grew a
+    string field the scan does not read". It cannot be closed by listing the
+    fields anyone thought of, because that list is exactly what drifts. So both
+    sides are read from source: the scanned set from the ``_AUTHORED_*``
+    constants (:func:`_allowlist_population`), the population from the schema JSON
+    (:func:`_schema_string_properties`). Every schema string field must be one of
+    two things, and the pin fails naming any that is neither:
+
+    * **scanned** -- its name reaches the walker through an allowlist constant, or
+    * **excluded** -- it is in :data:`_EXCLUDED`, whose every entry is proved
+      unable to carry a reported secret by a test, not by a sentence.
+
+    On this commit the pin is **red**: ``metadata.contentType``,
+    ``metadata.validFrom``, ``metadata.validTo`` and ``migration.createdAt`` are
+    author-controlled strings the schema admits a credential into and nothing
+    scans or excludes. The first three are #336's stated target; ``createdAt`` is
+    the same class one field over -- a date-time whose format the validator does
+    not enforce -- and is listed by the same failure for the same reason. The fix
+    moves them into the allowlist; it must not add them to :data:`_EXCLUDED`,
+    because :func:`test_a_schema_excluded_field_admits_no_reported_secret` would
+    then fail on them (the schema admits a detectable value, so no exclusion
+    mechanism holds).
+
+    The reverse direction is asserted too: an allowlist name the schema does not
+    declare is a scan reading a field that cannot exist, which is a defect in the
+    allowlist rather than a harmless extra.
+    """
+    population = set(_schema_string_properties())
+    scanned = _allowlist_population()
+    excluded = set(_EXCLUDED)
+
+    phantom = scanned - population
+    assert not phantom, f"the allowlist scans fields the schema does not declare: {sorted(phantom)}"
+    assert set(_UNDRIVABLE) <= population, (
+        f"_UNDRIVABLE names fields the schema does not declare: "
+        f"{sorted(set(_UNDRIVABLE) - population)}"
+    )
+    misclassified = excluded & scanned
+    assert not misclassified, (
+        f"a field is both scanned and excluded, which hides which one is load-bearing: "
+        f"{sorted(misclassified)}"
+    )
+
+    unclassified = population - scanned - excluded
+    assert not unclassified, (
+        "schema string fields that are neither scanned nor excluded -- an author can land a "
+        f"credential in each and nothing reads it: {sorted(unclassified)}. Move each into an "
+        "_AUTHORED_* constant (scanned) or, only if a mechanism truly bars a reported secret, "
+        "into _EXCLUDED with a tested reason."
+    )
+
+
+@pytest.mark.parametrize(
+    "name", [name for name, (category, _) in _EXCLUDED.items() if category != "scope"]
+)
+def test_a_schema_excluded_field_admits_no_reported_secret(name: str) -> None:
+    """Every exclusion is a *tested* mechanism, so no field is excluded by assertion alone.
+
+    An allowlist gap and a genuine exclusion look identical in a comment: both say
+    "this field is not scanned". They differ in whether a secret *can* live there.
+    For each excluded field this plants a real detector-family value and shows two
+    things:
+
+    * **the schema rejects that shape** -- the field's own subschema (const, enum,
+      ULID pattern or lower-case-hex pattern) refuses the planted value, so a
+      document carrying it is not one ``migrate apply`` would ever accept; and
+    * **every value the schema admits is undetectable** -- each const/enum literal,
+      and the highest-entropy value a ULID or hex field admits, scans clean.
+
+    Together these are stronger than "the scan does not look here": they are "there
+    is nothing here to find". If a future schema change loosened one of these
+    fields so a credential became admissible, the first assertion would fail and
+    force it out of :data:`_EXCLUDED` and into the scanned set -- which is exactly
+    what must happen to ``contentType``/``validFrom``/``validTo`` now.
+    """
+    category, _reason = _EXCLUDED[name]
+    subschema = _schema_string_properties()[name]
+
+    planted: object = [PLANTED_TOKEN] if _is_string_array(subschema) else PLANTED_TOKEN
+    assert not _subschema_admits(subschema, planted), (
+        f"{name}'s subschema admits a base64url token, so excluding it hides a real gap: "
+        f"the scan runs before validation and this value would reach a landed migration"
+    )
+
+    if category in ("const", "enum"):
+        for literal in _admissible_literals(subschema):
+            assert scan_text(literal) == (), (
+                f"{name} admits {literal!r}, which the detector reports -- the exclusion is unsafe"
+            )
+    elif category == "ulid":
+        admissible: object = [_A_REAL_ULID] if _is_string_array(subschema) else _A_REAL_ULID
+        assert _subschema_admits(subschema, admissible), (
+            f"{_A_REAL_ULID!r} is not a valid value for {name}; the class-gate check is vacuous"
+        )
+        assert scan_text(_A_REAL_ULID) == (), "a ULID is reported as a secret; the exclusion fails"
+    elif category == "hex":
+        assert _subschema_admits(subschema, _A_HEX64), (
+            f"{_A_HEX64!r} is not admitted by {name}; the class-gate check is vacuous"
+        )
+        assert scan_text(_A_HEX64) == (), "lower-case hex is reported; the exclusion fails"
+    else:  # pragma: no cover - the parametrization filters 'scope' out
+        raise AssertionError(f"unknown exclusion category for {name}: {category}")
+
+
+def test_a_secret_shaped_content_file_is_out_of_336_scope(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """``contentFile`` is a body path, so a credential in it is filename scanning (#349).
+
+    The exclusion of ``contentFile`` from the metadata scan is not "we forgot it":
+    a secret-shaped ``contentFile`` that backs no file is refused by
+    ``_body_moves`` before the scan is even reached, so it never lands. The case
+    that *would* land -- a real body file whose name is a credential -- is
+    filename scanning, tracked as #349 and out of this scan's scope. Either way
+    #336's field scan legitimately does not read it, which is what excluding it
+    from the population asserts.
+
+    This depends on #349 by design: were filename scanning added, ``contentFile``
+    would move into that scan's population, not this one's.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = service.draft(_request(CLEAN_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document["operations"][1]["contentFile"] = f"../knowledge/architecture/{PLANTED_TOKEN}.md"
+    drafted.migration_file.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY not in str(caught.value), (
+        "the metadata scan reported a secret in contentFile; that path is #349's scope, and a "
+        f"reported finding here means the exclusion is wrong: {caught.value}"
+    )
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "a migration naming a non-existent body landed"
+    )
+
+
+@pytest.mark.parametrize("value", [_A_HEX64, "abcdef1", "a" * 40, "f" * 64, "0123456789abcdef"])
+def test_a_lowercase_hex_anchor_sha_cannot_fire_the_detector(value: str) -> None:
+    """``commitSha``/``blobSha`` are scanned but unreportable, and here is why (SEC-11).
+
+    :data:`_UNDRIVABLE` records that the anchor SHAs cannot be driven to a finding.
+    Its reason must be the class gate, not the schema: the scan runs *before*
+    validation, so it is not the schema pinning ``^[0-9a-f]{7,64}$`` that stops a
+    finding -- the scan would happily look -- but that no value of that shape
+    clears the generic family's class gate, which needs an upper-case letter, and
+    no prefix family (``sk-``, ``ghp_``, ``AKIA``...) can be spelled in lower-case
+    hex. This plants representative values across the whole length range and shows
+    the detector reports nothing, so the recorded reason has teeth.
+    """
+    assert re.fullmatch(r"[0-9a-f]{7,64}", value), "the fixture value is not schema-admissible hex"
+
+    assert scan_text(value) == (), (
+        f"the detector reported a finding for lower-case hex {value!r}; the _UNDRIVABLE reason "
+        "for commitSha/blobSha (the class gate cannot fire) is false"
+    )
+
+
+# -- the walker's core, held against the mutations round one survived (#336) --
+#
+# Round one's adversarial pass found these mutations of `_document_findings` and
+# `_scan_for_secrets` survived the whole suite. Each test below was confirmed to
+# go red under its named mutation via a runtime patch (production byte-identical);
+# the mutation -> failure mapping is in the review notes.
+
+
+def _distinct_token(seed: object) -> str:
+    """A high-entropy token unique to ``seed``, as a *distinct* string object.
+
+    Distinct objects matter: the walker dedupes by :func:`id`, so two fields
+    holding the same object collapse to one finding (which is the point of the m1
+    test). Everywhere else that would swallow findings a test means to count, so
+    each is minted from its own seed.
+    """
+    digest = hashlib.sha256(f"theurian walker fixture {seed}".encode()).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def _one_upsert_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
+    """A document of one ``upsertRevision`` carrying ``metadata``, for the walker unit tests.
+
+    The walker takes raw parsed YAML and shape-checks each level, so a minimal
+    dict is a faithful input -- no body, no schema-valid surroundings. What the
+    walker reads is ``operations[i].metadata``, which is exactly this.
+    """
+    return {"operations": [{"op": "upsertRevision", "metadata": dict(metadata)}]}
+
+
+def test_the_walker_scans_a_shared_string_object_once(service: ProposalService) -> None:
+    """The T-6 alias-bomb defence: sharing one string across many slots stays O(1) findings.
+
+    PyYAML collapses an alias to the *same* object, so a hostile 4 MiB document can
+    reference one string a few million times through ``labels: [*s, *s, ...]``. The
+    walker visits each object once, by :func:`id`, so that document yields one
+    finding and one scan, not millions. Dropping the dedup (``_unvisited`` always
+    true) makes the same document scan the shared object once per reference.
+
+    Pinned observably: one string object placed at thirty list positions yields a
+    single finding at the first position. Under the mutation it yields
+    :data:`MAX_FINDINGS` -- the cap is all that stops it -- so the count is what
+    tells the two apart, not a timing.
+    """
+    shared = PLANTED_TOKEN
+    document = _one_upsert_metadata({"labels": [shared] * 30})
+
+    findings = _document_findings(document)
+
+    assert len(findings) == 1, (
+        f"a shared string object produced {len(findings)} findings, not one -- the id() dedup "
+        "that bounds the alias bomb is not holding"
+    )
+    assert findings[0].location.endswith("labels[0]"), findings[0].location
+
+
+def test_the_finding_budget_is_shared_across_all_fields_not_per_field(
+    service: ProposalService,
+) -> None:
+    """The document scan stops at :data:`MAX_FINDINGS` over *all* fields together (#336).
+
+    The budget is a property of the whole document, not of each field: a per-field
+    ceiling is no ceiling, because the field count is the hostile input's to
+    choose. This plants more than the cap across several fields -- five single
+    secrets, then a label holding twenty-five, then three more paths -- so both the
+    running-total budget and the loop's break are load-bearing.
+
+    Reproduced against the two survivors: a *per-field* budget
+    (``remaining = MAX_FINDINGS`` each time) lets the twenty-five-secret label run
+    to twenty-five and reports more than the cap; *removing the break* lets the
+    trailing fields each add one past the cap through ``scan_text``'s
+    append-before-check. Both make this count something other than the cap.
+    """
+    metadata: dict[str, object] = {
+        name: _distinct_token(name)
+        for name in ("aclGroup", "namespace", "owner", "tenantId", "title")
+    }
+    metadata["labels"] = [" ".join(_distinct_token(("label", index)) for index in range(25))]
+    metadata["scope"] = {"paths": [_distinct_token(("path", index)) for index in range(3)]}
+    document = _one_upsert_metadata(metadata)
+
+    findings = _document_findings(document)
+
+    assert len(findings) == MAX_FINDINGS, (
+        f"the document scan reported {len(findings)} findings, not the {MAX_FINDINGS} cap -- the "
+        "budget is per-field or the break was removed, either of which is unbounded on the "
+        "document's own field count"
+    )
+
+
+def test_a_finding_names_the_exact_list_index_it_sits_at(service: ProposalService) -> None:
+    """A finding's location carries the list index, so a reviewer opens the right line (#336).
+
+    A secret in ``labels[3]`` must be reported as ``labels[3]``. Reporting every
+    list finding at ``[0]`` would send a reviewer to the wrong element of a
+    multi-value field -- and under ``warn`` that is the whole actionable content of
+    the report. The three leading values are clean, so the one finding is the plant
+    and its index is the assertion.
+    """
+    document = _one_upsert_metadata({"labels": ["one", "two", "three", PLANTED_TOKEN]})
+
+    findings = _document_findings(document)
+
+    assert len(findings) == 1, f"expected one finding, got {[f.location for f in findings]}"
+    assert findings[0].location == "migration.operations[0].metadata.labels[3]", (
+        f"the finding names {findings[0].location!r}, not the index the secret sits at"
+    )
+
+
+def test_the_walker_reads_every_field_regardless_of_the_operations_op(
+    service: ProposalService,
+) -> None:
+    """``op`` is untrusted, so a mislabelled operation cannot steer a field past the scan.
+
+    The scan runs before stage-1 validation, so ``op`` is a value an author picks,
+    not a checked discriminator. The walker therefore reads the metadata and anchor
+    fields of *every* operation rather than branching on ``op`` -- otherwise a
+    ``deprecateItem`` carrying a bogus ``metadata`` or ``anchor`` block would hide a
+    credential from the scan while still landing it in the tree. Here the secrets
+    sit under an operation labelled ``deprecateItem`` (which the schema gives no
+    metadata or anchor) and must still be found.
+    """
+    document = {
+        "operations": [
+            {
+                "op": "deprecateItem",
+                "itemId": "architecture.retry-policy",
+                "metadata": {"title": _distinct_token("title")},
+                "anchor": {"provider": "git", "sourceUri": _distinct_token("uri")},
+            }
+        ]
+    }
+
+    locations = {finding.location for finding in _document_findings(document)}
+
+    assert "migration.operations[0].metadata.title" in locations, (
+        f"a secret in a mislabelled op's metadata was skipped: {sorted(locations)}"
+    )
+    assert "migration.operations[0].anchor.sourceUri" in locations, (
+        f"a secret in a mislabelled op's anchor was skipped: {sorted(locations)}"
+    )
+
+
+def test_body_findings_are_listed_before_document_findings(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The two finding sources are one ordered list, bodies first (#336).
+
+    ``_scan_for_secrets`` concatenates the body findings and then the document's,
+    and the order is part of the contract: a reviewer reading a ``warn`` result, or
+    the capped refusal list, meets the reviewed artefact (the body) before the
+    skimmed one (the metadata). A secret in the body and one in the title produce
+    two findings; the body's ``.md`` location must come first. Swapping the
+    concatenation order -- which round one's mutation did and the suite did not
+    notice -- puts the metadata finding first.
+    """
+    _configure(paths, SecretScanPolicy.WARN.value)
+    drafted = service.draft(_with_a_planted_secret("title", LEAKY_BODY))
+
+    accepted = service.accept(drafted.proposal_id)
+
+    locations = [finding.location for finding in accepted.secret_scan.findings]
+    assert len(locations) >= 2, f"expected a body and a metadata finding, got {locations}"
+    assert locations[0].endswith(".md"), (
+        f"the first finding is not the body; body findings must precede the document's: {locations}"
+    )
+    assert any("title" in location for location in locations[1:]), (
+        f"the metadata finding is missing or ahead of the body: {locations}"
+    )
+
+
+def test_a_metadata_only_migration_is_still_scanned(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The document scan does not depend on the migration moving a body (#336).
+
+    ``accept`` scans the parsed document itself, not only the bodies it stages, so a
+    migration that moves *no* body -- a lone ``createItem``, a ``changeOwner``, a
+    ``deprecateItem`` -- is still scanned. Gating the document scan on there being a
+    body to move (round one's mutation) is the difference between this refusing and
+    this **accepting the credential into the tree**: reproduced, the mutated build
+    lands the ``createItem`` with the secret in its namespace under ``block``.
+    """
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = service.draft(_request(CLEAN_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document["operations"] = [
+        {
+            "op": "createItem",
+            "itemId": _ITEM,
+            "kind": "architecture",
+            "namespace": f"architecture-{PLANTED_TOKEN}",
+            "owner": "platform-team",
+        }
+    ]
+    drafted.migration_file.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert HIGH_ENTROPY in str(caught.value), (
+        f"a body-less migration with a secret in its namespace was not refused: {caught.value}"
+    )
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed despite carrying a secret -- the document scan was skipped because "
+        "no body moved"
     )
