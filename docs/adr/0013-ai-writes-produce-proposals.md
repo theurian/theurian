@@ -329,13 +329,18 @@ Landed in Milestone 7, by the `theurian propose` CL:
   refuses a byte-identical body re-declared under a *different* item's id (a
   cross-item revision reuse `migrate apply` refuses, INV-1/SEC-13),
   `::test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision`
-  and `::test_accept_refuses_a_byte_different_redeclare_of_an_unpinned_landed_revision`
-  refuse a re-declare that reuses the id with different bytes, and
-  `::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body` with
-  `::test_accept_refuses_replacing_an_unpinned_landed_body` refuse a *different*
-  revision landing on the same body.
+  refuses a re-declare that reuses the id with different bytes, and
+  `::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body` refuses a
+  *different* revision landing on the same body.
   `::test_accept_allows_a_replacement_over_a_body_no_landed_revision_reads` is the
-  control that an ordinary replacement is untouched.
+  control that an ordinary replacement is untouched. **Each of those two had an
+  unpinned twin, and both twins were deleted rather than renamed by
+  [ADR-0027](0027-accept-validates-before-it-moves.md) decision 1**: each reached
+  its state by stripping the pin from a landed migration, and a landed migration
+  with no `contentSha256` no longer loads. Neither face lost coverage with them —
+  the guard keys on `(st_dev, st_ino)` and never on whether a pin was declared,
+  so the surviving siblings hold the same property against the input that is
+  still reachable.
 
 Still owed, with the milestone that brings the feature under test:
 

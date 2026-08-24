@@ -97,11 +97,16 @@ depending on the author having remembered.
 **Two things this decision does *not* buy**, stated because both were claimed
 during design and neither is true:
 
-- It does not strengthen the accept-path replacement guard. That guard already
-  covers unpinned landed bodies —
-  `tests/integration/test_proposal_service.py::test_accept_refuses_replacing_an_unpinned_landed_body`
-  is the test that pins it — and it keys on `(st_dev, st_ino)` rather than on
-  whether a pin was declared.
+- It does not strengthen the accept-path replacement guard. That guard keys on
+  the landed body's `(st_dev, st_ino)` rather than on whether a pin was
+  declared, so nothing about what it refuses moves with this decision.
+  `tests/integration/test_proposal_service.py::test_accept_refuses_a_byte_identical_replacement_of_a_pinned_body`
+  and `::test_accept_refuses_a_byte_different_redeclare_of_a_pinned_landed_revision`
+  are the tests that pin it. Their unpinned twins are *deleted* rather than
+  renamed, and could not have survived: each reached its state by stripping the
+  pin from a landed migration, which after this decision no longer loads. The
+  tightening removed the input they were written against, not the property they
+  asserted — which the surviving siblings hold on the same key.
 - It does not change what an absent `expectedRevision` means. **An absent
   `expectedRevision` permits a first revision, or an exact re-run of the same
   revision id**, and not only the first: `MigrationEngine._check_expected_revision`
@@ -182,6 +187,16 @@ The pre-check has four stages, in this order:
 4. **A dry replay** of landed ∪ incoming against a throwaway target, which is
    the stage that catches what nothing above can: the invariants the engine
    enforces only while applying.
+
+**Stages 3 and 4 overlap, deliberately, and the stage list should not be read
+as a partition.** `MigrationEngine.apply` calls `refuse_unenforceable_scope`,
+`refuse_duplicate_content_files` and `refuse_alias_item_id_collision` itself,
+after planning and before any write, so the replay re-reaches all three. Stage 3
+runs them statically first for message quality — a refusal that names the
+offending migration rather than surfacing from inside a replay — and not because
+removing it would leak a face past the pre-check. What stage 4 alone covers is
+the invariants the engine can only check while it is applying — a revision's
+source anchor, a reused revision id, the revision conflict measured below.
 
 **The dry replay is not new machinery; it is a property the format already
 promises.** ADR-0005 rule 8 — *"Applying all migrations to an empty store
@@ -416,7 +431,12 @@ commit updates it rather than silencing it.
   tightened in the same CL.
 - The threat model's own T-15 grade is not settled here. Whether the residual
   falls from High is a threat-model decision made against the shipped detector,
-  and it belongs to the CL that ships it.
+  and it belongs to the CL that ships it. **Taken 2026-08-24, in the threat
+  model rather than here: T-15 stays High**, because the shipped control covers
+  one of the three points a body can enter and the other two are live and
+  unscanned. It is re-graded when
+  [#329](https://github.com/theurian/theurian/issues/329) closes the ingest and
+  index-time gap; T-15's entry carries the reasoning.
 
 ## What this does not close
 
@@ -471,86 +491,111 @@ in a specific, reachable way each time.
 
 ## Compliance
 
-**Nothing in this section has landed.** The ADR is written at the design stage
-of #316's CL; the tests below are what the implementation commits owe, and each
-is named so a reviewer can check the list against the diff rather than against
-a claim.
+**Everything owed at design time has landed in Milestone 7**, in #316's CL. The
+list below names the test that discharges each item, so a reviewer can check it
+against the suite rather than against this sentence. Every test path is relative
+to `packages/theurian-core/`.
 
-Owed with the implementation of decision 1 (`contentSha256` required):
+Landed in Milestone 7 with decision 1 (`contentSha256` required):
 
-- A schema test asserting `contentSha256` is in `$defs.opUpsertRevision`'s
-  `required`, and a loader test driving a document that omits it and asserting
-  the refusal names the field — the test that goes RED if the `required` entry
-  is deleted. `tests/unit/test_schemas.py` and
-  `tests/unit/test_migration_loader*.py` are the homes.
-- A test that the tracked corpus and the example project still load, so the
-  "zero edit cost" measurement above stops being a measurement and becomes a
-  standing check. `test_dogfood_corpus_governance.py` and `test_examples.py`
-  already walk both populations.
-- A test asserting `unpinnedRevisions` is absent from `migrate validate`'s
-  output. Four tests in `tests/integration/test_cli_commands.py` read the field
-  today —
-  `test_validate_warns_about_a_revision_that_pins_no_body_digest`,
-  `test_validate_says_nothing_about_a_revision_that_pins_its_body`,
-  `test_the_unpinned_warning_reaches_the_human_output_too`, and
-  `test_the_unpinned_warning_names_a_shasummable_path_and_a_non_fatal_remedy`
-  — and they are the ones to invert. Deleting them without a replacement would
-  leave the removal unpinned.
+- The schema requirement, both directions:
+  `tests/unit/test_schemas.py::test_every_upsert_revision_must_pin_the_body_it_names`
+  reads `$defs.opUpsertRevision`'s `required` and goes RED if the entry is
+  deleted, and `::test_a_revision_that_declares_no_pin_is_refused_by_the_published_schema`
+  drives a document that omits the field. The loader half is
+  `tests/unit/test_migration_loader_required_pin.py::test_a_revision_that_declares_no_body_pin_is_refused_at_load`,
+  with `::test_the_same_revision_loads_once_it_pins_its_body` as the control
+  that the refusal is the missing pin and not the fixture.
+- The "zero edit cost" measurement is now a standing check rather than a
+  measurement: `tests/unit/test_dogfood_corpus_governance.py::test_every_committed_migration_matches_the_published_migration_schema`
+  walks the tracked corpus against the tightened schema, and
+  `tests/unit/test_examples.py::test_the_example_loads_through_the_loader_the_product_itself_runs`
+  puts the sample project through the loader the product runs rather than
+  through a schema check alone.
+- `unpinnedRevisions` is gone from `migrate validate`'s output, held by
+  `tests/integration/test_cli_commands.py::test_validate_publishes_exactly_the_recorded_key_set`
+  — a recorded key set, so a *re-added* field fails too — and
+  `::test_the_human_output_carries_no_pin_warning_either` for the second
+  channel. The four tests that read the field were deleted with it, and the
+  key set is what replaced them: a removal held only by deletions is held by
+  nothing.
 
-Owed with the implementation of decision 2 (`accept` validates first):
+Landed in Milestone 7 with decision 2 (`accept` validates first). All three of
+#307's demonstrated faces are in `tests/integration/test_proposal_service.py`,
+and each asserts the refusal **and** that the proposal directory is untouched:
 
-- One test per demonstrated face of #307 — two operations naming one
-  `contentFile`, a self-pin that mismatches its own body, and `contentFile: ""`
-  — each asserting **both** that the acceptance is refused **and** that the
-  proposal directory is untouched afterwards. The second assertion is the
-  recovery property; a test that only checks the exit code passes against a
-  version that refuses after deleting.
-- A test for the racing face: two proposals drafted before either acceptance,
-  both claiming the item's first revision; the second `accept` is refused, and
-  the set that remains applies cleanly. This is the one that goes RED if the
-  dry replay is removed while stages 1–3 stay.
-- A test pinning the **hard condition** rather than the outcome: that the
-  replay reaches the same engine entry point `migrate apply` reaches, and the
-  pre-check reaches `validate_migration_document` and the three set guards.
-  The shape is `test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write`
-  — a bytecode or call-graph walk — so a re-implementation that agrees with
-  the engine today still fails the test. A behavioural test comparing the two
-  answers on a fixture is *not* a substitute: it passes for exactly as long as
-  the two happen to agree, which is the failure this condition exists to
-  prevent.
-- A test that a fault in the landed set, not in the proposal, is reported as a
-  `ProposalError` with a remedy naming the landed file, under #227's
-  `{error, remedy}` contract.
-- A test that the replay writes nothing outside its throwaway target: the same
-  whole-tree diff and content snapshot
-  `test_generation_writes_only_under_the_proposal_directory` and
-  `::test_generation_modifies_no_file_outside_the_proposal_directory` already
-  apply to `draft`, pointed at a refused `accept`. ADR-0005 rule 8 is the
-  premise; this is what holds it.
+- `::test_two_operations_naming_one_body_are_refused_with_the_proposal_intact`,
+  `::test_a_pin_that_does_not_match_its_own_body_is_refused_with_the_proposal_intact`,
+  and `::test_an_empty_content_file_is_refused_with_the_proposal_intact`.
+- The racing face:
+  `tests/integration/test_propose_cli.py::test_a_proposal_racing_another_onto_one_item_is_refused_and_the_rest_applies`
+  — two proposals drafted before either acceptance, the second refused, and the
+  set that remains applying cleanly. This is the one that goes RED if the dry
+  replay is removed while stages 1–3 stay.
+- The **hard condition**, pinned structurally rather than behaviourally:
+  `tests/integration/test_propose_cli.py::test_the_accept_replay_and_migrate_apply_reach_one_apply_function`
+  and `::test_the_accept_pre_check_reaches_the_loaders_own_entry_points_and_every_guard`.
+  They walk the call graph in the shape
+  `test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write` uses,
+  so a re-implementation that agrees with the engine today still fails them.
+- A fault in the landed set is not reported as the proposal's:
+  `tests/integration/test_propose_cli.py::test_a_fault_in_the_landed_set_is_not_reported_as_this_proposals_fault`.
+  **The delivered contract is narrower than the design text asked for, and
+  deliberately.** This item was written as "a `ProposalError` with a remedy
+  naming the landed file"; what shipped is `ApprovedSetUnusableError` — its own
+  subclass, at **exit 4** rather than proposal-at-fault exit 1, because exit 1
+  promises that re-drafting is the recovery and here it mints a duplicate for a
+  fault the proposal does not have (#89) — carrying a remedy that points at
+  `.theurian/migrations/` and tells the reader to correct *what the message
+  names* there. Naming the landed file was unimplementable for one of the faces:
+  a `RevisionConflictError` names an item and two revision ids, because the
+  engine does not know which of the two migrations claiming that item is the
+  wrong one. A remedy that is false for a case is worse than one that is
+  general, so the remedy is general and the message does the naming.
+- The replay writes nothing outside its throwaway target:
+  `tests/integration/test_proposal_service.py::test_a_refused_acceptance_modifies_no_file_anywhere_in_the_project`
+  is the whole-tree diff and content snapshot pointed at a refused `accept`, and
+  `::test_the_replay_removes_the_throwaway_tree_it_staged_the_union_in` holds
+  the other half — that the target it does write to does not survive the call.
 
-Owed with the implementation of decision 3 (SEC-11):
+Landed in Milestone 7 with decision 3 (SEC-11):
 
-- Detector self-tests in the shape `test_secret_detector.py` already uses:
-  positive fixtures per pattern family, negative fixtures for the prose that
-  must not trip it, and a test that the detector can fail — a scan that returns
-  nothing for a planted secret is the failure mode this class has.
-- One test per policy value: `block` refuses and consumes nothing, `warn`
-  proceeds and reports, `off` skips, and an absent key or absent config file
-  behaves as `block`.
-- The update to `test_config_key_call_sites.py` recording the new call site,
-  together with the six prose flips it demands. The test's own assertion
-  messages specify the order: correct the surfaces, decide whether a default may
-  now be published, then record the site.
+- Detector self-tests in `tests/unit/test_content_secrets.py`, including
+  `::test_the_detector_can_fail` — a scan returning nothing for a planted secret
+  is this class's failure mode — `::test_each_pattern_family_reports_its_own_shape`
+  for the positive fixtures, and
+  `::test_the_detector_ignores_a_string_a_knowledge_document_really_contains`
+  for the prose that must not trip it.
+- One test per policy value, at both layers. Reading:
+  `tests/unit/test_project_config.py::test_a_project_with_no_config_file_blocks`,
+  `::test_a_config_that_states_no_policy_blocks`,
+  `::test_each_published_policy_is_read_back`, and
+  `::test_a_bare_off_is_refused_with_the_quoting_cure` for the YAML 1.1 spelling
+  a reader gets wrong by copying the enum. Behaviour:
+  `tests/integration/test_proposal_secret_scan.py::test_a_body_carrying_a_secret_is_refused_by_default`,
+  `::test_a_refused_acceptance_consumes_nothing`,
+  `::test_warn_lands_the_body_and_reports_what_it_found`, and
+  `::test_off_skips_the_scan_and_the_body_lands`.
+- The new call site is recorded in
+  `tests/unit/test_config_key_call_sites.py`, whose
+  `::test_each_secret_scan_prose_surface_states_the_control_and_its_bound` now
+  holds the prose flips as a standing check rather than a one-time edit. The
+  schema default lifted with it, pinned by
+  `tests/unit/test_schemas.py::test_the_secret_scan_policy_publishes_the_default_the_loader_applies`
+  — which asserts the published default *equals* what `read_secret_scan_policy`
+  applies, so the two cannot drift apart in either direction.
 
-Still owed, with the milestone or issue that will satisfy it:
+Still owed, with the issue that will satisfy it:
 
-- **Ingest-time and index-time secret scanning.** `theurian ingest` records
-  content that is already approved and no scan runs there. T-15's control is
-  approval-time, so this is a second and distinct control; an issue is filed at
-  implementation and it is out of #316's scope.
-- **Draft-time scanning as an advisory.** Refusing at `draft` would tell an
-  author sooner, but `accept` is the gate, so a draft-time scan is a
-  convenience rather than a control. Filed at implementation.
+- **Ingest-time and index-time secret scanning**
+  ([#329](https://github.com/theurian/theurian/issues/329)). `theurian ingest`
+  records content that is already approved and no scan runs there. T-15's
+  control is approval-time, so this is a second and distinct control; it was out
+  of #316's scope, and it is what T-15's grade is re-read against.
+- **Draft-time scanning as an advisory**
+  ([#330](https://github.com/theurian/theurian/issues/330)). Refusing at `draft`
+  would tell an author sooner, but `accept` is the gate, so a draft-time scan is
+  a convenience rather than a control.
 - **Concurrency between two `accept` invocations** (decision 2's third
   residue), which belongs with the write path's single-writer work
   ([ADR-0018](0018-single-writer-synchronous-in-m1.md)). The accept path's file
