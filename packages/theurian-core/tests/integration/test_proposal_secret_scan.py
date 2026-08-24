@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -34,6 +35,9 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _AUTHORED_ANCHOR_FIELDS,
+    _AUTHORED_METADATA_FIELDS,
+    _AUTHORED_MIGRATION_FIELDS,
     _AUTHORED_OPERATION_FIELDS,
     _MAX_NAMES_LISTED,
     AcceptedProposal,
@@ -41,6 +45,7 @@ from theurian.application.proposal_service import (
     ProposalError,
     ProposalRequest,
     ProposalService,
+    _document_findings,
 )
 from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.enums import KnowledgeKind
@@ -190,7 +195,9 @@ MIGRATION_FILENAME: Final = "01K3Z8Q9V4MRB7T2XNFCD5HGJW-retry-policy.yaml"
 #: than from this file's imagination: the migration's own ``author`` and
 #: ``description``, ``createItem``'s ``namespace`` and ``owner``, the revision
 #: metadata's ``title``/``namespace``/``owner``/``labels``/``scope``, and every
-#: string of every source anchor. ``sourceUri`` is the sharpest of them --
+#: string of every source anchor that can carry one -- ``commitSha`` and
+#: ``blobSha`` are pinned by the schema to ``^[0-9a-f]{7,64}$``, which no family
+#: can match. ``sourceUri`` is the sharpest of them --
 #: ``knowledge.search`` and ``knowledge.get`` publish it on every result, so a
 #: credential there is disclosed to an agent that never reads the body.
 #:
@@ -218,6 +225,12 @@ _METADATA_PLANTS: Final[Mapping[str, Callable[[ProposalRequest], ProposalRequest
     ),
     "anchor-file-path": lambda request: replace(
         request, source_anchors=(replace(ANCHOR, file_path=f"deploy/{PLANTED_TOKEN}.env"),)
+    ),
+    "anchor-repository": lambda request: replace(
+        request, source_anchors=(replace(ANCHOR, repository=f"acme/{PLANTED_TOKEN}"),)
+    ),
+    "anchor-external-id": lambda request: replace(
+        request, source_anchors=(replace(ANCHOR, external_id=f"JIRA-{PLANTED_TOKEN}"),)
     ),
 }
 
@@ -624,10 +637,21 @@ def test_one_listing_bound_covers_the_body_and_the_metadata_together(
     implementation that scans the document into a *second* list with a second
     cap: nine findings would then print ten lines and, worse, say that the
     proposal leaked on both sides. This is the same assertion with the findings
-    coming from both places at once: measured 2026-08-24, this fixture produces
-    eleven -- one body finding and ten metadata ones, ``namespace`` and ``owner``
-    counting twice because ``createItem`` and the revision metadata each carry
-    them -- so it is over the cap from either direction.
+    coming from both places at once: re-measured 2026-08-24 after the anchor
+    plants were added, this fixture produces eleven -- one body finding and ten
+    metadata ones, ``namespace`` and ``owner`` counting twice because
+    ``createItem`` and the revision metadata each carry them -- so it is over the
+    cap from either direction.
+
+    **Eleven did not move when :data:`_METADATA_PLANTS` grew by two, and that is
+    a property of the table rather than a coincidence.** Every anchor plant
+    rebuilds ``source_anchors`` from the pristine :data:`ANCHOR`, so applying
+    them in sequence leaves only the last one standing: the anchor contribution
+    here is one finding whatever the table's anchor count is, and it moved from
+    ``filePath`` to ``externalId`` when the two new rows were appended. Adding a
+    *non-anchor* plant raises this number; adding an anchor plant does not.
+    Recorded because a reader who adds a row and finds the count unchanged would
+    otherwise reasonably suspect the scan, which is the wrong place to look.
     """
     request = _request(LEAKY_BODY)
     for plant in _METADATA_PLANTS.values():
@@ -765,6 +789,50 @@ _HAND_AUTHORED_INDEX: Final = 2
 
 _ITEM: Final = "architecture.retry-policy"
 
+#: A second body, for the second ``upsertRevision`` the two metadata entries
+#: below need. It has to exist on disk: :meth:`ProposalService._body_moves` runs
+#: *before* the scan does and refuses a ``contentFile`` with no file behind it,
+#: so an upsert whose body is missing never reaches the control under test.
+_SECOND_BODY: Final = b"# Timeout policy\n\nFive seconds, then fail loudly.\n"
+
+#: Where that body sits, both inside the proposal directory and under
+#: ``knowledge/``. One constant for both, so the ``contentFile`` the operation
+#: declares and the file the fixture writes cannot drift apart.
+_SECOND_BODY_TAIL: Final = "architecture/timeout-policy-01K9AAAAAA0000000000000009.md"
+
+#: The revision the second upsert creates. Crockford base32 with no ``I``, ``L``,
+#: ``O`` or ``U``, which the fixture guard enforces.
+_SECOND_REVISION: Final = "01K9AAAAAA0000000000000009"
+
+
+def _second_upsert(**metadata: str) -> dict[str, object]:
+    """A second ``upsertRevision``, for a second item, with a metadata block of its own.
+
+    This is the only way the *metadata* half of the allowlist can be driven
+    independently. A drafted proposal copies one ``namespace`` and one ``owner``
+    into both ``createItem`` and the revision metadata, so a plant in either
+    reaches both and the finding it produces cannot say which entry found it --
+    which is how ``namespace`` and ``owner`` sat in
+    ``_AUTHORED_METADATA_FIELDS`` untested while looking covered. Here
+    ``createItem`` at index 0 stays clean and only this block carries the value.
+    """
+    return {
+        "op": "upsertRevision",
+        "itemId": _ID_SHAPED_CLEAN,
+        "revisionId": _SECOND_REVISION,
+        "contentFile": f"../knowledge/{_SECOND_BODY_TAIL}",
+        "contentSha256": hashlib.sha256(_SECOND_BODY).hexdigest(),
+        "metadata": {
+            "title": "Timeout policy",
+            "contentType": MARKDOWN.value,
+            "kind": "architecture",
+            "namespace": "architecture",
+            "status": "approved",
+            "owner": "platform-team",
+            **metadata,
+        },
+    }
+
 
 @dataclass(frozen=True)
 class _HandAuthored:
@@ -794,9 +862,9 @@ def _evidence_anchor(source_uri: str) -> dict[str, object]:
 
 #: One entry per name in ``_AUTHORED_OPERATION_FIELDS``, plus the single
 #: ``anchor`` only ``addEvidence`` carries, each planted in the operation type a
-#: contributor would actually write it in. That the two are the same population
-#: is asserted rather than stated:
-#: ``test_every_operation_level_allowlist_entry_has_a_case_that_drives_it``.
+#: contributor would actually write it in. That every allowlist entry has a
+#: fixture is asserted rather than stated:
+#: ``test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it``.
 #:
 #: Deliberately absent are ``tenantId`` and ``aclGroup``. Neither is an operation
 #: field -- both sit on revision metadata, which
@@ -972,6 +1040,24 @@ _HAND_AUTHORED: Final[Mapping[str, _HandAuthored]] = {
         at="namespace",
         family=HIGH_ENTROPY,
     ),
+    # The mirror of the two above, and the other half of the same shadowing. The
+    # `at` of each carries a dot, so the operation-level pin below skips them:
+    # what they drive is `_AUTHORED_METADATA_FIELDS`, reached through
+    # `_metadata_strings`, not the operation tuple.
+    "upsertRevision.metadata.namespace": _HandAuthored(
+        build=lambda value: _second_upsert(namespace=value),
+        secret=f"architecture-{PLANTED_TOKEN}",
+        clean="architecture",
+        at="metadata.namespace",
+        family=HIGH_ENTROPY,
+    ),
+    "upsertRevision.metadata.owner": _HandAuthored(
+        build=lambda value: _second_upsert(owner=value),
+        secret=f"platform-team-{PLANTED_TOKEN}",
+        clean="platform-team",
+        at="metadata.owner",
+        family=HIGH_ENTROPY,
+    ),
 }
 
 
@@ -1001,37 +1087,131 @@ def _hand_authored_proposal(
         f"{_HAND_AUTHORED_INDEX} and the locations asserted below name the wrong operation"
     )
 
-    operations.append(entry.build(value))
+    operation = entry.build(value)
+    operations.append(operation)
+    if operation["op"] == "upsertRevision":
+        # `_body_moves` runs before the scan and refuses a `contentFile` with no
+        # file behind it, so a second upsert without its body would be refused
+        # for a reason that has nothing to do with the secret in it.
+        body = drafted.directory / _SECOND_BODY_TAIL
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_bytes(_SECOND_BODY)
     drafted.migration_file.write_text(
         yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
     return drafted
 
 
-def test_every_operation_level_allowlist_entry_has_a_case_that_drives_it() -> None:
-    """A name added to the allowlist with no case here would be a guard nothing drives.
+#: Allowlist entries no fixture in this file can drive, each with the reason it
+#: is unreachable rather than merely untested. Subtracted from the population the
+#: pin below demands, so that "nothing tests this" and "nothing can test this"
+#: stay different states with different evidence instead of one silent gap.
+_UNDRIVABLE: Final[Mapping[str, str]] = {
+    "metadata.tenantId": (
+        "migration_engine refuses any value but 'local', on migrate validate and migrate apply "
+        "alike (#63), so no token can reach an applied revision through it"
+    ),
+    "metadata.aclGroup": "the same, for any value but 'default'",
+    "anchor.commitSha": (
+        "the schema pins it to ^[0-9a-f]{7,64}$, and every detector family needs either an "
+        "upper-case character or a prefix that pattern cannot spell"
+    ),
+    "anchor.blobSha": "the same pattern, the same reason",
+}
 
-    This is the state #336 shipped in and the state this block exists to end:
-    eleven of the allowlist's thirteen names were reached by no test at all, so
-    deleting them was green. Nothing stops that recurring -- the allowlist grows
-    when the schema grows an operation field, and the natural edit is the tuple
-    alone.
 
-    Equality rather than containment, in both directions. A name in the tuple
-    with no entry here is the gap above; an entry here naming a field the tuple
-    does not carry is a case whose refusal must be coming from somewhere else,
-    which would make it a test of the wrong thing rather than a harmless extra.
+def _allowlist_population() -> set[str]:
+    """Every location the scan's four allowlists can produce, as ``<level>.<field>``.
 
-    The table's dotted locations are the nested walks -- ``anchor.sourceUri`` is
-    reached by :func:`_authored_strings`' own branch rather than by the tuple --
-    so they are excluded by shape, which is the same rule the location spelling
-    uses.
+    Read from the constants themselves rather than listed here, so a name added
+    to any of them joins this population automatically and the pin below turns
+    red until something drives it. The two structural walks are added by hand
+    because :func:`_metadata_strings` reaches them by shape rather than through
+    a tuple of names.
     """
-    covered = {entry.at for entry in _HAND_AUTHORED.values() if "." not in entry.at}
+    return (
+        {f"migration.{name}" for name in _AUTHORED_MIGRATION_FIELDS}
+        | {f"operation.{name}" for name in _AUTHORED_OPERATION_FIELDS}
+        | {f"metadata.{name}" for name in _AUTHORED_METADATA_FIELDS}
+        | {f"anchor.{name}" for name in _AUTHORED_ANCHOR_FIELDS}
+        | {"metadata.labels", "metadata.scope.paths"}
+    )
 
-    assert covered == set(_AUTHORED_OPERATION_FIELDS), (
-        f"undriven allowlist names: {sorted(set(_AUTHORED_OPERATION_FIELDS) - covered)}; "
-        f"cases naming no allowlist field: {sorted(covered - set(_AUTHORED_OPERATION_FIELDS))}"
+
+def _allowlist_entry_of(location: str) -> str:
+    """Which allowlist entry produced a finding at ``location``.
+
+    ``migration.operations[1].metadata.sourceAnchors[0].filePath`` becomes
+    ``anchor.filePath``: the indices go, and the container decides the level.
+    Order matters -- an anchor sits *inside* a metadata block, so its two
+    prefixes are tried before the metadata one, and every operation-level prefix
+    before the bare migration one.
+
+    An unrecognised location raises rather than being dropped. A shape this does
+    not know is a walk the pin below cannot account for, and silently ignoring it
+    would let a whole new location family go untested while the assertion stayed
+    green.
+    """
+    path = re.sub(r"\[\d+\]", "", location)
+    for prefix, level in (
+        ("migration.operations.metadata.sourceAnchors.", "anchor"),
+        ("migration.operations.anchor.", "anchor"),
+        ("migration.operations.metadata.", "metadata"),
+        ("migration.operations.", "operation"),
+        ("migration.", "migration"),
+    ):
+        if path.startswith(prefix):
+            return f"{level}.{path.removeprefix(prefix)}"
+    raise AssertionError(f"a finding location no rule here recognises: {location!r}")
+
+
+def _entries_reached_by(drafted: DraftedProposal) -> set[str]:
+    """The allowlist entries the document scan actually reports for one proposal."""
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    return {_allowlist_entry_of(f.location) for f in _document_findings(document)}
+
+
+def test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it(
+    service: ProposalService,
+) -> None:
+    """The pin that stops this class reopening on any of the four allowlists.
+
+    #336 shipped with eleven of ``_AUTHORED_OPERATION_FIELDS``' thirteen names
+    driven by nothing at all, and with ``namespace`` and ``owner`` driven in two
+    tuples at once by a plant that could not say which of them found it -- a
+    shadow, which is the same gap wearing the other tuple's name. Both are closed
+    above. Nothing structural stopped either, and nothing would stop the next
+    one: the allowlists grow whenever the schema grows a string field, and the
+    natural edit is the tuple alone.
+
+    **The observed side is measured, not declared.** Each fixture is built and
+    its document put through the real walker, and what is collected is the
+    finding's *location*. That is what makes a shadow impossible to mistake for
+    coverage: ``operations[0].namespace`` and ``operations[1].metadata.namespace``
+    are different locations for the same word, so a plant that reaches only one
+    of them cannot report the other as driven.
+
+    **Equality, in both directions.** A population entry nothing reaches is the
+    gap; a reached entry outside the population is a fixture whose finding is
+    coming from somewhere the allowlists do not name, which is a defect in this
+    file's model of the scan rather than a harmless extra.
+
+    What this deliberately does *not* do is prove the ``accept`` path refuses --
+    it calls the walker directly, because several fixtures here carry operations
+    the pre-check would refuse for their own unrelated reasons. Refusal is the
+    per-entry tests' job; coverage of the population is this one's.
+    """
+    reached: set[str] = set()
+
+    for field in _METADATA_PLANTS:
+        reached |= _entries_reached_by(service.draft(_with_a_planted_secret(field)))
+    for entry in _HAND_AUTHORED.values():
+        reached |= _entries_reached_by(_hand_authored_proposal(service, entry, entry.secret))
+
+    expected = _allowlist_population() - set(_UNDRIVABLE)
+    assert reached == expected, (
+        f"allowlist entries no fixture reaches: {sorted(expected - reached)}; "
+        f"reached but named by no allowlist: {sorted(reached - expected)}"
     )
 
 
@@ -1153,12 +1333,23 @@ def test_a_refused_hand_authored_operation_consumes_nothing_and_is_not_quoted_ba
     Both matter more on this path than on the body path: a hand-authored
     operation is the shape a contributor arrives with, and the refusal is printed
     to a terminal and published under ``accept --json`` into something that logs.
+
+    **``match`` is what keeps this test about the scan.** A bare
+    ``pytest.raises(ProposalError)`` is satisfied by any refusal, and several of
+    these fixtures have a second reason to be refused -- the two
+    ``upsertRevision`` cases add a revision for an item no ``createItem``
+    introduces, which the pre-check rejects on its own. Reproduced: with
+    ``namespace`` dropped from ``_AUTHORED_METADATA_FIELDS`` the scan finds
+    nothing, the pre-check refuses instead, and every assertion below still
+    holds. Naming the family makes the refusal under test the secret one, which
+    also re-pins the ordering -- the scan runs before the pre-check, so the
+    secret is what the contributor is told about first.
     """
     entry = _HAND_AUTHORED[name]
     drafted = _hand_authored_proposal(service, entry, entry.secret)
     before = {p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")}
 
-    with pytest.raises(ProposalError) as caught:
+    with pytest.raises(ProposalError, match=re.escape(entry.family)) as caught:
         service.accept(drafted.proposal_id)
 
     assert {
