@@ -521,7 +521,7 @@ commit updates it rather than silencing it.
   one environmental caveat recorded rather than fixed: `$TMPDIR` may sit on a
   different volume than the project — an encrypted checkout with a plaintext
   `/tmp` writes those bodies to the plaintext volume for the duration — the same
-  shape of accepted environmental residual as [ADR-0028](0028-a-local-proposal-is-a-different-directory.md)'s
+  shape of accepted environmental residual as ADR-0028's
   `git clean -xdf` note, stated so an operator on that setup can weigh it.
 
 ## What this does not close
