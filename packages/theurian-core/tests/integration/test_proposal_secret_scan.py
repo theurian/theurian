@@ -1540,19 +1540,69 @@ def _is_string_array(node: Mapping[str, Any]) -> bool:
     return node.get("type") == "array" and _is_string_leaf(node.get("items", {}))
 
 
-def _string_properties(obj_schema: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    """The direct string / string-array properties of an object schema, name -> subschema.
+#: The three ``$defs`` that are their own population buckets rather than ordinary
+#: sub-objects. The recursive walk below does not descend into a reference to one
+#: of them: ``operation`` and ``revisionMetadata`` are enumerated by their own
+#: loops in :func:`_schema_string_properties`, and ``sourceAnchor`` collapses to
+#: the ``anchor.`` bucket wherever it appears -- an anchor's fields are keyed
+#: ``anchor.<field>`` whether they sit on an ``addEvidence`` operation or in a
+#: ``sourceAnchors`` list, exactly as the walker keys them and as
+#: :func:`_allowlist_entry_of` maps a finding location back.
+_BUCKET_ROOT_DEFS: Final = frozenset({"operation", "revisionMetadata", "sourceAnchor"})
 
-    Nested objects and arrays-of-objects are left out: they are their own level,
-    walked separately, exactly as :func:`~theurian.application.proposal_service
-    ._authored_strings` descends into ``anchor``, ``metadata`` and ``sourceAnchors``.
+
+def _ref_name(node: Mapping[str, Any]) -> str | None:
+    """The ``$defs`` name a ``$ref`` node points at, or ``None`` if it is not a ref."""
+    ref = node.get("$ref")
+    return ref.split("/")[-1] if isinstance(ref, str) else None
+
+
+def _references_bucket_root(node: Mapping[str, Any]) -> bool:
+    """Whether ``node`` is a reference to a bucket-root def, or an array of one."""
+    if _ref_name(node) in _BUCKET_ROOT_DEFS:
+        return True
+    if node.get("type") == "array":
+        items = node.get("items", {})
+        return isinstance(items, Mapping) and _ref_name(items) in _BUCKET_ROOT_DEFS
+    return False
+
+
+def _string_fields_in(
+    obj_schema: Mapping[str, Any], prefix: str
+) -> Iterator[tuple[str, Mapping[str, Any]]]:
+    """Every string / string-array field an object schema declares, keyed by dotted path.
+
+    Recurses into every inline nested object and object-array, so a string field
+    the schema grows at any depth -- ``scope.owner``, a new
+    ``metadata.<obj>.<field>``, a ``metadata.<arr>[].<field>`` -- surfaces under
+    its own key rather than being missed by a walk that stopped at the object's
+    own properties. ``prefix`` is the bucket-rooted path already accumulated
+    (``"metadata"``, ``"metadata.scope"``); a nested object extends it with
+    ``.<name>`` and an object-array with ``.<name>[]``, so the key a new field
+    gets is one no allowlist constant names and the pin below reddens on it.
+
+    A reference to a bucket-root def (:data:`_BUCKET_ROOT_DEFS`) is not descended
+    here. ``operation`` and ``revisionMetadata`` are enumerated by their own loops
+    in :func:`_schema_string_properties`, and ``sourceAnchor`` is enumerated once
+    under the ``anchor`` prefix and collapses there wherever it appears; descending
+    a reference to any of them would re-key an existing bucket rather than reach a
+    field the walker's four hand-listed levels miss, which is the only thing this
+    recursion exists to catch.
     """
     obj_schema = _resolve_ref(obj_schema)
-    out: dict[str, Mapping[str, Any]] = {}
     for name, node in obj_schema.get("properties", {}).items():
+        if _references_bucket_root(node):
+            continue
         if _is_string_leaf(node) or _is_string_array(node):
-            out[name] = node
-    return out
+            yield f"{prefix}.{name}", node
+            continue
+        resolved = _resolve_ref(node)
+        if resolved.get("type") == "object":
+            yield from _string_fields_in(resolved, f"{prefix}.{name}")
+        elif resolved.get("type") == "array":
+            items = resolved.get("items", {})
+            if isinstance(items, Mapping) and _resolve_ref(items).get("type") == "object":
+                yield from _string_fields_in(_resolve_ref(items), f"{prefix}.{name}[]")
 
 
 def _schema_string_properties() -> dict[str, Mapping[str, Any]]:
@@ -1562,30 +1612,26 @@ def _schema_string_properties() -> dict[str, Mapping[str, Any]]:
     with :func:`_allowlist_population` term for term: ``migration`` (the top
     level), ``operation`` (the union across all fourteen ``op*`` definitions,
     which is what the walker reads because ``op`` is untrusted until validation),
-    ``metadata`` (a revision's own block, plus the two structural lists) and
-    ``anchor`` (a source anchor, wherever it appears). The value kept is the
-    field's *subschema*, so the exclusion test below can plant a value against
-    the field's own pattern rather than against this file's idea of it.
+    ``metadata`` (a revision's own block, walked to any depth) and ``anchor`` (a
+    source anchor, wherever it appears, collapsed to one bucket exactly as the
+    walker and :func:`_allowlist_entry_of` collapse it). :func:`_string_fields_in`
+    recurses into every inline nested object and object-array within each level,
+    so a string field the schema grows at any depth -- not only the four the
+    walker hand-lists -- joins this population and the pin below reddens until it
+    is scanned or excluded. The value kept is the field's *subschema*, so the
+    exclusion test below can plant a value against the field's own pattern rather
+    than against this file's idea of it.
     """
     population: dict[str, Mapping[str, Any]] = {}
 
-    for name, node in _string_properties(_MIGRATION_SCHEMA).items():
-        population[f"migration.{name}"] = node
+    population.update(_string_fields_in(_MIGRATION_SCHEMA, "migration"))
 
     for branch in _SCHEMA_DEFS["operation"]["oneOf"]:
         op_schema = _SCHEMA_DEFS[branch["$ref"].split("/")[-1]]
-        for name, node in _string_properties(op_schema).items():
-            population[f"operation.{name}"] = node
+        population.update(_string_fields_in(op_schema, "operation"))
 
-    metadata = _SCHEMA_DEFS["revisionMetadata"]
-    for name, node in _string_properties(metadata).items():
-        population[f"metadata.{name}"] = node
-    scope = _resolve_ref(metadata["properties"]["scope"])
-    if _is_string_array(scope["properties"]["paths"]):
-        population["metadata.scope.paths"] = scope["properties"]["paths"]
-
-    for name, node in _string_properties(_SCHEMA_DEFS["sourceAnchor"]).items():
-        population[f"anchor.{name}"] = node
+    population.update(_string_fields_in(_SCHEMA_DEFS["revisionMetadata"], "metadata"))
+    population.update(_string_fields_in(_SCHEMA_DEFS["sourceAnchor"], "anchor"))
 
     return population
 
@@ -1670,23 +1716,29 @@ def test_the_allowlist_covers_every_string_field_the_schema_declares(
     fields anyone thought of, because that list is exactly what drifts. So both
     sides are read from source: the scanned set from the ``_AUTHORED_*``
     constants (:func:`_allowlist_population`), the population from the schema JSON
-    (:func:`_schema_string_properties`). Every schema string field must be one of
-    two things, and the pin fails naming any that is neither:
+    (:func:`_schema_string_properties`), which recurses into every nested object
+    and object-array the schema declares -- so a string field added at any depth
+    (``scope.owner``, a new ``metadata.<obj>.<field>``, a
+    ``metadata.<arr>[].<field>``) is in the population rather than missed by a walk
+    that stopped at the levels the walker hand-lists. Every schema string field
+    must be one of two things, and the pin fails naming any that is neither:
 
     * **scanned** -- its name reaches the walker through an allowlist constant, or
     * **excluded** -- it is in :data:`_EXCLUDED`, whose every entry is proved
       unable to carry a reported secret by a test, not by a sentence.
 
-    On this commit the pin is **red**: ``metadata.contentType``,
-    ``metadata.validFrom``, ``metadata.validTo`` and ``migration.createdAt`` are
-    author-controlled strings the schema admits a credential into and nothing
-    scans or excludes. The first three are #336's stated target; ``createdAt`` is
-    the same class one field over -- a date-time whose format the validator does
-    not enforce -- and is listed by the same failure for the same reason. The fix
-    moves them into the allowlist; it must not add them to :data:`_EXCLUDED`,
-    because :func:`test_a_schema_excluded_field_admits_no_reported_secret` would
-    then fail on them (the schema admits a detectable value, so no exclusion
-    mechanism holds).
+    At HEAD the pin is **green**: every string field the schema declares is either
+    scanned or excluded-with-a-tested-mechanism, and there is no third state. The
+    four fields it names as neither when they are absent -- ``metadata.contentType``,
+    ``metadata.validFrom``, ``metadata.validTo`` and ``migration.createdAt`` -- are
+    author-controlled strings the schema admits a credential into; before #336's
+    fix they were in no allowlist and no exclusion, so this pin was red on them.
+    It went green in the commit that added those four to the allowlist (not to
+    :data:`_EXCLUDED`): they may not move into :data:`_EXCLUDED`, because
+    :func:`test_a_schema_excluded_field_admits_no_reported_secret` would then fail
+    on them -- the schema admits a detectable value, so no exclusion mechanism
+    holds -- which is why the same failure would list them again the moment they
+    were dropped from the scanned set.
 
     The reverse direction is asserted too: an allowlist name the schema does not
     declare is a scan reading a field that cannot exist, which is a defect in the
@@ -1933,6 +1985,44 @@ def test_a_finding_names_the_exact_list_index_it_sits_at(service: ProposalServic
     assert len(findings) == 1, f"expected one finding, got {[f.location for f in findings]}"
     assert findings[0].location == "migration.operations[0].metadata.labels[3]", (
         f"the finding names {findings[0].location!r}, not the index the secret sits at"
+    )
+
+
+def test_a_mapping_after_a_non_mapping_is_located_by_its_list_index(
+    service: ProposalService,
+) -> None:
+    """``_mappings_in`` numbers a mapping by its list position, not among the mappings (#336).
+
+    ``operations`` and ``sourceAnchors`` are lists a hand-authored migration may
+    mix with anything -- a stray scalar, a ``null`` a YAML edit left behind -- and
+    the walker still has to name each mapping where a reviewer opening the file
+    will find it. Here a non-mapping element precedes the one operation that
+    carries a secret, so that operation sits at list index 1 while it is the
+    *first* mapping in the list. The reported location must read ``operations[1]``,
+    the position a reviewer counts to, not ``operations[0]``, its rank among the
+    mappings.
+
+    This is exactly the property :func:`~theurian.application.proposal_service
+    ._mappings_in`'s docstring claims and that nothing drove until now: round two's
+    adversarial pass found the mutation that replaces ``enumerate(value)`` with a
+    counter incremented only on a mapping -- so the index becomes the rank among
+    mappings -- surviving the whole suite. Under that mutation this finding is
+    reported at ``operations[0]``, which points a reviewer at the stray scalar, so
+    the exact index is the assertion and a bare ``in`` check would not catch it.
+    """
+    document = {
+        "operations": [
+            "a stray scalar a hand edit left in the list",
+            {"op": "changeOwner", "itemId": _ITEM, "owner": PLANTED_TOKEN},
+        ]
+    }
+
+    findings = _document_findings(document)
+
+    assert len(findings) == 1, f"expected one finding, got {[f.location for f in findings]}"
+    assert findings[0].location == "migration.operations[1].owner", (
+        f"the finding names {findings[0].location!r}, not the list index the mapping sits at -- "
+        "_mappings_in numbered the operation among the mappings rather than by its list position"
     )
 
 
