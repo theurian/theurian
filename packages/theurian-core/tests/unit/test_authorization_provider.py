@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 
 from theurian.application.authorization import (
     DEFAULT_CEILING,
@@ -463,6 +464,9 @@ def test_a_profile_written_at_0600_is_accepted(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no mkfifo on this platform")
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file types")
+@pytest.mark.skipif(
+    not CAN_INTERRUPT_A_HANG, reason="needs an interruptible timer to fail rather than hang"
+)
 def test_a_fifo_in_the_profiles_place_is_refused_before_anything_opens_it(tmp_path: Path) -> None:
     """A daemon that never finishes starting is the failure this prevents.
 
@@ -471,15 +475,24 @@ def test_a_fifo_in_the_profiles_place_is_refused_before_anything_opens_it(tmp_pa
     here on a path that is read during startup. The type is checked from the
     directory entry, which cannot block.
 
-    The test asserts the refusal rather than a timeout for the same reason: a
-    hanging test hangs the suite.
+    **The refusal is wrapped in ``fails_rather_than_hanging`` because the guard it
+    pins survives its own deletion otherwise.** Delete the ``S_ISREG`` check in
+    ``load_serving_profile`` and the reads below it reach ``open()`` on the FIFO,
+    which blocks forever with no writer -- so the assertion never runs and the
+    *suite* hangs rather than turning RED. ``SIGALRM`` converts that hang into a
+    ``TimeoutError`` in seconds, which escapes ``pytest.raises`` and fails this
+    test loudly, the way a driving test for a guard is required to
+    (``hang_guard``, issue #215).
     """
     path = serving_profile_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.mkfifo(path, 0o600)
     assert stat.S_ISFIFO(path.stat().st_mode)
 
-    with pytest.raises(MalformedServingProfileError) as raised:
+    with (
+        fails_rather_than_hanging(5, waiting_for="load_serving_profile on a FIFO"),
+        pytest.raises(MalformedServingProfileError) as raised,
+    ):
         load_serving_profile(tmp_path)
 
     assert raised.value.fault is ServingProfileFault.NOT_A_REGULAR_FILE
