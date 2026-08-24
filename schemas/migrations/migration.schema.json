@@ -314,7 +314,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 2000,
-          "description": "Required. Reclassification changes who may read the content, so the rationale is part of the record. The live response reflects the new label immediately because a result reads the item's current sensitivity, like its status; the built index reflects it after the next `index build`, which re-derives affected scopes. It does not force a rebuild."
+          "description": "Required. Reclassification changes who may read the content, so the rationale is part of the record. The live response reflects the new label immediately because a result reads the item's current sensitivity, like its status. It does not force a full rebuild, and since #119 it is not inert on the index either: moving an item past the sensitivity ceiling the published build ran under purges that item's rows out of the published index in the same `migrate apply`, with no `index build` after it. A move that stays within that ceiling purges nothing, and a move back down into it has no row to restore and waits for the next `index build`."
         }
       }
     },

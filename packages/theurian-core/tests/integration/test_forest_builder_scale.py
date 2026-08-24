@@ -313,15 +313,28 @@ def test_a_reclassified_item_is_reindexed_at_its_new_sensitivity(project: Path) 
     ``restricted`` is indexed, and would be returned, as ``internal``.
 
     The rebuild is explicit here, and that is the contract rather than a test
-    convenience: a reclassification does *not* auto-rebuild the index
-    (``test_migration_engine.py::test_a_reclassification_is_not_a_withdrawal``)
-    and does not need to -- the live response is item-authoritative the instant
-    the migration commits, before any rebuild
+    convenience: a reclassification does *not* auto-rebuild the index, and does
+    not need to -- the live response is item-authoritative the instant the
+    migration commits, before any rebuild
     (``test_mcp_tools.py::test_a_reclassification_shows_in_the_response_before_any_rebuild``).
     What this pins is the other half: given an ``index build``, the wiring
     re-derives at the item's current label, so a document reclassified
     ``restricted`` is indexed as ``restricted`` and not the label the revision was
     authored under.
+
+    **"Does not auto-rebuild" is not "does not touch the index", and this test
+    used to cite a pin that said the second.** It named
+    ``test_a_reclassification_is_not_a_withdrawal``, which #119 phase 5 deleted
+    with the decision it held: a ``changeSensitivity`` moving an item *past* the
+    ceiling the published build ran under withdraws it from this deployment, so
+    ``migrate apply`` purges its rows out of the published build in the same
+    command -- ``test_migration_engine.py``'s
+    ``test_a_reclassification_is_a_withdrawal_only_past_the_builds_own_ceiling``,
+    ADR-0025 part 2. What that purge never does is *re-derive*, which is why an
+    ``index build`` is still what puts this item back with its new label -- and
+    why the reclassification here purges nothing to begin with: the build the
+    fixture publishes runs under a ceiling that admits ``restricted``, so the
+    level moved but the deployment's disclosure of it did not.
     """
     docs = [Doc("auth-policy", sensitivity="internal")]
     first = _built(project, docs, "--raptor")

@@ -96,13 +96,32 @@ The set is closed. Adding one is a protocol change and bumps `apiVersion`.
 read the content. It updates the canonical record and every live response at
 once: a search reports the new label the instant the migration commits, because a
 result reads the item's current sensitivity the way it already reads the item's
-current status, not the immutable revision's. It does **not** force a rebuild —
-the built index keeps the label it derived until the next `index build`, which
-re-derives every affected chunk and node scope at the item's current
-classification. That lag reaches no reader, because no query filters on a chunk's
-or node's sensitivity yet
-([#119](https://github.com/theurian/theurian/issues/119)). Reclassification is
-still not a change anyone should be able to make without saying why.
+current status, not the immutable revision's. It does **not** force a full
+rebuild.
+
+It is not inert on the index either, and it stopped being so in
+[#119](https://github.com/theurian/theurian/issues/119): every retriever now
+filters on a chunk's and a node's sensitivity against the ceiling this deployment
+declares, so a stale index row is no longer a label nothing reads. Three cases,
+and only the middle one is a lag:
+
+- **Past the ceiling the published build ran under** — the item is withdrawn from
+  this deployment, and `migrate apply` purges its rows out of the published index
+  in the same command, with no `index build` after it. The forest half is
+  re-derived over the surviving rows, exactly as a `deprecateItem` already was
+  (ADR-0024 decision 5, ADR-0025 part 2).
+- **Within that ceiling** — nothing is withdrawn, so nothing is purged and no
+  index file is copied. The chunk rows keep the label they were derived under
+  until the next `index build`, and that lag reaches no reader: the label a caller
+  sees is published from the item, and the gate the row must clear is applied
+  against the item's current class as well.
+- **Back down into that ceiling** — a purge copies a build and deletes from the
+  copy, so an item the build was never allowed to write has no row to restore. It
+  stays unserved until the next `index build` re-derives from canonical state,
+  which fails toward *fewer* results.
+
+Reclassification is still not a change anyone should be able to make without
+saying why.
 
 ## Engine guarantees
 
