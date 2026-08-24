@@ -1666,6 +1666,126 @@ def test_index_status_reports_as_stale_whatever_the_ranked_path_refuses(
         )
 
 
+def test_index_status_names_the_disclosure_axis_a_healthy_build_agrees_on(project: Path) -> None:
+    """The control the two flag tests below are read against (#119 phase 4).
+
+    ``profileMismatch is True`` and ``profileUnrecorded is True`` only mean
+    something beside a build the deployment does agree with. Without this,
+    ``profileMismatch is True`` is satisfied by a field wired to a constant
+    ``True``, and the ``servedSensitivities`` value is unpinned in either
+    direction.
+
+    The served set is asserted as a value and by its order: ``encode_sensitivities``
+    writes disclosure order (``public`` before ``internal``), never the alphabetical
+    order a ``StrEnum`` sorts into, and a caller reading the ceiling off this key
+    would be misled by the wrong order as surely as by the wrong members. The
+    undeclared ``project`` fixture serves the built-in ``internal`` default, which
+    is ``{public, internal}``.
+    """
+    _must(project, "index", "build")
+
+    status = _must(project, "index", "status")
+
+    assert status["profileMismatch"] is False
+    assert status["profileUnrecorded"] is False
+    assert status["servedSensitivities"] == ["public", "internal"]
+    assert status["indexedSensitivities"] == ["public", "internal"]
+    assert status["stale"] is False
+
+
+def test_index_status_flags_a_build_made_under_a_different_ceiling(project: Path) -> None:
+    """``profileMismatch`` carries the value, not merely the key (#119 phase 4).
+
+    An operator who moved the deployment's ceiling under a build has a file the
+    ranked path stands aside on every query, and ``index status`` is where they
+    are told which axis is wrong. The flag was published but its *value* was held
+    by nothing: replacing ``verdict is ProfileVerdict.MISMATCH`` with a constant
+    ``False`` left every other assertion in this file green, so the key reported
+    "no mismatch" for the very build ``knowledge.search`` was degrading on the
+    disclosure axis.
+
+    The recipe records ``["public"]`` against a deployment serving
+    ``{public, internal}`` -- a narrower build, the ``count: 0, indexed: true``
+    shape -- so the verdict is ``MISMATCH`` and not ``UNRECORDED``. Both #119 flags
+    are asserted so that a mismatch cannot masquerade as the other verdict.
+    """
+    _built_under_another_ceiling(project)
+
+    status = _must(project, "index", "status")
+
+    assert status["profileMismatch"] is True
+    assert status["profileUnrecorded"] is False, "a recorded-but-wrong flavor is not an absent one"
+    assert status["servedSensitivities"] == ["public", "internal"]
+    assert status["indexedSensitivities"] == ["public"], "the narrower set the recipe recorded"
+    assert status["stale"] is True
+    assert "index build" in status["remedy"]
+
+
+def test_index_status_flags_a_pointer_that_records_no_ceiling(project: Path) -> None:
+    """``profileUnrecorded`` carries the value, the other half of the split.
+
+    A pointer that records no readable flavor is not the same as one recording the
+    wrong one: one says the profile moved, the other says which rows the file holds
+    cannot be established at all, and a reader told the first goes hunting for an
+    edit that never happened. The flag existed but its value was unheld --
+    replacing ``published is not None and verdict is ProfileVerdict.UNRECORDED``
+    with ``False`` passed the suite -- so this pins ``True`` on the unrecorded
+    recipe and ``False`` on the mismatch and healthy cases (the two tests around
+    it), which is what keeps the two verdicts from collapsing into one.
+    """
+    _pointer_predates_the_profile_field(project)
+
+    status = _must(project, "index", "status")
+
+    assert status["profileUnrecorded"] is True
+    assert status["profileMismatch"] is False, "an absent flavor is not a wrong one"
+    assert status["indexedSensitivities"] is None, "nothing was recorded to write back"
+    assert status["stale"] is True
+    assert "index build" in status["remedy"]
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_index_status_names_a_chmod_when_the_deployment_profile_cannot_be_read(
+    project: Path, tmp_path: Path
+) -> None:
+    """A present-but-unreadable profile is reported, and its remedy is the right one.
+
+    The recipe table reaches every disagreement *recorded in the pointer*; it
+    cannot reach the profile file the deployment reads at status time being there
+    and unopenable -- a 0600 file the operator has since ``chmod 000``-ed, or one
+    owned by another account. On that input ``load_serving_profile`` raises
+    ``UnreadableServingProfileError``, ``profile_state`` catches it, and two things
+    must both hold:
+
+    - ``profileUnreadable`` names the fault rather than being blanked. Emptying it
+      (``"profileUnreadable": fault`` -> ``""``) left the caller with no signal
+      that the profile, not the index, was the problem -- and no other assertion
+      noticed.
+    - the remedy is a ``chmod`` and *not* ``theurian index build``. The rebuild
+      reads this same file and refuses on the same refusal, so naming it first
+      would hand the operator a command that cannot run until this one has. Drop
+      the ``if profile_remedy: return profile_remedy`` arm and the remedy falls
+      through to the ``stale`` arm's rebuild -- true-sounding and useless here.
+
+    ``servedSensitivities`` is ``None`` because nothing was served, which is a
+    different statement from an empty set. Skipped where a mode cannot refuse --
+    the offline CI job runs as root -- because there the ``chmod 000`` denies
+    nothing and the whole branch never fires.
+    """
+    _must(project, "index", "build")
+    _break_the_profile(tmp_path / "datadir", "unreadable")
+
+    status = _must(project, "index", "status")
+
+    assert status["profileUnreadable"], "an unreadable profile must be named, not blanked"
+    assert status["servedSensitivities"] is None, "nothing was served, so no set is published"
+    assert status["stale"] is True, "a build whose ceiling cannot be established is not fresh"
+    assert "chmod" in status["remedy"], "the profile's mode is what has to be fixed first"
+    assert "index build" not in status["remedy"], (
+        "a rebuild reads this same file and refuses on the same fault, so it cannot be the remedy"
+    )
+
+
 def test_index_status_reports_the_schema_it_found_and_the_one_it_wants(project: Path) -> None:
     """Two numbers, because one of them cannot be acted on.
 
