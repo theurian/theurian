@@ -228,14 +228,17 @@ public security channel — only when **both** of these hold:
     accepts `public|internal|confidential|restricted` with no refusal (unlike
     tenant and ACL group, which are refused at write time), so a `restricted`
     document *is* ingested and returned, labelled, while nothing acted on the
-    label. It is now enforced in three places rather than published in one: a
+    label. It is now enforced in four places rather than published in one: a
     build writes no row for an item above the deployment's declared ceiling, every
-    retriever emits `chunks.sensitivity IN (…)` with the match, and the canonical
-    gate re-checks each candidate against the item's *current* class, which is
-    what withholds a document reclassified since the build (#119, ADR-0025). Two
-    parts of that ADR are still owed and are named there: `changeSensitivity` is
-    not yet a purge trigger, and the two-corpora equality suite is not yet
-    parametrized over this axis. This list moves when — and only when — `_scope`
+    retriever emits `chunks.sensitivity IN (…)` with the match, the canonical gate
+    re-checks each candidate against the item's *current* class, and a
+    `changeSensitivity` that moves an item past the ceiling its build ran under
+    purges that item out of the published index in the same `migrate apply`
+    (#119, ADR-0025). One part of that ADR is still owed and is named there: the
+    two-corpora equality suite is not yet parametrized over this axis. The purge
+    is not symmetric and the ADR records why — a reclassification *into* the
+    ceiling waits for the next `theurian index build`, failing toward fewer
+    results. This list moves when — and only when — `_scope`
     gains or drops a WHERE predicate; an axis that reaches the schema but not that
     clause has not moved it (#63, #119);
   - content withheld by approval state, supersession or retirement, read

@@ -196,10 +196,13 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
     """Publish a copy of the current index with the withdrawn revisions removed.
 
     Which revisions those are depends on the published index's **own build
-    flavor** -- whether it was built with ``--include-unapproved`` -- which only
-    the pointer records, so it is resolved here rather than in the engine
-    (`revisions_to_purge`): a doc made ``draft`` in place is withheld from a
-    default index but legitimately held by an ``--include-unapproved`` one.
+    flavor** -- both axes of it, ``indexesUnapproved`` and
+    ``indexedSensitivities`` -- which only the pointer records, so it is resolved
+    here rather than in the engine (`revisions_to_purge`): a doc made ``draft`` in
+    place is withheld from a default index but legitimately held by an
+    ``--include-unapproved`` one, and an item reclassified to ``confidential`` is
+    withheld from a build made at an ``internal`` ceiling but legitimately held by
+    one made under the shipped default (#119, ADR-0025 part 2).
 
     Does nothing, cheaply, when there is nothing to do: no withdrawal touched an
     item, nothing that survives the flavor reduction, no published build, or a
@@ -238,24 +241,31 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
     indexes_unapproved = bool(published.get("indexesUnapproved", False))
     indexed_sensitivities = decode_sensitivities(published.get("indexedSensitivities"))
     if indexed_sensitivities is None:
-        # The second flavor, and the one this cannot invent (#119, ADR-0025). A
-        # purge copies a build and deletes rows from the copy, so the copy holds
-        # exactly what the original was allowed to hold -- and the pointer is the
-        # only record of what that was. A build whose flavor the pointer does not
-        # state is already one retrieval stands aside from
-        # (`mcp.search._published_index`), so it is not serving the withdrawn
-        # rows' statistics to anybody, and republishing it under a *guessed*
-        # flavor is how a guess becomes the record. Reported as unusable, whose
-        # standing remedy is the rebuild that fixes both.
+        # The second flavor, and the one this cannot invent (#119, ADR-0025). It
+        # is read twice below -- carried forward onto the new pointer, and handed
+        # to `revisions_to_purge` as the ceiling a reclassification is judged
+        # against -- and a guess would be wrong in both. A purge copies a build and
+        # deletes rows from the copy, so the copy holds exactly what the original
+        # was allowed to hold, and the pointer is the only record of what that was.
+        # A build whose flavor the pointer does not state is already one retrieval
+        # stands aside from (`mcp.search._published_index`), so it is not serving
+        # the withdrawn rows' statistics to anybody, and republishing it under a
+        # *guessed* flavor is how a guess becomes the record. Reported as unusable,
+        # whose standing remedy is the rebuild that fixes both.
         return WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
 
     deduped = tuple(
-        revisions_to_purge(withdrawal_candidates, indexes_unapproved=indexes_unapproved)
+        revisions_to_purge(
+            withdrawal_candidates,
+            indexes_unapproved=indexes_unapproved,
+            indexed_sensitivities=indexed_sensitivities,
+        )
     )
     if not deduped:
         # The apply touched items, but none of their revisions is withheld from
         # *this* build's flavor -- e.g. a draft that an --include-unapproved index
-        # legitimately holds. Nothing to purge.
+        # legitimately holds, or an item reclassified within the ceiling this build
+        # ran under (#119). Nothing to purge.
         return WithdrawalPurge(published=False, reason=NO_WITHDRAWAL)
 
     orphan: Path | None = None

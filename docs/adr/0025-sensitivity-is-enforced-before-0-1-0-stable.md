@@ -54,7 +54,13 @@ the leaf half alone, does not discharge this ADR:
    an item above the ceiling — see *Deliberately left open* below for which of
    the two candidate shapes that settled, and Compliance for the test.
 2. **A `changeSensitivity`-triggered purge**, extending
-   [ADR-0024](0024-a-purge-is-a-build.md) decision 5's trigger set.
+   [ADR-0024](0024-a-purge-is-a-build.md) decision 5's trigger set. **Done in
+   #119 phase 5** (2026-08-24): the operation joins the withdrawal candidate set
+   and `revisions_to_purge` gains the build's recorded disclosure flavor as a
+   second axis beside `indexesUnapproved`, so an item reclassified past the
+   ceiling its build ran under leaves the published index in the same
+   `migrate apply` — see Compliance for the test and for the one direction this
+   cannot close.
 3. **The read-side predicate**, adding the axis to `_scope` *and* to
    `_node_scope` — the forest's own first gate, which emits the same predicates
    over `nodes` and is where a routed query meets a summary node before it
@@ -131,10 +137,18 @@ does**:
     what such a build excluded. The bump makes those files unusable by
     construction (`index-schema-mismatch`, rebuilt by the standing remedy) rather
     than filtered on read.
-  - **The read-side predicate is still owed** (part 3). Until it lands, a
-    document reclassified upward *after* a build keeps its chunk row and is
-    withheld by the canonical re-check alone — which is now the only way an
-    above-ceiling row is in a file this deployment reads at all.
+  - **A reclassification is now an index-side event.** Exclusion makes a build
+    specific to a ceiling, so an item that moves past that ceiling afterwards is
+    a row the build would not write today — which is what turns
+    `changeSensitivity` into a purge trigger (part 2) where under a
+    gate-at-read-time design it would have been nothing but a relabelling. The
+    trigger is not symmetric, and cannot be: a purge copies a build and deletes
+    from the copy, so an item reclassified *into* the ceiling has no row to
+    restore and waits for the next `index build`. Recorded under Compliance.
+
+  - **The read-side predicate** (part 3) was owed here and landed in phase 4.
+    Before it, a document reclassified upward after a build kept its chunk row
+    and was withheld by the canonical re-check alone.
 
 Naming these is the point. An ADR that pretended to settle them would be
 overturned by the first implementation attempt.
@@ -170,15 +184,15 @@ overturned by the first implementation attempt.
 
 | Alternative | Why rejected |
 | :-- | :-- |
-| **Ship the read-side predicate alone** | Two measured defects. (a) The index still holds the withheld text, so BM25 collection statistics computed over the whole index file continue to price the visible rows — T-17a's mechanism, moved from the status axis to the sensitivity axis; the threat model records T-17a's closure as covering "the status axis only" for exactly this reason. (b) `migration_engine.py` excludes `changeSensitivity` from the withdrawal candidate set the purge reads on the recorded ground that the stale column "is read by no gate before #119". The moment a gate reads it, that exclusion inverts into a defect: a document reclassified `internal → restricted` keeps clearing the gate under its stale label until the next manual `index build`, and there is no canonical re-check for sensitivity of the kind `CanonicalVisibility._may_surface` performs for status. |
+| **Ship the read-side predicate alone** | Two measured defects. (a) The index still holds the withheld text, so BM25 collection statistics computed over the whole index file continue to price the visible rows — T-17a's mechanism, moved from the status axis to the sensitivity axis; the threat model records T-17a's closure as covering "the status axis only" for exactly this reason. (b) `migration_engine.py` *excluded* `changeSensitivity` from the withdrawal candidate set the purge reads, on the recorded ground that the stale column "is read by no gate before #119". The moment a gate read it, that exclusion inverted into a defect: a document reclassified `internal → restricted` kept its row in the published build until the next manual `index build`. Both halves are closed as of phases 3–5; this row records why shipping part 3 on its own would not have been enough. |
 | **Keep sensitivity a label until after 1.0** | A published governance label that no query reads is, by this project's own grading, a claim that misleads a security decision. Deferral was defensible while one human at a CLI was the only writer; Phase B multiplies the writers, and a stable release turns the current meaning of every corpus into a compatibility promise. |
 | **Remove the label until it can be enforced** | `sensitivity` is already in the published wire contract and carries real information a caller may act on. Removing it is a breaking change to that contract, it deletes information the corpus genuinely holds, and it buys no safety — the underlying content is served either way. It trades a misleading claim for no claim at all, at the cost of a break. |
 | **Enforce tenant and ACL group at the same time** | Not rejected, deferred within the same issue: those axes are refused at write time today, so they hold no content and nothing routes on them. Sensitivity is the axis whose values actually vary, which is what makes it the one that misleads. |
 
 ## Compliance
 
-**Parts 1 and 3 are discharged as of #119 phases 3 and 4 (2026-08-24). Parts 2
-and 4 are owed.** The owner of both is
+**Parts 1, 2 and 3 are discharged as of #119 phases 3, 4 and 5 (2026-08-24).
+Part 4 is owed.** Its owner is
 [#119](https://github.com/theurian/theurian/issues/119), and the milestone is
 Phase 0 — before 0.1.0 stable.
 
@@ -194,6 +208,46 @@ Phase 0 — before 0.1.0 stable.
   gate. The builder's call site is pinned in
   `tests/unit/test_gate_call_sites.py::DISCLOSURE_GATE_CALL_SITES`, so its
   removal fails there as well.
+
+- **Part 2 — done.** `_withdrawal_affected_item` admits `changeSensitivity` to
+  the withdrawal candidate set, `WithdrawalCandidate` carries the item's **final**
+  disclosure class, and `revisions_to_purge` reduces the set against *two* flavor
+  axes read off the published pointer: `indexesUnapproved` as before, and
+  `indexedSensitivities` — the expanded set the build was allowed to write, never
+  a ceiling word re-expanded at purge time. A revision goes if it fails either.
+  So one `migrate apply` publishes a purged build with no `index build` after it,
+  the way a `deprecateItem` already does, and the reclassification meets the same
+  `recompute_forest` the withdrawal trigger does rather than a second mechanism.
+
+  This reverses the exclusion the previous revision of this document recorded as
+  deliberate, and the reasoning is in `_withdrawal_affected_item`'s own docstring
+  rather than only here: the ground for excluding it was that the index's stale
+  `sensitivity` column "is read by no gate", which phases 3 and 4 made false.
+
+  `tests/integration/test_sensitivity_purge.py` drives it, through the real CLI
+  with no `index build` after the apply. The upward case is parametrized over all
+  four text indexes and asserts on the *file* — no chunk row, no summary node
+  carrying the document's marker, and no `fts5vocab` term that could only have
+  come from it — because that is where the T-17a mechanism lives; a sibling
+  asserts the response is still `indexed: true` with no `fallbackReason`, so a
+  purge that broke the pointer's flavor and pushed the query onto the canonical
+  scan cannot pass as a withholding. `test_the_purged_forest_equals_one_built_
+  above_the_ceiling` compares the purged forest against one built when the item
+  was already `confidential` — nodes, derivation edges and node vectors — which
+  is how the trigger inherits ADR-0008 decision 9 rather than re-arguing it.
+  Measured RED against the pre-phase-5 engine: six of the file's eight tests
+  failed, the four parametrizations on the item's chunk rows still being present.
+
+  **What part 2 does not close, recorded rather than fixed.** A reclassification
+  *downward* — `restricted → internal` under an `internal` ceiling — cannot be
+  purged *in*. A purge copies the published build and deletes rows from the copy
+  (`index_purge.purge_into`), and the build never wrote a row for an item that
+  was above its ceiling at build time, so there is nothing to delete and nothing
+  to add. The item stays unserved until the next `index build` re-derives from
+  canonical state. That fails toward *fewer* results, which is the same direction
+  a draft approved after the build already fails in, and it is pinned in both
+  halves by `test_a_downward_reclassification_waits_for_the_next_build` so that a
+  change closing the window turns a test RED rather than passing unnoticed.
 
 - **Part 3 — done.** `_scope` and `_node_scope` each emit
   `sensitivity IN (…)` over the deployment's expanded grant beside their project
@@ -231,26 +285,8 @@ Phase 0 — before 0.1.0 stable.
   which is what forced the SQL, the test and both prose surfaces into one commit,
   exactly as this section predicted.
 
-Still owed, with the part of the decision each discharges:
+Still owed, with the part of the decision it discharges:
 
-- **Part 2** — a test that a `changeSensitivity` migration publishes a purged
-  build in the same `migrate apply`, the way a withdrawal already does. The
-  current behaviour is the opposite and is deliberate:
-  `_withdrawal_affected_item` (`migration_engine.py:658-669`) excludes the
-  operation from the withdrawal candidate set, with the reasoning in its
-  docstring; `revisions_to_purge` then reduces that set by build flavor and
-  would also need a sensitivity notion of "flavor" to do its half.
-- **Part 3** — a test that `_scope` and `_node_scope` refuse a withheld
-  sensitivity. Both emit two predicates today, project and status. **The axis
-  set itself is already pinned**, which changes what the implementer owes rather
-  than adding a gap:
-  `tests/unit/test_gate_call_sites.py::test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits`
-  binds `_scope`'s emitted `chunks.<column>` tokens to the prose in two
-  documents, and runs once per document (`SECURITY.md` and
-  `requirements-analysis.md`). A behaviour-neutral third predicate added to
-  `_scope` turns it RED in both parametrizations — measured. So adding the
-  sensitivity axis is a change to the SQL, that test, and both prose surfaces
-  **in one commit**, or the suite refuses it.
 - **Part 4** — the existing two-corpora equality tests, parametrized over the
   sensitivity axis and covering all four scoring surfaces. The status-axis
   closure is the model to follow and took three tests, not one:
@@ -258,14 +294,27 @@ Still owed, with the part of the decision each discharges:
   `test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
   and
   `test_forest_builder.py::test_a_purged_forest_leaves_no_residue_in_a_node_text_index`
-  over both node indexes. Nothing runs any of them for sensitivity. Phase 3
-  changed what this owes rather than discharging it: with the build excluding
-  above-ceiling rows, the pair `test_absence_proof.py` generates for the ceiling
-  shape now holds two indexes that never held the withheld text, and asserts they
-  hold *identical* text (`_indexed_text`). The pair still owed is the one whose
-  two indexes differ -- build at `internal`, reclassify to `restricted`, serve at
-  `internal` -- which is the only arrangement that puts an above-ceiling row in
-  front of a ranked query once part 1 has landed.
+  over both node indexes. Phase 3 changed what this owes rather than discharging
+  it: with the build excluding above-ceiling rows, the pair
+  `test_absence_proof.py` generates for the ceiling shape now holds two indexes
+  that never held the withheld text, and asserts they hold *identical* text
+  (`_indexed_text`). The pair still owed is the one whose two indexes differ —
+  build at `internal`, reclassify to `restricted`, serve at `internal` — which is
+  the only arrangement that puts an above-ceiling row in front of a ranked query
+  once part 1 has landed.
+
+  **Phase 5 narrowed this again and did not close it.** With the purge trigger in
+  place that arrangement no longer survives a `migrate apply`, so the pair has to
+  be built over a published build the purge did not reach — the residual state
+  `test_mcp_tools.py::_apply_leaving_the_stale_build_published` already
+  reproduces. What phase 5 *did* deliver against this part is the derived half of
+  the equality:
+  `test_sensitivity_purge.py::test_the_purged_forest_equals_one_built_above_the_ceiling`
+  compares nodes, derivation edges and node vectors between a purged build and
+  one built when the item was already above the ceiling. That is the analogue of
+  `test_forest_purge_equality.py`'s deliverable, on this axis. The leaf-side
+  response equality — one query, two corpora, whole response compared — is what
+  remains.
 
 **All four means all four over both halves.** A change that gates
 `chunks_fts`/`chunks_trigram` and leaves `nodes_fts`/`nodes_trigram` open does
@@ -280,8 +329,9 @@ its going is what part 3 landing means**: SECURITY.md said no retrieval predicat
 read `chunks.sensitivity`, so it was "a published label, not a control", and that
 was true until phase 4 made it false. What replaced it names the three places the
 axis is now enforced — the build, the retrievers' predicate, the canonical
-re-check — and names parts 2 and 4 as still owed, which is the shape this ADR
-asked for: the prose may say what the code does and no more. SECURITY.md
+re-check — and named parts 2 and 4 as still owed; phase 5 moved that to part 4
+alone and added the purge trigger to the enforcement it lists, which is the shape
+this ADR asked for: the prose may say what the code does and no more. SECURITY.md
 separately claimed that sensitivity is refused at write time, which is false
 (only `tenantId` and `aclGroup` are); that clause was in the sentence phase 4
 rewrote and is not restated there.

@@ -52,15 +52,19 @@ EVERY_SENSITIVITY = frozenset(Sensitivity)
 
 
 def _deprecated_candidates(revision_ids: Sequence[str]) -> list[WithdrawalCandidate]:
-    """One deprecated single-revision item per id -- non-surfaceable at any flavor.
+    """One deprecated single-revision item per id -- non-holdable at any flavor.
 
     Lets a test name exactly the revisions it wants purged: a deprecated item's
-    revisions are withheld whether or not the index holds drafts, so the flavor
-    does not enter and the purge set is precisely ``revision_ids``.
+    revisions are withheld whether or not the index holds drafts, so neither axis
+    of the flavor enters and the purge set is precisely ``revision_ids``.
+    ``internal`` is the class every pointer in this file records as indexed, so the
+    disclosure axis withholds nothing on its own and the status does all the work
+    (#119, ADR-0025 part 2).
     """
     return [
         WithdrawalCandidate(
             status=KnowledgeStatus.DEPRECATED,
+            sensitivity=Sensitivity.INTERNAL,
             current_revision_id=revision_id,
             revision_ids=(revision_id,),
         )

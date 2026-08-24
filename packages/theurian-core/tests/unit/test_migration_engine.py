@@ -99,6 +99,15 @@ def _engine(*bodies: str) -> MigrationEngine:
     return MigrationEngine(FrozenClock(NOW), content)
 
 
+#: The disclosure flavor of a build made under the shipped default ceiling: every
+#: level, so nothing is withheld on that axis and a case that is not about the
+#: ceiling reduces exactly as it did before the axis existed (#119).
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
+#: What a build made under a declared ``internal`` ceiling holds -- the flavor a
+#: reclassification to ``confidential`` or ``restricted`` falls outside of.
+UP_TO_INTERNAL = frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+
 ITEM = ItemId("architecture.auth-policy")
 REV_1 = RevisionId("01K1REV00101234567890ABCDE")
 REV_2 = RevisionId("01K1REV00201234567890ABCDE")
@@ -484,16 +493,29 @@ def test_deprecating_records_the_successor_relation() -> None:
 # -- ADR-0024 decision 5: what a withdrawal tells a still-published index ----
 
 
-def _purged(report: ApplyReport, *, indexes_unapproved: bool = True) -> list[str]:
+def _purged(
+    report: ApplyReport,
+    *,
+    indexes_unapproved: bool = True,
+    indexed_sensitivities: frozenset[Sensitivity] = EVERY_SENSITIVITY,
+) -> list[str]:
     """The revisions the report's candidates reduce to at a given index flavor.
 
     The engine gathers candidates (final item states); the purge reduces them
-    against the published index's flavor. These cases are flavor-independent --
-    deprecated/rejected are withheld at both flavors, a restored item at neither --
-    so ``indexes_unapproved`` defaults to True; the flavor split is exercised by
-    :func:`test_a_reject_in_place_to_draft_is_withdrawn_only_from_a_default_index`.
+    against the published index's flavor, which has two axes. These cases are
+    flavor-independent on both -- deprecated/rejected are withheld at every
+    ``indexesUnapproved``, a restored item at none, and none of them moves an
+    item's disclosure class -- so both parameters default to the widest value that
+    withholds nothing on its own. The status split is exercised by
+    :func:`test_a_reject_in_place_to_draft_is_withdrawn_only_from_a_default_index`
+    and the sensitivity split by
+    :func:`test_a_reclassification_is_a_withdrawal_only_past_the_builds_own_ceiling`.
     """
-    return revisions_to_purge(report.withdrawn_candidates, indexes_unapproved=indexes_unapproved)
+    return revisions_to_purge(
+        report.withdrawn_candidates,
+        indexes_unapproved=indexes_unapproved,
+        indexed_sensitivities=indexed_sensitivities,
+    )
 
 
 def test_a_deprecation_reports_the_items_whole_history_as_withdrawn() -> None:
@@ -749,25 +771,12 @@ def test_changing_owner_and_sensitivity_updates_the_item() -> None:
     assert item.sensitivity is Sensitivity.CONFIDENTIAL
 
 
-def test_a_reclassification_is_not_a_withdrawal() -> None:
-    """A ``changeSensitivity`` withdraws nothing, so it reaches no purge candidate.
+def _reclassified(level: Sensitivity) -> ApplyReport:
+    """One item created, then moved to ``level`` by a second apply.
 
-    ``withdrawn_candidates`` feeds exactly one consumer -- the withdrawal purge
-    (``publish_purge_for_withdrawal``), which copies the published build and
-    deletes withheld rows. A reclassification withholds none of the item's
-    revisions: its status and current revision are unchanged, so the purge would
-    gather the item and then discard it, doing nothing. Routing it there anyway is
-    inert plumbing under a name that implies a rebuild that never fires, so the
-    engine leaves ``changeSensitivity`` out of the affected set.
-
-    That is not a gap. The reclassified label reaches a caller immediately through
-    the item-authoritative response (``result_payload``,
-    ``test_result_payload.py``) with no rebuild, and the built index's scope
-    columns match canonical again after the next ``index build`` re-derives at the
-    item's current label (``test_forest_builder_scale.py``). This pins the
-    contract those two hold up: the apply of a pure reclassification produces no
-    withdrawal candidate. Re-adding ``changeSensitivity`` to
-    ``_withdrawal_affected_item`` turns it red.
+    Two applies rather than one, so the report under test carries *only* the
+    reclassification -- the create's own candidate would otherwise be in it and
+    every assertion below would be about two items.
     """
     from theurian.domain.migration import ChangeSensitivity
 
@@ -776,8 +785,7 @@ def test_a_reclassification_is_not_a_withdrawal() -> None:
     engine.apply(
         writer, PROJECT, MigrationSet.ordered((_create_and_upsert(MIG_1, REV_1, BODY_V1),))
     )
-
-    report = engine.apply(
+    return engine.apply(
         writer,
         PROJECT,
         MigrationSet.ordered(
@@ -785,19 +793,77 @@ def test_a_reclassification_is_not_a_withdrawal() -> None:
                 _migration(
                     MIG_2,
                     ChangeSensitivity(
-                        item_id=ITEM,
-                        sensitivity=Sensitivity.CONFIDENTIAL,
-                        reason="Contains incident detail",
+                        item_id=ITEM, sensitivity=level, reason="Contains incident detail"
                     ),
                 ),
             )
         ),
     )
 
+
+def test_a_reclassification_is_a_withdrawal_only_past_the_builds_own_ceiling() -> None:
+    """ADR-0025 part 2: a ``changeSensitivity`` reaches the purge, and the flavor decides.
+
+    This reverses a recorded decision, and the reversal is the point. The engine
+    used to leave ``changeSensitivity`` out of the affected set on the ground that
+    a reclassification withholds nothing -- its status and current revision are
+    unchanged -- and that the built index's stale ``sensitivity`` column "is read
+    by no gate". #119 phases 3 and 4 made the second half false: a build now writes
+    no row above the deployment's ceiling and every retriever filters on the
+    column, so a *reclassified* row is the only above-ceiling row a served build
+    can hold, and its text is still in four FTS5 tables pricing every visible row
+    against it (T-17a on this axis).
+
+    Both directions are asserted from one report, because the operation is the same
+    one and only the *build's* recorded flavor differs. Against a build made under
+    the shipped default every level is held, so a move to ``confidential`` removes
+    nothing and no index is copied -- which is what lets the operation join the
+    candidate set unconditionally instead of the engine having to know a ceiling it
+    cannot see. Against a build made at ``internal`` the same move is outside what
+    that build was allowed to write, and every revision of the item goes.
+
+    Removing ``ChangeSensitivity`` from ``_withdrawal_affected_item`` turns the
+    second assertion red; dropping the ``may_disclose`` term from
+    ``revisions_to_purge`` turns the first one red.
+    """
+    report = _reclassified(Sensitivity.CONFIDENTIAL)
+
     assert report.applied == [MigrationId(MIG_2)], "the reclassification must have applied"
-    assert report.withdrawn_candidates == [], (
-        "a pure reclassification reached a withdrawal candidate -- the purge would "
-        "discard it, so this is inert plumbing implying a rebuild that never fires"
+    assert [candidate.sensitivity for candidate in report.withdrawn_candidates] == [
+        Sensitivity.CONFIDENTIAL
+    ], "the candidate must carry the item's *final* class, or the purge judges the old one"
+    assert _purged(report, indexed_sensitivities=EVERY_SENSITIVITY) == [], (
+        "a build made under the shipped default holds every level, so a move to "
+        "`confidential` is still a row it was allowed to write -- purging it would copy "
+        "the whole index on every relabelling and delete a row nothing withholds"
+    )
+    assert _purged(report, indexed_sensitivities=UP_TO_INTERNAL) == [REV_1.value], (
+        "an item reclassified above the ceiling its build ran under is a row that build "
+        "would not write today, and nothing but the purge can take it out of the file"
+    )
+
+
+def test_a_reclassification_within_the_ceiling_purges_nothing() -> None:
+    """The downward and sideways case, pinned apart from the upward one.
+
+    ``internal -> public`` under a build made at ``internal``: the item was
+    holdable before and is holdable after, so the reduction is empty and
+    ``publish_purge_for_withdrawal`` returns its ``no-withdrawal`` state without
+    reading a single index page. Asserted on its own because the upward test's
+    allow-all half varies the *build* while this varies the *item*, and a
+    reduction that keyed on "any reclassification at all" would pass that one.
+
+    The **downward** residual this cannot fix is recorded in ADR-0025 and pinned
+    end to end in ``test_sensitivity_purge.py``: an item moving *below* the
+    ceiling is a row the build never wrote, and a purge copies a build and deletes
+    from the copy -- there is nothing to add. It stays absent until the next
+    ``index build``, failing toward fewer results.
+    """
+    report = _reclassified(Sensitivity.PUBLIC)
+
+    assert _purged(report, indexed_sensitivities=UP_TO_INTERNAL) == [], (
+        "a reclassification that stays within the build's ceiling withheld a revision "
+        "the build is still allowed to hold"
     )
 
 

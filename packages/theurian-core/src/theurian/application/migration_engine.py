@@ -22,7 +22,13 @@ from typing import Final, Protocol
 
 from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import refuse_duplicate_content_files
-from theurian.domain.enums import KnowledgeStatus, RelationType, may_surface
+from theurian.domain.enums import (
+    KnowledgeStatus,
+    RelationType,
+    Sensitivity,
+    may_disclose,
+    may_surface,
+)
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
@@ -117,13 +123,20 @@ class WithdrawalCandidate:
     Enough for the purge to decide -- at the *published index's own build flavor*,
     which only the index pointer records -- which of the item's revisions that
     index must stop holding (ADR-0024 decision 5). The engine cannot make that
-    decision on its own: whether a ``draft`` is withheld depends on whether the
-    index was built with ``--include-unapproved``, and the engine never reads the
-    index. So it gathers the final state here and `revisions_to_purge` reduces it
-    against the flavor the pointer carries.
+    decision on its own, and the flavor has **two** axes: whether a ``draft`` is
+    withheld depends on ``--include-unapproved``, and whether a ``confidential``
+    item is withheld depends on the ceiling that build ran under (#119, ADR-0025
+    part 2). The engine reads neither -- it never opens the index -- so it gathers
+    the final state here and `revisions_to_purge` reduces it against the flavor
+    the pointer carries.
+
+    :attr:`sensitivity` is the item's **final** class, read off canonical state
+    with everything else, which is what makes a reclassification-then-undo within
+    one apply cancel exactly the way a deprecate-then-restore already does.
     """
 
     status: KnowledgeStatus
+    sensitivity: Sensitivity
     current_revision_id: str | None
     revision_ids: tuple[str, ...]
 
@@ -136,13 +149,14 @@ class ApplyReport:
     skipped: list[MigrationId] = field(default_factory=list)
     operations_applied: int = 0
     #: The items this apply moved into or out of a withdrawn state, each with its
-    #: **final** canonical state (status, current and all revisions) -- gathered
-    #: after the apply commits, never accumulated per operation. The purge reduces
-    #: these to a purge set against the published index's own flavor
-    #: (`revisions_to_purge`), because whether a ``draft`` is withheld is a
-    #: property of the *index*, not the store. Reading final state is what makes a
-    #: restore cancel a deprecation, a reject-in-place withdraw an item whose
-    #: revision id never changed, and a full replay idempotent.
+    #: **final** canonical state (status, disclosure class, current and all
+    #: revisions) -- gathered after the apply commits, never accumulated per
+    #: operation. The purge reduces these to a purge set against the published
+    #: index's own flavor (`revisions_to_purge`), because whether a ``draft`` is
+    #: withheld, and whether a ``confidential`` item is, are both properties of the
+    #: *index* and not of the store. Reading final state is what makes a restore
+    #: cancel a deprecation, a reject-in-place withdraw an item whose revision id
+    #: never changed, and a full replay idempotent.
     withdrawn_candidates: list[WithdrawalCandidate] = field(default_factory=list)
 
     @property
@@ -646,30 +660,38 @@ def _replace_item(item: KnowledgeItem, **changes: object) -> KnowledgeItem:
 def _withdrawal_affected_item(operation: Operation) -> ItemId | None:
     """The item an operation could move into (or out of) a withdrawn state.
 
-    Only the three operations that touch an item's status or its current revision:
-    a ``deprecateItem``, a ``restoreItem`` (which can *undo* a withdrawal), and an
-    ``upsertRevision`` (which can supersede an old revision, or -- reusing a
-    revision id and only changing status -- reject an item in place). The
-    withdrawn set is then read off the final state of exactly these items, so an
-    item some *other* apply withdrew and this one does not touch is left to the
-    apply that did, and a replay that re-touches all of them recomputes the same
-    answer.
+    The four operations that touch an item's status, its disclosure class, or its
+    current revision: a ``deprecateItem``, a ``restoreItem`` (which can *undo* a
+    withdrawal), an ``upsertRevision`` (which can supersede an old revision, or --
+    reusing a revision id and only changing status -- reject an item in place),
+    and a ``changeSensitivity``. The withdrawn set is then read off the final state
+    of exactly these items, so an item some *other* apply withdrew and this one
+    does not touch is left to the apply that did, and a replay that re-touches all
+    of them recomputes the same answer.
 
-    A ``changeSensitivity`` is deliberately *not* here, even though it moves a
-    scope component (SEC-14, ADR-0008 decision 1). This set feeds only the
-    withdrawal purge, which copies the published build and deletes withheld rows
-    (`index_purge`) -- and a reclassification withholds none (its status and
-    current revision are unchanged), so the purge would gather the item and then
-    discard it. Nothing auto-rebuilds the index for it, and nothing needs to: the
-    live response is item-authoritative (`result_payload` reads the item's current
-    sensitivity, so a search reports the new label the instant the migration
-    commits, before any rebuild), and the built index's stale ``sensitivity``
-    column is read by no gate before #119 -- an unsigned local index row nothing
-    reads is not a disclosure (SEC-7). That column matches canonical again after
-    the next ``index build``, which re-derives at the item's current label.
+    **``changeSensitivity`` is here since #119, and it used to be deliberately
+    absent.** The recorded reasoning for excluding it was that a reclassification
+    withholds nothing -- its status and current revision are unchanged -- so the
+    purge would gather the item and discard it, and that the built index's stale
+    ``sensitivity`` column "is read by no gate", making it an unsigned local row
+    nothing reads rather than a disclosure (SEC-7). Both halves of that were true
+    and the second is now false: #119 phase 3 makes a build write no row above the
+    deployment's ceiling, and phase 4 makes every retriever emit
+    ``sensitivity IN (…)``, so a *reclassified* row is the only above-ceiling row
+    a served build can hold at all. What withholds it today is the canonical
+    re-check on the item's current class -- one gate, at read time, over rows whose
+    text is still in four FTS5 tables pricing every visible row against it (T-17a
+    on this axis). That is the window ADR-0025 part 2 exists to close, and it
+    closes here: a reclassification *is* a withdrawal from a deployment that does
+    not serve the class it moved to, so it joins the set the purge reduces.
+
+    Joining the set is not purging. `revisions_to_purge` decides, against the
+    ceiling the published build actually ran under, and a reclassification that
+    stays within it removes nothing -- which is why the operation can be added
+    unconditionally here without making every relabelling copy an index.
     """
     match operation:
-        case DeprecateItem() | RestoreItem() | UpsertRevision():
+        case ChangeSensitivity() | DeprecateItem() | RestoreItem() | UpsertRevision():
             return operation.item_id
         case _:
             return None
@@ -681,10 +703,11 @@ def _gather_withdrawal_candidates(
     """The final canonical state of each item a withdrawal touched.
 
     Read once, inside the transaction, from the store rather than accumulated per
-    operation -- which is what makes a restore cancel a deprecation, a reject in
-    place register though its revision id never moved, and a replay idempotent.
-    The purge, not this, decides which revisions to remove, because that depends
-    on the *index's* flavor (`revisions_to_purge`).
+    operation -- which is what makes a restore cancel a deprecation, a
+    reclassification cancel an earlier one in the same apply, a reject in place
+    register though its revision id never moved, and a replay idempotent. The
+    purge, not this, decides which revisions to remove, because that depends on
+    the *index's* flavor (`revisions_to_purge`).
     """
     candidates: list[WithdrawalCandidate] = []
     for item_id in affected:
@@ -695,6 +718,7 @@ def _gather_withdrawal_candidates(
         candidates.append(
             WithdrawalCandidate(
                 status=item.status,
+                sensitivity=item.sensitivity,
                 current_revision_id=None if current is None else current.value,
                 revision_ids=tuple(
                     revision_id.value
@@ -706,15 +730,21 @@ def _gather_withdrawal_candidates(
 
 
 def revisions_to_purge(
-    candidates: Sequence[WithdrawalCandidate], *, indexes_unapproved: bool
+    candidates: Sequence[WithdrawalCandidate],
+    *,
+    indexes_unapproved: bool,
+    indexed_sensitivities: frozenset[Sensitivity],
 ) -> list[str]:
     """Revision ids a published index must not hold, **at its own build flavor**.
 
     The class the withdrawal purge converges on (ADR-0024 decision 5): a published
-    index holds no revision that is non-surfaceable *at that index's own build
-    flavor*, nor non-current. ``indexes_unapproved`` is that flavor, read off the
-    index pointer -- and it is load-bearing, because a uniform flavor is wrong in
-    one direction each:
+    index holds no revision that is non-holdable *at that index's own build
+    flavor*, nor non-current. The flavor has two axes, both read off the index
+    pointer and neither knowable to the engine, and a revision goes if it fails
+    **either**.
+
+    ``indexes_unapproved`` is the first, and it is load-bearing, because a uniform
+    flavor is wrong in one direction each:
 
     - a **default** index (``indexes_unapproved=False``) holds only approved
       chunks, so a revision now ``draft`` or ``proposed`` -- an in-place status
@@ -728,9 +758,36 @@ def revisions_to_purge(
       revisions go. Testing with the flag *False* would delete a draft that build
       legitimately holds.
 
-    So the same ``may_surface`` rule the surfacing gate uses is applied here with
-    the index's own flag, which is what keeps the purge and the gate from
-    disagreeing about what "withheld" means for a given build.
+    ``indexed_sensitivities`` is the second (#119, ADR-0025 part 2), and it is the
+    axis a ``changeSensitivity`` moves. It is the **expanded set the build wrote
+    under**, recorded in the pointer as ``indexedSensitivities``, never a ceiling
+    word re-expanded here: re-expanding is a second derivation of the predicate
+    that decided what is in the file, and the two can disagree without anything
+    noticing (`encode_sensitivities`). Compared the same two directions:
+
+    - an item reclassified *above* the build's ceiling -- ``internal`` to
+      ``confidential`` under a build made at ``internal`` -- is a row that build
+      would not have written today, and it must go. Nothing else can remove it: the
+      canonical re-check withholds it from a *result* while its text stays in
+      ``chunks_fts``, ``chunks_trigram``, ``nodes_fts`` and ``nodes_trigram``,
+      whose collection statistics price every visible row against it;
+    - an item reclassified *within* the ceiling -- ``internal`` to ``public`` --
+      is a row that build was allowed to write and still is, so nothing goes and
+      no index is copied. This is the common case and the reason
+      ``changeSensitivity`` can join the candidate set unconditionally.
+
+    So the same two gates a read path applies -- ``may_surface`` and
+    ``may_disclose`` -- are applied here against the *index's* own flavor rather
+    than the request's or the deployment's, which is what keeps the purge and the
+    gates from disagreeing about what "withheld" means for a given build.
+
+    **Downward reclassification is not symmetric, and cannot be** (ADR-0025's
+    recorded residual): a build made at ``internal`` never wrote the row for an
+    item that was ``restricted`` at build time, and a purge copies a build and
+    deletes from the copy -- it has no source for a row that is not there. Such an
+    item stays withheld until the next ``index build``, failing toward fewer
+    results, which is the same honest direction an approved-after-the-build draft
+    already fails in.
 
     Sorted only for a deterministic result across a replay. No runtime consumer
     observes the order -- the purge deletes by set membership -- so nothing pins
@@ -738,9 +795,11 @@ def revisions_to_purge(
     """
     purge: set[str] = set()
     for candidate in candidates:
-        surfaceable = may_surface(candidate.status, include_unapproved=indexes_unapproved)
+        holdable = may_surface(
+            candidate.status, include_unapproved=indexes_unapproved
+        ) and may_disclose(candidate.sensitivity, visible=indexed_sensitivities)
         for revision_id in candidate.revision_ids:
-            if not surfaceable or revision_id != candidate.current_revision_id:
+            if not holdable or revision_id != candidate.current_revision_id:
                 purge.add(revision_id)
     return sorted(purge)
 

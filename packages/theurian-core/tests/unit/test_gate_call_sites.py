@@ -225,9 +225,10 @@ STATUS_GATE_CALL_SITES = {
 #: Every place the product consults the disclosure gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
-#: Four: three canonical-side read paths a caller can reach content through
-#: (#119 phase 2) and the build side that decides what exists to be reached
-#: (#119 phase 3), each with the test that holds it to gating:
+#: Five: three canonical-side read paths a caller can reach content through
+#: (#119 phase 2), the build side that decides what exists to be reached
+#: (#119 phase 3), and the purge that removes it from a build already published
+#: (#119 phase 5), each with the test that holds it to gating:
 #:   - the ranked path's canonical re-check on the item's *current* level
 #:     (``test_the_ranked_path_withholds_a_document_reclassified_after_the_build``);
 #:   - ``knowledge.get``'s gate on the item it hands over by id, refused in the
@@ -242,7 +243,13 @@ STATUS_GATE_CALL_SITES = {
 #:     tables whose collection statistics price every visible row -- the T-17a
 #:     mechanism, moved to this axis (ADR-0025 part 1,
 #:     ``test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_
-#:     half_of_the_index``).
+#:     half_of_the_index``);
+#:   - the withdrawal purge, the one *inverse* use -- it names what a published
+#:     build must stop holding once an item is reclassified past the ceiling that
+#:     build ran under, so the purge and the read gates cannot disagree about what
+#:     "withheld" means for a given file (ADR-0025 part 2,
+#:     ``test_sensitivity_purge.py::test_a_reclassification_above_the_ceiling_
+#:     purges_the_published_index_without_a_separate_build``).
 #:
 #: **The gates spelled as a predicate are deliberately absent, and they are not
 #: further sites.** This axis is enforced in two spellings, and a scan that reads
@@ -267,6 +274,7 @@ STATUS_GATE_CALL_SITES = {
 #: and "what got indexed" stay two derivations that can be caught disagreeing.
 DISCLOSURE_GATE_CALL_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
+    ("application/migration_engine.py", "revisions_to_purge"),
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),

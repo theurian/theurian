@@ -2342,12 +2342,18 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
     instant the migration commits -- the assertion on the response's
     ``sensitivity`` holds it. The index column *does* lag: nothing rebuilt it, so
     its chunk still says ``internal``. That lag is asserted to be *present*, not
-    absent, because it is harmless: no gate reads a chunk's ``sensitivity`` before
-    #119, and an unsigned local index row nothing reads is not a disclosure
-    (SEC-7). The column matches canonical again after ``index build`` re-derives
-    (``test_forest_builder_scale.py``); until then the response is already right,
-    which is what makes the auto-rebuild the migration engine deliberately does
-    not do (``test_migration_engine.py``) unnecessary.
+    absent, and since #119 phase 5 the reason has narrowed to one that is a
+    property of **this build's flavor**: ``indexed`` is built under the shipped
+    default, whose pointer records every level as indexed, so ``restricted`` is
+    still a class this build was allowed to write and the purge trigger correctly
+    removes nothing (``revisions_to_purge``). A build made under a *declared*
+    ceiling answers the other way, and that is
+    ``test_sensitivity_purge.py``'s subject -- the pair is what keeps "a
+    reclassification does not rebuild" from being read as "a reclassification never
+    touches the index". The column matches canonical again after ``index build``
+    re-derives (``test_forest_builder_scale.py``); until then the response is
+    already right, which is what makes the auto-rebuild the migration engine
+    deliberately does not do (``test_migration_engine.py``) unnecessary.
     """
     root = Path(indexed.load()["demo"]["rootPath"])
     assert _published_index_chunk_sensitivity(root) == {"internal"}, (
@@ -2374,8 +2380,8 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
         "one -- the label decides who may read the content (SEC-14)"
     )
     assert _published_index_chunk_sensitivity(root) == {"internal"}, (
-        "the reclassification rebuilt or purged the index -- the point of this test is "
-        "that it does neither, and that the response is right anyway"
+        "the reclassification rebuilt or purged the index -- against a build that holds "
+        "every level it must do neither, and the response is right anyway"
     )
 
 
@@ -8421,6 +8427,18 @@ async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build
     `indexed: true` is asserted on both halves for that reason, and the index is
     asserted to still hold the old label so that a rebuild slipping into the
     fixture fails here rather than turning this into a test of the build.
+
+    **The apply runs with the pointer withheld, and since #119 phase 5 it has
+    to.** ``migrate apply`` now purges a reclassified-above-the-ceiling item out
+    of the published build in the same apply (ADR-0025 part 2,
+    ``test_sensitivity_purge.py``), which closes this window at the seam and would
+    leave nothing here for the canonical re-check to withhold -- measured, the
+    label assertion below read ``set()`` the moment that landed. So this reproduces
+    the *residual* the way this file's other stale-build tests do
+    (``_apply_leaving_the_stale_build_published``): a purge that reached no
+    published build, which is also what a purge that raised leaves behind
+    (``WithdrawalPurge.failed`` and its remedy). The gate under test is the last
+    line for exactly that state.
     """
     indexed = indexed_under_an_internal_ceiling
     root = Path(indexed.load()["demo"]["rootPath"])
@@ -8439,12 +8457,12 @@ async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build
         (root / f".theurian/migrations/{RECLASSIFY_ID}-reclassify.yaml").write_text(
             RECLASSIFY_MIGRATION
         )
-        _run("migrate", "apply")
+        _apply_leaving_the_stale_build_published(root)
     finally:
         monkey.undo()
     assert _published_index_chunk_sensitivity(root) == {"internal"}, (
         "the published index must still carry the pre-reclassification label, or this is a "
-        "test of `index build` rather than of the canonical re-check"
+        "test of `index build` or of the purge rather than of the canonical re-check"
     )
 
     served = await _call_on(
