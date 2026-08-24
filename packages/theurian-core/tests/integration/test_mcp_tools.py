@@ -31,6 +31,7 @@ from theurian.application.authorization import (
     SERVING_PROFILE_FILENAME,
     AuthorizationGrant,
     StaticAuthorizationProvider,
+    encode_sensitivities,
 )
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
@@ -8379,6 +8380,150 @@ def a_confidential_item_indexed_at_restricted(
     _declare_ceiling(a_confidential_item.path.parent, Sensitivity.RESTRICTED)
     _build_index(a_confidential_item)
     return a_confidential_item
+
+
+#: The revision `a_confidential_item` writes for the confidential item, so a test
+#: can read the chunk row that revision produced (its build-time sensitivity).
+PAYROLL_REVISION_ID = "01K1FAAREV01234567890ABCDE"
+
+#: Sorts after the confidential item's create migration (`01K1FAAAAA...`), because
+#: `migrate apply` replays in ULID order and a declassify replayed before the
+#: create names an item that does not exist yet.
+DOWNCLASSIFY_ID = "01K1GAAAAA01234567890ABCDE"
+
+#: Reclassify the confidential item *down* to `internal`, with no rebuild. Against
+#: a build made under `restricted` this is not a withdrawal -- `internal` is within
+#: that flavor -- so the apply purges nothing and the chunk keeps its build-time
+#: `confidential` label while the item's current level becomes `internal`.
+DOWNCLASSIFY_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {DOWNCLASSIFY_ID}
+createdAt: 2026-08-02T15:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: changeSensitivity
+    itemId: {CONFIDENTIAL_ITEM}
+    sensitivity: internal
+    reason: Declassified after review
+"""
+
+
+def _chunk_sensitivities_for(root: Path, revision_id: str) -> set[str]:
+    """The sensitivities the published index stamped on ``revision_id``'s chunks."""
+    payload = read_active_index_pointer(ProjectPaths.of(root)).payload
+    assert payload is not None, "the project must have a published index"
+    index = ProjectPaths.of(root).index_for(str(payload["indexBuildId"]))
+    with contextlib.closing(sqlite3.connect(index)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT sensitivity FROM chunks WHERE revision_id = ?", (revision_id,)
+        ).fetchall()
+    return {row["sensitivity"] for row in rows}
+
+
+@pytest.fixture
+def a_wide_build_reclassified_down(a_confidential_item: ProjectRegistry) -> ProjectRegistry:
+    """A build holding a `confidential` chunk whose item is now `internal`, served narrow.
+
+    The state the retriever's own `WHERE sensitivity IN (...)` predicate (#119 phase
+    4) exists for, and the only one that reaches it. A real build under a ceiling
+    never writes a row above that ceiling, and the serve path stands aside any build
+    whose recorded flavor differs from the grant -- so the predicate is
+    defense-in-depth with no natural corpus, which is why its wiring survived its own
+    deletion. This constructs the synthetic-but-reachable state (the pointer is
+    derived and unsigned, SEC-7):
+
+    1. declare `restricted` and build, so the `confidential` item gets a chunk row
+       stamped `confidential` and the pointer records every level as indexed;
+    2. reclassify that item *down* to `internal` with no rebuild -- not a withdrawal
+       at this flavor, so the chunk keeps its `confidential` label while the item's
+       current canonical level becomes `internal`;
+    3. hand-narrow the pointer's recorded flavor to `{public, internal}`, the grant
+       the test serves under, so `_published_index` uses the build rather than
+       standing it aside on a flavor mismatch.
+
+    The result: a chunk stamped above the served ceiling, in a build the flavor gate
+    accepts, whose item the canonical re-check would admit. Only the retriever
+    predicate keeps that chunk out of the ranking.
+    """
+    registry = a_confidential_item
+    _declare_ceiling(registry.path.parent, Sensitivity.RESTRICTED)
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+        (root / f".theurian/migrations/{DOWNCLASSIFY_ID}-declassify.yaml").write_text(
+            DOWNCLASSIFY_MIGRATION
+        )
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    paths = ProjectPaths.of(root)
+    payload = json.loads(paths.active_index_pointer.read_text())
+    payload["indexedSensitivities"] = encode_sensitivities(
+        frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+    )
+    paths.active_index_pointer.write_text(json.dumps(payload))
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_the_retriever_predicate_withholds_an_above_flavor_chunk_the_recheck_admits(
+    a_wide_build_reclassified_down: ProjectRegistry,
+) -> None:
+    """#119 phase 4. The retriever's `WHERE sensitivity IN (...)` is wired, not just present.
+
+    `hybrid_answer` threads the deployment grant to the retriever through
+    `SearchRequest(visible_sensitivities=...)`. Replacing that with an allow-all set
+    left the whole suite green, because the store-layer tests exercise `_scope`
+    directly and the sibling canonical re-check (`ResultRequest`) catches an
+    above-ceiling row on its *current* level in every natural corpus. This is the
+    asymmetric half the re-check cannot cover: a chunk stamped `confidential` whose
+    item is `internal` now. The re-check admits it (current level within the grant),
+    so the retriever predicate is the only thing that keeps the stale-labelled chunk
+    out of the ranking -- exactly the wiring the mutation cut.
+
+    Preconditions make the assertion non-vacuous from both sides: the confidential
+    chunk really is in the published build, and `knowledge.get` hands the item's body
+    over under this same grant -- so the item is disclosable, and its absence from
+    the search is the retriever predicate at work rather than the ceiling withholding
+    the item outright. RED under the mutation: with the predicate handed
+    `frozenset(Sensitivity)`, the `confidential` chunk is ranked, the re-check admits
+    the now-`internal` item, and it appears in the results.
+    """
+    registry = a_wide_build_reclassified_down
+    root = Path(registry.load()["demo"]["rootPath"])
+    grant = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+    server = build_server(registry, grant)
+
+    assert _chunk_sensitivities_for(root, PAYROLL_REVISION_ID) == {"confidential"}, (
+        "precondition: the published build must still hold the item's chunk stamped "
+        "`confidential`, or its absence below is the absence of a chunk, not of a gate"
+    )
+    fetched = await _call_on(server, "knowledge.get", projectId="demo", itemId=CONFIDENTIAL_ITEM)
+    assert fetched["sensitivity"] == "internal", (
+        "precondition: the item is `internal` now, so the canonical re-check admits it -- "
+        "which is what leaves the retriever predicate as the only gate on the search"
+    )
+
+    searched = await _call_on(server, "knowledge.search", projectId="demo", query="signed token")
+    item_ids = {hit["itemId"] for hit in searched["results"]}
+
+    assert searched["retrieval"]["indexed"] is True, (
+        f"the flavor gate must accept this build so the ranked path answers, or this is a "
+        f"test of the unranked scan: {searched['retrieval']}"
+    )
+    assert "architecture.auth-policy" in item_ids, (
+        "the within-flavor chunk must be returned, or the absence below is an empty corpus"
+    )
+    assert CONFIDENTIAL_ITEM not in item_ids, (
+        f"a chunk stamped above the served ceiling was ranked and returned: {searched['results']}. "
+        f"The retriever's own `WHERE sensitivity IN (...)` must keep it out of the ranking."
+    )
+    assert "240000" not in json.dumps(searched), (
+        "the above-flavor chunk's body reached the response through an excerpt"
+    )
 
 
 @pytest.mark.asyncio
