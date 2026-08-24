@@ -144,6 +144,60 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   level remain unaddressed, and this change *lengthens* the interval between
   examining and moving by the replay's own duration (ADR-0018). No CI job applies
   the committed corpus ([#325](https://github.com/theurian/theurian/issues/325)).
+- **Every install command Theurian prints now names the interpreter as well as
+  the extra**: `uv tool install --python 3.13 'theurian[daemon]'` and
+  `pipx install --python 3.13 'theurian[daemon]'`
+  ([#323](https://github.com/theurian/theurian/pull/323)). These are the remedies
+  a user actually copies, and they previously left the interpreter to whatever
+  the installer picked by default, while `requires-python` has been `>=3.13`
+  throughout and the README's quick start had said so since it was written. Not
+  breaking: the old commands are not rejected, they are unqualified, and the
+  qualified ones are what the product now recommends.
+
+  Three surfaces read `theurian.domain.extras.DAEMON_INSTALLERS` rather than
+  spelling a command of their own, so their answers cannot drift apart:
+
+  - `core-present`'s detail, when `theurian setup` finds no Core.
+  - the daemon-extra remedy the CLI prints when a bare install reaches
+    `ModuleNotFoundError: No module named 'uvicorn'`. Its pipx form is
+    `pipx install --force --python 3.13 'theurian[daemon]'` — `--force` because
+    a plain `pipx install` over an existing installation reports success and
+    changes nothing, which is measured and recorded in `domain/extras.py`. The
+    `--python 3.13` in that one command is **not** covered by that measurement;
+    it is there so the repair command cannot choose a different interpreter from
+    the install commands beside it.
+  - `domain/compatibility.py`'s `core-missing` remedy, published as the string
+    third-party plugins implement against in
+    [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
+    whose outcome table and flowchart carry the same pair. No production caller
+    reaches that branch — its one call site always passes a parsed version — so
+    the copy a user actually meets is the plugin's `SessionStart` hook, which
+    carries the same advice and moved with it.
+
+  The fourth, `theurian setup --help`, spells the two commands in its docstring
+  instead of reading the constant, and is held to `core-present`'s own words by
+  `test_setup_claims.py::test_the_installers_pinned_here_are_the_ones_the_step_reports`.
+
+  `3.13` is now held to `requires-python` by
+  `test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires`,
+  which reads the floor out of `pyproject.toml`. Raising the floor without
+  touching `domain/extras.py` would otherwise ship, as the remedy for an install
+  that did not work, a command pinning an interpreter the only wheel it may
+  install rejects.
+
+  The written surfaces follow: this package's README — whose install line also
+  moves from `theurian[all]` to `theurian[daemon]`, matching what the root README
+  recommends and what the extra is actually for — the plugin's README,
+  `SessionStart` hook, `setup` and `upgrade` commands, ADR-0014, the macOS
+  packaging note, `docs/contributing/release.md`, and the `Install:` line
+  `release-core.yml` writes into every GitHub release body — which now reads
+  `uv tool install --python 3.13 'theurian[daemon]==<version>'`. That release
+  line and the release document were the last two surfaces still naming the bare
+  command; T-16 in
+  [the threat model](../../docs/security/threat-model.md) recorded them as a
+  deferral discharged by
+  [#71](https://github.com/theurian/theurian/pull/71) and records them as closed
+  here.
 
 ### Fixed
 
@@ -246,6 +300,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   open issue ([#327](https://github.com/theurian/theurian/issues/327)) and not
   closed here.
 
+### Security
+
+- **A single field rendered with `repr` re-expands a YAML alias chain that parsed
+  small** ([#210](https://github.com/theurian/theurian/issues/210),
+  [#316](https://github.com/theurian/theurian/issues/316), ADR-0027; T-6 in
+  [the threat model](../../docs/security/threat-model.md)). `theurian propose
+  accept` rendered two fields materialised from parsed YAML — `security.secretScan`
+  read from `.theurian/config.yaml`, and a proposal migration's `id` — with `repr`
+  before any per-shared-reference bound applied. PyYAML collapses an alias to a
+  shared object, so an alias chain parses in a few hundred bytes and re-expands
+  exponentially only when a field is rendered: a hostile committed
+  `.theurian/config.yaml` of 481 bytes drove 16.9 s and 4.8 GB of RSS before the
+  fix, and a proposal migration whose `id` is an alias graph does the same
+  (measured 2026-08-24 against the real CLI). The fix bounds each field with
+  `is_bounded_scalar` before it is rendered — a container or an oversized scalar is
+  refused first — so the same inputs now refuse in ~0.2 s with a bounded
+  `{error, remedy}` document.
+
+  **The migration-`id` face was a released defect in `0.1.0.dev9`**, where
+  `_require_filename_matches_id` ran the render before schema validation. It is the
+  same T-6 alias-re-expansion class the migration loader closed for whole documents
+  ([#291](https://github.com/theurian/theurian/issues/291)) and the ingest
+  projection closed in [#335](https://github.com/theurian/theurian/pull/335)
+  ([#232](https://github.com/theurian/theurian/issues/232),
+  [#245](https://github.com/theurian/theurian/issues/245)); it is now closed for
+  these two single-field render sites too.
+
 ### Documentation
 
 - **T-6's ingestion controls reconciled with what `src/` enforces**
@@ -289,63 +370,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   walk declined to enter always leaves a record. The arithmetic is unchanged and
   deliberate — counting truncations is what stops a capped document answering
   "no external references" at all.
-
-### Changed
-
-- **Every install command Theurian prints now names the interpreter as well as
-  the extra**: `uv tool install --python 3.13 'theurian[daemon]'` and
-  `pipx install --python 3.13 'theurian[daemon]'`
-  ([#323](https://github.com/theurian/theurian/pull/323)). These are the remedies
-  a user actually copies, and they previously left the interpreter to whatever
-  the installer picked by default, while `requires-python` has been `>=3.13`
-  throughout and the README's quick start had said so since it was written. Not
-  breaking: the old commands are not rejected, they are unqualified, and the
-  qualified ones are what the product now recommends.
-
-  Three surfaces read `theurian.domain.extras.DAEMON_INSTALLERS` rather than
-  spelling a command of their own, so their answers cannot drift apart:
-
-  - `core-present`'s detail, when `theurian setup` finds no Core.
-  - the daemon-extra remedy the CLI prints when a bare install reaches
-    `ModuleNotFoundError: No module named 'uvicorn'`. Its pipx form is
-    `pipx install --force --python 3.13 'theurian[daemon]'` — `--force` because
-    a plain `pipx install` over an existing installation reports success and
-    changes nothing, which is measured and recorded in `domain/extras.py`. The
-    `--python 3.13` in that one command is **not** covered by that measurement;
-    it is there so the repair command cannot choose a different interpreter from
-    the install commands beside it.
-  - `domain/compatibility.py`'s `core-missing` remedy, published as the string
-    third-party plugins implement against in
-    [`docs/protocol/plugin-core-compatibility.md`](../../docs/protocol/plugin-core-compatibility.md),
-    whose outcome table and flowchart carry the same pair. No production caller
-    reaches that branch — its one call site always passes a parsed version — so
-    the copy a user actually meets is the plugin's `SessionStart` hook, which
-    carries the same advice and moved with it.
-
-  The fourth, `theurian setup --help`, spells the two commands in its docstring
-  instead of reading the constant, and is held to `core-present`'s own words by
-  `test_setup_claims.py::test_the_installers_pinned_here_are_the_ones_the_step_reports`.
-
-  `3.13` is now held to `requires-python` by
-  `test_daemon_extra.py::test_the_install_commands_pin_the_python_core_requires`,
-  which reads the floor out of `pyproject.toml`. Raising the floor without
-  touching `domain/extras.py` would otherwise ship, as the remedy for an install
-  that did not work, a command pinning an interpreter the only wheel it may
-  install rejects.
-
-  The written surfaces follow: this package's README — whose install line also
-  moves from `theurian[all]` to `theurian[daemon]`, matching what the root README
-  recommends and what the extra is actually for — the plugin's README,
-  `SessionStart` hook, `setup` and `upgrade` commands, ADR-0014, the macOS
-  packaging note, `docs/contributing/release.md`, and the `Install:` line
-  `release-core.yml` writes into every GitHub release body — which now reads
-  `uv tool install --python 3.13 'theurian[daemon]==<version>'`. That release
-  line and the release document were the last two surfaces still naming the bare
-  command; T-16 in
-  [the threat model](../../docs/security/threat-model.md) recorded them as a
-  deferral discharged by
-  [#71](https://github.com/theurian/theurian/pull/71) and records them as closed
-  here.
 
 ## [0.1.0.dev9] - 2026-08-22
 
