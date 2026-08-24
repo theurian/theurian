@@ -378,7 +378,7 @@ Phase 0 — before 0.1.0 stable.
   | | `one-payload-apart` (content reaches a caller) | `present-in-one-only` (a slot, a count, a token total, a BM25 statistic) |
   | :-- | :-- | :-- |
   | `excluded-at-build` (part 1) | covered | covered |
-  | `reclassified-not-purged` (part 3, the canonical re-check alone) | covered | **absent by record** |
+  | `reclassified-not-purged` (part 3, the canonical re-check alone) | chunk-only builds exercised; forest builds not yet | **absent by record** |
   | `reclassified-and-purged` (part 2, through the real CLI) | covered | covered |
 
   `SHAPES` is written as the list of *valid* cells, so the missing one is absent by
