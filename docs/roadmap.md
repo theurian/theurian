@@ -30,6 +30,13 @@ authority every sentence below was checked against:
 Measured: `packages/theurian-core/src/theurian/mcp/tools.py`, the
 `system.capabilities` handler.
 
+An eighth flag has joined them since that measurement, and is deliberately not
+added to a table anchored to a commit: `sensitivityEnforcement: true`, from
+[#119](https://github.com/theurian/theurian/issues/119). It reports that this
+build enforces the disclosure axis, so an empty result may mean "withheld by the
+deployment's declared ceiling" rather than "nothing matched" — and it reports
+only that, never the ceiling itself.
+
 ## Contents
 
 0. [Premise — the stated principles against the implementation](#0-premise)

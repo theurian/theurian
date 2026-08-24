@@ -1117,6 +1117,22 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # project actually has a forest is discovered per response, through
                 # `raptorPath`'s presence, exactly as `hybridRetrieval` is.
                 "raptor": True,
+                # A server property, like `raptor`: this build enforces the
+                # disclosure axis, so an empty result may mean "withheld by the
+                # deployment's ceiling" and not only "nothing matched". ADR-0025
+                # forbade advertising this in any form until all four of its parts
+                # had landed -- a client told a control exists when it does not has
+                # been given a false answer to a security question -- and #119
+                # phase 6 discharged that prohibition in the document that made it.
+                #
+                # **The flag, never the ceiling.** Publishing the ceiling word
+                # would tell a caller which levels it is not being shown, which is
+                # a statement about withheld content on a surface no gate protects:
+                # this tool resolves no project, so it never passes `_resolve`.
+                # Every other flag here is a build property for the same reason.
+                # The operator who needs the ceiling reads the file they wrote it
+                # into.
+                "sensitivityEnforcement": True,
                 "reviewIngestion": False,
                 "traceability": False,
                 "writeTools": False,

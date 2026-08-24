@@ -1854,13 +1854,20 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     passing after hybrid retrieval shipped, which is how a capability
     declaration and its implementation drift apart unnoticed.
 
-    The drift runs the other way too, so all seven entries of the capability
+    The drift runs the other way too, so all eight entries of the capability
     block are pinned to the value they actually hold rather than only the `True`
-    ones: `knowledgeSearch` and the six booleans. `reviewIngestion`,
+    ones: `knowledgeSearch` and the seven booleans. `reviewIngestion`,
     `traceability` and `knowledgeSearch` were all unpinned until #129 -- mutations
     flipping each boolean to `True` and rewriting `"hybrid"` to `"substring"`
     survived the whole suite, and the first two are what Milestone 7 flips.
-    That the block holds *only* those seven is the sibling test below.
+    That the block holds *only* those eight is the sibling test below.
+
+    `sensitivityEnforcement` is the eighth, added in #119 phase 6, and it arrives
+    with two assertions rather than one. The second says what the flag must *not*
+    carry: this tool resolves no project and passes no gate, so the ceiling word
+    itself is withheld from it (ADR-0025) and a substring check over the whole
+    response holds that, because such a leak is as likely to arrive in `note` as
+    in a new field.
 
     Four fields sit outside the block, and all four are now pinned to a
     value here. `version` and `protocolVersion` are pinned against the
@@ -1909,6 +1916,28 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "traverses `nodes_fts` to leaves and a surfaced leaf carries `raptorPath`, "
         "so this flag now says what a caller can get. A client reading `true` may "
         "ask for the `raptorPath` a ranked hit over a `--raptor` index carries."
+    )
+    assert result["capabilities"]["sensitivityEnforcement"] is True, (
+        "#119 made the disclosure axis a read control on both halves of the "
+        "derived index, and ADR-0025 forbade advertising it in any form until all "
+        "four of its parts had landed. All four have, so the advertisement is owed "
+        "rather than merely permitted: a client reading `false` treats an empty "
+        "result as `nothing matched`, when it may mean `withheld by this "
+        "deployment's ceiling`."
+    )
+    serialized = json.dumps(result).casefold()
+    forbidden = ("ceiling", *(level.value for level in Sensitivity))
+    leaked = sorted(word for word in forbidden if word in serialized)
+    assert not leaked, (
+        f"the response names {sorted(leaked)}. The flag says the axis is "
+        f"enforced; it must not say *what* this deployment's ceiling is. This "
+        f"tool resolves no project, so it never passes `_resolve`, and a ceiling "
+        f"word here would tell a caller which levels it is not being shown -- a "
+        f"statement about withheld content on a surface no gate protects "
+        f"(ADR-0025). Case-folded, and over the serialized response rather than "
+        f"its keys, because that leak is as likely to arrive as a value, inside "
+        f"`note`, or under a camel-cased key (`sensitivityCeiling`) as it is to "
+        f"arrive as a new top-level field the population tests would catch."
     )
     assert result["capabilities"]["reviewIngestion"] is False, (
         "no review history is ingested: `infrastructure/github/` holds no adapter "
@@ -2002,6 +2031,7 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         "knowledgeGet",
         "hybridRetrieval",
         "raptor",
+        "sensitivityEnforcement",
         "reviewIngestion",
         "traceability",
         "writeTools",
