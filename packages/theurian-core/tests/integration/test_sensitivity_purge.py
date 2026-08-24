@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.authorization import (
@@ -185,6 +186,14 @@ def _body(doc: Doc) -> str:
 
 
 def _migration(doc: Doc) -> str:
+    """One document's ``createItem``/``upsertRevision`` pair.
+
+    ``contentSha256`` is derived here from :func:`_body`, the same function
+    :func:`_write_corpus` writes the file with, so the pin and the bytes cannot
+    drift (ADR-0027 decision 1, ``migration_fixtures``). It is required on every
+    ``upsertRevision`` since #342, and an absent one is a schema refusal at
+    ``migrate apply`` -- which is what these fixtures met on the rebase.
+    """
     return f"""apiVersion: theurian.dev/v1
 id: {doc.migration_id}
 createdAt: 2026-08-05T10:00:00+09:00
@@ -199,6 +208,7 @@ operations:
     itemId: {doc.item_id}
     revisionId: {doc.revision_id}
     contentFile: ../knowledge/{doc.kind}/{doc.slug}.md
+    contentSha256: {body_pin(_body(doc))}
     metadata:
       title: {doc.heading}
       contentType: text/markdown

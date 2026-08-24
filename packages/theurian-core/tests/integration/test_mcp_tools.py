@@ -1071,14 +1071,24 @@ READ_COST_WITHHELD = 25
 READ_COST_MIGRATION_ID = "01K1RCST0001234567890ABCDE"
 
 
-def _read_cost_item_ops(
+def _read_cost_item_ops(  # noqa: PLR0913 -- one metadata block, keyword-only so a call cannot mis-order it
+    *,
     slug: str,
     revision_id: str,
     title: str,
     status: str,
-    pin: str,
+    body: str,
     sensitivity: str = "internal",
 ) -> str:
+    """One item's ``createItem``/``upsertRevision`` pair for a read-cost corpus.
+
+    Takes the ``body`` rather than a precomputed pin, and hashes it here: the
+    bytes and their ``contentSha256`` are one fact (ADR-0027 decision 1,
+    ``migration_fixtures``), and a caller holding both can hand over a pin for a
+    different body. Keyword-only for the reason
+    ``test_alias_item_id_collision._upsert`` is -- six same-typed strings in a row
+    is a call a reorder breaks silently.
+    """
     return f"""  - op: createItem
     itemId: architecture.{slug}
     kind: architecture
@@ -1088,7 +1098,7 @@ def _read_cost_item_ops(
     itemId: architecture.{slug}
     revisionId: {revision_id}
     contentFile: ../knowledge/architecture/{slug}.md
-    contentSha256: {pin}
+    contentSha256: {body_pin(body)}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -1139,14 +1149,22 @@ def _build_read_cost_project(
         body = f"# Approved {i}\n\nApproved body {i}.\n"
         (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug, f"01K1RCAP{i:02d}01234567890ABCDE", f"Approved {i}", "approved", body_pin(body)
+            slug=slug,
+            revision_id=f"01K1RCAP{i:02d}01234567890ABCDE",
+            title=f"Approved {i}",
+            status="approved",
+            body=body,
         )
     for i in range(withheld):
         slug = f"read-withheld-{i:03d}"
         body = f"# Withheld {i}\n\nWithheld body {i}.\n"
         (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug, f"01K1RCWH{i:02d}01234567890ABCDE", f"Withheld {i}", "rejected", body_pin(body)
+            slug=slug,
+            revision_id=f"01K1RCWH{i:02d}01234567890ABCDE",
+            title=f"Withheld {i}",
+            status="rejected",
+            body=body,
         )
     for i in range(above_ceiling):
         slug = f"read-restricted-{i:03d}"
@@ -1157,11 +1175,11 @@ def _build_read_cost_project(
         body = f"# Restricted {i}\n\nApproved body {i}.\n"
         (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug,
-            f"01K1RCRS{i:02d}01234567890ABCDE",
-            f"Restricted {i}",
-            "approved",
-            body_pin(body),
+            slug=slug,
+            revision_id=f"01K1RCRS{i:02d}01234567890ABCDE",
+            title=f"Restricted {i}",
+            status="approved",
+            body=body,
             sensitivity="restricted",
         )
     header = (

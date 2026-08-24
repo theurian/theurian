@@ -186,6 +186,7 @@ import pytest
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.authorization import (
@@ -1856,6 +1857,7 @@ operations:
     itemId: {item}
     revisionId: {rid}
     contentFile: ../knowledge/architecture/{slug}.md
+    contentSha256: {pin}
     metadata:
       title: {title}
       contentType: text/markdown
@@ -1983,19 +1985,31 @@ def _declare_a_ceiling(data_dir: Path) -> None:
 
 
 def _write_shipped_corpus(root: Path) -> None:
+    """The corpus both projects apply, bodies and migrations written together.
+
+    Every body is named once, in a local, and handed to both the file write and
+    ``body_pin`` -- never re-spelled for the digest. ``contentSha256`` is required
+    on every ``upsertRevision`` since #342 (ADR-0027 decision 1) and the loader
+    re-hashes the file on each load, so a pin computed from anything but the bytes
+    actually written fails the migration rather than the assertion under test.
+    """
     knowledge = root / ".theurian/knowledge/architecture"
     migrations = root / ".theurian/migrations"
     for item, mid, rid, slug, title in _SHIPPED_VISIBLE:
-        (knowledge / f"{slug}.md").write_text(_SHIPPED_VISIBLE_BODY[slug])
+        body = _SHIPPED_VISIBLE_BODY[slug]
+        (knowledge / f"{slug}.md").write_text(body)
         (migrations / f"{mid}-{slug}.yaml").write_text(
-            _SHIPPED_DOC_MIGRATION.format(mid=mid, item=item, rid=rid, slug=slug, title=title)
+            _SHIPPED_DOC_MIGRATION.format(
+                mid=mid, item=item, rid=rid, slug=slug, title=title, pin=body_pin(body)
+            )
         )
     for number in range(_SHIPPED_NOISE):
         slug = f"window-{number}"
-        (knowledge / f"{slug}.md").write_text(
+        body = (
             f"# Deployment window {number}\n\nRelease {number} goes out on Thursday after the "
             f"staging soak has run for a day.\n"
         )
+        (knowledge / f"{slug}.md").write_text(body)
         (migrations / f"01K1NZ{number}AAA01234567890ABCDE-{slug}.yaml").write_text(
             _SHIPPED_DOC_MIGRATION.format(
                 mid=f"01K1NZ{number}AAA01234567890ABCDE",
@@ -2003,6 +2017,7 @@ def _write_shipped_corpus(root: Path) -> None:
                 rid=f"01K1NZ{number}REV01234567890ABCDE",
                 slug=slug,
                 title=f"Deployment window {number}",
+                pin=body_pin(body),
             )
         )
     (knowledge / "secret.md").write_text(_SHIPPED_SECRET_BODY)
@@ -2013,6 +2028,7 @@ def _write_shipped_corpus(root: Path) -> None:
             rid="01K1SCRTV101234567890ABCDE",
             slug="secret",
             title="Runbook",
+            pin=body_pin(_SHIPPED_SECRET_BODY),
         )
     )
 
