@@ -43,14 +43,16 @@ proof — and each applies to *both halves of the derived index*, leaf and
 forest.** A change that ships fewer than all four, or that ships all four over
 the leaf half alone, does not discharge this ADR:
 
-1. **Build-time gating and derivation.** `IndexBuilder._build` gates on status
-   only and writes `sensitivity` into every chunk row
-   (`index_builder.py:146,209`); `ForestBuilder.derive`
+1. **Build-time gating and derivation.** `IndexBuilder._build` gated on status
+   only and wrote `sensitivity` into every chunk row as a label; `ForestBuilder.derive`
    (`application/forest_builder.py`) then derives summary nodes over what the
    builder wrote. Both have to participate, because a query-time predicate alone
    leaves withheld-by-sensitivity text in the FTS5 tables — leaf text in
    `chunks_fts`/`chunks_trigram`, and summary text in
-   `nodes_fts`/`nodes_trigram`.
+   `nodes_fts`/`nodes_trigram`. **Done in #119 phase 3** (2026-08-24): the
+   builder now consults `may_disclose` beside `may_surface` and writes no row for
+   an item above the ceiling — see *Deliberately left open* below for which of
+   the two candidate shapes that settled, and Compliance for the test.
 2. **A `changeSensitivity`-triggered purge**, extending
    [ADR-0024](0024-a-purge-is-a-build.md) decision 5's trigger set.
 3. **The read-side predicate**, adding the axis to `_scope` *and* to
@@ -89,12 +91,45 @@ does**:
   scope parameter, per-project configuration, or a declared operator profile.
   Each has a different disclosure surface, and choosing between them is design
   work this ADR is not the place for.
-- **Exclusion versus gating.** Whether withheld-by-sensitivity rows are kept out
-  of the index entirely, **or indexed and gated at read time behind a mechanism
-  that isolates the collection statistics** — a per-entitlement build flavor of
-  the kind ADR-0024 already runs for status (`indexes_unapproved`). Part 1
-  requires the builder to participate either way; it does not choose which.
-  Part 4 constrains both branches and chooses neither.
+- **Exclusion versus gating.** ~~Whether withheld-by-sensitivity rows are kept
+  out of the index entirely, **or indexed and gated at read time behind a
+  mechanism that isolates the collection statistics** — a per-entitlement build
+  flavor of the kind ADR-0024 already runs for status (`indexes_unapproved`).
+  Part 1 requires the builder to participate either way; it does not choose
+  which. Part 4 constrains both branches and chooses neither.~~
+
+  **Settled 2026-08-24 by #119 phase 3: exclusion at build time, with one build
+  flavor per deployment.** `IndexBuilder._build` consults `may_disclose` against
+  the deployment's serving profile beside the status gate it already ran, so an
+  above-ceiling item writes no chunk row — and therefore no summary node, since
+  the forest is derived over what the build wrote. The two candidates were not
+  equally available: gating at read time leaves the withheld text in
+  `chunks_fts`, `chunks_trigram`, `nodes_fts` and `nodes_trigram`, whose BM25
+  scores are computed against collection statistics over every row the file
+  holds, so the visible rows keep being priced against content no query can
+  return. That is T-17a's mechanism on this axis, and no read-side predicate
+  removes it.
+
+  What exclusion costs, and what pays for it:
+
+  - **A build is now specific to the ceiling it ran under.** The published
+    pointer records that flavor as `indexedSensitivities`, beside
+    `indexesUnapproved`, and `mcp.search._published_index` stands aside a build
+    whose flavor differs from the grant in force —
+    `fallbackReason: serving-profile-mismatch`, degrading to the canonical scan,
+    which carries the same grant as a SQL predicate. Both directions refuse: a
+    wider build prices the visible rows against text this deployment does not
+    serve, and a narrower one answers with a silence a caller reads as "this team
+    has made no such decision".
+  - **`INDEX_SCHEMA_VERSION` goes 5 → 6.** Every version-5 index predates the
+    exclusion and may hold above-ceiling text, and no pointer field can establish
+    what such a build excluded. The bump makes those files unusable by
+    construction (`index-schema-mismatch`, rebuilt by the standing remedy) rather
+    than filtered on read.
+  - **The read-side predicate is still owed** (part 3). Until it lands, a
+    document reclassified upward *after* a build keeps its chunk row and is
+    withheld by the canonical re-check alone — which is now the only way an
+    above-ceiling row is in a file this deployment reads at all.
 
 Naming these is the point. An ADR that pretended to settle them would be
 overturned by the first implementation attempt.
@@ -137,16 +172,26 @@ overturned by the first implementation attempt.
 
 ## Compliance
 
-**Nothing enforces this ADR today. Every item below is owed.** The owner of all
-of them is [#119](https://github.com/theurian/theurian/issues/119), and the
-milestone is Phase 0 — before 0.1.0 stable.
+**Part 1 is discharged as of #119 phase 3 (2026-08-24). Parts 2, 3 and 4 are
+owed.** The owner of all of them is
+[#119](https://github.com/theurian/theurian/issues/119), and the milestone is
+Phase 0 — before 0.1.0 stable.
+
+- **Part 1 — done.** `IndexBuilder._build` gates on `may_disclose` against the
+  deployment's serving profile beside the status gate, so an above-ceiling item
+  writes no chunk row and the forest, derived over what the build wrote, gets no
+  summary node either.
+  `tests/integration/test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_half_of_the_index`
+  holds it over both halves and all four text indexes: two builds of one corpus,
+  the first under the shipped default to establish that the document *is*
+  indexable and that the table under test really indexes a term unique to it,
+  the second under a declared `internal` ceiling. Measured RED by reverting the
+  gate. The builder's call site is pinned in
+  `tests/unit/test_gate_call_sites.py::DISCLOSURE_GATE_CALL_SITES`, so its
+  removal fails there as well.
 
 Still owed, with the part of the decision each discharges:
 
-- **Part 1** — a test that a build over a corpus containing a withheld-by-
-  sensitivity document writes no chunk row *and no summary node* a gated query
-  could reach. No such test exists; `IndexBuilder._build`'s only scope gate is
-  status, and `ForestBuilder.derive` inherits whatever it wrote.
 - **Part 2** — a test that a `changeSensitivity` migration publishes a purged
   build in the same `migrate apply`, the way a withdrawal already does. The
   current behaviour is the opposite and is deliberate:
@@ -172,7 +217,14 @@ Still owed, with the part of the decision each discharges:
   `test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
   and
   `test_forest_builder.py::test_a_purged_forest_leaves_no_residue_in_a_node_text_index`
-  over both node indexes. Nothing runs any of them for sensitivity.
+  over both node indexes. Nothing runs any of them for sensitivity. Phase 3
+  changed what this owes rather than discharging it: with the build excluding
+  above-ceiling rows, the pair `test_absence_proof.py` generates for the ceiling
+  shape now holds two indexes that never held the withheld text, and asserts they
+  hold *identical* text (`_indexed_text`). The pair still owed is the one whose
+  two indexes differ -- build at `internal`, reclassify to `restricted`, serve at
+  `internal` -- which is the only arrangement that puts an above-ceiling row in
+  front of a ranked query once part 1 has landed.
 
 **All four means all four over both halves.** A change that gates
 `chunks_fts`/`chunks_trigram` and leaves `nodes_fts`/`nodes_trigram` open does
