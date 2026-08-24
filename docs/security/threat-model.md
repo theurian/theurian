@@ -1087,9 +1087,10 @@ the control is not a claim that a secret cannot pass. One gate of three, held by
 a control that disclaims completeness, does not separate High from Medium.
 
 **That three-point count is over the paths a *body* can enter.** The revision's
-own metadata — its `--title`, `--description` and `--label` values — is a
-distinct channel the body scan does not touch at all, published content of the
-approved revision, recorded in the enumeration below and deferred to
+own metadata — its `--title`, `--description` and `--label` values, and the
+source anchors it carries — is a distinct channel the body scan does not touch at
+all, part of it (the title and the anchors) published verbatim on every result,
+recorded in the enumeration below and deferred to
 [#336](https://github.com/theurian/theurian/issues/336). It widens the residual
 rather than moving the count, and reinforces High rather than threatening it.
 **The residual falls to be re-graded when #329 ships an ingest-time and
@@ -1142,14 +1143,23 @@ a separate point:*
 
 - **The scan reads bodies, not the revision's own metadata.**
   `_scan_bodies_for_secrets` reads the incoming body files and nothing else, so a
-  secret placed in `theurian propose`'s `--title`, `--description` or `--label` is
-  content of the approved revision that never meets the detector — even for a
-  proposal that does pass through `accept`. The title is the sharpest of the
-  three: it is published verbatim on every `knowledge.search` and `knowledge.get`
-  result (`mcp/results.py`) and, lowercased, becomes the migration filename's
-  slug, so a slug-surviving credential such as an AWS access-key id lands in both.
-  The description and labels land unscanned in the migration metadata. Extending
-  the scan to these fields is deferred to
+  secret placed in the revision's own metadata is content of the approved revision
+  that never meets the detector — even for a proposal that does pass through
+  `accept`. Two of those metadata channels are published verbatim on every
+  `knowledge.search` and `knowledge.get` result (`mcp/results.py`, verified
+  2026-08-24 against the round-two security review), which is what makes them the
+  sharp ones: the `--title`, and the revision's source anchors — provider,
+  sourceUri, repository, commitSha, filePath — set by `theurian propose`'s
+  `--source-provider`, `--source-uri`, `--source-commit` and `--source-path`, or
+  by hand in the authored migration for `repository` and the rest. A URL,
+  repository or file path is exactly where a credential embedded in a token-bearing
+  URL hides, so the anchors are at least as sharp a published channel as the title.
+  The title, lowercased, also becomes the migration filename's slug, so a
+  slug-surviving credential such as an AWS access-key id lands in both the filename
+  and every result. The `--description` and `--label` values are unscanned too, but
+  they land only in the migration YAML and the canonical store and are **not** in
+  the result payload — unscanned-but-committed rather than unscanned-and-published.
+  Extending the scan to all of these fields is deferred to
   [#336](https://github.com/theurian/theurian/issues/336); until it ships, the
   human review of the migration diff stands over this channel as it does over the
   body. This is a distinct channel from the three body-entry points the grade
@@ -4633,7 +4643,7 @@ fix.
 | T-12 | Agent rewrites approved knowledge | T | High | SEC-17 |
 | T-13 | Concurrent daemon corruption | T | High | NFR-1 |
 | T-14 | Setup overwrites configuration — the MCP entry, and `~/.theurian/env` since #128 | T | Medium | SEC-18 |
-| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land, `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The scan reads bodies only: the revision's own metadata — title, description, labels — is unscanned ([#336](https://github.com/theurian/theurian/issues/336)). Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
+| T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land, `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The scan reads bodies only: the revision's own metadata is unscanned — the title and source anchors (provider, sourceUri, repository, commitSha, filePath) are published verbatim on every result, the description and labels committed but not published ([#336](https://github.com/theurian/theurian/issues/336)). Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
 | T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |

@@ -437,10 +437,12 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   **That is one gate and a best-effort detector, not coverage.** It reads known
   credential shapes and flags strings that look randomly generated, so a secret
   resembling neither is invisible to it. The scan reads bodies, not the revision's
-  own metadata — a secret in the `--title`, `--description` or `--label` is
-  unscanned, and the title is published on every `knowledge.search` and
-  `knowledge.get` result and in the migration filename
-  ([#336](https://github.com/theurian/theurian/issues/336)). Theurian does not
+  own metadata — a secret in the `--title`, `--description` or `--label`, or in a
+  source anchor (provider, sourceUri, repository, commitSha, filePath), is
+  unscanned; the title and the source anchors are published verbatim on every
+  `knowledge.search` and `knowledge.get` result, the title also becoming the
+  migration filename, while the description and labels are committed but not
+  published ([#336](https://github.com/theurian/theurian/issues/336)). Theurian does not
   scan ingested content for secrets — `theurian ingest` and `index build` run no scan at all — and a
   migration written straight into `.theurian/migrations/` by hand never passes
   through `accept`. A secret that gets past all of that becomes readable through

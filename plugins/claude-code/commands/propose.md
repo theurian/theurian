@@ -110,8 +110,10 @@ cannot approve knowledge"** rule below, not the front-matter
 
       This checks first and moves second. Before anything moves it scans every
       body for secrets (SEC-11) — the body only, so keep credentials out of the
-      `--title`, `--description` and `--label` too: those are not scanned and the
-      title is published on every search result and in the migration filename
+      `--title`, `--description`, `--label` and the `--source-*` anchors too:
+      those are not scanned, and the title and the source anchors (provider,
+      sourceUri, repository, commitSha, filePath) are published on every search
+      result, the title also becoming the migration filename
       ([#336](https://github.com/theurian/theurian/issues/336)) — and proves that
       the project's migration set with this proposal in it still survives the
       pipeline `migrate apply` runs — the

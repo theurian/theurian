@@ -380,12 +380,20 @@ deliberately disclaims completeness on.
 
 **The scan is body-scoped, by decision.** `_scan_bodies_for_secrets` reads the
 incoming body files and nothing else, so a secret placed in the revision's own
-metadata — its `--title`, `--description` or `--label` — is not scanned. This is
-a stated boundary rather than an oversight, and it is a real disclosure channel:
-the title is published verbatim on every `knowledge.search` and `knowledge.get`
-result (`mcp/results.py`) and, lowercased, becomes the migration filename's slug,
-so a slug-surviving credential such as an AWS access-key id lands in both, while
-the description and labels land unscanned in the migration metadata. It is
+metadata — its `--title`, `--description` or `--label`, or one of its source
+anchors — is not scanned. This is a stated boundary rather than an oversight, and
+it is a real disclosure channel, because two of those metadata channels are
+published verbatim on every `knowledge.search` and `knowledge.get` result
+(`mcp/results.py`, verified 2026-08-24 against the round-two security review): the
+title, and the source anchors — provider, sourceUri, repository, commitSha,
+filePath — set by `theurian propose`'s `--source-provider`, `--source-uri`,
+`--source-commit` and `--source-path`, or by hand in the authored migration. A
+URL, repository or file path is exactly where a credential in a token-bearing URL
+hides, so the anchors are at least as sharp a published channel as the title. The
+title, lowercased, also becomes the migration filename's slug, so a slug-surviving
+credential such as an AWS access-key id lands in both. The description and labels
+land unscanned in the migration metadata too, but they are not in the result
+payload — unscanned-but-committed rather than unscanned-and-published. It is
 deferred to [#336](https://github.com/theurian/theurian/issues/336) rather than
 folded in here for three reasons stated so a reviewer can weigh them: the
 metadata is bounded and human-gated the same way the body is — a human reviews
@@ -668,11 +676,14 @@ Still owed, with the issue that will satisfy it:
 - **Metadata-field secret scanning**
   ([#336](https://github.com/theurian/theurian/issues/336)). The accept-path scan
   reads bodies only, so a secret in the revision's `--title`, `--description` or
-  `--label` is unscanned — the title being published on every `knowledge.search`
-  and `knowledge.get` result and in the migration filename. It is a HIGH finding
-  converted to the recorded design decision in decision 3 above, deferred rather
-  than absorbed because the metadata is human-gated the same way the body is and
-  the extension wants its own false-positive tuning.
+  `--label`, or in a source anchor, is unscanned — the title and the source
+  anchors (provider, sourceUri, repository, commitSha, filePath) being published
+  verbatim on every `knowledge.search` and `knowledge.get` result, and the title
+  in the migration filename, while the description and labels are committed but not
+  published. It is a HIGH finding converted to the recorded design decision in
+  decision 3 above, deferred rather than absorbed because the metadata is
+  human-gated the same way the body is and the extension wants its own
+  false-positive tuning.
 - **Ingest-time and index-time secret scanning**
   ([#329](https://github.com/theurian/theurian/issues/329)). `theurian ingest`
   records content that is already approved and no scan runs there. T-15's

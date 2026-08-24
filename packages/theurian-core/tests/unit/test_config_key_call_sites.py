@@ -456,11 +456,16 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "`theurian propose accept` scans the bodies a proposal would land",
             "That is one gate and a best-effort detector, not coverage",
             # The metadata channel (#336): the scan reads bodies only, so a secret
-            # in the revision's own title/description/labels is unscanned and, for
-            # the title, published. A surface that describes SEC-11's reach without
-            # this sentence over-claims by omission -- the same B1-B4 failure the
-            # rest of this row guards, applied to *which channels* the scan covers.
+            # in the revision's own title/description/labels or source anchors is
+            # unscanned, and the title *and* the source anchors are published on
+            # every result (verified 2026-08-24 in mcp/results.py). A surface that
+            # describes SEC-11's reach without both over-claims by omission -- the
+            # same B1-B4 failure the rest of this row guards, applied to *which
+            # channels* the scan covers. The field list is the completeness marker:
+            # dropping the source anchors, the sharpest published channel, reddens
+            # here.
             "The scan reads bodies, not the revision's own metadata",
+            "provider, sourceUri, repository, commitSha, filePath",
             "Theurian does not scan ingested content for secrets",
             "Theurian is not one and is not a replacement for one",
         ),
@@ -471,8 +476,11 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "**Controls: `theurian propose accept` scans every body before it moves it**",
             "It is best effort and the product says so",
-            # The metadata channel (#336); see the SECURITY.md row above.
+            # The metadata channel (#336); see the SECURITY.md row above. The field
+            # list guards that the source anchors -- a published channel as sharp as
+            # the title -- stay enumerated alongside it.
             "The scan reads bodies, not the revision's own metadata",
+            "provider, sourceUri, repository, commitSha, filePath",
             "`theurian ingest` runs no scan",
         ),
     ),
@@ -484,8 +492,11 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "best-effort in-house detector",
             # The metadata channel (#336); see the SECURITY.md row above. This
             # T-15 row is the one that enumerates what the control does not reach,
-            # so an omission here reads as "the scan covers everything".
-            "the revision's own metadata — title, description, labels — is unscanned",
+            # so an omission here reads as "the scan covers everything". The field
+            # list pins the sharpest omission the round-two review found: the source
+            # anchors are published verbatim on every result, the same as the title.
+            "the revision's own metadata is unscanned",
+            "provider, sourceUri, repository, commitSha, filePath",
             "Ingest-time and index-time scanning are separate controls and do not ship",
         ),
     ),
