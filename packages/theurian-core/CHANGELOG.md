@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.1.0.dev10] - 2026-08-24
+
 ### Added
 
 - **SEC-11 ships as a real control: `theurian propose accept` scans every body
