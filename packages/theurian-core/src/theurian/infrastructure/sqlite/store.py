@@ -531,9 +531,10 @@ class SqliteCanonicalStore:
         # regardless of the values, and the result order comes from the SQL
         # `ORDER BY status`. `GROUP BY` returns no row for a status with no
         # items, which keeps the mapping identical to the old first-appearance
-        # loop. The
-        # covering index `idx_items_status(project_id, status)` answers it
-        # without reading a withheld row.
+        # loop. The seek on `idx_items_status(project_id, status)` still skips
+        # every retired row, but this is no longer a *covering* scan -- the
+        # `sensitivity` column it also reads is not in the index, so each
+        # in-status row is fetched from the table (measured below).
         #
         # The `sensitivity` axis joins it in #119 phase 6, because these counts are
         # published and a statistic over rows the caller may not see is a

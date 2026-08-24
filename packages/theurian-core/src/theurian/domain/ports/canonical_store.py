@@ -221,8 +221,14 @@ class CanonicalStore(Protocol):
         filtering in Python, which made its *response time* proportional to the
         withheld rows rather than to what it publishes: subtracting the published
         count recovered the withheld one (T-17; #158 owns the ``search._scan``
-        sibling). Counting in SQL over the covering index scopes the work to the
-        surfaceable rows, so the timing carries no more than the values do.
+        sibling). Counting in SQL keeps the retired rows out of the walk -- the
+        seek on ``idx_items_status`` skips every row outside
+        ``SURFACEABLE_STATUSES``, so the response time no longer scales with the
+        withheld *status* count. It is not a *covering* scan, though: since #119
+        phase 6 the grouping also reads ``sensitivity``, a column that index does
+        not carry, so each in-status row is fetched and the ``GROUP BY`` needs a
+        temp b-tree -- a bounded per-above-ceiling-row term measured at the
+        adapter and recorded as T-22.
 
         **``sensitivities`` is required and has no default** (#119 phase 6), the
         convention :meth:`list_items_by_status` set: a default would mean
