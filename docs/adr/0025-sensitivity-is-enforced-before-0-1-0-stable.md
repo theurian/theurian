@@ -96,12 +96,45 @@ exactly why it stops being allowed to once a gate reads it.
 This ADR does not settle, and **must be amended when #119's implementation
 does**:
 
-- **The entitlement model.** What makes a row withheld-by-sensitivity in a
+- **The entitlement model.** ~~What makes a row withheld-by-sensitivity in a
   single-user loopback daemon? Caller identity does not exist — the daemon
   authenticates a bearer token, not a person. Candidates include a per-call
   scope parameter, per-project configuration, or a declared operator profile.
   Each has a different disclosure surface, and choosing between them is design
-  work this ADR is not the place for.
+  work this ADR is not the place for.~~
+
+  **Settled 2026-08-23 by a maintainer decision on
+  [#119](https://github.com/theurian/theurian/issues/119#issuecomment-5386235623):
+  a deployment serving profile.** The operator declares one sensitivity *ceiling*
+  for the whole deployment, and `StaticAuthorizationProvider` expands it once into
+  the grant every read carries. Three properties decided it, and each rules out
+  one of the candidates above:
+
+  - **It lives in the operator-owned data directory, never in the Git-tracked
+    `.theurian/config.yaml`** — `<data_dir>/auth/serving-profile`, one word, mode
+    0600, beside the token and refused if another local account can reach it.
+    Repository contributors are an untrusted actor class in this model, so a
+    committed ceiling would make *raising* the ceiling a contributor-authored
+    access-control change: reviewable in principle, indistinguishable from an
+    ordinary configuration edit in practice. That is what rules out per-project
+    configuration as the control.
+  - **It is not a per-call parameter.** A ceiling a caller chooses is a ceiling a
+    caller can raise, and the caller here is an agent reasoning over untrusted
+    input (T-3). Per-call *narrowing* may be added later as a refinement; it
+    cannot be the control.
+  - **It is a property of the deployment, not of a project.** The port is
+    per-`(principal, project_id)` and the OSS core's implementation deliberately
+    ignores both, answering identically for every project rather than inventing a
+    nominal identity to look per-project. A per-project or per-principal provider
+    is a hosted adapter's own implementation of the same Protocol — the seam
+    supports it and the core does not pretend to it (recorded on
+    [#119](https://github.com/theurian/theurian/issues/119#issuecomment-5388663423)).
+
+  **The shipped default is restrictive: ceiling `internal`.** `confidential` and
+  `restricted` are withheld until an operator raises it, and a deployment with no
+  profile file gets that default rather than an allow-all. See *Consequences →
+  Negative*, where it is recorded as an accepted, intended behaviour change rather
+  than a side effect.
 - **Exclusion versus gating.** ~~Whether withheld-by-sensitivity rows are kept
   out of the index entirely, **or indexed and gated at read time behind a
   mechanism that isolates the collection statistics** — a per-entitlement build
@@ -173,12 +206,58 @@ overturned by the first implementation attempt.
   who see them today. That is the intended effect and it is still a behaviour
   change inside a pre-1.0 line.
 
+  **It is the *default* rather than something an operator opts into, and that is
+  the decision rather than a side effect of it.** `DEFAULT_CEILING` is `internal`
+  (the one-line constant change is this branch's closing commit, deliberately
+  last so that every record above it describes a system that already exists),
+  so a deployment that declares no profile serves `public` and `internal` and
+  withholds `confidential` and `restricted` — from `knowledge.search`, from
+  `knowledge.get`, from `knowledge.status`'s counts, and from the build itself.
+  Every existing installation that upgrades loses results it used to get, with no
+  configuration change on its part, and the remedy is one word in one file
+  (`echo restricted > <data_dir>/auth/serving-profile`).
+
+  **Accepted knowingly by a maintainer decision on 2026-08-23**
+  ([#119](https://github.com/theurian/theurian/issues/119#issuecomment-5386235623)),
+  against a measurement rather than a principle: on a resident loopback daemon
+  serving this repository's own mixed-sensitivity corpus (82 items, 6 of them
+  `confidential`), a default-parameter `knowledge.search` returned four
+  `confidential` items ranked and excerpted in the top six, and `knowledge.get`
+  served a 5,058-character `confidential` body. A permissive default is what made
+  that the shipped behaviour, so a restrictive default is the line that closes it —
+  and an operator who is surprised by fewer results has been told something true,
+  where an operator surprised by a `confidential` excerpt has not.
+
 ### Neutral
 
 - No canonical schema change and no new index columns: the columns already
   exist and are already written.
 - The published response shape does not change. What changes is which rows reach
   it — and *that* is the part part 4 exists to hold.
+- **One accepted timing residual, measured and recorded rather than removed.**
+  `idx_items_status` is `(project_id, status)`, so a canonical read that also
+  filters on `sensitivity` fetches the above-ceiling rows before dropping them:
+  about 0.20 µs per above-ceiling row on `list_items_by_status` and 0.54 µs on
+  `count_surfaceable_by_status`, corpus-bounded because neither statement carries
+  a `LIMIT`, and in-process figures thousands of rows below TB-1's 1.40 ms
+  end-to-end floor. Recovery of content has not been demonstrated and the
+  mechanism offers none. Its own threat-model entry is **T-22**, named by root
+  cause — *the canonical index does not carry the gate's column* — and the
+  flattening is
+  [#338](https://github.com/theurian/theurian/issues/338).
+- **`knowledge.status` publishes ceiling-narrowed counts; the integrity
+  comparison does not.** Recorded 2026-08-24
+  ([#119](https://github.com/theurian/theurian/issues/119#issuecomment-5390252745)).
+  `itemCount` and `itemsByStatus` are a statistic over rows the caller may not
+  see, so they follow the grant — the disclosure-family member reached through a
+  tool nobody checking `knowledge.search` would think to call. The `#30` integrity
+  mechanism moves the other way and stays on the **ungated** population
+  internally: `expected_surfaceable_count` is written ceiling-blind by
+  `migrate apply`, so comparing a narrowed live count against it would make a
+  healthy restricted deployment report `damageDetected` from its own ceiling —
+  measured, which is why the phase that added the predicate deliberately left both
+  halves alone rather than narrowing one. The cost is one `COUNT` this tool used
+  to get for free.
 
 ## Alternatives considered
 
@@ -187,12 +266,12 @@ overturned by the first implementation attempt.
 | **Ship the read-side predicate alone** | Two measured defects. (a) The index still holds the withheld text, so BM25 collection statistics computed over the whole index file continue to price the visible rows — T-17a's mechanism, moved from the status axis to the sensitivity axis; the threat model records T-17a's closure as covering "the status axis only" for exactly this reason. (b) `migration_engine.py` *excluded* `changeSensitivity` from the withdrawal candidate set the purge reads, on the recorded ground that the stale column "is read by no gate before #119". The moment a gate read it, that exclusion inverted into a defect: a document reclassified `internal → restricted` kept its row in the published build until the next manual `index build`. Both halves are closed as of phases 3–5; this row records why shipping part 3 on its own would not have been enough. |
 | **Keep sensitivity a label until after 1.0** | A published governance label that no query reads is, by this project's own grading, a claim that misleads a security decision. Deferral was defensible while one human at a CLI was the only writer; Phase B multiplies the writers, and a stable release turns the current meaning of every corpus into a compatibility promise. |
 | **Remove the label until it can be enforced** | `sensitivity` is already in the published wire contract and carries real information a caller may act on. Removing it is a breaking change to that contract, it deletes information the corpus genuinely holds, and it buys no safety — the underlying content is served either way. It trades a misleading claim for no claim at all, at the cost of a break. |
-| **Enforce tenant and ACL group at the same time** | Not rejected, deferred within the same issue: those axes are refused at write time today, so they hold no content and nothing routes on them. Sensitivity is the axis whose values actually vary, which is what makes it the one that misleads. |
+| **Enforce tenant and ACL group at the same time** | Not rejected, and **not deferred either, as this row used to say**: #119 closed them by degenerate discharge — refused at write time, so they hold no content and nothing routes on them, with a request-boundary refusal and a test binding the grant to the write refusal beside it (see *Two axes this ADR does not enforce* under Compliance). Sensitivity is the axis whose values actually vary, which is what made it the one that misleads and the one that needed a predicate. |
 
 ## Compliance
 
-**Parts 1, 2 and 3 are discharged as of #119 phases 3, 4 and 5 (2026-08-24).
-Part 4 is owed.** Its owner is
+**All four parts are discharged as of #119 phases 3 to 6 (2026-08-24).** Nothing
+in this ADR is owed. Its owner was
 [#119](https://github.com/theurian/theurian/issues/119), and the milestone is
 Phase 0 — before 0.1.0 stable.
 
@@ -285,36 +364,71 @@ Phase 0 — before 0.1.0 stable.
   which is what forced the SQL, the test and both prose surfaces into one commit,
   exactly as this section predicted.
 
-Still owed, with the part of the decision it discharges:
+- **Part 4 — done in #119 phase 6** (2026-08-24), by a file of its own:
+  `tests/integration/test_sensitivity_absence_proof.py`, **38 tests**. It states
+  `test_absence_proof.py`'s property over a different reason for withholding, and
+  it is a second implementation rather than an import because the test tree has no
+  `__init__.py` and runs under `--import-mode=importlib` — a cost that module's own
+  docstring already priced when it argued that a new axis should be a new file.
 
-- **Part 4** — the existing two-corpora equality tests, parametrized over the
-  sensitivity axis and covering all four scoring surfaces. The status-axis
-  closure is the model to follow and took three tests, not one:
-  `tests/integration/test_absence_proof.py` for the leaf surfaces,
+  **The coverage grid, because "the suite exists" is not the claim.** Three
+  withholding mechanisms cross two ways for a pair to differ:
+
+  | | `one-payload-apart` (content reaches a caller) | `present-in-one-only` (a slot, a count, a token total, a BM25 statistic) |
+  | :-- | :-- | :-- |
+  | `excluded-at-build` (part 1) | covered | covered |
+  | `reclassified-not-purged` (part 3, the canonical re-check alone) | covered | **absent by record** |
+  | `reclassified-and-purged` (part 2, through the real CLI) | covered | covered |
+
+  `SHAPES` is written as the list of *valid* cells, so the missing one is absent by
+  construction rather than filtered away, and
+  `test_the_shape_grid_names_the_cell_it_leaves_out` fails if the grid stops saying
+  which. Why it is absent: in that state the published build still holds the
+  reclassified document's text, so a control that never held it has different FTS5
+  collection statistics and the visible rows are scored against a different `avgdl`
+  and different document frequencies. The equality *would* fail, honestly — it is
+  T-17a on this axis, recorded under part 2 as the one direction the purge cannot
+  close and in the threat model's T-17a entry — and the honest response to that
+  failure is not to weaken the assertion.
+
+  Of the 38: 24 are the whole-response comparison over two corpus depths × the
+  three valid generated cells × four argument sets, 3 compare `knowledge.status`'s
+  counts, 3 sweep every string a caller reads for an above-ceiling payload, and the
+  rest are the single-property tests plus the hand-written purged pair
+  (`test_a_purged_build_answers_as_one_that_was_never_allowed_to_hold_the_row`),
+  which runs the real `theurian migrate apply`. **Nothing is masked** on the
+  generated pairs; the three values a two-project comparison would otherwise have
+  to exclude — `snapshotId`, `indexBuildId` and the registry id — are held equal as
+  *inputs* instead.
+
+  **What this file does not reach is stated in it and delivered elsewhere**, which
+  is how all four surfaces are covered rather than two: every pair here builds a
+  chunk-only index, so the node half comes from
+  `test_sensitivity_purge.py::test_the_purged_forest_equals_one_built_above_the_ceiling`
+  (nodes, derivation edges and node vectors, purged against
+  never-allowed-to-hold) and
+  `test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_half_of_the_index`
+  (build-side exclusion, parametrised over all four text indexes). Those two plus
+  this file are the three-test shape the status-axis closure needed, on this axis.
+
+  Also not reached, and recorded rather than implied: the unranked fallback path
+  (pinned separately in `test_mcp_tools.py`, because reaching it from a pair means
+  a second variable in a comparison that has one), non-`approved` statuses (mixing
+  the axes would let the status gate satisfy an equality the disclosure gate was
+  supposed to), scripts without word boundaries, and **durations** — excluded by
+  the recorded decision below rather than by measurement.
+
+The status-axis closure this part was modelled on:
+
+- `tests/integration/test_absence_proof.py` for the leaf surfaces,
   `test_forest_purge_equality.py::test_a_purged_forest_equals_one_that_never_held_the_withdrawn_rows`,
   and
   `test_forest_builder.py::test_a_purged_forest_leaves_no_residue_in_a_node_text_index`
-  over both node indexes. Phase 3 changed what this owes rather than discharging
-  it: with the build excluding above-ceiling rows, the pair
-  `test_absence_proof.py` generates for the ceiling shape now holds two indexes
-  that never held the withheld text, and asserts they hold *identical* text
-  (`_indexed_text`). The pair still owed is the one whose two indexes differ —
-  build at `internal`, reclassify to `restricted`, serve at `internal` — which is
-  the only arrangement that puts an above-ceiling row in front of a ranked query
-  once part 1 has landed.
+  over both node indexes — three tests, not one, which is why this part's own
+  discharge above names three files.
 
-  **Phase 5 narrowed this again and did not close it.** With the purge trigger in
-  place that arrangement no longer survives a `migrate apply`, so the pair has to
-  be built over a published build the purge did not reach — the residual state
-  `test_mcp_tools.py::_apply_leaving_the_stale_build_published` already
-  reproduces. What phase 5 *did* deliver against this part is the derived half of
-  the equality:
-  `test_sensitivity_purge.py::test_the_purged_forest_equals_one_built_above_the_ceiling`
-  compares nodes, derivation edges and node vectors between a purged build and
-  one built when the item was already above the ceiling. That is the analogue of
-  `test_forest_purge_equality.py`'s deliverable, on this axis. The leaf-side
-  response equality — one query, two corpora, whole response compared — is what
-  remains.
+**All four parts are discharged as of #119 phase 6 (2026-08-24), and nothing in
+this ADR is owed.**
 
 **All four means all four over both halves.** A change that gates
 `chunks_fts`/`chunks_trigram` and leaves `nodes_fts`/`nodes_trigram` open does
@@ -323,8 +437,20 @@ same T-17a class by the same FTS5 mechanism, where a withheld node reweights the
 `idf` of the visible nodes it is scored against and so moves which node routes
 and what score a leaf inherits.
 
-Until all four land, `system.capabilities` must not advertise sensitivity
-enforcement in any form. **The sentence this ADR used to protect is gone, and
+~~Until all four land, `system.capabilities` must not advertise sensitivity
+enforcement in any form.~~ **Discharged in #119 phase 6: all four have landed, so
+the advertisement is now permitted and is made.** `system.capabilities` reports
+`sensitivityEnforcement: true`, pinned by
+`test_mcp_tools.py::test_capabilities_report_what_is_and_is_not_built` and by the
+block's own population test, so it cannot be flipped or dropped unnoticed. It is a
+*build* property, deliberately, and reports only that this build enforces the
+axis — **not the ceiling this deployment declares**. Every other flag in that
+block is a build property too, and publishing the ceiling word would tell a caller
+which levels it is not being shown, which is a statement about withheld content
+made on a surface no gate protects. An operator who needs to know the ceiling
+reads the profile file.
+
+**The sentence this ADR used to protect is gone, and
 its going is what part 3 landing means**: SECURITY.md said no retrieval predicate
 read `chunks.sensitivity`, so it was "a published label, not a control", and that
 was true until phase 4 made it false. What replaced it names the three places the
@@ -339,4 +465,33 @@ rewrote and is not restated there.
 **When #119's implementation settles the entitlement model or the
 exclusion-versus-gating question, this ADR is amended with what was chosen and
 why** — the reasoning is the artifact, and an ADR that silently acquires an
-answer it once called open is worse than one that never named it.
+answer it once called open is worse than one that never named it. **Both are
+settled and both amendments are above**, in *Deliberately left open*, where the
+superseded text is struck through rather than deleted.
+
+### Two axes this ADR does not enforce, and the difference between them
+
+The decision above is about `sensitivity` alone. FR-R1 names two more axes, and
+they are **discharged degenerately** rather than enforced — a weaker claim, said
+plainly here so nothing downstream reads it as the same one (maintainer decision
+4, 2026-08-23).
+
+`migration_engine._scope_violations` refuses at write time any revision naming a
+tenant other than `local` or an ACL group other than `default` (#110), so no
+stored row can carry anything else and there is nothing along either axis to
+withhold. Two things stand beside that refusal so the argument is checkable rather
+than asserted: `mcp/tools.py`'s `_resolve` refuses a grant naming another tenant
+before the registry is read (`_tenant_boundary_refusal` — unreachable through the
+shipped composition, and written out anyway so that a hosted provider meets a
+message rather than a comment), and
+`test_authorization_provider.py::test_tenant_and_acl_group_are_the_values_write_time_already_refuses`
+reads `_ENFORCED_TENANT_ID` and `_ENFORCED_ACL_GROUP` out of the engine and the
+grant out of the provider rather than restating either as a literal — because the
+discharge holds only while the provider grants *exactly* what the writer refuses
+to depart from.
+
+**What this is not.** It is not a predicate, and it does not become one by being
+recorded here. A deployment that ever stores a second tenant or a second ACL group
+needs a real control; those are hosted columns and hosted work. #119 closes on
+these two axes on this basis, and the moment the write refusal is relaxed, this
+paragraph is a defect rather than a discharge.
