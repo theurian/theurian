@@ -23,6 +23,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carrying an environment-variable reference rather than a literal token.
 - Shell helpers that shell out to the `theurian` CLI and contain no Theurian
   logic.
+- `/theurian:propose` documents `theurian propose --local` and tells the agent
+  not to reach for it: a proposal is review input, so the committable location
+  is the default, and `--local` is for a user who asks for a draft that stays on
+  their machine ([#265](https://github.com/theurian/theurian/issues/265),
+  ADR-0028). Two things it says when the user does ask, because both are ways a private
+  body reaches Git anyway: the scratch body file still has to be deleted, since
+  the `Write` grant reaches only the *committable* `.theurian/proposals/`; and
+  `--local` hides the proposal rather than the knowledge, so accepting it still
+  writes the body into `.theurian/knowledge/`.
 
 ### Fixed
 

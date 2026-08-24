@@ -93,6 +93,17 @@ cannot approve knowledge"** rule below, not the front-matter
      `migration.schema.json` in the repository to read either: it ships inside the
      installed Core, and the generator validates against it before it writes a
      file.
+   - **`--local` is the user's flag, not yours.** It drafts under
+     `.theurian/proposals-local/`, which `theurian init` git-ignores, so the
+     proposal never reaches the pull request. Default to the committable
+     location: a proposal is review input, which is the whole point of drafting
+     one (ADR-0013 point 7). Use `--local` only when the user asks for a draft
+     that stays on their machine, and tell them two things when you do — your
+     scratch body file still has to be deleted, because your `Write` grant only
+     reaches the *committable* `.theurian/proposals/` and a private body left
+     there is committable; and `--local` hides the proposal, not the knowledge,
+     so accepting it still writes the body into `.theurian/knowledge/` where Git
+     will see it.
 
 4. Show the user what was written — the `proposalId` and the paths from the
    `--json` output — and one sentence on what the migration would change.
