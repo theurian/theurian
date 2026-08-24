@@ -126,8 +126,8 @@ cannot approve knowledge"** rule below, not the front-matter
       refuses the acceptance under the default `block`
       ([#336](https://github.com/theurian/theurian/issues/336)). The detector is
       best effort, so keep credentials out of all of them regardless: the title
-      and the source anchors are published on every search result, and the title
-      is what the migration filename's slug is made from. It also proves that
+      and the published source anchors (provider, sourceUri, repository,
+      commitSha, filePath) appear on every search result. It also proves that
       the project's migration set with this proposal in it still survives the
       pipeline `migrate apply` runs — the
       published schema, the whole-set guards, and a dry replay that reaches the

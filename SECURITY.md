@@ -439,16 +439,26 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   **That is one gate and a best-effort detector, not coverage.** It reads known
   credential shapes and flags strings that look randomly generated, so a secret
   resembling neither is invisible to it. In the document it reads the
-  author-written strings: the `--title`, `--description`, `--label`,
-  `--scope-path`, `--owner`, `--author` and `--namespace` values, the free text
-  and chosen names each operation carries, and every string of a source anchor —
+  author-written string values: the `--title`, `--description`, `--label`,
+  `--scope-path`, `--owner`, `--author` and `--namespace` values, `contentType`
+  and the `createdAt`/`validFrom`/`validTo` dates, the free text and chosen
+  names each operation carries, and every string of a source anchor —
   provider, sourceUri, repository, filePath, externalId,
-  commitSha, blobSha. The title and the source anchors are the sharp ones,
-  because they are published verbatim on every `knowledge.search` and
-  `knowledge.get` result, and the title is also what the migration filename's
-  slug is made from. **What it does not read is the derived half** — the
-  identifiers, `contentSha256`, `createdAt`, `contentFile`, `contentType` and
-  the fixed vocabularies — where an author has nothing to put. A proposal's
+  commitSha, blobSha. The sharp ones are the title and the anchor fields a
+  result publishes verbatim — provider, sourceUri, repository, commitSha,
+  filePath — because a credential in one reaches an agent that never opens the
+  body; externalId and blobSha are scanned but not published, and the migration
+  filename is not re-derived from the title at accept, so it is not covered
+  here. **What it does not read** is a YAML comment or the migration and body
+  filenames — the artifact-level face, tracked in
+  [#349](https://github.com/theurian/theurian/issues/349) — and, inside the
+  document, the fields where a mechanism already bars a reported secret: the
+  ULID- and `contentSha256`-shaped identifiers, which the detector's class gate
+  cannot fire on; the fixed vocabularies (`kind`, `status`, `op` and the other
+  enums); and `contentFile`, a path whose secret-in-filename face is #349. The
+  date fields land nothing themselves, but a committed secret in one was
+  reproduced verbatim by the rehearsal's date parse, so scanning pre-empts that
+  with a redacted refusal under `block`. A proposal's
   `evidence.json` is not scanned: `accept` never moves it into the canonical
   tree, and scanning it is tracked with the draft-time advisory
   ([#330](https://github.com/theurian/theurian/issues/330)). Theurian does not

@@ -42,7 +42,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   credential in any of them refuses the acceptance under the default `block`
   ([#336](https://github.com/theurian/theurian/issues/336)). The advice to keep
   them out stands and now says why — the detector is best effort, and the title
-  and the source anchors are published on every search result.
+  and the published source anchors appear on every search result.
 - **`/theurian:propose` described the accept contract Core no longer has.** It
   told the agent that `theurian propose accept` "moves files and nothing else:
   it does not validate, does not apply, and does not approve", that

@@ -22,30 +22,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   so a credential in the revision's own metadata was accepted and committed
   unread. That is the wider channel of the two: a body is reviewed as a file in
   a pull request, while a title is skimmed as one line of YAML beside a ULID —
-  and the title and the source anchors are published verbatim on every
+  and the title and the published source anchors (`provider`, `sourceUri`,
+  `repository`, `commitSha`, `filePath`) appear verbatim on every
   `knowledge.search` and `knowledge.get` result, so a credential in one reaches
-  an agent that never opens the body. The title is also what the migration
-  filename's slug is made from.
+  an agent that never opens the body.
 
-  **What is scanned now.** The migration's `author` and `description`; on every
-  operation the free text and the names an author chooses (`reason`, `note`,
-  `alias`, `specId`, `sourceUri`, `format`, `description`, `sourceItemId`,
-  `targetItemId`, `supersededBy`, `itemId`, `namespace`, `owner`); a revision's
-  `title`, `namespace`, `owner`, `tenantId`, `aclGroup`, `labels` and
-  `scope.paths`; and every string of a source anchor — `provider`, `sourceUri`,
-  `filePath`, `repository`, `externalId`, `commitSha`, `blobSha` — wherever an
-  anchor appears, including `addEvidence`'s. All fourteen operation types the
-  published schema declares, not only the two `propose` writes. **The allowlist
-  is complete rather than a list of the fields somebody thought of**: every
-  object `schemas/migrations/migration.schema.json` declares carries
-  `additionalProperties: false`, so the string fields it names are exactly what
-  an acceptable document may carry, and the allowlist is that set minus the
-  derived half.
+  **What is scanned now** — author-written string *values*, not a YAML comment
+  and not the filename a `contentFile` points at (the artifact-level face,
+  tracked in [#349](https://github.com/theurian/theurian/issues/349)). The
+  migration's `author`, `createdAt` and `description`; on every operation the
+  free text and the names an author chooses (`reason`, `note`, `alias`, `specId`,
+  `sourceUri`, `format`, `description`, `sourceItemId`, `targetItemId`,
+  `supersededBy`, `itemId`, `namespace`, `owner`); a revision's `title`,
+  `namespace`, `owner`, `tenantId`, `aclGroup`, `contentType`, `validFrom`,
+  `validTo`, `labels` and `scope.paths`; and every string of a source anchor —
+  `provider`, `sourceUri`, `filePath`, `repository`, `externalId`, `commitSha`,
+  `blobSha` — wherever an anchor appears, including `addEvidence`'s. All fourteen
+  operation types the published schema declares, not only the two `propose`
+  writes. **The allowlist is the schema's string fields minus the derived half,
+  not a list of the fields somebody thought of**: each of the fourteen operation
+  branches and each leaf object (anchors, metadata) declares
+  `additionalProperties: false` — the `$defs/operation` `oneOf` wrapper does not
+  itself, but every branch it selects does — so the strings an acceptable
+  document may carry are exactly the ones those objects name.
 
-  **What is not.** The derived half — the identifiers, `expectedRevision`,
-  `dependsOn`, `createdAt`, `contentFile`, `contentSha256`, `contentType` and
-  every enum — where an author has nothing to put, and where scanning would
-  spend the detector's ULID subtraction on strings that exist to be identifiers.
+  **What is not.** The derived half, each field excluded by a mechanism rather
+  than by choice: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers
+  (`migrationId`, `revisionId`, `expectedRevision`, `dependsOn`,
+  `contentSha256`), which the detector's class gate cannot fire on; the fixed
+  vocabularies (`op`, `kind`, `status`, `trustLevel`, `sensitivity` and the
+  other enums); and `contentFile`, a path whose secret-in-filename face is the
+  artifact-level one above. The date fields (`createdAt`, `validFrom`,
+  `validTo`) are *not* excluded — they are scanned, because a committed secret
+  in one was reproduced verbatim by the rehearsal's date parse and scanning
+  pre-empts it with a redacted refusal under `block`.
   A proposal's `evidence.json` is not scanned either: `accept` never moves it
   into the canonical tree, so it rides with the draft-time advisory
   ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and
@@ -71,11 +81,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `migration.operations[1].metadata.title:1:14: high-entropy-token (fMlA...)`.
 
   **No false positives on real documents**, which is what a `block` default has
-  to earn: zero findings over all 82 live migration documents in this
-  repository's `.theurian/migrations/`, 26 of them tracked — 1,087
-  author-written strings (2026-08-24). The detector's ULID subtraction is what
-  makes that possible, and a title citing the migration that introduced an item
-  is pinned as an accepted input rather than left to chance.
+  to earn: zero findings over the migration corpus this repository tracks — the
+  26 documents under `.theurian/migrations/` and the 2 under
+  `examples/sample-project/`, 510 author-written strings (measured against
+  `67727eb`). The live dogfood machine's fuller corpus of 82 (those 26 plus 56
+  machine-local operator notes) scans clean too, but is not reproducible from
+  the repository. The detector's ULID subtraction is what makes that possible,
+  and a title citing the migration that introduced an item is pinned as an
+  accepted input rather than left to chance.
 
 ### Changed
 

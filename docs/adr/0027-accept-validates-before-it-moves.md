@@ -431,25 +431,40 @@ one of its recorded residuals.
 > beside a ULID — and the title and the source anchors are published verbatim on
 > every `knowledge.search` and `knowledge.get` result, so a credential in one is
 > disclosed to an agent that never opens the body. The tuning reason was
-> measurable rather than arguable, and the measurement went the other way: the
-> scan reports nothing over all 82 live migration documents in this repository's
-> `.theurian/migrations/`, 26 of them tracked — 1,087 author-written strings,
-> zero findings (2026-08-24). What those strings needed was the detector's ULID
-> subtraction, which was already load-bearing for bodies.
+> measurable rather than arguable, and the measurement went the other way: over
+> the migration corpus this repository tracks — the 26 documents under
+> `.theurian/migrations/` and the 2 under `examples/sample-project/` — the scan
+> reports nothing: 510 author-written strings, zero findings (measured against
+> `67727eb`). The live dogfood machine's fuller corpus of 82 (those 26 plus 56
+> machine-local operator notes) scans clean too, but is not reproducible from the
+> repository. What those strings needed was the detector's ULID subtraction,
+> which was already load-bearing for bodies.
 >
 > **The new answer is better for a reason the old one could not state: the
-> population is closed.** Every object
-> `schemas/migrations/migration.schema.json` declares carries
-> `additionalProperties: false`, so the string fields it names are exactly what a
-> document `accept` could apply may carry; the scan reads that set minus the
-> derived half — identifiers, `expectedRevision`, `dependsOn`, `createdAt`,
-> `contentFile`, `contentSha256`, `contentType` and every enum — where an author
-> has nothing to put. `accept` moves two artifacts into the canonical tree and
-> only two — the bodies and this document — so between them the gate sees
-> everything the acceptance makes canonical. The filename follows from the same argument rather than needing its
-> own: a migration is `<ulid>-<slug>.yaml`, the slug is `kebab_slug(title)`
-> falling back to the item id's last segment, and both inputs are scanned — so
-> under `block` no filename can land carrying characters the scan was not shown.
+> population is bounded.** Each of the schema's fourteen operation branches and
+> each leaf object it defines (anchors, metadata) declares
+> `additionalProperties: false` — the `$defs/operation` `oneOf` wrapper does not
+> itself, but every branch it selects does — so the string fields those objects
+> name are exactly what a document `accept` could apply may carry. The scan reads
+> that set and subtracts each derived field only where a mechanism already bars a
+> *reported* secret: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers
+> (`migrationId`, `revisionId`, `expectedRevision`, `dependsOn`,
+> `contentSha256`), which the detector's class gate cannot fire on; the fixed
+> vocabularies (`op`, `kind`, `status`, `trustLevel`, `sensitivity` and the other
+> enums); and `contentFile`, a path whose secret-in-filename face is the
+> artifact-level one. The date fields `createdAt`, `validFrom` and `validTo` are
+> *not* in that subtraction — they are scanned, because a committed secret in one
+> was reproduced verbatim by the rehearsal's date parse and scanning pre-empts it
+> with a redacted refusal. `accept` moves two artifacts into the canonical tree
+> and only two — the bodies and this document — so between them the gate sees the
+> author-written *bytes* the acceptance makes canonical, but not the artifact
+> level: a YAML comment, and the migration and body filenames, are unscanned and
+> tracked as their own face
+> ([#349](https://github.com/theurian/theurian/issues/349)). The filename in
+> particular does not follow from the title's scan — the slug is not re-derived
+> from the title at accept (`_require_filename_matches_id` checks only the ULID
+> prefix, and a hand-authored slug is free-form), so it is #349's face and not
+> the title's.
 >
 > What does not change is the grade or the disclaimer. T-15 stays High: the count
 > that decides it is over the three points content enters the canonical store,
@@ -765,8 +780,9 @@ are in `tests/integration/test_proposal_secret_scan.py`:
   by name with the reason each is unreachable rather than merely untested:
   `metadata.tenantId` and `metadata.aclGroup`, which the engine refuses any value
   but `local` and `default` for ([#63](https://github.com/theurian/theurian/issues/63)),
-  and `anchor.commitSha`/`anchor.blobSha`, which the schema pins to
-  `^[0-9a-f]{7,64}$` — a pattern no detector family can spell.
+  and `anchor.commitSha`/`anchor.blobSha`: a schema-valid document holds only
+  `^[0-9a-f]{7,64}$` there, and the detector's class gate cannot fire on lower-case
+  hex — no credential family it recognises can be spelled in it.
 
 Still owed, with the issue that will satisfy it:
 

@@ -468,10 +468,14 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # failure the rest of this row guards, applied to *which channels* the
             # scan covers. The anchor field list is the completeness marker:
             # dropping the source anchors, the sharpest published channel, reddens
-            # here. The derived-half sentence is the other direction -- an
-            # unqualified "the document is scanned" reads as "every field is".
+            # here. The two exclusion pins are the other direction, and fix on the
+            # enumerated exclusion list rather than an adjective like "complete"
+            # that can pin a false claim: the first holds that the date fields are
+            # *scanned* -- the round-two false claim was that they were excluded --
+            # and the second holds a concrete excluded field with its mechanism.
             "provider, sourceUri, repository, filePath, externalId, commitSha, blobSha",
-            "What it does not read is the derived half",
+            "`contentType` and the `createdAt`/`validFrom`/`validTo` dates",
+            "`contentFile`, a path whose secret-in-filename face is #349",
             "`evidence.json` is not scanned",
             "Theurian does not scan ingested content for secrets",
             "Theurian is not one and is not a replacement for one",
@@ -488,13 +492,16 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "It is best effort and the product says so",
             # The metadata channel (#336); see the SECURITY.md row above. The
             # anchor field list guards that the source anchors -- a published
-            # channel as sharp as the title -- stay enumerated alongside it, and
-            # the derived-half sentence guards the other direction.
+            # channel as sharp as the title -- stay enumerated alongside it. The
+            # two exclusion pins guard the other direction on the enumerated list
+            # rather than an adjective: that the date fields are scanned, and the
+            # per-field mechanism framing.
             (
                 "`provider`, `sourceUri`, `filePath`, `repository`, `externalId`, "
                 "`commitSha`, `blobSha`"
             ),
-            "the derived half is not read",
+            "`aclGroup`, `contentType`, `validFrom`, `validTo`",
+            "each field excluded by a mechanism rather than by choice",
             "`theurian ingest` runs no scan",
         ),
     ),
@@ -507,12 +514,15 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # The metadata channel (#336); see the SECURITY.md row above. This
             # T-15 row is the one that enumerates what the control does and does
             # not reach, so an omission either way reads as a different control.
-            # The field list pins the sharpest channel the round-two review of
-            # #198 found: the source anchors are published verbatim on every
-            # result, the same as the title.
+            # The anchor field list pins the sharpest channel the round-two review
+            # of #198 found. The date-field and mechanism pins fix on the
+            # enumerated exclusion list: that the date fields are scanned, and that
+            # each excluded field is barred by a mechanism, not by "nothing to put".
             "and the migration document's own author-written fields with it",
             "provider, sourceUri, filePath, repository, externalId, commitSha, blobSha",
+            "`contentType` and the date fields",
             "What it does not reach: the document's derived fields",
+            "each barred by a mechanism rather than by choice",
             "Ingest-time and index-time scanning are separate controls and do not ship",
         ),
     ),
