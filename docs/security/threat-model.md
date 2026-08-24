@@ -1069,12 +1069,29 @@ index is built.
 **The grade is unchanged by the scanner shipping, and that is a decision rather
 than an omission.** SEC-11's control now runs (below), but the residual it leaves
 — a best-effort detector at one of three points a body can enter, with the merge
-still unenforced — is the same shape as before with a smaller mouth. Whether High
-should fall to Medium is a judgement about how much a best-effort detector is
-worth, not a fact this CL establishes, and it is recorded as open rather than
-taken silently. It stays High rather than rising because the audience the secret
-reaches is bounded by project authorisation (SEC-13) and by the repository read
-access the secret already had — unlike T-17, which crossed that boundary.
+still unenforced — is the same shape as before with a smaller mouth.
+
+**Decided 2026-08-24: T-15 stays High, and it is a count that decides it rather
+than a judgement about how good the detector is.** A body reaches the canonical
+store through three points, and the shipped control covers one of them.
+`theurian propose accept` is scanned. `theurian ingest` records content that is
+already approved and runs no scan — shipped behaviour today, not a future gap
+([#329](https://github.com/theurian/theurian/issues/329)). A migration written
+straight into `.theurian/migrations/` never passes through `accept`, so it never
+meets the scan either. Draft time is not a fourth point but advisory territory
+([#330](https://github.com/theurian/theurian/issues/330)): a refusal there would
+tell an author sooner and would gate nothing that `accept` does not already gate.
+And the one covered point is covered by a detector the product declines to call
+complete — best effort by published stance, not by current tuning — so even there
+the control is not a claim that a secret cannot pass. One gate of three, held by
+a control that disclaims completeness, does not separate High from Medium.
+**The residual falls to be re-graded when #329 ships an ingest-time and
+index-time control**, because that is the change that moves the count rather than
+the confidence.
+
+It stays High rather than rising because the audience the secret reaches is
+bounded by project authorisation (SEC-13) and by the repository read access the
+secret already had — unlike T-17, which crossed that boundary.
 
 **Controls: `theurian propose accept` scans every body before it moves it**
 (SEC-11, [ADR-0027](../adr/0027-accept-validates-before-it-moves.md) decision 3).

@@ -26,6 +26,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`/theurian:propose` described the accept contract Core no longer has.** It
+  told the agent that `theurian propose accept` "moves files and nothing else:
+  it does not validate, does not apply, and does not approve", that
+  `migrate validate` is "the first point at which anything is checked", and that
+  a revision's source anchor and a reused revision id "are checked in step 5,
+  after the pull request has already merged". All three became false with
+  [#307](https://github.com/theurian/theurian/issues/307): `accept` now scans
+  every body for secrets and replays the landed set with the proposal in it
+  before it moves anything, and a refusal consumes nothing (ADR-0027). The
+  document says that, says `migrate validate` is now the *weaker* check of the
+  two rather than the stronger one, and adds what to do with exit 1 against exit
+  4 — the second means the proposal may not be at fault, so re-drafting mints a
+  duplicate. Its digest bullet also stops implying the body pin is something an
+  author may leave out; `contentSha256` is schema-required
+  ([#210](https://github.com/theurian/theurian/issues/210)). Core's own commands
+  moved in the same CL; this document was outside that sweep.
 - `/theurian:setup` no longer presents itself as the way Theurian Core gets onto
   the machine. Its `description` — visible in Claude Code's command list — said
   "Install and configure Theurian"; the document opened by calling itself the
