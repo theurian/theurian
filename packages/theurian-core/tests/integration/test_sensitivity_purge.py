@@ -38,6 +38,24 @@ symmetric:
   than re-argued for it: the purge machinery is the same, and this file's job is
   to show the new trigger reaches it.
 
+**What "gone from the index" means here, measured rather than assumed.** The
+absences below are over *rows and FTS5 postings* -- ``chunks``, ``nodes``, and
+each text index read through ``fts5vocab`` -- and deliberately not over the
+file's bytes. A purge page-copies the published build
+(``sqlite3.Connection.backup``) and then ``DELETE``s from the copy, and SQLite
+does not zero a freed page unless ``PRAGMA secure_delete`` is on, so the
+withdrawn text can linger in the copy's free list until a later write reuses the
+page. Measured on 2026-08-24 against 6087be4, through the real CLI: after the
+purge the marker string is absent from every row and every posting and still
+present in the file's raw bytes. **It is not this trigger's property** -- the
+same run with a ``deprecateItem`` in place of the ``changeSensitivity``, the
+trigger ADR-0024 shipped, leaves exactly the same residue. Nor is it a channel
+to a caller: no query reads a free page, and the document's plaintext is in
+``.theurian/knowledge/`` beside the index either way. ADR-0024 records the
+mechanism as a disk cost ("a purge does not compact; ``backup`` copies free
+pages"); this note is where the *content* reading of it is written down, so the
+next reader does not mistake these assertions for byte absence.
+
 Real repositories, real index files and the real CLI under ``tmp_path``, with
 ``HOME`` and ``THEURIAN_DATA_DIR`` redirected -- the pattern
 ``test_forest_builder.py`` establishes, widened to two projects for the equality
