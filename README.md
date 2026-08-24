@@ -354,10 +354,10 @@ echo restricted > ~/.theurian/auth/serving-profile && chmod 600 $_
 theurian index build                     # a build is specific to the ceiling it ran under
 ```
 
-- **With no file, the ceiling is `restricted`** — every level is served. This is
-  the ceiling the closing commit of
-  [#119](https://github.com/theurian/theurian/issues/119) lowers; see *Security
-  posture* below for what the default becomes and why.
+- **With no file, the ceiling is `internal`** — `public` and `internal` are
+  served, `confidential` and `restricted` are withheld. The default is
+  restrictive on purpose; *Security posture* below has the measurement that
+  decided it.
 - **It lives in the data directory, deliberately not in a project's tracked
   `.theurian/config.yaml`.** A committed ceiling would make *raising* it a change
   any repository contributor could author.
@@ -583,7 +583,7 @@ found beside the version it expects.
 | :-- | :-- |
 | **Nothing leaves your machine** | Loopback only, bearer token at mode 0600, no telemetry, no account, no API key. |
 | **Indexed text is labelled as data, not as instructions** | Every result carries `untrusted-knowledge`, `mayContainInstructions`, and `executable`. **Theurian labels; it does not enforce.** Acting on the label is the calling agent's responsibility, and no MCP server can take it over (T-3). |
-| **Sensitivity is an enforced read control, not a label** | One word in `~/.theurian/auth/serving-profile` declares the highest class this deployment serves, and everything above it is withheld — from search, from `knowledge.get`, from `knowledge.status`'s counts, and from the index build, so the withheld text never reaches a file a query reads. **The shipped default is `restricted`, which serves every level; #119's closing commit lowers it to `internal`, so `confidential` and `restricted` are withheld until an operator raises the ceiling.** That is a behaviour change and it is the intended one: measured on a real mixed-sensitivity corpus, a default-parameter search returned four `confidential` items ranked and excerpted in its top six. `system.capabilities` reports `sensitivityEnforcement: true` and never the ceiling itself. Tenant and ACL group are a weaker claim and not the same one: they are refused at write time, so nothing is stored to withhold. ([ADR-0025](docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md), [#119](https://github.com/theurian/theurian/issues/119)) |
+| **Sensitivity is an enforced read control, not a label** | One word in `~/.theurian/auth/serving-profile` declares the highest class this deployment serves, and everything above it is withheld — from search, from `knowledge.get`, from `knowledge.status`'s counts, and from the index build, so the withheld text never reaches a file a query reads. **The shipped default is `internal`, so `confidential` and `restricted` are withheld until an operator raises the ceiling.** That is a behaviour change for anything upgrading past 0.1.0.dev9, and it is the intended one: measured on a real mixed-sensitivity corpus, a default-parameter search returned four `confidential` items ranked and excerpted in its top six, and `knowledge.get` served a 5,058-character `confidential` body. `system.capabilities` reports `sensitivityEnforcement: true` and never the ceiling itself. Tenant and ACL group are a weaker claim and not the same one: they are refused at write time, so nothing is stored to withhold. ([ADR-0025](docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md), [#119](https://github.com/theurian/theurian/issues/119)) |
 | **Nothing is ever overwritten** | Revisions are immutable; items point at the current one. |
 | **Apache-2.0, DCO, no CLA** | Core cannot be relicensed away from Apache-2.0 without every contributor's agreement. ([ADR-0015](docs/adr/0015-dco-over-cla.md)) |
 | **Artifact verification is not implemented** | `SHA256SUMS` and a CycloneDX SBOM are published with every release, so the record a verifier would check against exists on every release — and **nothing in Theurian checks it**. Setup has no artifact to hash and no point in its flow where a check would run: it does not obtain Core, and cannot even report Core missing, because setup *is* Core. `artifact-integrity` reports `not-applicable` rather than claiming a check it did not make — `theurian setup --dry-run` prints it, and installs nothing. Checking a download against the `SHA256SUMS` on [its release](https://github.com/theurian/theurian/releases) is a manual step, and a narrow one: the checksums are unsigned and published by the pipeline that built the artifact, so they catch a substituted download, not a compromised release. ([#39](https://github.com/theurian/theurian/issues/39), T-16) |

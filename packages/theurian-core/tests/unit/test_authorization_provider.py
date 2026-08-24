@@ -237,28 +237,43 @@ def test_a_ceiling_given_as_a_bare_string_is_normalised() -> None:
     assert profile.ceiling is Sensitivity.INTERNAL
 
 
-# -- The default: this phase changes nothing --------------------------------
+# -- The default: restrictive, and every construction site agrees ------------
 
 
-def test_the_shipped_default_serves_every_level(tmp_path: Path) -> None:
-    """The behaviour-neutrality pin at the default construction site (#119).
+def test_the_shipped_default_withholds_confidential_and_restricted(tmp_path: Path) -> None:
+    """The default is restrictive (#119, maintainer decision 2026-08-23, ADR-0025).
 
-    Three statements of one property, because each is a different way for the
-    phase to stop being neutral: the constant, the profile it produces, and the
-    grant the composition root builds from it when no file exists.
+    Four statements of one property, because each is a different way for the
+    default to drift wider than the decision: the constant, the profile it
+    produces, the profile an *absent* file produces, and the grant the composition
+    root builds from that. A deployment that declares nothing serves ``public``
+    and ``internal`` and withholds the other two.
 
-    When a later phase flips ``DEFAULT_CEILING`` to ``internal`` this test goes
-    RED, which is the intended signal -- the flip is the behaviour change, and it
-    should not be possible to make it quietly.
+    **This test asserted the opposite until the flip**, under the name
+    ``test_the_shipped_default_serves_every_level``, and its docstring said the
+    flip should turn it RED so that the behaviour change could not be made
+    quietly. It did: ``assert DEFAULT_CEILING is Sensitivity.RESTRICTED`` failed
+    with ``<Sensitivity.INTERNAL: 'internal'>``. Rewritten rather than deleted,
+    because the pin is the same pin -- what moved is which side of it is true.
+
+    The withheld set is written as a literal rather than derived from
+    ``DEFAULT_CEILING``, deliberately: a derivation would agree with the constant
+    however the constant moved, which is the one thing this test exists to
+    notice.
     """
-    every_level = frozenset(Sensitivity)
+    served = frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+    withheld = frozenset({Sensitivity.CONFIDENTIAL, Sensitivity.RESTRICTED})
+    assert served | withheld == frozenset(Sensitivity), (
+        "the two sets must partition Sensitivity, or a level added to the enum "
+        "would be neither asserted served nor asserted withheld here"
+    )
 
-    assert DEFAULT_CEILING is Sensitivity.RESTRICTED
-    assert ServingProfile().visible_sensitivities == every_level
+    assert DEFAULT_CEILING is Sensitivity.INTERNAL
+    assert ServingProfile().visible_sensitivities == served
     assert load_serving_profile(tmp_path) == ServingProfile()
     assert (
         StaticAuthorizationProvider(load_serving_profile(tmp_path)).deployment_grant().sensitivities
-        == every_level
+        == served
     )
 
 

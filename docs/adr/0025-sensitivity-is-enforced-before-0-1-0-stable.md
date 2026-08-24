@@ -207,15 +207,16 @@ overturned by the first implementation attempt.
   change inside a pre-1.0 line.
 
   **It is the *default* rather than something an operator opts into, and that is
-  the decision rather than a side effect of it.** `DEFAULT_CEILING` is `internal`
-  (the one-line constant change is this branch's closing commit, deliberately
-  last so that every record above it describes a system that already exists),
-  so a deployment that declares no profile serves `public` and `internal` and
-  withholds `confidential` and `restricted` — from `knowledge.search`, from
-  `knowledge.get`, from `knowledge.status`'s counts, and from the build itself.
-  Every existing installation that upgrades loses results it used to get, with no
-  configuration change on its part, and the remedy is one word in one file
-  (`echo restricted > <data_dir>/auth/serving-profile`).
+  the decision rather than a side effect of it.** `DEFAULT_CEILING` is
+  `internal`, so a deployment that declares no profile serves `public` and
+  `internal` and withholds `confidential` and `restricted` — from
+  `knowledge.search`, from `knowledge.get`, from `knowledge.status`'s counts, and
+  from the build itself. Every existing installation that upgrades loses results
+  it used to get, with no configuration change on its part, and the remedy is one
+  word in one file plus a rebuild
+  (`echo restricted > <data_dir>/auth/serving-profile`, then
+  `theurian index build`, because a build is specific to the ceiling it ran
+  under).
 
   **Accepted knowingly by a maintainer decision on 2026-08-23**
   ([#119](https://github.com/theurian/theurian/issues/119#issuecomment-5386235623)),

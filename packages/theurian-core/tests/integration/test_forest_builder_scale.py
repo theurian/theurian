@@ -39,8 +39,10 @@ import pytest
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
+from theurian.application.authorization import SERVING_PROFILE_FILENAME
 from theurian.application.project_service import ProjectPaths, read_active_index_pointer
 from theurian.cli.main import app
+from theurian.domain.enums import Sensitivity
 
 pytestmark = pytest.mark.integration
 
@@ -201,6 +203,20 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield root
 
 
+def _declare_a_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
+    """Declare a serving ceiling the way an operator does, for `theurian index build`.
+
+    Mode 0600 because ``load_serving_profile`` refuses a profile other local users
+    can reach, and ``write_text`` under the usual umask leaves 0644 -- a caller
+    that skipped this would exercise that refusal and read as "the build failed".
+    """
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
+
+
 def _published_index(root: Path) -> Path:
     payload = read_active_index_pointer(ProjectPaths.of(root)).payload
     assert payload is not None, "the project must have a published index"
@@ -300,7 +316,9 @@ def test_a_three_kind_corpus_builds_a_catalog_over_one_domain_per_kind(project: 
 # -- sensitivity follows the item (written RED) ------------------------------
 
 
-def test_a_reclassified_item_is_reindexed_at_its_new_sensitivity(project: Path) -> None:
+def test_a_reclassified_item_is_reindexed_at_its_new_sensitivity(
+    project: Path, tmp_path: Path
+) -> None:
     """After a ``changeSensitivity`` and a rebuild, the item's chunks and its
     forest node carry the new label, not the one the revision was written under.
 
@@ -332,10 +350,18 @@ def test_a_reclassified_item_is_reindexed_at_its_new_sensitivity(project: Path) 
     ``test_a_reclassification_is_a_withdrawal_only_past_the_builds_own_ceiling``,
     ADR-0025 part 2. What that purge never does is *re-derive*, which is why an
     ``index build`` is still what puts this item back with its new label -- and
-    why the reclassification here purges nothing to begin with: the build the
-    fixture publishes runs under a ceiling that admits ``restricted``, so the
-    level moved but the deployment's disclosure of it did not.
+    why the reclassification here purges nothing to begin with: this deployment
+    declares a ``restricted`` ceiling, so the level moved but the deployment's
+    disclosure of it did not.
+
+    **That declaration is not decoration.** The shipped default is ``internal``,
+    under which the reclassification below *is* a withdrawal: `migrate apply`
+    would purge the item's rows out of the published build and the rebuild would
+    write none, so every assertion here would read an empty set and this test
+    would be measuring the ceiling instead of the wiring it is about. Declaring it
+    is how the fixture says which of the two it wants.
     """
+    _declare_a_ceiling(tmp_path / "datadir", Sensitivity.RESTRICTED)
     docs = [Doc("auth-policy", sensitivity="internal")]
     first = _built(project, docs, "--raptor")
     assert {row["sensitivity"] for row in _chunks(first).values()} == {"internal"}

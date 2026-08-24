@@ -37,11 +37,11 @@ the bearer token at mode 0600, deliberately outside any repository, and a word i
 does not recognise refuses at startup rather than falling back to a wider
 default.
 
-**With no file the ceiling is `restricted`, which serves every level.**
-[#119](https://github.com/theurian/theurian/issues/119)'s closing commit lowers
-that default to `internal`, so an installation upgrading past it stops serving
-`confidential` and `restricted` knowledge until an operator raises the ceiling —
-a behaviour change inside a pre-release line, and the intended one. Raise it with
+**With no file the ceiling is `internal`**, so `confidential` and `restricted`
+knowledge is withheld until an operator raises it. An installation upgrading past
+`0.1.0.dev9` loses results it used to get, with no configuration change on its
+part — a behaviour change inside a pre-release line, and the intended one
+([#119](https://github.com/theurian/theurian/issues/119)). Raise the ceiling with
 `echo restricted > ~/.theurian/auth/serving-profile`, then `theurian index
 build`, because a build is specific to the ceiling it ran under. The reasoning is
 [ADR-0025](https://github.com/theurian/theurian/blob/main/docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md).

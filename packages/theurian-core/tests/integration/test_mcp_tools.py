@@ -391,11 +391,32 @@ def _declare_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
 FIXTURE_SENSITIVITY = Sensitivity.INTERNAL
 PUBLIC_ONLY = _ceiling_of(Sensitivity.PUBLIC)
 
+#: Every level, for the tests whose subject is not the ceiling.
+#:
+#: The shipped default withholds `confidential` and `restricted` since #119's
+#: closing commit, so a test that reclassifies a fixture item *upward* and then
+#: reads it back is measuring the ceiling unless it says otherwise. Spelled here
+#: and passed explicitly, rather than left to `build_server`'s default: a test
+#: that inherits the default inherits whatever the default becomes next.
+EVERY_LEVEL = _ceiling_of(*Sensitivity)
+
 
 async def _call_failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
     """Invoke a tool that must fail, and return the message a client would see."""
     with pytest.raises(SdkToolError) as raised:
         await _call(registry, tool, **arguments)
+    return str(raised.value)
+
+
+async def _call_failing_on(server: MCPServer, tool: str, **arguments: Any) -> str:
+    """:func:`_call_failing` against a server somebody else built.
+
+    The counterpart of :func:`_call_on`, and split out for the same reason: a
+    refusal that depends on the grant cannot be reached through a helper that
+    builds its own server.
+    """
+    with pytest.raises(SdkToolError) as raised:
+        await _call_on(server, tool, **arguments)
     return str(raised.value)
 
 
@@ -2366,6 +2387,33 @@ def indexed(registry: ProjectRegistry) -> ProjectRegistry:
     return registry
 
 
+@pytest.fixture
+def indexed_serving_every_level(registry: ProjectRegistry) -> ProjectRegistry:
+    """``registry``, plus an index built under a declared ``restricted`` ceiling.
+
+    A **synchronous** fixture on purpose, like
+    ``indexed_under_an_internal_ceiling``: `theurian index build` embeds through
+    ``asyncio.run``, which raises inside the event loop an async test body already
+    owns.
+
+    The ceiling is declared *before* the build, because a build records the
+    flavor it ran under and nothing rewrites that afterwards. What this buys is a
+    published build that is allowed to hold every level -- the state ``indexed``
+    was in before #119's default flip, and the state a reclassification-lag test
+    needs, since under the shipped ``internal`` default a move to ``restricted``
+    is a withdrawal that purges the rows the lag is measured on.
+    """
+    _declare_ceiling(registry.path.parent, Sensitivity.RESTRICTED)
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return registry
+
+
 RECLASSIFY_ID = "01K1RRRRRR01234567890ABCDE"
 RECLASSIFY_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: {RECLASSIFY_ID}
@@ -2394,7 +2442,7 @@ def _published_index_chunk_sensitivity(root: Path) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
-    indexed: ProjectRegistry,
+    indexed_serving_every_level: ProjectRegistry,
 ) -> None:
     """After a ``changeSensitivity`` and a ``migrate apply`` -- with NO rebuild --
     a search reports the item's new sensitivity, while the still-published index
@@ -2407,18 +2455,27 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
     ``sensitivity`` holds it. The index column *does* lag: nothing rebuilt it, so
     its chunk still says ``internal``. That lag is asserted to be *present*, not
     absent, and since #119 phase 5 the reason has narrowed to one that is a
-    property of **this build's flavor**: ``indexed`` is built under the shipped
-    default, whose pointer records every level as indexed, so ``restricted`` is
-    still a class this build was allowed to write and the purge trigger correctly
-    removes nothing (``revisions_to_purge``). A build made under a *declared*
-    ceiling answers the other way, and that is
-    ``test_sensitivity_purge.py``'s subject -- the pair is what keeps "a
-    reclassification does not rebuild" from being read as "a reclassification never
-    touches the index". The column matches canonical again after ``index build``
-    re-derives (``test_forest_builder_scale.py``); until then the response is
-    already right, which is what makes the auto-rebuild the migration engine
-    deliberately does not do (``test_migration_engine.py``) unnecessary.
+    property of **this build's flavor**: this deployment declares a ``restricted``
+    ceiling, so the pointer records every level as indexed, ``restricted`` is
+    still a class this build was allowed to write, and the purge trigger correctly
+    removes nothing (``revisions_to_purge``). A build made under a *narrower*
+    ceiling answers the other way, and that is ``test_sensitivity_purge.py``'s
+    subject -- the pair is what keeps "a reclassification does not rebuild" from
+    being read as "a reclassification never touches the index". The column matches
+    canonical again after ``index build`` re-derives
+    (``test_forest_builder_scale.py``); until then the response is already right,
+    which is what makes the auto-rebuild the migration engine deliberately does
+    not do (``test_migration_engine.py``) unnecessary.
+
+    **That ceiling used to be the shipped default and now has to be declared.**
+    With the default at ``internal``, this reclassification *is* a withdrawal: the
+    apply purges the item's chunk rows and the assertion below reads an empty set
+    instead of the lag. Declaring the wider ceiling is how the fixture keeps this
+    test about the lag rather than about the purge -- and the grant is declared
+    with it, because a build the deployment cannot serve answers from the
+    substring scan and the response would no longer come from the index at all.
     """
+    indexed = indexed_serving_every_level
     root = Path(indexed.load()["demo"]["rootPath"])
     assert _published_index_chunk_sensitivity(root) == {"internal"}, (
         "the fixture's index must be built at the original sensitivity, or the lag below "
@@ -2435,7 +2492,12 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
     finally:
         monkey.undo()
 
-    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+    result = await _call_on(
+        build_server(indexed, EVERY_LEVEL),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
 
     hits = [hit for hit in result["results"] if hit["itemId"] == "architecture.auth-policy"]
     assert hits, "the reclassified item must still be found -- it was not withdrawn"
@@ -2464,10 +2526,18 @@ async def test_knowledge_get_reports_the_items_current_sensitivity_not_the_revis
     ``knowledge.get`` is too, so a caller reading back the revision's stale
     label there would have satisfied every test that ran before it. No index
     is needed: ``knowledge.get`` reads the canonical store directly.
+
+    **Served under an explicit :data:`EVERY_LEVEL` grant, because the subject is
+    the label's authority and not the ceiling.** The reclassification below moves
+    the item to ``restricted``, which the shipped default withholds since #119's
+    closing commit: under the default grant this test read a refusal instead of a
+    label, and would have been measuring the gate that was already pinned three
+    times over.
     """
     root = Path(registry.load()["demo"]["rootPath"])
-    before = await _call(
-        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    server = build_server(registry, EVERY_LEVEL)
+    before = await _call_on(
+        server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
     )
     assert before["sensitivity"] == "internal", (
         "the fixture's item must start at the default sensitivity, or the reclassification "
@@ -2484,8 +2554,8 @@ async def test_knowledge_get_reports_the_items_current_sensitivity_not_the_revis
     finally:
         monkey.undo()
 
-    after = await _call(
-        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    after = await _call_on(
+        server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
     )
 
     assert after["sensitivity"] == "restricted", (
@@ -2509,9 +2579,15 @@ async def test_the_substring_scan_reports_the_items_current_sensitivity_not_the_
     ``knowledge.get``; nothing before this test proved it, so a caller reading
     back the revision's stale label there would have satisfied every test that
     ran before it too.
+
+    **Served under an explicit :data:`EVERY_LEVEL` grant, for the reason the
+    ``knowledge.get`` sibling above gives:** the reclassification moves the item
+    to ``restricted``, which the shipped default withholds, and the subject here
+    is which field the scan reads rather than which rows it may return.
     """
     root = Path(registry.load()["demo"]["rootPath"])
-    before = await _call(registry, "knowledge.search", projectId="demo", query="signed token")
+    server = build_server(registry, EVERY_LEVEL)
+    before = await _call_on(server, "knowledge.search", projectId="demo", query="signed token")
     assert before["retrieval"]["mode"] == "substring", (
         "the fixture must answer through the unranked scan, or the reclassification below "
         "does not exercise `_scan`'s call site"
@@ -2534,7 +2610,7 @@ async def test_the_substring_scan_reports_the_items_current_sensitivity_not_the_
     finally:
         monkey.undo()
 
-    after = await _call(registry, "knowledge.search", projectId="demo", query="signed token")
+    after = await _call_on(server, "knowledge.search", projectId="demo", query="signed token")
 
     assert after["retrieval"]["mode"] == "substring"
     hit = next(hit for hit in after["results"] if hit["itemId"] == "architecture.auth-policy")
@@ -8217,51 +8293,174 @@ def _allow_all() -> AuthorizationGrant:
     )
 
 
-@pytest.mark.asyncio
-async def test_the_default_grant_publishes_the_same_response_as_an_explicit_allow_all(
-    indexed: ProjectRegistry,
-) -> None:
-    """The behaviour-neutrality pin for #119 phase 1.
+CONFIDENTIAL_ITEM = "architecture.payroll-bands"
+CONFIDENTIAL_BODY = (
+    "# Payroll bands\n\nEvery call carries a signed token. Band L7 is paid 240000.\n"
+)
+CONFIDENTIAL_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: 01K1FAAAAA01234567890ABCDE
+createdAt: 2026-08-02T14:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: {CONFIDENTIAL_ITEM}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {CONFIDENTIAL_ITEM}
+    revisionId: 01K1FAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/payroll-bands.md
+    contentSha256: {body_pin(CONFIDENTIAL_BODY)}
+    metadata:
+      title: Payroll bands
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      sensitivity: confidential
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/payroll-bands.md
+"""
 
-    An `AuthorizationGrant` is now threaded through `register` and read in
-    `_resolve`. This asserts that the *default* construction site --
-    `build_server(registry)` with no grant, which is what every other test in this
-    suite and the daemon's own first start use -- publishes byte-for-byte what a
-    grant naming every sensitivity publishes. Together with
-    `test_the_shipped_default_serves_every_level` in the unit suite, which pins
-    the default profile to every level and to the absent-file case, that is the
-    whole of "this phase withholds nothing".
 
-    It is *not* the two-corpora equality suite ADR-0025 part 4 owes: that one
-    compares an index holding withheld rows against an index that never held
-    them, and it belongs to the phase that first withholds something. This one
-    only holds the seam neutral while it is being cut.
+@pytest.fixture
+def a_confidential_item(registry: ProjectRegistry) -> ProjectRegistry:
+    """``registry``, plus one approved ``confidential`` item and no index.
 
-    Both tools are exercised because they reach content by different routes --
-    ranked retrieval and a primary-key fetch -- and #119's dogfood measurement
-    found the leak on both.
+    The corpus keeps its ``internal`` item, so a response can be non-empty while
+    the confidential one is withheld -- without which "the default withholds it"
+    and "the default answers nothing" are the same observation.
     """
-    default = build_server(indexed)
-    explicit = build_server(indexed, _allow_all())
-
-    calls: tuple[tuple[str, dict[str, Any]], ...] = (
-        ("knowledge.search", {"projectId": "demo", "query": "token"}),
-        ("knowledge.get", {"projectId": "demo", "itemId": "architecture.auth-policy"}),
-        ("knowledge.status", {"projectId": "demo"}),
+    root = Path(registry.load()["demo"]["rootPath"])
+    (root / ".theurian/knowledge/architecture/payroll-bands.md").write_text(CONFIDENTIAL_BODY)
+    (root / ".theurian/migrations/01K1FAAAAA01234567890ABCDE-payroll.yaml").write_text(
+        CONFIDENTIAL_MIGRATION
     )
-    for tool, arguments in calls:
-        from_default = await _call_on(default, tool, **arguments)
-        from_explicit = await _call_on(explicit, tool, **arguments)
-        assert from_default == from_explicit, tool
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
 
-    # Guards against a green that means "both answered nothing": a comparison of
-    # two empty responses holds no property at all.
-    searched = await _call_on(default, "knowledge.search", projectId="demo", query="token")
-    fetched = await _call_on(
-        default, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+
+@pytest.fixture
+def a_confidential_item_indexed_by_default(a_confidential_item: ProjectRegistry) -> ProjectRegistry:
+    """The confidential corpus, built with **no serving profile declared**.
+
+    A **synchronous** fixture, like every other one in this file that builds:
+    `index build` embeds through ``asyncio.run``, which raises inside the event
+    loop an async test body already owns.
+    """
+    _build_index(a_confidential_item)
+    return a_confidential_item
+
+
+@pytest.fixture
+def a_confidential_item_indexed_at_restricted(
+    a_confidential_item: ProjectRegistry,
+) -> ProjectRegistry:
+    """The same corpus after the shipped remedy: declare `restricted`, rebuild.
+
+    The declaration comes first because a build records the flavor it ran under
+    and nothing rewrites that afterwards -- which is why the remedy is two
+    commands and not one.
+    """
+    _declare_ceiling(a_confidential_item.path.parent, Sensitivity.RESTRICTED)
+    _build_index(a_confidential_item)
+    return a_confidential_item
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_default_withholds_a_confidential_item(
+    a_confidential_item_indexed_by_default: ProjectRegistry,
+) -> None:
+    """#119's closing commit: the default ceiling is `internal`, and it withholds.
+
+    **This test asserted the opposite until the flip**, as
+    `test_the_default_grant_publishes_the_same_response_as_an_explicit_allow_all`
+    -- the behaviour-neutrality pin phase 1 shipped, which held that
+    `build_server(registry)` with no grant published byte-for-byte what an
+    explicit allow-all grant published. The flip made that false by design, and
+    it went RED on `knowledge.search` with `mode: lexical` against
+    `mode: substring`. Rewritten into the property that replaced it rather than
+    deleted, because the construction site is the same one: the default grant,
+    which is what the daemon's own first start uses.
+
+    All three tools are exercised because they reach withheld content by three
+    different routes -- ranked retrieval, a primary-key fetch, and a count over
+    rows the caller may not see -- and #119's dogfood measurement found the leak
+    on the first two.
+
+    **Non-vacuous in two directions.** The `internal` item must still answer, or
+    the absence below is the absence of a corpus; and the sibling test below
+    declares `restricted`, rebuilds, and requires this same item back, or a gate
+    that withheld everything would pass here.
+    """
+    default = build_server(a_confidential_item_indexed_by_default)
+    search = await _call_on(default, "knowledge.search", projectId="demo", query="token")
+    status = await _call_on(default, "knowledge.status", projectId="demo")
+
+    assert search["results"], (
+        "the visible half of the corpus must answer, or the absence below is the absence "
+        "of a corpus rather than of a withheld item"
     )
-    assert searched["results"], "the corpus must answer, or the equality above is vacuous"
-    assert fetched["body"], "the fetch must return a body, or the equality above is vacuous"
+    assert CONFIDENTIAL_ITEM not in {hit["itemId"] for hit in search["results"]}, (
+        "the shipped default served a `confidential` item -- this is the dogfood-measured "
+        "leak #119's default flip exists to close"
+    )
+    assert "240000" not in json.dumps(search), (
+        "an excerpt carried the confidential body's text even though its item was absent "
+        "from the result list"
+    )
+    refusal = await _call_failing_on(
+        default, "knowledge.get", projectId="demo", itemId=CONFIDENTIAL_ITEM
+    )
+    assert CONFIDENTIAL_ITEM in refusal, f"the refusal must name the id asked for: {refusal}"
+    assert "240000" not in refusal, f"the refusal carried the withheld body: {refusal}"
+    # Two, not three: the `registry` corpus contributes one `approved` item and
+    # one `draft`, both `internal`, and the confidential one is withheld. The
+    # sibling below requires three under a declared ceiling, which is what makes
+    # this a narrowing rather than a number.
+    assert status["itemCount"] == 2, (
+        "`knowledge.status` counted the withheld item: the counts are a statistic over rows "
+        "the caller may not see and follow the grant (#119 phase 6)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_declared_restricted_ceiling_serves_what_the_default_withholds(
+    a_confidential_item_indexed_at_restricted: ProjectRegistry,
+) -> None:
+    """The other half of the pair above, and the shipped remedy run rather than described.
+
+    `echo restricted > <data_dir>/auth/serving-profile` then `theurian index
+    build` -- the two commands the CHANGELOG's BREAKING entry names -- and the
+    same three tools must hand back what the default withheld. Without this, a
+    gate that withheld everything, or a corpus whose confidential item never
+    existed, would satisfy the sibling above.
+    """
+    served = build_server(a_confidential_item_indexed_at_restricted, EVERY_LEVEL)
+    search = await _call_on(served, "knowledge.search", projectId="demo", query="token")
+    fetched = await _call_on(served, "knowledge.get", projectId="demo", itemId=CONFIDENTIAL_ITEM)
+    status = await _call_on(served, "knowledge.status", projectId="demo")
+
+    assert CONFIDENTIAL_ITEM in {hit["itemId"] for hit in search["results"]}, (
+        "an operator who declared `restricted` and rebuilt must get the item back, or the "
+        "withholding in the sibling above is indistinguishable from a broken corpus"
+    )
+    assert "240000" in fetched["body"], (
+        "the declared ceiling must serve the body the default withheld"
+    )
+    assert status["itemCount"] == 3, (
+        "the declared ceiling must count the confidential item too -- two under the shipped "
+        "default, three here -- or the narrowed count in the sibling above proves nothing"
+    )
 
 
 @pytest.mark.asyncio

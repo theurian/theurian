@@ -969,13 +969,22 @@ def test_an_above_ceiling_document_reaches_neither_half_of_the_index(
     document.
 
     Two builds of one corpus, which is what makes the absence mean anything. The
-    first runs under the shipped default, where every level is served: it pins
-    that this document *is* indexable and that this table really does index a
-    term unique to it -- without which the second build's silence would be the
-    silence of a fixture nothing ever reached. The second runs under an
-    ``internal`` ceiling declared exactly as an operator declares it, in the
-    profile file beside the token, and is the shipped path end to end: `theurian
-    index build` reads it through the same provider the daemon serves through.
+    first runs under a declared ``restricted`` ceiling, where every level is
+    served: it pins that this document *is* indexable and that this table really
+    does index a term unique to it -- without which the second build's silence
+    would be the silence of a fixture nothing ever reached. The second runs under
+    an ``internal`` ceiling. Both are declared the way an operator declares one,
+    in the profile file beside the token, and both are the shipped path end to
+    end: `theurian index build` reads it through the same provider the daemon
+    serves through.
+
+    **The control build declares its ceiling rather than inheriting the shipped
+    default**, and it inherited it until the flip. Once ``DEFAULT_CEILING`` became
+    ``internal``, an undeclared build was already the *gated* one: the control
+    indexed nothing of the withheld document and the assertion below -- that the
+    document is indexable at all -- went RED. What the control has to be is a
+    build allowed to hold the row; which ceiling produces that is incidental, so
+    it is now said out loud rather than borrowed from a constant that moved.
 
     The forest is asserted non-empty on both sides. A ceiling that took the whole
     forest with it would satisfy every absence below and destroy the capability.
@@ -985,11 +994,12 @@ def test_an_above_ceiling_document_reaches_neither_half_of_the_index(
     _write_corpus(project, (*visible, withheld))
     _must(project, "migrate", "apply")
 
+    _declare_a_ceiling(tmp_path / "datadir", Sensitivity.RESTRICTED)
     _must(project, "index", "build", "--raptor")
     served_everything = _published_index(project)
     assert withheld.item_id in {
         str(row["item_id"]) for row in _chunks(served_everything).values()
-    }, "the shipped default must index a confidential document, or this phase is not neutral"
+    }, "a `restricted` ceiling must index a confidential document, or the control build is not one"
     assert _nodes(served_everything), "no forest was derived, so neither half can be shown empty"
     discriminating = _only_from(withheld, visible, _terms(served_everything, table))
     assert discriminating, (

@@ -284,6 +284,7 @@ from typer.testing import CliRunner
 from theurian.application.authorization import (
     DEPLOYMENT_ACL_GROUPS,
     DEPLOYMENT_TENANT,
+    SERVING_PROFILE_FILENAME,
     AuthorizationGrant,
     encode_sensitivities,
 )
@@ -2611,6 +2612,21 @@ def _write_shipped_withdrawal(root: Path, *, face: str) -> None:
     )
 
 
+def _declare_every_level(data_dir: Path) -> None:
+    """Declare a ``restricted`` ceiling, the way an operator entitled to the whole
+    corpus does.
+
+    Mode 0600 because ``load_serving_profile`` refuses a profile other local users
+    can reach, and ``write_text`` under the usual umask leaves 0644 -- a caller
+    that skipped this would exercise that refusal and read as "the build failed".
+    """
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{Sensitivity.RESTRICTED.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
+
+
 def _shipped_project(
     root: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch, *, face: str, build_before: bool
 ) -> ProjectRegistry:
@@ -2628,6 +2644,16 @@ def _shipped_project(
     state and report the identical ``snapshotId``. Neither runs a second
     ``index build`` after the withdrawal: that a purged build needs no rebuild is
     the property under test.
+
+    **The ``restricted`` ceiling is declared, and it is what keeps this about the
+    status axis.** ``_call`` answers under :data:`ALLOW_ALL_GRANT`, and a build is
+    specific to the ceiling it ran under (#119 phase 3): once the shipped default
+    became ``internal``, a build made under it recorded a *narrower* flavor than
+    that grant, ``_published_index`` stood aside, and both sides of the equality
+    answered from the substring scan with nothing to compare. Declaring the
+    ceiling makes the build's flavor and the serving grant agree, which is the
+    state this pair was written in and the only one in which its equality is
+    about a withdrawal.
     """
     root.mkdir(parents=True)
     for git in (
@@ -2637,6 +2663,7 @@ def _shipped_project(
     ):
         subprocess.run(git, cwd=root, check=True, capture_output=True)  # noqa: S603
 
+    _declare_every_level(data_dir)
     _shipped_cli(root, data_dir, monkeypatch, "init")
     _shipped_cli(
         root, data_dir, monkeypatch, "project", "register", "--project-id", SHIPPED_PROJECT_ID

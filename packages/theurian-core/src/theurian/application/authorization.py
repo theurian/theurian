@@ -15,12 +15,18 @@ actor class, so a committed ceiling would make *raising* the ceiling a
 contributor-authored access-control change -- reviewable in principle, and
 indistinguishable from an ordinary configuration edit in practice.
 
-**Nothing here withholds anything yet.** :data:`DEFAULT_CEILING` is
-``restricted``, so the default profile serves every sensitivity and a deployment
-with no profile file behaves exactly as it did before this module existed.
-Flipping that default to ``internal`` -- the line that actually closes the leak
-#119 measured on a real corpus -- is a later phase's change to make and to review,
-and it is deliberately one line so that review has something small to look at.
+**The default is restrictive.** :data:`DEFAULT_CEILING` is ``internal``, so a
+deployment that declares no profile serves ``public`` and ``internal`` and
+withholds ``confidential`` and ``restricted``. That is a behaviour change for
+every installation that upgrades past it, and it is the intended one: it closes
+the leak #119 measured on a real corpus, where a default-parameter
+``knowledge.search`` returned four ``confidential`` items ranked and excerpted in
+its top six and ``knowledge.get`` served a 5,058-character ``confidential`` body.
+
+This module shipped with that default at ``restricted`` -- every level, exactly
+the behaviour that preceded it -- so the seam could be cut, wired and tested
+while withholding nothing, and the flip could be one line with nothing else in
+its diff.
 """
 
 from __future__ import annotations
@@ -69,12 +75,19 @@ DISCLOSURE_ORDER: Final[tuple[Sensitivity, ...]] = (
 
 #: The ceiling a deployment gets when it declares none.
 #:
-#: ``restricted`` -- every level -- which is exactly today's behaviour and is why
-#: this phase changes nothing observable. The shipped default becomes ``internal``
-#: in a later phase of #119, once the build-side exclusion and the read-side
-#: predicate that make a withholding *safe* are in place; withholding rows while
-#: the index still holds their text is the T-17a mechanism, not a fix.
-DEFAULT_CEILING: Final = Sensitivity.RESTRICTED
+#: ``internal``, so an undeclared deployment withholds ``confidential`` and
+#: ``restricted``. Restrictive by decision rather than by accident (#119,
+#: 2026-08-23, ADR-0025): a permissive default is what made the measured leak the
+#: *shipped* behaviour, and an operator surprised by fewer results has been told
+#: something true where an operator surprised by a ``confidential`` excerpt has
+#: not.
+#:
+#: It was ``restricted`` -- every level -- until the closing commit of #119, and
+#: deliberately so: withholding rows while the index still holds their text is the
+#: T-17a mechanism rather than a fix, so this moved only once the build-side
+#: exclusion, the read-side predicate and the reclassification purge were all in
+#: place to make a withholding actually withhold.
+DEFAULT_CEILING: Final = Sensitivity.INTERNAL
 
 #: The tenant this deployment serves. One process, one operator, one tenant
 #: (ADR-0002) -- and the same ``TenantId()`` default that ``migration_engine``
