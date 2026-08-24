@@ -191,13 +191,16 @@ class CanonicalStore(Protocol):
         """
         ...
 
-    def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:
+    def count_surfaceable_by_status(
+        self, context: RequestContext, *, sensitivities: frozenset[Sensitivity]
+    ) -> dict[str, int]:
         """Count the items a caller may see, grouped by status, in SQL.
 
         Returns a ``status-value -> count`` mapping over
-        :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` alone. Deprecated,
-        superseded and rejected rows are never counted, so nothing here -- not
-        even a sum across it -- restores the withheld total.
+        :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` **and** the levels in
+        ``sensitivities``. Deprecated, superseded and rejected rows are never
+        counted, nor is a row above the deployment's ceiling, so nothing here --
+        not even a sum across it -- restores the withheld total.
 
         That is what separates it from :meth:`list_items`, which reads every row
         and leaves the filtering to the caller. ``knowledge.status`` did that
@@ -206,6 +209,31 @@ class CanonicalStore(Protocol):
         count recovered the withheld one (T-17; #158 owns the ``search._scan``
         sibling). Counting in SQL over the covering index scopes the work to the
         surfaceable rows, so the timing carries no more than the values do.
+
+        **``sensitivities`` is required and has no default** (#119 phase 6), the
+        convention :meth:`list_items_by_status` set: a default would mean
+        "everything", which is the answer a forgotten argument must not silently
+        produce on a read path. An empty set returns ``{}`` without a query.
+
+        **The level is interpreted, not matched**, which is where this method
+        parts company with :meth:`list_items_by_status`'s SQL predicate. An
+        adapter is expected to aggregate in SQL and admit in the domain, so a
+        stored level it cannot interpret refuses the read rather than dropping
+        out of a match -- a corrupt cell would otherwise answer ``itemCount: 0``
+        over a project holding items, silently, while ``knowledge.search`` and
+        ``knowledge.get`` both refuse the same cell. The cost of that choice is
+        measured at the adapter.
+
+        **It narrows what is published and not what is checked.** This is the
+        number ``knowledge.status`` publishes as ``itemsByStatus``, and its sum is
+        ``itemCount``; both are statistics over rows the caller may see and
+        therefore follow the grant (SEC-13, T-17). The #30 integrity comparison
+        deliberately does **not** read this method -- it reads
+        :meth:`count_surfaceable_items`, which takes no grant -- because that
+        comparison checks a *ceiling-blind* record written by ``migrate apply``
+        against the live population, and narrowing one half of it would make
+        every restricted deployment report ``damageDetected`` on a healthy
+        project.
 
         Lives on this port beside :meth:`applied_migrations`, the other thing
         ``knowledge.status`` reads, rather than on :class:`CanonicalReadSession`:
@@ -217,11 +245,23 @@ class CanonicalStore(Protocol):
     def count_surfaceable_items(self, context: RequestContext) -> int:
         """How many items in scope a caller may see, totalled in SQL.
 
-        The same population :meth:`count_surfaceable_by_status` groups, without
-        the breakdown. It exists because ``knowledge.search`` and
-        ``knowledge.get`` need the total and publish no breakdown: it is the live
-        half of the ``#30`` integrity comparison, checked against
-        :meth:`expected_surfaceable_count` on every request.
+        The same **status** population :meth:`count_surfaceable_by_status`
+        groups, without the breakdown and **without that method's disclosure
+        axis**. It exists because ``knowledge.search`` and ``knowledge.get`` need
+        the total and publish no breakdown: it is the live half of the ``#30``
+        integrity comparison, checked against :meth:`expected_surfaceable_count`
+        on every request.
+
+        **It takes no grant, and that is the decision rather than an omission**
+        (#119 phase 6). Its number is never published; it is compared against a
+        record ``migrate apply`` wrote ceiling-blind from the rows it had just
+        written. Narrowing this side alone would make a deployment's own ceiling
+        read as damage on a healthy project, and narrowing both sides would make
+        the check compare a live population against a record written under
+        whatever ceiling happened to be declared at write time. So the
+        comparison stays on the ungated population at both ends, and the
+        ceiling narrows :meth:`count_surfaceable_by_status`, which is the half a
+        caller reads.
 
         Retired rows -- deprecated, superseded, rejected -- are not counted, so
         neither this number nor its comparison carries anything about content the

@@ -178,6 +178,21 @@ REFUSALS_WITHOUT_A_REMEDY: Final = frozenset(
 #: `knowledge.get` is absent because it does not answer successfully at all over
 #: this cell -- it refuses, in :data:`REFUSALS_WITHOUT_A_REMEDY`, reporting the
 #: damage as absence. That is a different recorded gap on a different surface.
+#:
+#: **One position was measured joining this set and was kept out by a change to
+#: the store instead** (#119 phase 6), recorded because "a new member is a
+#: failure" is only a real rule if the failure is acted on. Narrowing
+#: `knowledge.status`'s published counts by the deployment's sensitivity ceiling
+#: was first written as a second SQL predicate, `sensitivity IN (?, ?)`, beside
+#: the status one. A corrupted `knowledge_items.sensitivity` then drops out of
+#: that `IN` list exactly as an above-ceiling row does, and the sweep measured
+#: `('knowledge.status', 'knowledge_items', 'sensitivity')` answering
+#: ``itemCount: 2 -> 0`` with no refusal and no `integrity` -- while
+#: `knowledge.search` and `knowledge.get` both *refuse* the same cell, because
+#: `_item_from_row` interprets it. `count_surfaceable_by_status` now aggregates
+#: in SQL and admits in Python through `Sensitivity(...)`, so the cell refuses
+#: there too and this set is unchanged. Restoring the predicate form turns this
+#: test RED, which is what makes it the guard on that decision.
 UNDETECTED_UNDERREPORT: Final = frozenset(
     {
         ("knowledge.search", "knowledge_items", "item_id"),

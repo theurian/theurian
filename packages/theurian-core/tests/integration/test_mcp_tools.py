@@ -1384,7 +1384,7 @@ def _query_plan(db_path: Path, sql: str, params: tuple[str, ...]) -> str:
 
 
 @pytest.mark.asyncio
-async def test_status_count_is_answered_by_a_covering_index(
+async def test_status_count_seeks_into_the_status_index(
     read_cost_corpora: _ReadCostCorpora,
 ) -> None:
     """SEC-13, T-17, #19. The withheld-count independence rests on this index.
@@ -1392,28 +1392,44 @@ async def test_status_count_is_answered_by_a_covering_index(
     The row-count pin above proves ``knowledge.status`` no longer materialises
     the withheld rows -- but only against the ``list_items`` path it replaced.
     ``count_surfaceable_by_status`` aggregates in SQL, so its ``GROUP BY`` hands
-    back one row per surfaceable status whatever the store holds; the row meter
+    back a bounded number of rows whatever the store holds; the row meter
     therefore *cannot* see SQLite walk every row of the project to build that
-    aggregate. That walk is exactly what losing the covering index
-    ``idx_items_status(project_id, status)`` restores: the planner falls to the
-    namespace index, filters on ``project_id`` alone, and reads each withheld row
-    to group it -- reopening the O(withheld) timing channel T-17 closed, while
-    the response and the meter stay byte-identical.
+    aggregate. That walk is exactly what losing ``idx_items_status(project_id,
+    status)`` restores: the planner falls to the namespace index, filters on
+    ``project_id`` alone, and reads each withheld row to group it -- reopening
+    the O(withheld) timing channel T-17 closed, while the response and the meter
+    stay byte-identical.
 
-    So this pins the mechanism the row meter only proxies: the count is served by
-    a covering index that reads none of the withheld rows. Deleting or renaming
-    the index, or changing the predicate so the index can no longer cover the
-    query, drops the plan to a scan and turns this RED where the row-count pin
-    above stays green -- the two catch different regressions, so both are kept.
+    So this pins the mechanism the row meter only proxies: the count *seeks* into
+    the status index and never reads a retired row. Deleting or renaming the
+    index, or changing the predicate so the seek is no longer available, drops
+    the plan to a scan and turns this RED where the row-count pin above stays
+    green -- the two catch different regressions, so both are kept.
 
-    **The seek form is asserted, not merely the index name.** ``USING COVERING
-    INDEX idx_items_status`` appears in a ``SCAN`` line too, so that substring
-    alone was satisfied by a plan that walks the whole index -- measured:
-    reversing the declared columns to ``(status, project_id)`` leaves the phrase
-    intact while the leading column stops being the project. The three parts
-    below -- ``SEARCH``, the index, and the ``(project_id=?`` that opens the
-    constraint list -- are what say SQLite seeks into one project's entries; the
-    reversal plans ``(status=? AND project_id=?)`` and fails the third.
+    **The seek form is asserted, not merely the index name.** The index name
+    appears in a ``SCAN`` line too, so that substring alone was satisfied by a
+    plan that walks the whole index -- measured: reversing the declared columns
+    to ``(status, project_id)`` leaves the phrase intact while the leading column
+    stops being the project. The three parts below -- ``SEARCH``, the index, and
+    the ``(project_id=?`` that opens the constraint list -- are what say SQLite
+    seeks into one project's entries; the reversal plans ``(status=? AND
+    project_id=?)`` and fails the third.
+
+    **The plan says ``USING INDEX`` and no longer ``USING COVERING INDEX``, and
+    the difference is a recorded cost rather than a regression in this
+    property.** #119 phase 6 gave the published counts the deployment's
+    sensitivity axis, and nothing indexes ``knowledge_items.sensitivity``, so
+    each *in-status* row is now fetched from the table to read that column.
+    Measured on SQLite 3.47.1: ``SEARCH knowledge_items USING INDEX
+    idx_items_status (project_id=? AND status=?)`` plus ``USE TEMP B-TREE FOR
+    GROUP BY``, at 17.0 VM steps and about 0.54 us per above-ceiling row against
+    the ungated form's 9.0 -- the acceptance is argued at
+    ``SqliteCanonicalStore.count_surfaceable_by_status`` and flattening it is
+    https://github.com/theurian/theurian/issues/338. What the seek still buys is
+    the property this test is named for: a *retired* row is outside the status
+    range and is never read at all, however many of them the project holds, which
+    is the channel #19 closed. The word ``COVERING`` is therefore not asserted --
+    asserting it would be pinning a cost the issue above intends to change back.
     """
     corpora = read_cost_corpora
 
@@ -1431,7 +1447,7 @@ async def test_status_count_is_answered_by_a_covering_index(
     # installed -- that open does not go through `_read_all`, so the one call the
     # capture sees is the count's own statement.
     with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
-        store.count_surfaceable_by_status(context)
+        store.count_surfaceable_by_status(context, sensitivities=frozenset(Sensitivity))
 
     assert captured, (
         "count_surfaceable_by_status ran no statement through the store reader, so the plan "
@@ -1439,14 +1455,14 @@ async def test_status_count_is_answered_by_a_covering_index(
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
-    # Assert: SQLite *seeks* into the covering index rather than walking it. All
-    # three fragments are stable across SQLite versions for this shape, and each
-    # fails for a different regression: `SEARCH` for a plan that scans,
+    # Assert: SQLite *seeks* into the status index rather than walking the table.
+    # All three fragments are stable across SQLite versions for this shape, and
+    # each fails for a different regression: `SEARCH` for a plan that scans,
     # `idx_items_status` for a dropped or renamed index, `(project_id=?` for an
     # index whose leading column is no longer the project.
-    for fragment in ("SEARCH", "USING COVERING INDEX idx_items_status", "(project_id=?"):
+    for fragment in ("SEARCH", "INDEX idx_items_status", "(project_id=?"):
         assert fragment in plan, (
-            f"knowledge.status is no longer answered by a seek into the covering index "
+            f"knowledge.status is no longer answered by a seek into "
             f"idx_items_status(project_id, status): {fragment!r} is missing. SQLite planned:\n"
             f"{plan}\n"
             "Without that seek the count reads rows of the project it does not publish, withheld "
@@ -6784,16 +6800,26 @@ async def test_the_integrity_signal_is_identical_across_a_withheld_only_differen
     three surfaces use:
 
     - dropping the status predicate from `count_surfaceable_items` -- the read
-      `knowledge.search` and `knowledge.get` share -- fails the equality below on
-      `knowledge.search`;
-    - dropping it from `count_surfaceable_by_status`, whose sum
-      `knowledge.status` passes in instead, fails the same equality on
-      `knowledge.status` with `itemsByStatus` carrying `rejected: 25`.
+      all three tools' integrity check shares -- fails the `integrity` equality
+      below on every one of them;
+    - dropping it from `count_surfaceable_by_status` -- the read that produces
+      what `knowledge.status` *publishes* -- fails the `itemsByStatus` equality
+      below, which carries `rejected: 25` on the heavy corpus alone.
 
-    Both assertions are needed and they fail differently. The first is the
-    property; the second exists because a build where *both* corpora reported
-    damage would satisfy an equality of presence while saying nothing. Mirrors
-    the #19 status differential.
+    **Two readers, and since #119 phase 6 they answer two different questions.**
+    `knowledge.status` used to pass the sum of its published breakdown into the
+    integrity check, so one mutation moved both. Phase 6 narrowed the published
+    half by the deployment's sensitivity ceiling and left the checked half
+    ceiling-blind, which split them: a widened `count_surfaceable_by_status`
+    now moves no `integrity` key at all. So the published counts are compared
+    here directly rather than through the signal they no longer feed --
+    otherwise this test would have gone on claiming a mutation it had stopped
+    catching, which is the exact failure it exists to prevent one level down.
+
+    The `integrity` assertions are needed in both directions and they fail
+    differently. The first is the property; the second exists because a build
+    where *both* corpora reported damage would satisfy an equality of presence
+    while saying nothing. Mirrors the #19 status differential.
     """
     corpora = read_cost_corpora
 
@@ -6826,6 +6852,13 @@ async def test_the_integrity_signal_is_identical_across_a_withheld_only_differen
             f"{tool}: both corpora are healthy, so neither may report damage -- an equal signal "
             f"that was present in both would pass the line above for the wrong reason"
         )
+        if tool == "knowledge.status":
+            assert baseline["itemsByStatus"] == heavy["itemsByStatus"] == {"approved": 3}, (
+                f"the published breakdown moved with withheld content alone: baseline "
+                f"{baseline['itemsByStatus']}, heavy {heavy['itemsByStatus']}. This is the half "
+                f"`count_surfaceable_by_status` produces, and since it stopped feeding the "
+                f"integrity check it is the only place a widened predicate there shows up."
+            )
 
 
 @contextlib.contextmanager
@@ -8318,54 +8351,115 @@ async def test_an_allow_all_grant_still_serves_the_item_both_ways(
 
 
 @pytest.mark.asyncio
-async def test_knowledge_status_counts_are_not_yet_narrowed_by_the_ceiling(
+async def test_knowledge_status_counts_only_what_this_deployment_may_disclose(
     registry: ProjectRegistry,
 ) -> None:
-    """What #119 phase 2 does *not* do, recorded rather than assumed.
+    """#119 phase 6, SEC-13, T-17. The last tool that counted what it would not show.
 
-    `knowledge.status` publishes `itemCount` and `itemsByStatus` over
-    :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` and no sensitivity
-    predicate, so under a ceiling that withholds an item from `knowledge.search`
-    and `knowledge.get`, that same item is still *counted* here. That is a
-    statistic over a row the caller may not read -- the family SEC-13 and T-17
-    enumerate -- and it is left standing in this phase deliberately.
+    This test used to assert the opposite, under the name
+    `test_knowledge_status_counts_are_not_yet_narrowed_by_the_ceiling`: phases 2
+    to 5 closed `knowledge.search`, `knowledge.get` and the index, and left
+    `itemCount`/`itemsByStatus` counting every surfaceable row whatever the
+    ceiling. That is *a statistic over rows the caller may not see* -- the
+    disclosure family member that reaches the same content through another tool,
+    and the one a reader of the other four gates would never think to check.
+    Rewritten rather than deleted, because the record of what moved is the point
+    (maintainer decision, 2026-08-24, recorded on #119).
 
-    **Why it is not simply narrowed.** The same population is the live half of
-    the #30 integrity comparison, whose expected half
-    (`project_integrity.expected_surfaceable_count`) is written by `migrate
-    apply` from the rows it wrote, with no sensitivity predicate and no knowledge
-    of any deployment's ceiling. Narrowing the live count alone makes every
-    restricted deployment report `damageDetected` on every call to three tools --
-    a false security claim, which is worse than the count it would have fixed.
-    Closing it properly means deciding what the recorded expectation *means* on a
-    deployment that serves less than it holds, and that is a decision with its
-    own review rather than a line in this phase.
+    **Both halves in one test, and the second is not decoration.** A narrowing
+    that counted *nothing* would satisfy the first assertion and take the tool
+    with it, so the same corpus is asked again under an allow-all grant and must
+    report both items. What separates the two calls is the grant and nothing
+    else.
 
-    The absence of `integrity` is asserted here, not assumed: it is what says the
-    two halves still agree, and it is the assertion that turns RED first if
-    somebody narrows one of them.
-
-    **The phase that closes this must turn this test RED.** A seam recorded as
-    unenforced is the shape phase 1 used for exactly this reason, and it is
-    also why the profile file stays out of the README and `doctor` until every
-    part of #119 has landed (ADR-0025).
+    The integrity signal's absence is asserted on both sides for the reason the
+    previous version of this test asserted it: the #30 comparison's recorded half
+    is written ceiling-blind, so narrowing the *published* counts must not narrow
+    the *checked* population. `test_narrowing_the_ceiling_alone_never_reports_
+    damage` is where that is pinned with the two operands read out of SQLite, and
+    it is what makes this test's `"integrity" not in` more than a hope.
     """
-    server = build_server(registry, PUBLIC_ONLY)
-
-    with pytest.raises(SdkToolError):
-        await _call_on(server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy")
-    status = await _call_on(server, "knowledge.status", projectId="demo")
-
-    assert status["itemsByStatus"] == {"approved": 1, "draft": 1}, (
-        f"the above-ceiling items are no longer counted ({status['itemsByStatus']}). If that is "
-        f"deliberate, the #30 expected count has to move with them -- see this test's docstring "
-        f"-- and this test is the record that says so"
+    narrowed = await _call_on(
+        build_server(registry, PUBLIC_ONLY), "knowledge.status", projectId="demo"
     )
-    assert status["itemCount"] == 2
-    assert "integrity" not in status, (
-        f"the live surfaceable count and the count `migrate apply` recorded have stopped "
-        f"agreeing ({status.get('integrity')}). A ceiling applied to one half and not the other "
-        f"reports damage on a healthy project, which is the failure this test guards against."
+    served = await _call_on(
+        build_server(registry, _allow_all()), "knowledge.status", projectId="demo"
+    )
+
+    assert FIXTURE_SENSITIVITY not in PUBLIC_ONLY.sensitivities, (
+        "the fixture's items must be above this ceiling, or the narrowing below is vacuous"
+    )
+    assert narrowed["itemsByStatus"] == {}, (
+        f"`knowledge.status` counted items this deployment may not disclose "
+        f"({narrowed['itemsByStatus']}). Both of the fixture's items are `internal` and this "
+        f"ceiling serves `public` alone, so the breakdown must be empty (SEC-13, T-17)."
+    )
+    assert narrowed["itemCount"] == 0, (
+        f"and the total is the sum of that breakdown, so it must be 0: {narrowed['itemCount']}"
+    )
+    assert served["itemsByStatus"] == {"approved": 1, "draft": 1}, (
+        f"the allow-all half must still count both items ({served['itemsByStatus']}), or the "
+        f"assertion above is satisfied by a tool that counts nothing for anyone"
+    )
+    assert served["itemCount"] == 2
+    for answer, name in ((narrowed, "narrowed"), (served, "allow-all")):
+        assert "integrity" not in answer, (
+            f"{name}: a healthy project reported damage ({answer.get('integrity')}). The "
+            f"published counts follow the grant; the #30 comparison must not."
+        )
+
+
+@pytest.mark.asyncio
+async def test_narrowing_the_ceiling_alone_never_reports_damage(
+    registry: ProjectRegistry,
+) -> None:
+    """#119 phase 6, #30. The failure mode that kept the counts ungated until now.
+
+    `itemCount` is published narrowed and `project_integrity.expected_surfaceable_
+    count` is recorded ceiling-blind, so on any deployment that serves less than
+    it holds the two numbers *disagree by design*. An implementation that fed the
+    published number into the #30 comparison -- which is exactly what this tool
+    did before phase 6, to save one `COUNT` -- reports `damageDetected` on a
+    healthy project, on every call, with a remedy that tells the operator to
+    delete their state directory. A false security claim is worse than the count
+    it tidies, which is why phase 2 left the counts alone rather than narrowing
+    one half.
+
+    The two operands are read straight out of SQLite rather than off the
+    response, for the reason `_expected_surfaceable_count` records: an assertion
+    built from the tool's own numbers would hold over a build that had stopped
+    comparing anything. **Their disagreement is the precondition** -- if the
+    published count and the recorded expectation happened to be equal, "no damage
+    reported" would hold for any implementation, including the broken one.
+
+    RED under that implementation: restoring `live_surfaceable=sum(by_status.
+    values())` at `knowledge_status`'s `_measure_integrity` call makes the
+    narrowed half report `integrity` with `damageDetected: true`.
+    """
+    database, _ = _state_database(registry)
+
+    narrowed = await _call_on(
+        build_server(registry, PUBLIC_ONLY), "knowledge.status", projectId="demo"
+    )
+    served = await _call_on(
+        build_server(registry, _allow_all()), "knowledge.status", projectId="demo"
+    )
+
+    assert _expected_surfaceable_count(database) == 2, (
+        "the writer must have recorded both items ceiling-blind, or there is nothing here "
+        "for a narrowed count to disagree with"
+    )
+    assert narrowed["itemCount"] != _expected_surfaceable_count(database), (
+        f"the published count ({narrowed['itemCount']}) must differ from the recorded "
+        f"expectation, or 'this reports no damage' is true of any implementation"
+    )
+    assert narrowed["itemCount"] < served["itemCount"], (
+        "and the ceiling must be what moved it, not an empty project"
+    )
+    assert "integrity" not in narrowed, (
+        f"tightening the ceiling alone reported damage: {narrowed.get('integrity')}. The #30 "
+        f"comparison reads `count_surfaceable_items`, which takes no grant, precisely so that "
+        f"an operator's own access-control decision cannot look like a corrupt database."
     )
 
 
