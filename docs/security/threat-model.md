@@ -4256,33 +4256,54 @@ filters on `sensitivity` seeks to the in-status rows and then drops the
 above-ceiling ones *after* fetching them from the table. The work is spent on rows
 the caller never sees, and the amount of it is a function of how many there are.
 
-Two statements carry the term, and both take the deployment's grant since #119:
+Two statements carry this entry's term -- a `sensitivity` predicate over an index
+that does not carry the column -- and both take the deployment's grant since #119.
+A third statement produces the same *observable*, a per-above-ceiling-row slope,
+from a **different root cause**; it is listed here so a reader timing a request
+meets all three, but named apart below:
 
 | Statement | Reached by | Per above-ceiling row |
 | :-- | :-- | :-- |
 | `SqliteCanonicalStore.list_items_by_status` | `mcp/search.py`'s `substring_answer` — the unranked scan, which answers when a project has no index or when the published build's flavor does not match the grant (`serving-profile-mismatch`) | 6.0 SQLite VM steps, **0.198–0.204 µs** |
 | `SqliteCanonicalStore.count_surfaceable_by_status` | `knowledge.status`, on **every** call — this is not a fallback path | 17.0 VM steps, **0.54 µs** |
+| `SqliteCanonicalStore.count_surfaceable_items` — *distinct class, see below* | all three tools (`knowledge.search`, `knowledge.get` including its refusal path, and `knowledge.status`), on **every** request, through `_measure_integrity` (#30) | 4.0 VM steps, **≈0.13 µs** |
 
-Both figures are from the in-code notes at those two methods
-(`infrastructure/sqlite/store.py`), which are the live claim; this entry cites
-them rather than restating a number that would then have two homes. Measured on
-SQLite 3.47.1 against a project of 50 in-ceiling `approved` rows plus
-0/50/300/1,000/3,000 above the ceiling, median of 60 warm in-process calls,
-linear across the whole range with no threshold in it. The VM-step counts are
-exact and reproduce anywhere; the microseconds are one machine's.
+The first two are this entry's own class. The third is named by its root cause --
+**#30's integrity comparison counts rows the ceiling withholds**, not *the
+canonical index lacks the gate's column*. `count_surfaceable_items` is
+ceiling-blind by design (the #30 comparison must be, at both ends, or a restricted
+deployment reads its own ceiling as damage), so it counts the above-ceiling rows
+in a surfaceable status deliberately and takes no grant. The observable is the
+same and the grading is the same -- Medium and accepted for the reasons below --
+but #338's flattening does not reach it: a ceiling-blind count has no `sensitivity`
+predicate for an index column to make covering.
+
+The first two figures are from the in-code notes at those methods in
+`infrastructure/sqlite/store.py`; the third is recorded at `_measure_integrity`
+in `mcp/tools.py`, beside the read it prices. This entry cites them rather than
+restating a number that would then have two homes. Measured on SQLite 3.47.1
+against a project of 50 in-ceiling `approved` rows plus 0/50/300/1,000/3,000 above
+the ceiling, median of 60 warm in-process calls, linear across the whole range
+with no threshold in it. The VM-step counts are exact and reproduce anywhere --
+4.0 for the third by the same progress-handler method that gives 17.0 for the
+grouping -- the microseconds are one machine's, and the third row's is scaled from
+its 4.0 VM steps at the ~0.032 µs/step the two rows above measure rather than
+separately re-timed there.
 
 **In-process, and that caveat is load-bearing.** These were taken by calling the
 store directly, with no loopback hop, no MCP framing and no JSON encoding. The
 end-to-end floor this model records for a real client is **1.40 ms** (TB-1), from
 identical repeated calls. The counts term needs on the order of **2,600**
 above-ceiling rows in one project to reach a single floor's width; the scan term
-needs about **7,000**. Nothing here was measured end to end, and no separation
-across that floor has been demonstrated.
+needs about **7,000**, and the ceiling-blind integrity count about **11,000**.
+Nothing here was measured end to end, and no separation across that floor has been
+demonstrated.
 
-**Reach: corpus-bounded, and no caller can shrink it.** Neither statement carries
-a `LIMIT` — `search._scan` cuts in Python after the whole result set is built, and
-a `GROUP BY` aggregate has nothing to cut — so the term is proportional to every
-above-ceiling row in the project rather than to what was asked for. That is the
+**Reach: corpus-bounded, and no caller can shrink it.** None of the three carries
+a `LIMIT` — `search._scan` cuts in Python after the whole result set is built, a
+`GROUP BY` aggregate has nothing to cut, and a `COUNT` returns a single row — so
+the term is proportional to every above-ceiling row in the project rather than to
+what was asked for. That is the
 bound in both directions: an attacker cannot make it larger than the corpus
 either.
 
@@ -4306,8 +4327,9 @@ deployment holds.
 
 **Controls, such as they are.** None that remove it. What bounds it is the
 absence of a `LIMIT` in the caller's hands, the per-row size, and the fact that
-the only tool on the always-reached path (`knowledge.status`) publishes no count
-it could be checked against. The exact flattening is known and is a schema change:
+the tool on this term's always-reached path (`knowledge.status`) publishes only
+the ceiling-narrowed `itemCount`/`itemsByStatus`, never the above-ceiling total
+the timing reflects, so there is no published number to calibrate it against. The exact flattening is known and is a schema change:
 adding `sensitivity` as a third column of `idx_items_status` measured flat (2,032
 VM steps at both 0 and 1,000 above the ceiling), which bumps `SCHEMA_VERSION` and
 invalidates every existing state database — owned by

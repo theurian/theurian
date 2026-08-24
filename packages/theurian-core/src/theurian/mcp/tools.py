@@ -281,10 +281,17 @@ def _measure_integrity(
     itself, so no caller can supply a population and the comparison is
     ceiling-blind at both ends by construction.
 
-    The read it costs is one ``COUNT`` over ``idx_items_status``,
-    ``O(surfaceable)`` and independent of the corpus -- the same cost discipline
-    PR1 held for ``count_migration_history``, so neither reopens the
-    ``O(withheld)`` timing channels #158 and #19 closed.
+    The read it costs is one ``COUNT`` over ``idx_items_status``, flat in the
+    retired rows -- the same discipline PR1 held for ``count_migration_history``,
+    so the *status* channels #158 and #19 closed stay closed. It is **not** free
+    of the corpus, though: ``count_surfaceable_items`` is ceiling-blind by design
+    (the #30 comparison must be, at both ends), so it counts the above-ceiling
+    rows in a surfaceable status and carries a measured, corpus-bounded slope --
+    4.0 SQLite VM steps per above-ceiling row, exact and linear, reached on every
+    request of all three tools. That term is a distinct class from T-22's -- it is
+    *ceiling-blind counting*, not a ``sensitivity`` predicate over an index that
+    lacks the column -- and is recorded there as the third statement carrying it,
+    Medium and accepted.
 
     Called with the store already open, so a tool pays one connection for its
     answer and its integrity check together.
@@ -774,8 +781,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         #
         # A short-lived connection for three indexed reads, each O(migrations) or
         # O(surfaceable): the ranked and scan paths open and close their own
-        # stores, and this stays off their hot path so it cannot reopen the
-        # O(withheld) timing channels they close.
+        # stores, and this stays off their hot path. The *status* channels #158/#19
+        # closed stay closed here too, but the surfaceable count is ceiling-blind
+        # by #30's design, so it carries the bounded per-above-ceiling-row slope
+        # recorded at `_measure_integrity` and in T-22 -- a distinct class, not
+        # those channels reopened.
         with SqliteCanonicalStore(database) as store:
             integrity = _measure_integrity(
                 store, RequestContext(project_id=ProjectId(projectId)), active
