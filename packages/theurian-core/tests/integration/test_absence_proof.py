@@ -250,9 +250,12 @@ Milestone 5's account of T-17a is precisely that of an acceptance drifting away
 from the measurement behind it, carried for two rounds in the orchestrator's own
 words before anyone re-measured it.
 
-The secondary cost is that the split needs a shared helper module in a test tree
-with no package structure (no ``__init__.py``, ``--import-mode=importlib``),
-which is a new import mechanism introduced for one file.
+The often-cited secondary cost -- that a split needs a shared helper module the
+tree cannot import -- does not hold: ``conftest.py`` already puts the tests root
+on ``sys.path``, which is how ``fakes`` and ``migration_fixtures`` are imported
+as top-level modules under ``--import-mode=importlib``. A shared helper would use
+that existing mechanism, not a new one, so the reason not to split is the
+keep-together argument above and nothing about imports.
 
 Sizes here for calibration rather than as an excuse: ``test_mcp_tools.py`` is
 3,757 lines, ``test_retrieval_service.py`` 2,002 and

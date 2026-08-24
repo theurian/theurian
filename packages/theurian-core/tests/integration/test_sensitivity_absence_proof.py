@@ -7,14 +7,19 @@ and the answer is self-composition -- build the pair, ask the same question,
 compare the whole answer.
 
 This is the same property over a **different reason for withholding**, and it is
-its own file because that module's docstring says a new axis should be (*Why this
-is one file and not two*): the shared-helper alternative needs an import mechanism
-this test tree does not have, since it has no ``__init__.py`` and runs under
-``--import-mode=importlib``. So the builder below is a second implementation of
-the same idea rather than an import of the first, and the cost of that is stated
-where it bites: :func:`test_the_two_alphabets_cannot_produce_a_shared_token_or_trigram`
-exists here as well, because this file has its own copy of the vocabulary and a
-copy can drift.
+its own file because ``test_absence_proof.py``'s docstring argues a new axis
+should be one (*Why this is one file and not two*). The builder below is a
+deliberate *second implementation* rather than an import of that module's: the
+two files prove one property over two axes, and keeping their corpus
+construction independent means a bug in one cannot mask the same bug in the
+other -- the whole value of a 2-safety cross-check. A shared helper *would* be
+importable -- this tree runs under ``--import-mode=importlib`` and
+``conftest.py`` puts the tests root on ``sys.path``, which is how
+``migration_fixtures`` is imported below -- so the separation is a choice, not a
+limitation. The cost of the choice is stated where it bites:
+:func:`test_the_two_alphabets_cannot_produce_a_shared_token_or_trigram` exists
+here as well, because this file has its own copy of the vocabulary and a copy
+can drift.
 
 What "withheld" means here
 --------------------------
