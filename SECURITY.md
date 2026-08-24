@@ -450,20 +450,40 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   document text as instructions, and no MCP server can. This is a shared
   responsibility, and it is the most important line in this document.
 - **Secrets already committed to your repository.** `theurian propose accept`
-  scans the bodies a proposal would land and, by default, refuses to move them
-  ([#198](https://github.com/theurian/theurian/issues/198));
+  scans both the bodies a proposal would land and the migration document that
+  lands with them, and by default refuses to move any of it
+  ([#198](https://github.com/theurian/theurian/issues/198),
+  [#336](https://github.com/theurian/theurian/issues/336));
   `security.secretScan` in `.theurian/config.yaml` selects `block` — which is
   also what an absent key and an absent file select — or `warn`, or `off`.
   **That is one gate and a best-effort detector, not coverage.** It reads known
   credential shapes and flags strings that look randomly generated, so a secret
-  resembling neither is invisible to it. The scan reads bodies, not the revision's
-  own metadata — a secret in the `--title`, `--description` or `--label`, or in a
-  source anchor (provider, sourceUri, repository, commitSha, filePath), is
-  unscanned; the title and the source anchors are published verbatim on every
-  `knowledge.search` and `knowledge.get` result, the title also becoming the
-  migration filename, while the description and labels are committed but not
-  published ([#336](https://github.com/theurian/theurian/issues/336)). Theurian does not
-  scan ingested content for secrets — `theurian ingest` and `index build` run no scan at all — and a
+  resembling neither is invisible to it. In the document it reads the
+  author-written string values: the `--title`, `--description`, `--label`,
+  `--scope-path`, `--owner`, `--author` and `--namespace` values, `contentType`
+  and the `createdAt`/`validFrom`/`validTo` dates, the free text and chosen
+  names each operation carries, and every string of a source anchor —
+  provider, sourceUri, repository, filePath, externalId,
+  commitSha, blobSha. The sharp ones are the title and the anchor fields a
+  result publishes verbatim — provider, sourceUri, repository, commitSha,
+  filePath — because a credential in one reaches an agent that never opens the
+  body; externalId and blobSha are scanned but not published, and the migration
+  filename is not re-derived from the title at accept, so it is not covered
+  here. **What it does not read** is a YAML comment or the migration and body
+  filenames — the artifact-level face, tracked in
+  [#349](https://github.com/theurian/theurian/issues/349) — and, inside the
+  document, the fields where a mechanism already bars a reported secret: the
+  ULID- and `contentSha256`-shaped identifiers, which the detector's class gate
+  cannot fire on; the fixed vocabularies (`kind`, `status`, `op` and the other
+  enums); and `contentFile`, a path whose secret-in-filename face is #349. The
+  date fields land nothing themselves, but a committed secret in one was
+  reproduced verbatim by the rehearsal's date parse, so scanning pre-empts that
+  with a redacted refusal under `block`. A proposal's
+  `evidence.json` is not scanned: `accept` never moves it into the canonical
+  tree, and scanning it is tracked with the draft-time advisory
+  ([#330](https://github.com/theurian/theurian/issues/330)). Theurian does not
+  scan ingested content for secrets — `theurian ingest` and `index build` run no scan at all
+  ([#329](https://github.com/theurian/theurian/issues/329)) — and a
   migration written straight into `.theurian/migrations/` by hand never passes
   through `accept`. A secret that gets past all of that becomes readable through
   `knowledge.search` and `knowledge.get` the moment `theurian migrate apply`

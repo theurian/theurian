@@ -147,6 +147,23 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   that comparison now runs its own ungated count internally instead of reusing the
   published sum.
 
+- **`theurian propose accept` refuses a secret in the migration document, not
+  only in a body**
+  ([#336](https://github.com/theurian/theurian/issues/336)). A tightening of the
+  approval gate, not a wire-contract break — `secretFindings` keeps its shape and
+  no read is affected — but a behaviour a caller can observe, so it is recorded
+  here as well as in the security entry above. **Old
+  shape:** an acceptance was refused under `security.secretScan: block` only
+  when an incoming *body file* appeared to carry a secret, and every entry in
+  `accept --json`'s `secretFindings` began with a body path relative to
+  `.theurian/knowledge/`. **New shape:** the migration document's author-written
+  fields are refused on the same terms, and a `secretFindings` entry may instead
+  name a field of that document — `migration.operations[1].metadata.title` — in
+  the same `<location>:<line>:<column>: <family> (<prefix>)` line. A project
+  whose existing proposals carry a high-entropy title, label or source URI will
+  see `accept` exit 1 where it exited 0, and the escape hatch is the policy key
+  the refusal's own remedy names: there is still no per-finding suppression.
+
 ### Security
 
 - **`sensitivity` stops being a published label and becomes an enforced read
@@ -170,6 +187,83 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `DELETE` frees without zeroing and `backup` page-copies the free list; no query
   reads a free page, a `deprecateItem` control shows it predates this trigger, and
   it is [#344](https://github.com/theurian/theurian/issues/344).
+
+- **The accept-path secret scan reads the migration document, not only the
+  bodies** ([#336](https://github.com/theurian/theurian/issues/336), SEC-11,
+  ADR-0027 decision 3 as amended; T-15 in
+  [the threat model](../../docs/security/threat-model.md)). Until now `theurian
+  propose accept` scanned the body files a proposal would land and nothing else,
+  so a credential in the revision's own metadata was accepted and committed
+  unread. That is the wider channel of the two: a body is reviewed as a file in
+  a pull request, while a title is skimmed as one line of YAML beside a ULID —
+  and the title and the published source anchors (`provider`, `sourceUri`,
+  `repository`, `commitSha`, `filePath`) appear verbatim on every
+  `knowledge.search` and `knowledge.get` result, so a credential in one reaches
+  an agent that never opens the body.
+
+  **What is scanned now** — author-written string *values*, not a YAML comment
+  and not the filename a `contentFile` points at (the artifact-level face,
+  tracked in [#349](https://github.com/theurian/theurian/issues/349)). The
+  migration's `author`, `createdAt` and `description`; on every operation the
+  free text and the names an author chooses (`reason`, `note`, `alias`, `specId`,
+  `sourceUri`, `format`, `description`, `sourceItemId`, `targetItemId`,
+  `supersededBy`, `itemId`, `namespace`, `owner`); a revision's `title`,
+  `namespace`, `owner`, `tenantId`, `aclGroup`, `contentType`, `validFrom`,
+  `validTo`, `labels` and `scope.paths`; and every string of a source anchor —
+  `provider`, `sourceUri`, `filePath`, `repository`, `externalId`, `commitSha`,
+  `blobSha` — wherever an anchor appears, including `addEvidence`'s. All fourteen
+  operation types the published schema declares, not only the two `propose`
+  writes. **The allowlist is the schema's string fields minus the derived half,
+  not a list of the fields somebody thought of**: each of the fourteen operation
+  branches and each leaf object (anchors, metadata) declares
+  `additionalProperties: false` — the `$defs/operation` `oneOf` wrapper does not
+  itself, but every branch it selects does — so the strings an acceptable
+  document may carry are exactly the ones those objects name.
+
+  **What is not.** The derived half, each field excluded by a mechanism rather
+  than by choice: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers
+  (`id`, `revisionId`, `expectedRevision`, `dependsOn`,
+  `contentSha256`), which the detector's class gate cannot fire on; the fixed
+  vocabularies (`op`, `kind`, `status`, `trustLevel`, `sensitivity` and the
+  other enums); and `contentFile`, a path whose secret-in-filename face is the
+  artifact-level one above. The date fields (`createdAt`, `validFrom`,
+  `validTo`) are *not* excluded — they are scanned, because a committed secret
+  in one was reproduced verbatim by the rehearsal's date parse and scanning
+  pre-empts it with a redacted refusal under `block`.
+  A proposal's `evidence.json` is not scanned either: `accept` never moves it
+  into the canonical tree, so it rides with the draft-time advisory
+  ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and
+  index-time scanning still do not exist
+  ([#329](https://github.com/theurian/theurian/issues/329)), a migration written
+  straight into `.theurian/migrations/` still never meets the scan, and the
+  detector is still best effort. T-15 stays **High** for those reasons: this
+  widens the one gate of three that was already covered.
+
+  **Nothing about the policy changes.** `block`, `warn` and `off` mean what they
+  meant, `block` is still what an absent key and an absent file select, and the
+  policy is still read before either input is touched — so `off` skips the
+  document as well as the bodies, which is what keeps the escape hatch a
+  whole-control escape hatch. The scan still runs before the pre-check and before
+  any write, so a refusal consumes nothing. Body findings and document findings
+  are one list under one `_MAX_NAMES_LISTED` cap, not a cap each.
+
+  **A finding names a location and never reproduces the value.** Measured
+  2026-08-24 against the real CLI in a scratch project: a secret in `--title`
+  refuses at the default `block` with exit 1, `.theurian/migrations/` and
+  `.theurian/knowledge/` untouched and the proposal directory intact; under
+  `warn` the same acceptance exits 0 and `secretFindings` carries
+  `migration.operations[1].metadata.title:1:14: high-entropy-token (fMlA...)`.
+
+  **No false positives on real documents**, which is what a `block` default has
+  to earn: zero findings over the migration corpus this repository tracks — the
+  26 documents under `.theurian/migrations/` and the 2 under
+  `examples/sample-project/`, 510 author-written strings (measured against
+  `67727eb`). The live dogfood machine's fuller corpus of 82 (those 26 plus 56
+  machine-local operator notes) scans clean too, but is not reproducible from
+  the repository. The detector's ULID subtraction is what makes that possible,
+  and a title citing the migration that introduced an item is pinned as an
+  accepted input rather than left to chance.
+
 
 ## [0.1.0.dev10] - 2026-08-24
 

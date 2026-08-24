@@ -120,12 +120,14 @@ cannot approve knowledge"** rule below, not the front-matter
       ```
 
       This checks first and moves second. Before anything moves it scans every
-      body for secrets (SEC-11) — the body only, so keep credentials out of the
-      `--title`, `--description`, `--label` and the `--source-*` anchors too:
-      those are not scanned, and the title and the source anchors (provider,
-      sourceUri, repository, commitSha, filePath) are published on every search
-      result, the title also becoming the migration filename
-      ([#336](https://github.com/theurian/theurian/issues/336)) — and proves that
+      body for secrets (SEC-11), and the migration document's own author-written
+      fields with it — the `--title`, `--description`, `--label`, `--scope-path`
+      and the `--source-*` anchors are all read, so a credential in any of them
+      refuses the acceptance under the default `block`
+      ([#336](https://github.com/theurian/theurian/issues/336)). The detector is
+      best effort, so keep credentials out of all of them regardless: the title
+      and the published source anchors (provider, sourceUri, repository,
+      commitSha, filePath) appear on every search result. It also proves that
       the project's migration set with this proposal in it still survives the
       pipeline `migrate apply` runs — the
       published schema, the whole-set guards, and a dry replay that reaches the

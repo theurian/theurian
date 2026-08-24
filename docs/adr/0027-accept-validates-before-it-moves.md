@@ -408,6 +408,72 @@ free design decision, not a neutral gap note. What grade this leaves T-15 at is
 decided in the threat model, not here; it stays High, and the metadata channel is
 one of its recorded residuals.
 
+> **Amended in Milestone 7, by the metadata-scan CL
+> ([#336](https://github.com/theurian/theurian/issues/336)). The text above is
+> the decision as accepted; the boundary it records no longer holds, and neither
+> does this decision's opening sentence — *"runs over the proposal's body
+> files"*.**
+>
+> As accepted, this decision scoped the scan to the proposal's body files and
+> named the metadata channel a stated boundary, deferred for three reasons: the
+> metadata is human-gated the same way the body is, shipping the body scan first
+> is what #316's window bought, and short structured fields wanted their own
+> false-positive tuning. `theurian propose accept` now scans the migration
+> document's author-written strings as well as the bodies, so *"the scan is
+> body-scoped, by decision"* is false and the symbol it names,
+> `_scan_bodies_for_secrets`, no longer exists — `_scan_for_secrets`,
+> `_document_findings` and `_authored_strings` carry the reach and its reasoning.
+>
+> **What implementing the deferral revealed is that two of its three reasons were
+> weaker than they read.** "Human-gated the same way the body is" is true of
+> where a value lands and false of how it is reviewed: a body arrives in a pull
+> request as a file a reviewer opens, while a title arrives as one line of YAML
+> beside a ULID — and the title and the source anchors are published verbatim on
+> every `knowledge.search` and `knowledge.get` result, so a credential in one is
+> disclosed to an agent that never opens the body. The tuning reason was
+> measurable rather than arguable, and the measurement went the other way: over
+> the migration corpus this repository tracks — the 26 documents under
+> `.theurian/migrations/` and the 2 under `examples/sample-project/` — the scan
+> reports nothing: 510 author-written strings, zero findings (measured against
+> `67727eb`). The live dogfood machine's fuller corpus of 82 (those 26 plus 56
+> machine-local operator notes) scans clean too, but is not reproducible from the
+> repository. What those strings needed was the detector's ULID subtraction,
+> which was already load-bearing for bodies.
+>
+> **The new answer is better for a reason the old one could not state: the
+> population is bounded.** Each of the schema's fourteen operation branches and
+> each leaf object it defines (anchors, metadata) declares
+> `additionalProperties: false` — the `$defs/operation` `oneOf` wrapper does not
+> itself, but every branch it selects does — so the string fields those objects
+> name are exactly what a document `accept` could apply may carry. The scan reads
+> that set and subtracts each derived field only where a mechanism already bars a
+> *reported* secret: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers
+> (`id`, `revisionId`, `expectedRevision`, `dependsOn`,
+> `contentSha256`), which the detector's class gate cannot fire on; the fixed
+> vocabularies (`op`, `kind`, `status`, `trustLevel`, `sensitivity` and the other
+> enums); and `contentFile`, a path whose secret-in-filename face is the
+> artifact-level one. The date fields `createdAt`, `validFrom` and `validTo` are
+> *not* in that subtraction — they are scanned, because a committed secret in one
+> was reproduced verbatim by the rehearsal's date parse and scanning pre-empts it
+> with a redacted refusal. `accept` moves two artifacts into the canonical tree
+> and only two — the bodies and this document — so between them the gate sees the
+> author-written *bytes* the acceptance makes canonical, but not the artifact
+> level: a YAML comment, and the migration and body filenames, are unscanned and
+> tracked as their own face
+> ([#349](https://github.com/theurian/theurian/issues/349)). The filename in
+> particular does not follow from the title's scan — the slug is not re-derived
+> from the title at accept (`_require_filename_matches_id` checks only the ULID
+> prefix, and a hand-authored slug is free-form), so it is #349's face and not
+> the title's.
+>
+> What does not change is the grade or the disclaimer. T-15 stays High: the count
+> that decides it is over the three points content enters the canonical store,
+> and this widens the one already covered rather than covering a second. The
+> detector is still best effort, there is still no per-finding suppression, and a
+> proposal's `evidence.json` is still unscanned — `accept` never moves it into
+> the canonical tree, so it is tracked with the draft-time advisory
+> ([#330](https://github.com/theurian/theurian/issues/330)).
+
 **This is the first code in `src/` that reads `.theurian/config.yaml`.** Nothing
 reads it today — `infrastructure/github/__init__.py` mentions the filename in a
 docstring and that is the whole of it, which is the state
@@ -671,28 +737,69 @@ Landed in Milestone 7 with decision 3 (SEC-11):
   — which asserts the published default *equals* what `read_secret_scan_policy`
   applies, so the two cannot drift apart in either direction.
 
+Landed in Milestone 7 with decision 3's amendment above — metadata-field
+scanning ([#336](https://github.com/theurian/theurian/issues/336)), which this
+ADR owed as a HIGH finding converted to a recorded design decision. All of these
+are in `tests/integration/test_proposal_secret_scan.py`:
+
+- The refusal, over every field a `propose`-drafted document carries:
+  `::test_a_secret_in_the_migration_document_is_refused_by_default`, parametrized
+  over twelve plants — title, description, author, owner, namespace, label,
+  scope path, and five source-anchor strings — with
+  `::test_every_planted_field_reaches_the_migration_document_and_is_detectable`
+  as the guard that each plant actually reaches the document and is one the
+  detector reports — without it a green parametrization could be testing nothing.
+- The recovery property on the new input:
+  `::test_a_refused_metadata_secret_leaves_the_proposal_intact` asserts the
+  proposal directory is unchanged *and* that the document did not reach
+  `.theurian/migrations/`, which an implementation scanning after the move would
+  fail while satisfying the body-side test.
+- The other two policies, and the message:
+  `::test_warn_lands_the_proposal_and_names_the_metadata_it_found`,
+  `::test_off_leaves_the_migration_document_unscanned_too` — the escape hatch has
+  to cover the whole control or it is not one — and
+  `::test_a_metadata_refusal_does_not_reproduce_the_secret_it_reports`.
+  `::test_one_listing_bound_covers_the_body_and_the_metadata_together` holds that
+  the `_MAX_NAMES_LISTED` cap applies to the pair rather than once per kind.
+- The false positive that would make this the first control switched off:
+  `::test_a_title_quoting_a_migration_filename_is_still_accepted_under_block`.
+- The fields no `propose`-drafted document can carry, reached by sixteen
+  hand-authored fixtures — one per allowlist field, across `deprecateItem`,
+  `addRelation`, `addAlias`, `addEvidence`, `registerSpecification`,
+  `changeOwner`, `createItem` and `upsertRevision`, since `propose` itself emits
+  only the last two of the schema's fourteen operation types:
+  `::test_a_secret_in_a_hand_authored_operation_is_refused_and_the_field_is_named`,
+  `::test_a_refused_hand_authored_operation_consumes_nothing_and_is_not_quoted_back`,
+  with `::test_a_hand_authored_operation_is_schema_valid_with_and_without_its_planted_secret`
+  and `::test_a_hand_authored_operation_carries_no_finding_until_its_field_is_planted`
+  as the guards that a refusal is the scan's and not the schema's.
+- The population pin that stops the class reopening:
+  `::test_every_drivable_allowlist_entry_has_a_fixture_that_reaches_it` reads the
+  allowlists themselves and demands equality in both directions, so a name added
+  to any of them goes RED until something drives it. Four entries are subtracted
+  by name with the reason each is unreachable rather than merely untested:
+  `metadata.tenantId` and `metadata.aclGroup`, which the engine refuses any value
+  but `local` and `default` for ([#63](https://github.com/theurian/theurian/issues/63)),
+  and `anchor.commitSha`/`anchor.blobSha`: a schema-valid document holds only
+  `^[0-9a-f]{7,64}$` there, and the detector's class gate cannot fire on lower-case
+  hex — no credential family it recognises can be spelled in it.
+
 Still owed, with the issue that will satisfy it:
 
-- **Metadata-field secret scanning**
-  ([#336](https://github.com/theurian/theurian/issues/336)). The accept-path scan
-  reads bodies only, so a secret in the revision's `--title`, `--description` or
-  `--label`, or in a source anchor, is unscanned — the title and the source
-  anchors (provider, sourceUri, repository, commitSha, filePath) being published
-  verbatim on every `knowledge.search` and `knowledge.get` result, and the title
-  in the migration filename, while the description and labels are committed but not
-  published. It is a HIGH finding converted to the recorded design decision in
-  decision 3 above, deferred rather than absorbed because the metadata is
-  human-gated the same way the body is and the extension wants its own
-  false-positive tuning.
 - **Ingest-time and index-time secret scanning**
   ([#329](https://github.com/theurian/theurian/issues/329)). `theurian ingest`
   records content that is already approved and no scan runs there. T-15's
   control is approval-time, so this is a second and distinct control; it was out
   of #316's scope, and it is what T-15's grade is re-read against.
-- **Draft-time scanning as an advisory**
+- **Draft-time scanning as an advisory, and `evidence.json` with it**
   ([#330](https://github.com/theurian/theurian/issues/330)). Refusing at `draft`
   would tell an author sooner, but `accept` is the gate, so a draft-time scan is
-  a convenience rather than a control.
+  a convenience rather than a control. `evidence.json` belongs to the same item
+  and not to the one above: `accept` moves the migration document and the bodies
+  it names and leaves the rest of the proposal directory alone (ADR-0013 point
+  7), so the evidence file is committed with the pull request and never becomes
+  part of an approved revision — a control over it is a control over something
+  this gate does not land.
 - **Concurrency between two `accept` invocations** (decision 2's third
   residue), which belongs with the write path's single-writer work
   ([ADR-0018](0018-single-writer-synchronous-in-m1.md)). The accept path's file

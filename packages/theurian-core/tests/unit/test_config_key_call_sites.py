@@ -453,19 +453,30 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "SECURITY.md",
         "SECURITY.md",
         (
-            "`theurian propose accept` scans the bodies a proposal would land",
+            (
+                "`theurian propose accept` scans both the bodies a proposal would land "
+                "and the migration document"
+            ),
             "That is one gate and a best-effort detector, not coverage",
-            # The metadata channel (#336): the scan reads bodies only, so a secret
-            # in the revision's own title/description/labels or source anchors is
-            # unscanned, and the title *and* the source anchors are published on
-            # every result (verified 2026-08-24 in mcp/results.py). A surface that
-            # describes SEC-11's reach without both over-claims by omission -- the
-            # same B1-B4 failure the rest of this row guards, applied to *which
-            # channels* the scan covers. The field list is the completeness marker:
+            # The metadata channel (#336). The scan *used* to read bodies only,
+            # so a secret in the revision's own title/description/labels or
+            # source anchors was unscanned while the title and the source anchors
+            # are published on every result (verified 2026-08-24 in
+            # mcp/results.py). It now reads the migration document's
+            # author-written strings too, and a surface that describes SEC-11's
+            # reach without both halves over-claims by omission -- the same B1-B4
+            # failure the rest of this row guards, applied to *which channels* the
+            # scan covers. The anchor field list is the completeness marker:
             # dropping the source anchors, the sharpest published channel, reddens
-            # here.
-            "The scan reads bodies, not the revision's own metadata",
-            "provider, sourceUri, repository, commitSha, filePath",
+            # here. The two exclusion pins are the other direction, and fix on the
+            # enumerated exclusion list rather than an adjective like "complete"
+            # that can pin a false claim: the first holds that the date fields are
+            # *scanned* -- the round-two false claim was that they were excluded --
+            # and the second holds a concrete excluded field with its mechanism.
+            "provider, sourceUri, repository, filePath, externalId, commitSha, blobSha",
+            "`contentType` and the `createdAt`/`validFrom`/`validTo` dates",
+            "`contentFile`, a path whose secret-in-filename face is #349",
+            "`evidence.json` is not scanned",
             "Theurian does not scan ingested content for secrets",
             "Theurian is not one and is not a replacement for one",
         ),
@@ -474,13 +485,23 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "docs/security/threat-model.md (T-15 Controls)",
         "docs/security/threat-model.md",
         (
-            "**Controls: `theurian propose accept` scans every body before it moves it**",
+            (
+                "**Controls: `theurian propose accept` scans every body and the migration "
+                "document itself before it moves anything**"
+            ),
             "It is best effort and the product says so",
-            # The metadata channel (#336); see the SECURITY.md row above. The field
-            # list guards that the source anchors -- a published channel as sharp as
-            # the title -- stay enumerated alongside it.
-            "The scan reads bodies, not the revision's own metadata",
-            "provider, sourceUri, repository, commitSha, filePath",
+            # The metadata channel (#336); see the SECURITY.md row above. The
+            # anchor field list guards that the source anchors -- a published
+            # channel as sharp as the title -- stay enumerated alongside it. The
+            # two exclusion pins guard the other direction on the enumerated list
+            # rather than an adjective: that the date fields are scanned, and the
+            # per-field mechanism framing.
+            (
+                "`provider`, `sourceUri`, `filePath`, `repository`, `externalId`, "
+                "`commitSha`, `blobSha`"
+            ),
+            "`aclGroup`, `contentType`, `validFrom`, `validTo`",
+            "each field excluded by a mechanism rather than by choice",
             "`theurian ingest` runs no scan",
         ),
     ),
@@ -491,12 +512,17 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "scans every body it would land",
             "best-effort in-house detector",
             # The metadata channel (#336); see the SECURITY.md row above. This
-            # T-15 row is the one that enumerates what the control does not reach,
-            # so an omission here reads as "the scan covers everything". The field
-            # list pins the sharpest omission the round-two review found: the source
-            # anchors are published verbatim on every result, the same as the title.
-            "the revision's own metadata is unscanned",
-            "provider, sourceUri, repository, commitSha, filePath",
+            # T-15 row is the one that enumerates what the control does and does
+            # not reach, so an omission either way reads as a different control.
+            # The anchor field list pins the sharpest channel the round-two review
+            # of #198 found. The date-field and mechanism pins fix on the
+            # enumerated exclusion list: that the date fields are scanned, and that
+            # each excluded field is barred by a mechanism, not by "nothing to put".
+            "and the migration document's own author-written fields with it",
+            "provider, sourceUri, filePath, repository, externalId, commitSha, blobSha",
+            "`contentType` and the date fields",
+            "What it does not reach: the document's derived fields",
+            "each barred by a mechanism rather than by choice",
             "Ingest-time and index-time scanning are separate controls and do not ship",
         ),
     ),
