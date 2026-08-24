@@ -48,7 +48,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **What is not.** The derived half, each field excluded by a mechanism rather
   than by choice: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers
-  (`migrationId`, `revisionId`, `expectedRevision`, `dependsOn`,
+  (`id`, `revisionId`, `expectedRevision`, `dependsOn`,
   `contentSha256`), which the detector's class gate cannot fire on; the fixed
   vocabularies (`op`, `kind`, `status`, `trustLevel`, `sensitivity` and the
   other enums); and `contentFile`, a path whose secret-in-filename face is the

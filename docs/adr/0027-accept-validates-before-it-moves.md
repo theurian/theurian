@@ -448,7 +448,7 @@ one of its recorded residuals.
 > name are exactly what a document `accept` could apply may carry. The scan reads
 > that set and subtracts each derived field only where a mechanism already bars a
 > *reported* secret: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers
-> (`migrationId`, `revisionId`, `expectedRevision`, `dependsOn`,
+> (`id`, `revisionId`, `expectedRevision`, `dependsOn`,
 > `contentSha256`), which the detector's class gate cannot fire on; the fixed
 > vocabularies (`op`, `kind`, `status`, `trustLevel`, `sensitivity` and the other
 > enums); and `contentFile`, a path whose secret-in-filename face is the

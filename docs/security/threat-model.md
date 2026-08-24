@@ -1150,7 +1150,7 @@ of the fourteen operation branches it selects does, as do the leaf objects
 (anchors, metadata) below them — so the strings a document `accept` could apply
 may carry are exactly the ones those objects name. The scan reads that set and
 subtracts each derived field only where a mechanism already bars a *reported*
-secret: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers (`migrationId`,
+secret: the ULID- and `^[0-9a-f]{64}$`-shaped identifiers (`id`,
 `revisionId`, `expectedRevision`, `dependsOn`, `contentSha256`), which the
 detector's class gate cannot fire on; the fixed vocabularies (`op`, `kind`,
 `status`, `trustLevel`, `sensitivity` and the other enums and consts); and
@@ -1224,7 +1224,7 @@ a separate point:*
   in [#349](https://github.com/theurian/theurian/issues/349).
 - **Inside the migration document, the derived half is not read**, each field
   excluded by a mechanism rather than by choice: the ULID- and
-  `^[0-9a-f]{64}$`-shaped identifiers (`migrationId`, `revisionId`,
+  `^[0-9a-f]{64}$`-shaped identifiers (`id`, `revisionId`,
   `expectedRevision`, `dependsOn`, `contentSha256`), which the detector's class
   gate cannot fire on; the fixed vocabularies (`op`, `kind`, `status`,
   `trustLevel`, `sensitivity` and the other enums); and `contentFile`, a path

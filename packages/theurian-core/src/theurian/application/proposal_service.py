@@ -2685,11 +2685,17 @@ def _upsert_bodies(document: Mapping[str, object]) -> Iterable[tuple[str, str | 
 #: string like a path or a timestamp. The mechanism is per field:
 #:
 #: * ``id``, ``revisionId``, ``expectedRevision`` and ``dependsOn`` are
-#:   ``$defs/ulid`` (upper-case Crockford base32) and ``contentSha256`` is
-#:   ``^[0-9a-f]{64}$``; the detector's class gate cannot fire on either, the
-#:   generic family needing an upper-case letter and lower-case hex spelling none
-#:   of the prefix families. Scanning them would only spend the detector's ULID
-#:   subtraction on strings that exist to be identifiers.
+#:   ``$defs/ulid`` -- upper-case Crockford base32, carrying no lower-case
+#:   letter -- and ``contentSha256`` is ``^[0-9a-f]{64}$`` -- lower-case hex,
+#:   carrying no upper-case letter. The generic family's class gate needs an
+#:   upper-case letter, a lower-case letter *and* a digit
+#:   (``_looks_like_a_secret``), so it fires on neither: the ULID lacks the
+#:   lower-case letter -- and is subtracted to nothing above the candidate floor
+#:   besides -- and the hex lacks the upper-case letter. No prefix family fires
+#:   either: their literals (``sk-``, ``ghp_``, ``AKIA``, ``xox``, ``AIza``) each
+#:   need a character one alphabet or the other cannot spell. Scanning them would
+#:   only spend the detector's ULID subtraction on strings that exist to be
+#:   identifiers.
 #: * ``op``, ``apiVersion`` and every enum (``kind``, ``status``,
 #:   ``sensitivity``, ``trustLevel``, ``relationType``) admit only a fixed
 #:   vocabulary, none of whose members the detector reports.
@@ -2768,10 +2774,14 @@ def _document_findings(document: Mapping[str, object]) -> tuple[ProposalSecretFi
 
     **One value at a time, never the concatenation.** Joining the fields and
     scanning once is both less precise and wrong: with no delimiter between
-    them, a clean migration's ``contentType`` and ``contentSha256`` fuse into a
-    reported token (measured 2026-08-24). Per value, a clean document scans
-    empty, and a finding names the field it is in rather than an offset into a
-    string nobody can see.
+    them, two clean values fuse into a token neither carries. A clean
+    migration's ``contentSha256`` run straight into a ``title`` whose first word
+    holds an upper-case letter -- ``Configuring the service``, say -- is reported
+    as one high-entropy candidate (verified 2026-08-24), because the hex brings
+    the length, the digits and the lower-case letters while the ``title`` brings
+    the upper-case letter, and neither field clears the detector's class gate on
+    its own. Per value, a clean document scans empty, and a finding names the
+    field it is in rather than an offset into a string nobody can see.
 
     The total is bounded by the detector's own :data:`~theurian.security
     .content_secrets.MAX_FINDINGS` across *all* fields, not per field: the field
