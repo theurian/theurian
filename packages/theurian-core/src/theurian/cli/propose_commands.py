@@ -609,8 +609,8 @@ _LOCAL_ACCEPT_FIRST_STEP: Final = (
 #: ``.theurian/knowledge/`` or ``.theurian/migrations/`` rather than still in the
 #: proposal. It names no single file, because a finding is in a body *or* in the
 #: migration's own fields (#336) and only ``secretFindings`` knows which.
-_SECRET_ROTATE_STEP: Final = (
-    "The secret scan flagged something this acceptance landed (security.secretScan is `warn`, "  # noqa: S105 - operator guidance, not a secret
+_ROTATE_ADVICE_STEP: Final = (
+    "The secret scan flagged something this acceptance landed (security.secretScan is `warn`, "
     "so it proceeded). Treat each flagged value as exposed and rotate it -- it is now in the "
     "working tree, and in Git history once this is committed. The findings, with their "
     "locations, are in `secretFindings`. If any is a false positive, no action is needed for "
@@ -626,7 +626,7 @@ def _accept_steps(accepted: AcceptedProposal) -> list[str]:
     only it names the proposal directory. Built from :data:`_ACCEPT_STEPS`' own
     tail rather than restated, so the two lists cannot drift where they agree.
 
-    A ``warn`` finding prepends :data:`_SECRET_ROTATE_STEP`: the acceptance
+    A ``warn`` finding prepends :data:`_ROTATE_ADVICE_STEP`: the acceptance
     succeeded and the exit code says nothing is wrong, so the rotate instruction
     has to live in the steps or it lives nowhere (findings are non-empty only
     under ``warn`` -- ``block`` refuses and ``off`` scans nothing).
@@ -637,7 +637,7 @@ def _accept_steps(accepted: AcceptedProposal) -> list[str]:
         else [_LOCAL_ACCEPT_FIRST_STEP, *_ACCEPT_STEPS[1:]]
     )
     if accepted.secret_scan.findings:
-        return [_SECRET_ROTATE_STEP, *standing]
+        return [_ROTATE_ADVICE_STEP, *standing]
     return standing
 
 
