@@ -16,13 +16,13 @@ dev = [
     # A development dependency only. It is absent from the published wheel's
     # `dependencies` and from every extra, so nothing a user installs gains it.
     "hypothesis==6.165.7",
-    "mypy==2.3.0",
+    "mypy==2.3.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest==9.1.1",
-    "ruff==0.16.3",
+    "ruff==0.16.4",
     "types-jsonschema==4.26.0.20260518",
-    "types-pyyaml==6.0.12.20260724",
+    "types-pyyaml==6.0.12.20260815",
     # `[all]` so a single `uv sync` at the repo root gives contributors the
     # daemon, vector, and telemetry extras that the full test suite exercises.
     "theurian[all]",
