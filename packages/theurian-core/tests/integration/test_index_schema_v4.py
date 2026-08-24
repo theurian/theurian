@@ -35,9 +35,18 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.chunking import Chunk
+from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.sqlite.index_store import IndexableChunk, SqliteIndexStore
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
 
 
 def _indexable(  # noqa: PLR0913 - one keyword per canonical field the filters read
@@ -332,7 +341,13 @@ def test_the_schema_carries_nodes_trigram(store: SqliteIndexStore) -> None:
 
 
 def _trigram_score(store: SqliteIndexStore, query: str, *, chunk_id: str) -> float:
-    page = store.search_substring(query, project_id="demo", limit=10, include_unapproved=False)
+    page = store.search_substring(
+        query,
+        project_id="demo",
+        limit=10,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
     matches = [row.score for row in page.rows if row.chunk_id == chunk_id]
     assert matches, f"{chunk_id!r} did not match {query!r} -- the fixture cannot show isolation"
     return matches[0]
@@ -391,7 +406,13 @@ def test_a_node_row_does_not_move_a_leaf_chunks_trigram_score(store: SqliteIndex
 
 
 def _bm25_score(store: SqliteIndexStore, query: str, *, chunk_id: str) -> float:
-    page = store.search_lexical(query, project_id="demo", limit=10, include_unapproved=False)
+    page = store.search_lexical(
+        query,
+        project_id="demo",
+        limit=10,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
     matches = [row.score for row in page.rows if row.chunk_id == chunk_id]
     assert matches, f"{chunk_id!r} did not match {query!r} -- the fixture cannot show isolation"
     return matches[0]

@@ -15,9 +15,10 @@ their content -- which is exactly why routing through it, and publishing its
 title, must never widen what a caller may read:
 
 - :func:`summary_statement` filters the *node* match on the same scope the leaf
-  retrievers filter on (Project, and status unless the caller asked for drafts),
-  so a draft-scope summary is not even traversed on a default query, and it
-  filters the *descended leaves* again -- the double gate. The caller then
+  retrievers filter on (Project, the deployment's disclosure grant, and status
+  unless the caller asked for drafts), so a draft-scope or above-ceiling summary
+  is not even traversed on a default query, and it filters the *descended leaves*
+  again -- the double gate. The caller then
   re-clears every descended leaf through
   :class:`~theurian.application.visibility.CanonicalVisibility` in
   :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`,

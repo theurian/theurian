@@ -5,13 +5,16 @@ and ``infrastructure/sqlite/index_store.py``: FTS5 word and trigram lookups, an
 exact dense scan, RRF fusion, rerank, deduplicate, diversify, and packing within
 a token budget. RAPTOR search and parent/child expansion are Milestone 6.
 
-**The pre-filter is project and status, not five axes.** This said "pre-filter by
-project, tenant, ACL, sensitivity, and validity", which is FR-R1's text rather
-than a description of ``SqliteIndexStore._scope``. Tenant and ACL group are real
-domain values that default to the single-tenant case
-(``tests/unit/test_scope_isolation.py``) and have no column in the index;
-``sensitivity`` has a column and no query reads it. See #63, and the schema
-comment beside the columns in ``index_schema.py``.
+**The pre-filter is project, status and sensitivity, not five axes.** This said
+"pre-filter by project, tenant, ACL, sensitivity, and validity", which is FR-R1's
+text rather than a description of ``SqliteIndexStore._scope``. Tenant and ACL
+group are real domain values that default to the single-tenant case
+(``tests/unit/test_scope_isolation.py``) and have no column in the index.
+``sensitivity`` was in that sentence as a column no query read, and is now
+filtered on against the deployment's grant -- by the build, which writes no row
+above it, and by ``_scope``/``_node_scope``, which emit an ``IN`` predicate over
+it with the match (#119 phases 3-4). See #63, #119, and the schema comment beside
+the columns in ``index_schema.py``.
 
 The validity-window axis now has a caller: ``knowledge.search``'s optional
 ``asOf`` parameter (#63 phase 2), applied through ``ValidityPeriod.contains``

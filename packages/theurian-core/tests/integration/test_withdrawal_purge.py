@@ -143,7 +143,11 @@ def _ranking(store: SqliteIndexStore, query: str) -> list[tuple[str, float]]:
     return [
         (row.chunk_id, round(row.score, 10))
         for row in store.search_lexical(
-            query, project_id=PROJECT, limit=100_000, include_unapproved=False
+            query,
+            project_id=PROJECT,
+            limit=100_000,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ).rows
     ]
 

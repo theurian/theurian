@@ -244,13 +244,22 @@ STATUS_GATE_CALL_SITES = {
 #:     ``test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_
 #:     half_of_the_index``).
 #:
-#: **``mcp/search.py :: _scan`` is deliberately absent and is not a fifth site.**
-#: The unranked fallback hands the grant to the canonical store as a SQL
-#: predicate, so an above-ceiling row is never materialised for a Python check to
-#: run on (``test_the_unranked_scan_withholds_an_above_ceiling_item``, and the
-#: cost note on ``list_items_by_status``). It is the one gate on this axis that is
-#: enforced by a query rather than by a call, so adding it here would mean
-#: deleting the predicate that makes it cheap.
+#: **The gates spelled as a predicate are deliberately absent, and they are not
+#: further sites.** This axis is enforced in two spellings, and a scan that reads
+#: names can only see one of them:
+#:   - ``mcp/search.py :: _scan`` hands the grant to the *canonical* store as a
+#:     SQL predicate, so an above-ceiling row is never materialised for a Python
+#:     check to run on (``test_the_unranked_scan_withholds_an_above_ceiling_item``,
+#:     and the cost note on ``list_items_by_status``);
+#:   - every retriever hands it to the *index* the same way, through
+#:     ``SqliteIndexStore._scope`` and ``._node_scope`` (#119 phase 4), which emit
+#:     ``chunks.sensitivity IN (…)`` and ``nodes.sensitivity IN (…)`` in the same
+#:     statement as the match.
+#: Adding either here would mean deleting the predicate that makes it cheap. What
+#: covers the predicate side instead is
+#: ``test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits``
+#: below, which reads ``_scope``'s own clause literals -- so between the two
+#: tests, a gate that disappears is caught whichever way it was written.
 #:
 #: ``cli/index_commands.py :: _indexable_items`` is absent for the reason it is
 #: absent from the status set above: it *repeats* the builder's selection rule
@@ -530,9 +539,12 @@ def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits(
 ) -> None:
     """Hold each document to its own claim: the axes it publishes are the ones ``_scope`` emits.
 
-    SECURITY.md tells a reader that project isolation and status withholding are
-    the two authorization axes enforced on retrieval today (T-11, SEC-13), and the
-    FR-R1 register repeats the list; both source it to ``_scope``. A document
+    SECURITY.md tells a reader which authorization axes are enforced on retrieval
+    today -- project isolation, status withholding and, since #119 phase 4, the
+    deployment's disclosure class (T-11, SEC-13) -- and the FR-R1 register repeats
+    the list; both source it to ``_scope``. Neither the axes nor the count is
+    spelled here, deliberately: this test derives both from the shipped source, so
+    the next axis needs no edit to it. A document
     naming a control that has drifted from — or never matched — the code is exactly
     the compliance-claims defect #115 tracks, and a *third* copy nothing reads is
     how the count drifts, so both documents are pinned here against one source.

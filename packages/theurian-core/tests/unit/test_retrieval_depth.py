@@ -182,6 +182,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - the index holds only approved rows here
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(LEXICAL_READS, limit)
 
@@ -192,6 +193,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(SUBSTRING_READS, limit)
 
@@ -201,6 +203,7 @@ class _CountingIndex:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         # Deliberately not counted, and deliberately not raising. The dense
         # retriever is not depth-doubled -- it scores the whole index whatever it
@@ -215,6 +218,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,  # noqa: ARG002 - no leaves to bound
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         # No forest, so the summary retriever contributes nothing and is not
         # counted -- the depth this file measures is the leaf retrievers'.
@@ -293,7 +297,10 @@ def _search(withheld: int, *, honours_limit: bool = True) -> _CountingIndex:
     index = _CountingIndex(_corpus(withheld), honours_limit=honours_limit)
     service = RetrievalService(index)
 
-    service.search(SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld())
+    service.search(
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY),
+        _WithoutTheWithheld(),
+    )
 
     return index
 
@@ -475,7 +482,10 @@ def _search_pinned_excluding(excluded_at_moment: int) -> tuple[_CountingIndex, S
         moment=MOMENT,
     )
 
-    outcome = service.search(SearchRequest(query="gateway", project_id="demo"), visibility)
+    outcome = service.search(
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY),
+        visibility,
+    )
 
     return index, outcome
 
@@ -744,7 +754,8 @@ def test_a_retriever_that_ignores_its_limit_is_read_once_however_much_is_withhel
     index = _CountingIndex(rows, honours_limit=False)
 
     RetrievalService(index).search(
-        SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld()
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY),
+        _WithoutTheWithheld(),
     )
 
     first = index.reads[0]
@@ -793,6 +804,7 @@ class _NeverFinished:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(limit)
 
@@ -803,6 +815,7 @@ class _NeverFinished:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(limit)
 
@@ -812,6 +825,7 @@ class _NeverFinished:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return whole(())
 
@@ -822,6 +836,7 @@ class _NeverFinished:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,  # noqa: ARG002 - no leaves to bound
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return RetrieverPage(rows=(), exhausted=True)
 
@@ -906,7 +921,10 @@ def test_a_retriever_that_never_reports_exhaustion_is_refused_not_looped() -> No
 
     with pytest.raises(RetrievalError, match="cannot make progress"):
         RetrievalService(index).search(
-            SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld()
+            SearchRequest(
+                query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+            ),
+            _WithoutTheWithheld(),
         )
 
     assert index.calls == GUARD_FIRES_AFTER, (

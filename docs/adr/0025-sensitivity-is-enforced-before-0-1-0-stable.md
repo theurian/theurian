@@ -56,9 +56,14 @@ the leaf half alone, does not discharge this ADR:
 2. **A `changeSensitivity`-triggered purge**, extending
    [ADR-0024](0024-a-purge-is-a-build.md) decision 5's trigger set.
 3. **The read-side predicate**, adding the axis to `_scope` *and* to
-   `_node_scope` (`index_store.py:1310`) — the forest's own first gate, which
-   emits the same two predicates and is where a routed query meets a summary
-   node before it descends to any leaf.
+   `_node_scope` — the forest's own first gate, which emits the same predicates
+   over `nodes` and is where a routed query meets a summary node before it
+   descends to any leaf. **Done in #119 phase 4** (2026-08-24): both emit
+   `sensitivity IN (…)` over the deployment's expanded grant, in the same
+   statement as the match, and every retriever on the `IndexStore` port takes
+   that grant as a required argument. It is defence in depth over part 1 rather
+   than a substitute for it — see Compliance for what that means it can and
+   cannot hold.
 4. **The two-corpora equality suite parametrized over the sensitivity axis** —
    an index holding the withheld rows and an index that never held them must
    return the same response to the same query — **across all four BM25 scoring
@@ -172,8 +177,8 @@ overturned by the first implementation attempt.
 
 ## Compliance
 
-**Part 1 is discharged as of #119 phase 3 (2026-08-24). Parts 2, 3 and 4 are
-owed.** The owner of all of them is
+**Parts 1 and 3 are discharged as of #119 phases 3 and 4 (2026-08-24). Parts 2
+and 4 are owed.** The owner of both is
 [#119](https://github.com/theurian/theurian/issues/119), and the milestone is
 Phase 0 — before 0.1.0 stable.
 
@@ -189,6 +194,42 @@ Phase 0 — before 0.1.0 stable.
   gate. The builder's call site is pinned in
   `tests/unit/test_gate_call_sites.py::DISCLOSURE_GATE_CALL_SITES`, so its
   removal fails there as well.
+
+- **Part 3 — done.** `_scope` and `_node_scope` each emit
+  `sensitivity IN (…)` over the deployment's expanded grant beside their project
+  and status predicates, bound in the same statement as the match, and the four
+  `IndexStore` retrievers take that grant as a required keyword with no default —
+  the shape `may_disclose` uses, for the reason it uses it.
+
+  **What it is worth is bounded and is stated at the predicate.** Against a build
+  made under the grant in force it excludes nothing, because part 1 already kept
+  those rows out of the file; what it answers for is a *wider* build reached
+  because a pointer was rewritten, a file was copied in, or
+  `_published_index`'s equality check was defeated. It cannot take back what such
+  a file's FTS5 collection statistics have already priced, which is why part 1 is
+  the control and this is the second line.
+
+  Three tests drive it, all at the store layer, because through the whole stack
+  the `serving-profile-mismatch` fallback fires first and a guard no input reaches
+  survives its own deletion:
+  `test_index_store.py::test_a_build_wider_than_the_grant_is_withheld_by_the_clause_alone`
+  over all four SQL shapes `_scope` feeds (the word index, the trigram lookup, the
+  scan below the trigram floor, and the dense join);
+  `test_index_store.py::test_the_clause_changes_nothing_on_a_build_made_under_the_same_grant`,
+  which asserts identical rows *and scores* under the grant and under everything,
+  so the predicate is measured inert on an honest build; and
+  `test_forest_node_scope.py::test_search_summaries_does_not_descend_a_node_above_the_deployments_ceiling`
+  for the node half, isolated from the leaf gate the way that file's other two
+  tests are. Measured RED by deleting each clause in turn: the leaf pair fails in
+  all four parametrizations with the withheld classes in the answer, and the node
+  test fails with the leaked leaf in it.
+
+  The axis set is pinned as well as tested:
+  `test_gate_call_sites.py::test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits`
+  binds `_scope`'s emitted `chunks.<column>` tokens to SECURITY.md and the FR-R1
+  register, and went RED in both parametrizations the moment the clause landed —
+  which is what forced the SQL, the test and both prose surfaces into one commit,
+  exactly as this section predicted.
 
 Still owed, with the part of the decision each discharges:
 
@@ -234,13 +275,16 @@ same T-17a class by the same FTS5 mechanism, where a withheld node reweights the
 and what score a leaf inherits.
 
 Until all four land, `system.capabilities` must not advertise sensitivity
-enforcement in any form, and **SECURITY.md's statement that no retrieval
-predicate reads `chunks.sensitivity`, so it is "a published label, not a
-control", stays as written** — it is currently true, and this ADR is the record
-that it is not meant to stay true. That is the only sentence this ADR protects:
-SECURITY.md separately claims that sensitivity is refused at write time, which
-is false today (only `tenantId` and `aclGroup` are), and is owed by the
-roadmap's appendix item 12.
+enforcement in any form. **The sentence this ADR used to protect is gone, and
+its going is what part 3 landing means**: SECURITY.md said no retrieval predicate
+read `chunks.sensitivity`, so it was "a published label, not a control", and that
+was true until phase 4 made it false. What replaced it names the three places the
+axis is now enforced — the build, the retrievers' predicate, the canonical
+re-check — and names parts 2 and 4 as still owed, which is the shape this ADR
+asked for: the prose may say what the code does and no more. SECURITY.md
+separately claimed that sensitivity is refused at write time, which is false
+(only `tenantId` and `aclGroup` are); that clause was in the sentence phase 4
+rewrote and is not restated there.
 
 **When #119's implementation settles the entitlement model or the
 exclusion-versus-gating question, this ADR is amended with what was chosen and

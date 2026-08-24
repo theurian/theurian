@@ -106,6 +106,15 @@ from theurian.mcp.tools import MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
+
 runner = CliRunner()
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
@@ -1634,7 +1643,7 @@ def test_a_missing_table_raises_instead_of_answering_nothing(
 
     search = store.search_lexical if table == "chunks_fts" else store.search_substring
     with pytest.raises(IndexUnreadableError, match="cannot be read"):
-        search("token", project_id="demo")
+        search("token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY)
 
 
 @pytest.mark.parametrize("table", ["chunks_fts", "chunks_trigram"])
@@ -1647,7 +1656,7 @@ def test_the_error_names_the_rebuild_rather_than_the_sql(
 
     search = store.search_lexical if table == "chunks_fts" else store.search_substring
     with pytest.raises(IndexUnreadableError) as raised:
-        search("token", project_id="demo")
+        search("token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY)
 
     assert "theurian index build" in str(raised.value)
     assert "nothing is lost" in str(raised.value)
@@ -1671,7 +1680,7 @@ def test_a_dense_search_over_a_lost_embeddings_table_raises_too(
     _corrupt(store.path, "DROP TABLE embeddings")
 
     with pytest.raises(IndexUnreadableError, match="cannot be read"):
-        store.search_dense([1.0, 0.0], project_id="demo")
+        store.search_dense([1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY)
 
 
 def test_a_dense_search_over_an_index_with_no_vectors_returns_nothing(
@@ -1683,7 +1692,12 @@ def test_a_dense_search_over_an_index_with_no_vectors_returns_nothing(
     is gone" and "the table is empty" must not share an answer, or `--no-embeddings`
     would look like corruption.
     """
-    assert store.search_dense([1.0, 0.0], project_id="demo").rows == ()
+    assert (
+        store.search_dense(
+            [1.0, 0.0], project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ).rows
+        == ()
+    )
 
 
 @pytest.mark.parametrize("retriever", ["search_lexical", "search_substring"])
@@ -1697,8 +1711,12 @@ def test_a_query_that_matches_nothing_returns_nothing_and_does_not_raise(
     """
     search = getattr(store, retriever)
 
-    assert search("kubernetes", project_id="demo").rows == ()
-    assert search("token", project_id="demo").rows, "and a matching one still matches"
+    assert (
+        search("kubernetes", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows == ()
+    )
+    assert search("token", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY).rows, (
+        "and a matching one still matches"
+    )
 
 
 @pytest.mark.parametrize(

@@ -216,19 +216,28 @@ public security channel — only when **both** of these hold:
     `SqliteIndexStore._scope` emits — re-derived from that source, not listed
     here from memory:
     <!-- enforced-axes:begin — the enforced-axis set and its count, pinned to _scope by tests/unit/test_gate_call_sites.py -->
-    **two** axes: the project (`chunks.project_id`) and approval status
-    (`chunks.status`, the rule `may_surface` applies at the canonical gate).
+    **three** axes: the project (`chunks.project_id`), approval status
+    (`chunks.status`, the rule `may_surface` applies at the canonical gate) and
+    the disclosure class this deployment serves (`chunks.sensitivity`, the
+    expanded set `may_disclose` applies at that same gate).
     <!-- enforced-axes:end -->
-    A defect in either is out (T-11, SEC-13). Tenant, ACL group and namespace are
-    design intent that no retrieval predicate implements yet, and hold no content
-    today, so nothing routes on them. Sensitivity is different: its values *do*
-    vary — the migration schema accepts `public|internal|confidential|restricted`
-    with no refusal (unlike tenant and ACL group, which are refused at write
-    time), so a `restricted` document *is* ingested and returned, labelled — but
-    no retrieval predicate reads `chunks.sensitivity`, so it is a published label,
-    not a control. This list moves when — and only when — `_scope` gains or drops
-    a WHERE predicate; an axis that reaches the schema but not that clause has not
-    moved it (#63, #119);
+    A defect in any of them is out (T-11, SEC-13). Tenant, ACL group and namespace
+    are design intent that no retrieval predicate implements yet, and hold no
+    content today, so nothing routes on them. Sensitivity used to be listed beside
+    them and was not the same case: its values *do* vary — the migration schema
+    accepts `public|internal|confidential|restricted` with no refusal (unlike
+    tenant and ACL group, which are refused at write time), so a `restricted`
+    document *is* ingested and returned, labelled, while nothing acted on the
+    label. It is now enforced in three places rather than published in one: a
+    build writes no row for an item above the deployment's declared ceiling, every
+    retriever emits `chunks.sensitivity IN (…)` with the match, and the canonical
+    gate re-checks each candidate against the item's *current* class, which is
+    what withholds a document reclassified since the build (#119, ADR-0025). Two
+    parts of that ADR are still owed and are named there: `changeSensitivity` is
+    not yet a purge trigger, and the two-corpora equality suite is not yet
+    parametrized over this axis. This list moves when — and only when — `_scope`
+    gains or drops a WHERE predicate; an axis that reaches the schema but not that
+    clause has not moved it (#63, #119);
   - content withheld by approval state, supersession or retirement, read
     directly or **recovered** from any observable that moves with it (T-17) —
     not only a published field. The families are enumerated in
@@ -388,25 +397,29 @@ published artifact were what would settle it. Both have now happened: the tag is
 - **Parser input.** Size, depth, and expansion-ratio limits, with safe loaders
   only (`yaml.safe_load`). External `$ref` targets are recorded as unresolved,
   never fetched.
-- **Sensitivity boundaries (enforced on the build; on the answer a published
-  label, not a control).** The scope key identifying a RAPTOR summary node's tree
-  includes project, tenant, sensitivity, ACL group, namespace, and status, and a
-  node combining two sensitivity levels has no tree it could belong to — mixing
-  impossible by construction rather than prevented by a check. Three refusals hold
-  that: `domain/raptor.py`'s `SummaryNode` raises when a declared child scope
-  disagrees with the node's own, `IndexableNode` raises when a declaration stands
-  for no source, and `application/forest_builder.py` derives each declaration from
-  the chunk or node it summarises. The sensitivity that key partitions on is the
+- **Sensitivity boundaries (enforced on the build, and now on the answer).** The
+  scope key identifying a RAPTOR summary node's tree includes project, tenant,
+  sensitivity, ACL group, namespace, and status, and a node combining two
+  sensitivity levels has no tree it could belong to — mixing impossible by
+  construction rather than prevented by a check. Three refusals hold that:
+  `domain/raptor.py`'s `SummaryNode` raises when a declared child scope disagrees
+  with the node's own, `IndexableNode` raises when a declaration stands for no
+  source, and `application/forest_builder.py` derives each declaration from the
+  chunk or node it summarises. The sensitivity that key partitions on is the
   item's current classification, stamped at build time the way `status` is, so a
   `changeSensitivity` moves it on the next build; until then the built row keeps
-  the label it was derived under, which no gate reads (SEC-7). `theurian index
-  build --raptor` writes the forest those refusals guard, and a test over a real
-  build asserts that every leaf chunk a node was synthesized from agrees on all
-  six components. **What this does not do is make a *sensitivity* serving
-  decision.** No retrieval path reads `chunks.sensitivity`: sensitivity is a
-  published label, with the control deferred to
-  [#119](https://github.com/theurian/theurian/issues/119). A node *is* read on an
-  answer now — the retrieval CL added a summary retriever and
+  the label it was derived under, and what catches the difference is the canonical
+  re-check on the item's current class rather than anything in the file (SEC-7).
+  `theurian index build --raptor` writes the forest those refusals guard, and a
+  test over a real build asserts that every leaf chunk a node was synthesized from
+  agrees on all six components. **What this bullet by itself does not do is make a
+  *sensitivity* serving decision**, and that decision is now made elsewhere rather
+  than deferred: a build writes no row above the deployment's declared ceiling,
+  and every retriever filters `chunks.sensitivity` and `nodes.sensitivity` on it
+  before ranking ([#119](https://github.com/theurian/theurian/issues/119),
+  ADR-0025). What the scope key contributes to that is uniformity, not permission
+  — it is why a node has one class to test rather than a mixture. A node *is* read
+  on an answer now — the retrieval CL added a summary retriever and
   `system.capabilities` reports `raptor: true` — but only as a router, and a
   node's text reaches the wire only as a surfaced leaf's `raptorPath` title, above
   a leaf that cleared the gate and whose ancestors share its six-component scope.
@@ -476,9 +489,19 @@ Stated plainly, because a security model with unstated gaps is worse than none.
   (`indexPurge` with `published: false`, `failed: true`, and a remedy), so it is
   visible rather than silent. The reasoning, the measurements and the closure are
   T-17a in [the threat model](docs/security/threat-model.md); this covers the
-  **status** axis only — sensitivity, tenant and ACL group are refused at write
-  time and their enforcement as read controls is deferred to
-  [#119](https://github.com/theurian/theurian/issues/119).
+  **status** axis only.
+
+  On the **sensitivity** axis the shape is different, because the exclusion
+  happens earlier: a build writes no row for an item above the deployment's
+  declared ceiling, so there is nothing above it in the file to price the rest
+  ([#119](https://github.com/theurian/theurian/issues/119), ADR-0025 part 1).
+  What is not closed is a *reclassification after* a build. `changeSensitivity` is
+  not yet a purge trigger (ADR-0025 part 2), so the rows of a document moved above
+  the ceiling stay in the published index and go on contributing to its BM25
+  collection statistics until the next `theurian index build` — while the read
+  predicate and the canonical re-check keep the document itself out of the answer.
+  Tenant and ACL group carry no such residual: a migration naming a non-default
+  value is refused at write time, so no row with one is ever built.
 - **Cleartext of governed bodies transiting `$TMPDIR` during `propose accept`.**
   Every acceptance rehearses the whole migration set before it moves anything, and
   that rehearsal copies every referenced body — including `confidential` and

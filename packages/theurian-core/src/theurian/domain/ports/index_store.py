@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.chunking import ChunkScope, IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.domain.ranking import RetrieverPage
 from theurian.domain.raptor import IndexableNode
 from theurian.domain.retrieval import RaptorPathSegment
@@ -182,12 +183,24 @@ class IndexStore(Protocol):
         project_id: str,
         limit: int,
         include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank by term match, best first.
 
         Filtering happens with the match, before ranking (FR-R1). A malformed
         query returns nothing rather than raising: a search box that punishes
         punctuation is a broken search box.
+
+        ``visible_sensitivities`` is the deployment's grant -- the *expanded set*
+        of disclosure classes it serves, never a ceiling -- and it has no default
+        here for the reason :func:`~theurian.domain.enums.may_disclose` has none:
+        "everything is visible" is the state this axis exists to stop being
+        assumed, and a default parameter is how it comes back (#119 phase 4). An
+        implementation must apply it in the same statement as the match, beside
+        the project and status predicates. It is defence in depth over a build
+        that already excluded those rows (#119 phase 3), so against a build made
+        under this same grant it excludes nothing; what it answers for is a build
+        made under a wider one.
 
         **``limit`` is a true ceiling**: never more rows than ``limit``, and it
         must be at least 1. Zero or negative is refused rather than interpreted
@@ -211,10 +224,17 @@ class IndexStore(Protocol):
         project_id: str,
         limit: int,
         include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank by substring match, best first.
 
         The retriever that makes scripts without word boundaries searchable.
+
+        ``visible_sensitivities`` is required and means what it means in
+        :meth:`search_lexical`, including on the branch that falls below the
+        trigram floor: a scan that has to read every matching row is exactly where
+        a forgotten predicate would be least visible, since its answer would still
+        look like a ranking rather than like a leak.
 
         **``limit`` is a floor, not a ceiling**, and that asymmetry with
         :meth:`search_lexical` is deliberate. It must still be at least 1, for
@@ -242,6 +262,7 @@ class IndexStore(Protocol):
         project_id: str,
         limit: int,
         include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank *leaves* by matching the RAPTOR summary above them (ADR-0008 dec. 8).
 
@@ -255,10 +276,15 @@ class IndexStore(Protocol):
         could clear.
 
         **The double gate is the disclosure spine (SEC-13, T-15).** The *node*
-        match is scoped exactly as the leaf retrievers are -- Project, and status
-        unless the caller asked for drafts -- so a draft-scope summary is not even
+        match is scoped exactly as the leaf retrievers are -- Project, the
+        deployment's ``visible_sensitivities``, and status unless the caller asked
+        for drafts -- so a draft-scope or above-ceiling summary is not even
         traversed on a default query; and the *descended leaves* are scoped again,
-        so a leaf whose build-time status is withheld never leaves this method.
+        so a leaf whose build-time status or class is withheld never leaves this
+        method. Both halves matter on the sensitivity axis in particular: a
+        summary node's text is a paraphrase of its children, so gating the leaves
+        alone would still route on -- and inherit a score from -- a summary of a
+        document this deployment does not serve (ADR-0025).
         The caller then re-clears every leaf through the canonical store in
         :meth:`~theurian.application.retrieval_service.RetrievalService._visible_ranking`,
         as it does every retriever's rows. Routing changes which leaves are
@@ -305,11 +331,17 @@ class IndexStore(Protocol):
         *,
         project_id: str,
         include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         """Rank by vector similarity, best first. The **whole** ranking.
 
         Returns nothing when there are no embeddings, which degrades the search
         to lexical rather than failing it.
+
+        ``visible_sensitivities`` is required here too, and this is the retriever
+        where omitting it would cost the most: it returns the whole ranking rather
+        than a page, so an ungated row is not merely reachable at depth, it is
+        handed over on the first call.
 
         No ``limit``, unlike the two above, and the asymmetry is the honest
         shape of the thing. Similarity search here is an exact scan: it scores

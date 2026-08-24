@@ -53,11 +53,12 @@ only, which the build already had.
 Two gaps the tables do not close, and only the second is this package's.
 ``tenant`` and ``acl_group`` have no column anywhere in the index: ``tree_id``
 encodes the whole six-component tuple, so a node's tree is expressible, but no
-predicate can filter on those two axes, which are deferred along with
-sensitivity to #119. And nothing enforces project or status for node reads --
-``SqliteIndexStore._scope`` is the single point of enforcement for chunk reads
-and names ``chunks`` in its clauses, so a node traversal is a second enforcement
-point unless it is built through the same one. ADR-0008's Compliance section owes
-exactly that, with the mutation check that distinguishes one enforcement point
-from two that happen to agree.
+predicate can filter on those two axes. Sensitivity was deferred with them to
+#119 and is no longer: ``nodes.sensitivity`` is a column and ``_node_scope``
+filters the node match on it (phase 4). And a node read is enforced *separately*
+from a chunk read: ``SqliteIndexStore._scope`` names ``chunks`` in its clauses, so
+``_node_scope`` spells the same three predicates again over ``nodes`` -- two
+enforcement points that agree rather than one, which is what a per-table clause
+list costs. ADR-0008's Compliance section owes exactly that distinction, with the
+mutation check that establishes it rather than assuming it.
 """

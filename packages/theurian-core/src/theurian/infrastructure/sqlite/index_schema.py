@@ -26,6 +26,18 @@ change, because the column is now the record of a decision the *build* made
 rather than a label nothing acted on. That alone earns the bump under this file's
 own rule.
 
+**Phase 4 moves that comment again and the version stays at 6, which is an
+exception to the rule above and is argued rather than assumed.** The read-side
+predicate (`_scope`, `_node_scope`) reads `chunks.sensitivity` and
+`nodes.sensitivity`, columns every version-6 file already has, and writes nothing
+new -- so there is no file the new code could misread, which is the whole of what
+the version gate is for. Every file that could disagree with this DDL text is
+version 5 or lower and is already rejected. Version 6 has never left this branch:
+`main` pins 5 and the released artifacts pin 2, so "a version-6 build made by the
+phase-3 code" is the only kind that exists, and the phase-4 predicate serves it
+correctly by construction. Bumping to 7 would order a rebuild of files that need
+none, and would split one unreleased change across two versions.
+
 The forcing function is what makes the bump the point rather than the paperwork.
 Every version-5 index predates the exclusion, so it may hold an above-ceiling
 document's text -- and `chunks_fts` and `chunks_trigram` score what they return
@@ -154,19 +166,20 @@ CREATE TABLE chunks (
     -- ranking would let a caller learn that a document they may not read exists,
     -- by watching how many results disappeared.
     --
-    -- Today only `status` is filtered on by a *query*. `sensitivity` stopped
-    -- being inert at v6: every build now consults the deployment's disclosure
-    -- ceiling and writes no row at all for an item above it (#119, ADR-0025
-    -- part 1), so this column records the class a row was admitted under rather
-    -- than a label nothing acted on. What is still owed is the read side --
-    -- `_scope` and `_node_scope` emit project and status only, so a row already
-    -- in the file is matched whatever this column says, and a document
-    -- reclassified upward after the build is withheld by the canonical re-check
-    -- rather than by the index (#119 phase 4). Said plainly, because a comment
-    -- that implies an access control which does not exist is how the next person
-    -- concludes it is already handled -- and because the reverse mistake is now
-    -- available too: this column is not the gate, the build that refused to write
-    -- the row is.
+    -- `project_id`, `status` and `sensitivity` are all filtered on by a *query*.
+    -- `sensitivity` stopped being inert at v6: every build now consults the
+    -- deployment's disclosure ceiling and writes no row at all for an item above
+    -- it (#119, ADR-0025 part 1), so this column records the class a row was
+    -- admitted under rather than a label nothing acted on, and `_scope` /
+    -- `_node_scope` emit an `IN` predicate over it beside the other two (#119
+    -- phase 4). Which of those two is the control matters: the build is. Against
+    -- a file built under the grant now in force the predicate excludes nothing,
+    -- because every row in it was already admitted under that grant; it answers
+    -- for a file built under a wider one. And it cannot take back what such a
+    -- file's FTS5 collection statistics have already priced. A document
+    -- reclassified upward *after* a build is a third case again, withheld by the
+    -- canonical re-check on its current class rather than by anything here, since
+    -- this column still says what was true when the row was written.
     --
     -- `trust_level` and `namespace` are carried for the scope filtering #119
     -- adds (Milestone 6) and are read by no query. `namespace` is populated as of

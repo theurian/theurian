@@ -306,7 +306,12 @@ def test_a_query_finds_the_document_that_answers_it(project: Path) -> None:
     embedder = HashingEmbedding()
     service = _service(_build(project, embedder=embedder), embedder)
 
-    outcome = service.search(SearchRequest(query="signed JWT", project_id="demo"), NOTHING_WITHHELD)
+    outcome = service.search(
+        SearchRequest(
+            query="signed JWT", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
+    )
 
     assert outcome.candidates
     assert outcome.candidates[0].item_id == "architecture.auth"
@@ -318,7 +323,10 @@ def test_a_title_only_match_still_finds_the_document(project: Path) -> None:
     service = _service(_build(project, embedder=None), None)
 
     outcome = service.search(
-        SearchRequest(query="Caching policy", project_id="demo"), NOTHING_WITHHELD
+        SearchRequest(
+            query="Caching policy", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert outcome.candidates[0].item_id == "architecture.cache"
@@ -334,7 +342,10 @@ def test_dense_is_off_by_default(project: Path) -> None:
     service = _service(_build(project, embedder=embedder), embedder)
 
     outcome = service.search(
-        SearchRequest(query="token rotation", project_id="demo"), NOTHING_WITHHELD
+        SearchRequest(
+            query="token rotation", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert _mode(outcome) is RetrievalMode.LEXICAL
@@ -348,7 +359,13 @@ def test_dense_participates_when_asked_for(project: Path) -> None:
     service = _service(_build(project, embedder=embedder), embedder)
 
     outcome = service.search(
-        SearchRequest(query="signed JWT", project_id="demo", use_dense=True), NOTHING_WITHHELD
+        SearchRequest(
+            query="signed JWT",
+            project_id="demo",
+            use_dense=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert _mode(outcome) is RetrievalMode.HYBRID
@@ -372,7 +389,12 @@ def test_a_pinned_moment_excludes_a_dense_hit_too(project: Path) -> None:
     """
     embedder = HashingEmbedding()
     service = _service(_build(project, embedder=embedder), embedder)
-    request = SearchRequest(query="signed JWT", project_id="demo", use_dense=True)
+    request = SearchRequest(
+        query="signed JWT",
+        project_id="demo",
+        use_dense=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
     context = RequestContext(project_id=ProjectId("demo"))
 
     with SqliteCanonicalStore(_database(project)) as store:
@@ -423,7 +445,12 @@ def test_an_index_without_embeddings_degrades_visibly_to_lexical(project: Path) 
     index_path = _build(project, embedder=None)
     service = _service(index_path, HashingEmbedding())
 
-    outcome = service.search(SearchRequest(query="signed JWT", project_id="demo"), NOTHING_WITHHELD)
+    outcome = service.search(
+        SearchRequest(
+            query="signed JWT", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
+    )
 
     assert SqliteIndexStore(index_path).metadata()["embedding_model"] == ""
     assert _mode(outcome) is RetrievalMode.LEXICAL
@@ -490,10 +517,22 @@ def test_an_index_embedded_by_another_model_is_not_scored_against_it(project: Pa
     index_path = _build(project, embedder=HashingEmbedding())
 
     agreeing = _service(index_path, HashingEmbedding()).search(
-        SearchRequest(query="autentication", project_id="demo", use_dense=True), NOTHING_WITHHELD
+        SearchRequest(
+            query="autentication",
+            project_id="demo",
+            use_dense=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
     disagreeing = _service(index_path, _AnotherModel()).search(
-        SearchRequest(query="autentication", project_id="demo", use_dense=True), NOTHING_WITHHELD
+        SearchRequest(
+            query="autentication",
+            project_id="demo",
+            use_dense=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert agreeing.candidates, "the control: these vectors do bridge the typo"
@@ -512,7 +551,13 @@ def test_a_model_mismatch_removes_only_the_dense_half(project: Path) -> None:
     index_path = _build(project, embedder=HashingEmbedding())
 
     outcome = _service(index_path, _AnotherModel()).search(
-        SearchRequest(query="signed JWT", project_id="demo", use_dense=True), NOTHING_WITHHELD
+        SearchRequest(
+            query="signed JWT",
+            project_id="demo",
+            use_dense=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert outcome.candidates[0].item_id == "architecture.auth"
@@ -534,10 +579,19 @@ def test_a_morphological_variant_is_found_only_with_the_dense_retriever(
     index_path = _build(project, embedder=embedder)
 
     without = _service(index_path, embedder).search(
-        SearchRequest(query="autentication", project_id="demo"), NOTHING_WITHHELD
+        SearchRequest(
+            query="autentication", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
     with_dense = _service(index_path, embedder).search(
-        SearchRequest(query="autentication", project_id="demo", use_dense=True), NOTHING_WITHHELD
+        SearchRequest(
+            query="autentication",
+            project_id="demo",
+            use_dense=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert without.candidates == (), "FTS5 matches terms exactly and finds nothing"
@@ -552,7 +606,10 @@ def test_another_project_is_never_returned(project: Path) -> None:
     service = _service(_build(project, embedder=None), None)
 
     outcome = service.search(
-        SearchRequest(query="signed JWT", project_id="somebody-else"), NOTHING_WITHHELD
+        SearchRequest(
+            query="signed JWT", project_id="somebody-else", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert outcome.candidates == ()
@@ -576,7 +633,10 @@ def test_a_long_document_cannot_take_every_slot(with_a_long_document: Path) -> N
     service = _service(_build(with_a_long_document, embedder=None), None)
 
     outcome = service.search(
-        SearchRequest(query="policy", project_id="demo", per_item=1), NOTHING_WITHHELD
+        SearchRequest(
+            query="policy", project_id="demo", per_item=1, visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     items = [candidate.item_id for candidate in outcome.candidates]
@@ -597,7 +657,10 @@ def test_the_cap_is_the_only_reason_the_long_document_is_held_back(
     service = _service(_build(with_a_long_document, embedder=None), None)
 
     outcome = service.search(
-        SearchRequest(query="policy", project_id="demo", per_item=4), NOTHING_WITHHELD
+        SearchRequest(
+            query="policy", project_id="demo", per_item=4, visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     items = [candidate.item_id for candidate in outcome.candidates]
@@ -608,7 +671,9 @@ def test_two_identical_searches_return_the_same_order(project: Path) -> None:
     """FR-R7. Without a total order, a pinned snapshot reproduces nothing."""
     embedder = HashingEmbedding()
     service = _service(_build(project, embedder=embedder), embedder)
-    request = SearchRequest(query="policy token cache", project_id="demo")
+    request = SearchRequest(
+        query="policy token cache", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    )
 
     first = [c.chunk_id for c in service.search(request, NOTHING_WITHHELD).candidates]
     second = [c.chunk_id for c in service.search(request, NOTHING_WITHHELD).candidates]
@@ -634,7 +699,10 @@ def test_a_query_embedded_by_a_different_model_refuses_to_score(project: Path) -
 
     index_path = _build(project, embedder=HashingEmbedding())
     outcome = _service(index_path, OtherModel()).search(
-        SearchRequest(query="signed JWT", project_id="demo"), NOTHING_WITHHELD
+        SearchRequest(
+            query="signed JWT", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert _mode(outcome) is RetrievalMode.LEXICAL
@@ -1109,7 +1177,13 @@ operations:
 
     hits = (
         SqliteIndexStore(index_path)
-        .search_lexical("caching", project_id="demo", limit=50, include_unapproved=True)
+        .search_lexical(
+            "caching",
+            project_id="demo",
+            limit=50,
+            include_unapproved=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        )
         .rows
     )
 
@@ -1276,7 +1350,13 @@ def test_the_canonical_store_is_the_state_the_pointer_names(
 
     hits = (
         SqliteIndexStore(_build(project, embedder=None))
-        .search_lexical("caching", project_id="demo", limit=50, include_unapproved=True)
+        .search_lexical(
+            "caching",
+            project_id="demo",
+            limit=50,
+            include_unapproved=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        )
         .rows
     )
     assert hits == (), "and so the retired item is never written to the index"
@@ -1296,7 +1376,9 @@ def test_the_limit_is_applied_to_results_and_not_to_candidates(project: Path) ->
     """
     index_path = _build(project, embedder=None)
     service = _service(index_path, None)
-    request = SearchRequest(query="policy", project_id="demo", per_item=1)
+    request = SearchRequest(
+        query="policy", project_id="demo", per_item=1, visible_sensitivities=EVERY_SENSITIVITY
+    )
     ranked = [c.item_id for c in service.search(request, NOTHING_WITHHELD).candidates]
     assert len(ranked) >= 2, "the query must reach more than one document"
 
@@ -1329,7 +1411,9 @@ def test_the_scores_the_gate_publishes_are_computed_over_the_survivors(
     """
     index_path = _build(project, embedder=None)
     service = _service(index_path, None)
-    request = SearchRequest(query="policy", project_id="demo", per_item=1)
+    request = SearchRequest(
+        query="policy", project_id="demo", per_item=1, visible_sensitivities=EVERY_SENSITIVITY
+    )
     ranked = [c.item_id for c in service.search(request, NOTHING_WITHHELD).candidates]
 
     def admit() -> tuple[dict[str, Any], ...]:
@@ -1501,6 +1585,7 @@ class _ScriptedIndex:
         project_id: str,  # noqa: ARG002
         limit: int,
         include_unapproved: bool,  # noqa: ARG002
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return truncating(self._lexical, limit)
 
@@ -1511,6 +1596,7 @@ class _ScriptedIndex:
         project_id: str,  # noqa: ARG002
         limit: int,
         include_unapproved: bool,  # noqa: ARG002
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return truncating(self._substring, limit)
 
@@ -1520,6 +1606,7 @@ class _ScriptedIndex:
         *,
         project_id: str,  # noqa: ARG002
         include_unapproved: bool,  # noqa: ARG002
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return whole(())
 
@@ -1530,6 +1617,7 @@ class _ScriptedIndex:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,  # noqa: ARG002 - no leaves to bound
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return RetrieverPage(rows=(), exhausted=True)
 
@@ -1574,7 +1662,9 @@ def test_a_withheld_row_cannot_choose_which_chunk_of_a_visible_document_is_publi
     first chunk first. A gate applied after `diversify` sees only the survivor of
     that choice and cannot tell that the choice was made for it.
     """
-    request = SearchRequest(query="gateway", project_id="demo", per_item=1)
+    request = SearchRequest(
+        query="gateway", project_id="demo", per_item=1, visible_sensitivities=EVERY_SENSITIVITY
+    )
     first, second = _row(_FIRST, _VISIBLE), _row(_SECOND, _VISIBLE)
     retracted = _row(_RETRACTED, _WITHHELD)
 
@@ -1968,7 +2058,13 @@ def _matching_chunks(index_path: Path, term: str) -> int:
     """
     return len(
         SqliteIndexStore(index_path)
-        .search_lexical(term, project_id="demo", limit=200, include_unapproved=False)
+        .search_lexical(
+            term,
+            project_id="demo",
+            limit=200,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        )
         .rows
     )
 
@@ -1976,7 +2072,9 @@ def _matching_chunks(index_path: Path, term: str) -> int:
 def _published_order(probe: _BM25Probe, index_path: Path) -> list[str]:
     """The item ids a caller receives, in the order they receive them."""
     service = _service(index_path, None)
-    request = SearchRequest(query=PROBE_QUERY, project_id="demo", per_item=1)
+    request = SearchRequest(
+        query=PROBE_QUERY, project_id="demo", per_item=1, visible_sensitivities=EVERY_SENSITIVITY
+    )
     resolved = ResultGate(store_factory=SqliteCanonicalStore, shape=_bare_shape).admit(
         ResultRequest(
             database=_database(probe.project),
@@ -2068,12 +2166,24 @@ def test_the_bm25_probe_corpus_can_still_flip(bm25_probe: _BM25Probe) -> None:
     fresh = _published_order(bm25_probe, bm25_probe.fresh)
     withheld_chunks = (
         SqliteIndexStore(bm25_probe.stale)
-        .search_lexical(PROBE_QUERY, project_id="demo", limit=50, include_unapproved=False)
+        .search_lexical(
+            PROBE_QUERY,
+            project_id="demo",
+            limit=50,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        )
         .rows
     )
     fresh_chunks = (
         SqliteIndexStore(bm25_probe.fresh)
-        .search_lexical(PROBE_QUERY, project_id="demo", limit=50, include_unapproved=False)
+        .search_lexical(
+            PROBE_QUERY,
+            project_id="demo",
+            limit=50,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        )
         .rows
     )
 

@@ -169,13 +169,13 @@ class IndexBuilder:
                 # is one copy of a security rule too many.
                 if not may_surface(item.status, include_unapproved=request.include_unapproved):
                     continue
-                # The second axis, and the one whose omission is invisible: a
-                # withheld *status* that reached the file would still be caught
-                # by the query-time predicate `_scope` emits, while a withheld
-                # *sensitivity* has no such predicate yet -- and would not be
-                # fully covered by one, because an FTS5 external-content table
-                # scores against collection statistics computed over every row
-                # it holds. Excluded here, an above-ceiling document contributes
+                # The second axis, and the one a query-time predicate cannot
+                # fully cover. `_scope` does emit one for it now (#119 phase 4),
+                # and it is defence in depth rather than the control: an FTS5
+                # external-content table scores what it returns against
+                # collection statistics computed over every row it holds, so a
+                # row filtered out on read goes on pricing the rows that are
+                # returned. Excluded here, an above-ceiling document contributes
                 # nothing to `N`, to `avgdl` or to any term's document frequency,
                 # so T-17a is held by construction on this axis rather than by a
                 # filter (ADR-0025 part 1).

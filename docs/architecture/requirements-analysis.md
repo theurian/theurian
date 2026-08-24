@@ -64,29 +64,30 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 | FR-R7 | Pin a `snapshotId` so results are reproducible for the lifetime of a task. |
 | FR-R8 | Search across several registered Projects in one call when the caller is authorized for all of them. |
 
-**FR-R1 is one of five axes as of Milestone 5.** `SqliteIndexStore._scope`
-builds the WHERE clause every retriever uses, and it filters on Project and on
-status — a check FR-R1 does not name. Tenant and ACL have no column and hold no
-content: a migration naming a non-default tenant or ACL group is refused at
-write time (#110). The `chunks` table carries `sensitivity`, `trust_level` and
-`namespace`, and no query reads them; `sensitivity` differs from the other two
-in that its values *are* ingested — a `restricted` document is stored and
-returned, labelled — so it is a published label rather than an empty axis.
-Routing changes for none of these today, which is why each is a recorded
-deferral and not a defect; the per-axis register below states them one by one
+**FR-R1 is two of five axes as of #119 phase 4.** `SqliteIndexStore._scope`
+builds the WHERE clause every retriever uses, and it filters on Project, on
+sensitivity, and on status — a check FR-R1 does not name. Tenant and ACL have no
+column and hold no content: a migration naming a non-default tenant or ACL group
+is refused at write time (#110). The `chunks` table still carries `trust_level`
+and `namespace`, which no query reads. `sensitivity` was in that list until #119:
+its values *are* ingested — a `restricted` document is stored — and it is now
+filtered on against the deployment's declared ceiling rather than merely returned
+labelled. The per-axis register below states each disposition one by one
 (#63, #119).
 
 **Per-axis disposition — the register that closes
 [#63](https://github.com/theurian/theurian/issues/63).** Each of FR-R1's five
 named axes, plus the `status` check `_scope` adds that FR-R1 does not name, with
 what the pre-1.0 product actually does about it and the PR that established that
-disposition. The maintainer's recorded decision: enforcing tenant, ACL group and
-sensitivity is deferred to [#119](https://github.com/theurian/theurian/issues/119),
-the successor to this issue. Landing `AuthorizationProvider` is necessary but not
-sufficient — its local adapter is "allow all" (the port table above), so #119
-also has to give sensitivity a retrieval predicate. Until then sensitivity is a
-published label on every result, not a control. Only Project, status and (on
-request) the validity window are enforced pre-1.0.
+disposition. The maintainer's recorded decision deferred tenant, ACL group and
+sensitivity to [#119](https://github.com/theurian/theurian/issues/119), the
+successor to this issue, and noted that landing `AuthorizationProvider` would be
+necessary but not sufficient — its local adapter is "allow all" (the port table
+above), so #119 also had to give sensitivity a retrieval predicate. It has: the
+grant is resolved from the operator's serving profile, the build excludes what is
+above it, and `_scope`/`_node_scope` emit it (phases 3–4). Tenant and ACL group
+remain refused at write time rather than filtered. Project, status, sensitivity
+and (on request) the validity window are what is enforced pre-1.0.
 
 | Axis | Pre-1.0 disposition | Mechanism | Landed |
 | :-- | :-- | :-- | :-- |
@@ -94,13 +95,14 @@ request) the validity window are enforced pre-1.0.
 | status | **Enforced** — a pre-ranking WHERE predicate when the caller has not passed `includeUnapproved`; `may_surface` at the canonical gate otherwise | `chunks.status = ?` in `_scope` (added only when `include_unapproved` is false); `may_surface` in `domain/enums.py` | [#32](https://github.com/theurian/theurian/pull/32) |
 | tenant | **Refused at write time** — a migration naming a `tenantId` other than `local` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
 | ACL group | **Refused at write time** — a migration naming an `aclGroup` other than `default` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
-| sensitivity | **Published label, not a control** — values *are* ingested (a `restricted` document is stored and returned), but read by no retrieval predicate | `results.py` emits `sensitivity`; the `chunks.sensitivity` column is unread | [#32](https://github.com/theurian/theurian/pull/32); control **deferred** to [#119](https://github.com/theurian/theurian/issues/119) |
+| sensitivity | **Enforced** — against the deployment's declared ceiling, not the caller's request: the build writes no row above it, every retriever filters on it before ranking, and the canonical gate re-checks the item's *current* class so a reclassification since the build is caught too | `may_disclose` in `domain/enums.py`; `chunks.sensitivity IN (…)` and `nodes.sensitivity IN (…)` in `_scope`/`_node_scope`; exclusion in `IndexBuilder._build` | [#119](https://github.com/theurian/theurian/issues/119) phases 3–4; ADR-0025 parts 2 and 4 (`changeSensitivity` purge trigger, two-corpora suite) still owed |
 | validity window | **Caller-chosen refinement, not a default filter** — omitting `asOf` filters on nothing; applied after ranking, never inside the retriever depth loop | `knowledge.search`'s optional `asOf` → `ValidityPeriod.contains`, in Python, on both answer paths | [#112](https://github.com/theurian/theurian/pull/112) (phase 2) |
 
 The enforced predicates are exactly what `_scope` emits, and this register is
 pinned to that same source the way SECURITY.md is:
 <!-- enforced-axes:begin — the enforced-axis set and its count, pinned to _scope by tests/unit/test_gate_call_sites.py -->
-**two** enforced axes — `chunks.project_id` and `chunks.status`.
+**three** enforced axes — `chunks.project_id`, `chunks.status` and
+`chunks.sensitivity`.
 <!-- enforced-axes:end -->
 `tests/unit/test_gate_call_sites.py` checks both this block and SECURITY.md's
 against what `_scope` emits — the axis tokens and the spelled count — so the

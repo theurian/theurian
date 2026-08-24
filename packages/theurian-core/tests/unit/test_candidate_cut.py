@@ -58,12 +58,22 @@ from theurian.application.retrieval_service import (
     SearchRequest,
 )
 from theurian.domain.chunking import IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
 from theurian.domain.retrieval import RaptorPathSegment
 
 pytestmark = pytest.mark.unit
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 #: How many rows the word index has to offer. Four times
 #: :data:`FIRST_PASS_DEPTH`, so the first pass truncates and the deepest pass
@@ -152,6 +162,7 @@ class _TwoRankings:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - the fixture holds only approved rows
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return truncating(self._lexical, limit)
 
@@ -162,6 +173,7 @@ class _TwoRankings:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return truncating(SUBSTRING_RANKING, limit)
 
@@ -171,6 +183,7 @@ class _TwoRankings:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return whole(())
 
@@ -181,6 +194,7 @@ class _TwoRankings:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,  # noqa: ARG002 - no leaves to bound
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return RetrieverPage(rows=(), exhausted=True)
 
@@ -261,7 +275,10 @@ def _search(withheld: int) -> SearchOutcome:
     service = RetrievalService(_TwoRankings(withheld))
 
     return service.search(
-        SearchRequest(query="gateway", project_id="demo", per_item=1), _WithoutTheWithheld()
+        SearchRequest(
+            query="gateway", project_id="demo", per_item=1, visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        _WithoutTheWithheld(),
     )
 
 
@@ -293,7 +310,11 @@ def _first_pass(withheld: int) -> tuple[Ranked, ...]:
     return (
         _TwoRankings(withheld)
         .search_lexical(
-            "gateway", project_id="demo", limit=FIRST_PASS_DEPTH, include_unapproved=False
+            "gateway",
+            project_id="demo",
+            limit=FIRST_PASS_DEPTH,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
         )
         .rows
     )

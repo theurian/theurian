@@ -296,6 +296,15 @@ from theurian.mcp.tools import MAX_BUDGET_TOKENS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
+
 #: The visible corpus and every query term are built from these, and the letters
 #: are the load-bearing part: **a to o only**.
 #:
@@ -1244,12 +1253,14 @@ def _offered_by_the_index(root: Path, case: _Case, *, include_unapproved: bool) 
             project_id=PROJECT_ID,
             limit=_EXHAUSTIVE_DEPTH,
             include_unapproved=include_unapproved,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ),
         index.search_substring(
             case.query,
             project_id=PROJECT_ID,
             limit=_EXHAUSTIVE_DEPTH,
             include_unapproved=include_unapproved,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ),
     )
     assert all(page.exhausted for page in pages), (
@@ -1874,7 +1885,11 @@ def test_a_rejected_item_is_never_written_into_the_index(tmp_path: Path) -> None
 
     index = SqliteIndexStore(ProjectPaths.of(tmp_path / "one").index_for(INDEX_BUILD_ID))
     page = index.search_lexical(
-        "ledger", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+        "ledger",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     assert page.exhausted, "or the rejected item is merely below the cut"
     assert {row.item_id for row in page.rows} == {visible.item_id}, (
@@ -2102,10 +2117,18 @@ def test_the_t17a_corpus_still_has_something_to_withhold(tmp_path: Path) -> None
     index = SqliteIndexStore(ProjectPaths.of(tmp_path / "holds-it").index_for(INDEX_BUILD_ID))
 
     with_the_flag = index.search_lexical(
-        "backend", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+        "backend",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=True,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     as_the_search_asks = index.search_lexical(
-        "backend", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=False
+        "backend",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     answer = _call(registry, "knowledge.search", projectId=PROJECT_ID, query="backend", limit=10)
 
@@ -2228,7 +2251,11 @@ def test_the_pair_builder_writes_a_canonical_store_the_gate_actually_reads(
         items = store.list_items(RequestContext(project_id=ProjectId(PROJECT_ID)))
     by_id = {item.item_id.value: item for item in items}
     offered = SqliteIndexStore(paths.index_for(INDEX_BUILD_ID)).search_lexical(
-        "manifold", project_id=PROJECT_ID, limit=MAX_RESULTS, include_unapproved=False
+        "manifold",
+        project_id=PROJECT_ID,
+        limit=MAX_RESULTS,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert by_id[approved.item_id].status is KnowledgeStatus.APPROVED
@@ -2614,7 +2641,11 @@ def _published_offers(root: Path, query: str, *, include_unapproved: bool) -> se
     assert payload is not None, "the project must have a published index"
     index = SqliteIndexStore(ProjectPaths.of(root).index_for(str(payload["indexBuildId"])))
     page = index.search_lexical(
-        query, project_id=SHIPPED_PROJECT_ID, limit=500, include_unapproved=include_unapproved
+        query,
+        project_id=SHIPPED_PROJECT_ID,
+        limit=500,
+        include_unapproved=include_unapproved,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     assert page.exhausted, "the page must be complete for an absence to mean anything"
     return {row.item_id for row in page.rows}
@@ -2739,7 +2770,11 @@ def _visible_orders_before_and_after_the_purge(probe_root: Path) -> tuple[list[s
 
     def visible_order(build: Path) -> list[str]:
         page = SqliteIndexStore(build).search_lexical(
-            SHIPPED_QUERY, project_id=SHIPPED_PROJECT_ID, limit=MAX_RESULTS, include_unapproved=True
+            SHIPPED_QUERY,
+            project_id=SHIPPED_PROJECT_ID,
+            limit=MAX_RESULTS,
+            include_unapproved=True,
+            visible_sensitivities=EVERY_SENSITIVITY,
         )
         seen: list[str] = []
         for row in page.rows:
@@ -2759,6 +2794,7 @@ def _visible_orders_before_and_after_the_purge(probe_root: Path) -> tuple[list[s
                 project_id=SHIPPED_PROJECT_ID,
                 limit=MAX_RESULTS,
                 include_unapproved=True,
+                visible_sensitivities=EVERY_SENSITIVITY,
             )
             .rows
         )

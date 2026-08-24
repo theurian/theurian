@@ -512,14 +512,18 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     is computed against -- ``datetime.now(UTC)`` when the caller pinned
     nothing, exactly as before this parameter existed.
 
-    ``visible_sensitivities`` is the deployment's grant (#119), and it reaches two
-    places that are not the same check. :func:`_published_index` compares it
+    ``visible_sensitivities`` is the deployment's grant (#119), and it reaches
+    three places that are not the same check. :func:`_published_index` compares it
     against the flavor the *build* was made under and stands the whole index aside
-    on a mismatch; the canonical gate then re-checks each surviving candidate
-    against the item's *current* level, which is what withholds a document
-    reclassified upward since the build even though its chunk row was legitimately
-    written. Neither subsumes the other: the first is about which rows exist to be
-    scored against each other, the second about which of them may be returned.
+    on a mismatch; every retriever takes it as a WHERE predicate emitted with the
+    match, so no above-ceiling row in the file is ranked (phase 4); and the
+    canonical gate then re-checks each surviving candidate against the item's
+    *current* level, which is what withholds a document reclassified upward since
+    the build even though its chunk row was legitimately written. None subsumes
+    another: the first decides which build may be read at all, the second which of
+    its rows may be scored against each other, the third which of those may be
+    returned. Only the third sees a reclassification, and only the first takes
+    back what a wider build's collection statistics have already priced.
     """
     published = _published_index(
         paths,
@@ -558,6 +562,11 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     search = SearchRequest(
         query=query,
         project_id=project_id,
+        # The same grant `ResultRequest` below carries, and the third place it
+        # reaches (#119 phase 4): `_published_index` judged the *build*, the
+        # canonical gate re-checks each candidate's *current* level, and this is
+        # the retrievers' own WHERE predicate over the rows in between.
+        visible_sensitivities=visible_sensitivities,
         include_unapproved=include_unapproved,
         use_dense=use_dense,
         # One chunk per document. This tool returns one result per document, and

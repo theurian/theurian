@@ -32,9 +32,19 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 PROJECT = "demo"
 
@@ -194,14 +204,18 @@ def test_search_summaries_limit_is_a_true_ceiling_over_routed_leaves(tmp_path: P
         "retriever, not the forest, could account for them"
     )
 
-    truncated = store.search_summaries(ROUTING_TERM, project_id=PROJECT, limit=5)
+    truncated = store.search_summaries(
+        ROUTING_TERM, project_id=PROJECT, limit=5, visible_sensitivities=EVERY_SENSITIVITY
+    )
     assert len(truncated.rows) == 5, "the ceiling must cap the page at exactly limit rows"
     assert truncated.exhausted is False, (
         "sixty leaves route from the matched node, so a page of five is a "
         "truncation and must report there is more -- which needs the LIMIT + 1 probe"
     )
 
-    whole = store.search_summaries(ROUTING_TERM, project_id=PROJECT, limit=total)
+    whole = store.search_summaries(
+        ROUTING_TERM, project_id=PROJECT, limit=total, visible_sensitivities=EVERY_SENSITIVITY
+    )
     assert len(whole.rows) == total, "the whole match set is sixty routed leaves"
     assert whole.exhausted is True, "a page holding every routed leaf is exhausted"
 
@@ -261,7 +275,12 @@ def test_search_summaries_withholds_a_draft_leaf_under_an_approved_node(tmp_path
         "precondition: the withheld leaf must itself be draft, so only its own status can gate it"
     )
 
-    page = store.search_summaries(ROUTING_TERM, project_id=PROJECT, include_unapproved=False)
+    page = store.search_summaries(
+        ROUTING_TERM,
+        project_id=PROJECT,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
 
     surfaced = {row.chunk_id for row in page.rows}
     assert surfaced == {"approved-leaf#0"}, (
@@ -301,7 +320,9 @@ def test_search_summaries_orders_leaves_best_summary_score_first(tmp_path: Path)
             _edge_chunk(connection, "node-strong", chunk="leaf-strong")
             _edge_chunk(connection, "node-weak", chunk="leaf-weak")
 
-    page = store.search_summaries(ROUTING_TERM, project_id=PROJECT, limit=50)
+    page = store.search_summaries(
+        ROUTING_TERM, project_id=PROJECT, limit=50, visible_sensitivities=EVERY_SENSITIVITY
+    )
 
     order = [row.chunk_id for row in page.rows]
     assert order == ["leaf-strong", "leaf-weak"], (
@@ -352,7 +373,9 @@ def test_a_leaf_reached_by_two_summaries_takes_the_better_score(tmp_path: Path) 
             _edge_chunk(connection, "node-strong", chunk="leaf-diamond")
             _edge_chunk(connection, "node-weak", chunk="leaf-diamond")
 
-    page = store.search_summaries(ROUTING_TERM, project_id=PROJECT, limit=50)
+    page = store.search_summaries(
+        ROUTING_TERM, project_id=PROJECT, limit=50, visible_sensitivities=EVERY_SENSITIVITY
+    )
     score = {row.chunk_id: row.score for row in page.rows}
 
     assert score.keys() >= {"leaf-strongsolo", "leaf-weaksolo", "leaf-diamond"}, (

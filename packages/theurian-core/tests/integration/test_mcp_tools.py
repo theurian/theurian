@@ -60,6 +60,15 @@ from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
 
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
+
 runner = CliRunner()
 
 #: tests/integration/test_mcp_tools.py -> integration -> tests -> theurian-core
@@ -2909,7 +2918,10 @@ def test_the_cap_is_the_only_reason_the_long_document_appears_once(
     root = Path(indexed_long_document.load()["demo"]["rootPath"])
     (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
     outcome = RetrievalService(SqliteIndexStore(built)).search(
-        SearchRequest(query="gateway", project_id="demo", per_item=2), NOTHING_WITHHELD
+        SearchRequest(
+            query="gateway", project_id="demo", per_item=2, visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     items = [candidate.item_id for candidate in outcome.candidates]
@@ -3597,10 +3609,22 @@ def test_the_stale_index_still_ranks_the_withheld_document(
     service = RetrievalService(SqliteIndexStore(built), HashingEmbedding())
 
     found = service.search(
-        SearchRequest(query=probe, project_id="demo", use_dense=use_dense), NOTHING_WITHHELD
+        SearchRequest(
+            query=probe,
+            project_id="demo",
+            use_dense=use_dense,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
     nothing = service.search(
-        SearchRequest(query=control, project_id="demo", use_dense=use_dense), NOTHING_WITHHELD
+        SearchRequest(
+            query=control,
+            project_id="demo",
+            use_dense=use_dense,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert [c.item_id for c in found.candidates] == ["architecture.runbook"], (
@@ -3789,7 +3813,12 @@ def test_the_crowding_probe_puts_the_withheld_document_among_visible_ones(
     root = Path(crowded.load()["demo"]["rootPath"])
     (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
     outcome = RetrievalService(SqliteIndexStore(built)).search(
-        SearchRequest(query=f"gateway {LEAKED_CREDENTIAL}", project_id="demo", per_item=1),
+        SearchRequest(
+            query=f"gateway {LEAKED_CREDENTIAL}",
+            project_id="demo",
+            per_item=1,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
         NOTHING_WITHHELD,
     )
     items = [candidate.item_id for candidate in outcome.candidates]
@@ -5216,10 +5245,16 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
     index = SqliteIndexStore(built)
 
     words = index.search_lexical(
-        corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
+        corpus.query,
+        project_id="depth-probe",
+        limit=DOCUMENTED_DEPTH,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
     trigrams = index.search_substring(
-        corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
+        corpus.query,
+        project_id="depth-probe",
+        limit=DOCUMENTED_DEPTH,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
 
     assert (len(words), len(trigrams)) == (corpus.word_index_rows, DOCUMENTED_DEPTH), (
@@ -5233,7 +5268,10 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
         "`lexical` below prove nothing about it"
     )
     crowd = index.search_substring(
-        corpus.query, project_id="depth-probe", limit=FIRST_PASS_DEPTH
+        corpus.query,
+        project_id="depth-probe",
+        limit=FIRST_PASS_DEPTH,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
 
     assert len(crowd) > CANDIDATE_DEPTH, (
