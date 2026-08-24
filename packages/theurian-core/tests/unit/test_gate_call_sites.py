@@ -591,3 +591,108 @@ def test_the_axes_security_md_publishes_are_the_axes_the_scope_filter_emits(
         f"prose still says 'two' — the count-in-prose drift `may_surface` had, kept "
         f"off the document side."
     )
+
+
+# -- build_server's one default in a required-no-default change ---------------
+#
+# The deployment grant (#119) is a required argument everywhere it decides what a
+# caller may be shown -- `Visibility` has no default because "everything is
+# visible" is the bug and a default parameter is how it comes back, and
+# `CanonicalVisibility.__init__` says the same in prose. `build_server` is the one
+# constructor on that change that keeps a `grant=None` default, and it keeps it for
+# a narrow, test-only reason: 29 call sites across the suite lean on it to mean
+# "this build's own default ceiling", and making it required would churn them for
+# no production safety, since `serve` is the only shipped caller and already reads
+# the operator's profile and passes the grant. What must stay true is that no
+# *shipped* path relies on the default -- the default is `DEFAULT_CEILING`, so a
+# production caller that inherited it would serve a ceiling nobody declared.
+
+#: The constructor whose shipped call sites are counted.
+BUILD_SERVER = "build_server"
+
+#: The shipped `build_server` call sites that pass an explicit grant, as
+#: `(module path under theurian/, enclosing function)`. One: the composition root,
+#: which hands `serve`'s resolved deployment grant to the server it builds.
+BUILD_SERVER_CALLS_WITH_GRANT = {("daemon/runner.py", "serve")}
+
+#: The shipped `build_server` call sites that omit the grant. Empty by decision
+#: (#119): the `grant=None` default is a test seam, and a production
+#: `build_server(registry)` relying on it is the finding this pins.
+BUILD_SERVER_CALLS_WITHOUT_GRANT: set[tuple[str, str]] = set()
+
+
+def _passes_a_grant(node: ast.Call) -> bool:
+    """Whether a `build_server(...)` call hands over an explicit grant.
+
+    A second positional argument, or a `grant=` keyword. `grant=None` written out
+    would count as passing one: it is an explicit choice at the call site, which is
+    what this enforces -- not the value.
+    """
+    return len(node.args) >= 2 or any(keyword.arg == "grant" for keyword in node.keywords)
+
+
+def _build_server_calls(
+    path: pathlib.Path,
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """`build_server` call sites in `path`, split into (with grant, without grant).
+
+    Matches `build_server(...)` as a bare `Name` call, the only form the product
+    uses. A docstring mention -- `infrastructure/sqlite/connection.py` has one --
+    is an `ast.Constant`, not a `Call`, and the `def build_server` line is a
+    `FunctionDef`; neither is matched.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    module = path.relative_to(SRC).as_posix()
+    with_grant: set[tuple[str, str]] = set()
+    without_grant: set[tuple[str, str]] = set()
+    for node, scope in _iter_nodes_with_scope(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == BUILD_SERVER
+        ):
+            target = with_grant if _passes_a_grant(node) else without_grant
+            target.add(_here(module, scope))
+    return with_grant, without_grant
+
+
+def test_every_shipped_build_server_call_passes_an_explicit_grant() -> None:
+    """`build_server`'s `grant=None` default is a test seam no shipped path may use.
+
+    The default resolves to `DEFAULT_CEILING`, so a production caller that inherited
+    it would serve a ceiling the operator never declared -- the same "everything is
+    visible" shape the rest of #119 makes impossible by requiring the grant. It is
+    the one default in that change, kept only because 29 test call sites lean on it;
+    the discipline it breaks with is held on the *shipped* tree instead, here.
+
+    Two equalities rather than a length, and the pair is what makes it fail rather
+    than pass vacuously: the with-grant set pins the one real call site, so a
+    scanner that found nothing (a rename of `build_server`, a broken parser) reddens
+    on it; the without-grant set is empty, so a new shipped `build_server(registry)`
+    reddens on that. RED confirmed by mutation: dropping the grant from the `serve`
+    composition (`daemon/runner.py`, `build_server(ProjectRegistry.default(resolved),
+    grant)` -> `build_server(ProjectRegistry.default(resolved))`) moves that site
+    from with-grant to without-grant and fails both assertions.
+    """
+    with_grant: set[tuple[str, str]] = set()
+    without_grant: set[tuple[str, str]] = set()
+    for path in sorted(SRC.rglob("*.py")):
+        found_with, found_without = _build_server_calls(path)
+        with_grant |= found_with
+        without_grant |= found_without
+
+    assert with_grant == BUILD_SERVER_CALLS_WITH_GRANT, (
+        f"`{BUILD_SERVER}` is called with an explicit grant from {sorted(with_grant)}, "
+        f"expected {sorted(BUILD_SERVER_CALLS_WITH_GRANT)}. If the composition root "
+        f"moved or a second shipped caller now passes a grant, amend "
+        f"BUILD_SERVER_CALLS_WITH_GRANT; if this found nothing, `{BUILD_SERVER}` was "
+        f"renamed and this test is now counting a name the product has stopped using."
+    )
+    assert without_grant == BUILD_SERVER_CALLS_WITHOUT_GRANT, (
+        f"`{BUILD_SERVER}` is called *without* a grant from {sorted(without_grant)} in "
+        f"the shipped source, and that set is pinned empty (#119): the `grant=None` "
+        f"default is a test seam, and a production call that inherits it serves "
+        f"`DEFAULT_CEILING` to a deployment that declared nothing. Pass the "
+        f"deployment's grant explicitly -- the way `serve` does -- rather than adding "
+        f"the site here."
+    )
