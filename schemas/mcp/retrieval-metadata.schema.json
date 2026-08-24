@@ -104,6 +104,10 @@
         {
           "const": "unapproved-not-indexed",
           "description": "The caller asked for unapproved knowledge and the index was built without it. Answering from the approved-only index would change the meaning of a published parameter without saying so. Remedy: `theurian index build --include-unapproved`."
+        },
+        {
+          "const": "serving-profile-mismatch",
+          "description": "The build was made under a different disclosure profile than this deployment serves, or records none at all. A build writes no row for an item above the ceiling in force when it ran, so which ceiling that was decides which rows the file holds — and an FTS5 external-content table scores what it returns against collection statistics computed over every row it holds. A build made under a wider ceiling would therefore price the rows it does return against text this deployment does not serve, which no read-time filter can undo; a build made under a narrower one is missing rows the deployment serves and would answer with a silence a caller reads as \"this team has made no such decision\". Neither `note` names a level — not the one the build ran under and not the one in force. Remedy: `theurian index build`."
         }
       ]
     },

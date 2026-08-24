@@ -371,12 +371,19 @@ for A never returns B.
 
 *Future controls, not shipped:* SEC-12 — validating every MCP tool input against
 its published JSON Schema at the boundary — is not implemented; input is checked
-by domain construction as above, not against the schemas. And an
-`AuthorizationProvider` check before every read is the design for the hosted
-deployment (`domain/ports/authorization.py`), but that port is a `Protocol` with
-no implementation anywhere in this tree — project isolation today rests on the
-`ProjectId`/registry validation and the `_scope` predicate above, not on it
-(#63, #115).
+by domain construction as above, not against the schemas.
+
+The `AuthorizationProvider` port has an implementation since #119 —
+`application/authorization.StaticAuthorizationProvider`, resolved once at startup
+by the composition root — and it is deliberately **not** what isolates projects.
+It answers a *deployment* serving profile: one operator-declared sensitivity
+ceiling, identical for every project, because the entitlement model recorded in
+[ADR-0025](../adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md) makes the
+ceiling a property of the deployment rather than of a project, and the core does
+not invent a per-project answer it has no basis for. A per-project provider is a
+hosted adapter's own implementation of the same Protocol. So project isolation
+still rests on the `ProjectId`/registry validation and the `_scope` predicate
+above (#63, #115); what the provider adds is the disclosure axis beside them.
 
 #### T-13 — Two daemons corrupt the same SQLite file (Tampering, High)
 
@@ -2316,8 +2323,22 @@ all six components — parametrised over the three axes a corpus can vary:
 namespace, sensitivity and status. Tenant and ACL group are not exercised there
 and cannot be, because `migrate validate` and `migrate apply` refuse an
 `upsertRevision` naming any value but the default
-(`migration_engine._scope_violations`) until [#119](https://github.com/theurian/theurian/issues/119),
-so no corpus can carry a second one to mix.
+(`migration_engine._scope_violations`), so no corpus can carry a second one to
+mix. That refusal used to be described here as holding "until
+[#119](https://github.com/theurian/theurian/issues/119)"; #119 closed on those two
+axes by **degenerate discharge** rather than by adding a predicate, and three
+things carry it. The write refusal above is the first. The second is a
+request-boundary check: `mcp/tools.py`'s `_resolve` refuses a grant naming a
+tenant this deployment does not serve *before* the registry is read, so a hosted
+provider cannot quietly widen the seam later
+(`_tenant_boundary_refusal`, unreachable through the shipped composition and
+written out anyway). The third is
+`test_authorization_provider.py::test_tenant_and_acl_group_are_the_values_write_time_already_refuses`,
+which reads `_ENFORCED_TENANT_ID` and `_ENFORCED_ACL_GROUP` out of the migration
+engine and the grant out of the provider rather than restating either as a
+literal — because the discharge holds only while the provider grants exactly what
+the writer refuses to depart from. Hosted columns are hosted work, so the refusal
+is what stands, and it stands indefinitely rather than until a named issue.
 
 **One limit, by design.** A declared child scope equal to the parent's is
 indistinguishable from one copied off the parent, because for a correctly
@@ -3897,6 +3918,61 @@ the dense path, which T-6 enumerates as the second member of that class.
 > [#119](https://github.com/theurian/theurian/issues/119). This closure does not
 > touch those axes and does not claim to.
 >
+> **Amended in #119 (2026-08-24): the sensitivity axis is closed too, and by a
+> different mechanism from the status axis.** The paragraph above is the Milestone
+> 6 record and stays; what follows is what changed. Status is closed *after the
+> fact* — a build writes the row, and a purge removes it when the status moves.
+> Sensitivity is closed **by construction, at build time**: `IndexBuilder._build`
+> consults `may_disclose` against the deployment's declared sensitivity ceiling
+> beside the status gate it already ran, so an item above that ceiling writes no
+> chunk row, and the forest — derived over what the build wrote — gets no summary
+> node. All four scoring surfaces are covered by that one fact, because
+> `chunks_fts`, `chunks_trigram`, `nodes_fts` and `nodes_trigram` are computed
+> over rows that do not exist. There is nothing for a collection statistic to
+> price (ADR-0025 part 1;
+> `test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_half_of_the_index`,
+> parametrised over all four).
+>
+> A build is therefore specific to the ceiling it ran under, which is recorded in
+> the published pointer as `indexedSensitivities` beside `indexesUnapproved`, and
+> `mcp.search._published_index` stands aside a build whose flavor differs from the
+> grant in force (`fallbackReason: serving-profile-mismatch`, degrading to the
+> already-gated canonical scan). **That is what makes a reclassification an
+> index-side event**, and it is the second half of the closure: a
+> `changeSensitivity` moving an item *past* the ceiling its build ran under is a
+> withdrawal from this deployment, so `migrate apply` purges its rows out of the
+> published build in the same command and `recompute_forest` re-derives the
+> affected scopes — the same machinery this entry's status closure uses, reached
+> by a second trigger rather than by a second mechanism (ADR-0024 decision 5 as
+> extended by ADR-0025 part 2; `tests/integration/test_sensitivity_purge.py`,
+> asserting on the *file* — no chunk row, no summary node, and no `fts5vocab` term
+> that could only have come from the document).
+>
+> **One residual cell on this axis, and it is the one the equality suite is
+> written not to cover.** A published build the purge did not reach — a purge that
+> failed, or a build whose pointer was rewritten — still holds a reclassified
+> item's text, withheld from results by the canonical re-check on the item's
+> current class while its postings keep pricing the visible rows. That is this
+> entry's own mechanism, unchanged, on a state the trigger is what normally
+> prevents. It is recorded rather than closed:
+> `test_sensitivity_absence_proof.py` writes its shape grid as the list of *valid*
+> cells so that `(reclassified-not-purged, present-in-one-only)` is absent by
+> construction rather than filtered away, with the reason in that module's own
+> docstring — the equality would fail honestly there, and weakening it would be
+> the dishonest response.
+>
+> **A byte residual, not a query residual, and it predates this trigger.** A purge
+> page-copies the published build and `DELETE`s from the copy; SQLite does not
+> zero a freed page without `PRAGMA secure_delete`, so the withdrawn text can
+> linger in the copy's free list until a later write reuses the page. Measured
+> 2026-08-24 against 6087be4 through the real CLI: after the purge the marker
+> string is absent from every row and every FTS5 posting and still present in the
+> file's raw bytes — and a `deprecateItem` control, the trigger ADR-0024 shipped,
+> leaves exactly the same residue, which is what says this is not the
+> sensitivity trigger's property. No query reads a free page, so it reaches no
+> caller through any tool; it is a disk-forensics surface, tracked as
+> [#344](https://github.com/theurian/theurian/issues/344).
+>
 > **Two residuals remain, both content-independent and measured, neither an
 > extraction channel:**
 >
@@ -4238,6 +4314,114 @@ named there. The qualification above applies to a build that still holds withdra
 rows — the pre-purge window, and the one request in flight across the swap — not
 to what a caller reads once the purge has published.
 
+#### T-22 — The canonical index does not carry the gate's column, so a read's cost grows with the rows it withholds (Information disclosure, Medium — accepted residual, measured; flattening owned by #338)
+
+Class: **the canonical index does not carry the gate's column.** Named by root
+cause, and it is *not* a face of T-17a. T-17a is *the index still holds the
+withdrawn rows* — a derived-index problem, closed on this axis by keeping the rows
+out of the build. This is a **canonical-store** problem and survives that closure
+untouched: `idx_items_status` is `(project_id, status)`, so a statement that also
+filters on `sensitivity` seeks to the in-status rows and then drops the
+above-ceiling ones *after* fetching them from the table. The work is spent on rows
+the caller never sees, and the amount of it is a function of how many there are.
+
+Two statements carry this entry's term -- a `sensitivity` predicate over an index
+that does not carry the column -- and both take the deployment's grant since #119.
+A third statement produces the same *observable*, a per-above-ceiling-row slope,
+from a **different root cause**; it is listed here so a reader timing a request
+meets all three, but named apart below:
+
+| Statement | Reached by | Per above-ceiling row |
+| :-- | :-- | :-- |
+| `SqliteCanonicalStore.list_items_by_status` | `mcp/search.py`'s `substring_answer` — the unranked scan, which answers when a project has no index or when the published build's flavor does not match the grant (`serving-profile-mismatch`) | 6.0 SQLite VM steps, **0.198–0.204 µs** |
+| `SqliteCanonicalStore.count_surfaceable_by_status` | `knowledge.status`, on **every** call — this is not a fallback path | 17.0 VM steps, **0.54 µs** |
+| `SqliteCanonicalStore.count_surfaceable_items` — *distinct class, see below* | all three tools (`knowledge.search`, `knowledge.get` including its refusal path, and `knowledge.status`), on **every** request, through `_measure_integrity` (#30) | 4.0 VM steps, **≈0.13 µs** |
+
+The first two are this entry's own class. The third is named by its root cause --
+**#30's integrity comparison counts rows the ceiling withholds**, not *the
+canonical index lacks the gate's column*. `count_surfaceable_items` is
+ceiling-blind by design (the #30 comparison must be, at both ends, or a restricted
+deployment reads its own ceiling as damage), so it counts the above-ceiling rows
+in a surfaceable status deliberately and takes no grant. The observable is the
+same and the grading is the same -- Medium and accepted for the reasons below --
+but #338's flattening does not reach it: a ceiling-blind count has no `sensitivity`
+predicate for an index column to make covering.
+
+The first two figures are from the in-code notes at those methods in
+`infrastructure/sqlite/store.py`; the third is recorded at `_measure_integrity`
+in `mcp/tools.py`, beside the read it prices. This entry cites them rather than
+restating a number that would then have two homes. Measured on SQLite 3.47.1
+against a project of 50 in-ceiling `approved` rows plus 0/50/300/1,000/3,000 above
+the ceiling, median of 60 warm in-process calls, linear across the whole range
+with no threshold in it. The VM-step counts are exact and reproduce anywhere --
+4.0 for the third by the same progress-handler method that gives 17.0 for the
+grouping -- the microseconds are one machine's, and the third row's is scaled from
+its 4.0 VM steps at the ~0.032 µs/step the two rows above measure rather than
+separately re-timed there.
+
+**In-process, and that caveat is load-bearing.** These were taken by calling the
+store directly, with no loopback hop, no MCP framing and no JSON encoding. The
+end-to-end floor this model records for a real client is **1.40 ms** (TB-1), from
+identical repeated calls. The counts term needs on the order of **2,600**
+above-ceiling rows in one project to reach a single floor's width; the scan term
+needs about **7,000**, and the ceiling-blind integrity count about **11,000**.
+Nothing here was measured end to end, and no separation across that floor has been
+demonstrated.
+
+**Reach: corpus-bounded, and no caller can shrink it.** None of the three carries
+a `LIMIT` — `search._scan` cuts in Python after the whole result set is built, a
+`GROUP BY` aggregate has nothing to cut, and a `COUNT` returns a single row — so
+the term is proportional to every above-ceiling row in the project rather than to
+what was asked for. That is the
+bound in both directions: an attacker cannot make it larger than the corpus
+either.
+
+**What it carries, and what it does not.** The quantity that moves is the *count*
+of above-ceiling rows, not any byte of them: the slope is per row and identical
+whatever a row says. **No recovery of content has been demonstrated through it**,
+and the mechanism offers none — two corpora differing only in what an
+above-ceiling document *says* produce the same term. What it does leak, in
+principle, is the one number #119 phase 6 deliberately stopped publishing:
+`knowledge.status`'s `itemCount` and `itemsByStatus` are now narrowed to the
+ceiling, and this residual is the counterpart channel to that narrowing, which is
+why it is recorded here rather than folded into a performance note.
+
+**Grading, stated rather than assumed.** Medium as an *entry* — the residual after
+its controls and its recorded deferral — because the value is content-independent,
+the reach is bounded and recorded, recovery has not been demonstrated, and the
+term sits thousands of rows below the only end-to-end floor this model has
+measured. It would be High if the quantity moved with what a withheld row *says*,
+or if a separation were demonstrated across TB-1's floor on a corpus a real
+deployment holds.
+
+**Controls, such as they are.** None that remove it. What bounds it is the
+absence of a `LIMIT` in the caller's hands, the per-row size, and the fact that
+the tool on this term's always-reached path (`knowledge.status`) publishes only
+the ceiling-narrowed `itemCount`/`itemsByStatus`, never the above-ceiling total
+the timing reflects, so there is no published number to calibrate it against. The exact flattening is known and is a schema change:
+adding `sensitivity` as a third column of `idx_items_status` measured flat (2,032
+VM steps at both 0 and 1,000 above the ceiling), which bumps `SCHEMA_VERSION` and
+invalidates every existing state database — owned by
+[#338](https://github.com/theurian/theurian/issues/338). The `GROUP BY` form's
+temp b-tree is its own and is not flattened by that index; the trade that bought
+it is a *damaged* `sensitivity` cell refusing rather than counting as zero, argued
+at `count_surfaceable_by_status`.
+
+**Accepted, with the acceptance recorded.** The decision is on
+[#119](https://github.com/theurian/theurian/issues/119)
+(2026-08-24, orchestrator position re-measured and corrected by an independent
+reader), under four conditions, all discharged: the recorded numbers are the
+measured slope and crossing point with the in-process caveat rather than
+comparative adjectives; the residual gets this entry, named by root cause; the
+absence-proof suite's duration-exclusion docstring states that a second quantity
+now moves with the withheld count at pass-count one
+(`test_sensitivity_absence_proof.py`, adopting `test_absence_proof.py`'s amended
+decision); and `count_surfaceable_by_status` — the fourth condition's subject, then
+ungated — was settled by its own recorded decision, which narrowed the published
+counts and moved the #30 integrity comparison to the ungated population
+internally so a restricted deployment never reports `damageDetected` from its own
+ceiling.
+
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
 **Controls:** no MCP tool reaches a write path for approved state — not behind a
@@ -4447,10 +4631,12 @@ item's published index carried the withheld item's bytes: a caller requesting
 the *approved* id was served the rejected body — its title, source anchors and
 any secret that caused the rejection — through `knowledge.search` and
 `knowledge.get`. Requesting the withheld id directly was still correctly refused;
-the sharing bypassed the enforced status gate (`SURFACEABLE_STATUSES`, the axis
-Milestone 6 enforces — sensitivity is deferred to
-[#119](https://github.com/theurian/theurian/issues/119), so status is the
-load-bearing control on this path), and `theurian migrate validate` /
+the sharing bypassed the enforced status gate (`SURFACEABLE_STATUSES`, the only
+axis enforced when this was found — sensitivity was still deferred to
+[#119](https://github.com/theurian/theurian/issues/119), which is why status was
+the load-bearing control on this path; #119 has since added the disclosure axis
+beside it, and a `restricted` item would today also have to clear
+`may_disclose`), and `theurian migrate validate` /
 `migrate apply` reported nothing. Reproducible in the shipped default
 configuration through the documented migration API, so **Critical**. Affected
 0.1.0.dev0–0.1.0.dev4, fixed in 0.1.0.dev5 (GHSA-w5cm-cqf9-vm7r,
@@ -4715,11 +4901,12 @@ fix.
 | T-15 | Secret becomes indexed knowledge | I | High | SEC-11 — `theurian propose accept` scans every body it would land **and the migration document's author-written fields** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan`, with a best-effort in-house detector; human review of the authored migration (ADR-0013) and supersede/retire with the withdrawal→purge trigger stand beside it. The document's derived fields and a proposal's `evidence.json` are not read ([#330](https://github.com/theurian/theurian/issues/330)). Ingest-time and index-time scanning are separate controls and do not ship ([#198](https://github.com/theurian/theurian/issues/198)) |
 | T-16 | Compromised release artifact | T | Critical | OSS-11 — publication only; install-time verification unmet (#39) |
 | T-17 | Search accounting leaks withheld content | I | Critical | FR-R1, SEC-13 |
-| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15) |
+| T-17a | BM25 statistics count withheld documents | I | High | Closed for the status axis by the withdrawal→purge trigger, M6 (#15); closed for the sensitivity axis in #119 by exclusion at build plus a `changeSensitivity` purge trigger (ADR-0025 parts 1–2), with the unpurged-build cell and the free-page byte residue ([#344](https://github.com/theurian/theurian/issues/344)) recorded |
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
 | T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
+| T-22 | A canonical read's cost grows with the above-ceiling rows it withholds | I | Medium | Accepted residual, measured (0.20 µs/row on the scan, 0.54 µs/row on `knowledge.status`'s counts); flattening owned by [#338](https://github.com/theurian/theurian/issues/338), acceptance recorded on #119 |
 
 ## Explicitly out of scope
 

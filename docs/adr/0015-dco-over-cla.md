@@ -33,10 +33,11 @@ out by requiring that Core remain fully functional standalone.
 1. Every commit carries `Signed-off-by: Name <email>` (`git commit -s`).
 2. The DCO text (version 1.1, verbatim) lives at `docs/contributing/dco.md` and is
    referenced from `CONTRIBUTING.md`.
-3. A CI job verifies the sign-off on every commit in a pull request. **It is
-   intended to be a required check and is not one yet** — see the Compliance
-   section and [#67](https://github.com/theurian/theurian/issues/67). Point 3 is
-   what the DCO is worth: an unenforced sign-off records intent and proves
+3. A CI job verifies the sign-off on every commit in a pull request, and **it is
+   a required status check on `main`** — see the Compliance section and
+   [#67](https://github.com/theurian/theurian/issues/67), which was open from
+   this ADR's acceptance until 2026-08-23 for exactly this. The enforcement is
+   what point 3 is worth: an unenforced sign-off records intent and proves
    nothing about the commits that actually landed.
 4. Contributors retain copyright in their contributions. There is no copyright
    assignment.
@@ -87,19 +88,29 @@ out by requiring that Core remain fully functional standalone.
   names both remedies (`--amend -s` and `rebase --signoff`) in the failure. This
   section said the check lived in `.github/workflows/dco.yml`, which has never
   existed; the control does, under a different name.
-- `CONTRIBUTING.md` documents `git commit -s` and the amend fix.
+- That job is a **required status check** on `main`, under the check name
+  `Conventional Commits and DCO`, so a missing sign-off blocks the merge instead
+  of reporting beside it. It is requirable because it reports on every pull
+  request whatever the change touches: `shared.yml` carries no path filter and
+  the job's only condition is `github.event_name == 'pull_request'`. Measured
+  2026-08-23: present with a conclusion on the head commit of all 30 most
+  recently merged pull requests, 30/30 `success`.
+- `CONTRIBUTING.md` documents `git commit -s` and the amend fix, and lists the
+  required set under
+  [What `main` requires](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md#what-main-requires).
 - A `.gitmessage` template is provided and referenced in the development guide.
 
-Still owed, with the milestone that will satisfy it:
+Resolved, with what it used to say:
 
-- **The DCO check is not a required status check.** This section said it was.
-  `main` has no required status checks at all
-  (`branches/main/protection/required_status_checks` returns 404), so the
-  `commits` job reports a missing sign-off without blocking the merge. Point 3
-  of the Decision calls it "a mechanical gate, not a judgement call", and today
-  it reports but does not gate. This is a repository setting rather than a file,
-  which is why no amount of reading the tree finds it; it is filed as
-  [#67](https://github.com/theurian/theurian/issues/67).
+- **The DCO check is now a required status check.** This section first claimed
+  it was one, then corrected itself to say it was not: until 2026-08-23 `main`
+  had no required status checks at all
+  (`branches/main/protection/required_status_checks` returned 404), so the
+  `commits` job reported a missing sign-off without blocking the merge. That was
+  a repository setting rather than a file, which is why no amount of reading the
+  tree found it; it was filed as
+  [#67](https://github.com/theurian/theurian/issues/67) and closed by applying
+  the required set.
 
   What this note used to conclude from that — "a pull request with an unsigned
   commit can be merged by anyone able to merge" — is false, and #197 proved it.
@@ -107,7 +118,8 @@ Still owed, with the milestone that will satisfy it:
   status check) blocks any commit without a verified cryptographic signature,
   regardless of its sign-off state. #197, the first contribution from outside
   the team, carried a correct sign-off and was still refused with every check
-  green — landable only by an admin override, not by "anyone able to merge." So
-  the owed item is narrow: DCO sign-off is reported but not gate-enforced, while
-  cryptographic signing already is
+  green — landable only by an admin override, not by "anyone able to merge." The
+  distinction outlives the gap and is the part worth keeping: sign-off is
+  gate-enforced by a status check that reports, while cryptographic signing is
+  gate-enforced by a branch rule that reports through no check at all
   ([Signing your commits](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md#signing-your-commits)).

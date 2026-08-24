@@ -34,12 +34,22 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite import index_purge
 from theurian.infrastructure.sqlite.index_purge import IndexPurgeError, _verify
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 PROJECT = "demo"
 
@@ -105,7 +115,11 @@ def _ranking(store: SqliteIndexStore, query: str) -> list[tuple[str, float]]:
     return [
         (row.chunk_id, round(row.score, 10))
         for row in store.search_lexical(
-            query, project_id=PROJECT, limit=100_000, include_unapproved=False
+            query,
+            project_id=PROJECT,
+            limit=100_000,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ).rows
     ]
 
@@ -114,7 +128,11 @@ def _substring_ranking(store: SqliteIndexStore, query: str) -> list[tuple[str, f
     return [
         (row.chunk_id, round(row.score, 10))
         for row in store.search_substring(
-            query, project_id=PROJECT, limit=100_000, include_unapproved=False
+            query,
+            project_id=PROJECT,
+            limit=100_000,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ).rows
     ]
 

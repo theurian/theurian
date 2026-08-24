@@ -64,29 +64,30 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 | FR-R7 | Pin a `snapshotId` so results are reproducible for the lifetime of a task. |
 | FR-R8 | Search across several registered Projects in one call when the caller is authorized for all of them. |
 
-**FR-R1 is one of five axes as of Milestone 5.** `SqliteIndexStore._scope`
-builds the WHERE clause every retriever uses, and it filters on Project and on
-status — a check FR-R1 does not name. Tenant and ACL have no column and hold no
-content: a migration naming a non-default tenant or ACL group is refused at
-write time (#110). The `chunks` table carries `sensitivity`, `trust_level` and
-`namespace`, and no query reads them; `sensitivity` differs from the other two
-in that its values *are* ingested — a `restricted` document is stored and
-returned, labelled — so it is a published label rather than an empty axis.
-Routing changes for none of these today, which is why each is a recorded
-deferral and not a defect; the per-axis register below states them one by one
+**FR-R1 is two of five axes as of #119 phase 4.** `SqliteIndexStore._scope`
+builds the WHERE clause every retriever uses, and it filters on Project, on
+sensitivity, and on status — a check FR-R1 does not name. Tenant and ACL have no
+column and hold no content: a migration naming a non-default tenant or ACL group
+is refused at write time (#110). The `chunks` table still carries `trust_level`
+and `namespace`, which no query reads. `sensitivity` was in that list until #119:
+its values *are* ingested — a `restricted` document is stored — and it is now
+filtered on against the deployment's declared ceiling rather than merely returned
+labelled. The per-axis register below states each disposition one by one
 (#63, #119).
 
 **Per-axis disposition — the register that closes
 [#63](https://github.com/theurian/theurian/issues/63).** Each of FR-R1's five
 named axes, plus the `status` check `_scope` adds that FR-R1 does not name, with
 what the pre-1.0 product actually does about it and the PR that established that
-disposition. The maintainer's recorded decision: enforcing tenant, ACL group and
-sensitivity is deferred to [#119](https://github.com/theurian/theurian/issues/119),
-the successor to this issue. Landing `AuthorizationProvider` is necessary but not
-sufficient — its local adapter is "allow all" (the port table above), so #119
-also has to give sensitivity a retrieval predicate. Until then sensitivity is a
-published label on every result, not a control. Only Project, status and (on
-request) the validity window are enforced pre-1.0.
+disposition. The maintainer's recorded decision deferred tenant, ACL group and
+sensitivity to [#119](https://github.com/theurian/theurian/issues/119), the
+successor to this issue, and noted that landing `AuthorizationProvider` would be
+necessary but not sufficient — its local adapter is "allow all" (the port table
+above), so #119 also had to give sensitivity a retrieval predicate. It has: the
+grant is resolved from the operator's serving profile, the build excludes what is
+above it, and `_scope`/`_node_scope` emit it (phases 3–4). Tenant and ACL group
+remain refused at write time rather than filtered. Project, status, sensitivity
+and (on request) the validity window are what is enforced pre-1.0.
 
 | Axis | Pre-1.0 disposition | Mechanism | Landed |
 | :-- | :-- | :-- | :-- |
@@ -94,13 +95,14 @@ request) the validity window are enforced pre-1.0.
 | status | **Enforced** — a pre-ranking WHERE predicate when the caller has not passed `includeUnapproved`; `may_surface` at the canonical gate otherwise | `chunks.status = ?` in `_scope` (added only when `include_unapproved` is false); `may_surface` in `domain/enums.py` | [#32](https://github.com/theurian/theurian/pull/32) |
 | tenant | **Refused at write time** — a migration naming a `tenantId` other than `local` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
 | ACL group | **Refused at write time** — a migration naming an `aclGroup` other than `default` is rejected; no index column | `migrate validate`/`migrate apply` | [#110](https://github.com/theurian/theurian/pull/110) (phase 1) |
-| sensitivity | **Published label, not a control** — values *are* ingested (a `restricted` document is stored and returned), but read by no retrieval predicate | `results.py` emits `sensitivity`; the `chunks.sensitivity` column is unread | [#32](https://github.com/theurian/theurian/pull/32); control **deferred** to [#119](https://github.com/theurian/theurian/issues/119) |
+| sensitivity | **Enforced** — against the deployment's declared ceiling, not the caller's request: the build writes no row above it, every retriever filters on it before ranking, the canonical gate re-checks the item's *current* class, and a `changeSensitivity` past the build's own ceiling purges the item out of the published index in the same `migrate apply` (a reclassification *into* the ceiling waits for the next build — ADR-0025's recorded residual) | `may_disclose` in `domain/enums.py`; `chunks.sensitivity IN (…)` and `nodes.sensitivity IN (…)` in `_scope`/`_node_scope`; exclusion in `IndexBuilder._build`; `revisions_to_purge` in `application/migration_engine.py` | [#119](https://github.com/theurian/theurian/issues/119) phases 3–6; ADR-0025 part 4 (two-corpora suite) discharged in phase 6 |
 | validity window | **Caller-chosen refinement, not a default filter** — omitting `asOf` filters on nothing; applied after ranking, never inside the retriever depth loop | `knowledge.search`'s optional `asOf` → `ValidityPeriod.contains`, in Python, on both answer paths | [#112](https://github.com/theurian/theurian/pull/112) (phase 2) |
 
 The enforced predicates are exactly what `_scope` emits, and this register is
 pinned to that same source the way SECURITY.md is:
 <!-- enforced-axes:begin — the enforced-axis set and its count, pinned to _scope by tests/unit/test_gate_call_sites.py -->
-**two** enforced axes — `chunks.project_id` and `chunks.status`.
+**three** enforced axes — `chunks.project_id`, `chunks.status` and
+`chunks.sensitivity`.
 <!-- enforced-axes:end -->
 `tests/unit/test_gate_call_sites.py` checks both this block and SECURITY.md's
 against what `_scope` emits — the axis tokens and the spelled count — so the
@@ -130,10 +132,14 @@ single-withheld-row timing oracle `FIRST_PASS_DEPTH` exists to blunt (see
 validity filter was rejected, because it would make `freshness.isWithinValidity`
 constant-`true` on every published result and give the ranked path a
 stale-index statistics residual with no way to turn off, rather than only
-while an index build is behind. Tenant, ACL and sensitivity remain unenforced as
-controls; enforcing them is tracked by
-[#119](https://github.com/theurian/theurian/issues/119), the successor to this
-issue.
+while an index build is behind. Sensitivity is now enforced as a control
+(build-side exclusion, the `_scope`/`_node_scope` predicate, and a
+same-`migrate apply` purge on reclassification); tenant and ACL group are
+discharged degenerately, refused at write time so that no stored row carries a
+non-default value to filter — a deployment that ever stores a second tenant
+needs a real control rather than this argument
+([#119](https://github.com/theurian/theurian/issues/119) closed both halves;
+ADR-0025).
 
 FR-R5's `snapshotId` and `indexBuildId` are realized once per response, on the
 `retrieval` block, not repeated on every hit in `results`. One
@@ -369,6 +375,7 @@ the state a run with no findings at all reaches is
 | 4 | Data directory | `~/.theurian` exists, mode 0700 | `mkdir -p`, `chmod 700` | tighten mode, report the change |
 | 5 | Token | token exists and is ≥ 32 bytes | generate via CSPRNG | reuse; never regenerate silently |
 | 6 | Token storage | file mode 0600, or Keychain entry | write | `chmod`, report |
+| 6a | Serving profile | `~/.theurian/auth/serving-profile` names a ceiling this build can honour | — never `Missing`: an undeclared ceiling is `NotApplicable`, and the summary names the default in force | report the refusal and its remedy; setup never writes or repairs that file |
 | 7 | Env reference | `~/.theurian/env` holds a current Theurian-owned block | write the block, or rewrite a stale one, leaving every other line alone | markers that delimit no single block: report, never write |
 | 8 | Daemon service | LaunchAgent / systemd user unit present | install a user-scoped unit | show a diff, back up, ask |
 | 9 | Daemon running | `GET /health` returns 200 | start the service | reuse the existing daemon |
@@ -382,6 +389,15 @@ the state a run with no findings at all reaches is
 | 17 | Initial index | an `active_index` exists for the current `state_hash` | build | reuse |
 | 18 | Serena detection | a `serena` MCP entry exists | — | report coexistence, change nothing |
 | 19 | Report | — | print the changed-files list | — |
+
+**Row 6a is not numbered, and that is deliberate.** It arrived with the
+deployment serving profile ([#119](https://github.com/theurian/theurian/issues/119),
+ADR-0025) — long after this table was written — and it belongs beside the token,
+because it is the other operator-owned file in `auth/`. Inserting it as a numbered
+row would move every row below it, and "§6.2 row *N*" is cited across the tree,
+the threat model included. `StepId` carries it as `SERVING_PROFILE`, `STEPS`
+places it after `token-storage`, and `probe_serving_profile` states why none of
+its three arms is `Missing`.
 
 **Rows 2 and 3 are required, not implemented.** Setup neither installs Core nor
 verifies an artifact.
@@ -537,10 +553,10 @@ returns, `"failed"` when it raises
 apply is the condition, not being one of the seven — a step whose probe found it
 `Satisfied` never reaches it, a `Conflicting` one never does either (approval
 buys progress on the rest of the list, never an overwrite), and neither does any
-step after a critical failure has halted the run. The other eleven steps — rows
-1–3, 10–13 and 15–18; row 19 is the report itself and not a step — have no apply
-and never journal, so the file records what setup *did* and not what it looked
-at.
+step after a critical failure has halted the run. The other twelve steps — rows
+1–3, 6a, 10–13 and 15–18; row 19 is the report itself and not a step — have no
+apply and never journal, so the file records what setup *did* and not what it
+looked at.
 
 The journal is append-only and a record is `{"step", "event", "detail"}`. There
 is no path *field* — but `detail` is prose written for a person, and it does name
@@ -1174,7 +1190,7 @@ daemon, MCP tools, ingestion, retrieval, RAPTOR, GitHub. Those are Milestones 1�
 | R-11 | Optimistic concurrency is too coarse and blocks routine parallel work | Contributors fight the tool | `expectedRevision` is per item, not per store; conflicts produce a readable three-way report. |
 | R-12 | Reviews are personal data (author identity, opinions) | Privacy and compliance exposure | Store author identity as the provider's stable ID plus display name; support redaction at ingestion; document retention in SECURITY.md. |
 | R-13 | Deterministic fakes drift from real providers | Tests pass, production fails | Fakes implement the same Protocol; contract tests run against fakes in CI and against real adapters in an opt-in, credentialed job. |
-| R-14 | Cross-tenant leakage through a shared RAPTOR node | The most severe correctness failure possible | Live on the build path as of Milestone 6's forest builder. A tree identity of project + tenant + sensitivity + ACL group + namespace + status makes mixing structurally impossible rather than policy-checked, held by three refusals: `SummaryNode` rejects a declared child scope differing from the node's own, `IndexableNode` rejects a declaration standing for no source, and `application/forest_builder.py` derives each declaration from the source it summarises. The sensitivity in that tuple is the item's current classification, stamped at build time the way `status` is — a `changeSensitivity` moves it without writing a new revision — so a reclassified item is partitioned under its new label on the next build, never under the revision's authored one; this is uniformity at build time, not a serving control. Asserted over rows a real build wrote — `test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`, transitively over `node_derivation`, on the three axes a corpus can vary (namespace, sensitivity, status) — with the scope key itself asserted exhaustively (`test_scope_isolation.py`). Tenant and ACL group cannot be varied by any corpus, because the write path refuses a revision naming a non-default value, so those two axes are structural rather than exercised. Residual: a node is read back into a response now — the retrieval CL serves a surfaced leaf's `raptorPath` title — so this control is load-bearing for serving at last, and it holds: a title ships only above a leaf that cleared the gate and whose ancestors share its six-component scope, so it carries nothing across a scope boundary. What is still deferred is per-axis enforcement of sensitivity itself, which remains a published label rather than a serving predicate ([#119](https://github.com/theurian/theurian/issues/119)) (#115). |
+| R-14 | Cross-tenant leakage through a shared RAPTOR node | The most severe correctness failure possible | Live on the build path as of Milestone 6's forest builder. A tree identity of project + tenant + sensitivity + ACL group + namespace + status makes mixing structurally impossible rather than policy-checked, held by three refusals: `SummaryNode` rejects a declared child scope differing from the node's own, `IndexableNode` rejects a declaration standing for no source, and `application/forest_builder.py` derives each declaration from the source it summarises. The sensitivity in that tuple is the item's current classification, stamped at build time the way `status` is — a `changeSensitivity` moves it without writing a new revision — so a reclassified item is partitioned under its new label on the next build, never under the revision's authored one; this is uniformity at build time, not a serving control. Asserted over rows a real build wrote — `test_forest_builder.py::test_no_node_stands_on_chunks_that_disagree_on_a_scope_component`, transitively over `node_derivation`, on the three axes a corpus can vary (namespace, sensitivity, status) — with the scope key itself asserted exhaustively (`test_scope_isolation.py`). Tenant and ACL group cannot be varied by any corpus, because the write path refuses a revision naming a non-default value, so those two axes are structural rather than exercised. Residual: a node is read back into a response now — the retrieval CL serves a surfaced leaf's `raptorPath` title — so this control is load-bearing for serving at last, and it holds: a title ships only above a leaf that cleared the gate and whose ancestors share its six-component scope, so it carries nothing across a scope boundary. Per-axis enforcement of sensitivity is no longer deferred and is no longer this row's residual: since [#119](https://github.com/theurian/theurian/issues/119) it is a serving predicate on both halves of the derived index — `_scope` over `chunks` and `_node_scope` over `nodes` — a build writes no row above the deployment's declared ceiling, and a `changeSensitivity` moving an item past that ceiling purges the affected rows and re-derives the affected scopes' trees in the same `migrate apply` (ADR-0025 parts 1 to 3). That changes nothing above it: the scope tuple is still what makes mixing structurally impossible at build time, which is a different property from a deployment's ceiling and is the one this row is about (#115). |
 
 ---
 

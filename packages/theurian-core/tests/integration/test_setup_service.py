@@ -706,20 +706,26 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 # `probe_migrations` naming the directory it only reads -- both surviving the
 # whole suite while restoring the published defect.
 
-#: Every ``(step, status)`` pair the eleven actionless steps reach across
+#: Every ``(step, status)`` pair the twelve actionless steps reach across
 #: `_states`, counted off their branches: platform 2, core-present 2 (three
-#: returns, two of them CONFLICTING), artifact-integrity 1, single-instance 3,
-#: project-registered 4, project-layout 3, gitignore 3, mcp-health 2,
-#: migrations-valid 2 (three returns, two of them NOT_APPLICABLE), initial-index
-#: 1 (two summaries, one status), serena-detection 2. Independently: 28
-#: ``return SetupStep(...)`` statements collapsing onto 25 pairs.
+#: returns, two of them CONFLICTING), artifact-integrity 1, serving-profile 1
+#: (three returns, one reachable here), single-instance 3, project-registered 4,
+#: project-layout 3, gitignore 3, mcp-health 2, migrations-valid 2 (three
+#: returns, two of them NOT_APPLICABLE), initial-index 1 (two summaries, one
+#: status), serena-detection 2. Independently: 31 ``return SetupStep(...)``
+#: statements collapsing onto 26 pairs.
 #:
-#: `core-present`'s third return -- Core installed without its ``daemon`` extra
-#: (#78) -- is not reachable from any state here, because the test process is a
-#: development environment that always has the extra. It is walked by
-#: ``tests/integration/test_bare_install.py``, which blocks the modules instead
-#: of varying the context. The count above is what the arm costs this number:
-#: nothing, since the other CONFLICTING arm already supplies the pair.
+#: Two steps have returns no state here can walk, and both are walked elsewhere.
+#: `core-present`'s third -- Core installed without its ``daemon`` extra (#78) --
+#: is unreachable because the test process is a development environment that
+#: always has the extra; ``tests/integration/test_bare_install.py`` blocks the
+#: modules instead of varying the context. `serving-profile`'s SATISFIED and
+#: CONFLICTING arms need a profile file in the data directory, which no context
+#: here writes; ``tests/integration/test_setup_cli.py`` declares one and asserts
+#: all three statuses through `doctor`. The count above is what those arms cost
+#: this number: nothing for `core-present`, whose other CONFLICTING arm already
+#: supplies the pair, and two pairs for `serving-profile` that simply never
+#: appear here.
 #:
 #: **What the assertion holds, exactly.** A fall means a state stopped reaching
 #: a status it used to. A rise means a step began emitting a status it did not
@@ -730,7 +736,7 @@ def test_the_summaries_carry_the_locations_that_removing_paths_took_out(
 #: survives this, because the `root is None` arm keeps emitting
 #: NOT_APPLICABLE. What catches a probe naming a path is the `paths` assertion
 #: in the loop, not this number.
-ACTIONLESS_STEP_STATUS_PAIRS = 25
+ACTIONLESS_STEP_STATUS_PAIRS = 26
 
 #: Any absolute path. What matters is only that a probe named one.
 _A_NAMED_PATH = "/tmp/a-file-this-step-only-reads"  # noqa: S108 - never opened

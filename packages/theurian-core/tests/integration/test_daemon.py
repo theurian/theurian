@@ -23,6 +23,10 @@ import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
+from theurian.application.authorization import (
+    AuthorizationGrant,
+    serving_profile_path,
+)
 from theurian.application.project_service import ProjectRegistry
 from theurian.cli.main import app
 from theurian.daemon.instance import (
@@ -32,8 +36,9 @@ from theurian.daemon.instance import (
     port_is_free,
     probe_health,
 )
-from theurian.daemon.runner import build_server, ensure_token, prepare
+from theurian.daemon.runner import build_server, ensure_token, prepare, serve
 from theurian.daemon.server import DaemonConfig, build_app
+from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.secrets.file_store import (
     TOKEN_KEY,
     FileSecretStore,
@@ -474,6 +479,53 @@ def test_prepare_reports_without_starting_anything(tmp_path: Path) -> None:
     assert check.decision is StartDecision.START
     assert resolved == tmp_path
     assert port_is_free(port=port), "asking must not leave a listener behind"
+
+
+def test_serve_composes_the_grant_from_the_declared_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`serve` reads the operator's serving profile and threads its grant into the server.
+
+    The composition is one line -- `StaticAuthorizationProvider(load_serving_profile(
+    resolved)).deployment_grant()` -- and `daemon start` grabs a real port, so no
+    integration test reaches it. Dropping the `load_serving_profile` read there, so
+    the daemon serves the built-in `DEFAULT_CEILING` whatever the operator declared,
+    left the whole suite green. This exercises the seam in-process, the way the MCP
+    tests build a server without starting a daemon: `uvicorn.run`, `build_app` and
+    `build_server` are stubbed so nothing binds or serves, and the grant `serve`
+    hands to `build_server` is captured and checked against the profile on disk.
+
+    Paired with the build side. `build_server` is held to *using* the grant it is
+    given by the #119 tests in `test_mcp_tools.py`; this holds `serve` to *reading*
+    the right one, so between them both ends of the seam read the same source. A
+    `restricted` profile expands to every level, which the built-in default
+    (`internal`) does not -- so a mutation that ignored the file would capture a
+    strictly narrower set and redden here.
+    """
+    # Declared the way an operator does: 0600 file in a 0700 `auth/` directory,
+    # the two modes `load_serving_profile` requires before it will honour the file.
+    profile = serving_profile_path(tmp_path)
+    profile.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    profile.write_text("restricted\n")
+    profile.chmod(0o600)
+
+    captured: list[AuthorizationGrant] = []
+
+    def _capture_grant(registry: ProjectRegistry, grant: AuthorizationGrant) -> object:
+        captured.append(grant)
+        return object()
+
+    monkeypatch.setattr("theurian.daemon.runner.build_server", _capture_grant)
+    monkeypatch.setattr("theurian.daemon.runner.build_app", lambda _config, _server: object())
+    monkeypatch.setattr("theurian.daemon.runner.uvicorn.run", lambda *_args, **_kwargs: None)
+
+    serve(tmp_path, port=_free_port())
+
+    assert len(captured) == 1, "serve must compose one grant and hand it to build_server"
+    assert captured[0].sensitivities == frozenset(Sensitivity), (
+        "serve served the built-in default instead of the declared `restricted` ceiling: "
+        f"{sorted(level.value for level in captured[0].sensitivities)}"
+    )
 
 
 def test_port_is_free_detects_an_occupied_port() -> None:

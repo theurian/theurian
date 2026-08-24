@@ -7,17 +7,27 @@ survived**. Not one test in the suite read a byte of it, so the corpus was
 committed data with no owner. This module is what those mutations have to die
 on.
 
-**Why the governance triple is the load-bearing one.** ``sensitivity`` is a
-published label, not a serving control: ``docs/architecture/requirements-analysis.md``
-records that values are ingested and returned and that no retrieval predicate
-reads them, with enforcement deferred to
-https://github.com/theurian/theurian/issues/119. So nothing downstream stops an
-``internal`` item from being served once it is in the repository -- the boundary
-is *whether it is committed at all*. That boundary is currently held by
-``.git/info/exclude``, which is machine-local: it exists in one developer's
-clone, never in CI, and never in a fresh checkout. A stray ``git add -f`` of a
-local-only note (an operator handoff note, a pre-accept draft) therefore has
-exactly one place left to go RED, and this is it (FR-K9).
+**Why the governance triple is the load-bearing one, and why enforcing
+sensitivity did not make it less so.** This paragraph used to rest on
+``sensitivity`` being a published label that no retrieval predicate read, with
+enforcement deferred to
+https://github.com/theurian/theurian/issues/119. That is no longer true: a
+deployment declares a ceiling, a build writes no row above it, every retriever
+filters on it, and ``knowledge.status`` counts only what the ceiling serves
+(ADR-0025). The conclusion is unchanged, and the reason it survives is worth
+saying rather than assuming.
+
+A ceiling is **a property of the deployment that serves a corpus, not of the
+repository that ships one**. Anyone who clones this repository chooses their own
+-- the profile file lives in the operator's data directory precisely so that a
+contributor cannot author it -- and the shipped default serves more than
+``public``. So an ``internal`` item committed here is served by whichever
+deployment reads it, and the boundary this module guards is still *whether it is
+committed at all*. That boundary is held by ``.git/info/exclude``, which is
+machine-local: it exists in one developer's clone, never in CI, and never in a
+fresh checkout. A stray ``git add -f`` of a local-only note (an operator handoff
+note, a pre-accept draft) therefore has exactly one place left to go RED, and
+this is it (FR-K9).
 
 **The population key, so a reader can attack the key and not just the number.**
 Every tracked path under the root ``.theurian/`` prefix. Three consequences,

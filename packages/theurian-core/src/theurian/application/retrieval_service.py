@@ -338,6 +338,20 @@ class SearchRequest:
 
     query: str
     project_id: str
+    #: What this deployment serves (#119 phase 4): the expanded set of sensitivity
+    #: levels the operator's declared ceiling permits, threaded to every retriever
+    #: as a WHERE predicate emitted in the same statement as the match.
+    #:
+    #: No default, matching :class:`ResultRequest` and
+    #: :func:`~theurian.domain.enums.may_disclose`. A default would have to be
+    #: "everything", which is the assumption this axis exists to stop being made
+    #: silently -- and unlike ``include_unapproved`` there is no safe direction to
+    #: pick, since a narrow default would withhold content the deployment does
+    #: serve while claiming the corpus is empty.
+    #:
+    #: Positioned before the defaulted fields because the language requires it,
+    #: and every construction site names its fields, so nothing reads positionally.
+    visible_sensitivities: frozenset[Sensitivity]
     include_unapproved: bool = False
     #: Whether the dense retriever participates.
     #:
@@ -469,6 +483,16 @@ class RetrievalService:
         makes the equality this module promises structural: there is no stage
         left that could compute a number from a row the caller may not read.
 
+        ``request.visible_sensitivities`` travels the other way: it is handed to
+        each retriever as a predicate rather than applied to its rows, so an
+        above-ceiling row is never ranked, never fused and never counted (#119
+        phase 4). It must be the same set :class:`ResultRequest` carries -- the
+        canonical re-check inside ``visible`` is what withholds a document
+        *reclassified* since the build, which no index predicate can see, and the
+        predicate is what keeps a build made under a wider grant from ranking rows
+        this deployment does not serve. Neither subsumes the other, and
+        ``mcp.search.hybrid_answer`` is where one grant reaches both.
+
         Stops at candidates. Neither the caller's ``limit`` nor their budget
         (FR-R4) is applied here — both bound the answer, and the answer is what
         :class:`ResultGate` admits.
@@ -486,6 +510,7 @@ class RetrievalService:
                 project_id=request.project_id,
                 limit=depth,
                 include_unapproved=request.include_unapproved,
+                visible_sensitivities=request.visible_sensitivities,
             ),
             visible,
         )
@@ -501,6 +526,7 @@ class RetrievalService:
                 project_id=request.project_id,
                 limit=depth,
                 include_unapproved=request.include_unapproved,
+                visible_sensitivities=request.visible_sensitivities,
             ),
             visible,
         )
@@ -517,6 +543,7 @@ class RetrievalService:
                 project_id=request.project_id,
                 limit=depth,
                 include_unapproved=request.include_unapproved,
+                visible_sensitivities=request.visible_sensitivities,
             ),
             visible,
         )
@@ -766,6 +793,7 @@ class RetrievalService:
             vector,
             project_id=request.project_id,
             include_unapproved=request.include_unapproved,
+            visible_sensitivities=request.visible_sensitivities,
         )
         # `page.exhausted` is not read here, and that is not an oversight: this
         # retriever returns the whole ranking, so there is no depth to go back
@@ -905,6 +933,18 @@ class ResultRequest:
     database: Path
     project_id: str
     include_unapproved: bool
+    #: What this deployment serves (#119): the expanded set of sensitivity levels
+    #: the operator's declared ceiling permits, resolved once at startup by the
+    #: composition root and threaded down. Not defaulted, and not derived here --
+    #: a second derivation of one idea is how a gate ends up admitting a level its
+    #: own profile excluded.
+    #:
+    #: Unlike ``moment`` below, it is applied *inside* the depth loop, beside
+    #: status, because it is a property of the deployment rather than of the
+    #: request: no caller can vary it, so it hands no one a dial with which to
+    #: tune what the loop excludes. See
+    #: :meth:`~theurian.application.visibility.CanonicalVisibility._may_surface`.
+    visible_sensitivities: frozenset[Sensitivity]
     #: How many results the caller asked for. Applied to what survives the gate.
     limit: int
     budget_tokens: int
@@ -979,6 +1019,7 @@ class ResultGate:
                 store,
                 context,
                 include_unapproved=request.include_unapproved,
+                visible_sensitivities=request.visible_sensitivities,
                 moment=request.moment,
             )
             outcome = source(visible)

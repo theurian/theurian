@@ -543,11 +543,15 @@ class UnenforceableScopeError(MigrationError):
     """A revision names a tenant or ACL group nothing yet enforces (issue #63).
 
     ``tenantId`` and ``aclGroup`` are kept by the migration schema because they
-    describe the hosted deployment's shape (ADR-0003), but no
-    ``AuthorizationProvider`` (``domain/ports/authorization.py``) is implemented
-    anywhere in this tree. Accepting a value other than the enforced default
-    would let the field read as a security boundary while nothing checks it --
-    so it is refused at write time instead of silently accepted.
+    describe the hosted deployment's shape (ADR-0003), and **nothing routes on
+    either**. An ``AuthorizationProvider`` implementation does exist since #119 --
+    ``application/authorization.StaticAuthorizationProvider`` -- and it answers a
+    *deployment* serving profile: one tenant, one ACL group, and a sensitivity
+    ceiling. It has no notion of a second tenant or a second group, so accepting a
+    value other than the enforced default would let the field read as a security
+    boundary while nothing checks it. Refused at write time instead of silently
+    accepted, which is what makes those two axes degenerately discharged rather
+    than enforced (ADR-0025).
 
     ``violations`` holds every offending field on the one revision, not only
     the first: a revision naming both a foreign tenant and a foreign ACL group

@@ -19,11 +19,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian import __protocol_version__, __version__
+from theurian.application.authorization import (
+    DEPLOYMENT_ACL_GROUPS,
+    DEPLOYMENT_TENANT,
+    SERVING_PROFILE_FILENAME,
+    AuthorizationGrant,
+    StaticAuthorizationProvider,
+    encode_sensitivities,
+)
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     ProjectPaths,
@@ -35,10 +44,11 @@ from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_D
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus, may_surface
+from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus, Sensitivity, may_surface
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION
 from theurian.domain.ranking import Ranked
+from theurian.domain.values import TenantId
 from theurian.infrastructure.sqlite import store as store_module
 from theurian.infrastructure.sqlite.connection import (
     create_database,
@@ -50,6 +60,15 @@ from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWri
 from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 runner = CliRunner()
 
@@ -308,7 +327,16 @@ async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[
     here is the *text*, so a message that leaked a path or a stack trace would
     fail a test rather than reach a client.
     """
-    result = await build_server(registry).call_tool(tool, arguments)
+    return await _call_on(build_server(registry), tool, **arguments)
+
+
+async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, Any]:
+    """:func:`_call` against a server somebody else built.
+
+    Split out for the authorization tests (#119), which compare two servers built
+    from two different grants and so cannot let the helper build one.
+    """
+    result = await server.call_tool(tool, arguments)
     content: Any = result.content  # type: ignore[union-attr]
     structured = getattr(result, "structuredContent", None)
     if structured is not None:
@@ -318,10 +346,83 @@ async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[
     return loaded
 
 
+# -- Authorization grants (#119) -------------------------------------------
+#
+# Up here rather than in the authorization section at the end of the file,
+# because the read-cost measurements reach for a narrowed ceiling too. A helper
+# a test 6,000 lines above its definition calls is one nobody reads before
+# using.
+
+
+def _ceiling_of(*levels: Sensitivity) -> AuthorizationGrant:
+    """A grant serving exactly ``levels``, and nothing else."""
+    return AuthorizationGrant(
+        tenant=DEPLOYMENT_TENANT,
+        sensitivities=frozenset(levels),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+
+
+def _declare_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
+    """Declare a ceiling the way an operator does, for `theurian index build`.
+
+    A grant handed to :func:`build_server` decides what the *serve* side may
+    disclose; this decides what the *build* side may write (#119 phase 3), and
+    the two have to be told separately because they are told separately in
+    production -- one by the profile file, one by the daemon reading it. A test
+    that narrows only the grant leaves a build the serve path stands aside.
+
+    Mode 0600 because ``load_serving_profile`` refuses a profile other local
+    users can reach, and ``write_text`` under the usual umask leaves 0644 -- a
+    caller that skipped this would exercise that refusal instead.
+    """
+    auth = data_dir / "auth"
+    # 0700 on the directory as well as 0600 on the file. `load_serving_profile`
+    # refuses both, because a directory's write bit governs *replacing* an entry
+    # in it -- and a bare `mkdir` under the usual umask leaves 0755, which is the
+    # shape `FileSecretStore.set` never creates and this refusal exists for.
+    auth.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth.chmod(0o700)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
+
+
+#: The `registry`/`indexed` fixtures author their one approved item at
+#: `internal`, so a grant of `public` alone puts it above the ceiling. Named
+#: rather than repeated, because every test below has to agree on which side of
+#: the line the fixture is: the assertions read "the item is absent", and an
+#: item that was *never* above the ceiling is absent in a way that proves
+#: nothing.
+FIXTURE_SENSITIVITY = Sensitivity.INTERNAL
+PUBLIC_ONLY = _ceiling_of(Sensitivity.PUBLIC)
+
+#: Every level, for the tests whose subject is not the ceiling.
+#:
+#: The shipped default withholds `confidential` and `restricted` since #119's
+#: closing commit, so a test that reclassifies a fixture item *upward* and then
+#: reads it back is measuring the ceiling unless it says otherwise. Spelled here
+#: and passed explicitly, rather than left to `build_server`'s default: a test
+#: that inherits the default inherits whatever the default becomes next.
+EVERY_LEVEL = _ceiling_of(*Sensitivity)
+
+
 async def _call_failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
     """Invoke a tool that must fail, and return the message a client would see."""
     with pytest.raises(SdkToolError) as raised:
         await _call(registry, tool, **arguments)
+    return str(raised.value)
+
+
+async def _call_failing_on(server: MCPServer, tool: str, **arguments: Any) -> str:
+    """:func:`_call_failing` against a server somebody else built.
+
+    The counterpart of :func:`_call_on`, and split out for the same reason: a
+    refusal that depends on the grant cannot be reached through a helper that
+    builds its own server.
+    """
+    with pytest.raises(SdkToolError) as raised:
+        await _call_on(server, tool, **arguments)
     return str(raised.value)
 
 
@@ -687,6 +788,21 @@ def _stored_statuses(registry: ProjectRegistry, project_id: str = "demo") -> dic
         return {item.item_id.value: item.status.value for item in store.list_items(context)}
 
 
+def _stored_sensitivities(registry: ProjectRegistry, project_id: str = "demo") -> dict[str, str]:
+    """The same read on the #119 axis: every item, mapped to its stored level.
+
+    A second reader rather than a parameter on the one above, because both are
+    used as *guards* on measurements and a guard that takes an argument saying
+    what to look at is one call site away from looking at the wrong thing.
+    """
+    paths = ProjectPaths.of(Path(registry.load()[project_id]["rootPath"]))
+    active = read_active_state(paths)
+    assert active is not None, "the fixture must have built a canonical state"
+    context = RequestContext(project_id=ProjectId(project_id))
+    with SqliteCanonicalStore(paths.state / active.database_filename) as store:
+        return {item.item_id.value: item.sensitivity.value for item in store.list_items(context)}
+
+
 @pytest.mark.asyncio
 async def test_the_retired_items_really_reach_the_canonical_store(
     with_retired_items: ProjectRegistry,
@@ -967,6 +1083,11 @@ async def test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_ex
 READ_COST_BASELINE_ID = "read-cost-baseline"
 READ_COST_HEAVY_ID = "read-cost-heavy"
 
+#: The third corpus: the same three approved items, plus the same number of
+#: extra rows again -- but ``approved`` at ``restricted``, so the status axis
+#: admits every one of them and only the #119 sensitivity axis withholds them.
+READ_COST_RESTRICTED_ID = "read-cost-restricted"
+
 #: How many withheld (`rejected`) items the heavy corpus holds beyond the three
 #: approved items both corpora share. Large enough that a `list_items` path
 #: materialising every row hands back an unmistakably different count; the two
@@ -977,7 +1098,24 @@ READ_COST_WITHHELD = 25
 READ_COST_MIGRATION_ID = "01K1RCST0001234567890ABCDE"
 
 
-def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pin: str) -> str:
+def _read_cost_item_ops(  # noqa: PLR0913 -- one metadata block, keyword-only so a call cannot mis-order it
+    *,
+    slug: str,
+    revision_id: str,
+    title: str,
+    status: str,
+    body: str,
+    sensitivity: str = "internal",
+) -> str:
+    """One item's ``createItem``/``upsertRevision`` pair for a read-cost corpus.
+
+    Takes the ``body`` rather than a precomputed pin, and hashes it here: the
+    bytes and their ``contentSha256`` are one fact (ADR-0027 decision 1,
+    ``migration_fixtures``), and a caller holding both can hand over a pin for a
+    different body. Keyword-only for the reason
+    ``test_alias_item_id_collision._upsert`` is -- six same-typed strings in a row
+    is a call a reorder breaks silently.
+    """
     return f"""  - op: createItem
     itemId: architecture.{slug}
     kind: architecture
@@ -987,13 +1125,14 @@ def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pi
     itemId: architecture.{slug}
     revisionId: {revision_id}
     contentFile: ../knowledge/architecture/{slug}.md
-    contentSha256: {pin}
+    contentSha256: {body_pin(body)}
     metadata:
       title: {title}
       contentType: text/markdown
       kind: architecture
       namespace: backend
       status: {status}
+      sensitivity: {sensitivity}
       owner: platform-team
       trustLevel: reviewed
       sourceAnchors:
@@ -1002,13 +1141,23 @@ def _read_cost_item_ops(slug: str, revision_id: str, title: str, status: str, pi
 """
 
 
-def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> None:
-    """Three approved items, plus ``withheld`` rejected ones, in one migration.
+def _build_read_cost_project(
+    root: Path, project_id: str, *, withheld: int, above_ceiling: int = 0
+) -> None:
+    """Three approved items, plus withheld ones, in one migration.
+
+    Two ways to be withheld, and a corpus uses one of them: ``withheld`` adds
+    ``rejected`` rows, which the status axis stops; ``above_ceiling`` adds
+    ``approved`` rows at ``restricted``, which only the #119 sensitivity axis
+    stops. They are separate parameters rather than one count because the two
+    predicates are pushed into SQL differently -- ``status`` seeks through
+    ``idx_items_status`` and ``sensitivity`` is applied to what that seek returns
+    -- so a corpus mixing them could not attribute a cost difference to either.
 
     `init` and `project register` resolve the project from the working
     directory and take no argument that says where, so the caller has chdir'd
     into ``root`` already; the file writes below are given it as well so they do
-    not depend on that. One migration in both corpora, so `appliedMigrations`
+    not depend on that. One migration in every corpus, so `appliedMigrations`
     -- and the single migration-history row it reads -- is identical between
     them and the only difference the measurement sees is the withheld items.
     """
@@ -1027,14 +1176,38 @@ def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> N
         body = f"# Approved {i}\n\nApproved body {i}.\n"
         (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug, f"01K1RCAP{i:02d}01234567890ABCDE", f"Approved {i}", "approved", body_pin(body)
+            slug=slug,
+            revision_id=f"01K1RCAP{i:02d}01234567890ABCDE",
+            title=f"Approved {i}",
+            status="approved",
+            body=body,
         )
     for i in range(withheld):
         slug = f"read-withheld-{i:03d}"
         body = f"# Withheld {i}\n\nWithheld body {i}.\n"
         (knowledge / f"{slug}.md").write_text(body)
         operations += _read_cost_item_ops(
-            slug, f"01K1RCWH{i:02d}01234567890ABCDE", f"Withheld {i}", "rejected", body_pin(body)
+            slug=slug,
+            revision_id=f"01K1RCWH{i:02d}01234567890ABCDE",
+            title=f"Withheld {i}",
+            status="rejected",
+            body=body,
+        )
+    for i in range(above_ceiling):
+        slug = f"read-restricted-{i:03d}"
+        # The same body the approved items carry, so this corpus's extra rows are
+        # ones the query *matches*: a row the needle misses would be dropped by
+        # the scan's own comparison and the measurement would be about the query
+        # rather than about the gate.
+        body = f"# Restricted {i}\n\nApproved body {i}.\n"
+        (knowledge / f"{slug}.md").write_text(body)
+        operations += _read_cost_item_ops(
+            slug=slug,
+            revision_id=f"01K1RCRS{i:02d}01234567890ABCDE",
+            title=f"Restricted {i}",
+            status="approved",
+            body=body,
+            sensitivity="restricted",
         )
     header = (
         "apiVersion: theurian.dev/v1\n"
@@ -1052,44 +1225,54 @@ def _build_read_cost_project(root: Path, project_id: str, *, withheld: int) -> N
 
 @dataclass(frozen=True, slots=True)
 class _ReadCostCorpora:
-    """Two projects sharing three approved items; one also holds withheld ones.
+    """Three projects sharing three approved items; two also hold withheld ones.
 
     ``stored`` is the heavy store read directly, so the measurement's guard can
     assert the withheld rows a `list_items` path would fetch really landed --
     an equal read count between two three-item stores would be equal for the
-    wrong reason.
+    wrong reason. ``sensitivities`` is the same read of the above-ceiling corpus,
+    for the same reason on the #119 axis.
     """
 
     registry: ProjectRegistry
     stored: dict[str, str]
+    sensitivities: dict[str, str]
 
 
 @pytest.fixture(scope="module")
 def read_cost_corpora(tmp_path_factory: pytest.TempPathFactory) -> _ReadCostCorpora:
-    """One baseline project and one withheld-heavy project, built by the real CLI.
+    """One baseline project and two withheld-heavy ones, built by the real CLI.
 
-    Both register into one `THEURIAN_DATA_DIR` under distinct ids, so one
-    registry answers for both and the comparison is between two calls to the
+    All three register into one `THEURIAN_DATA_DIR` under distinct ids, so one
+    registry answers for them and each comparison is between two calls to the
     same daemon.
+
+    The two heavy corpora withhold along different axes -- ``rejected`` rows for
+    the status axis, ``approved``-at-``restricted`` rows for the #119 sensitivity
+    axis -- against the *same* baseline. Sharing the baseline is what makes the
+    two measurements comparable: the difference between them is which predicate
+    dropped the rows, and nothing else about the project.
     """
     base = tmp_path_factory.mktemp("read-cost")
     data_dir = base / "datadir"
     monkey = pytest.MonkeyPatch()
     monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
     try:
-        for project_id, withheld in (
-            (READ_COST_BASELINE_ID, 0),
-            (READ_COST_HEAVY_ID, READ_COST_WITHHELD),
+        for project_id, withheld, above in (
+            (READ_COST_BASELINE_ID, 0, 0),
+            (READ_COST_HEAVY_ID, READ_COST_WITHHELD, 0),
+            (READ_COST_RESTRICTED_ID, 0, READ_COST_WITHHELD),
         ):
             root = base / project_id
             root.mkdir()
             monkey.chdir(root)
-            _build_read_cost_project(root, project_id, withheld=withheld)
+            _build_read_cost_project(root, project_id, withheld=withheld, above_ceiling=above)
         registry = ProjectRegistry.default(data_dir)
         stored = _stored_statuses(registry, READ_COST_HEAVY_ID)
+        sensitivities = _stored_sensitivities(registry, READ_COST_RESTRICTED_ID)
     finally:
         monkey.undo()
-    return _ReadCostCorpora(registry=registry, stored=stored)
+    return _ReadCostCorpora(registry=registry, stored=stored, sensitivities=sensitivities)
 
 
 class _RowMeter:
@@ -1246,7 +1429,7 @@ def _query_plan(db_path: Path, sql: str, params: tuple[str, ...]) -> str:
 
 
 @pytest.mark.asyncio
-async def test_status_count_is_answered_by_a_covering_index(
+async def test_status_count_seeks_into_the_status_index(
     read_cost_corpora: _ReadCostCorpora,
 ) -> None:
     """SEC-13, T-17, #19. The withheld-count independence rests on this index.
@@ -1254,28 +1437,44 @@ async def test_status_count_is_answered_by_a_covering_index(
     The row-count pin above proves ``knowledge.status`` no longer materialises
     the withheld rows -- but only against the ``list_items`` path it replaced.
     ``count_surfaceable_by_status`` aggregates in SQL, so its ``GROUP BY`` hands
-    back one row per surfaceable status whatever the store holds; the row meter
+    back a bounded number of rows whatever the store holds; the row meter
     therefore *cannot* see SQLite walk every row of the project to build that
-    aggregate. That walk is exactly what losing the covering index
-    ``idx_items_status(project_id, status)`` restores: the planner falls to the
-    namespace index, filters on ``project_id`` alone, and reads each withheld row
-    to group it -- reopening the O(withheld) timing channel T-17 closed, while
-    the response and the meter stay byte-identical.
+    aggregate. That walk is exactly what losing ``idx_items_status(project_id,
+    status)`` restores: the planner falls to the namespace index, filters on
+    ``project_id`` alone, and reads each withheld row to group it -- reopening
+    the O(withheld) timing channel T-17 closed, while the response and the meter
+    stay byte-identical.
 
-    So this pins the mechanism the row meter only proxies: the count is served by
-    a covering index that reads none of the withheld rows. Deleting or renaming
-    the index, or changing the predicate so the index can no longer cover the
-    query, drops the plan to a scan and turns this RED where the row-count pin
-    above stays green -- the two catch different regressions, so both are kept.
+    So this pins the mechanism the row meter only proxies: the count *seeks* into
+    the status index and never reads a retired row. Deleting or renaming the
+    index, or changing the predicate so the seek is no longer available, drops
+    the plan to a scan and turns this RED where the row-count pin above stays
+    green -- the two catch different regressions, so both are kept.
 
-    **The seek form is asserted, not merely the index name.** ``USING COVERING
-    INDEX idx_items_status`` appears in a ``SCAN`` line too, so that substring
-    alone was satisfied by a plan that walks the whole index -- measured:
-    reversing the declared columns to ``(status, project_id)`` leaves the phrase
-    intact while the leading column stops being the project. The three parts
-    below -- ``SEARCH``, the index, and the ``(project_id=?`` that opens the
-    constraint list -- are what say SQLite seeks into one project's entries; the
-    reversal plans ``(status=? AND project_id=?)`` and fails the third.
+    **The seek form is asserted, not merely the index name.** The index name
+    appears in a ``SCAN`` line too, so that substring alone was satisfied by a
+    plan that walks the whole index -- measured: reversing the declared columns
+    to ``(status, project_id)`` leaves the phrase intact while the leading column
+    stops being the project. The three parts below -- ``SEARCH``, the index, and
+    the ``(project_id=?`` that opens the constraint list -- are what say SQLite
+    seeks into one project's entries; the reversal plans ``(status=? AND
+    project_id=?)`` and fails the third.
+
+    **The plan says ``USING INDEX`` and no longer ``USING COVERING INDEX``, and
+    the difference is a recorded cost rather than a regression in this
+    property.** #119 phase 6 gave the published counts the deployment's
+    sensitivity axis, and nothing indexes ``knowledge_items.sensitivity``, so
+    each *in-status* row is now fetched from the table to read that column.
+    Measured on SQLite 3.47.1: ``SEARCH knowledge_items USING INDEX
+    idx_items_status (project_id=? AND status=?)`` plus ``USE TEMP B-TREE FOR
+    GROUP BY``, at 17.0 VM steps and about 0.54 us per above-ceiling row against
+    the ungated form's 9.0 -- the acceptance is argued at
+    ``SqliteCanonicalStore.count_surfaceable_by_status`` and flattening it is
+    https://github.com/theurian/theurian/issues/338. What the seek still buys is
+    the property this test is named for: a *retired* row is outside the status
+    range and is never read at all, however many of them the project holds, which
+    is the channel #19 closed. The word ``COVERING`` is therefore not asserted --
+    asserting it would be pinning a cost the issue above intends to change back.
     """
     corpora = read_cost_corpora
 
@@ -1293,7 +1492,7 @@ async def test_status_count_is_answered_by_a_covering_index(
     # installed -- that open does not go through `_read_all`, so the one call the
     # capture sees is the count's own statement.
     with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
-        store.count_surfaceable_by_status(context)
+        store.count_surfaceable_by_status(context, sensitivities=frozenset(Sensitivity))
 
     assert captured, (
         "count_surfaceable_by_status ran no statement through the store reader, so the plan "
@@ -1301,14 +1500,14 @@ async def test_status_count_is_answered_by_a_covering_index(
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
-    # Assert: SQLite *seeks* into the covering index rather than walking it. All
-    # three fragments are stable across SQLite versions for this shape, and each
-    # fails for a different regression: `SEARCH` for a plan that scans,
+    # Assert: SQLite *seeks* into the status index rather than walking the table.
+    # All three fragments are stable across SQLite versions for this shape, and
+    # each fails for a different regression: `SEARCH` for a plan that scans,
     # `idx_items_status` for a dropped or renamed index, `(project_id=?` for an
     # index whose leading column is no longer the project.
-    for fragment in ("SEARCH", "USING COVERING INDEX idx_items_status", "(project_id=?"):
+    for fragment in ("SEARCH", "INDEX idx_items_status", "(project_id=?"):
         assert fragment in plan, (
-            f"knowledge.status is no longer answered by a seek into the covering index "
+            f"knowledge.status is no longer answered by a seek into "
             f"idx_items_status(project_id, status): {fragment!r} is missing. SQLite planned:\n"
             f"{plan}\n"
             "Without that seek the count reads rows of the project it does not publish, withheld "
@@ -1398,23 +1597,30 @@ async def test_the_substring_scan_reads_items_through_idx_items_status(
         f"`IN ({', '.join('?' * expected_status_count)})` the tool runs; it resolved "
         f"{len(surfaceable)}. A drift here would pin the plan of a query the tool never issues."
     )
+    # The sensitivity axis the shipped default grant resolves (#119). Read off the
+    # grant rather than spelled as `frozenset(Sensitivity)`, so the statement
+    # planned below stays the one the shipped daemon runs when a later phase
+    # narrows `DEFAULT_CEILING`.
+    visible = StaticAuthorizationProvider().deployment_grant().sensitivities
 
     # Act: run the real read and capture the statement it built, then plan it. The
     # store is entered first so its connection opens before the capture is
     # installed -- that open does not go through `_read_all`, so the one call the
     # capture sees is `list_items_by_status`'s own statement.
     with SqliteCanonicalStore(db_path) as store, _statement_the_store_runs() as captured:
-        store.list_items_by_status(context, statuses=surfaceable)
+        store.list_items_by_status(context, statuses=surfaceable, sensitivities=visible)
 
     assert captured, (
         "list_items_by_status ran no statement through the store reader, so the plan below "
         "would describe a query the tool never runs -- the capture watches the wrong method"
     )
-    assert captured["sql"].count("?") == 1 + expected_status_count, (
+    expected_placeholders = 1 + expected_status_count + len(visible)
+    assert captured["sql"].count("?") == expected_placeholders, (
         "the captured statement binds one `project_id` plus one placeholder per surfaceable "
-        f"status, so a {expected_status_count}-status gate must show {1 + expected_status_count} "
-        f"placeholders; it showed {captured['sql'].count('?')}. The capture watched the wrong "
-        "statement, so the plan below would not describe this gate width."
+        f"status and one per visible sensitivity, so a {expected_status_count}-status gate at "
+        f"{len(visible)} visible level(s) must show {expected_placeholders} placeholders; it "
+        f"showed {captured['sql'].count('?')}. The capture watched the wrong statement, so the "
+        "plan below would not describe this gate width."
     )
     plan = _query_plan(db_path, captured["sql"], captured["params"])
 
@@ -1511,6 +1717,101 @@ async def test_the_substring_scan_materializes_the_same_rows_however_many_are_wi
 
 
 @pytest.mark.asyncio
+async def test_the_substring_scan_materializes_the_same_rows_however_many_are_above_the_ceiling(
+    read_cost_corpora: _ReadCostCorpora,
+) -> None:
+    """SEC-13, T-17, #119. The sibling measurement on the sensitivity axis.
+
+    The status-axis pin above compares a corpus with twenty-five ``rejected``
+    rows against one with none. This compares a corpus with twenty-five
+    ``approved``-at-``restricted`` rows against the same baseline, served through
+    a grant that stops at ``internal``. Every one of those rows passes the status
+    predicate, matches the query, and would be an ordinary result on an allow-all
+    deployment -- so if `_scan` were filtering them in Python, this corpus would
+    materialise twenty-five more rows than the baseline.
+
+    **What this pins and what it deliberately does not.** It pins the rows the
+    store hands to Python, which carry the whole per-row cost of this path: a
+    `KnowledgeItem`, then a revision read, then a scan of the body. It does not
+    pin SQLite's own work, and that is a measured difference rather than an
+    oversight -- ``idx_items_status`` has no ``sensitivity`` column, so the seek
+    fetches an above-ceiling row from the table before dropping it, at 6.0 VM
+    steps each on SQLite 3.47.1. `list_items_by_status`'s docstring carries the
+    measurement and what flattening it would cost. Asserting flatness *here*
+    where flatness holds, and recording the residual where it does not, is the
+    honest split; a row-count assertion that claimed to cover both would be
+    green and false.
+
+    Measured at the row rather than timed, so it goes RED deterministically:
+    moving the sensitivity filter out of the SQL predicate and into the Python
+    loop makes the restricted corpus's count jump by twenty-five while the
+    baseline's stays put, and both responses stay byte-identical on the three
+    approved items -- which is why every other test here survives that change and
+    only this one falls.
+    """
+    corpora = read_cost_corpora
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+
+    # Guard: the corpus really holds the above-ceiling rows, at a level this
+    # grant excludes. Without it an equal count below could be two three-item
+    # stores agreeing for a reason that has nothing to do with the gate.
+    above = {
+        item: level
+        for item, level in corpora.sensitivities.items()
+        if Sensitivity(level) not in up_to_internal.sensitivities
+    }
+    assert len(above) == READ_COST_WITHHELD, (
+        f"the restricted corpus must hold {READ_COST_WITHHELD} items above this ceiling for the "
+        f"measurement to mean anything; its store holds {len(above)}"
+    )
+    assert len(corpora.sensitivities) == 3 + READ_COST_WITHHELD, (
+        "the restricted store must be larger than the surfaceable count, or a Python-side "
+        "filter would materialise nothing extra and this would measure two equal-sized stores"
+    )
+
+    with _rows_materialized_by_the_canonical_store() as meter:
+        meter.rows = 0
+        baseline = await _call_on(
+            build_server(corpora.registry, up_to_internal),
+            "knowledge.search",
+            projectId=READ_COST_BASELINE_ID,
+            query="approved",
+        )
+        baseline_rows = meter.rows
+        meter.rows = 0
+        restricted = await _call_on(
+            build_server(corpora.registry, up_to_internal),
+            "knowledge.search",
+            projectId=READ_COST_RESTRICTED_ID,
+            query="approved",
+        )
+        restricted_rows = meter.rows
+
+    for response in (baseline, restricted):
+        assert response["retrieval"]["mode"] == "substring", (
+            "the corpus must answer through the unranked scan, or this does not exercise "
+            "`_scan`'s `list_items_by_status` read"
+        )
+    assert baseline["count"] == restricted["count"] == 3, (
+        f"both corpora hold the same three items this ceiling admits; a different count means "
+        f"an above-ceiling row surfaced or an admitted one was dropped "
+        f"({[hit['itemId'] for hit in restricted['results']]})"
+    )
+
+    assert baseline_rows > 0, (
+        "the meter counted no rows, so it is watching a connection the tool does not open -- "
+        "the measurement is inert and would pass whatever the read cost did"
+    )
+    assert restricted_rows == baseline_rows, (
+        f"the substring scan materialised {restricted_rows} rows against a store holding "
+        f"{READ_COST_WITHHELD} above-ceiling items and {baseline_rows} against one holding none. "
+        f"The rows are crossing into Python before anything withholds them, so the scan pays a "
+        f"revision read and a body scan for content the caller may not see, and latency reports "
+        f"by subtraction what `count` refuses to (SEC-13, T-17, #119)."
+    )
+
+
+@pytest.mark.asyncio
 async def test_the_substring_scan_never_surfaces_a_retired_item_even_with_include_unapproved(
     with_retired_items: ProjectRegistry,
 ) -> None:
@@ -1580,13 +1881,20 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     passing after hybrid retrieval shipped, which is how a capability
     declaration and its implementation drift apart unnoticed.
 
-    The drift runs the other way too, so all seven entries of the capability
+    The drift runs the other way too, so all eight entries of the capability
     block are pinned to the value they actually hold rather than only the `True`
-    ones: `knowledgeSearch` and the six booleans. `reviewIngestion`,
+    ones: `knowledgeSearch` and the seven booleans. `reviewIngestion`,
     `traceability` and `knowledgeSearch` were all unpinned until #129 -- mutations
     flipping each boolean to `True` and rewriting `"hybrid"` to `"substring"`
     survived the whole suite, and the first two are what Milestone 7 flips.
-    That the block holds *only* those seven is the sibling test below.
+    That the block holds *only* those eight is the sibling test below.
+
+    `sensitivityEnforcement` is the eighth, added in #119 phase 6, and it arrives
+    with two assertions rather than one. The second says what the flag must *not*
+    carry: this tool resolves no project and passes no gate, so the ceiling word
+    itself is withheld from it (ADR-0025) and a substring check over the whole
+    response holds that, because such a leak is as likely to arrive in `note` as
+    in a new field.
 
     Four fields sit outside the block, and all four are now pinned to a
     value here. `version` and `protocolVersion` are pinned against the
@@ -1635,6 +1943,28 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "traverses `nodes_fts` to leaves and a surfaced leaf carries `raptorPath`, "
         "so this flag now says what a caller can get. A client reading `true` may "
         "ask for the `raptorPath` a ranked hit over a `--raptor` index carries."
+    )
+    assert result["capabilities"]["sensitivityEnforcement"] is True, (
+        "#119 made the disclosure axis a read control on both halves of the "
+        "derived index, and ADR-0025 forbade advertising it in any form until all "
+        "four of its parts had landed. All four have, so the advertisement is owed "
+        "rather than merely permitted: a client reading `false` treats an empty "
+        "result as `nothing matched`, when it may mean `withheld by this "
+        "deployment's ceiling`."
+    )
+    serialized = json.dumps(result).casefold()
+    forbidden = ("ceiling", *(level.value for level in Sensitivity))
+    leaked = sorted(word for word in forbidden if word in serialized)
+    assert not leaked, (
+        f"the response names {sorted(leaked)}. The flag says the axis is "
+        f"enforced; it must not say *what* this deployment's ceiling is. This "
+        f"tool resolves no project, so it never passes `_resolve`, and a ceiling "
+        f"word here would tell a caller which levels it is not being shown -- a "
+        f"statement about withheld content on a surface no gate protects "
+        f"(ADR-0025). Case-folded, and over the serialized response rather than "
+        f"its keys, because that leak is as likely to arrive as a value, inside "
+        f"`note`, or under a camel-cased key (`sensitivityCeiling`) as it is to "
+        f"arrive as a new top-level field the population tests would catch."
     )
     assert result["capabilities"]["reviewIngestion"] is False, (
         "no review history is ingested: `infrastructure/github/` holds no adapter "
@@ -1728,6 +2058,7 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         "knowledgeGet",
         "hybridRetrieval",
         "raptor",
+        "sensitivityEnforcement",
         "reviewIngestion",
         "traceability",
         "writeTools",
@@ -2062,6 +2393,33 @@ def indexed(registry: ProjectRegistry) -> ProjectRegistry:
     return registry
 
 
+@pytest.fixture
+def indexed_serving_every_level(registry: ProjectRegistry) -> ProjectRegistry:
+    """``registry``, plus an index built under a declared ``restricted`` ceiling.
+
+    A **synchronous** fixture on purpose, like
+    ``indexed_under_an_internal_ceiling``: `theurian index build` embeds through
+    ``asyncio.run``, which raises inside the event loop an async test body already
+    owns.
+
+    The ceiling is declared *before* the build, because a build records the
+    flavor it ran under and nothing rewrites that afterwards. What this buys is a
+    published build that is allowed to hold every level -- the state ``indexed``
+    was in before #119's default flip, and the state a reclassification-lag test
+    needs, since under the shipped ``internal`` default a move to ``restricted``
+    is a withdrawal that purges the rows the lag is measured on.
+    """
+    _declare_ceiling(registry.path.parent, Sensitivity.RESTRICTED)
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return registry
+
+
 RECLASSIFY_ID = "01K1RRRRRR01234567890ABCDE"
 RECLASSIFY_MIGRATION = f"""apiVersion: theurian.dev/v1
 id: {RECLASSIFY_ID}
@@ -2090,7 +2448,7 @@ def _published_index_chunk_sensitivity(root: Path) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
-    indexed: ProjectRegistry,
+    indexed_serving_every_level: ProjectRegistry,
 ) -> None:
     """After a ``changeSensitivity`` and a ``migrate apply`` -- with NO rebuild --
     a search reports the item's new sensitivity, while the still-published index
@@ -2102,13 +2460,28 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
     instant the migration commits -- the assertion on the response's
     ``sensitivity`` holds it. The index column *does* lag: nothing rebuilt it, so
     its chunk still says ``internal``. That lag is asserted to be *present*, not
-    absent, because it is harmless: no gate reads a chunk's ``sensitivity`` before
-    #119, and an unsigned local index row nothing reads is not a disclosure
-    (SEC-7). The column matches canonical again after ``index build`` re-derives
+    absent, and since #119 phase 5 the reason has narrowed to one that is a
+    property of **this build's flavor**: this deployment declares a ``restricted``
+    ceiling, so the pointer records every level as indexed, ``restricted`` is
+    still a class this build was allowed to write, and the purge trigger correctly
+    removes nothing (``revisions_to_purge``). A build made under a *narrower*
+    ceiling answers the other way, and that is ``test_sensitivity_purge.py``'s
+    subject -- the pair is what keeps "a reclassification does not rebuild" from
+    being read as "a reclassification never touches the index". The column matches
+    canonical again after ``index build`` re-derives
     (``test_forest_builder_scale.py``); until then the response is already right,
     which is what makes the auto-rebuild the migration engine deliberately does
     not do (``test_migration_engine.py``) unnecessary.
+
+    **That ceiling used to be the shipped default and now has to be declared.**
+    With the default at ``internal``, this reclassification *is* a withdrawal: the
+    apply purges the item's chunk rows and the assertion below reads an empty set
+    instead of the lag. Declaring the wider ceiling is how the fixture keeps this
+    test about the lag rather than about the purge -- and the grant is declared
+    with it, because a build the deployment cannot serve answers from the
+    substring scan and the response would no longer come from the index at all.
     """
+    indexed = indexed_serving_every_level
     root = Path(indexed.load()["demo"]["rootPath"])
     assert _published_index_chunk_sensitivity(root) == {"internal"}, (
         "the fixture's index must be built at the original sensitivity, or the lag below "
@@ -2125,7 +2498,12 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
     finally:
         monkey.undo()
 
-    result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
+    result = await _call_on(
+        build_server(indexed, EVERY_LEVEL),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
 
     hits = [hit for hit in result["results"] if hit["itemId"] == "architecture.auth-policy"]
     assert hits, "the reclassified item must still be found -- it was not withdrawn"
@@ -2134,8 +2512,8 @@ async def test_a_reclassification_shows_in_the_response_before_any_rebuild(
         "one -- the label decides who may read the content (SEC-14)"
     )
     assert _published_index_chunk_sensitivity(root) == {"internal"}, (
-        "the reclassification rebuilt or purged the index -- the point of this test is "
-        "that it does neither, and that the response is right anyway"
+        "the reclassification rebuilt or purged the index -- against a build that holds "
+        "every level it must do neither, and the response is right anyway"
     )
 
 
@@ -2154,10 +2532,18 @@ async def test_knowledge_get_reports_the_items_current_sensitivity_not_the_revis
     ``knowledge.get`` is too, so a caller reading back the revision's stale
     label there would have satisfied every test that ran before it. No index
     is needed: ``knowledge.get`` reads the canonical store directly.
+
+    **Served under an explicit :data:`EVERY_LEVEL` grant, because the subject is
+    the label's authority and not the ceiling.** The reclassification below moves
+    the item to ``restricted``, which the shipped default withholds since #119's
+    closing commit: under the default grant this test read a refusal instead of a
+    label, and would have been measuring the gate that was already pinned three
+    times over.
     """
     root = Path(registry.load()["demo"]["rootPath"])
-    before = await _call(
-        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    server = build_server(registry, EVERY_LEVEL)
+    before = await _call_on(
+        server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
     )
     assert before["sensitivity"] == "internal", (
         "the fixture's item must start at the default sensitivity, or the reclassification "
@@ -2174,8 +2560,8 @@ async def test_knowledge_get_reports_the_items_current_sensitivity_not_the_revis
     finally:
         monkey.undo()
 
-    after = await _call(
-        registry, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    after = await _call_on(
+        server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
     )
 
     assert after["sensitivity"] == "restricted", (
@@ -2199,9 +2585,15 @@ async def test_the_substring_scan_reports_the_items_current_sensitivity_not_the_
     ``knowledge.get``; nothing before this test proved it, so a caller reading
     back the revision's stale label there would have satisfied every test that
     ran before it too.
+
+    **Served under an explicit :data:`EVERY_LEVEL` grant, for the reason the
+    ``knowledge.get`` sibling above gives:** the reclassification moves the item
+    to ``restricted``, which the shipped default withholds, and the subject here
+    is which field the scan reads rather than which rows it may return.
     """
     root = Path(registry.load()["demo"]["rootPath"])
-    before = await _call(registry, "knowledge.search", projectId="demo", query="signed token")
+    server = build_server(registry, EVERY_LEVEL)
+    before = await _call_on(server, "knowledge.search", projectId="demo", query="signed token")
     assert before["retrieval"]["mode"] == "substring", (
         "the fixture must answer through the unranked scan, or the reclassification below "
         "does not exercise `_scan`'s call site"
@@ -2224,7 +2616,7 @@ async def test_the_substring_scan_reports_the_items_current_sensitivity_not_the_
     finally:
         monkey.undo()
 
-    after = await _call(registry, "knowledge.search", projectId="demo", query="signed token")
+    after = await _call_on(server, "knowledge.search", projectId="demo", query="signed token")
 
     assert after["retrieval"]["mode"] == "substring"
     hit = next(hit for hit in after["results"] if hit["itemId"] == "architecture.auth-policy")
@@ -2678,7 +3070,10 @@ def test_the_cap_is_the_only_reason_the_long_document_appears_once(
     root = Path(indexed_long_document.load()["demo"]["rootPath"])
     (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
     outcome = RetrievalService(SqliteIndexStore(built)).search(
-        SearchRequest(query="gateway", project_id="demo", per_item=2), NOTHING_WITHHELD
+        SearchRequest(
+            query="gateway", project_id="demo", per_item=2, visible_sensitivities=EVERY_SENSITIVITY
+        ),
+        NOTHING_WITHHELD,
     )
 
     items = [candidate.item_id for candidate in outcome.candidates]
@@ -3366,10 +3761,22 @@ def test_the_stale_index_still_ranks_the_withheld_document(
     service = RetrievalService(SqliteIndexStore(built), HashingEmbedding())
 
     found = service.search(
-        SearchRequest(query=probe, project_id="demo", use_dense=use_dense), NOTHING_WITHHELD
+        SearchRequest(
+            query=probe,
+            project_id="demo",
+            use_dense=use_dense,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
     nothing = service.search(
-        SearchRequest(query=control, project_id="demo", use_dense=use_dense), NOTHING_WITHHELD
+        SearchRequest(
+            query=control,
+            project_id="demo",
+            use_dense=use_dense,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
+        NOTHING_WITHHELD,
     )
 
     assert [c.item_id for c in found.candidates] == ["architecture.runbook"], (
@@ -3558,7 +3965,12 @@ def test_the_crowding_probe_puts_the_withheld_document_among_visible_ones(
     root = Path(crowded.load()["demo"]["rootPath"])
     (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
     outcome = RetrievalService(SqliteIndexStore(built)).search(
-        SearchRequest(query=f"gateway {LEAKED_CREDENTIAL}", project_id="demo", per_item=1),
+        SearchRequest(
+            query=f"gateway {LEAKED_CREDENTIAL}",
+            project_id="demo",
+            per_item=1,
+            visible_sensitivities=EVERY_SENSITIVITY,
+        ),
         NOTHING_WITHHELD,
     )
     items = [candidate.item_id for candidate in outcome.candidates]
@@ -4985,10 +5397,16 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
     index = SqliteIndexStore(built)
 
     words = index.search_lexical(
-        corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
+        corpus.query,
+        project_id="depth-probe",
+        limit=DOCUMENTED_DEPTH,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
     trigrams = index.search_substring(
-        corpus.query, project_id="depth-probe", limit=DOCUMENTED_DEPTH
+        corpus.query,
+        project_id="depth-probe",
+        limit=DOCUMENTED_DEPTH,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
 
     assert (len(words), len(trigrams)) == (corpus.word_index_rows, DOCUMENTED_DEPTH), (
@@ -5002,7 +5420,10 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
         "`lexical` below prove nothing about it"
     )
     crowd = index.search_substring(
-        corpus.query, project_id="depth-probe", limit=FIRST_PASS_DEPTH
+        corpus.query,
+        project_id="depth-probe",
+        limit=FIRST_PASS_DEPTH,
+        visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
 
     assert len(crowd) > CANDIDATE_DEPTH, (
@@ -6509,16 +6930,26 @@ async def test_the_integrity_signal_is_identical_across_a_withheld_only_differen
     three surfaces use:
 
     - dropping the status predicate from `count_surfaceable_items` -- the read
-      `knowledge.search` and `knowledge.get` share -- fails the equality below on
-      `knowledge.search`;
-    - dropping it from `count_surfaceable_by_status`, whose sum
-      `knowledge.status` passes in instead, fails the same equality on
-      `knowledge.status` with `itemsByStatus` carrying `rejected: 25`.
+      all three tools' integrity check shares -- fails the `integrity` equality
+      below on every one of them;
+    - dropping it from `count_surfaceable_by_status` -- the read that produces
+      what `knowledge.status` *publishes* -- fails the `itemsByStatus` equality
+      below, which carries `rejected: 25` on the heavy corpus alone.
 
-    Both assertions are needed and they fail differently. The first is the
-    property; the second exists because a build where *both* corpora reported
-    damage would satisfy an equality of presence while saying nothing. Mirrors
-    the #19 status differential.
+    **Two readers, and since #119 phase 6 they answer two different questions.**
+    `knowledge.status` used to pass the sum of its published breakdown into the
+    integrity check, so one mutation moved both. Phase 6 narrowed the published
+    half by the deployment's sensitivity ceiling and left the checked half
+    ceiling-blind, which split them: a widened `count_surfaceable_by_status`
+    now moves no `integrity` key at all. So the published counts are compared
+    here directly rather than through the signal they no longer feed --
+    otherwise this test would have gone on claiming a mutation it had stopped
+    catching, which is the exact failure it exists to prevent one level down.
+
+    The `integrity` assertions are needed in both directions and they fail
+    differently. The first is the property; the second exists because a build
+    where *both* corpora reported damage would satisfy an equality of presence
+    while saying nothing. Mirrors the #19 status differential.
     """
     corpora = read_cost_corpora
 
@@ -6551,6 +6982,13 @@ async def test_the_integrity_signal_is_identical_across_a_withheld_only_differen
             f"{tool}: both corpora are healthy, so neither may report damage -- an equal signal "
             f"that was present in both would pass the line above for the wrong reason"
         )
+        if tool == "knowledge.status":
+            assert baseline["itemsByStatus"] == heavy["itemsByStatus"] == {"approved": 3}, (
+                f"the published breakdown moved with withheld content alone: baseline "
+                f"{baseline['itemsByStatus']}, heavy {heavy['itemsByStatus']}. This is the half "
+                f"`count_surfaceable_by_status` produces, and since it stopped feeding the "
+                f"integrity check it is the only place a widened predicate there shows up."
+            )
 
 
 @contextlib.contextmanager
@@ -7848,3 +8286,819 @@ async def test_a_within_surfaceable_status_move_moves_no_count_and_is_silent(
     assert "integrity" not in search, "a within-set status move moved no count and must be silent"
     assert "integrity" not in status, "a within-set status move moved no count and must be silent"
     assert "integrity" not in got, "a within-set status move moved no count and must be silent"
+
+
+# -- Authorization (#119, ADR-0025) ----------------------------------------
+
+
+def _allow_all() -> AuthorizationGrant:
+    return AuthorizationGrant(
+        tenant=DEPLOYMENT_TENANT,
+        sensitivities=frozenset(Sensitivity),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+
+
+CONFIDENTIAL_ITEM = "architecture.payroll-bands"
+CONFIDENTIAL_BODY = (
+    "# Payroll bands\n\nEvery call carries a signed token. Band L7 is paid 240000.\n"
+)
+CONFIDENTIAL_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: 01K1FAAAAA01234567890ABCDE
+createdAt: 2026-08-02T14:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: {CONFIDENTIAL_ITEM}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {CONFIDENTIAL_ITEM}
+    revisionId: 01K1FAAREV01234567890ABCDE
+    contentFile: ../knowledge/architecture/payroll-bands.md
+    contentSha256: {body_pin(CONFIDENTIAL_BODY)}
+    metadata:
+      title: Payroll bands
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      sensitivity: confidential
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/payroll-bands.md
+"""
+
+
+@pytest.fixture
+def a_confidential_item(registry: ProjectRegistry) -> ProjectRegistry:
+    """``registry``, plus one approved ``confidential`` item and no index.
+
+    The corpus keeps its ``internal`` item, so a response can be non-empty while
+    the confidential one is withheld -- without which "the default withholds it"
+    and "the default answers nothing" are the same observation.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    (root / ".theurian/knowledge/architecture/payroll-bands.md").write_text(CONFIDENTIAL_BODY)
+    (root / ".theurian/migrations/01K1FAAAAA01234567890ABCDE-payroll.yaml").write_text(
+        CONFIDENTIAL_MIGRATION
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return registry
+
+
+@pytest.fixture
+def a_confidential_item_indexed_by_default(a_confidential_item: ProjectRegistry) -> ProjectRegistry:
+    """The confidential corpus, built with **no serving profile declared**.
+
+    A **synchronous** fixture, like every other one in this file that builds:
+    `index build` embeds through ``asyncio.run``, which raises inside the event
+    loop an async test body already owns.
+    """
+    _build_index(a_confidential_item)
+    return a_confidential_item
+
+
+@pytest.fixture
+def a_confidential_item_indexed_at_restricted(
+    a_confidential_item: ProjectRegistry,
+) -> ProjectRegistry:
+    """The same corpus after the shipped remedy: declare `restricted`, rebuild.
+
+    The declaration comes first because a build records the flavor it ran under
+    and nothing rewrites that afterwards -- which is why the remedy is two
+    commands and not one.
+    """
+    _declare_ceiling(a_confidential_item.path.parent, Sensitivity.RESTRICTED)
+    _build_index(a_confidential_item)
+    return a_confidential_item
+
+
+#: The revision `a_confidential_item` writes for the confidential item, so a test
+#: can read the chunk row that revision produced (its build-time sensitivity).
+PAYROLL_REVISION_ID = "01K1FAAREV01234567890ABCDE"
+
+#: Sorts after the confidential item's create migration (`01K1FAAAAA...`), because
+#: `migrate apply` replays in ULID order and a declassify replayed before the
+#: create names an item that does not exist yet.
+DOWNCLASSIFY_ID = "01K1GAAAAA01234567890ABCDE"
+
+#: Reclassify the confidential item *down* to `internal`, with no rebuild. Against
+#: a build made under `restricted` this is not a withdrawal -- `internal` is within
+#: that flavor -- so the apply purges nothing and the chunk keeps its build-time
+#: `confidential` label while the item's current level becomes `internal`.
+DOWNCLASSIFY_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {DOWNCLASSIFY_ID}
+createdAt: 2026-08-02T15:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: changeSensitivity
+    itemId: {CONFIDENTIAL_ITEM}
+    sensitivity: internal
+    reason: Declassified after review
+"""
+
+
+def _chunk_sensitivities_for(root: Path, revision_id: str) -> set[str]:
+    """The sensitivities the published index stamped on ``revision_id``'s chunks."""
+    payload = read_active_index_pointer(ProjectPaths.of(root)).payload
+    assert payload is not None, "the project must have a published index"
+    index = ProjectPaths.of(root).index_for(str(payload["indexBuildId"]))
+    with contextlib.closing(sqlite3.connect(index)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT sensitivity FROM chunks WHERE revision_id = ?", (revision_id,)
+        ).fetchall()
+    return {row["sensitivity"] for row in rows}
+
+
+@pytest.fixture
+def a_wide_build_reclassified_down(a_confidential_item: ProjectRegistry) -> ProjectRegistry:
+    """A build holding a `confidential` chunk whose item is now `internal`, served narrow.
+
+    The state the retriever's own `WHERE sensitivity IN (...)` predicate (#119 phase
+    4) exists for, and the only one that reaches it. A real build under a ceiling
+    never writes a row above that ceiling, and the serve path stands aside any build
+    whose recorded flavor differs from the grant -- so the predicate is
+    defense-in-depth with no natural corpus, which is why its wiring survived its own
+    deletion. This constructs the synthetic-but-reachable state (the pointer is
+    derived and unsigned, SEC-7):
+
+    1. declare `restricted` and build, so the `confidential` item gets a chunk row
+       stamped `confidential` and the pointer records every level as indexed;
+    2. reclassify that item *down* to `internal` with no rebuild -- not a withdrawal
+       at this flavor, so the chunk keeps its `confidential` label while the item's
+       current canonical level becomes `internal`;
+    3. hand-narrow the pointer's recorded flavor to `{public, internal}`, the grant
+       the test serves under, so `_published_index` uses the build rather than
+       standing it aside on a flavor mismatch.
+
+    The result: a chunk stamped above the served ceiling, in a build the flavor gate
+    accepts, whose item the canonical re-check would admit. Only the retriever
+    predicate keeps that chunk out of the ranking.
+    """
+    registry = a_confidential_item
+    _declare_ceiling(registry.path.parent, Sensitivity.RESTRICTED)
+    root = Path(registry.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+        (root / f".theurian/migrations/{DOWNCLASSIFY_ID}-declassify.yaml").write_text(
+            DOWNCLASSIFY_MIGRATION
+        )
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+
+    paths = ProjectPaths.of(root)
+    payload = json.loads(paths.active_index_pointer.read_text())
+    payload["indexedSensitivities"] = encode_sensitivities(
+        frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+    )
+    paths.active_index_pointer.write_text(json.dumps(payload))
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_the_retriever_predicate_withholds_an_above_flavor_chunk_the_recheck_admits(
+    a_wide_build_reclassified_down: ProjectRegistry,
+) -> None:
+    """#119 phase 4. The retriever's `WHERE sensitivity IN (...)` is wired, not just present.
+
+    `hybrid_answer` threads the deployment grant to the retriever through
+    `SearchRequest(visible_sensitivities=...)`. Replacing that with an allow-all set
+    left the whole suite green, because the store-layer tests exercise `_scope`
+    directly and the sibling canonical re-check (`ResultRequest`) catches an
+    above-ceiling row on its *current* level in every natural corpus. This is the
+    asymmetric half the re-check cannot cover: a chunk stamped `confidential` whose
+    item is `internal` now. The re-check admits it (current level within the grant),
+    so the retriever predicate is the only thing that keeps the stale-labelled chunk
+    out of the ranking -- exactly the wiring the mutation cut.
+
+    Preconditions make the assertion non-vacuous from both sides: the confidential
+    chunk really is in the published build, and `knowledge.get` hands the item's body
+    over under this same grant -- so the item is disclosable, and its absence from
+    the search is the retriever predicate at work rather than the ceiling withholding
+    the item outright. RED under the mutation: with the predicate handed
+    `frozenset(Sensitivity)`, the `confidential` chunk is ranked, the re-check admits
+    the now-`internal` item, and it appears in the results.
+    """
+    registry = a_wide_build_reclassified_down
+    root = Path(registry.load()["demo"]["rootPath"])
+    grant = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+    server = build_server(registry, grant)
+
+    assert _chunk_sensitivities_for(root, PAYROLL_REVISION_ID) == {"confidential"}, (
+        "precondition: the published build must still hold the item's chunk stamped "
+        "`confidential`, or its absence below is the absence of a chunk, not of a gate"
+    )
+    fetched = await _call_on(server, "knowledge.get", projectId="demo", itemId=CONFIDENTIAL_ITEM)
+    assert fetched["sensitivity"] == "internal", (
+        "precondition: the item is `internal` now, so the canonical re-check admits it -- "
+        "which is what leaves the retriever predicate as the only gate on the search"
+    )
+
+    searched = await _call_on(server, "knowledge.search", projectId="demo", query="signed token")
+    item_ids = {hit["itemId"] for hit in searched["results"]}
+
+    assert searched["retrieval"]["indexed"] is True, (
+        f"the flavor gate must accept this build so the ranked path answers, or this is a "
+        f"test of the unranked scan: {searched['retrieval']}"
+    )
+    assert "architecture.auth-policy" in item_ids, (
+        "the within-flavor chunk must be returned, or the absence below is an empty corpus"
+    )
+    assert CONFIDENTIAL_ITEM not in item_ids, (
+        f"a chunk stamped above the served ceiling was ranked and returned: {searched['results']}. "
+        f"The retriever's own `WHERE sensitivity IN (...)` must keep it out of the ranking."
+    )
+    assert "240000" not in json.dumps(searched), (
+        "the above-flavor chunk's body reached the response through an excerpt"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_default_withholds_a_confidential_item(
+    a_confidential_item_indexed_by_default: ProjectRegistry,
+) -> None:
+    """#119's closing commit: the default ceiling is `internal`, and it withholds.
+
+    **This test asserted the opposite until the flip**, as
+    `test_the_default_grant_publishes_the_same_response_as_an_explicit_allow_all`
+    -- the behaviour-neutrality pin phase 1 shipped, which held that
+    `build_server(registry)` with no grant published byte-for-byte what an
+    explicit allow-all grant published. The flip made that false by design, and
+    it went RED on `knowledge.search` with `mode: lexical` against
+    `mode: substring`. Rewritten into the property that replaced it rather than
+    deleted, because the construction site is the same one: the default grant,
+    which is what the daemon's own first start uses.
+
+    All three tools are exercised because they reach withheld content by three
+    different routes -- ranked retrieval, a primary-key fetch, and a count over
+    rows the caller may not see -- and #119's dogfood measurement found the leak
+    on the first two.
+
+    **Non-vacuous in two directions.** The `internal` item must still answer, or
+    the absence below is the absence of a corpus; and the sibling test below
+    declares `restricted`, rebuilds, and requires this same item back, or a gate
+    that withheld everything would pass here.
+    """
+    default = build_server(a_confidential_item_indexed_by_default)
+    search = await _call_on(default, "knowledge.search", projectId="demo", query="token")
+    status = await _call_on(default, "knowledge.status", projectId="demo")
+
+    assert search["results"], (
+        "the visible half of the corpus must answer, or the absence below is the absence "
+        "of a corpus rather than of a withheld item"
+    )
+    assert CONFIDENTIAL_ITEM not in {hit["itemId"] for hit in search["results"]}, (
+        "the shipped default served a `confidential` item -- this is the dogfood-measured "
+        "leak #119's default flip exists to close"
+    )
+    assert "240000" not in json.dumps(search), (
+        "an excerpt carried the confidential body's text even though its item was absent "
+        "from the result list"
+    )
+    refusal = await _call_failing_on(
+        default, "knowledge.get", projectId="demo", itemId=CONFIDENTIAL_ITEM
+    )
+    assert CONFIDENTIAL_ITEM in refusal, f"the refusal must name the id asked for: {refusal}"
+    assert "240000" not in refusal, f"the refusal carried the withheld body: {refusal}"
+    # Two, not three: the `registry` corpus contributes one `approved` item and
+    # one `draft`, both `internal`, and the confidential one is withheld. The
+    # sibling below requires three under a declared ceiling, which is what makes
+    # this a narrowing rather than a number.
+    assert status["itemCount"] == 2, (
+        "`knowledge.status` counted the withheld item: the counts are a statistic over rows "
+        "the caller may not see and follow the grant (#119 phase 6)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_declared_restricted_ceiling_serves_what_the_default_withholds(
+    a_confidential_item_indexed_at_restricted: ProjectRegistry,
+) -> None:
+    """The other half of the pair above, and the shipped remedy run rather than described.
+
+    `echo restricted > <data_dir>/auth/serving-profile` then `theurian index
+    build` -- the two commands the CHANGELOG's BREAKING entry names -- and the
+    same three tools must hand back what the default withheld. Without this, a
+    gate that withheld everything, or a corpus whose confidential item never
+    existed, would satisfy the sibling above.
+    """
+    served = build_server(a_confidential_item_indexed_at_restricted, EVERY_LEVEL)
+    search = await _call_on(served, "knowledge.search", projectId="demo", query="token")
+    fetched = await _call_on(served, "knowledge.get", projectId="demo", itemId=CONFIDENTIAL_ITEM)
+    status = await _call_on(served, "knowledge.status", projectId="demo")
+
+    assert CONFIDENTIAL_ITEM in {hit["itemId"] for hit in search["results"]}, (
+        "an operator who declared `restricted` and rebuilt must get the item back, or the "
+        "withholding in the sibling above is indistinguishable from a broken corpus"
+    )
+    assert "240000" in fetched["body"], (
+        "the declared ceiling must serve the body the default withheld"
+    )
+    assert status["itemCount"] == 3, (
+        "the declared ceiling must count the confidential item too -- two under the shipped "
+        "default, three here -- or the narrowed count in the sibling above proves nothing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_grant_from_another_tenant_is_refused_before_the_registry_is_read(
+    registry: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#119 decision 4: the request boundary, at the seam every knowledge tool passes.
+
+    Unreachable through the shipped composition -- `StaticAuthorizationProvider`
+    stamps `DEPLOYMENT_TENANT` on every grant it builds -- and reachable here,
+    which is the point: a guard no input reaches survives its own deletion. The
+    grant is assembled by hand so the refusal has something to refuse.
+
+    The registry is made unreadable *after* the server is built, so a refusal that
+    still names both tenants proves the check ran before `_resolve` read the file.
+    That ordering is deliberate: `_unresolvable` names every registered project,
+    and a caller from another tenant must not be able to enumerate them by asking
+    for one that does not exist.
+    """
+    foreign = AuthorizationGrant(
+        tenant=TenantId("other-tenant"),
+        sensitivities=frozenset(Sensitivity),
+        acl_groups=DEPLOYMENT_ACL_GROUPS,
+    )
+    server = build_server(registry, foreign)
+
+    def _must_not_be_read(self: ProjectRegistry) -> dict[str, dict[str, str]]:
+        raise AssertionError("the registry was read before the tenant boundary was checked")
+
+    # Patched on the class, not the instance: `ProjectRegistry` is a frozen
+    # dataclass, so `setattr` on one of them raises before the test can run.
+    monkeypatch.setattr(ProjectRegistry, "load", _must_not_be_read)
+
+    with pytest.raises(SdkToolError) as raised:
+        await _call_on(server, "knowledge.search", projectId="demo", query="token")
+
+    message = str(raised.value)
+    assert "'other-tenant'" in message, message
+    assert f"{DEPLOYMENT_TENANT.value!r}" in message, message
+    assert "demo" not in message, "the refusal must not name what this daemon serves"
+
+
+@pytest.mark.asyncio
+async def test_the_deployments_own_tenant_is_not_refused(registry: ProjectRegistry) -> None:
+    """The counterpart, so the refusal above is not vacuously green.
+
+    Without it, a boundary check that refused every grant would pass the test
+    above and fail nothing -- and would take every tool on the daemon with it.
+    """
+    server = build_server(registry, _allow_all())
+
+    result = await _call_on(server, "knowledge.search", projectId="demo", query="token")
+
+    assert result["results"]
+
+
+@pytest.mark.asyncio
+async def test_a_narrow_ceiling_withholds_the_item_from_search_and_from_get(
+    indexed: ProjectRegistry,
+) -> None:
+    """#119 phase 2. What phase 1 recorded as unenforced, now enforced.
+
+    This test used to assert the opposite, under the name
+    `test_a_narrow_ceiling_withholds_nothing_yet`: the grant reached every tool
+    and no retrieval predicate read it, so a deployment declaring the narrowest
+    possible ceiling still served the item's excerpt through `knowledge.search`
+    and its full body through `knowledge.get`. Rewritten rather than deleted,
+    because the *pair* is the property -- closing search alone achieves nothing
+    while `knowledge.get` will hand over the same body to a caller who already
+    holds the id, which is the shape the status gate was measured failing at.
+
+    Both tools, one grant, one corpus, and the item is above the ceiling on both
+    sides of the assertion.
+
+    **Which path answers the search half moved in #119 phase 3, and the reason
+    code is asserted so that it cannot move again unnoticed.** The `indexed`
+    fixture builds under the shipped default, so this deployment's grant is
+    narrower than the flavor its published build records: the ranked path stands
+    aside (`serving-profile-mismatch`) and the unranked scan answers, where the
+    grant is a SQL predicate rather than a Python check. That is the shipped
+    behaviour for an operator who lowered a ceiling without rebuilding, and it is
+    still this pair's property -- the scan is reachable by deleting a file, so a
+    fallback that served the body would make `rm` the way past the ceiling. What
+    it is no longer is a test of `CanonicalVisibility._may_surface`, which its
+    own failure message used to claim;
+    `test_the_ranked_path_withholds_a_document_reclassified_after_the_build` is
+    where that gate is exercised now.
+    """
+    assert FIXTURE_SENSITIVITY not in PUBLIC_ONLY.sensitivities, (
+        "the fixture item must be above this ceiling, or neither assertion below means anything"
+    )
+    server = build_server(indexed, PUBLIC_ONLY)
+
+    searched = await _call_on(server, "knowledge.search", projectId="demo", query="token")
+    with pytest.raises(SdkToolError) as refused:
+        await _call_on(server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy")
+
+    assert searched["retrieval"]["fallbackReason"] == "serving-profile-mismatch", (
+        f"the build this deployment publishes was made under a wider ceiling, so the ranked "
+        f"path must stand aside rather than search it: {searched['retrieval']}"
+    )
+    assert searched["count"] == 0, (
+        f"an above-ceiling item reached the results: {searched['results']}. The scan hands the "
+        f"grant to `list_items_by_status` as a SQL predicate, so no such row should ever have "
+        f"been materialised."
+    )
+    assert searched["results"] == []
+    assert "is not present" in str(refused.value), (
+        f"`knowledge.get` refused an above-ceiling item with {str(refused.value)!r}. It must "
+        f"refuse with the words that refuse an absent item -- a distinct message confirms the "
+        f"item exists and names its disclosure class (SEC-13)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_allow_all_grant_still_serves_the_item_both_ways(
+    indexed: ProjectRegistry,
+) -> None:
+    """The counterpart, so the withholding above is not vacuously green.
+
+    A gate that refused everything would satisfy every assertion in the test
+    above and take the whole daemon with it. This is the same corpus and the same
+    two calls under the shipped default grant, and it is what makes "the ceiling
+    decides" a claim about the ceiling rather than about the gate existing.
+    """
+    server = build_server(indexed, _allow_all())
+
+    searched = await _call_on(server, "knowledge.search", projectId="demo", query="token")
+    fetched = await _call_on(
+        server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy"
+    )
+
+    assert searched["results"][0]["sensitivity"] == FIXTURE_SENSITIVITY.value
+    assert fetched["body"] == BODY
+
+
+@pytest.mark.asyncio
+async def test_knowledge_status_counts_only_what_this_deployment_may_disclose(
+    registry: ProjectRegistry,
+) -> None:
+    """#119 phase 6, SEC-13, T-17. The last tool that counted what it would not show.
+
+    This test used to assert the opposite, under the name
+    `test_knowledge_status_counts_are_not_yet_narrowed_by_the_ceiling`: phases 2
+    to 5 closed `knowledge.search`, `knowledge.get` and the index, and left
+    `itemCount`/`itemsByStatus` counting every surfaceable row whatever the
+    ceiling. That is *a statistic over rows the caller may not see* -- the
+    disclosure family member that reaches the same content through another tool,
+    and the one a reader of the other four gates would never think to check.
+    Rewritten rather than deleted, because the record of what moved is the point
+    (maintainer decision, 2026-08-24, recorded on #119).
+
+    **Both halves in one test, and the second is not decoration.** A narrowing
+    that counted *nothing* would satisfy the first assertion and take the tool
+    with it, so the same corpus is asked again under an allow-all grant and must
+    report both items. What separates the two calls is the grant and nothing
+    else.
+
+    The integrity signal's absence is asserted on both sides for the reason the
+    previous version of this test asserted it: the #30 comparison's recorded half
+    is written ceiling-blind, so narrowing the *published* counts must not narrow
+    the *checked* population. `test_narrowing_the_ceiling_alone_never_reports_
+    damage` is where that is pinned with the two operands read out of SQLite, and
+    it is what makes this test's `"integrity" not in` more than a hope.
+    """
+    narrowed = await _call_on(
+        build_server(registry, PUBLIC_ONLY), "knowledge.status", projectId="demo"
+    )
+    served = await _call_on(
+        build_server(registry, _allow_all()), "knowledge.status", projectId="demo"
+    )
+
+    assert FIXTURE_SENSITIVITY not in PUBLIC_ONLY.sensitivities, (
+        "the fixture's items must be above this ceiling, or the narrowing below is vacuous"
+    )
+    assert narrowed["itemsByStatus"] == {}, (
+        f"`knowledge.status` counted items this deployment may not disclose "
+        f"({narrowed['itemsByStatus']}). Both of the fixture's items are `internal` and this "
+        f"ceiling serves `public` alone, so the breakdown must be empty (SEC-13, T-17)."
+    )
+    assert narrowed["itemCount"] == 0, (
+        f"and the total is the sum of that breakdown, so it must be 0: {narrowed['itemCount']}"
+    )
+    assert served["itemsByStatus"] == {"approved": 1, "draft": 1}, (
+        f"the allow-all half must still count both items ({served['itemsByStatus']}), or the "
+        f"assertion above is satisfied by a tool that counts nothing for anyone"
+    )
+    assert served["itemCount"] == 2
+    for answer, name in ((narrowed, "narrowed"), (served, "allow-all")):
+        assert "integrity" not in answer, (
+            f"{name}: a healthy project reported damage ({answer.get('integrity')}). The "
+            f"published counts follow the grant; the #30 comparison must not."
+        )
+
+
+@pytest.mark.asyncio
+async def test_narrowing_the_ceiling_alone_never_reports_damage(
+    registry: ProjectRegistry,
+) -> None:
+    """#119 phase 6, #30. The failure mode that kept the counts ungated until now.
+
+    `itemCount` is published narrowed and `project_integrity.expected_surfaceable_
+    count` is recorded ceiling-blind, so on any deployment that serves less than
+    it holds the two numbers *disagree by design*. An implementation that fed the
+    published number into the #30 comparison -- which is exactly what this tool
+    did before phase 6, to save one `COUNT` -- reports `damageDetected` on a
+    healthy project, on every call, with a remedy that tells the operator to
+    delete their state directory. A false security claim is worse than the count
+    it tidies, which is why phase 2 left the counts alone rather than narrowing
+    one half.
+
+    The two operands are read straight out of SQLite rather than off the
+    response, for the reason `_expected_surfaceable_count` records: an assertion
+    built from the tool's own numbers would hold over a build that had stopped
+    comparing anything. **Their disagreement is the precondition** -- if the
+    published count and the recorded expectation happened to be equal, "no damage
+    reported" would hold for any implementation, including the broken one.
+
+    RED under that implementation: restoring `live_surfaceable=sum(by_status.
+    values())` at `knowledge_status`'s `_measure_integrity` call makes the
+    narrowed half report `integrity` with `damageDetected: true`.
+    """
+    database, _ = _state_database(registry)
+
+    narrowed = await _call_on(
+        build_server(registry, PUBLIC_ONLY), "knowledge.status", projectId="demo"
+    )
+    served = await _call_on(
+        build_server(registry, _allow_all()), "knowledge.status", projectId="demo"
+    )
+
+    assert _expected_surfaceable_count(database) == 2, (
+        "the writer must have recorded both items ceiling-blind, or there is nothing here "
+        "for a narrowed count to disagree with"
+    )
+    assert narrowed["itemCount"] != _expected_surfaceable_count(database), (
+        f"the published count ({narrowed['itemCount']}) must differ from the recorded "
+        f"expectation, or 'this reports no damage' is true of any implementation"
+    )
+    assert narrowed["itemCount"] < served["itemCount"], (
+        "and the ceiling must be what moved it, not an empty project"
+    )
+    assert "integrity" not in narrowed, (
+        f"tightening the ceiling alone reported damage: {narrowed.get('integrity')}. The #30 "
+        f"comparison reads `count_surfaceable_items`, which takes no grant, precisely so that "
+        f"an operator's own access-control decision cannot look like a corrupt database."
+    )
+
+
+@pytest.fixture
+def indexed_under_an_internal_ceiling(indexed: ProjectRegistry) -> ProjectRegistry:
+    """``indexed``, rebuilt under a declared ``internal`` ceiling (#119 phase 3).
+
+    A **synchronous** fixture on purpose: `theurian index build` embeds through
+    ``asyncio.run``, which raises inside the event loop an async test body already
+    owns. The corpus is entirely ``internal``, so this build holds exactly what
+    the allow-all one held -- what changes is the flavor the pointer records, and
+    therefore which grant can be answered from it at all.
+    """
+    _declare_ceiling(indexed.path.parent, Sensitivity.INTERNAL)
+    root = Path(indexed.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return indexed
+
+
+@pytest.mark.asyncio
+async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build(
+    indexed_under_an_internal_ceiling: ProjectRegistry,
+) -> None:
+    """#119 phase 2, the window this gate exists to close before the purge does.
+
+    The asymmetry is the whole test: the index is built *while the item is
+    `internal`*, so its chunk rows hold the document's text stamped `internal`
+    and every retriever still matches it. The item is then reclassified to
+    `restricted` by an ordinary migration, with **no rebuild** -- the state
+    `test_a_reclassification_shows_in_the_response_before_any_rebuild` pins as
+    normal. A deployment serving up to `internal` must not return it.
+
+    Nothing index-side can produce that answer: the index row says `internal`,
+    which the ceiling admits, and #119 phase 3's build-side exclusion cannot
+    reach it either -- the build was allowed to write this row, and the
+    reclassification came afterwards. Only the canonical re-check on the *item's
+    current* level can, which is why this gate goes in `CanonicalVisibility` and
+    not beside the retrievers. Since phase 3, reclassification is the only way an
+    above-ceiling row is in a file this deployment reads at all, which makes this
+    test the whole of the ranked path's coverage on the sensitivity axis.
+
+    **Both halves run under one grant, before and after the migration**, and that
+    shape is forced rather than stylistic. The comparison used to be one index
+    against two grants, narrow and allow-all, which phase 3 turned into a
+    comparison of two *fallbacks*: a build records the ceiling it ran under and
+    the serve path stands aside any build made under another
+    (`serving-profile-mismatch`), so one index can answer at most one of two
+    different grants. Measured before this was rewritten -- both calls came back
+    `indexed: false, mode: substring`, and the assertion below held over the
+    unranked scan while the test's name claimed the ranked path. So the index is
+    built under the ceiling it is served under, and the only thing that moves
+    between the two calls is the item's own level.
+
+    `indexed: true` is asserted on both halves for that reason, and the index is
+    asserted to still hold the old label so that a rebuild slipping into the
+    fixture fails here rather than turning this into a test of the build.
+
+    **The apply runs with the pointer withheld, and since #119 phase 5 it has
+    to.** ``migrate apply`` now purges a reclassified-above-the-ceiling item out
+    of the published build in the same apply (ADR-0025 part 2,
+    ``test_sensitivity_purge.py``), which closes this window at the seam and would
+    leave nothing here for the canonical re-check to withhold -- measured, the
+    label assertion below read ``set()`` the moment that landed. So this reproduces
+    the *residual* the way this file's other stale-build tests do
+    (``_apply_leaving_the_stale_build_published``): a purge that reached no
+    published build, which is also what a purge that raised leaves behind
+    (``WithdrawalPurge.failed`` and its remedy). The gate under test is the last
+    line for exactly that state.
+    """
+    indexed = indexed_under_an_internal_ceiling
+    root = Path(indexed.load()["demo"]["rootPath"])
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+
+    before = await _call_on(
+        build_server(indexed, up_to_internal),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
+
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        (root / f".theurian/migrations/{RECLASSIFY_ID}-reclassify.yaml").write_text(
+            RECLASSIFY_MIGRATION
+        )
+        _apply_leaving_the_stale_build_published(root)
+    finally:
+        monkey.undo()
+    assert _published_index_chunk_sensitivity(root) == {"internal"}, (
+        "the published index must still carry the pre-reclassification label, or this is a "
+        "test of `index build` or of the purge rather than of the canonical re-check"
+    )
+
+    served = await _call_on(
+        build_server(indexed, up_to_internal),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
+
+    assert before["retrieval"]["indexed"] is True, (
+        f"precondition: this deployment must be answered from its own index before the "
+        f"reclassification, or nothing below is about the ranked path: {before['retrieval']}"
+    )
+    assert [hit["itemId"] for hit in before["results"]] == ["architecture.auth-policy"], (
+        "precondition: the document must be reachable through the index while it is still "
+        "`internal`, or its absence afterwards says nothing about the gate"
+    )
+    assert before["results"][0]["sensitivity"] == "internal"
+    assert served["retrieval"]["indexed"] is True, (
+        f"the reclassification moved this off the ranked path, so the assertion below is "
+        f"about the unranked scan rather than the gate it names: {served['retrieval']}"
+    )
+    assert served["count"] == 0, (
+        f"a document reclassified to `restricted` after the build was served to a deployment "
+        f"whose ceiling is `internal`: {served['results']}. The index row still says `internal` "
+        f"and always will until a rebuild, so only the item's current level can withhold it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_unranked_scan_withholds_an_above_ceiling_item(
+    registry: ProjectRegistry,
+) -> None:
+    """The second answer path, which no index gates (#119).
+
+    `registry` has no index, so `knowledge.search` answers through
+    `substring_answer` -> `_scan`. Both paths take the same grant deliberately:
+    an unbuilt, deleted or unreadable index is a condition any local process can
+    create, and a fallback that served what the ranked path withheld would make
+    `rm` the way past the ceiling.
+
+    The allow-all half is asserted in the same test rather than in a sibling,
+    because on this path the two answers differ only in `count` -- a fallback
+    that returned nothing for an unrelated reason would satisfy the withholding
+    assertion on its own.
+    """
+    withheld = await _call_on(
+        build_server(registry, PUBLIC_ONLY), "knowledge.search", projectId="demo", query="token"
+    )
+    served = await _call_on(
+        build_server(registry, _allow_all()), "knowledge.search", projectId="demo", query="token"
+    )
+
+    for answer in (served, withheld):
+        assert answer["retrieval"]["mode"] == "substring", (
+            "both corpora must answer through the unranked scan, or this does not exercise "
+            "`_scan`. On this path `mode` is the literal the fallback reports whatever it "
+            "found, so it says which machinery ran and nothing about the results."
+        )
+    assert served["count"] == 1, "precondition: the item must be found when nothing withholds it"
+    assert withheld["count"] == 0, (
+        f"the unranked scan surfaced an above-ceiling item: {withheld['results']}. `_scan` "
+        f"hands the grant to `list_items_by_status` as a SQL predicate; the row must never "
+        f"have been read."
+    )
+
+
+RESTRICT_TARGET_ID = "01K1RSTRCT01234567890ABCDE"
+RESTRICT_TARGET_MIGRATION = f"""apiVersion: theurian.dev/v1
+id: {RESTRICT_TARGET_ID}
+createdAt: 2026-08-02T16:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: changeSensitivity
+    itemId: architecture.token-rotation
+    sensitivity: restricted
+    reason: Reclassified after review
+"""
+
+
+@pytest.fixture
+def with_an_above_ceiling_relation(with_a_rejected_relation: ProjectRegistry) -> ProjectRegistry:
+    """`with_a_rejected_relation`, with the *approved* far item reclassified.
+
+    Two edges leave `architecture.auth-policy`: one to a `rejected` item, which
+    `may_surface` already withholds, and one to an approved `architecture.token-
+    rotation`, which is published today. Raising only the second to `restricted`
+    leaves a corpus in which a deployment serving up to `internal` may read the
+    source item and neither of its edges -- and one of the two is withheld by an
+    axis nothing but #119 supplies.
+    """
+    root = Path(with_a_rejected_relation.load()["demo"]["rootPath"])
+    (root / f".theurian/migrations/{RESTRICT_TARGET_ID}-restrict.yaml").write_text(
+        RESTRICT_TARGET_MIGRATION
+    )
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("migrate", "apply")
+    finally:
+        monkey.undo()
+    return with_a_rejected_relation
+
+
+@pytest.mark.asyncio
+async def test_a_relation_to_an_above_ceiling_item_is_not_published(
+    with_an_above_ceiling_relation: ProjectRegistry,
+) -> None:
+    """#119, SEC-13. `knowledge.get`'s refusal by id is not the whole of the gate.
+
+    A relation names the far item's id and carries a `note` written by whichever
+    side authored the edge. Publishing that edge from a *visible* item hands over
+    both -- which is exactly the pair `_relation_is_visible` was measured leaking
+    for a `rejected` endpoint, and nothing about it becomes safe because the
+    endpoint is above the ceiling instead of retired.
+
+    The fetched item is itself `internal` and the ceiling is `internal`, so this
+    is not the fetch being refused: the response is served, and what changes is
+    the edge on it. The allow-all half is asserted first, because an edge missing
+    for any other reason would satisfy the withholding assertion alone.
+    """
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+    served = await _call_on(
+        build_server(with_an_above_ceiling_relation, _allow_all()),
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
+    )
+    assert [r["targetItemId"] for r in served["relations"]] == ["architecture.token-rotation"], (
+        f"precondition: the visible item must publish exactly the edge this test puts above "
+        f"the ceiling; it published {served['relations']}"
+    )
+
+    withheld = await _call_on(
+        build_server(with_an_above_ceiling_relation, up_to_internal),
+        "knowledge.get",
+        projectId="demo",
+        itemId="architecture.auth-policy",
+    )
+
+    assert withheld["body"] == BODY, (
+        "the fetched item is at the ceiling, not above it -- if this refuses, the test is "
+        "measuring the item gate again rather than the per-edge one"
+    )
+    assert withheld["relations"] == [], (
+        f"an edge to an above-ceiling item was published: {withheld['relations']}. The id and "
+        f"the note are the disclosure, not the body -- see `_relation_is_visible`."
+    )

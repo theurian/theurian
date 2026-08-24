@@ -31,6 +31,11 @@ from typing import Annotated, Any, Final
 
 import typer
 
+from theurian.application.authorization import (
+    AuthorizationGrant,
+    StaticAuthorizationProvider,
+    load_serving_profile,
+)
 from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import IndexBuilder, IndexRequest
 from theurian.application.project_service import (
@@ -41,12 +46,18 @@ from theurian.application.project_service import (
     read_active_index_pointer,
     write_active_index_pointer,
 )
+from theurian.cli.index_status_report import (
+    index_schema_version,
+    profile_state,
+    remedy_for,
+)
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus
+from theurian.domain.enums import SURFACEABLE_STATUSES, KnowledgeStatus, Sensitivity
 from theurian.domain.errors import TheurianError
 from theurian.domain.state import ActiveState
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
+from theurian.infrastructure.secrets.file_store import default_data_dir
 from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore, fts5_available
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
@@ -107,6 +118,9 @@ def index_build(
     active = _require_buildable_state(paths, as_json)
     if active is None:
         return
+    grant = _deployment_grant(as_json)
+    if grant is None:
+        return
 
     # The context already carries the generator every other command uses, so
     # index build ids sort alongside migration and revision ids.
@@ -135,6 +149,7 @@ def index_build(
         project_id=context.project_id.value,
         state_hash=str(active.state_hash),
         index_build_id=index_build_id,
+        visible_sensitivities=grant.sensitivities,
         include_unapproved=include_unapproved,
         raptor=raptor,
     )
@@ -153,6 +168,7 @@ def index_build(
         state_hash=str(active.state_hash),
         project_id=context.project_id.value,
         indexes_unapproved=include_unapproved,
+        indexed_sensitivities=grant.sensitivities,
     )
     # Record that this installation built this index, out of the repository tree,
     # the instant it is published (ADR-0004, SEC-7). The serve-side index gate
@@ -218,6 +234,39 @@ def _require_buildable_state(paths: ProjectPaths, as_json: bool) -> ActiveState 
     return active
 
 
+def _deployment_grant(as_json: bool) -> AuthorizationGrant | None:
+    """What this deployment serves, or ``None`` once the refusal has been reported.
+
+    Resolved through the same :class:`StaticAuthorizationProvider` the daemon
+    composes (``daemon.runner.serve``) and out of the same operator-owned data
+    directory, so a build and the daemon that will serve it cannot expand one
+    declared ceiling two different ways. A build is a *write*, and what it writes
+    is what the FTS5 collection statistics are computed over, so the two agreeing
+    is what makes the exclusion worth anything (ADR-0025 part 1).
+
+    An unreadable profile refuses the build rather than defaulting, for the reason
+    :func:`~theurian.application.authorization.load_serving_profile` gives about
+    the daemon's start: a malformed ceiling that fell back to this build's default
+    would write *more* into the index than its operator asked for, silently -- and
+    an index row's text is in the file whatever a later query does with it. Its
+    own ``remedy`` names the file and the words that belong in it, which is why it
+    is preferred here over the generic one.
+    """
+    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+
+    try:
+        profile = load_serving_profile(default_data_dir())
+    except TheurianError as exc:
+        _fail(
+            str(exc),
+            remedy=exc.remedy or "Run `theurian doctor`.",
+            as_json=as_json,
+            code=1,
+        )
+        return None
+    return StaticAuthorizationProvider(profile).deployment_grant()
+
+
 def _run_build(
     builder: IndexBuilder, request: IndexRequest, active: ActiveState, *, as_json: bool
 ) -> dict[str, Any] | None:
@@ -273,7 +322,9 @@ def _refuse_if_empty(
         return False
     try:
         available = _indexable_items(
-            request.database, include_unapproved=request.include_unapproved
+            request.database,
+            include_unapproved=request.include_unapproved,
+            visible_sensitivities=request.visible_sensitivities,
         )
     except TheurianError as exc:
         # A second read session over the same file, so `_run_build`'s conversion
@@ -337,6 +388,16 @@ def index_status(as_json: JsonOption = False) -> None:
     "no built state" here for the same file would send a person to run
     ``theurian migrate apply`` for state that was never the problem, while the
     corrupt file sat on disk the whole time.
+
+    **The invariant that governs all of it: whatever the ranked path refuses,
+    this command reports as stale.** It was stated above about the schema
+    version and held about nothing else. A build whose recorded disclosure
+    flavor is not the one in force degrades every ``knowledge.search`` to an
+    unranked scan with ``indexed: false`` (``serving-profile-mismatch``), and
+    this command answered ``stale: false`` with an empty remedy -- while
+    ``mcp/search.py``'s own note for that fallback says an operator would be told
+    *here*. The levels are named on both sides, because that is exactly what the
+    fallback withholds from an agent and defers to this terminal.
     """
     from theurian.cli.commands import _emit, _read_active, _require_project  # noqa: PLC0415 - cycle
 
@@ -359,7 +420,7 @@ def index_status(as_json: JsonOption = False) -> None:
     # how fresh its state hash is, and retrieval already falls back for it. Left
     # out of `stale`, this command would answer "fresh, nothing to do" for the
     # very file a search had just refused to read.
-    schema = _index_schema_version(paths, published)
+    schema = index_schema_version(paths, published)
     # Chunks are stamped with the project id that built them, so an index built
     # for another id answers every query with nothing while reporting itself
     # indexed. A pointer written before this field existed cannot be checked, so
@@ -367,7 +428,14 @@ def index_status(as_json: JsonOption = False) -> None:
     # freshness that was never established is what this command exists to avoid.
     index_project = (published or {}).get("projectId")
     orphaned = published is not None and index_project != context.project_id.value
-    stale = published is None or indexed != current or schema != INDEX_SCHEMA_VERSION or orphaned
+    profile = profile_state(published)
+    stale = (
+        published is None
+        or indexed != current
+        or schema != INDEX_SCHEMA_VERSION
+        or orphaned
+        or profile.stale
+    )
 
     _emit(
         {
@@ -384,58 +452,17 @@ def index_status(as_json: JsonOption = False) -> None:
             "stale": stale,
             "orphaned": orphaned,
             "knowledgeNotApplied": needs_apply,
-            "remedy": _remedy(
+            **profile.payload,
+            "remedy": remedy_for(
                 stale=stale,
                 needs_apply=needs_apply,
                 orphaned=orphaned,
                 pointer_corrupt=pointer.unreadable,
+                profile_remedy=profile.remedy,
             ),
         },
         as_json=as_json,
     )
-
-
-def _index_schema_version(paths: ProjectPaths, published: dict[str, Any] | None) -> int | None:
-    """The schema version of the published build, or ``None`` if there is none.
-
-    Never raises. A pointer naming a path outside the project, or a file that has
-    since been deleted, is a status to report rather than a command to fail.
-    """
-    if published is None:
-        return None
-    try:
-        path = paths.index_for(str(published.get("indexBuildId", "")))
-    except TheurianError:
-        return 0
-    return SqliteIndexStore(path).schema_version() if path.is_file() else 0
-
-
-def _remedy(*, stale: bool, needs_apply: bool, orphaned: bool, pointer_corrupt: bool) -> str:
-    """The next command to run, in the order it has to be run in.
-
-    A corrupt pointer is named first, ahead of even ``orphaned``: it is the one
-    case where "run `theurian index build`" alone understates what happened, and
-    it is the exact remedy ``knowledge.search`` already gives an agent for the
-    same file (:data:`~theurian.application.project_service.INDEX_POINTER_REMEDY`)
-    -- the two surfaces must agree, not merely both suggest a rebuild.
-
-    Indexing before applying would build from a database that is itself behind,
-    producing a fresh-looking index of stale knowledge. An orphaned index is
-    named next because the rebuild it asks for subsumes both other remedies.
-    """
-    if pointer_corrupt:
-        return INDEX_POINTER_REMEDY
-    if orphaned:
-        return (
-            "This index was built for a different project id. Run `theurian index build`; "
-            "if it refuses, the canonical rows carry the other id too -- delete "
-            ".theurian/state/ and run `theurian migrate apply` first."
-        )
-    if needs_apply:
-        return "Run `theurian migrate apply`, then `theurian index build`."
-    if stale:
-        return "Run `theurian index build`."
-    return ""
 
 
 #: Filenames `theurian index gc` will consider at all.
@@ -634,13 +661,14 @@ def _reclaimable(paths: ProjectPaths, *, published: str) -> list[Path]:
     return reclaimable
 
 
-def _publish(
+def _publish(  # noqa: PLR0913 - the pointer's field set, forwarded whole
     paths: ProjectPaths,
     *,
     index_build_id: str,
     state_hash: str,
     project_id: str,
     indexes_unapproved: bool,
+    indexed_sensitivities: frozenset[Sensitivity],
 ) -> None:
     """Point retrieval at a finished build, atomically.
 
@@ -655,16 +683,29 @@ def _publish(
         state_hash=state_hash,
         project_id=project_id,
         indexes_unapproved=indexes_unapproved,
+        indexed_sensitivities=indexed_sensitivities,
     )
 
 
-def _indexable_items(database: Path, *, include_unapproved: bool) -> dict[str, int]:
+def _indexable_items(
+    database: Path, *, include_unapproved: bool, visible_sensitivities: frozenset[Sensitivity]
+) -> dict[str, int]:
     """How many items each project in the canonical store offered this build.
 
     Deliberately repeats ``IndexBuilder``'s selection rule rather than sharing
     it. The builder reports what it indexed; this reports what was there to be
     indexed, and the whole value of the pair is in noticing when the two
-    disagree — which one shared implementation could not do.
+    disagree — which one shared implementation could not do. That is also why
+    both terms are written out here instead of calling ``may_surface`` and
+    ``may_disclose``: a copy that shares the gate is not a second derivation, and
+    ``tests/unit/test_gate_call_sites.py`` accounts for this function's absence
+    from both enumerations on exactly that ground.
+
+    **The sensitivity term is not optional.** Without it a deployment whose
+    ceiling excludes its whole corpus builds an index that is correctly empty and
+    is then told its canonical state is broken, with a remedy about project ids —
+    the failure ``test_a_project_holding_only_retired_knowledge_builds_an_empty
+    _index`` already pins on the status axis.
 
     Keyed by project id and ordered by it, because the answer reaches an error
     message that has to read the same way twice.
@@ -678,6 +719,7 @@ def _indexable_items(database: Path, *, include_unapproved: bool) -> dict[str, i
                 if item.current_revision_id is not None
                 and item.status in SURFACEABLE_STATUSES
                 and (include_unapproved or item.status is KnowledgeStatus.APPROVED)
+                and item.sensitivity in visible_sensitivities
             )
             if offered:
                 counts[project.project_id.value] = offered

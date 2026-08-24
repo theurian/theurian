@@ -682,6 +682,38 @@ no purge candidate for it, and
 `test_a_reclassification_shows_in_the_response_before_any_rebuild` pins the live
 response and the harmless index lag end to end.
 
+> **Amended in #119 phase 5 (2026-08-24). The paragraph above is reversed, and
+> the ground it stood on is the reason.** "A reclassification triggers no purge,
+> and needs none" rested on the clause it states itself: the built index's stale
+> `sensitivity` column "is read by no gate before #119". Phase 3 made a build
+> write no chunk row above the deployment's declared ceiling and phase 4 made
+> every retriever emit `sensitivity IN (…)`, which turned that column into a
+> gate's column and inverted the exclusion into a defect — a reclassified row is
+> then the *only* above-ceiling row a served build can hold, withheld from results
+> by the canonical re-check while its text stays in `chunks_fts`,
+> `chunks_trigram`, `nodes_fts` and `nodes_trigram`, whose collection statistics
+> price every visible row against it (T-17a on this axis).
+>
+> So `_withdrawal_affected_item` admits `changeSensitivity` today, extending this
+> ADR's decision 5 trigger set, and `revisions_to_purge` reduces the candidate set
+> against a *second* flavor axis read off the published pointer —
+> `indexedSensitivities` beside `indexesUnapproved`. The reasoning in the
+> paragraph above survives the reversal in one narrow form and is worth keeping
+> for it: a reclassification that stays **within** the ceiling the published build
+> ran under still purges nothing and still copies no file, which is what lets the
+> operation join the candidate set unconditionally rather than the engine needing
+> to know a ceiling it cannot see.
+>
+> `test_a_reclassification_is_not_a_withdrawal` is gone with the decision it
+> pinned; `test_migration_engine.py::test_a_reclassification_is_a_withdrawal_only_past_the_builds_own_ceiling`
+> and its sibling `test_a_reclassification_within_the_ceiling_purges_nothing` are
+> what stand there now, with `tests/integration/test_sensitivity_purge.py` driving
+> it through the real CLI. The one direction this cannot close — a reclassification
+> back *down* into the ceiling, which has no row to restore and waits for the next
+> `index build` — is recorded in
+> [ADR-0025](0025-sensitivity-is-enforced-before-0-1-0-stable.md)'s compliance
+> section rather than here.
+
 Everything below is the mechanism's own acceptance, which #113 discharges;
 [#103](https://github.com/theurian/theurian/issues/103) tracked these eight as
 one class, and all eight are green.

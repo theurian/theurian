@@ -11,6 +11,7 @@ report itself failed.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
@@ -34,7 +35,7 @@ from theurian.application.withdrawal_purge import (
     publish_purge_for_withdrawal,
 )
 from theurian.domain.chunking import Chunk, IndexableChunk
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.infrastructure.determinism import UlidGenerator
 from theurian.infrastructure.sqlite.index_purge import IndexPurgeError
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
@@ -43,17 +44,28 @@ pytestmark = pytest.mark.integration
 
 PROJECT = "demo"
 
+#: The disclosure flavor every pointer in this file records, and the one the
+#: purge must carry forward unchanged. All four levels -- the flavor a build
+#: under the shipped default profile has -- because nothing here is about the
+#: ceiling itself; what is about the ceiling is that a purge may not invent one
+#: (`publish_purge_for_withdrawal`, #119 phase 3).
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 def _deprecated_candidates(revision_ids: Sequence[str]) -> list[WithdrawalCandidate]:
-    """One deprecated single-revision item per id -- non-surfaceable at any flavor.
+    """One deprecated single-revision item per id -- non-holdable at any flavor.
 
     Lets a test name exactly the revisions it wants purged: a deprecated item's
-    revisions are withheld whether or not the index holds drafts, so the flavor
-    does not enter and the purge set is precisely ``revision_ids``.
+    revisions are withheld whether or not the index holds drafts, so neither axis
+    of the flavor enters and the purge set is precisely ``revision_ids``.
+    ``internal`` is the class every pointer in this file records as indexed, so the
+    disclosure axis withholds nothing on its own and the status does all the work
+    (#119, ADR-0025 part 2).
     """
     return [
         WithdrawalCandidate(
             status=KnowledgeStatus.DEPRECATED,
+            sensitivity=Sensitivity.INTERNAL,
             current_revision_id=revision_id,
             revision_ids=(revision_id,),
         )
@@ -127,6 +139,7 @@ def _publish_source(paths: ProjectPaths, *, include_withdrawn: bool) -> list[str
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
     return withdrawn
 
@@ -135,7 +148,11 @@ def _ranking(store: SqliteIndexStore, query: str) -> list[tuple[str, float]]:
     return [
         (row.chunk_id, round(row.score, 10))
         for row in store.search_lexical(
-            query, project_id=PROJECT, limit=100_000, include_unapproved=False
+            query,
+            project_id=PROJECT,
+            limit=100_000,
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
         ).rows
     ]
 
@@ -230,6 +247,7 @@ def test_an_empty_withdrawal_publishes_nothing(tmp_path: Path) -> None:
         "stateHash": STATE_HASH,
         "projectId": PROJECT,
         "indexesUnapproved": False,
+        "indexedSensitivities": ["public", "internal", "confidential", "restricted"],
     }
 
 
@@ -263,6 +281,7 @@ def test_a_pointer_naming_a_missing_or_unreadable_build_is_unusable(tmp_path: Pa
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     outcome = publish_purge_for_withdrawal(
@@ -324,6 +343,7 @@ def test_the_purge_preserves_the_published_project_id_not_the_callers(tmp_path: 
         state_hash=STATE_HASH,
         project_id="the-original-id",
         indexes_unapproved=True,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     outcome = publish_purge_for_withdrawal(
@@ -419,6 +439,54 @@ def test_a_non_sqlite_adapter_failure_also_fails_closed(tmp_path: Path) -> None:
     assert read_active_index_pointer(paths).payload["indexBuildId"] == BUILD_ID  # type: ignore[index]
 
 
+def test_a_pointer_that_records_no_flavor_makes_the_purge_stand_aside(tmp_path: Path) -> None:
+    """A purge may not invent the disclosure flavor a build ran under (#119, ADR-0025).
+
+    The pointer is derived, git-ignored and unsigned (SEC-7), so a build predating
+    ``indexedSensitivities`` -- or a hand-edited pointer -- can name a real, readable
+    index while recording no flavor. ``revisions_to_purge`` judges a reclassification
+    against the ceiling the build ran under, and a purge *copies* the build and
+    deletes rows from the copy, then records the result: republishing under a
+    **guessed** flavor is exactly how a guess becomes the pointer's authoritative
+    record. So the purge stands aside (``INDEX_UNUSABLE``) rather than guessing, and
+    leaves the flavor-less pointer exactly as it was -- its standing remedy, a
+    rebuild, records the flavor and removes the withdrawn rows in one step.
+
+    The purge-side twin of the read side, which treats the same pointer the same
+    way: ``test_index_fallback.py``'s ``_pointer_predates_the_profile_field`` recipe
+    degrades every ``knowledge.search`` to an unranked scan with reason
+    ``serving-profile-mismatch`` / ``profile-unrecorded``. That read-side arm is
+    killed by ``test_a_fallback_names_the_reason_it_could_not_use_the_index``; this
+    is the write-side arm the same guard protects, and nothing exercised it before.
+
+    Non-vacuous: the withdrawn revisions are ones this build holds and the deprecated
+    candidates name them, so a purge that guessed a flavor would compute a non-empty
+    delete set and republish. ``INDEX_UNUSABLE`` -- rather than ``NO_WITHDRAWAL`` or
+    ``NOTHING_TO_PURGE`` -- is what says the flavor guard fired ahead of that.
+    """
+    paths = _paths(tmp_path)
+    withdrawn = _publish_source(paths, include_withdrawn=True)
+    # Strip the recorded flavor, the shape a pre-#119 build or a hand edit leaves.
+    payload = json.loads(paths.active_index_pointer.read_text())
+    del payload["indexedSensitivities"]
+    paths.active_index_pointer.write_text(json.dumps(payload))
+
+    outcome = publish_purge_for_withdrawal(
+        paths,
+        withdrawal_candidates=_deprecated_candidates(withdrawn),
+        ids=UlidGenerator(),
+        index_factory=SqliteIndexStore,
+    )
+
+    assert outcome == WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
+    reread = read_active_index_pointer(paths).payload
+    assert reread is not None
+    assert "indexedSensitivities" not in reread, (
+        "the flavor-less pointer must be left as it was, never restamped under a guess"
+    )
+    assert reread["indexBuildId"] == BUILD_ID, "and the old build must still be published"
+
+
 def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> None:
     """The is_searchable() branch, exercised by a real corrupt build.
 
@@ -434,6 +502,7 @@ def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> Non
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
     # Corrupt the build's schema version so `is_searchable()` returns False.
     with closing(sqlite3.connect(paths.index_for(BUILD_ID))) as connection:
@@ -608,6 +677,7 @@ def test_an_unprovenanced_node_is_seen_by_the_pre_check_and_purged(tmp_path: Pat
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     # The pre-check sees it even though the withdrawn revision matches no chunk,
@@ -682,6 +752,7 @@ def test_a_dangling_edge_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> 
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert SqliteIndexStore(paths.index_for(BUILD_ID)).holds_any_revision(["no-such-revision"]), (

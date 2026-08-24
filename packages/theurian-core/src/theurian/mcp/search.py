@@ -67,6 +67,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from theurian.application.authorization import ProfileVerdict, recorded_flavor_verdict
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     BuildProvenance,
@@ -86,7 +87,7 @@ from theurian.application.retrieval_service import (
 )
 from theurian.application.visibility import Visibility
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus, may_surface
+from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_surface
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ranking import RetrievalMode, estimate_tokens, mode_of
@@ -107,6 +108,10 @@ INDEX_UNREADABLE: Final = "index-unreadable"
 INDEX_PROJECT_MISMATCH: Final = "index-project-mismatch"
 INDEX_UNBUILT: Final = "index-unbuilt"
 UNAPPROVED_NOT_INDEXED: Final = "unapproved-not-indexed"
+#: Spelled `serving-profile-` and not `index-profile-`, which would sit one
+#: letter from `index-project-mismatch` in every transcript and every client's
+#: switch statement.
+SERVING_PROFILE_MISMATCH: Final = "serving-profile-mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +212,37 @@ _NO_DRAFTS_INDEXED = Fallback(
     "Run `theurian index build --include-unapproved` for ranked retrieval over "
     "unapproved knowledge.",
 )
+#: Two notes and one reason code, the arrangement `index-project-mismatch` is in
+#: and for the same trade: the next action is `theurian index build` either way,
+#: while a person reading the transcript needs to know whether the deployment's
+#: profile moved under an index or was never recorded against it at all.
+#:
+#: Neither names a level -- not the one the build was made under and not the one
+#: in force. The remedy does not depend on which, and this reply goes to a caller
+#: that has no business learning the shape of the deployment's ceiling from a
+#: degraded search. `theurian index status` is where an operator at their own
+#: terminal *is* told, the same split `_PROJECT_MISMATCH` makes for ids: it
+#: publishes `profileMismatch`, `profileUnrecorded`, and both level sets by name.
+#:
+#: That sentence was written before the command implemented it, and read as a
+#: promise for one release: `index status` reported `stale: false` with an empty
+#: remedy for a build every query here was degrading. Both surfaces now read one
+#: answer (`application.authorization.recorded_flavor_verdict`), so the split is
+#: a division of what each reader is told rather than of who bothered to check.
+_PROFILE_MISMATCH = Fallback(
+    SERVING_PROFILE_MISMATCH,
+    "This project's index was built under a different disclosure profile than this "
+    "deployment serves, so it cannot be used and this is an unranked substring "
+    "scan. Run `theurian index build` to rebuild it under the profile in force "
+    "now; the index is derived, so nothing is lost.",
+)
+_PROFILE_UNRECORDED = Fallback(
+    SERVING_PROFILE_MISMATCH,
+    "This project's index does not record which disclosure profile it was built "
+    "under, so it cannot be shown to hold only what this deployment serves and "
+    "this is an unranked substring scan. Run `theurian index build`; one rebuild "
+    "records the profile, and the index is derived, so nothing is lost.",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,13 +328,24 @@ class _PublishedIndex:
     indexes_unapproved: bool
 
 
-def _published_index(
-    paths: ProjectPaths, *, project_id: str, include_unapproved: bool, provenance: BuildProvenance
+def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
+    paths: ProjectPaths,
+    *,
+    project_id: str,
+    include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
+    provenance: BuildProvenance,
 ) -> _PublishedIndex | Fallback:
     """Locate the index this project publishes, or say why there is not one.
 
     Never raises. Every failure here is a missing optimisation, and the caller
     answers from the canonical store instead.
+
+    ``visible_sensitivities`` is the deployment's grant, and it is checked against
+    the *build* rather than against any row: which levels a build was allowed to
+    write decides which rows exist in the file at all (#119 phase 3), and an index
+    whose flavor disagrees with the grant in force is stood aside whole rather
+    than filtered.
     """
     pointer = read_active_index_pointer(paths)
     if pointer.payload is None:
@@ -352,6 +399,25 @@ def _published_index(
         # that does not claim a rename happened.
         names_a_project = isinstance(recorded, str) and bool(recorded)
         return _PROJECT_MISMATCH if names_a_project else _PROJECT_UNVERIFIED
+
+    # The build's disclosure flavor against the one in force (#119, ADR-0025
+    # part 1). Ahead of the drafts gate because it does not depend on what was
+    # asked for: `includeUnapproved` is a request parameter a caller can stop
+    # passing, while this build is the wrong build for this deployment on every
+    # query it will ever be asked.
+    #
+    # The comparison itself lives in `application.authorization`, because
+    # `theurian index status` has to report as stale exactly what this refuses --
+    # and written out twice, the two disagreed: the status command answered
+    # "fresh, nothing to do" for a build every query here was degrading. Its
+    # docstring carries the reasoning for the equality and for both directions.
+    verdict = recorded_flavor_verdict(
+        published.get("indexedSensitivities"), served=visible_sensitivities
+    )
+    if verdict is ProfileVerdict.UNRECORDED:
+        return _PROFILE_UNRECORDED
+    if verdict is ProfileVerdict.MISMATCH:
+        return _PROFILE_MISMATCH
 
     indexes_unapproved = bool(published.get("indexesUnapproved", False))
     if include_unapproved and not indexes_unapproved:
@@ -422,6 +488,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     query: str,
     limit: int,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
     budget_tokens: int,
     use_dense: bool,
     as_of: datetime | None,
@@ -444,11 +511,25 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     :func:`_shaper`, where it is the moment every returned hit's ``freshness``
     is computed against -- ``datetime.now(UTC)`` when the caller pinned
     nothing, exactly as before this parameter existed.
+
+    ``visible_sensitivities`` is the deployment's grant (#119), and it reaches
+    three places that are not the same check. :func:`_published_index` compares it
+    against the flavor the *build* was made under and stands the whole index aside
+    on a mismatch; every retriever takes it as a WHERE predicate emitted with the
+    match, so no above-ceiling row in the file is ranked (phase 4); and the
+    canonical gate then re-checks each surviving candidate against the item's
+    *current* level, which is what withholds a document reclassified upward since
+    the build even though its chunk row was legitimately written. None subsumes
+    another: the first decides which build may be read at all, the second which of
+    its rows may be scored against each other, the third which of those may be
+    returned. Only the third sees a reclassification, and only the first takes
+    back what a wider build's collection statistics have already priced.
     """
     published = _published_index(
         paths,
         project_id=project_id,
         include_unapproved=include_unapproved,
+        visible_sensitivities=visible_sensitivities,
         provenance=provenance,
     )
     if isinstance(published, Fallback):
@@ -481,6 +562,11 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     search = SearchRequest(
         query=query,
         project_id=project_id,
+        # The same grant `ResultRequest` below carries, and the third place it
+        # reaches (#119 phase 4): `_published_index` judged the *build*, the
+        # canonical gate re-checks each candidate's *current* level, and this is
+        # the retrievers' own WHERE predicate over the rows in between.
+        visible_sensitivities=visible_sensitivities,
         include_unapproved=include_unapproved,
         use_dense=use_dense,
         # One chunk per document. This tool returns one result per document, and
@@ -549,6 +635,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
                     database=database,
                     project_id=project_id,
                     include_unapproved=include_unapproved,
+                    visible_sensitivities=visible_sensitivities,
                     limit=limit,
                     budget_tokens=budget_tokens,
                     reserved_tokens=_envelope_tokens(project_id, query, provisional),
@@ -763,6 +850,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     query: str,
     limit: int,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
     budget_tokens: int,
     fallback: Fallback,
     as_of: datetime | None,
@@ -805,10 +893,11 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
         snapshot_id=str(state.state_hash),
         fallback_reason=fallback.reason,
     )
-    # `_scan` gates on status before it counts towards `limit`, so its output is
-    # already what this caller may see and the budget may be applied straight to
-    # it. The envelope is reserved here for the same reason as on the ranked
-    # path: `note` alone is a paragraph, and the caller pays for it.
+    # `_scan` gates on status and on the deployment's sensitivity grant before it
+    # counts towards `limit`, so its output is already what this caller may see and
+    # the budget may be applied straight to it. The envelope is reserved here for
+    # the same reason as on the ranked path: `note` alone is a paragraph, and the
+    # caller pays for it.
     resolved = within_budget(
         _scan(
             database,
@@ -816,6 +905,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
             needle=query.strip().lower(),
             limit=limit,
             include_unapproved=include_unapproved,
+            visible_sensitivities=visible_sensitivities,
             as_of=as_of,
         ),
         budget_tokens=budget_tokens,
@@ -841,6 +931,7 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     needle: str,
     limit: int,
     include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
     as_of: datetime | None,
 ) -> list[dict[str, Any]]:
     """Every current revision whose title or body contains ``needle``.
@@ -910,12 +1001,30 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     # `_item_from_row` parses the cell: a corrupt status on a row the query ranks
     # refuses the whole search, and a refusal carries no field. Ranked refuses, this
     # fallback discloses, and `knowledge.status` is the sibling pinned as disclosing.
+    #
+    # The sensitivity axis (#119) arrives already resolved -- it is the deployment's
+    # grant, not a rule this function applies -- so there is nothing to build here
+    # and it is passed straight through below. The two axes are independent: a level
+    # this deployment does not serve is withheld whatever `include_unapproved` says,
+    # for the reason retired statuses are.
     surfaceable = frozenset(
         s for s in KnowledgeStatus if may_surface(s, include_unapproved=include_unapproved)
     )
 
     with SqliteCanonicalStore(database) as store:
-        for item in store.list_items_by_status(context, statuses=surfaceable):
+        for item in store.list_items_by_status(
+            context,
+            statuses=surfaceable,
+            # The deployment's grant, handed to the store as the second SQL
+            # predicate rather than checked on the way past (#119). Same
+            # discipline as `statuses` and for the same reason: an above-ceiling
+            # row never crosses into Python, so it costs no `KnowledgeItem`, no
+            # revision read and no body scan -- the dominant per-row work on this
+            # path. `may_disclose` is therefore not called here and `_scan` is not
+            # one of its enumerated sites; what the store cannot make flat is
+            # recorded on `list_items_by_status` and measured there.
+            sensitivities=visible_sensitivities,
+        ):
             if as_of is not None and not item.validity.contains(as_of):
                 continue
             if item.current_revision_id is None:

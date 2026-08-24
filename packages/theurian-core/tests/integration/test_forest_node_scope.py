@@ -4,7 +4,8 @@
 `search_summaries` (`index_store.py`) filters twice: `_node_scope` decides
 which *summary nodes* a query may even match, before `node_derivation` is
 descended to any leaf; `_scope` then filters the *leaves* that descent
-reaches, bound to the same ``project_id``/``include_unapproved`` arguments.
+reaches, bound to the same ``project_id``/``include_unapproved``/
+``visible_sensitivities`` arguments.
 Every disclosure test in `test_forest_retrieval.py` builds a forest the real
 builder produces, where a node's own scope always equals its children's
 (`SummaryNode.__post_init__`'s own invariant) -- so a withheld leaf is always
@@ -33,9 +34,19 @@ from pathlib import Path
 import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 PROJECT = "demo"
 OTHER_PROJECT = "other-project"
@@ -72,13 +83,15 @@ def _node(  # noqa: PLR0913 - a raw row helper, one keyword per column the tests
     text: str,
     project_id: str = PROJECT,
     status: str = "approved",
+    sensitivity: str = "internal",
     index_build_id: str = "01K1NSCOPE",
 ) -> None:
     """A raw `nodes` row, written the way RAPTOR would (ADR-0008 decision 5).
 
     Not shared with `test_index_purge_nodes.py`'s `_node`: that helper
     hardcodes `project_id` and `status` to the one value every purge fixture
-    wants, and the two columns varied here are exactly those two.
+    wants, and the three columns varied here are exactly those two plus
+    `sensitivity`, which `_node_scope` began filtering on in #119 phase 4.
     """
     connection.execute(
         "INSERT INTO nodes (node_id, tree_id, level, node_type, text, content_hash, "
@@ -86,8 +99,8 @@ def _node(  # noqa: PLR0913 - a raw row helper, one keyword per column the tests
         "embedding_model_revision, embedding_dimension, source_revision_id, "
         "index_build_id, project_id, sensitivity, status) "
         "VALUES (?, 'tree-abc', 1, 'document', ?, 'deadbeef', '', '', '', '', '', 0, '', ?, ?, "
-        "'internal', ?)",
-        (node_id, text, index_build_id, project_id, status),
+        "?, ?)",
+        (node_id, text, index_build_id, project_id, sensitivity, status),
     )
 
 
@@ -105,6 +118,16 @@ def _node_texts(path: Path) -> dict[str, str]:
             str(row[0]): str(row[1])
             for row in connection.execute("SELECT node_id, text FROM nodes")
         }
+
+
+def _chunk_sensitivity(path: Path, chunk_id: str) -> str:
+    """A chunk's own class, read back after `add_chunks` (#119 phase 4)."""
+    with closing(sqlite3.connect(path)) as connection:
+        row = connection.execute(
+            "SELECT sensitivity FROM chunks WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+    assert row is not None, f"precondition: {chunk_id} was never written"
+    return str(row[0])
 
 
 def _chunk_scope(path: Path, chunk_id: str) -> tuple[str, str]:
@@ -176,7 +199,12 @@ def test_search_summaries_does_not_descend_a_draft_status_node_by_default(
         "or withholding it would prove nothing about _node_scope specifically"
     )
 
-    page = store.search_summaries(ROUTING_TERM, project_id=PROJECT, include_unapproved=False)
+    page = store.search_summaries(
+        ROUTING_TERM,
+        project_id=PROJECT,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
 
     surfaced = {row.chunk_id for row in page.rows}
     assert surfaced == {"approved-leaf#0"}, (
@@ -242,11 +270,93 @@ def test_search_summaries_does_not_descend_a_node_from_another_project(
         "or withholding it would prove nothing about _node_scope specifically"
     )
 
-    page = store.search_summaries(ROUTING_TERM, project_id=PROJECT, include_unapproved=False)
+    page = store.search_summaries(
+        ROUTING_TERM,
+        project_id=PROJECT,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    )
 
     surfaced = {row.chunk_id for row in page.rows}
     assert surfaced == {"approved-leaf#0"}, (
         f"a query scoped to {PROJECT!r} must not route through a summary node "
         f"belonging to {OTHER_PROJECT!r}, even to a leaf that belongs here; "
         f"got {sorted(surfaced)}"
+    )
+
+
+# -- 3. Node disclosure-class isolation (#119 phase 4) ------------------------
+
+
+def test_search_summaries_does_not_descend_a_node_above_the_deployments_ceiling(
+    tmp_path: Path,
+) -> None:
+    """A summary node above the grant must not be traversed, even to a leaf below it.
+
+    The third axis, isolated the same way as the first two, and the reason
+    ADR-0025 requires all four scoring surfaces rather than the leaf pair: a
+    summary node's text is a paraphrase of its children, so a gate that covered
+    `chunks` alone would still route on -- and hand a leaf the score of -- a
+    summary of a document this deployment does not serve.
+
+    The file this builds is a *wider* build, the shape `_published_index` stands
+    aside whole in the shipped stack (`serving-profile-mismatch`); calling
+    `search_summaries` directly with a narrow grant is the bypass that leaves the
+    predicate as the only thing deciding.
+
+    RED against a `_node_scope` whose sensitivity clause is removed: the leaked
+    leaf is `internal`, which the grant admits, so `_scope` has nothing to
+    withhold on it and it arrives through the restricted node.
+    """
+    path = tmp_path / "theurian-index-node-sensitivity.sqlite"
+    store = SqliteIndexStore(path)
+    store.create(index_build_id="01K1NSCOPE", state_hash="state-abc")
+    store.add_chunks(
+        [
+            _indexable("served-leaf#0", "an ordinary internal paragraph", revision="served-rev"),
+            _indexable(
+                "leaked-leaf#0",
+                "a paragraph that must stay reachable only through a restricted node",
+                revision="leaked-rev",
+            ),
+        ]
+    )
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            _node(
+                connection,
+                "internal-node#0",
+                text=f"{ROUTING_TERM} summary of the internal leaf",
+                sensitivity="internal",
+            )
+            _edge(connection, "internal-node#0", chunk="served-leaf#0")
+            _node(
+                connection,
+                "restricted-node#0",
+                text=f"{ROUTING_TERM} summary that names an internal leaf from a restricted node",
+                sensitivity="restricted",
+            )
+            _edge(connection, "restricted-node#0", chunk="leaked-leaf#0")
+
+    assert all(ROUTING_TERM in text.lower() for text in _node_texts(path).values()), (
+        "precondition: the routing term must match every node's text, or a query for "
+        "it would exclude one for a reason that has nothing to do with node scope"
+    )
+    assert _chunk_sensitivity(path, "leaked-leaf#0") == Sensitivity.INTERNAL.value, (
+        "precondition: the leaked leaf's own class must already clear the leaf gate, "
+        "or withholding it would prove nothing about _node_scope specifically"
+    )
+
+    page = store.search_summaries(
+        ROUTING_TERM,
+        project_id=PROJECT,
+        include_unapproved=False,
+        visible_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    )
+
+    surfaced = {row.chunk_id for row in page.rows}
+    assert surfaced == {"served-leaf#0"}, (
+        f"an `internal` deployment must not route through a `restricted` summary node, "
+        f"even to a leaf it does serve; got {sorted(surfaced)}"
     )

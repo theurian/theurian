@@ -25,7 +25,7 @@ from theurian.domain.errors import TheurianError
 
 
 class StepId(StrEnum):
-    """The steps of §6.2, in application order.
+    """The steps of §6.2, in application order, and one §6.2 predates.
 
     An enum rather than free strings: the plugin's presentation groups steps by
     identity, and the journal records what was applied under these names -- a
@@ -42,6 +42,13 @@ class StepId(StrEnum):
     DATA_DIRECTORY = "data-directory"
     TOKEN = "token"  # noqa: S105 - a step name, not a secret
     TOKEN_STORAGE = "token-storage"  # noqa: S105 - a step name, not a secret
+    #: The one member §6.2's numbered table does not number, added by #119 with
+    #: the deployment serving profile (ADR-0025). It sits beside the token
+    #: because it is the other operator-owned file in ``auth/``, and it is
+    #: unnumbered because inserting a row here would move every row below it --
+    #: and "§6.2 row N" is cited across the tree, the threat model included.
+    #: §6.2 lists it as row 6a for that reason.
+    SERVING_PROFILE = "serving-profile"
     ENV_REFERENCE = "env-reference"
     DAEMON_SERVICE = "daemon-service"
     DAEMON_RUNNING = "daemon-running"

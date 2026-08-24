@@ -1,0 +1,597 @@
+"""The deployment serving profile, and the authorization it grants (#119, ADR-0025).
+
+:class:`~theurian.domain.ports.authorization.AuthorizationProvider` has had no
+implementation since it was written, and that is what has blocked ``sensitivity``
+from becoming a read control: enforcement needs a *principal*, and a loopback
+daemon authenticates a bearer token rather than a person.
+
+The entitlement model chosen for OSS Core is a **deployment serving profile**
+(maintainer decision, 2026-08-23, recorded on
+`#119 <https://github.com/theurian/theurian/issues/119>`_): the operator declares
+one sensitivity *ceiling* for the whole deployment, and it lives with the token in
+the operator-owned data directory. It is deliberately **not** read from a project's
+Git-tracked ``.theurian/config.yaml``. Repository contributors are an untrusted
+actor class, so a committed ceiling would make *raising* the ceiling a
+contributor-authored access-control change -- reviewable in principle, and
+indistinguishable from an ordinary configuration edit in practice.
+
+**The default is restrictive.** :data:`DEFAULT_CEILING` is ``internal``, so a
+deployment that declares no profile serves ``public`` and ``internal`` and
+withholds ``confidential`` and ``restricted``. That is a behaviour change for
+every installation that upgrades past it, and it is the intended one: it closes
+the leak #119 measured on a real corpus, where a default-parameter
+``knowledge.search`` returned four ``confidential`` items ranked and excerpted in
+its top six and ``knowledge.get`` served a 5,058-character ``confidential`` body.
+
+This module shipped with that default at ``restricted`` -- every level, exactly
+the behaviour that preceded it -- so the seam could be cut, wired and tested
+while withholding nothing, and the flip could be one line with nothing else in
+its diff.
+"""
+
+from __future__ import annotations
+
+import stat
+from dataclasses import dataclass, field
+from enum import StrEnum
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final, final
+
+from theurian.domain.enums import Sensitivity
+from theurian.domain.errors import DomainError, SecurityError
+from theurian.domain.values import AclGroup, TenantId
+from theurian.security.paths import is_world_accessible
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from pathlib import Path
+
+    from theurian.domain.identifiers import ProjectId
+
+#: Sensitivity levels ordered by how much disclosure each one permits, least
+#: first. **This tuple is the only definition of that order in the codebase**, and
+#: everything that needs it -- the ceiling expansion below, the list of valid
+#: ceilings in an error message -- reads it rather than restating it.
+#:
+#: It has to be written down because :class:`~theurian.domain.enums.Sensitivity`
+#: is a ``StrEnum``, whose members therefore compare *as strings*: measured,
+#: ``sorted(Sensitivity)`` is ``[confidential, internal, public, restricted]`` and
+#: ``Sensitivity.CONFIDENTIAL < Sensitivity.INTERNAL`` is ``True``. An
+#: implementation that reached for ``<`` would not raise; it would silently place
+#: ``confidential`` below ``internal`` and serve confidential content under an
+#: ``internal`` ceiling.
+#:
+#: Declaration order in the enum happens to agree today, and is not relied on for
+#: the same reason: a member inserted in the middle would move the boundary with
+#: nothing to notice it. ``test_authorization_provider`` pins this tuple's members
+#: against ``set(Sensitivity)``, so a new level added to the enum turns RED here
+#: rather than becoming quietly invisible.
+DISCLOSURE_ORDER: Final[tuple[Sensitivity, ...]] = (
+    Sensitivity.PUBLIC,
+    Sensitivity.INTERNAL,
+    Sensitivity.CONFIDENTIAL,
+    Sensitivity.RESTRICTED,
+)
+
+#: The ceiling a deployment gets when it declares none.
+#:
+#: ``internal``, so an undeclared deployment withholds ``confidential`` and
+#: ``restricted``. Restrictive by decision rather than by accident (#119,
+#: 2026-08-23, ADR-0025): a permissive default is what made the measured leak the
+#: *shipped* behaviour, and an operator surprised by fewer results has been told
+#: something true where an operator surprised by a ``confidential`` excerpt has
+#: not.
+#:
+#: It was ``restricted`` -- every level -- until the closing commit of #119, and
+#: deliberately so: withholding rows while the index still holds their text is the
+#: T-17a mechanism rather than a fix, so this moved only once the build-side
+#: exclusion, the read-side predicate and the reclassification purge were all in
+#: place to make a withholding actually withhold.
+DEFAULT_CEILING: Final = Sensitivity.INTERNAL
+
+#: The tenant this deployment serves. One process, one operator, one tenant
+#: (ADR-0002) -- and the same ``TenantId()`` default that ``migration_engine``
+#: refuses a revision for departing from at write time (#110). Both read the
+#: domain default rather than a literal, so there is one value and not two.
+DEPLOYMENT_TENANT: Final = TenantId()
+
+#: The ACL groups this deployment serves, for the same reason and from the same
+#: default as :data:`DEPLOYMENT_TENANT`.
+DEPLOYMENT_ACL_GROUPS: Final = frozenset({AclGroup()})
+
+#: The profile file's name, inside the ``auth`` directory beside the token.
+SERVING_PROFILE_FILENAME: Final = "serving-profile"
+
+#: Cap on the profile file's size. The longest valid content is ``confidential``
+#: and a line terminator, so 64 bytes is roomy; the point is that the read is
+#: bounded at all, and that an over-long file is refused before its bytes can
+#: reach an error message.
+MAX_SERVING_PROFILE_BYTES: Final = 64
+
+_VISIBLE_BY_CEILING: Final[Mapping[Sensitivity, frozenset[Sensitivity]]] = MappingProxyType(
+    {
+        ceiling: frozenset(DISCLOSURE_ORDER[: index + 1])
+        for index, ceiling in enumerate(DISCLOSURE_ORDER)
+    }
+)
+
+
+class ServingProfileFault(StrEnum):
+    """Why a profile file could not be read as a ceiling, as a closed set.
+
+    A ``StrEnum`` rather than a message parameter, for the reason
+    :class:`~theurian.security.env_file.EnvBlockFault` is one: these sentences are
+    *published* -- the daemon prints them when it refuses to start -- and an
+    exception carries whatever raised it. Constructing the message from a member
+    of this enum is what makes "the message contains no byte of the file" a
+    property of the type rather than a habit of each call site.
+    """
+
+    NOT_A_REGULAR_FILE = "is not a regular file"
+    TOO_LARGE = f"is larger than {MAX_SERVING_PROFILE_BYTES} bytes"
+    NOT_UTF8 = "is not valid UTF-8"
+    EMPTY = "declares no ceiling"
+
+
+class ServingProfileError(SecurityError):
+    """The deployment serving profile exists and could not be honoured.
+
+    Refused rather than defaulted. Falling back to the built-in ceiling would
+    turn an operator's typo into a *wider* grant than they asked for, silently,
+    and an access control that widens on malformed input is not one.
+    """
+
+
+class MalformedServingProfileError(ServingProfileError):
+    """The profile file is not one readable ceiling word."""
+
+    def __init__(self, path: Path, fault: ServingProfileFault) -> None:
+        self.path = path
+        self.fault = fault
+        self.remedy = (
+            f"Write one of {_valid_ceilings()} into {path}, or delete the file to "
+            f"fall back to this build's default ceiling."
+        )
+        super().__init__(f"The deployment serving profile at {path} {fault.value}.")
+
+
+class UnknownSensitivityCeilingError(ServingProfileError):
+    """The profile file holds a word that is not a sensitivity level."""
+
+    def __init__(self, path: Path, word: str) -> None:
+        self.path = path
+        self.word = word
+        self.remedy = (
+            f"Write one of {_valid_ceilings()} into {path}, or delete the file to "
+            f"fall back to this build's default ceiling."
+        )
+        # The one place a byte of the file enters a message, because an operator
+        # cannot fix a typo they cannot see. Bounded by construction: the read
+        # refuses anything past MAX_SERVING_PROFILE_BYTES before this is reached,
+        # and `!r` escapes whatever those bytes turned out to be.
+        super().__init__(
+            f"The deployment serving profile at {path} declares a ceiling of {word!r}, "
+            f"which is not a sensitivity level."
+        )
+
+
+class InsecureServingProfilePermissionsError(ServingProfileError):
+    """The profile file is readable or writable by other local users.
+
+    The same refusal ``FileSecretStore.get`` makes about the token beside it, and
+    for a stronger reason: a token another account can read is a leaked
+    credential, while a *ceiling* another account can write is that account
+    choosing what this daemon serves.
+    """
+
+    def __init__(self, path: Path, mode: int) -> None:
+        self.path = path
+        self.mode = mode
+        self.remedy = f"Run `chmod 600 {path}`, then re-check who has been able to edit it."
+        super().__init__(
+            f"The deployment serving profile at {path} has mode {mode:04o} and is "
+            f"accessible to other users."
+        )
+
+
+class InsecureServingProfileDirectoryError(ServingProfileError):
+    """The profile is private, and the directory holding it is not.
+
+    Separate from :class:`InsecureServingProfilePermissionsError` because the
+    offending object and the cure are different: the file is 0600 and blameless,
+    and the ``chmod`` that fixes this names the directory. Reporting the file's
+    own mode here -- which is what one shared class would do -- would print
+    ``mode 0600 and is accessible to other users`` about a file that is not.
+
+    A directory's write bit governs *replacing* an entry in it, so a 0600 profile
+    inside a 0777 ``auth/`` is rewritable by any local account: the mode on the
+    file buys nothing that the directory has already given away. That is the
+    claim :func:`serving_profile_path` makes and this is what enforces it.
+    """
+
+    def __init__(self, path: Path, directory: Path, mode: int) -> None:
+        self.path = path
+        self.directory = directory
+        self.mode = mode
+        self.remedy = f"Run `chmod 700 {directory}`, then re-check who has been able to edit it."
+        super().__init__(
+            f"The deployment serving profile at {path} is in {directory}, which has mode "
+            f"{mode:04o} and is reachable by other users."
+        )
+
+
+class UnreadableServingProfileError(ServingProfileError):
+    """The profile file is there and the operating system refused to open it.
+
+    Its own class rather than a :class:`MalformedServingProfileError` fault,
+    because the remedy is the opposite one: nothing is wrong with the *contents*,
+    so "write one of these four words into it, or delete it" would send an
+    operator to rewrite a file whose only problem is its mode.
+
+    A ``PermissionError`` used to escape here instead. It is not a
+    :class:`~theurian.domain.errors.TheurianError`, so it went straight past the
+    ``except`` in ``index_commands._deployment_grant`` and ``daemon.runner``, and
+    reached the user as a Rich traceback with an empty stdout under ``--json`` --
+    the CP-2 escape every other malformed input on this path was already closed
+    for.
+    """
+
+    def __init__(self, path: Path, error: OSError) -> None:
+        self.path = path
+        self.errno = error.errno
+        self.remedy = (
+            f"Run `chmod 600 {path}` and check that you own it and the directory it is in, "
+            f"or delete the file to fall back to this build's default ceiling."
+        )
+        # `error.strerror` and never `str(error)`: the latter appends the
+        # filename the OS was given, which is this path twice, and the operating
+        # system's own sentence is the only part that says what went wrong. No
+        # byte of the file can reach here -- nothing opened it.
+        super().__init__(
+            f"The deployment serving profile at {path} could not be read: "
+            f"{error.strerror or type(error).__name__}."
+        )
+
+
+def _valid_ceilings() -> str:
+    return ", ".join(level.value for level in DISCLOSURE_ORDER)
+
+
+def encode_sensitivities(levels: frozenset[Sensitivity]) -> list[str]:
+    """Write a grant's levels down, least-disclosing first.
+
+    The form the published index pointer records a build's disclosure flavor in
+    (``indexedSensitivities``, beside ``indexesUnapproved``), so that a serve path
+    can ask whether the file it is about to search holds what this deployment
+    serves -- and no more (#119, ADR-0025 part 1).
+
+    **The expanded set rather than the ceiling word it came from.** A ceiling
+    re-expanded at read time is a second derivation of the predicate that decided
+    what was written, and the two can disagree without anything noticing: insert
+    one level into :data:`DISCLOSURE_ORDER` and every previously written word
+    expands to a different set, silently admitting an index built without a level
+    the reader now believes it holds. Recording the set closes that by making the
+    reader read the writer's own answer.
+
+    Ordered by :data:`DISCLOSURE_ORDER` rather than sorted, because sorting a
+    ``StrEnum`` sorts alphabetically -- the very ordering that is not the
+    disclosure order -- and a pointer file a person opens should read in the order
+    the ceiling is declared in.
+    """
+    return [level.value for level in DISCLOSURE_ORDER if level in levels]
+
+
+def decode_sensitivities(raw: object) -> frozenset[Sensitivity] | None:
+    """The levels a recorded value names, or ``None`` when it names none.
+
+    ``None`` rather than a default, and rather than a raise. The pointer is
+    derived, git-ignored and unsigned, so any local process can put anything in it
+    (SEC-7): the answer to a value this cannot read is "this build's flavor is
+    unknown", which the caller turns into a fallback and a rebuild, never into an
+    assumption about what the file holds.
+
+    An empty list is unknown for the same reason rather than "nothing was
+    indexed": :class:`AuthorizationGrant` refuses an empty set at construction, so
+    no build can have written one.
+    """
+    if not isinstance(raw, list) or not raw:
+        return None
+    by_value = {level.value: level for level in DISCLOSURE_ORDER}
+    levels: list[Sensitivity] = []
+    for item in raw:
+        level = by_value.get(item) if isinstance(item, str) else None
+        if level is None:
+            return None
+        levels.append(level)
+    return frozenset(levels)
+
+
+class ProfileVerdict(StrEnum):
+    """Whether a published build's recorded flavor is the one in force."""
+
+    MATCHES = "matches"
+    #: The pointer records no readable flavor, so which rows the file holds
+    #: cannot be established. Never folded into :attr:`MISMATCH`: one says the
+    #: profile moved under a build, the other says nothing is known, and a
+    #: reader told the first goes looking for an edit that never happened.
+    UNRECORDED = "unrecorded"
+    MISMATCH = "mismatch"
+
+
+def recorded_flavor_verdict(recorded: object, *, served: frozenset[Sensitivity]) -> ProfileVerdict:
+    """Judge one pointer's ``indexedSensitivities`` against the grant in force.
+
+    **One derivation, two readers**, and that is the whole reason this is a
+    function rather than four lines in each of them. ``mcp.search._published_index``
+    stands an index aside on this answer and degrades every query to an unranked
+    scan; ``cli.index_commands.index_status`` reports whether an operator has
+    anything to do about it. Written twice, the two disagreed in the ordinary
+    direction -- the serve path refused a build on every query while the status
+    command answered ``stale: false`` with an empty remedy, for the very file the
+    search had just refused, and ``_PROFILE_MISMATCH``'s own note says *`theurian
+    index status` is where an operator would be told*.
+
+    Equality, and it refuses in both directions for two different failures. A
+    *wider* build holds text this deployment does not serve, and an FTS5
+    external-content table scores what it returns against collection statistics
+    -- ``N``, ``avgdl``, per-term document frequencies -- computed over every row
+    it holds, so the withheld rows price the visible ones even though no query
+    could return them (T-17a on this axis). A *narrower* build is missing rows
+    the deployment does serve, and an index that silently answers less is the
+    ``count: 0, indexed: true`` shape every other check exists to prevent.
+
+    Compared against the set the pointer recorded rather than a ceiling word
+    re-expanded here: the recorded set is the predicate the build actually
+    applied, and re-deriving it would be a second derivation that can drift from
+    the first (see :func:`encode_sensitivities`).
+    """
+    built_for = decode_sensitivities(recorded)
+    if built_for is None:
+        return ProfileVerdict.UNRECORDED
+    return ProfileVerdict.MATCHES if built_for == served else ProfileVerdict.MISMATCH
+
+
+@dataclass(frozen=True, slots=True)
+class ServingProfile:
+    """One deployment's declared sensitivity ceiling, expanded once.
+
+    :attr:`visible_sensitivities` is computed at construction rather than on
+    demand, so the ceiling-to-set expansion happens in one place at one moment and
+    every reader afterwards is looking at the same frozen answer.
+    """
+
+    ceiling: Sensitivity = DEFAULT_CEILING
+
+    #: Every level at or below :attr:`ceiling`. Derived, never passed in.
+    visible_sensitivities: frozenset[Sensitivity] = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Normalised rather than trusted: `Sensitivity` is a `StrEnum`, so a bare
+        # "internal" satisfies the annotation at runtime and would leave
+        # `profile.ceiling` a `str` that only looks like a member. The lookup
+        # below would still succeed -- `StrEnum` hashes as `str` -- and the
+        # mismatch would surface somewhere else entirely.
+        ceiling = Sensitivity(self.ceiling)
+        object.__setattr__(self, "ceiling", ceiling)
+        object.__setattr__(self, "visible_sensitivities", _VISIBLE_BY_CEILING[ceiling])
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationGrant:
+    """What the daemon's one principal may see, resolved once at startup.
+
+    The composition root resolves this before the server exists and threads it in.
+    That is deliberate: the port's methods are ``async`` and the MCP tool
+    functions are not, so a per-call ``await`` would need an event loop the tool
+    layer does not own. Resolving once is also the honest shape for a *deployment*
+    profile -- there is one answer for the whole process, and a value re-derived
+    per request is a second place for it to be wrong.
+    """
+
+    tenant: TenantId
+    sensitivities: frozenset[Sensitivity]
+    acl_groups: frozenset[AclGroup]
+
+    def __post_init__(self) -> None:
+        # A grant that permits nothing is not a policy, it is a deployment that
+        # answers every query with an empty result and no explanation. Refused at
+        # construction so it cannot reach a request.
+        if not self.sensitivities:
+            msg = "An AuthorizationGrant must permit at least one sensitivity level."
+            raise DomainError(msg)
+        if not self.acl_groups:
+            msg = "An AuthorizationGrant must permit at least one ACL group."
+            raise DomainError(msg)
+
+
+@final
+class StaticAuthorizationProvider:
+    """The OSS Core's :class:`~theurian.domain.ports.authorization.AuthorizationProvider`.
+
+    One process, one operator, one profile (ADR-0002). Every answer is precomputed
+    at construction and every method hands back a slice of the *same*
+    :class:`AuthorizationGrant` that :meth:`deployment_grant` returns -- so the
+    port's answers and the composition root's grant cannot disagree, because there
+    is one object and not two derivations of one idea.
+
+    ``tenant_for`` and ``visible_acl_groups`` return the values ``migration_engine``
+    already refuses a revision for departing from (#110), which is what makes
+    those two axes degenerate here rather than unenforced: nothing can be stored
+    outside them, so nothing can be withheld along them.
+    """
+
+    def __init__(self, profile: ServingProfile | None = None) -> None:
+        self._profile = profile if profile is not None else ServingProfile()
+        self._grant = AuthorizationGrant(
+            tenant=DEPLOYMENT_TENANT,
+            sensitivities=self._profile.visible_sensitivities,
+            acl_groups=DEPLOYMENT_ACL_GROUPS,
+        )
+
+    @property
+    def profile(self) -> ServingProfile:
+        return self._profile
+
+    def deployment_grant(self) -> AuthorizationGrant:
+        """The whole deployment's grant, without an event loop.
+
+        The port is ``async`` because a hosted provider will make a network call;
+        this one has nothing to await, and the composition root that needs the
+        answer (``daemon/runner.build_server``) is called from inside a running
+        loop by every integration test, where ``asyncio.run`` raises. So the
+        precomputed value is offered synchronously here, and the ``async``
+        methods below return pieces of it.
+        """
+        return self._grant
+
+    async def may_access_project(
+        self,
+        principal: str,  # noqa: ARG002 -- port shape; one bearer token, one principal
+        project_id: ProjectId,  # noqa: ARG002 -- every registered project, per the port
+    ) -> bool:
+        return True
+
+    async def visible_sensitivities(
+        self,
+        principal: str,  # noqa: ARG002 -- port shape; the profile is deployment-wide
+        project_id: ProjectId,  # noqa: ARG002 -- port shape; the profile is deployment-wide
+    ) -> frozenset[Sensitivity]:
+        return self._grant.sensitivities
+
+    async def visible_acl_groups(
+        self,
+        principal: str,  # noqa: ARG002 -- port shape; the profile is deployment-wide
+        project_id: ProjectId,  # noqa: ARG002 -- port shape; the profile is deployment-wide
+    ) -> frozenset[AclGroup]:
+        return self._grant.acl_groups
+
+    async def tenant_for(
+        self,
+        principal: str,  # noqa: ARG002 -- port shape; one process serves one tenant
+    ) -> TenantId:
+        return self._grant.tenant
+
+
+def serving_profile_path(data_dir: Path) -> Path:
+    """Where the operator declares this deployment's ceiling.
+
+    Beside the token, inside ``auth/``, and not at the data directory's root.
+    ``Path.mkdir(parents=True, mode=...)`` applies its mode to the leaf only, so a
+    data directory that was created as somebody's parent keeps the umask's mode
+    while ``auth/`` is 0700 by construction (``FileSecretStore.set``). A ceiling
+    another local account can rewrite is not a ceiling.
+
+    ``"auth"`` is spelled here as a literal, the way every other site already
+    spells it. Counted rather than estimated --
+    ``git grep -n '/ "auth"' -- packages/theurian-core/src`` on ``e58a8aa`` --
+    there are six including this one, across ``application`` (twice), ``cli``,
+    ``infrastructure`` and ``security`` (twice). Naming the directory once would
+    be an improvement and is a change to four packages, none of which this phase
+    touches.
+    """
+    return data_dir / "auth" / SERVING_PROFILE_FILENAME
+
+
+def load_serving_profile(data_dir: Path) -> ServingProfile:
+    """Read the declared ceiling, or the built-in default when none is declared.
+
+    **An absent file is not an error and not a warning**: it is the ordinary state
+    of a deployment that has not declared a ceiling, and it is what makes this
+    phase behaviour-neutral on every existing installation.
+
+    A file that is *present* is honoured or refused, never partially believed.
+    **"Present" is decided by ``lstat`` and not by ``Path.exists()``**, because
+    ``exists()`` follows a symlink and answers ``False`` for a dangling one: a
+    profile whose target had been deleted took the absent-file arm above and
+    widened the deployment's grant back to the built-in default, silently. Every
+    other malformed input was already refused; that one defaulted.
+
+    Raises:
+        MalformedServingProfileError: The file is not one readable word --
+            irregular, oversized, not UTF-8, or empty.
+        UnknownSensitivityCeilingError: The word is not a sensitivity level.
+        InsecureServingProfilePermissionsError: Other local users can reach it.
+        InsecureServingProfileDirectoryError: Other local users can reach the
+            directory holding it, which is enough to replace it.
+        UnreadableServingProfileError: It is there and the operating system
+            refused to open it.
+    """
+    path = serving_profile_path(data_dir)
+    try:
+        # `lstat`, so a symlink is seen as a symlink. A link resolving to a
+        # regular file would pass every check below while its *target's*
+        # directory -- which the mode checks here never look at -- decides who
+        # may rewrite the ceiling. Refusing the whole shape is what makes the
+        # directory check one path down worth anything.
+        info = path.lstat()
+    except FileNotFoundError:
+        return ServingProfile()
+    except OSError as exc:
+        # Not folded into the branch above. `Path.exists()` swallows every
+        # `OSError` into `False`, which is the same widening the dangling-link
+        # case is: a directory this process cannot traverse would read as "no
+        # ceiling declared" rather than as a refusal.
+        raise UnreadableServingProfileError(path, exc) from exc
+
+    # Checked from the directory entry, before anything opens the path: a FIFO
+    # reports size 0, passes every bound below it, and then blocks in `open()`
+    # until a writer appears -- which for a file read during startup is a daemon
+    # that never finishes starting (the shape issue #215 measured for source
+    # files).
+    if not stat.S_ISREG(info.st_mode):
+        raise MalformedServingProfileError(path, ServingProfileFault.NOT_A_REGULAR_FILE)
+    if is_world_accessible(path):
+        raise InsecureServingProfilePermissionsError(path, info.st_mode & 0o777)
+    # The directory as well as the file, mirroring `probe_token_storage`'s check
+    # on the same two objects for the token beside it. A 0600 profile inside a
+    # 0777 `auth/` is rewritable by any local account: replacing an entry is
+    # governed by the directory's write bit, so the file's own mode buys nothing
+    # the directory has already given away.
+    directory = path.parent
+    if is_world_accessible(directory):
+        raise InsecureServingProfileDirectoryError(
+            path, directory, directory.stat().st_mode & 0o777
+        )
+    if info.st_size > MAX_SERVING_PROFILE_BYTES:
+        raise MalformedServingProfileError(path, ServingProfileFault.TOO_LARGE)
+
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_SERVING_PROFILE_BYTES + 1)
+    except OSError as exc:
+        # The one input on this path that used to escape as a bare
+        # `PermissionError`: not a `TheurianError`, so it went past every
+        # `except` its callers wrote and reached the user as a Rich traceback
+        # with an empty stdout under `--json` (CP-2). Nothing above can stand in
+        # for it -- `lstat` succeeds on a 0000 file, and its mode is 0600-clean.
+        raise UnreadableServingProfileError(path, exc) from exc
+    # Bounded at the read and re-checked after it, rather than trusted from the
+    # `stat` above: the file can grow between the two, and `read_bytes` would
+    # then pull in whatever it grew to before any of this could refuse it.
+    if len(raw) > MAX_SERVING_PROFILE_BYTES:
+        raise MalformedServingProfileError(path, ServingProfileFault.TOO_LARGE)
+
+    try:
+        word = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise MalformedServingProfileError(path, ServingProfileFault.NOT_UTF8) from exc
+
+    if not word:
+        raise MalformedServingProfileError(path, ServingProfileFault.EMPTY)
+
+    ceiling = _ceiling_from(word)
+    if ceiling is None:
+        raise UnknownSensitivityCeilingError(path, word)
+    return ServingProfile(ceiling=ceiling)
+
+
+def _ceiling_from(word: str) -> Sensitivity | None:
+    """The level this word names, or ``None``.
+
+    Case-insensitive: ``INTERNAL`` names the same level as ``internal`` and
+    accepting it widens nothing. Everything else is refused rather than guessed --
+    a near-miss silently resolved is how a ceiling ends up somewhere its operator
+    did not put it.
+    """
+    folded = word.casefold()
+    return next((level for level in DISCLOSURE_ORDER if level.value == folded), None)

@@ -399,6 +399,16 @@ Traceability graph queries are planned, not shipped. The current server reports
 all-or-nothing. Version gating is coarse; if only summarization is unconfigured,
 everything else should still work.
 
+`sensitivityEnforcement: true` is the flag with a consequence for how a client
+reads an *empty* answer. This build enforces the disclosure axis against a
+ceiling the operator declares, so no results can mean "withheld", not only
+"nothing matched" — a client should not tell a user that a project holds no such
+knowledge. The flag reports that the axis is enforced and **never which ceiling
+this deployment declares**: that word would tell a caller which levels it is not
+being shown, and this tool resolves no project and passes no authorization gate.
+An operator reads the ceiling from the file they wrote it into
+([ADR-0025](https://github.com/theurian/theurian/blob/main/docs/adr/0025-sensitivity-is-enforced-before-0-1-0-stable.md)).
+
 <!-- capabilities-fields:begin -->
 The response's fields serve different roles, not one uniform contract.
 `capabilities` is what a client degrades against, one feature at a time.

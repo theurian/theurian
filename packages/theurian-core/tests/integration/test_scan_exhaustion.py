@@ -74,6 +74,7 @@ from theurian.application.retrieval_service import (
     SearchRequest,
 )
 from theurian.domain.chunking import Chunk, IndexableChunk
+from theurian.domain.enums import Sensitivity
 from theurian.domain.ports.index_store import ForestRecompute
 from theurian.domain.ranking import Ranked, RetrieverPage
 from theurian.domain.raptor import IndexableNode
@@ -82,6 +83,15 @@ from theurian.infrastructure.sqlite import index_store as index_store_module
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 pytestmark = pytest.mark.integration
+
+#: The disclosure grant every retriever call in this file runs under: all four
+#: levels, which is what "this deployment serves everything" means once the
+#: retrievers take the axis as a WHERE predicate (#119 phase 4). Spelled out
+#: rather than read from ``StaticAuthorizationProvider``'s shipped default, which
+#: a later phase narrows -- a file that inherited it would start withholding its
+#: own fixtures silently, turning these tests into tests of something else.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 
 PROJECT = "demo"
 
@@ -201,32 +211,70 @@ class _CountedStore:
         self.substring_reads: list[int] = []
 
     def search_substring(
-        self, query: str, *, project_id: str, limit: int, include_unapproved: bool
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int,
+        include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         self.substring_reads.append(limit)
         return self._inner.search_substring(
-            query, project_id=project_id, limit=limit, include_unapproved=include_unapproved
+            query,
+            project_id=project_id,
+            limit=limit,
+            include_unapproved=include_unapproved,
+            visible_sensitivities=visible_sensitivities,
         )
 
     def search_lexical(
-        self, query: str, *, project_id: str, limit: int, include_unapproved: bool
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int,
+        include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         return self._inner.search_lexical(
-            query, project_id=project_id, limit=limit, include_unapproved=include_unapproved
+            query,
+            project_id=project_id,
+            limit=limit,
+            include_unapproved=include_unapproved,
+            visible_sensitivities=visible_sensitivities,
         )
 
     def search_dense(
-        self, query_vector: Sequence[float], *, project_id: str, include_unapproved: bool
+        self,
+        query_vector: Sequence[float],
+        *,
+        project_id: str,
+        include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         return self._inner.search_dense(
-            query_vector, project_id=project_id, include_unapproved=include_unapproved
+            query_vector,
+            project_id=project_id,
+            include_unapproved=include_unapproved,
+            visible_sensitivities=visible_sensitivities,
         )
 
     def search_summaries(
-        self, query: str, *, project_id: str, limit: int, include_unapproved: bool
+        self,
+        query: str,
+        *,
+        project_id: str,
+        limit: int,
+        include_unapproved: bool,
+        visible_sensitivities: frozenset[Sensitivity],
     ) -> RetrieverPage:
         return self._inner.search_summaries(
-            query, project_id=project_id, limit=limit, include_unapproved=include_unapproved
+            query,
+            project_id=project_id,
+            limit=limit,
+            include_unapproved=include_unapproved,
+            visible_sensitivities=visible_sensitivities,
         )
 
     def raptor_path(self, revision_id: str, *, project_id: str) -> tuple[RaptorPathSegment, ...]:
@@ -327,7 +375,11 @@ def test_one_search_reads_the_scan_once_however_many_rows_were_withheld(
     """
     index = _stale_index(tmp_path, withdrawn)
     matches = SqliteIndexStore(index).search_substring(
-        QUERY, project_id=PROJECT, limit=FIRST_PASS_DEPTH, include_unapproved=False
+        QUERY,
+        project_id=PROJECT,
+        limit=FIRST_PASS_DEPTH,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
     )
     assert len(matches.rows) == FIRST_PASS_DEPTH, (
         f"the corpus must match exactly {FIRST_PASS_DEPTH} rows, which is the count at which "
@@ -342,7 +394,10 @@ def test_one_search_reads_the_scan_once_however_many_rows_were_withheld(
     store = _CountedStore(SqliteIndexStore(index))
 
     with _statements_reaching_sqlite() as executed:
-        RetrievalService(store).search(SearchRequest(query=QUERY, project_id=PROJECT), visible)
+        RetrievalService(store).search(
+            SearchRequest(query=QUERY, project_id=PROJECT, visible_sensitivities=EVERY_SENSITIVITY),
+            visible,
+        )
 
     assert store.substring_reads == [FIRST_PASS_DEPTH], (
         f"one search must read the scan retriever once whatever was withheld; with "

@@ -415,27 +415,35 @@ class SqliteCanonicalStore:
         return self._read_all(sql, params, _item_from_row)
 
     def list_items_by_status(
-        self, context: RequestContext, *, statuses: frozenset[KnowledgeStatus]
+        self,
+        context: RequestContext,
+        *,
+        statuses: frozenset[KnowledgeStatus],
+        sensitivities: frozenset[Sensitivity],
     ) -> tuple[KnowledgeItem, ...]:
-        # A status-filtered read with no visibility semantics. The caller passes the
-        # status set it has already resolved, so the `may_surface` gate stays in the
-        # tool layer (`search._scan`) where the security enumeration expects it and
-        # this adapter never consults it. `knowledge.search`'s substring fallback is
+        # A two-axis filtered read with no visibility semantics. The caller passes
+        # the sets it has already resolved, so the `may_surface` gate and the
+        # deployment's sensitivity grant both stay in the tool layer
+        # (`search._scan`) where the security enumeration expects them and this
+        # adapter never consults either. `knowledge.search`'s substring fallback is
         # the caller; filtering in SQL is what keeps its response time proportional
-        # to the rows it may return rather than to the retired rows it withholds --
-        # the `search._scan` sibling of the channel #19 closed for `knowledge.status`
-        # (T-17, SEC-13, #158).
+        # to the rows it may return rather than to the rows it withholds -- the
+        # `search._scan` sibling of the channel #19 closed for `knowledge.status`
+        # (T-17, SEC-13, #158, #119).
         #
-        # An empty set short-circuits to `()`: no status can match, so a query would
-        # only return zero rows. The guard is defensive -- `search._scan` always
-        # resolves at least APPROVED into the set
-        # (`may_surface(APPROVED, include_unapproved=False)` is always true), so it
-        # never passes an empty one. `sorted()` only fixes the bind order: the
-        # statement text is `?, ?, ?` regardless of the values.
-        if not statuses:
+        # An empty set on either axis short-circuits to `()`: nothing can match, so a
+        # query would only return zero rows. Both guards are defensive --
+        # `search._scan` always resolves at least APPROVED into the first
+        # (`may_surface(APPROVED, include_unapproved=False)` is always true), and
+        # `AuthorizationGrant` refuses at construction to hold an empty second. Each
+        # `sorted()` only fixes the bind order: the statement text is `?, ?, ?`
+        # regardless of the values.
+        if not statuses or not sensitivities:
             return ()
         values = tuple(sorted(s.value for s in statuses))
         placeholders = ", ".join("?" for _ in values)
+        levels = tuple(sorted(s.value for s in sensitivities))
+        level_placeholders = ", ".join("?" for _ in levels)
         # `INDEXED BY idx_items_status`, not left to the planner, and that hint is
         # the whole of what makes this timing-independent. `idx_items_status` is
         # `(project_id, status)`; the primary key gives a second index
@@ -452,15 +460,66 @@ class SqliteCanonicalStore:
         # force is also structural, not advisory -- drop or rename the index and the
         # query fails loudly rather than silently falling back to the scan that
         # reopens the channel.
+        #
+        # The `sensitivity` predicate rides along and is *not* flat in the same way,
+        # because no index carries that column: the seek locates the in-status rows
+        # and this drops the above-ceiling ones after they have been fetched from the
+        # table. So this statement carries a term that grows with the rows it
+        # withholds. It is accepted rather than absent, which means saying how large
+        # it is in the unit the residual it is measured against uses.
+        #
+        # Measured on SQLite 3.47.1 against this schema, an `approved` project with
+        # 50 rows an `internal` ceiling admits and 0/50/300/1,000/3,000 above it,
+        # median of 60 warm in-process calls: VM steps 1,816 -> 2,116 -> 3,616 ->
+        # 7,816 -> 19,816 and 363 -> 373 -> 423 -> 552 -> 957 us, while the rows
+        # crossing into Python stayed at 50 throughout. That is **6.0 VM steps and
+        # about 0.20 us per above-ceiling row**, linear, with no threshold in it.
+        # The step count is exact and reproduces anywhere; the microseconds are this
+        # machine's, which is why they are quoted to two figures.
+        #
+        # **Bounded by the corpus, not by the ask.** This statement carries no
+        # `LIMIT` -- `search._scan` cuts in Python, after the whole result set has
+        # been built -- so the term is proportional to every above-ceiling row in the
+        # project, and no caller can shrink it by asking for less.
+        #
+        # **What it is worth is a per-row comparison and only a per-row one.** The
+        # ranked path already accepts, and the threat model records, a canonical read
+        # of 14.7 us per withheld row (T-17); this is about 70 times smaller per row.
+        # Compared as totals the two say nothing to each other, because they are
+        # bounded by different populations. Against the end-to-end noise floor the
+        # threat model records for a real client -- 1.40 ms across the loopback hop
+        # (TB-1) -- this term needs on the order of 7,000 above-ceiling rows in one
+        # project to reach a single floor's width, which is where the acceptance
+        # stops being obvious and the flattening below stops being optional.
+        #
+        # **`count_surfaceable_by_status` took the same axis in #119 phase 6 and
+        # carries a larger term of the same shape** -- 0.54 us per above-ceiling
+        # row against this method's 0.20, because it interprets the level rather
+        # than matching it in SQL. Measured and argued at that method, not here,
+        # so the two acceptances stay separately checkable. Neither covers
+        # `count_surfaceable_items`, which takes no grant: that is the live half
+        # of the #30 integrity comparison, and it stays on the ungated
+        # population deliberately (see both methods below).
+        #
+        # Flattening it exactly means adding `sensitivity` as a third column of
+        # `idx_items_status` (measured: 2,032 steps at both 0 and 1,000 above the
+        # ceiling, on the fixture the earlier note used), which bumps SCHEMA_VERSION
+        # and so invalidates every existing state database. That was not a change
+        # #119 phase 2 could make, since its contract was that an allow-all
+        # deployment behaves as it did; it is owned by
+        # https://github.com/theurian/theurian/issues/338.
         sql = (
             "SELECT * FROM knowledge_items INDEXED BY idx_items_status "  # noqa: S608 - placeholders only
             f"WHERE project_id = ? AND status IN ({placeholders}) "
+            f"AND sensitivity IN ({level_placeholders}) "
             "ORDER BY item_id"
         )
-        params = (context.project_id.value, *values)
+        params = (context.project_id.value, *values, *levels)
         return self._read_all(sql, params, _item_from_row)
 
-    def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:
+    def count_surfaceable_by_status(
+        self, context: RequestContext, *, sensitivities: frozenset[Sensitivity]
+    ) -> dict[str, int]:
         # Count in SQL so `knowledge.status` spends work proportional to what it
         # publishes, not to the retired rows it withholds. Filtering `list_items`
         # in Python read every row, which made the tool's response time scale
@@ -472,27 +531,111 @@ class SqliteCanonicalStore:
         # regardless of the values, and the result order comes from the SQL
         # `ORDER BY status`. `GROUP BY` returns no row for a status with no
         # items, which keeps the mapping identical to the old first-appearance
-        # loop. The
-        # covering index `idx_items_status(project_id, status)` answers it
-        # without reading a withheld row.
+        # loop. The seek on `idx_items_status(project_id, status)` still skips
+        # every retired row, but this is no longer a *covering* scan -- the
+        # `sensitivity` column it also reads is not in the index, so each
+        # in-status row is fetched from the table (measured below).
+        #
+        # The `sensitivity` axis joins it in #119 phase 6, because these counts are
+        # published and a statistic over rows the caller may not see is a
+        # disclosure whatever tool carries it (SEC-13, T-17). What differs from
+        # `list_items_by_status` above is *where* the axis is applied, and the
+        # difference is deliberate.
+        #
+        # **Aggregated in SQL, admitted in Python, and the level is interpreted
+        # rather than matched.** `GROUP BY status, sensitivity` still counts in
+        # SQLite -- at most `len(SURFACEABLE_STATUSES) * len(Sensitivity)` rows
+        # ever cross into Python, whatever the corpus holds -- and the grant then
+        # decides which groups are summed. A second `sensitivity IN (?, ?)`
+        # predicate beside the status one would read the same rows for the same
+        # cost and was written that way first; it was changed because it makes a
+        # *damaged* cell silent. A `sensitivity` SQLite cannot match drops out of
+        # the `IN` list exactly as an above-ceiling row does, so a corrupt column
+        # answers `itemCount: 0` over a project holding two items, with no
+        # refusal and no `integrity` -- while `knowledge.search` and
+        # `knowledge.get` both refuse the same cell, because `_item_from_row`
+        # interprets it. Measured, on the whole-schema sweep in
+        # `test_canonical_store_corruption.py`: the predicate form added
+        # `('knowledge.status', 'knowledge_items', 'sensitivity')` to
+        # `UNDETECTED_UNDERREPORT`, whose own docstring says a new member is a
+        # failure rather than an expectation to update. `Sensitivity(...)` here
+        # raises inside `_reading`, so the cell refuses with a remedy and names
+        # nothing of itself, which is what the other two tools already did.
+        #
+        # **What that costs, measured rather than asserted, because it is not
+        # free.** Both forms lose the covering index -- nothing indexes
+        # `sensitivity`, so the seek on `(project_id, status)` still skips every
+        # retired row and each *in-status* row is then fetched from the table --
+        # and the `GROUP BY` over two columns needs a temp b-tree the one-column
+        # form does not. On SQLite 3.47.1, a project of 50 in-ceiling `approved`
+        # rows plus 0/50/300/1,000/3,000 above-ceiling ones, median of 60 warm
+        # in-process calls:
+        #
+        #                      VM steps per above-ceiling row   us per row
+        #   ungated (pre-#119)              9.0 (and counts it)      0.14
+        #   `sensitivity IN (...)`          7.0                      0.20
+        #   `GROUP BY status, sensitivity` 17.0                      0.54
+        #
+        # So interpretation costs about 0.34 us per above-ceiling row over the
+        # predicate form, linear, with no threshold. It is corpus-bounded and no
+        # caller can shrink it -- the same shape `list_items_by_status` accepts at
+        # 0.20 us/row -- and against the 1.40 ms end-to-end floor the threat model
+        # records for a real client (TB-1) it needs on the order of 2,600
+        # above-ceiling rows in one project to reach a single floor's width,
+        # where the predicate form needs about 7,000. The trade is a factor of
+        # 2.6 on an accepted residual against a *new* false published claim, and
+        # it is taken in that direction deliberately.
+        # https://github.com/theurian/theurian/issues/338 flattens the seek half
+        # of both by indexing the column; the temp b-tree is this form's own.
+        #
+        # An empty grant short-circuits: nothing can match, and
+        # `AuthorizationGrant` refuses to hold an empty set, so this is
+        # defensive.
+        #
+        # **The narrowing stops here.** `count_surfaceable_items` below is the
+        # #30 integrity comparison's live half and takes no grant, so a
+        # deployment that serves less than it holds never reports damage from its
+        # own ceiling -- see that method and the port for why the comparison
+        # stays on the ungated population at both ends.
+        if not sensitivities:
+            return {}
         statuses = tuple(sorted(s.value for s in SURFACEABLE_STATUSES))
         placeholders = ", ".join("?" for _ in statuses)
         sql = (
-            "SELECT status, COUNT(*) AS n FROM knowledge_items "  # noqa: S608 - placeholders only
-            f"WHERE project_id = ? AND status IN ({placeholders}) "
-            "GROUP BY status ORDER BY status"
+            "SELECT status, sensitivity, COUNT(*) AS n "  # noqa: S608 - placeholders only
+            f"FROM knowledge_items WHERE project_id = ? AND status IN ({placeholders}) "
+            "GROUP BY status, sensitivity ORDER BY status, sensitivity"
         )
         params = (context.project_id.value, *statuses)
-        pairs = self._read_all(sql, params, lambda row: (str(row["status"]), int(row["n"])))
-        return dict(pairs)
+        groups = self._read_all(
+            sql,
+            params,
+            lambda row: (str(row["status"]), Sensitivity(row["sensitivity"]), int(row["n"])),
+        )
+        # Ordered by the SQL `ORDER BY`, so the mapping this tool publishes is a
+        # function of the rows and not of a dict's insertion history.
+        admitted = tuple(
+            (status, count) for status, level, count in groups if level in sensitivities
+        )
+        return {
+            status: sum(n for other, n in admitted if other == status) for status, _ in admitted
+        }
 
     def count_surfaceable_items(self, context: RequestContext) -> int:
-        # The same population `count_surfaceable_by_status` groups, totalled in
-        # SQL for the tools that need only the total: `knowledge.search` and
-        # `knowledge.get` compare it against `project_integrity`'s recorded count
-        # on every request (#30 PR2) and publish no breakdown. `knowledge.status`
-        # calls neither for this -- it sums the breakdown it already read, which
-        # is the same predicate over the same rows and one query fewer.
+        # The same *status* population `count_surfaceable_by_status` groups,
+        # totalled in SQL and **not narrowed by any deployment ceiling**, for the
+        # one comparison that must stay ceiling-blind at both ends: all three
+        # tools check it against `project_integrity`'s recorded count on every
+        # request (#30 PR2), and that record is written by `migrate apply` from
+        # the rows it wrote, knowing no ceiling.
+        #
+        # `knowledge.status` used to skip this read and pass the sum of its own
+        # breakdown instead -- one query fewer, and identical while the two
+        # predicates were identical. #119 phase 6 made them differ: the breakdown
+        # is narrowed to what that tool publishes, so its sum is no longer this
+        # number, and passing it would have made every restricted deployment
+        # report `damageDetected` on a healthy project. The saved query was
+        # bought back rather than the population being quietly widened.
         #
         # `INDEXED BY idx_items_status`, measured as `SEARCH knowledge_items
         # USING COVERING INDEX idx_items_status (project_id=? AND status=?)` --

@@ -71,6 +71,12 @@ from theurian.domain.values import ValidityPeriod
 
 pytestmark = pytest.mark.unit
 
+#: The sensitivity grant every construction in this file runs under: all four
+#: levels, so the #119 axis withholds nothing and what is measured here stays the
+#: status and pass-count behaviour these tests were written for. Spelled out
+#: rather than read from the shipped default, which a later phase narrows.
+EVERY_SENSITIVITY = frozenset(Sensitivity)
+
 LEXICAL_READS = "search_lexical"
 SUBSTRING_READS = "search_substring"
 
@@ -176,6 +182,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - the index holds only approved rows here
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(LEXICAL_READS, limit)
 
@@ -186,6 +193,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(SUBSTRING_READS, limit)
 
@@ -195,6 +203,7 @@ class _CountingIndex:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         # Deliberately not counted, and deliberately not raising. The dense
         # retriever is not depth-doubled -- it scores the whole index whatever it
@@ -209,6 +218,7 @@ class _CountingIndex:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,  # noqa: ARG002 - no leaves to bound
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         # No forest, so the summary retriever contributes nothing and is not
         # counted -- the depth this file measures is the leaf retrievers'.
@@ -287,7 +297,10 @@ def _search(withheld: int, *, honours_limit: bool = True) -> _CountingIndex:
     index = _CountingIndex(_corpus(withheld), honours_limit=honours_limit)
     service = RetrievalService(index)
 
-    service.search(SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld())
+    service.search(
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY),
+        _WithoutTheWithheld(),
+    )
 
     return index
 
@@ -465,10 +478,14 @@ def _search_pinned_excluding(excluded_at_moment: int) -> tuple[_CountingIndex, S
         _ControlledValiditySession(valid_at_moment),
         DEMO_CONTEXT,
         include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
         moment=MOMENT,
     )
 
-    outcome = service.search(SearchRequest(query="gateway", project_id="demo"), visibility)
+    outcome = service.search(
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY),
+        visibility,
+    )
 
     return index, outcome
 
@@ -537,6 +554,137 @@ def test_a_pinned_moment_still_returns_valid_rows_ranked_below_candidate_depth()
     assert len(outcome.candidates) == CANDIDATE_DEPTH, (
         f"the {CANDIDATE_DEPTH} rows ranked just below the cut are inside the pinned "
         f"window and must survive -- got {len(outcome.candidates)}"
+    )
+
+
+#: A deployment that serves up to `internal` and no higher, and the level the
+#: withheld rows carry *now* -- above that ceiling, so `CanonicalVisibility`
+#: withholds them on the item's current sensitivity (#119). Spelled out rather than
+#: read from the shipped default, the reason :data:`EVERY_SENSITIVITY` is.
+UP_TO_INTERNAL = frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+ABOVE_THE_CEILING = Sensitivity.RESTRICTED
+
+
+@final
+class _SensitivitySession:
+    """A canonical read session whose first ``withheld`` items are current at a
+    level this deployment does not serve, and the rest within it -- so the real
+    ``CanonicalVisibility`` withholds by sensitivity, exercised without a database.
+
+    Every item is approved, current, and valid at :data:`MOMENT`, so the only thing
+    that can withhold a row is ``may_disclose`` on its *current* sensitivity. That
+    isolation is what lets the behaviour test below tell the ceiling gate's
+    placement apart: a validity or status difference would move the same counts.
+    """
+
+    def __init__(self, withheld_ids: frozenset[str]) -> None:
+        self._withheld_ids = withheld_ids
+
+    def __enter__(self) -> _SensitivitySession:
+        return self
+
+    def __exit__(self, *details: object) -> None:
+        return None
+
+    def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
+        raise NotImplementedError  # pragma: no cover - CanonicalVisibility never lists
+
+    def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:  # noqa: ARG002
+        number = int(item_id.value.rsplit("-", 1)[-1])
+        current = ABOVE_THE_CEILING if item_id.value in self._withheld_ids else Sensitivity.INTERNAL
+        return KnowledgeItem(
+            item_id=item_id,
+            project_id=DEMO,
+            namespace="architecture",
+            kind=KnowledgeKind.ARCHITECTURE,
+            status=KnowledgeStatus.APPROVED,
+            current_revision_id=RevisionId(f"01K1M{number:021d}"),
+            owner="platform-team",
+            trust_level=TrustLevel.REVIEWED,
+            sensitivity=current,
+            validity=ValidityPeriod(valid_from=MOMENT - timedelta(days=1)),
+        )
+
+    def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        # This fake resolves no alias, so the exact read is the resolving one; it
+        # exists to satisfy the port `CanonicalVisibility` depends on (T-21).
+        return self.get_item(context, item_id)
+
+    def get_revision(
+        self, context: RequestContext, revision_id: RevisionId
+    ) -> KnowledgeRevision | None:
+        raise NotImplementedError  # pragma: no cover - not read by CanonicalVisibility
+
+
+def _search_withholding_by_sensitivity(
+    withheld: int,
+) -> tuple[_CountingIndex, SearchOutcome, frozenset[str]]:
+    """One ordinary search over an all-approved corpus whose top ``withheld`` rows
+    are current at a level above this deployment's ceiling, served up to ``internal``.
+    """
+    rows = tuple(_moment_row(number) for number in range(VISIBLE_TAIL))
+    withheld_ids = frozenset(row.item_id for row in rows[:withheld])
+    index = _CountingIndex(rows)
+    service = RetrievalService(index)
+    visibility = CanonicalVisibility(
+        _SensitivitySession(withheld_ids),
+        DEMO_CONTEXT,
+        include_unapproved=False,
+        visible_sensitivities=UP_TO_INTERNAL,
+        moment=MOMENT,
+    )
+
+    outcome = service.search(
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=UP_TO_INTERNAL),
+        visibility,
+    )
+
+    return index, outcome, withheld_ids
+
+
+def test_a_sensitivity_withholding_lives_in_cleared_and_drives_the_depth_loop() -> None:
+    """The ceiling gate belongs in ``cleared``, not ``at_moment`` -- reached by row count.
+
+    Moving ``may_disclose`` out of ``CanonicalVisibility._may_surface`` (which
+    ``cleared`` calls) and into ``at_moment`` is caught on the AST by
+    ``test_gate_call_sites.py``, but the only *behaviour* test on the ranked ceiling
+    gate reclassifies a single row -- below :data:`CANDIDATE_DEPTH`, so the depth
+    loop's second-pass branch never runs and the move could not be seen in a
+    response. This puts fifty-one above-ceiling rows at the top of the ranking, one
+    past the threshold ``FIRST_PASS_DEPTH`` absorbs, so the branch does run.
+
+    Shipped (gate in ``cleared``): those rows fail ``cleared``, the first pass clears
+    too few, and the loop asks a second time twice as deep, reaches the visible tail
+    and returns :data:`CANDIDATE_DEPTH` rows in two passes. Moved into ``at_moment``:
+    they pass ``cleared`` (all approved), so the loop counts them toward
+    ``CANDIDATE_DEPTH``, exits on the first pass, and ``at_moment`` then strips them
+    -- a short answer at one pass.
+
+    Three complementary assertions, so the test reddens whichever way the gate is
+    broken: the pass count and the result count catch the *move* (one pass, a short
+    answer), and the withheld-absent check catches a mutation that merely *deletes*
+    the gate (an above-ceiling row reaching the response). The moment is pinned so
+    ``at_moment`` actually runs -- it returns early on ``None`` -- and every item is
+    valid at it, so validity strips nothing and only the ceiling can move a count.
+    """
+    index, outcome, withheld_ids = _search_withholding_by_sensitivity(ABSORBED_WITHHELD_ROWS + 1)
+    returned = {candidate.item_id for candidate in outcome.candidates}
+
+    assert _first_read_was_a_choice(index), (
+        "the corpus must outlast the first pass, or this measures exhaustion"
+    )
+    assert index.passes(LEXICAL_READS) == 2, (
+        "fifty-one above-ceiling rows must fail `cleared` and force a second pass; a gate "
+        "that ran in `at_moment` would let them pass `cleared` and exit at one"
+    )
+    assert index.passes(SUBSTRING_READS) == 2
+    assert len(outcome.candidates) == CANDIDATE_DEPTH, (
+        f"the depth loop must dig past the withheld rows to the visible tail: got "
+        f"{len(outcome.candidates)}"
+    )
+    assert returned.isdisjoint(withheld_ids), (
+        f"an above-ceiling row reached the response, so the ceiling gate withheld nothing: "
+        f"{sorted(returned & withheld_ids)}"
     )
 
 
@@ -737,7 +885,8 @@ def test_a_retriever_that_ignores_its_limit_is_read_once_however_much_is_withhel
     index = _CountingIndex(rows, honours_limit=False)
 
     RetrievalService(index).search(
-        SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld()
+        SearchRequest(query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY),
+        _WithoutTheWithheld(),
     )
 
     first = index.reads[0]
@@ -786,6 +935,7 @@ class _NeverFinished:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(limit)
 
@@ -796,6 +946,7 @@ class _NeverFinished:
         project_id: str,  # noqa: ARG002 - as above
         limit: int,
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return self._serve(limit)
 
@@ -805,6 +956,7 @@ class _NeverFinished:
         *,
         project_id: str,  # noqa: ARG002 - as above
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return whole(())
 
@@ -815,6 +967,7 @@ class _NeverFinished:
         project_id: str,  # noqa: ARG002 - single-project fake
         limit: int,  # noqa: ARG002 - no leaves to bound
         include_unapproved: bool,  # noqa: ARG002 - as above
+        visible_sensitivities: frozenset[Sensitivity],  # noqa: ARG002 - named by the port; this fake models one grant's rows
     ) -> RetrieverPage:
         return RetrieverPage(rows=(), exhausted=True)
 
@@ -899,7 +1052,10 @@ def test_a_retriever_that_never_reports_exhaustion_is_refused_not_looped() -> No
 
     with pytest.raises(RetrievalError, match="cannot make progress"):
         RetrievalService(index).search(
-            SearchRequest(query="gateway", project_id="demo"), _WithoutTheWithheld()
+            SearchRequest(
+                query="gateway", project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+            ),
+            _WithoutTheWithheld(),
         )
 
     assert index.calls == GUARD_FIRES_AFTER, (

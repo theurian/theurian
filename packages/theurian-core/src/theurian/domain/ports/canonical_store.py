@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
@@ -117,49 +117,143 @@ class CanonicalStore(Protocol):
         ...
 
     def list_items_by_status(
-        self, context: RequestContext, *, statuses: frozenset[KnowledgeStatus]
+        self,
+        context: RequestContext,
+        *,
+        statuses: frozenset[KnowledgeStatus],
+        sensitivities: frozenset[Sensitivity],
     ) -> tuple[KnowledgeItem, ...]:
-        """Every item in scope whose status is in ``statuses``, filtered in SQL.
+        """Every item in scope on both axes, filtered in SQL.
 
-        A dumb status-filtered read. It holds no visibility semantics and never
-        decides what a caller may see: the caller passes the status set it has
-        already resolved. ``knowledge.search``'s substring fallback builds that set
-        from :func:`~theurian.domain.enums.may_surface`, so the status gate stays in
-        the tool layer where it is enumerated (SEC-13, T-15) and this port stays
-        gate-agnostic -- an adapter must not consult the visibility rule.
+        A dumb two-axis filtered read. It holds no visibility semantics and never
+        decides what a caller may see: the caller passes the sets it has already
+        resolved. ``knowledge.search``'s substring fallback is the caller, and it
+        builds ``statuses`` from :func:`~theurian.domain.enums.may_surface`, so
+        both gates stay in the tool layer where they are enumerated (SEC-13,
+        T-15, #119) and this port stays gate-agnostic -- an adapter must not
+        consult a visibility rule.
+
+        Neither set is defaulted. A default for either would mean "everything",
+        which is the answer a forgotten argument must not silently produce on a
+        read path.
 
         Its value over :meth:`list_items` is *where* the filtering happens.
         ``list_items`` reads every row and filters in Python, so a caller keeping
-        only some statuses still pays to materialise the rest -- and its response
+        only some rows still pays to materialise the rest -- and its response
         time then scales with the count of the rows it discards, recoverable by
         measuring it (T-17; the ``search._scan`` sibling of the channel #19 closed
-        for ``knowledge.status``, #158). Here the set is pushed into the ``IN``
-        predicate the index ``idx_items_status(project_id, status)`` serves: the
-        seek locates only the in-set rows and ``SELECT *`` then fetches each by
-        rowid (``USING INDEX``, not ``USING COVERING INDEX``), so a row whose status
-        is not in ``statuses`` is never fetched.
+        for ``knowledge.status``, #158).
 
-        An empty ``statuses`` returns ``()`` without a query: no status can match,
-        so a query would only return zero rows. It is defensive -- ``search._scan``
-        always resolves at least APPROVED into the set, so never passes an empty one.
+        **The two axes are pushed down equally and are not equally flat, because
+        only one of them is indexed.** ``statuses`` goes into the ``IN`` predicate
+        ``idx_items_status(project_id, status)`` serves: the seek locates only the
+        in-set rows and ``SELECT *`` then fetches each by rowid (``USING INDEX``,
+        not ``USING COVERING INDEX``), so a row whose status is not in
+        ``statuses`` is never fetched at all. ``sensitivities`` has no index
+        column, so it is applied to the rows that seek returns -- an above-ceiling
+        row is fetched from the table and dropped before it crosses into Python.
+
+        What that buys and what it does not. Measured on SQLite 3.47.1 against
+        this schema, over an ``approved`` project holding 50 rows an ``internal``
+        ceiling admits and 0/50/300/1,000 above it, VM steps counted with a
+        progress handler:
+
+        ================== ============= ============= ==================
+        Above-ceiling rows With the axis Without it    Rows into Python
+        ================== ============= ============= ==================
+        0                  2,110         1,955         50
+        50                 2,410         3,655         50
+        300                3,910         12,155        50
+        1,000              8,110         35,955        50
+        ================== ============= ============= ==================
+
+        So the *Python* cost -- item construction, and in ``search._scan`` the
+        per-item revision read and body scan that dominate it -- is flat, while
+        the predicate itself carries exactly 6.0 VM steps per above-ceiling row
+        against the 34 the same rows cost when they are returned instead.
+
+        **The comparison against the residual the ranked path already accepts is
+        in microseconds, not in VM steps**, because the two are not measured in
+        one unit and an earlier revision of this paragraph compared them as
+        though they were. Six VM steps is **about 0.20 us** per above-ceiling row
+        on the machine the table above was taken on -- the figure and its method
+        are recorded at
+        :meth:`~theurian.infrastructure.sqlite.store.SqliteCanonicalStore.list_items_by_status`,
+        which is where a re-measurement belongs. Against that, the canonical read
+        the ranked path accepts and the threat model records is **14.7 us per
+        withheld row** (T-17; the 15 us
+        :meth:`~theurian.application.visibility.CanonicalVisibility.cleared`
+        quotes is the same measurement rounded), so this term is roughly seventy
+        times smaller *per row* -- and it is not zero, and it is bounded by the
+        corpus rather than by the caller's ask, because the statement carries no
+        ``LIMIT``.
+
+        Adding ``sensitivity`` as a third column of ``idx_items_status`` flattens
+        it exactly -- 2,032 steps at 0 and at 1,000, measured the same way -- at
+        the price of a ``SCHEMA_VERSION`` bump, which invalidates every existing
+        state database and moves the ``schemaVersion`` ``knowledge.status``
+        publishes. That was not a change #119 phase 2 could make, because its
+        contract was that an allow-all deployment behaves exactly as it did; it
+        is owned by https://github.com/theurian/theurian/issues/338.
+
+        An empty ``statuses`` or an empty ``sensitivities`` returns ``()`` without
+        a query: neither can match, so a query would only return zero rows. Both
+        guards are defensive -- ``search._scan`` always resolves at least APPROVED
+        into the first, and
+        :class:`~theurian.application.authorization.AuthorizationGrant` refuses to
+        exist with an empty second.
         """
         ...
 
-    def count_surfaceable_by_status(self, context: RequestContext) -> dict[str, int]:
+    def count_surfaceable_by_status(
+        self, context: RequestContext, *, sensitivities: frozenset[Sensitivity]
+    ) -> dict[str, int]:
         """Count the items a caller may see, grouped by status, in SQL.
 
         Returns a ``status-value -> count`` mapping over
-        :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` alone. Deprecated,
-        superseded and rejected rows are never counted, so nothing here -- not
-        even a sum across it -- restores the withheld total.
+        :data:`~theurian.domain.enums.SURFACEABLE_STATUSES` **and** the levels in
+        ``sensitivities``. Deprecated, superseded and rejected rows are never
+        counted, nor is a row above the deployment's ceiling, so nothing here --
+        not even a sum across it -- restores the withheld total.
 
         That is what separates it from :meth:`list_items`, which reads every row
         and leaves the filtering to the caller. ``knowledge.status`` did that
         filtering in Python, which made its *response time* proportional to the
         withheld rows rather than to what it publishes: subtracting the published
         count recovered the withheld one (T-17; #158 owns the ``search._scan``
-        sibling). Counting in SQL over the covering index scopes the work to the
-        surfaceable rows, so the timing carries no more than the values do.
+        sibling). Counting in SQL keeps the retired rows out of the walk -- the
+        seek on ``idx_items_status`` skips every row outside
+        ``SURFACEABLE_STATUSES``, so the response time no longer scales with the
+        withheld *status* count. It is not a *covering* scan, though: since #119
+        phase 6 the grouping also reads ``sensitivity``, a column that index does
+        not carry, so each in-status row is fetched and the ``GROUP BY`` needs a
+        temp b-tree -- a bounded per-above-ceiling-row term measured at the
+        adapter and recorded as T-22.
+
+        **``sensitivities`` is required and has no default** (#119 phase 6), the
+        convention :meth:`list_items_by_status` set: a default would mean
+        "everything", which is the answer a forgotten argument must not silently
+        produce on a read path. An empty set returns ``{}`` without a query.
+
+        **The level is interpreted, not matched**, which is where this method
+        parts company with :meth:`list_items_by_status`'s SQL predicate. An
+        adapter is expected to aggregate in SQL and admit in the domain, so a
+        stored level it cannot interpret refuses the read rather than dropping
+        out of a match -- a corrupt cell would otherwise answer ``itemCount: 0``
+        over a project holding items, silently, while ``knowledge.search`` and
+        ``knowledge.get`` both refuse the same cell. The cost of that choice is
+        measured at the adapter.
+
+        **It narrows what is published and not what is checked.** This is the
+        number ``knowledge.status`` publishes as ``itemsByStatus``, and its sum is
+        ``itemCount``; both are statistics over rows the caller may see and
+        therefore follow the grant (SEC-13, T-17). The #30 integrity comparison
+        deliberately does **not** read this method -- it reads
+        :meth:`count_surfaceable_items`, which takes no grant -- because that
+        comparison checks a *ceiling-blind* record written by ``migrate apply``
+        against the live population, and narrowing one half of it would make
+        every restricted deployment report ``damageDetected`` on a healthy
+        project.
 
         Lives on this port beside :meth:`applied_migrations`, the other thing
         ``knowledge.status`` reads, rather than on :class:`CanonicalReadSession`:
@@ -171,11 +265,23 @@ class CanonicalStore(Protocol):
     def count_surfaceable_items(self, context: RequestContext) -> int:
         """How many items in scope a caller may see, totalled in SQL.
 
-        The same population :meth:`count_surfaceable_by_status` groups, without
-        the breakdown. It exists because ``knowledge.search`` and
-        ``knowledge.get`` need the total and publish no breakdown: it is the live
-        half of the ``#30`` integrity comparison, checked against
-        :meth:`expected_surfaceable_count` on every request.
+        The same **status** population :meth:`count_surfaceable_by_status`
+        groups, without the breakdown and **without that method's disclosure
+        axis**. It exists because ``knowledge.search`` and ``knowledge.get`` need
+        the total and publish no breakdown: it is the live half of the ``#30``
+        integrity comparison, checked against :meth:`expected_surfaceable_count`
+        on every request.
+
+        **It takes no grant, and that is the decision rather than an omission**
+        (#119 phase 6). Its number is never published; it is compared against a
+        record ``migrate apply`` wrote ceiling-blind from the rows it had just
+        written. Narrowing this side alone would make a deployment's own ceiling
+        read as damage on a healthy project, and narrowing both sides would make
+        the check compare a live population against a record written under
+        whatever ceiling happened to be declared at write time. So the
+        comparison stays on the ungated population at both ends, and the
+        ceiling narrows :meth:`count_surfaceable_by_status`, which is the half a
+        caller reads.
 
         Retired rows -- deprecated, superseded, rejected -- are not counted, so
         neither this number nor its comparison carries anything about content the

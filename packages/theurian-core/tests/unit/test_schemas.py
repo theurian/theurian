@@ -1045,10 +1045,18 @@ def _published_consts(relative: str, field: str) -> set[Any]:
 
 
 def test_every_fallback_reason_the_code_can_emit_is_published() -> None:
-    """Seven codes, from eight ``Fallback`` constants: two notes share
-    `index-project-mismatch` because a client's next action is the same for
-    both, while a person reading the transcript needs to know whether an id
-    changed under the index or was never recorded.
+    """Nine codes, from eleven ``Fallback`` constants -- measured on the shipped
+    source, not counted by hand.
+
+    Two codes carry two notes each, for the same trade in both:
+    `index-project-mismatch` and `serving-profile-mismatch` each have a "moved"
+    note and a "never recorded" one, because a client's next action is
+    `theurian index build` either way while a person reading the transcript needs
+    to know which happened.
+
+    The assertion below is a set equality against the published vocabulary, so
+    neither number above is what holds this -- they are here because a reader who
+    finds them stale learns that a code was added without a look at this file.
     """
     from theurian.mcp import search
     from theurian.mcp.search import Fallback

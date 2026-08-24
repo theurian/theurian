@@ -96,7 +96,15 @@ Still owed, with the milestone that will satisfy it:
   that makes requiring code-owner review possible.
 
   Not to be confused with [#67](https://github.com/theurian/theurian/issues/67),
-  which is the neighbouring gap and a genuine one: `main` requires **no status
-  checks at all**, and nothing anywhere records that as intentional. The
-  deadlock argument does not extend to it, because a required status check needs
-  no second human.
+  the neighbouring gap, which was genuine and is now shut: until 2026-08-23
+  `main` required **no status checks at all**, and nothing anywhere recorded
+  that as intentional. It could be shut while this item stays owed because the
+  deadlock argument never extended to it — a required status check needs no
+  second human. The required set is listed under
+  [What `main` requires](https://github.com/theurian/theurian/blob/main/CONTRIBUTING.md#what-main-requires),
+  and it holds only checks that *run* on every pull request whatever it touches.
+  So the shared contract is still ungated from both sides: `Core` and `Plugin`
+  are filtered by path and report nothing on a pull request that misses their
+  filter, and `Cross-artifact compatibility` — the job that re-checks both
+  consumers when `/schemas/` changes — reports `skipped` on every pull request
+  that does not, which is a weaker thing to require than it looks.
