@@ -401,6 +401,19 @@ def propose_accept(
     refused exits 1 without having established anything either way, so its own
     remedy sends the reader to ``.theurian/migrations/`` before re-drafting
     rather than straight to a second draft (#227).
+
+    **A ``.theurian/config.yaml`` fault also exits 1, though the proposal is not
+    at fault** -- the same "proposal is fine" property
+    :class:`~theurian.application.proposal_service.ApprovedSetUnusableError`
+    carries into exit 4. It deliberately does not share that 4: exit 4 is
+    anchored to the project's *knowledge state* -- the approved migration set, a
+    proposal already accepted -- and a configuration fault is not one, so widening
+    4 to cover it would blur what "read the knowledge state" means. Exit 1 is the
+    bucket for "this proposal could not be used as it stands, and the remedy names
+    the fix", which is exactly what a config fault is: its own remedy names
+    ``config.yaml`` and the three ``secretScan`` values rather than sending the
+    author to draft again, the same honesty the refused read above relies on,
+    where the remedy carries the action.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,

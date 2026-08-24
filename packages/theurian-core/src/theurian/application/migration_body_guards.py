@@ -75,11 +75,13 @@ def refuse_duplicate_content_files(migration_set: MigrationSet) -> None:
     A body file holds one version at a time and carries no history, so a set in
     which two *distinct* revisions read one file does not describe a state -- it
     describes whatever that file was last written with. Measured against the
-    unpinned form: both migrations applied, exit 0, and the earlier revision
-    recorded the later body under its own title and author. Nothing detects it
-    afterwards, because the loader adopts the file's current hash where no
-    ``contentSha256`` is declared, so the wrong record is internally consistent.
-    The refusal is **unconditional of pinning**: even a pair that both pin the
+    then-unpinned form, before ``contentSha256`` became schema-required (ADR-0027):
+    both migrations applied, exit 0, and the earlier revision recorded the later
+    body under its own title and author. Nothing detected it afterwards, because
+    the loader adopted the file's current hash where no ``contentSha256`` was
+    declared, so the wrong record was internally consistent. The pin is now
+    required and that branch is gone, but the refusal is **unconditional of
+    pinning** for a reason the pin never addressed: even a pair that both pin the
     same digest is refused, because one file cannot attribute distinct bytes to
     two revisions -- the hazard is the sharing, not the missing pin.
 

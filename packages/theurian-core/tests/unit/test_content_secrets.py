@@ -262,21 +262,37 @@ def test_a_finding_locates_itself_by_line_and_column() -> None:
     )
 
 
-def test_the_scan_stops_at_its_own_ceiling() -> None:
-    """The list a caller renders is bounded by the scanner, not by the input.
+#: A fixed number of candidates, well over the ceiling and independent of it, so
+#: the ceiling test below cannot pass by having its fixture scale with the
+#: constant it checks (adversarial M-1).
+_CANDIDATES_OVER_THE_CEILING: Final = 50
 
-    A body is capped at 8 MiB, and 8 MiB of base64 holds a quarter of a million
-    candidates. Every one of them would otherwise become an entry in an error
-    message and in a published JSON document -- the same failure
-    ``_MAX_NAMES_LISTED`` in ``proposal_service.py`` bounds for a contributor's
-    filenames.
+
+def test_the_scan_stops_at_a_fixed_ceiling() -> None:
+    """The list a caller renders is bounded at a *fixed* number, not one the input scales.
+
+    ``MAX_FINDINGS`` is the only bound on ``scan_text``'s quadratic line-number
+    cost: every finding pays ``text.count("\\n", 0, start)``, O(position), so N
+    findings over a large body is O(N x bytes) -- a quarter-million candidates
+    over a published-size document was measured at 319 s. The cap is what stops
+    that, and it is a *number*, not a ratio: asserted as the absolute 20 rather
+    than as ``MAX_FINDINGS``, because a fixture and an expectation that both read
+    the constant pass however high it is raised (a mutation to 1000 survived that
+    shape). Raising the ceiling now lands here, which is where the cost the ceiling
+    protects gets re-measured.
     """
-    crowded = "\n".join(f"TOKEN_{n}={TOKEN_SHAPED}" for n in range(MAX_FINDINGS * 3))
+    assert _CANDIDATES_OVER_THE_CEILING > MAX_FINDINGS, (
+        "the fixture must carry more candidates than the ceiling, or it exercises no truncation "
+        "-- raising MAX_FINDINGS past the fixture size lands here"
+    )
+    crowded = "\n".join(f"TOKEN_{n}={TOKEN_SHAPED}" for n in range(_CANDIDATES_OVER_THE_CEILING))
 
     findings = scan_text(crowded)
 
-    assert len(findings) == MAX_FINDINGS, (
-        f"{len(findings)} findings came back from a body holding {MAX_FINDINGS * 3}"
+    assert len(findings) == 20, (
+        f"{len(findings)} findings came back from a body holding "
+        f"{_CANDIDATES_OVER_THE_CEILING} candidates; the ceiling is a fixed 20 and raising it "
+        f"is a decision that re-measures the quadratic line-number cost it bounds"
     )
 
 

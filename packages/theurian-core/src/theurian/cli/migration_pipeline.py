@@ -201,8 +201,13 @@ def _materialize(candidate: CandidateMigrationSet, target: Path) -> Path:
     * Case sensitivity is the filesystem's, and the temporary directory need not
       be on the same filesystem as the project. Two spellings that reach one
       file on a case-insensitive project could reach two here, or the reverse.
-      On every platform this ships to, the system temporary directory and a
-      user's checkout are on the same volume with the same semantics.
+      This is *assumed* harmless rather than measured: the system temporary
+      directory and a user's checkout are expected to share case semantics on the
+      platforms this ships to, but nothing here probes it. It does not have to,
+      because the real accept path keys duplicate-body detection on filesystem
+      identity (``st_dev``/``st_ino``) against the *actual* project, not this copy
+      (issue #210) -- so a case-fidelity mismatch here at worst costs the
+      rehearsal a collision the real move still catches, never the reverse.
 
     And the copy is taken *after* the caller loaded the set it describes, so a
     landed file edited in between is replayed as it is now rather than as it was

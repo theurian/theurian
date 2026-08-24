@@ -32,6 +32,7 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _MAX_NAMES_LISTED,
     AcceptedProposal,
     ProposalError,
     ProposalRequest,
@@ -85,6 +86,13 @@ PLANTED_TOKEN: Final = (
 
 CLEAN_BODY: Final = "# Retry policy\n\nThree attempts, then fail loudly.\n"
 LEAKY_BODY: Final = f"# Retry policy\n\nThree attempts.\n\n    THEURIAN_MCP_TOKEN={PLANTED_TOKEN}\n"
+
+#: A body carrying more secrets than the refusal lists, one per line so each is a
+#: distinct finding. Two past the name cap, so the truncation is exercised.
+_OVER_THE_CAP = _MAX_NAMES_LISTED + 2
+MANY_SECRETS_BODY: Final = "# Retry policy\n\n" + "".join(
+    f"    TOKEN_{index}={PLANTED_TOKEN}\n" for index in range(_OVER_THE_CAP)
+)
 
 
 @pytest.fixture
@@ -179,6 +187,35 @@ def test_a_body_carrying_a_secret_is_refused_by_default(
     )
     assert "secretScan" in caught.value.remedy, (
         f"the remedy does not name the key that selects the policy: {caught.value.remedy!r}"
+    )
+
+
+def test_a_refusal_lists_at_most_the_name_cap_and_does_not_reveal_the_count(
+    service: ProposalService, paths: ProjectPaths
+) -> None:
+    """The refusal bounds its own listing (adversarial M-2, pinning the slice).
+
+    ``_secret_refusal`` slices ``findings`` to :data:`_MAX_NAMES_LISTED` before
+    handing them to ``_names``, which is the *second* of two ceilings and, unlike
+    the first, deliberately suppresses ``_names``' own "and N more" tail: how many
+    bodies a proposal carries is the contributor's number, not one this refusal
+    republishes. Dropping the slice -- ``findings`` passed whole -- lets that tail
+    fire, revealing the count. Reproduced: without it a body with
+    ``_MAX_NAMES_LISTED + 2`` findings appends "and 2 more"; with it, exactly the
+    cap and no tail.
+    """
+    drafted = service.draft(_request(MANY_SECRETS_BODY))
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    message = str(caught.value)
+    assert message.count(HIGH_ENTROPY) == _MAX_NAMES_LISTED, (
+        f"the refusal listed {message.count(HIGH_ENTROPY)} findings, not the {_MAX_NAMES_LISTED} "
+        f"cap: {message}"
+    )
+    assert "more" not in message, (
+        f"the refusal revealed how many findings there were past the cap: {message}"
     )
 
 
