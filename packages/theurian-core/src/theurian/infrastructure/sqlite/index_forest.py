@@ -33,10 +33,9 @@ title, must never widen what a caller may read:
   against a hand-edited or corrupted file, so the walk's own ``nodes`` lookup
   filters on the leaf's project, **disclosure class** and status too -- a second,
   independent gate a scope-disagreeing ancestor cannot clear even if the
-  invariant above were ever violated. All three axes, and that is the set
-  :func:`summary_statement` gates on rather than a shorter one chosen here: a
-  guard missing the very axis a query is being withheld on is the shape that
-  looks enforced and is not. An ancestor title therefore carries no content from
+  invariant above were ever violated. The ``WHERE`` clause matches
+  ``project_id``, ``sensitivity`` and ``status`` against the values read off the
+  leaf's own chunk row. An ancestor title therefore carries no content from
   a scope the leaf is not in, and a *withheld* leaf contributes no result and so
   no path -- its ancestors' titles never reach the wire. The title's build-time
   staleness is the recorded T-17a/#130 residual, the same one every excerpt
