@@ -351,6 +351,27 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#232](https://github.com/theurian/theurian/issues/232),
   [#245](https://github.com/theurian/theurian/issues/245)); it is now closed for
   these two single-field render sites too.
+- **`theurian propose --local` brings the managed `.gitignore` block current
+  before it writes a private body**
+  ([#265](https://github.com/theurian/theurian/issues/265),
+  [#316](https://github.com/theurian/theurian/issues/316), ADR-0028). `--local`
+  drafts under `.theurian/proposals-local/`, which is git-ignored only if the
+  managed `.gitignore` block carries that entry — true only for a project
+  initialised with the ADR-0028 block. A project initialised before ADR-0028 —
+  every project first set up under `0.1.0.dev9` or earlier — has a stale block, so
+  `--local` wrote the private body into a Git-tracked directory while the command
+  asserted it was ignored, and `doctor`'s gitignore step reported `satisfied`
+  because it compared a substring rather than the managed entries.
+
+  **Fixed** by refreshing the managed block before the write — in the service
+  `draft(local=True)`, so a future MCP composition root inherits the same guard —
+  or refusing with a remedy if `.gitignore` cannot be written; `doctor`'s gitignore
+  probe now compares against the managed entries.
+
+  **Behaviour change: `draft(local=True)` now writes `.gitignore`.** A local draft
+  that previously touched only `.theurian/proposals-local/` now also updates the
+  managed `.gitignore` block, which is what makes the confidentiality claim true
+  before the body lands.
 
 ### Documentation
 
