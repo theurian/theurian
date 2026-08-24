@@ -23,18 +23,21 @@ from __future__ import annotations
 import base64
 import hashlib
 from collections.abc import Callable, Collection, Iterator, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
 import pytest
+import yaml
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import (
+    _AUTHORED_OPERATION_FIELDS,
     _MAX_NAMES_LISTED,
     AcceptedProposal,
+    DraftedProposal,
     ProposalError,
     ProposalRequest,
     ProposalService,
@@ -701,3 +704,474 @@ def test_a_title_quoting_a_migration_filename_is_still_accepted_under_block(
         f"a title quoting a migration filename was reported as a secret: {_rendered(accepted)}"
     )
     assert (paths.migrations / drafted.migration_file.name).exists()
+
+
+# -- the operations `propose` does not write (#336) -------------------------
+#
+# `_migration_document` emits two operation types, `createItem` and
+# `upsertRevision`, out of the fourteen `schemas/migrations/migration.schema.json`
+# declares (counted from its `operation.oneOf`, 2026-08-24). So every test above
+# reaches `_AUTHORED_OPERATION_FIELDS` through `namespace` and `owner` alone, and
+# even those two only as one half of a pair -- the same names are in
+# `_AUTHORED_METADATA_FIELDS`, and a drafted proposal carries the value in both.
+#
+# The rest is not dead code. `accept` reads a *committed* proposal directory
+# (ADR-0013 point 7), and a contributor may hand-write any operation the schema
+# allows into the migration it holds; the allowlist is the schema's population
+# for exactly that reason. Measured on 8e755a4 against all 3,546 tests, each of
+# these deletions was individually green:
+#
+#   * any one of `alias`, `description`, `format`, `itemId`, `note`, `reason`,
+#     `sourceItemId`, `sourceUri`, `specId`, `supersededBy`, `targetItemId` --
+#     and all eleven at once -- from `_AUTHORED_OPERATION_FIELDS`;
+#   * `namespace` or `owner` from the same tuple, which the metadata entry of
+#     the same name silently covered for;
+#   * the single-`anchor` branch of `_authored_strings`, which only
+#     `addEvidence` reaches.
+#
+# What follows is what turns each of those deletions red.
+
+#: A lowercase, hyphen-separated credential, for the six fields below that the
+#: schema constrains to ``$defs/itemId``: ``alias``, ``itemId``, ``sourceItemId``,
+#: ``targetItemId``, ``specId`` and ``supersededBy``.
+#:
+#: That pattern -- ``^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+...)*$`` -- admits no
+#: upper-case character, and the generic family's class gate requires one, so the
+#: two obvious plants both fail for opposite reasons: :data:`PLANTED_TOKEN` is
+#: rejected by the pattern, and a lower-case token of the same length is passed
+#: over by the detector. ``sk-`` followed by twenty or more of the candidate class
+#: is the ``openai-api-key`` family instead -- a pattern family, which
+#: ``scan_text`` reports without consulting the class gate at all -- so the value
+#: is simultaneously a valid ``itemId`` and a reported secret, which is what makes
+#: those six fields testable at all. Split from its seed for the reason
+#: :data:`PLANTED_TOKEN` is.
+_ID_SHAPED_TOKEN: Final = (
+    "sk-" + hashlib.sha256(b"theurian hand-authored operation fixture (#336)").hexdigest()[:40]
+)
+
+#: A clean ``itemId`` of the same shape, for the control below.
+_ID_SHAPED_CLEAN: Final = "architecture.timeout-policy"
+
+_SENTENCE_SECRET: Final = f"Rotated on 2026-08-24; the retired staging value was {PLANTED_TOKEN}."
+_SENTENCE_CLEAN: Final = "Rotated on 2026-08-24; the retired staging value is gone."
+
+_URI_SECRET: Final = f"https://specs.example/openapi.yaml?token={PLANTED_TOKEN}"
+_URI_CLEAN: Final = "https://specs.example/openapi.yaml"
+
+#: Where the hand-authored operation sits once it is appended to the two
+#: ``_migration_document`` writes. Named rather than spelled inline because the
+#: assertions below pin the *whole* location, index included.
+_HAND_AUTHORED_INDEX: Final = 2
+
+_ITEM: Final = "architecture.retry-policy"
+
+
+@dataclass(frozen=True)
+class _HandAuthored:
+    """One hand-written operation, in two versions of the one field it is about.
+
+    ``build`` takes the value that field carries, so the planted and the clean
+    document differ in exactly one string and nothing else -- which is what lets
+    the control below say that the operation contributes no finding of its own.
+    """
+
+    #: The operation, with ``value`` in the field this entry is about.
+    build: Callable[[str], dict[str, object]]
+    #: A value the detector reports, and the schema accepts for this field.
+    secret: str
+    #: A value of the same shape that the detector does not report.
+    clean: str
+    #: The location ``_authored_strings`` gives it, below the operation.
+    at: str
+    #: Which family the planted value matches.
+    family: str
+
+
+def _evidence_anchor(source_uri: str) -> dict[str, object]:
+    """A ``$defs/sourceAnchor`` for ``addEvidence``, which carries exactly one."""
+    return {"provider": "git", "sourceUri": source_uri}
+
+
+#: One entry per name in ``_AUTHORED_OPERATION_FIELDS``, plus the single
+#: ``anchor`` only ``addEvidence`` carries, each planted in the operation type a
+#: contributor would actually write it in. That the two are the same population
+#: is asserted rather than stated:
+#: ``test_every_operation_level_allowlist_entry_has_a_case_that_drives_it``.
+#:
+#: Deliberately absent are ``tenantId`` and ``aclGroup``. Neither is an operation
+#: field -- both sit on revision metadata, which
+#: :data:`_METADATA_PLANTS` above already reaches -- and neither can carry a
+#: credential into an applied revision: ``migration_engine`` refuses any
+#: ``tenantId`` but ``local`` and any ``aclGroup`` but ``default`` (issue #63),
+#: on ``migrate validate`` and ``migrate apply`` alike. The schema itself does
+#: *not* pin them, so the refusal is the engine's rather than the document's.
+#:
+#: ``commitSha`` and ``blobSha`` are absent for the reason the allowlist itself
+#: records: the schema pins both to ``^[0-9a-f]{7,64}$``, which no family can
+#: match. ``kind``, ``relationType``, ``sensitivity`` and ``status`` are enums.
+_HAND_AUTHORED: Final[Mapping[str, _HandAuthored]] = {
+    "deprecateItem.reason": _HandAuthored(
+        build=lambda value: {"op": "deprecateItem", "itemId": _ITEM, "reason": value},
+        secret=_SENTENCE_SECRET,
+        clean=_SENTENCE_CLEAN,
+        at="reason",
+        family=HIGH_ENTROPY,
+    ),
+    "deprecateItem.supersededBy": _HandAuthored(
+        build=lambda value: {"op": "deprecateItem", "itemId": _ITEM, "supersededBy": value},
+        secret=_ID_SHAPED_TOKEN,
+        clean=_ID_SHAPED_CLEAN,
+        at="supersededBy",
+        family="openai-api-key",
+    ),
+    "addRelation.note": _HandAuthored(
+        build=lambda value: {
+            "op": "addRelation",
+            "sourceItemId": _ITEM,
+            "relationType": "related_to",
+            "targetItemId": _ID_SHAPED_CLEAN,
+            "note": value,
+        },
+        secret=_SENTENCE_SECRET,
+        clean=_SENTENCE_CLEAN,
+        at="note",
+        family=HIGH_ENTROPY,
+    ),
+    "addRelation.sourceItemId": _HandAuthored(
+        build=lambda value: {
+            "op": "addRelation",
+            "sourceItemId": value,
+            "relationType": "related_to",
+            "targetItemId": _ID_SHAPED_CLEAN,
+        },
+        secret=_ID_SHAPED_TOKEN,
+        clean=_ITEM,
+        at="sourceItemId",
+        family="openai-api-key",
+    ),
+    "addRelation.targetItemId": _HandAuthored(
+        build=lambda value: {
+            "op": "addRelation",
+            "sourceItemId": _ITEM,
+            "relationType": "related_to",
+            "targetItemId": value,
+        },
+        secret=_ID_SHAPED_TOKEN,
+        clean=_ID_SHAPED_CLEAN,
+        at="targetItemId",
+        family="openai-api-key",
+    ),
+    "addAlias.alias": _HandAuthored(
+        build=lambda value: {"op": "addAlias", "alias": value, "itemId": _ITEM},
+        secret=_ID_SHAPED_TOKEN,
+        clean=_ID_SHAPED_CLEAN,
+        at="alias",
+        family="openai-api-key",
+    ),
+    "addEvidence.itemId": _HandAuthored(
+        build=lambda value: {
+            "op": "addEvidence",
+            "itemId": value,
+            "anchor": _evidence_anchor(_URI_CLEAN),
+            "description": _SENTENCE_CLEAN,
+        },
+        secret=_ID_SHAPED_TOKEN,
+        clean=_ITEM,
+        at="itemId",
+        family="openai-api-key",
+    ),
+    "addEvidence.description": _HandAuthored(
+        build=lambda value: {
+            "op": "addEvidence",
+            "itemId": _ITEM,
+            "anchor": _evidence_anchor(_URI_CLEAN),
+            "description": value,
+        },
+        secret=_SENTENCE_SECRET,
+        clean=_SENTENCE_CLEAN,
+        at="description",
+        family=HIGH_ENTROPY,
+    ),
+    "addEvidence.anchor.sourceUri": _HandAuthored(
+        build=lambda value: {
+            "op": "addEvidence",
+            "itemId": _ITEM,
+            "anchor": _evidence_anchor(value),
+            "description": _SENTENCE_CLEAN,
+        },
+        secret=_URI_SECRET,
+        clean=_URI_CLEAN,
+        at="anchor.sourceUri",
+        family=HIGH_ENTROPY,
+    ),
+    "registerSpecification.specId": _HandAuthored(
+        build=lambda value: {
+            "op": "registerSpecification",
+            "specId": value,
+            "itemId": _ITEM,
+            "sourceUri": _URI_CLEAN,
+            "format": "application/yaml",
+        },
+        secret=_ID_SHAPED_TOKEN,
+        clean=_ID_SHAPED_CLEAN,
+        at="specId",
+        family="openai-api-key",
+    ),
+    "registerSpecification.sourceUri": _HandAuthored(
+        build=lambda value: {
+            "op": "registerSpecification",
+            "specId": _ID_SHAPED_CLEAN,
+            "itemId": _ITEM,
+            "sourceUri": value,
+            "format": "application/yaml",
+        },
+        secret=_URI_SECRET,
+        clean=_URI_CLEAN,
+        at="sourceUri",
+        family=HIGH_ENTROPY,
+    ),
+    "registerSpecification.format": _HandAuthored(
+        build=lambda value: {
+            "op": "registerSpecification",
+            "specId": _ID_SHAPED_CLEAN,
+            "itemId": _ITEM,
+            "sourceUri": _URI_CLEAN,
+            "format": value,
+        },
+        secret=f"application/{_ID_SHAPED_TOKEN}",
+        clean="application/yaml",
+        at="format",
+        family="openai-api-key",
+    ),
+    # The last two are the entries `propose` *does* emit -- but only ever from
+    # `createItem`, whose namespace and owner it copies into the revision
+    # metadata as well. So `_METADATA_PLANTS` above plants each of them in both
+    # places at once, and the finding it asserts on can come from either:
+    # measured 2026-08-24, dropping `namespace` or `owner` from
+    # `_AUTHORED_OPERATION_FIELDS` alone leaves the entire suite green, because
+    # `_AUTHORED_METADATA_FIELDS` still carries the same name. These two put the
+    # secret where only the operation-level entry can find it, so each is
+    # load-bearing on its own rather than as one half of a pair.
+    "changeOwner.owner": _HandAuthored(
+        build=lambda value: {"op": "changeOwner", "itemId": _ITEM, "owner": value},
+        secret=f"platform-team-{PLANTED_TOKEN}",
+        clean="platform-team",
+        at="owner",
+        family=HIGH_ENTROPY,
+    ),
+    "createItem.namespace": _HandAuthored(
+        build=lambda value: {
+            "op": "createItem",
+            "itemId": _ID_SHAPED_CLEAN,
+            "kind": "architecture",
+            "namespace": value,
+            "owner": "platform-team",
+        },
+        secret=f"architecture-{PLANTED_TOKEN}",
+        clean="architecture",
+        at="namespace",
+        family=HIGH_ENTROPY,
+    ),
+}
+
+
+def _hand_authored_proposal(
+    service: ProposalService, entry: _HandAuthored, value: str
+) -> DraftedProposal:
+    """The ordinary proposal with one hand-written operation appended to it.
+
+    ``draft`` lays down the directory ``accept`` reads -- the ULID-named
+    migration, the body at the sub-path its ``contentFile`` points to, and the
+    pinned digest of that body -- and the migration YAML is then rewritten the
+    way a contributor editing their own proposal before opening the pull request
+    rewrites it. Building the whole directory from literals instead would test
+    this file's copy of that layout, and would go green against an ``accept``
+    that had stopped reading the real one.
+
+    The appended operation is the *only* difference from a document every test
+    above already accepts, so nothing but that operation can be what refuses.
+    """
+    drafted = service.draft(_request(CLEAN_BODY))
+    document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    operations = document["operations"]
+    assert isinstance(operations, list)
+    assert len(operations) == _HAND_AUTHORED_INDEX, (
+        f"draft wrote {len(operations)} operations, so the appended one is not at index "
+        f"{_HAND_AUTHORED_INDEX} and the locations asserted below name the wrong operation"
+    )
+
+    operations.append(entry.build(value))
+    drafted.migration_file.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    return drafted
+
+
+def test_every_operation_level_allowlist_entry_has_a_case_that_drives_it() -> None:
+    """A name added to the allowlist with no case here would be a guard nothing drives.
+
+    This is the state #336 shipped in and the state this block exists to end:
+    eleven of the allowlist's thirteen names were reached by no test at all, so
+    deleting them was green. Nothing stops that recurring -- the allowlist grows
+    when the schema grows an operation field, and the natural edit is the tuple
+    alone.
+
+    Equality rather than containment, in both directions. A name in the tuple
+    with no entry here is the gap above; an entry here naming a field the tuple
+    does not carry is a case whose refusal must be coming from somewhere else,
+    which would make it a test of the wrong thing rather than a harmless extra.
+
+    The table's dotted locations are the nested walks -- ``anchor.sourceUri`` is
+    reached by :func:`_authored_strings`' own branch rather than by the tuple --
+    so they are excluded by shape, which is the same rule the location spelling
+    uses.
+    """
+    covered = {entry.at for entry in _HAND_AUTHORED.values() if "." not in entry.at}
+
+    assert covered == set(_AUTHORED_OPERATION_FIELDS), (
+        f"undriven allowlist names: {sorted(set(_AUTHORED_OPERATION_FIELDS) - covered)}; "
+        f"cases naming no allowlist field: {sorted(covered - set(_AUTHORED_OPERATION_FIELDS))}"
+    )
+
+
+@pytest.mark.parametrize("name", list(_HAND_AUTHORED))
+def test_a_hand_authored_operation_is_schema_valid_with_and_without_its_planted_secret(
+    service: ProposalService, name: str
+) -> None:
+    """The guard that keeps the tests below about the scan and not about the schema.
+
+    The scan runs *before* stage-1 validation, so a document the schema would
+    reject still reaches it -- which means a fixture that quietly violated a
+    ``pattern`` would produce a refusal that looked identical and proved nothing
+    about the allowlist. Six of the table's fields are ``$defs/itemId`` and one
+    is a media type; a base64url token in any of them is not a document
+    ``accept`` could ever have applied, so the refusal it produced would be a
+    refusal of an impossible input.
+
+    Both versions are validated. The planted one is what the tests below feed
+    ``accept``; the clean one is what the control feeds it, and a control that
+    was schema-invalid would be a control refused for its own reason.
+    """
+    entry = _HAND_AUTHORED[name]
+
+    for value in (entry.secret, entry.clean):
+        drafted = _hand_authored_proposal(service, entry, value)
+        document = yaml.safe_load(drafted.migration_file.read_text(encoding="utf-8"))
+
+        _validate(document)
+
+
+@pytest.mark.parametrize("name", list(_HAND_AUTHORED))
+def test_a_hand_authored_operation_carries_no_finding_until_its_field_is_planted(
+    service: ProposalService, name: str
+) -> None:
+    """The control on the fixture: the operation itself is clean, the plant is not.
+
+    Two failures this catches, both of which would leave the refusal tests below
+    green while testing nothing:
+
+    * the operation's *other* fields being detectable -- a ``sourceUri`` or a
+      ``specId`` chosen carelessly -- so the refusal fires on a field this entry
+      is not about;
+    * the planted value not being detectable at all in the field's schema-legal
+      spelling, which is a live risk here because six of these fields are
+      lowercase-only and the generic family's class gate needs an upper-case
+      character. A refusal test built on such a value would be red for the
+      fixture's reason rather than the control's.
+
+    The whole migration text is scanned rather than the field alone, so this
+    also pins what #336 is about: the value is in the document that would land
+    in ``.theurian/migrations/``.
+    """
+    entry = _HAND_AUTHORED[name]
+
+    clean = _hand_authored_proposal(service, entry, entry.clean)
+    planted = _hand_authored_proposal(service, entry, entry.secret)
+
+    assert scan_text(clean.migration_file.read_text(encoding="utf-8")) == (), (
+        f"the {name} operation is reported as carrying a secret before anything was planted "
+        f"in it, so a refusal on it names the wrong field"
+    )
+    planted_text = planted.migration_file.read_text(encoding="utf-8")
+    assert entry.secret in planted_text, f"{name} never reached the migration document"
+    assert [f.family for f in scan_text(planted_text)] == [entry.family], (
+        f"the detector reports {[f.family for f in scan_text(planted_text)]} for a secret "
+        f"planted in {name}, not exactly one {entry.family}"
+    )
+
+
+@pytest.mark.parametrize("name", list(_HAND_AUTHORED))
+def test_a_secret_in_a_hand_authored_operation_is_refused_and_the_field_is_named(
+    service: ProposalService, paths: ProjectPaths, name: str
+) -> None:
+    """SEC-11's gate covers the operations a contributor writes, not only the two we do.
+
+    ``propose`` emits ``createItem`` and ``upsertRevision``; ``accept`` takes any
+    of the schema's fourteen operation types, because a proposal directory is a
+    contributor's committed input (ADR-0013 point 7). A control that covered only
+    what the generator produces would be a control on Theurian's own output, and
+    the input it is there to judge would walk past it -- ``registerSpecification``
+    carries a ``sourceUri`` and ``deprecateItem`` a free-text ``reason``, both of
+    which land in ``.theurian/migrations/`` and are read by every later
+    ``migrate apply``.
+
+    The location is asserted whole -- operation index and field -- rather than by
+    field name alone. Which operation a secret is in is the actionable half of the
+    report for a migration carrying several, and
+    :class:`~theurian.application.proposal_service.ProposalSecretFinding`
+    publishes that spelling in its own docstring. If it is deliberately changed,
+    this is the test that should have to be changed with it.
+    """
+    entry = _HAND_AUTHORED[name]
+    assert not paths.config.exists(), "the fixture wrote a config file; the default is untested"
+    drafted = _hand_authored_proposal(service, entry, entry.secret)
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    message = str(caught.value)
+    assert entry.family in message, (
+        f"a secret in {name} was not what refused the acceptance: {caught.value}"
+    )
+    assert f"migration.operations[{_HAND_AUTHORED_INDEX}].{entry.at}" in message, (
+        f"the refusal does not name the field the secret is in: {message}"
+    )
+
+
+@pytest.mark.parametrize("name", list(_HAND_AUTHORED))
+def test_a_refused_hand_authored_operation_consumes_nothing_and_is_not_quoted_back(
+    service: ProposalService, paths: ProjectPaths, name: str
+) -> None:
+    """The two properties an exception-type assertion does not reach (#307, SEC-11).
+
+    An implementation that refused *after* moving the files would satisfy the
+    test above while leaving the credential in the tree ``migrate apply`` reads,
+    and one that assembled its message from field *values* rather than from
+    findings would route around the four-character bound
+    :class:`~theurian.security.content_secrets.SecretFinding` enforces on itself.
+    Both matter more on this path than on the body path: a hand-authored
+    operation is the shape a contributor arrives with, and the refusal is printed
+    to a terminal and published under ``accept --json`` into something that logs.
+    """
+    entry = _HAND_AUTHORED[name]
+    drafted = _hand_authored_proposal(service, entry, entry.secret)
+    before = {p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")}
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert {
+        p.relative_to(drafted.directory).as_posix() for p in drafted.directory.rglob("*")
+    } == before, "the proposal directory changed on a refused acceptance"
+    assert not (paths.migrations / drafted.migration_file.name).exists(), (
+        "the migration landed in .theurian/migrations/ despite the refusal -- the secret is now "
+        "in the tree the migration set reads"
+    )
+    assert not drafted.body_destination.exists()
+    assert entry.secret not in str(caught.value), (
+        f"the refusal reproduced the secret it refused: {caught.value}"
+    )
+    assert entry.secret not in caught.value.remedy, (
+        f"the remedy reproduced the secret it refused: {caught.value.remedy!r}"
+    )
