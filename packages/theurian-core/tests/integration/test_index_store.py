@@ -1447,7 +1447,16 @@ def test_a_limit_of_exactly_one_is_allowed(
 def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStore) -> None:
     """The literal, so a DDL change that forgets to bump -- or bumps wrong -- fails.
 
-    Five at the time of writing. Version 3 added `chunks.derived` and
+    Six at the time of writing, and the newest one adds no column: version 6
+    marks the build that stopped writing rows for items above the deployment's
+    disclosure ceiling (#119, ADR-0025 part 1). It moves the DDL only in
+    `chunks.sensitivity`'s comment, which is enough under this file's own rule --
+    and the reason it is a *version* rather than a comment is that every
+    version-5 file predates the exclusion, so it may hold above-ceiling text
+    whose collection statistics price the rows this deployment does serve. Those
+    files report `index-schema-mismatch` and are rebuilt rather than filtered.
+
+    Version 3 added `chunks.derived` and
     `chunk_derivation` for a writer that did not exist yet; version 4 drops both
     and adds `nodes`, `node_derivation` and `nodes_fts` in their place (ADR-0008
     decision 5's amendment, ADR-0024 decision 8's amendment) -- a RAPTOR summary
@@ -1461,7 +1470,7 @@ def test_a_fresh_build_reports_the_current_schema_version(store: SqliteIndexStor
     constant *is*.
     """
     assert store.schema_version() == INDEX_SCHEMA_VERSION
-    assert store.schema_version() == 5, (
+    assert store.schema_version() == 6, (
         "the index schema version changed. If a DDL change intended it, update this literal "
         "and the CHANGELOG; if not, a bump slipped in without a schema change behind it"
     )

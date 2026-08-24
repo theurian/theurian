@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
+from theurian.application.authorization import encode_sensitivities
+from theurian.domain.enums import Sensitivity
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import LoadedMigrations
@@ -673,13 +675,14 @@ def read_active_index(paths: ProjectPaths) -> dict[str, Any] | None:
     return dict(payload) if payload is not None else None
 
 
-def write_active_index_pointer(
+def write_active_index_pointer(  # noqa: PLR0913 - one keyword per published pointer field
     paths: ProjectPaths,
     *,
     index_build_id: str,
     state_hash: str,
     project_id: str,
     indexes_unapproved: bool,
+    indexed_sensitivities: frozenset[Sensitivity],
 ) -> None:
     """Point retrieval at a finished build, atomically (ADR-0007, ADR-0024).
 
@@ -699,6 +702,18 @@ def write_active_index_pointer(
     change is indistinguishable from a project that simply has no knowledge.
     ``indexesUnapproved`` lets a search say *why* an ``includeUnapproved`` query
     returned nothing rather than looking like an empty result.
+
+    ``indexedSensitivities`` is the second build flavor, recorded for a stronger
+    reason than the first (#119, ADR-0025 part 1). A build writes no row for an
+    item above the deployment's disclosure ceiling, so which ceiling was in force
+    decides *which rows the file holds* -- and an FTS5 external-content table
+    scores every row it holds against statistics computed over all of them. A
+    build kept from an era with a different ceiling therefore cannot merely
+    over-return; it prices the rows it does return against text this deployment
+    does not serve. The serve path compares this against the grant in force and
+    stands aside when they differ (``mcp.search._published_index``), which is why
+    it is written here rather than derived from the file: the file cannot say what
+    was *excluded* from it.
     """
     pointer = paths.active_index_pointer
     pointer.parent.mkdir(parents=True, exist_ok=True)
@@ -710,6 +725,7 @@ def write_active_index_pointer(
                 "stateHash": state_hash,
                 "projectId": project_id,
                 "indexesUnapproved": indexes_unapproved,
+                "indexedSensitivities": encode_sensitivities(indexed_sensitivities),
             },
             indent=2,
         ),

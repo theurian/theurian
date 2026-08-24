@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from theurian.application.authorization import decode_sensitivities
 from theurian.application.forest_builder import ForestBuilder
 from theurian.application.index_builder import EMBED_BATCH
 from theurian.application.migration_engine import WithdrawalCandidate, revisions_to_purge
@@ -235,6 +236,18 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
     source_state_hash = str(published.get("stateHash", ""))
     source_project_id = str(published.get("projectId", ""))
     indexes_unapproved = bool(published.get("indexesUnapproved", False))
+    indexed_sensitivities = decode_sensitivities(published.get("indexedSensitivities"))
+    if indexed_sensitivities is None:
+        # The second flavor, and the one this cannot invent (#119, ADR-0025). A
+        # purge copies a build and deletes rows from the copy, so the copy holds
+        # exactly what the original was allowed to hold -- and the pointer is the
+        # only record of what that was. A build whose flavor the pointer does not
+        # state is already one retrieval stands aside from
+        # (`mcp.search._published_index`), so it is not serving the withdrawn
+        # rows' statistics to anybody, and republishing it under a *guessed*
+        # flavor is how a guess becomes the record. Reported as unusable, whose
+        # standing remedy is the rebuild that fixes both.
+        return WithdrawalPurge(published=False, reason=INDEX_UNUSABLE)
 
     deduped = tuple(
         revisions_to_purge(withdrawal_candidates, indexes_unapproved=indexes_unapproved)
@@ -304,6 +317,7 @@ def publish_purge_for_withdrawal(  # noqa: PLR0911 - one early return per benign
             state_hash=source_state_hash,
             project_id=source_project_id,
             indexes_unapproved=indexes_unapproved,
+            indexed_sensitivities=indexed_sensitivities,
         )
         orphan = None
     except Exception as exc:  # fail closed: any adapter's failure leaves the old build serving

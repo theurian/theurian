@@ -225,8 +225,9 @@ STATUS_GATE_CALL_SITES = {
 #: Every place the product consults the disclosure gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
-#: Three, and they are the three canonical-side read paths a caller can reach
-#: content through (#119 phase 2), each with the test that holds it to gating:
+#: Four: three canonical-side read paths a caller can reach content through
+#: (#119 phase 2) and the build side that decides what exists to be reached
+#: (#119 phase 3), each with the test that holds it to gating:
 #:   - the ranked path's canonical re-check on the item's *current* level
 #:     (``test_the_ranked_path_withholds_a_document_reclassified_after_the_build``);
 #:   - ``knowledge.get``'s gate on the item it hands over by id, refused in the
@@ -235,9 +236,15 @@ STATUS_GATE_CALL_SITES = {
 #:     ``test_absence_proof.py``'s generated refusal equality);
 #:   - the per-edge gate on each endpoint of a relation, because an edge's target
 #:     id and ``note`` are the disclosure whether or not the body is
-#:     (``test_a_relation_to_an_above_ceiling_item_is_not_published``).
+#:     (``test_a_relation_to_an_above_ceiling_item_is_not_published``);
+#:   - the index builder, which decides what is *written* rather than what is
+#:     shown, so that an above-ceiling document's text never reaches the FTS5
+#:     tables whose collection statistics price every visible row -- the T-17a
+#:     mechanism, moved to this axis (ADR-0025 part 1,
+#:     ``test_forest_builder.py::test_an_above_ceiling_document_reaches_neither_
+#:     half_of_the_index``).
 #:
-#: **``mcp/search.py :: _scan`` is deliberately absent and is not a fourth site.**
+#: **``mcp/search.py :: _scan`` is deliberately absent and is not a fifth site.**
 #: The unranked fallback hands the grant to the canonical store as a SQL
 #: predicate, so an above-ceiling row is never materialised for a Python check to
 #: run on (``test_the_unranked_scan_withholds_an_above_ceiling_item``, and the
@@ -245,10 +252,12 @@ STATUS_GATE_CALL_SITES = {
 #: enforced by a query rather than by a call, so adding it here would mean
 #: deleting the predicate that makes it cheap.
 #:
-#: The build side is absent for a different reason: nothing excludes an
-#: above-ceiling document from the *index* yet (#119 phase 3). Until it does, the
-#: index holds the text and these three are the whole of the enforcement.
+#: ``cli/index_commands.py :: _indexable_items`` is absent for the reason it is
+#: absent from the status set above: it *repeats* the builder's selection rule
+#: inline rather than calling either gate, so that "what was there to be indexed"
+#: and "what got indexed" stay two derivations that can be caught disagreeing.
 DISCLOSURE_GATE_CALL_SITES = {
+    ("application/index_builder.py", "IndexBuilder._build"),
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),

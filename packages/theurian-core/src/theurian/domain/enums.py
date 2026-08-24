@@ -270,13 +270,19 @@ def may_disclose(sensitivity: Sensitivity, *, visible: frozenset[Sensitivity]) -
     would come back -- the reason
     :class:`~theurian.application.visibility.Visibility` refuses one too.
 
-    Consulted from three call sites, each spelled out and pinned in
+    Consulted from four call sites, each spelled out and pinned in
     ``tests/unit/test_gate_call_sites.py``: the ranked path's canonical re-check
     (``CanonicalVisibility._may_surface``), ``knowledge.get``'s gate on the item it
-    hands over by id, and the per-edge gate on each endpoint of a relation before
-    it is published. ``knowledge.search``'s unranked fallback does *not* appear
-    there and is not a fourth: it hands ``visible`` to the canonical store as a SQL
-    predicate, so no above-ceiling row is materialised for a Python check to run on
+    hands over by id, the per-edge gate on each endpoint of a relation before it is
+    published, and the index builder, which decides what is *written* rather than
+    what is shown. The builder is not a fourth reader of the same rule but the one
+    that makes the other three cheap: an FTS5 external-content table scores against
+    collection statistics computed over every row it holds, so a withheld document
+    left in the file moves the score of every visible one (T-17a, ADR-0025 part 1).
+
+    ``knowledge.search``'s unranked fallback does *not* appear there and is not a
+    fifth: it hands ``visible`` to the canonical store as a SQL predicate, so no
+    above-ceiling row is materialised for a Python check to run on
     (``mcp.search._scan``, and the cost note on
     :meth:`~theurian.domain.ports.canonical_store.CanonicalStore.list_items_by_status`).
     """

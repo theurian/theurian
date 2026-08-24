@@ -185,6 +185,55 @@ def _valid_ceilings() -> str:
     return ", ".join(level.value for level in DISCLOSURE_ORDER)
 
 
+def encode_sensitivities(levels: frozenset[Sensitivity]) -> list[str]:
+    """Write a grant's levels down, least-disclosing first.
+
+    The form the published index pointer records a build's disclosure flavor in
+    (``indexedSensitivities``, beside ``indexesUnapproved``), so that a serve path
+    can ask whether the file it is about to search holds what this deployment
+    serves -- and no more (#119, ADR-0025 part 1).
+
+    **The expanded set rather than the ceiling word it came from.** A ceiling
+    re-expanded at read time is a second derivation of the predicate that decided
+    what was written, and the two can disagree without anything noticing: insert
+    one level into :data:`DISCLOSURE_ORDER` and every previously written word
+    expands to a different set, silently admitting an index built without a level
+    the reader now believes it holds. Recording the set closes that by making the
+    reader read the writer's own answer.
+
+    Ordered by :data:`DISCLOSURE_ORDER` rather than sorted, because sorting a
+    ``StrEnum`` sorts alphabetically -- the very ordering that is not the
+    disclosure order -- and a pointer file a person opens should read in the order
+    the ceiling is declared in.
+    """
+    return [level.value for level in DISCLOSURE_ORDER if level in levels]
+
+
+def decode_sensitivities(raw: object) -> frozenset[Sensitivity] | None:
+    """The levels a recorded value names, or ``None`` when it names none.
+
+    ``None`` rather than a default, and rather than a raise. The pointer is
+    derived, git-ignored and unsigned, so any local process can put anything in it
+    (SEC-7): the answer to a value this cannot read is "this build's flavor is
+    unknown", which the caller turns into a fallback and a rebuild, never into an
+    assumption about what the file holds.
+
+    An empty list is unknown for the same reason rather than "nothing was
+    indexed": :class:`AuthorizationGrant` refuses an empty set at construction, so
+    no build can have written one.
+    """
+    if not isinstance(raw, list) or not raw:
+        return None
+    by_value = {level.value: level for level in DISCLOSURE_ORDER}
+    levels: list[Sensitivity] = []
+    for item in raw:
+        level = by_value.get(item) if isinstance(item, str) else None
+        if level is None:
+            return None
+        levels.append(level)
+    return frozenset(levels)
+
+
 @dataclass(frozen=True, slots=True)
 class ServingProfile:
     """One deployment's declared sensitivity ceiling, expanded once.

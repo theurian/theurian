@@ -34,7 +34,7 @@ from theurian.application.withdrawal_purge import (
     publish_purge_for_withdrawal,
 )
 from theurian.domain.chunking import Chunk, IndexableChunk
-from theurian.domain.enums import KnowledgeStatus
+from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.infrastructure.determinism import UlidGenerator
 from theurian.infrastructure.sqlite.index_purge import IndexPurgeError
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
@@ -42,6 +42,13 @@ from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 pytestmark = pytest.mark.integration
 
 PROJECT = "demo"
+
+#: The disclosure flavor every pointer in this file records, and the one the
+#: purge must carry forward unchanged. All four levels -- the flavor a build
+#: under the shipped default profile has -- because nothing here is about the
+#: ceiling itself; what is about the ceiling is that a purge may not invent one
+#: (`publish_purge_for_withdrawal`, #119 phase 3).
+EVERY_SENSITIVITY = frozenset(Sensitivity)
 
 
 def _deprecated_candidates(revision_ids: Sequence[str]) -> list[WithdrawalCandidate]:
@@ -127,6 +134,7 @@ def _publish_source(paths: ProjectPaths, *, include_withdrawn: bool) -> list[str
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
     return withdrawn
 
@@ -230,6 +238,7 @@ def test_an_empty_withdrawal_publishes_nothing(tmp_path: Path) -> None:
         "stateHash": STATE_HASH,
         "projectId": PROJECT,
         "indexesUnapproved": False,
+        "indexedSensitivities": ["public", "internal", "confidential", "restricted"],
     }
 
 
@@ -263,6 +272,7 @@ def test_a_pointer_naming_a_missing_or_unreadable_build_is_unusable(tmp_path: Pa
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     outcome = publish_purge_for_withdrawal(
@@ -324,6 +334,7 @@ def test_the_purge_preserves_the_published_project_id_not_the_callers(tmp_path: 
         state_hash=STATE_HASH,
         project_id="the-original-id",
         indexes_unapproved=True,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     outcome = publish_purge_for_withdrawal(
@@ -434,6 +445,7 @@ def test_a_schema_mismatched_build_is_unusable_not_purged(tmp_path: Path) -> Non
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
     # Corrupt the build's schema version so `is_searchable()` returns False.
     with closing(sqlite3.connect(paths.index_for(BUILD_ID))) as connection:
@@ -608,6 +620,7 @@ def test_an_unprovenanced_node_is_seen_by_the_pre_check_and_purged(tmp_path: Pat
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     # The pre-check sees it even though the withdrawn revision matches no chunk,
@@ -682,6 +695,7 @@ def test_a_dangling_edge_is_seen_by_the_pre_check_and_purged(tmp_path: Path) -> 
         state_hash=STATE_HASH,
         project_id=PROJECT,
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     assert SqliteIndexStore(paths.index_for(BUILD_ID)).holds_any_revision(["no-such-revision"]), (

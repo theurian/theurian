@@ -28,6 +28,7 @@ from theurian import __protocol_version__, __version__
 from theurian.application.authorization import (
     DEPLOYMENT_ACL_GROUPS,
     DEPLOYMENT_TENANT,
+    SERVING_PROFILE_FILENAME,
     AuthorizationGrant,
     StaticAuthorizationProvider,
 )
@@ -350,6 +351,26 @@ def _ceiling_of(*levels: Sensitivity) -> AuthorizationGrant:
         sensitivities=frozenset(levels),
         acl_groups=DEPLOYMENT_ACL_GROUPS,
     )
+
+
+def _declare_ceiling(data_dir: Path, ceiling: Sensitivity) -> None:
+    """Declare a ceiling the way an operator does, for `theurian index build`.
+
+    A grant handed to :func:`build_server` decides what the *serve* side may
+    disclose; this decides what the *build* side may write (#119 phase 3), and
+    the two have to be told separately because they are told separately in
+    production -- one by the profile file, one by the daemon reading it. A test
+    that narrows only the grant leaves a build the serve path stands aside.
+
+    Mode 0600 because ``load_serving_profile`` refuses a profile other local
+    users can reach, and ``write_text`` under the usual umask leaves 0644 -- a
+    caller that skipped this would exercise that refusal instead.
+    """
+    auth = data_dir / "auth"
+    auth.mkdir(parents=True, exist_ok=True)
+    profile = auth / SERVING_PROFILE_FILENAME
+    profile.write_text(f"{ceiling.value}\n", encoding="utf-8")
+    profile.chmod(0o600)
 
 
 #: The `registry`/`indexed` fixtures author their one approved item at
@@ -8189,6 +8210,20 @@ async def test_a_narrow_ceiling_withholds_the_item_from_search_and_from_get(
 
     Both tools, one grant, one corpus, and the item is above the ceiling on both
     sides of the assertion.
+
+    **Which path answers the search half moved in #119 phase 3, and the reason
+    code is asserted so that it cannot move again unnoticed.** The `indexed`
+    fixture builds under the shipped default, so this deployment's grant is
+    narrower than the flavor its published build records: the ranked path stands
+    aside (`serving-profile-mismatch`) and the unranked scan answers, where the
+    grant is a SQL predicate rather than a Python check. That is the shipped
+    behaviour for an operator who lowered a ceiling without rebuilding, and it is
+    still this pair's property -- the scan is reachable by deleting a file, so a
+    fallback that served the body would make `rm` the way past the ceiling. What
+    it is no longer is a test of `CanonicalVisibility._may_surface`, which its
+    own failure message used to claim;
+    `test_the_ranked_path_withholds_a_document_reclassified_after_the_build` is
+    where that gate is exercised now.
     """
     assert FIXTURE_SENSITIVITY not in PUBLIC_ONLY.sensitivities, (
         "the fixture item must be above this ceiling, or neither assertion below means anything"
@@ -8199,9 +8234,14 @@ async def test_a_narrow_ceiling_withholds_the_item_from_search_and_from_get(
     with pytest.raises(SdkToolError) as refused:
         await _call_on(server, "knowledge.get", projectId="demo", itemId="architecture.auth-policy")
 
+    assert searched["retrieval"]["fallbackReason"] == "serving-profile-mismatch", (
+        f"the build this deployment publishes was made under a wider ceiling, so the ranked "
+        f"path must stand aside rather than search it: {searched['retrieval']}"
+    )
     assert searched["count"] == 0, (
-        f"an above-ceiling item reached the ranked results: {searched['results']}. The "
-        f"canonical re-check in `CanonicalVisibility._may_surface` is not reading the grant."
+        f"an above-ceiling item reached the results: {searched['results']}. The scan hands the "
+        f"grant to `list_items_by_status` as a SQL predicate, so no such row should ever have "
+        f"been materialised."
     )
     assert searched["results"] == []
     assert "is not present" in str(refused.value), (
@@ -8285,9 +8325,30 @@ async def test_knowledge_status_counts_are_not_yet_narrowed_by_the_ceiling(
     )
 
 
+@pytest.fixture
+def indexed_under_an_internal_ceiling(indexed: ProjectRegistry) -> ProjectRegistry:
+    """``indexed``, rebuilt under a declared ``internal`` ceiling (#119 phase 3).
+
+    A **synchronous** fixture on purpose: `theurian index build` embeds through
+    ``asyncio.run``, which raises inside the event loop an async test body already
+    owns. The corpus is entirely ``internal``, so this build holds exactly what
+    the allow-all one held -- what changes is the flavor the pointer records, and
+    therefore which grant can be answered from it at all.
+    """
+    _declare_ceiling(indexed.path.parent, Sensitivity.INTERNAL)
+    root = Path(indexed.load()["demo"]["rootPath"])
+    monkey = pytest.MonkeyPatch()
+    monkey.chdir(root)
+    try:
+        _run("index", "build")
+    finally:
+        monkey.undo()
+    return indexed
+
+
 @pytest.mark.asyncio
 async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build(
-    indexed: ProjectRegistry,
+    indexed_under_an_internal_ceiling: ProjectRegistry,
 ) -> None:
     """#119 phase 2, the window this gate exists to close before the purge does.
 
@@ -8299,17 +8360,41 @@ async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build
     normal. A deployment serving up to `internal` must not return it.
 
     Nothing index-side can produce that answer: the index row says `internal`,
-    which the ceiling admits. Only the canonical re-check on the *item's current*
-    level can, which is why this gate goes in `CanonicalVisibility` and not
-    beside the retrievers. The build-side exclusion and the index-side predicate
-    that make the withholding cheap rather than merely correct are later phases;
-    until they land this is the only thing standing between a reclassification
-    and the text it reclassified.
+    which the ceiling admits, and #119 phase 3's build-side exclusion cannot
+    reach it either -- the build was allowed to write this row, and the
+    reclassification came afterwards. Only the canonical re-check on the *item's
+    current* level can, which is why this gate goes in `CanonicalVisibility` and
+    not beside the retrievers. Since phase 3, reclassification is the only way an
+    above-ceiling row is in a file this deployment reads at all, which makes this
+    test the whole of the ranked path's coverage on the sensitivity axis.
 
-    The index is asserted to still hold the old label, so a rebuild slipping into
-    the fixture would fail here rather than turn this into a test of the build.
+    **Both halves run under one grant, before and after the migration**, and that
+    shape is forced rather than stylistic. The comparison used to be one index
+    against two grants, narrow and allow-all, which phase 3 turned into a
+    comparison of two *fallbacks*: a build records the ceiling it ran under and
+    the serve path stands aside any build made under another
+    (`serving-profile-mismatch`), so one index can answer at most one of two
+    different grants. Measured before this was rewritten -- both calls came back
+    `indexed: false, mode: substring`, and the assertion below held over the
+    unranked scan while the test's name claimed the ranked path. So the index is
+    built under the ceiling it is served under, and the only thing that moves
+    between the two calls is the item's own level.
+
+    `indexed: true` is asserted on both halves for that reason, and the index is
+    asserted to still hold the old label so that a rebuild slipping into the
+    fixture fails here rather than turning this into a test of the build.
     """
+    indexed = indexed_under_an_internal_ceiling
     root = Path(indexed.load()["demo"]["rootPath"])
+    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
+
+    before = await _call_on(
+        build_server(indexed, up_to_internal),
+        "knowledge.search",
+        projectId="demo",
+        query="signed token",
+    )
+
     monkey = pytest.MonkeyPatch()
     monkey.chdir(root)
     try:
@@ -8324,25 +8409,26 @@ async def test_the_ranked_path_withholds_a_document_reclassified_after_the_build
         "test of `index build` rather than of the canonical re-check"
     )
 
-    up_to_internal = _ceiling_of(Sensitivity.PUBLIC, Sensitivity.INTERNAL)
     served = await _call_on(
         build_server(indexed, up_to_internal),
         "knowledge.search",
         projectId="demo",
         query="signed token",
     )
-    unrestricted = await _call_on(
-        build_server(indexed, _allow_all()),
-        "knowledge.search",
-        projectId="demo",
-        query="signed token",
-    )
 
-    assert [hit["itemId"] for hit in unrestricted["results"]] == ["architecture.auth-policy"], (
-        "precondition: the reclassified document must still be reachable through the index, "
-        "or its absence below says nothing about the gate"
+    assert before["retrieval"]["indexed"] is True, (
+        f"precondition: this deployment must be answered from its own index before the "
+        f"reclassification, or nothing below is about the ranked path: {before['retrieval']}"
     )
-    assert unrestricted["results"][0]["sensitivity"] == "restricted"
+    assert [hit["itemId"] for hit in before["results"]] == ["architecture.auth-policy"], (
+        "precondition: the document must be reachable through the index while it is still "
+        "`internal`, or its absence afterwards says nothing about the gate"
+    )
+    assert before["results"][0]["sensitivity"] == "internal"
+    assert served["retrieval"]["indexed"] is True, (
+        f"the reclassification moved this off the ranked path, so the assertion below is "
+        f"about the unranked scan rather than the gate it names: {served['retrieval']}"
+    )
     assert served["count"] == 0, (
         f"a document reclassified to `restricted` after the build was served to a deployment "
         f"whose ceiling is `internal`: {served['results']}. The index row still says `internal` "

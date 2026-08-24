@@ -67,6 +67,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from theurian.application.authorization import decode_sensitivities
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     BuildProvenance,
@@ -107,6 +108,10 @@ INDEX_UNREADABLE: Final = "index-unreadable"
 INDEX_PROJECT_MISMATCH: Final = "index-project-mismatch"
 INDEX_UNBUILT: Final = "index-unbuilt"
 UNAPPROVED_NOT_INDEXED: Final = "unapproved-not-indexed"
+#: Spelled `serving-profile-` and not `index-profile-`, which would sit one
+#: letter from `index-project-mismatch` in every transcript and every client's
+#: switch statement.
+SERVING_PROFILE_MISMATCH: Final = "serving-profile-mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +212,30 @@ _NO_DRAFTS_INDEXED = Fallback(
     "Run `theurian index build --include-unapproved` for ranked retrieval over "
     "unapproved knowledge.",
 )
+#: Two notes and one reason code, the arrangement `index-project-mismatch` is in
+#: and for the same trade: the next action is `theurian index build` either way,
+#: while a person reading the transcript needs to know whether the deployment's
+#: profile moved under an index or was never recorded against it at all.
+#:
+#: Neither names a level -- not the one the build was made under and not the one
+#: in force. The remedy does not depend on which, and this reply goes to a caller
+#: that has no business learning the shape of the deployment's ceiling from a
+#: degraded search. `theurian index status` is where an operator at their own
+#: terminal would be told, the same split `_PROJECT_MISMATCH` makes for ids.
+_PROFILE_MISMATCH = Fallback(
+    SERVING_PROFILE_MISMATCH,
+    "This project's index was built under a different disclosure profile than this "
+    "deployment serves, so it cannot be used and this is an unranked substring "
+    "scan. Run `theurian index build` to rebuild it under the profile in force "
+    "now; the index is derived, so nothing is lost.",
+)
+_PROFILE_UNRECORDED = Fallback(
+    SERVING_PROFILE_MISMATCH,
+    "This project's index does not record which disclosure profile it was built "
+    "under, so it cannot be shown to hold only what this deployment serves and "
+    "this is an unranked substring scan. Run `theurian index build`; one rebuild "
+    "records the profile, and the index is derived, so nothing is lost.",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,13 +321,24 @@ class _PublishedIndex:
     indexes_unapproved: bool
 
 
-def _published_index(
-    paths: ProjectPaths, *, project_id: str, include_unapproved: bool, provenance: BuildProvenance
+def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
+    paths: ProjectPaths,
+    *,
+    project_id: str,
+    include_unapproved: bool,
+    visible_sensitivities: frozenset[Sensitivity],
+    provenance: BuildProvenance,
 ) -> _PublishedIndex | Fallback:
     """Locate the index this project publishes, or say why there is not one.
 
     Never raises. Every failure here is a missing optimisation, and the caller
     answers from the canonical store instead.
+
+    ``visible_sensitivities`` is the deployment's grant, and it is checked against
+    the *build* rather than against any row: which levels a build was allowed to
+    write decides which rows exist in the file at all (#119 phase 3), and an index
+    whose flavor disagrees with the grant in force is stood aside whole rather
+    than filtered.
     """
     pointer = read_active_index_pointer(paths)
     if pointer.payload is None:
@@ -352,6 +392,32 @@ def _published_index(
         # that does not claim a rename happened.
         names_a_project = isinstance(recorded, str) and bool(recorded)
         return _PROJECT_MISMATCH if names_a_project else _PROJECT_UNVERIFIED
+
+    # The build's disclosure flavor against the one in force (#119, ADR-0025
+    # part 1). Ahead of the drafts gate because it does not depend on what was
+    # asked for: `includeUnapproved` is a request parameter a caller can stop
+    # passing, while this build is the wrong build for this deployment on every
+    # query it will ever be asked.
+    #
+    # Equality, and it refuses in both directions for two different failures. A
+    # *wider* build holds text this deployment does not serve, and an FTS5
+    # external-content table scores what it returns against collection
+    # statistics -- `N`, `avgdl`, per-term document frequencies -- computed over
+    # every row it holds, so the withheld rows would price the visible ones even
+    # though no query could return them (T-17a on this axis). A *narrower* build
+    # is missing rows the deployment does serve, and an index that silently
+    # answers less is the `count: 0, indexed: true` shape every other check here
+    # exists to prevent.
+    #
+    # Compared against the set the pointer recorded rather than a ceiling word
+    # re-expanded here: the recorded set is the predicate the build actually
+    # applied, and re-deriving it would be a second derivation that can drift
+    # from the first (see `encode_sensitivities`).
+    built_for = decode_sensitivities(published.get("indexedSensitivities"))
+    if built_for is None:
+        return _PROFILE_UNRECORDED
+    if built_for != visible_sensitivities:
+        return _PROFILE_MISMATCH
 
     indexes_unapproved = bool(published.get("indexesUnapproved", False))
     if include_unapproved and not indexes_unapproved:
@@ -446,18 +512,20 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     is computed against -- ``datetime.now(UTC)`` when the caller pinned
     nothing, exactly as before this parameter existed.
 
-    ``visible_sensitivities`` is the deployment's grant (#119), carried through
-    to the canonical gate rather than applied to the index. That asymmetry is
-    the point of this phase: the index still holds an above-ceiling document's
-    text, and the *item's current* level is what decides, so a document
-    reclassified upward after the build is withheld here even though its index
-    row survives. The index-side exclusion that makes this cheap rather than
-    merely correct is a later phase's change.
+    ``visible_sensitivities`` is the deployment's grant (#119), and it reaches two
+    places that are not the same check. :func:`_published_index` compares it
+    against the flavor the *build* was made under and stands the whole index aside
+    on a mismatch; the canonical gate then re-checks each surviving candidate
+    against the item's *current* level, which is what withholds a document
+    reclassified upward since the build even though its chunk row was legitimately
+    written. Neither subsumes the other: the first is about which rows exist to be
+    scored against each other, the second about which of them may be returned.
     """
     published = _published_index(
         paths,
         project_id=project_id,
         include_unapproved=include_unapproved,
+        visible_sensitivities=visible_sensitivities,
         provenance=provenance,
     )
     if isinstance(published, Fallback):

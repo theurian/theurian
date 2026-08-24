@@ -263,6 +263,7 @@ def _build(project: Path, *, embedder: EmbeddingProvider | None) -> Path:
             project_id="demo",
             state_hash="test-state",
             index_build_id="01K1DXAAAA01234567890ABCDE",
+            visible_sensitivities=EVERY_SENSITIVITY,
         )
     )
     return index_path
@@ -981,6 +982,7 @@ def test_gc_keeps_a_build_that_is_still_being_written(tmp_path: Path) -> None:
         state_hash="s",
         project_id="demo",
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     reclaimable = _reclaimable(paths, published="01K1BBBBBB")
@@ -1016,6 +1018,7 @@ def test_gc_reclaims_a_superseded_build_but_never_the_published_one(tmp_path: Pa
         state_hash="s",
         project_id="demo",
         indexes_unapproved=False,
+        indexed_sensitivities=EVERY_SENSITIVITY,
     )
 
     reclaimable = _reclaimable(paths, published="01K1DDDDDD")
@@ -1099,6 +1102,7 @@ operations:
             project_id="demo",
             state_hash="test-state",
             index_build_id="01K1DXAAAA",
+            visible_sensitivities=EVERY_SENSITIVITY,
             include_unapproved=True,  # asked for explicitly, and still refused
         )
     )
@@ -1151,6 +1155,7 @@ def test_a_build_that_is_refused_the_path_does_not_delete_what_is_there(
                 project_id="demo",
                 state_hash="another-state",
                 index_build_id="01K1DXBBBB01234567890ABCDE",
+                visible_sensitivities=EVERY_SENSITIVITY,
             )
         )
 
@@ -1870,6 +1875,7 @@ def _build_probe_index(project: Path, name: str, build_id: str) -> Path:
             project_id="demo",
             state_hash="probe-state",
             index_build_id=build_id,
+            visible_sensitivities=EVERY_SENSITIVITY,
         )
     )
     return index_path

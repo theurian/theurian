@@ -18,6 +18,27 @@ The file is named for the index build id, not the state hash, because two index
 builds over one canonical state are a normal thing to have — a re-embedding with
 a different model changes nothing canonical.
 
+**Version 6 changes no column and is still a real break: from it on, a build
+consults the deployment's disclosure ceiling and writes no row for an item above
+it** (#119, ADR-0025 part 1). The DDL moves only in `chunks.sensitivity`'s
+comment, which said the column was read by no query -- and that sentence has to
+change, because the column is now the record of a decision the *build* made
+rather than a label nothing acted on. That alone earns the bump under this file's
+own rule.
+
+The forcing function is what makes the bump the point rather than the paperwork.
+Every version-5 index predates the exclusion, so it may hold an above-ceiling
+document's text -- and `chunks_fts` and `chunks_trigram` score what they return
+against collection statistics computed over every row in the file, so those rows
+price the visible ones whether or not any query can return them (T-17a on the
+sensitivity axis). A serve path that merely *filtered* such a file would inherit
+that. Bumping makes it structural: every pre-enforcement build reports
+`index-schema-mismatch` on the first search and is rebuilt, under a ceiling, by
+the same command that has always been the remedy. The pointer's
+`indexedSensitivities` then keeps a *post*-enforcement build from being served
+under a ceiling it was not built for; the version bump is what covers the builds
+that recorded no ceiling at all.
+
 **Version 5 gives `chunks` a `kind` column, so a purge can re-derive the forest
 from the index's own surviving rows.** The withdrawal purge re-derives each
 affected scope's trees from the published build rather than from canonical state
@@ -77,7 +98,7 @@ from typing import Final
 
 #: Bump for ANY change to the DDL below. Independent of the canonical store's
 #: version: they version separately because they are rebuilt separately.
-INDEX_SCHEMA_VERSION: Final = 5
+INDEX_SCHEMA_VERSION: Final = 6
 
 #: FTS5 is a compile-time option. It ships with the python.org, Homebrew, and
 #: Debian builds, but not with every distribution's, so its absence is detected
@@ -133,13 +154,24 @@ CREATE TABLE chunks (
     -- ranking would let a caller learn that a document they may not read exists,
     -- by watching how many results disappeared.
     --
-    -- Today only `status` is filtered on. `sensitivity`, `trust_level`, and
-    -- `namespace` are carried for the scope filtering #119 adds (Milestone 6)
-    -- and are read by no query yet -- said plainly here because a comment that implies
-    -- an access control which does not exist is how the next person concludes
-    -- it is already handled. `namespace` is populated as of the RAPTOR builder,
-    -- which partitions the forest by the scope tuple this column is a component
-    -- of; it is still read by no query.
+    -- Today only `status` is filtered on by a *query*. `sensitivity` stopped
+    -- being inert at v6: every build now consults the deployment's disclosure
+    -- ceiling and writes no row at all for an item above it (#119, ADR-0025
+    -- part 1), so this column records the class a row was admitted under rather
+    -- than a label nothing acted on. What is still owed is the read side --
+    -- `_scope` and `_node_scope` emit project and status only, so a row already
+    -- in the file is matched whatever this column says, and a document
+    -- reclassified upward after the build is withheld by the canonical re-check
+    -- rather than by the index (#119 phase 4). Said plainly, because a comment
+    -- that implies an access control which does not exist is how the next person
+    -- concludes it is already handled -- and because the reverse mistake is now
+    -- available too: this column is not the gate, the build that refused to write
+    -- the row is.
+    --
+    -- `trust_level` and `namespace` are carried for the scope filtering #119
+    -- adds (Milestone 6) and are read by no query. `namespace` is populated as of
+    -- the RAPTOR builder, which partitions the forest by the scope tuple this
+    -- column is a component of; it is still read by no query.
     --
     -- `kind` is the one exception to "read by no query": no *retrieval* reads it,
     -- but the withdrawal purge's re-derivation does (v5). A Domain tree is keyed
